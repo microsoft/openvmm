@@ -96,8 +96,9 @@ pub trait DmaTarget: Send + Sync {
     /// The region manager may call this with a range that covers multiple
     /// prior `map_dma` calls (e.g., unmapping an entire region at once even
     /// though individual sub-mappings were mapped separately). The range
-    /// may bisect prior mappings. Gaps within the range (unmapped sub-ranges)
-    /// are expected and must not cause errors.
+    /// will always be aligned to mapping boundaries — it will not bisect
+    /// any prior mapping. Gaps within the range (unmapped sub-ranges) are
+    /// expected and must not cause errors.
     fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()>;
 }
 
@@ -294,7 +295,7 @@ enum RegionRequest {
     MapRegion(FailableRpc<(RegionId, MapParams), ()>),
     UnmapRegion(Rpc<RegionId, ()>),
     AddMapping(FailableRpc<(RegionId, RegionMappingParams), ()>),
-    RemoveMappings(Rpc<(RegionId, MemoryRange), ()>),
+    RemoveMappings(FailableRpc<(RegionId, MemoryRange), ()>),
     AddPartition(
         LocalOnly<Rpc<PartitionMapper, Result<(), crate::partition_mapper::PartitionMapperError>>>,
     ),
@@ -307,7 +308,7 @@ struct RegionMapping {
     params: RegionMappingParams,
 }
 
-#[derive(MeshPayload, Clone)]
+#[derive(MeshPayload)]
 struct RegionMappingParams {
     range_in_region: MemoryRange,
     /// How the mapping is backed by host memory. File-backed RAM carries a
@@ -374,7 +375,7 @@ impl RegionManagerTask {
                         .await
                 }
                 RegionRequest::RemoveMappings(rpc) => {
-                    rpc.handle(async |(id, range)| self.remove_mappings(id, range).await)
+                    rpc.handle_failable(async |(id, range)| self.remove_mappings(id, range).await)
                         .await
                 }
                 RegionRequest::AddPartition(LocalOnly(rpc)) => {
@@ -730,69 +731,84 @@ impl RegionManagerTask {
         Ok(())
     }
 
-    async fn remove_mappings(&mut self, id: RegionId, range_in_region: MemoryRange) {
+    async fn remove_mappings(
+        &mut self,
+        id: RegionId,
+        range_in_region: MemoryRange,
+    ) -> anyhow::Result<()> {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
         let active_range = region.active_range();
 
-        // Collect absolute GPA ranges being removed (before mutating the vec)
-        // so we can notify DMA mappers.
-        let removed_ranges: Vec<MemoryRange> = if active_range.is_some() {
-            let region_range = region.params.range;
-            region
-                .mappings
-                .iter()
-                .filter_map(|m| {
-                    let removed = range_in_region.intersection(&m.params.range_in_region);
-                    (!removed.is_empty()).then(|| range_within(region_range, removed))
-                })
-                .collect()
-        } else {
-            Vec::new()
+        let Some(region_range) = active_range.map(|_| region.params.range) else {
+            remove_region_mapping_fragments(region, range_in_region);
+            return Ok(());
         };
 
-        let mut kept = Vec::new();
-        for mapping in std::mem::take(&mut region.mappings) {
-            let removed = range_in_region.intersection(&mapping.params.range_in_region);
-            if removed.is_empty() {
-                kept.push(mapping);
-                continue;
-            }
+        let affected: Vec<_> = region
+            .mappings
+            .iter()
+            .map(|mapping| mapping.params.range_in_region)
+            .filter(|range| range.overlaps(&range_in_region))
+            .collect();
 
-            if mapping.params.range_in_region.start() < removed.start() {
-                let range =
-                    MemoryRange::new(mapping.params.range_in_region.start()..removed.start());
-                kept.push(RegionMapping {
-                    params: region_mapping_fragment(&mapping.params, range),
-                });
-            }
-            if mapping.params.range_in_region.end() > removed.end() {
-                let range = MemoryRange::new(removed.end()..mapping.params.range_in_region.end());
-                kept.push(RegionMapping {
-                    params: region_mapping_fragment(&mapping.params, range),
-                });
+        // DMA targets such as VFIO Type1v2 cannot unmap part of a prior
+        // mapping, so partial removal is not supported while DMA mappers exist.
+        if !self.inner.dma_mappers.is_empty()
+            && affected
+                .iter()
+                .any(|range| !range_in_region.contains(range))
+        {
+            anyhow::bail!(
+                "cannot partially remove mappings in {range_in_region} while DMA mappers are registered"
+            );
+        }
+
+        // Unmap DMA mappers first — IOMMU entries must be removed before the VA
+        // mappings are torn down (same ordering as disable_region).
+        for &range in &affected {
+            let range = range_within(region_range, range);
+            for dma_mapper in &self.inner.dma_mappers {
+                dma_mapper.unmap_dma(range);
             }
         }
-        region.mappings = kept;
-        if let Some(region_range) = active_range {
-            // Unmap DMA mappers first — IOMMU entries must be removed before
-            // the VA mappings are torn down (same ordering as disable_region).
-            for &removed in &removed_ranges {
-                for dma_mapper in &self.inner.dma_mappers {
-                    dma_mapper.unmap_dma(removed);
-                }
-            }
 
-            self.inner
-                .mapping_manager
-                .remove_mappings(range_within(region_range, range_in_region))
-                .await;
+        remove_region_mapping_fragments(region, range_in_region);
+        self.inner
+            .mapping_manager
+            .remove_mappings(range_within(region_range, range_in_region))
+            .await;
 
-            // Currently there is no need to tell the partitions about the
-            // removed mappings; they will find out when the underlying VA is
-            // invalidated by the kernel.
+        // Currently there is no need to tell the partitions about the
+        // removed mappings; they will find out when the underlying VA is
+        // invalidated by the kernel.
+        Ok(())
+    }
+}
+
+fn remove_region_mapping_fragments(region: &mut Region, range: MemoryRange) {
+    let mut kept = Vec::new();
+    for mapping in std::mem::take(&mut region.mappings) {
+        let removed = range.intersection(&mapping.params.range_in_region);
+        if removed.is_empty() {
+            kept.push(mapping);
+            continue;
+        }
+        if mapping.params.range_in_region.start() < removed.start() {
+            let fragment =
+                MemoryRange::new(mapping.params.range_in_region.start()..removed.start());
+            kept.push(RegionMapping {
+                params: region_mapping_fragment(&mapping.params, fragment),
+            });
+        }
+        if removed.end() < mapping.params.range_in_region.end() {
+            let fragment = MemoryRange::new(removed.end()..mapping.params.range_in_region.end());
+            kept.push(RegionMapping {
+                params: region_mapping_fragment(&mapping.params, fragment),
+            });
         }
     }
+    region.mappings = kept;
 }
 
 impl RegionManagerTaskInner {
@@ -1142,12 +1158,13 @@ impl RegionHandle {
     }
 
     /// Removes mappings in `range` within this region, splitting partially
-    /// covered mappings.
-    pub async fn remove_mappings(&self, range: MemoryRange) {
-        let _ = self
-            .req_send
+    /// covered mappings. Returns an error, leaving the mappings unchanged, if
+    /// this would split a mapping while DMA mappers are registered.
+    pub async fn remove_mappings(&self, range: MemoryRange) -> Result<(), RemoteError> {
+        self.req_send
             .call(RegionRequest::RemoveMappings, (self.id.unwrap(), range))
-            .await;
+            .await
+            .map_err(RemoteError::new)?
     }
 
     /// Tears the region down, waiting for all mappings to be unreferenced.
@@ -1410,7 +1427,8 @@ mod tests {
         // Removing the mapping should unmap it.
         t.task
             .remove_mappings(r, MemoryRange::new(0x0..0x4000))
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             target.take_events(),
             vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x4000))]
@@ -1418,7 +1436,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_dma_partial_unmap_preserves_mapping_fragments(spawn: impl Spawn) {
+    async fn test_dma_partial_unmap_rejected(spawn: impl Spawn) {
         let mut t = DmaTestTask::new(&spawn);
         let r = t.add_region(0x0..0x10000).await;
         t.add_mapping(r, 0x0..0x10000).await;
@@ -1427,26 +1445,20 @@ mod tests {
         t.task.add_dma_mapper(target.clone(), false).await.unwrap();
         target.take_events();
 
-        t.task
-            .remove_mappings(r, MemoryRange::new(0x4000..0x8000))
-            .await;
-
-        assert_eq!(
-            target.take_events(),
-            vec![DmaEvent::Unmap(MemoryRange::new(0x4000..0x8000))]
+        assert!(
+            t.task
+                .remove_mappings(r, MemoryRange::new(0x4000..0x8000))
+                .await
+                .is_err()
         );
+
+        assert!(target.take_events().is_empty());
         let region = &t.task.regions[t.task.region_index(r)];
-        assert_eq!(region.mappings.len(), 2);
+        assert_eq!(region.mappings.len(), 1);
         assert_eq!(
             region.mappings[0].params.range_in_region,
-            MemoryRange::new(0..0x4000)
+            MemoryRange::new(0..0x10000)
         );
-        assert_eq!(region.mappings[0].params.backing.file_offset(), 0);
-        assert_eq!(
-            region.mappings[1].params.range_in_region,
-            MemoryRange::new(0x8000..0x10000)
-        );
-        assert_eq!(region.mappings[1].params.backing.file_offset(), 0x8000);
     }
 
     /// Anonymous/private RAM has no backing fd, so its region mappings carry

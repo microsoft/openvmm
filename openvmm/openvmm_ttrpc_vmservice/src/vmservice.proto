@@ -925,7 +925,7 @@ message VirtioFs {
     // set, "ro" is appended.
     string mount_options = 4;
     // Host-specific virtio-fs options. Omit on non-Windows hosts.
-    WindowsOptions windows_options = 7;
+    WindowsOptions windows_options = 5;
 
     message WindowsOptions {
         // A token handle duplicated into the VM service process. OpenVMM

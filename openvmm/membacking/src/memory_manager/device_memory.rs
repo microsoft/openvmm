@@ -104,7 +104,11 @@ impl DeviceRegionState {
     /// Removes `range` from the region. Mappings that partially overlap
     /// `range` are split, leaving the unaffected portions mapped. virtiofs
     /// DAX relies on this to replace or upgrade existing mappings.
-    fn remove_range(&mut self, range: MemoryRange) {
+    fn remove_range(&mut self, range: MemoryRange) -> io::Result<()> {
+        if let Some(handle) = &self.handle {
+            block_on(handle.remove_mappings(range)).map_err(io::Error::other)?;
+        }
+
         let mut kept = Vec::new();
         for mapping in std::mem::take(&mut self.mappings) {
             if !mapping.range.overlaps(&range) {
@@ -113,10 +117,6 @@ impl DeviceRegionState {
             }
 
             let removed = mapping.range.intersection(&range);
-            if let Some(handle) = &self.handle {
-                block_on(handle.remove_mappings(removed));
-            }
-
             if mapping.range.start() < removed.start() {
                 kept.push(DeviceMapping {
                     range: MemoryRange::new(mapping.range.start()..removed.start()),
@@ -135,6 +135,7 @@ impl DeviceRegionState {
             }
         }
         self.mappings = kept;
+        Ok(())
     }
 }
 
@@ -161,13 +162,13 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         };
 
         let mut state = self.state.lock();
-        state.remove_range(range);
+        state.remove_range(range)?;
         state.add_mapping(new_mapping)
     }
 
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let range = self.validated_memory_range(offset, len)?;
-        self.state.lock().remove_range(range);
+        self.state.lock().remove_range(range)?;
         Ok(())
     }
 }
@@ -254,7 +255,9 @@ mod tests {
             }],
         };
 
-        state.remove_range(MemoryRange::new(0x4000..0x8000));
+        state
+            .remove_range(MemoryRange::new(0x4000..0x8000))
+            .unwrap();
 
         assert_eq!(state.mappings.len(), 2);
         assert_eq!(state.mappings[0].range, MemoryRange::new(0..0x4000));
