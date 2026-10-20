@@ -92,10 +92,9 @@ const SNP_REPORT_VERSIONS_WITH_COMPONENT_ORDERING: core::ops::RangeInclusive<u32
 /// SVN equality. Version 2 has no trusted CPUID and is also equality-only.
 /// TDX uses a structural minimum-TCB policy: CPU SVN bytes must individually
 /// meet the floor. TEE SVN byte 1 must match, including legacy identity 0.
-/// For TD-preserving modules byte 0 is module ISVSVN and bytes 2..16 are platform
-/// components; these bytes must individually meet the floor in both layouts.
-/// This is not quote appraisal
-/// or an Intel TCB status decision, which requires authenticated TCB Info.
+/// Minor SVN (byte 0) and SE_SVN (byte 2) must be non-decreasing; reserved
+/// bytes 3–15 must remain equal. This is not quote appraisal or an Intel TCB
+/// status decision, which requires authenticated TCB Info.
 #[derive(Debug)]
 pub struct RuntimeTcbFloor {
     snapshot: Snapshot,
