@@ -819,7 +819,7 @@ pub const WHvMsrActionExit: WHV_MSR_ACTION = WHV_MSR_ACTION(2);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct WHV_SCHEDULER_FEATURES(pub u32);
+pub struct WHV_SCHEDULER_FEATURES(pub u64);
 bitops!(WHV_SCHEDULER_FEATURES);
 
 impl WHV_SCHEDULER_FEATURES {
