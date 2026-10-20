@@ -536,11 +536,13 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn set_tsc(&mut self, tsc: &vp::Tsc) -> Result<(), Self::Error> {
-        // The counter is kept on the reference clock, a fixed lead ahead, by one offset
-        // every vp shares; creation, reset and the restore of the clock each re-establish
-        // it. So a counter write, from a restore or a reset, puts this vp back on that
-        // offset instead of storing a value: a saved counter carries no information the
-        // restored clock does not, and it was read at a different instant than the clock.
+        // On a partition with a reference time element the counter is kept on the
+        // reference clock, a fixed lead ahead, by one offset every vp shares; creation,
+        // reset and the restore of the clock each re-establish it. So a counter write, from
+        // a restore or a reset, puts this vp back on that offset instead of storing a value:
+        // a saved counter carries no information the restored clock does not, and it was
+        // read at a different instant than the clock. Without that element no offset is
+        // recorded (nothing sets the clock on a restore), and the counter is stored below.
         // `MSR_IA32_TSC` is not used here because the kernel infers what a host write
         // meant from its distance to the counter (`kvm_synchronize_tsc`): a write within a
         // second of the previous one keeps the old offset, a later one is stored as given,

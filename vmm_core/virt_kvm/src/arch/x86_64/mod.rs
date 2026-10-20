@@ -553,7 +553,10 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         // whether or not it does so through the hyper-v interfaces.
         //
         // The per-vp `Tsc` element that guest state initialization writes later cannot undo
-        // this: it reapplies the offset recorded below (see `set_tsc`).
+        // this. With a reference time element it reapplies the offset recorded below (see
+        // `set_tsc`); without one it is a plain zero through `MSR_IA32_TSC`, and the kernel
+        // substitutes the partition's current offset for a host write of zero, which is the
+        // offset written here.
         let alignment = align_guest_tsc_to_reference_clock(
             &self.vm,
             bsp_apic_id,
@@ -1908,8 +1911,9 @@ impl KvmMsi {
 }
 
 impl KvmPartitionInner {
-    /// Puts every vp's counter on the reference clock and records the offset they now
-    /// share, which a later `Tsc` state write reapplies.
+    /// Puts every vp's counter on the reference clock and, on a partition with a reference
+    /// time element, records the offset they now share for a later `Tsc` state write to
+    /// reapply (see `recorded_tsc_offset`).
     fn align_guest_tsc(&self) -> Result<Option<GuestTscAlignment>, KvmError> {
         let bsp = self.bsp().vp_info.apic_id;
         let alignment = align_guest_tsc_to_reference_clock(
