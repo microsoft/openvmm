@@ -552,9 +552,8 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         // that calibrates a counter against a clock is entitled to find them consistent
         // whether or not it does so through the hyper-v interfaces.
         //
-        // The per-vp `Tsc` element that guest state initialization writes later is a plain
-        // zero and cannot undo this: the kernel substitutes the partition's current offset
-        // for a host write of zero, and that is now the offset written here.
+        // The per-vp `Tsc` element that guest state initialization writes later cannot undo
+        // this: it reapplies the offset recorded below (see `set_tsc`).
         let alignment = align_guest_tsc_to_reference_clock(
             &self.vm,
             bsp_apic_id,
@@ -573,6 +572,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             tsc_achieved_lead_ns = alignment.map(|a| a.achieved_lead_ns),
             "partition created"
         );
+        let aligned_tsc_offset = alignment
+            .map(|_| self.vm.vp(bsp_apic_id).tsc_offset())
+            .transpose()?;
 
         let mut gsi_routing = GsiRouting::new();
 
@@ -641,6 +643,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                     siefp: Default::default(),
                 })
                 .collect(),
+            aligned_tsc_offset: Mutex::new(aligned_tsc_offset),
             gsi_routing: Mutex::new(gsi_routing),
             caps,
             cpuid,
@@ -814,11 +817,7 @@ impl ResetPartition for KvmPartition {
         // `reset_all` has just returned the reference clock to zero; put the counter back
         // on that same origin. Both halves of the partition clock restart together, which
         // is what recreating the partition would do.
-        let tsc = align_guest_tsc_to_reference_clock(
-            &self.inner.kvm,
-            self.inner.bsp().vp_info.apic_id,
-            self.inner.vps.iter().map(|vp| vp.vp_info.apic_id),
-        )?;
+        let tsc = self.inner.align_guest_tsc()?;
         tracelimit::info_ratelimited!(
             reference_time_before,
             reference_time_after = self.inner.kvm.get_clock()?.clock_ns / 100,
@@ -1889,6 +1888,26 @@ impl KvmMsi {
 }
 
 impl KvmPartitionInner {
+    /// Puts every vp's counter on the reference clock and records the offset they now
+    /// share, which a later `Tsc` state write reapplies.
+    fn align_guest_tsc(&self) -> Result<Option<GuestTscAlignment>, KvmError> {
+        let bsp = self.bsp().vp_info.apic_id;
+        let alignment = align_guest_tsc_to_reference_clock(
+            &self.kvm,
+            bsp,
+            self.vps.iter().map(|vp| vp.vp_info.apic_id),
+        )?;
+        *self.aligned_tsc_offset.lock() = alignment
+            .map(|_| self.kvm.vp(bsp).tsc_offset())
+            .transpose()?;
+        Ok(alignment)
+    }
+
+    /// The offset the latest alignment gave every vp, if the kernel can set it directly.
+    pub(crate) fn aligned_tsc_offset(&self) -> Option<u64> {
+        *self.aligned_tsc_offset.lock()
+    }
+
     fn request_msi(&self, request: MsiRequest) {
         let Some(KvmMsi {
             address_lo,
