@@ -154,6 +154,7 @@ fn validate_loaded_ranges(
                 .ok_or(Error::InvalidMpTableMemoryLayout)?;
             if !range_is_in_ram(mem_layout, range)
                 || overlaps_fixed_boot_data(&range)
+                || range.end() > MPTABLE_MMIO_GAP_END
                 || range.overlaps(&kernel_range)
             {
                 return Err(Error::InvalidMpTableMemoryLayout);
@@ -1132,6 +1133,35 @@ mod tests {
             MPTABLE_ISA_HOLE_END as u32
         );
         assert_eq!(u32::from(boot_params.hdr.ramdisk_size), HV_PAGE_SIZE as u32);
+    }
+
+    #[test]
+    fn mptable_config_rejects_initrd_above_identity_map() {
+        let load_info = LoadInfo {
+            kernel: KernelInfo {
+                gpa: KERNEL_BASE,
+                size: HV_PAGE_SIZE,
+                entrypoint: KERNEL_BASE,
+            },
+            initrd: Some(InitrdInfo {
+                gpa: MPTABLE_MMIO_GAP_END,
+                size: HV_PAGE_SIZE,
+            }),
+            ..Default::default()
+        };
+        let mut importer = RecordingImporter::default();
+        let error = import_mptable_config(
+            &mut importer,
+            &load_info,
+            &CString::new("").unwrap(),
+            &make_mptable_layout(8 * GB),
+            &mptable_config(&[0]),
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidMpTableMemoryLayout));
+        assert!(importer.imports.is_empty());
     }
 
     #[test]
