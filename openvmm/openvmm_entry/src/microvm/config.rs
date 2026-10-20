@@ -1041,9 +1041,9 @@ mod tests {
                 "x".repeat(fill)
             )
         };
-        let fill = MICROVM_COMMAND_LINE_MAX_SIZE
-            - 1
-            - (MICROVM_CONSOLE_COMMAND_LINE.len() + 1 + profile_tokens.len());
+        let fill = (MICROVM_COMMAND_LINE_MAX_SIZE - 1)
+            .checked_sub(MICROVM_CONSOLE_COMMAND_LINE.len() + 1 + profile_tokens.len())
+            .expect("the profile's tokens leave room for the caller's argument");
         let longest = build(fill).unwrap();
         assert_eq!(longest, expected(fill));
         assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
