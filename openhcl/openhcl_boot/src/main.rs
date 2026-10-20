@@ -12,13 +12,6 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-// Allow the allocator api when compiling with `RUSTFLAGS="--cfg nightly"`. This
-// is used for some miri tests for testing the bump allocator.
-//
-// Do not use a normal feature, as that shows errors with rust-analyzer since
-// most people are using stable and enable all features. We could remove this
-// once the allocator_api feature is stable.
-#![cfg_attr(nightly, feature(allocator_api))]
 
 mod arch;
 mod boot_logger;
@@ -310,19 +303,6 @@ fn build_kernel_command_line(
 
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
-    }
-
-    if !cmdline.contains("hv_vmbus.message_connection_id") {
-        // HACK: Set the vmbus connection id via kernel commandline if we haven't
-        // gotten one from elsewhere.
-        //
-        // This code will be removed when the kernel supports setting connection id
-        // via device tree.
-        write!(
-            cmdline,
-            "hv_vmbus.message_connection_id=0x{:x} ",
-            partition_info.vmbus_vtl2.connection_id
-        )?;
     }
 
     // Prepend the computed parameters to the original command line.
@@ -1027,13 +1007,9 @@ mod test {
                 sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
             },
             cmdline: ArrayString::new(),
-            vmbus_vtl2: VmbusInfo {
-                mmio,
-                connection_id: 0,
-            },
+            vmbus_vtl2: VmbusInfo { mmio },
             vmbus_vtl0: VmbusInfo {
                 mmio: ArrayVec::new(),
-                connection_id: 0,
             },
             com3_serial: ComInfo::None,
             gic: None,

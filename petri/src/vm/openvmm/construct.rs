@@ -50,6 +50,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaNode;
@@ -1118,6 +1119,7 @@ impl PetriVmConfigSetupCore<'_> {
                     cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address,
                     com_serial: self.enable_serial.then_some(UartId::Com(ComPort::Com3)),
+                    personality: IgvmPersonality::Openhcl,
                 }
             }
             (a, f) => anyhow::bail!("Unsupported firmware {f:?} for arch {a:?}"),

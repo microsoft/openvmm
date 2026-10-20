@@ -3730,6 +3730,11 @@ impl Adapter {
         let mut restart_endpoint = false;
         let mut packet_filter = None;
         match oid {
+            rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD => {
+                let _: u32 = reader.clone().read_plain()?;
+                // NetVSP supplies the full packet in every receive indication, so the
+                // requested lookahead does not change behavior.
+            }
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
                 packet_filter = self.oid_set_packet_filter(reader)?;
             }

@@ -33,6 +33,7 @@ dependencies = [
  "cxl_spec",
  "guid",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -579,6 +580,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "chipset"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
@@ -716,6 +718,7 @@ dependencies = [
 name = "chipset_resources"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "arbitrary",
  "inspect",
  "ipmi_protocol",
@@ -3898,11 +3901,9 @@ dependencies = [
 name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
- "acpi_spec",
  "anyhow",
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
- "chipset_resources",
  "clap",
  "corim",
  "crypto",
@@ -3921,14 +3922,12 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "serial_16550_resources",
  "signature",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
  "vm_topology",
- "vmm_core",
  "x509-cert",
  "x86defs",
  "zerocopy",
@@ -4863,6 +4862,7 @@ dependencies = [
  "arrayvec",
  "cfg-if",
  "hvdef",
+ "memory_range",
  "minimal_rt_build",
  "minimal_rt_reloc",
  "zerocopy",
@@ -6368,6 +6368,7 @@ dependencies = [
  "pal_event",
  "seccompiler",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "widestring",
@@ -7813,6 +7814,8 @@ dependencies = [
  "pal_async",
  "serial_core",
  "socket2",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unix_socket",
  "vm_resource",
@@ -8056,10 +8059,18 @@ dependencies = [
 name = "snp_bootshim"
 version = "0.0.0"
 dependencies = [
+ "acpi",
+ "acpi_spec",
+ "arrayvec",
+ "fdt",
  "loader_defs",
+ "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "test_with_tracing",
+ "thiserror 2.0.16",
  "x86defs",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8482,11 +8493,13 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "crypto",
+ "der",
  "get_resources",
  "getrandom 0.4.2",
  "inspect",
  "openhcl_attestation_protocol",
  "serde_json",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "zerocopy",
@@ -8504,6 +8517,7 @@ dependencies = [
  "parking_lot",
  "serde_json",
  "test_igvm_agent_lib",
+ "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.61.0",
@@ -9132,6 +9146,7 @@ dependencies = [
  "constant_time_eq",
  "crypto",
  "cvm_tracing",
+ "der",
  "disk_backend",
  "disklayer_ram",
  "get_protocol",
@@ -9147,6 +9162,7 @@ dependencies = [
  "serde_json",
  "static_assertions",
  "tee_call",
+ "test_igvm_agent_lib",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
@@ -11007,6 +11023,7 @@ dependencies = [
  "static_assertions",
  "storvsp_resources",
  "tempfile",
+ "test_igvm_agent_lib",
  "tmk_tests",
  "tracing",
  "unix_socket",

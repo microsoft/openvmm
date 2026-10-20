@@ -100,6 +100,9 @@ describes the source definitions.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
 
+  For SNP Linux-direct IGVM images, see
+  [SEV-SNP IGVM Boot](../../devices/firmware/linux_direct.md#sev-snp-igvm-boot).
+
   SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
   the minimal emulated chipset and serial console, optional devices are
   limited to virtio devices attached through PCIe.

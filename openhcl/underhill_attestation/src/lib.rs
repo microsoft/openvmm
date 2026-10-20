@@ -21,6 +21,8 @@ mod test_helpers;
 
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
+pub use igvm_attest::ak_cert::AkCertResponse;
+pub use igvm_attest::ak_cert::parse_metadata as parse_ak_cert_metadata;
 pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
 use crate::hardware_key_sealing::HardwareKeySealingError;
@@ -229,7 +231,13 @@ fn derive_key(
     context: &[u8],
     label: &[u8],
 ) -> Result<[u8; AES_GCM_KEY_LENGTH], crypto::kbkdf::KbkdfError> {
-    let output = crypto::kbkdf::kbkdf_hmac_sha256(key, context, label, AES_GCM_KEY_LENGTH)?;
+    let output = crypto::kbkdf::kbkdf_hmac(
+        key,
+        context,
+        label,
+        AES_GCM_KEY_LENGTH,
+        crypto::HashAlgorithm::Sha256,
+    )?;
     Ok(output.try_into().unwrap())
 }
 
@@ -1842,7 +1850,7 @@ pub fn derive_vmgsid(seed_file: &[u8]) -> Result<Guid, Error> {
         .map_err(ProvenanceError::DecodeVmgsidData)
         .map_err(AttestationErrorInner::Provenance)?;
 
-    let key = crypto::kbkdf::kbkdf_hmac_sha256(&seed, &context, &label, 32)
+    let key = crypto::kbkdf::kbkdf_hmac(&seed, &context, &label, 32, crypto::HashAlgorithm::Sha256)
         .map_err(ProvenanceError::KdfError)
         .map_err(AttestationErrorInner::Provenance)?;
 

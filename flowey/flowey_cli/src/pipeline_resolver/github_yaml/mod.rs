@@ -169,10 +169,19 @@ pub fn github_yaml(
             FloweySource::Bootstrap { .. } => {
                 let flowey_path = "bootstrapped-flowey".to_string();
 
+                let gh_bootstrap_template = gh_bootstrap_template.as_ref().context(
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template_fn`",
+                )?(platform, arch)
+                .with_context(|| {
+                    format!(
+                        "while generating flowey bootstrap template for job '{label}' ({platform}/{arch})"
+                    )
+                })?;
+
                 // actual artifact publish happens at the end of the job
                 if gh_bootstrap_template.is_empty() {
                     anyhow::bail!(
-                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
+                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template_fn`"
                     )
                 }
 

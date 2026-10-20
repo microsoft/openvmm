@@ -42,8 +42,8 @@ impl IntoPipeline for OpenvmmSourceReleaseCli {
 
         let openvmm_repo_source = RepoSource::GithubSelf;
 
-        pipeline.gh_set_flowey_bootstrap_template(
-            crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
+        pipeline.gh_set_flowey_bootstrap_template_fn(
+            crate::pipelines_shared::gh_flowey_bootstrap_template::get_template_for_platform,
         );
 
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(

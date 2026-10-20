@@ -89,11 +89,12 @@ impl HardwareDerivedKeys {
 
         let vm_config_json = serde_json::to_string(vm_config).expect("JSON serialization failed");
 
-        let output = crypto::kbkdf::kbkdf_hmac_sha256(
+        let output = crypto::kbkdf::kbkdf_hmac(
             &hardware_secret,
             vm_config_json.as_bytes(),
             label,
             vmgs::AES_CBC_KEY_LENGTH + vmgs::HMAC_SHA_256_KEY_LENGTH,
+            crypto::HashAlgorithm::Sha256,
         )
         .map_err(HardwareDerivedKeysError::KdfWithHardwareSecret)?;
 
