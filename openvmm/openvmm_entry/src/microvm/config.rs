@@ -1023,9 +1023,18 @@ mod tests {
         // The profile's tokens follow the caller's, and the guest kernel must
         // receive both: 2,047 bytes of text pass, and 2,048 fail with the
         // shared check's error, whose text openvmm_defs tests. The expected
-        // line comes from the profile's own tokens, not from the builder.
-        let profile_tokens = " nr_cpus=8 nvx_workload_uid=4294967295 \
-                              nvx_workload_gid=4294967295 nvx_lifecycle=one-shot";
+        // line joins the console command line, the caller's argument, and the
+        // tokens as the profile's own functions write them, whose formats
+        // openvmm_defs tests, so it does not come from the builder.
+        let mut profile_tokens = String::new();
+        openvmm_defs::microvm::append_microvm_processor_limit(&mut profile_tokens, 8).unwrap();
+        openvmm_defs::microvm::append_microvm_workload_identity(
+            &mut profile_tokens,
+            u32::MAX,
+            u32::MAX,
+        )
+        .unwrap();
+        openvmm_defs::microvm::append_microvm_lifecycle(&mut profile_tokens, false).unwrap();
         let expected = |fill: usize| {
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} {}{profile_tokens}",
