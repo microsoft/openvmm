@@ -45,7 +45,12 @@ describes the source definitions.
   anchored to UTC,
   the microVM portb console, lifecycle ports, and the optional fixed virtio
   devices described below. User arguments cannot override `earlycon=`,
-  `console=`, `virtio_mmio.device=`, `virtnet_*=`, or `virtfs_*=`.
+  `console=`, `virtio_mmio.device=`, `virtnet_*=`, or `virtfs_*=`. The
+  effective command line, including the tokens that the profile appends after
+  the user arguments, must fit in the x86 guest kernel's 2048-byte command-line
+  buffer with its terminating NUL, so it holds at most 2047 bytes. OpenVMM
+  rejects a longer command line, or one with an embedded NUL, rather than let
+  the guest truncate it.
 
   One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
   dormant when neither `--mount` nor `--mount-aggregate` is given; either one
