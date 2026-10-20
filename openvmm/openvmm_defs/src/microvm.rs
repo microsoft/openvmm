@@ -2351,10 +2351,11 @@ mod tests {
         }
 
         // Device discovery and the network bootstrap come last, so the line
-        // that they complete is the effective one. The line with a one-byte
-        // argument gives the profile's share of it; padded to the limit, the
-        // line must equal that one with only the argument longer, so that no
-        // token is lost, and still end with the network bootstrap.
+        // that they complete is the effective one. Padded to the limit, it
+        // must join the base command line, the caller's argument, and the
+        // tokens that discovery writes after an empty line, whose formats
+        // microvm_discovery_bootstraps_one_filesystem pins, so that no token
+        // is lost, and still end with the network bootstrap.
         let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         let discover = |cmdline: &mut String| {
             append_microvm_virtio_discovery(
@@ -2367,16 +2368,21 @@ mod tests {
                 &[],
             )
         };
-        let mut shortest = build_microvm_command_line(&["x".to_owned()], false).unwrap();
-        discover(&mut shortest).unwrap();
-        let fill = max_text - (shortest.len() - 1);
+        let mut discovery = String::new();
+        discover(&mut discovery).unwrap();
+        let fill = max_text
+            .checked_sub(MICROVM_BASE_COMMAND_LINE.len() + 1 + discovery.len())
+            .expect("the profile's tokens leave room for the caller's argument");
         let mut longest = build_microvm_command_line(&["x".repeat(fill)], false).unwrap();
         discover(&mut longest).unwrap();
-        assert_eq!(longest.len(), max_text);
         assert_eq!(
             longest,
-            shortest.replacen(" x ", &format!(" {} ", "x".repeat(fill)), 1)
+            format!(
+                "{MICROVM_BASE_COMMAND_LINE} {}{discovery}",
+                "x".repeat(fill)
+            )
         );
+        assert_eq!(longest.len(), max_text);
         assert!(longest.ends_with(" virtnet_gw6=fd00::a00:1"));
         let mut over = build_microvm_command_line(&["x".repeat(fill + 1)], false).unwrap();
         assert_eq!(discover(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
