@@ -499,11 +499,14 @@ fn validate_snapshot_directory(
 mod tests {
     use super::super::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
     use super::super::microvm::paired_scratch_manifest;
+    use super::super::microvm::test_machine_contract;
     use super::super::publish::write_snapshot;
     #[cfg(target_os = "linux")]
     use super::super::publish::write_snapshot_from_memory_and_scratch_files;
     use super::super::tests::test_manifest;
     use super::*;
+    use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::check_microvm_command_line;
     use std::io::Read;
     #[cfg(any(target_os = "linux", windows))]
     use std::io::Seek;
@@ -686,6 +689,56 @@ mod tests {
         let error = format!("{:#}", read_snapshot(&snap_dir, 1024).err().unwrap());
         assert!(error.contains("[E_SNAPSHOT_VERSION]"), "{error}");
         assert!(error.contains("recapture the snapshot"), "{error}");
+    }
+
+    #[test]
+    fn read_snapshot_rejects_a_command_line_over_the_limit_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+        // A snapshot whose saved command line no longer fits, as one captured
+        // under a larger limit would record: one byte over the limit.
+        let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
+        let mut contract = test_machine_contract();
+        let prefix = "console=hvc0 ";
+        let fill = MICROVM_COMMAND_LINE_MAX_SIZE
+            .checked_sub(prefix.len())
+            .expect("the prefix fits within the limit");
+        let saved = format!("{prefix}{}", "x".repeat(fill));
+        // The shared check's error, whose text openvmm_defs tests.
+        let expected = format!(
+            "snapshot effective command line is invalid: {}",
+            check_microvm_command_line(&saved).unwrap_err()
+        );
+        contract.set_effective_command_line(saved);
+        manifest.machine_contract = Some(contract);
+        let encoded = mesh::payload::encode(manifest);
+        std::fs::write(snap_dir.join(MANIFEST_FILE_NAME), &encoded).unwrap();
+        let entries = || {
+            let mut names = std::fs::read_dir(&snap_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let before = entries();
+
+        for error in [
+            read_snapshot(&snap_dir, 1024).err().unwrap(),
+            read_snapshot_manifest(&snap_dir).err().unwrap(),
+        ] {
+            let error = format!("{error:#}");
+            assert!(error.contains(&expected), "{error}");
+        }
+        // The restore neither rewrites the saved string nor migrates the snapshot.
+        assert_eq!(
+            std::fs::read(snap_dir.join(MANIFEST_FILE_NAME)).unwrap(),
+            encoded
+        );
+        assert_eq!(entries(), before);
     }
 
     #[test]
