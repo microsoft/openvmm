@@ -53,7 +53,6 @@ use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use std::future::pending;
 use std::io;
-#[cfg(unix)]
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
@@ -67,8 +66,6 @@ use storvsp_resources::ScsiPath;
 use tracing_helpers::AnyhowValueExt;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
-
-mod headless;
 
 fn maybe_with_radix_u64(s: &str) -> Result<u64, String> {
     let (radix, prefix_len) = if s.starts_with("0x") || s.starts_with("0X") {
@@ -591,15 +588,23 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                let terminal =
-                    headless::enable_raw_mode(&stdin).expect("failed to enable raw console mode");
+                let terminal = stdin.is_terminal();
+                // Read a non-terminal stdin, such as a pipe from a driving
+                // process, without switching the console to raw mode.
+                if terminal {
+                    crossterm::terminal::enable_raw_mode()
+                        .expect("failed to enable raw console mode");
+                }
 
                 let input_end = console_in.as_mut().map(|input| {
                     forward_console_input(&mut stdin, input.as_mut())
                         .expect("failed to forward console input")
                 });
 
-                headless::disable_raw_mode(terminal).expect("failed to disable raw console mode");
+                if terminal {
+                    crossterm::terminal::disable_raw_mode()
+                        .expect("failed to disable raw console mode");
+                }
                 if input_end == Some(ConsoleInputEnd::Eof) {
                     return;
                 }
