@@ -53,7 +53,6 @@ const MAX_DEVICE_RANGES: usize = 16;
 const MAX_STATE_UNITS: usize = 512;
 const MAX_ATTACHMENTS: usize = 64;
 const MAX_ATTACHMENT_IDENTITY_BYTES: usize = 4096;
-const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
 
 /// A guest RAM range and its corresponding offset in `memory.bin`.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
@@ -1666,14 +1665,10 @@ pub(super) fn validate_machine_contract_shape(
                 == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
         "snapshot microVM shared-status interrupt contract is invalid"
     );
-    anyhow::ensure!(
-        contract.effective_command_line.len() < MAX_COMMAND_LINE_BYTES,
-        "snapshot command line exceeds the 64-KiB limit"
-    );
-    anyhow::ensure!(
-        !contract.effective_command_line.contains('\0'),
-        "snapshot command line contains an embedded NUL"
-    );
+    // A restore reuses the saved string verbatim, so it is checked as saved
+    // and never rewritten to fit.
+    openvmm_defs::microvm::check_microvm_command_line(&contract.effective_command_line)
+        .context("snapshot effective command line is invalid")?;
     validate_sha256(
         &contract.effective_command_line_sha256,
         "effective command line",
@@ -3821,6 +3816,31 @@ mod tests {
         expected.set_effective_command_line("console=other".to_owned());
         let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(err.to_string().contains("command line"));
+    }
+
+    #[test]
+    fn machine_contract_command_line_fits_the_guest_kernel_limit() {
+        // Text and its terminating NUL must fit in 2,048 bytes, the guest
+        // kernel's buffer.
+        let line = |length: usize| format!("console=hvc0 {}", "x".repeat(length - 13));
+        let mut contract = test_machine_contract();
+        contract.set_effective_command_line(line(2047));
+        validate_machine_contract_shape(&contract, 1024, 2).unwrap();
+
+        contract.set_effective_command_line(line(2048));
+        let error = validate_machine_contract_shape(&contract, 1024, 2).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "snapshot effective command line is invalid: microVM kernel command line is \
+             2048 bytes; the limit is 2047 bytes plus the terminating NUL"
+        );
+
+        contract.set_effective_command_line("console=hvc0 \0".to_owned());
+        let error = validate_machine_contract_shape(&contract, 1024, 2).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("contains an embedded NUL"),
+            "{error:#}"
+        );
     }
 
     #[test]

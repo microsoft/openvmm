@@ -1001,4 +1001,31 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn effective_command_line_limit_includes_the_profile_tokens() {
+        let build = |fill: usize| {
+            build_effective_microvm_command_line(
+                &["x".repeat(fill)],
+                8,
+                true,
+                true,
+                Some(cli_args::microvm::MicrovmWorkloadIdentityCli {
+                    uid: u32::MAX,
+                    gid: u32::MAX,
+                }),
+                Some(cli_args::microvm::MicrovmLifecycleCli::OneShot),
+            )
+        };
+        // The profile's tokens follow the caller's, and the guest kernel must
+        // receive both: 2,047 bytes of text pass, and 2,048 fail.
+        let fill = 2047 - (build(1).unwrap().len() - 1);
+        let longest = build(fill).unwrap();
+        assert_eq!(longest.len(), 2047);
+        assert!(longest.ends_with(" nvx_lifecycle=one-shot"), "{longest}");
+        assert_eq!(
+            build(fill + 1).unwrap_err().to_string(),
+            "microVM kernel command line is 2048 bytes; the limit is 2047 bytes plus the terminating NUL"
+        );
+    }
 }
