@@ -57,6 +57,33 @@ impl AccessVmState for &'_ KvmPartition {
         self.inner
             .kvm
             .set_clock_ns(value.value.saturating_mul(100))?;
+
+        // Moving the clock leaves the guest counter where it was, so put the counter back
+        // on it. A restore writes this element before any vp's `Tsc`, and those writes
+        // then land within a second of where the kernel expects the counter after this
+        // alignment, so it keeps the aligned offset instead of storing them
+        // (`kvm_synchronize_tsc`, the one-second slop after a user-set offset). Without
+        // this, each saved `Tsc` is stored as written, and the restored pair is off by the
+        // difference between how far apart save read and restore wrote the clock and the
+        // counter; each save then records that error and the next restore adds to it. On
+        // a machine reset this runs inside `reset_all`, and
+        // `ResetPartition::reset` then aligns again, which it must also do for a
+        // partition with no reference time element.
+        let alignment = super::align_guest_tsc_to_reference_clock(
+            &self.inner.kvm,
+            self.inner.bsp().vp_info.apic_id,
+            self.inner.vps.iter().map(|vp| vp.vp_info.apic_id),
+        )?;
+        tracelimit::info_ratelimited!(
+            reference_time = value.value,
+            guest_tsc_before = alignment.map(|a| a.before),
+            guest_tsc_after = alignment.map(|a| a.after),
+            tsc_pairing = alignment.map(|a| a.pairing),
+            tsc_pairing_error_ns = alignment.map(|a| a.pairing_error_ns),
+            tsc_requested_lead_ns = alignment.map(|a| a.requested_lead_ns),
+            tsc_achieved_lead_ns = alignment.map(|a| a.achieved_lead_ns),
+            "reference clock set"
+        );
         Ok(())
     }
 

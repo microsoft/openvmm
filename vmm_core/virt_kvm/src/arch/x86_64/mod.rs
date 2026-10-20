@@ -1163,8 +1163,8 @@ fn prime_reference_clock_pairing(vm: &kvm::Partition) -> Result<(), KvmError> {
 /// deliberate hair ahead of it, on every vp.
 ///
 /// The partition has two views of time and a guest hypervisor calibrates one against the
-/// other, so they have to start together. They do not, on their own, at either of the two
-/// points where the partition's clock starts:
+/// other, so they have to start together. They do not, on their own, at any of the three
+/// points where the partition's clock is set:
 ///
 /// * On a cold start the kernel zeroes the reference clock when the vm is created
 ///   (`kvm_arch_init_vm` sets `kvmclock_offset` to minus the current base time) but fixes
@@ -1185,8 +1185,14 @@ fn prime_reference_clock_pairing(vm: &kvm::Partition) -> Result<(), KvmError> {
 ///   value"). So zero, the one value a reset needs to deliver, is the one value that path
 ///   cannot deliver. Measured on a live guest: TSC 5403506220, wrote 0, read back
 ///   5403522705, while a control write of 0x4000000000000000 landed.
+/// * On a restore `set_reftime` writes the saved clock and each vp's `Tsc` follows later,
+///   from that vp's own thread, while the clock runs. The save read the two at different
+///   times too, so the restored pair is off by the difference between those gaps, and each
+///   save records the error the previous restore left. Measured over ten pulsed
+///   save/restores of one guest: the lead went from 20 us to -565 us, 35 to 105 us a
+///   restore.
 ///
-/// Both are corrected the same way and in the same direction: the reference clock is the
+/// All three are corrected the same way and in the same direction: the reference clock is the
 /// partition's authority on time - every synthetic timer deadline is expressed in it, and
 /// `GetReferenceTime` reads it directly - while the counter is a per-vp view of the same
 /// instant. So this moves the counter to the clock. Moving the clock to the counter would
