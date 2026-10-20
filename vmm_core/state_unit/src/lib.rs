@@ -296,8 +296,30 @@ struct Unit {
     dependencies: BTreeSet<u64>,
     dependents: BTreeSet<u64>,
     state: State,
+    pending_input: Option<PendingInput>,
+    pending_start: Option<PendingStart>,
     pending_stop: Option<PendingStop>,
     inspect_sensitivity: inspect::SensitivityLevel,
+}
+
+struct PendingInput {
+    future: BoxFuture<'static, anyhow::Result<()>>,
+}
+
+impl Debug for PendingInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingInput").finish_non_exhaustive()
+    }
+}
+
+struct PendingStart {
+    future: BoxFuture<'static, Result<(), UnitRecvError>>,
+}
+
+impl Debug for PendingStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingStart").finish_non_exhaustive()
+    }
 }
 
 struct PendingStop {
@@ -596,6 +618,11 @@ impl StateUnits {
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
+
+        // Input hooks run while units remain in Running. Complete any hook
+        // whose bounded caller timed out before sending lifecycle requests.
+        self.finish_pending_inputs().await;
+
         let terminal_states = {
             let inner = self.inner.lock();
             inner
@@ -615,8 +642,10 @@ impl StateUnits {
         };
 
         // A bounded quiesce may stop waiting for an RPC response while the
-        // handler is still running. Complete those RPCs before deciding
-        // whether a cleanup Stop still needs to be sent.
+        // handler is still running. A bounded restart can do the same for a
+        // Start. Complete those RPCs before deciding whether a cleanup Stop
+        // still needs to be sent.
+        self.finish_pending_starts().await;
         self.finish_pending_stops().await;
 
         // Make uncertain transitions receive Stop and already-cleaned start
@@ -629,10 +658,13 @@ impl StateUnits {
                     continue;
                 };
                 match state {
-                    State::StartUncertain => {
-                        assert_eq!(unit.state, state);
-                        unit.state = State::Running;
-                    }
+                    State::StartUncertain => match unit.state {
+                        State::StartUncertain => unit.state = State::Running,
+                        State::Stopped => {}
+                        current => {
+                            panic!("unit {} in {current:?} state after pending stop", unit.name);
+                        }
+                    },
                     State::QuiesceUncertain => match unit.state {
                         State::QuiesceUncertain => unit.state = State::Running,
                         State::Stopped => {}
@@ -671,6 +703,37 @@ impl StateUnits {
         self.running = false;
     }
 
+    async fn finish_pending_inputs(&self) {
+        let pending = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .values_mut()
+                .filter_map(|unit| unit.pending_input.take())
+                .collect::<Vec<_>>()
+        };
+
+        let _ = join_all(pending.into_iter().map(|pending| pending.future)).await;
+    }
+
+    async fn finish_pending_starts(&self) {
+        let pending = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter_map(|(&id, unit)| {
+                    unit.pending_start.take().map(|pending| {
+                        assert_eq!(unit.state, State::StartUncertain);
+                        (id, pending)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let _ = join_all(pending.into_iter().map(|(_, pending)| pending.future)).await;
+    }
+
     async fn finish_pending_stops(&self) {
         let pending = {
             let mut inner = self.inner.lock();
@@ -679,7 +742,10 @@ impl StateUnits {
                 .iter_mut()
                 .filter_map(|(&id, unit)| {
                     unit.pending_stop.take().map(|pending| {
-                        assert_eq!(unit.state, State::QuiesceUncertain);
+                        assert!(matches!(
+                            unit.state,
+                            State::StartUncertain | State::QuiesceUncertain
+                        ));
                         (id, pending)
                     })
                 })
@@ -698,7 +764,10 @@ impl StateUnits {
             match result {
                 Ok(Some(())) => {
                     if let Some(unit) = inner.units.get_mut(&id) {
-                        assert_eq!(unit.state, State::QuiesceUncertain);
+                        assert!(matches!(
+                            unit.state,
+                            State::StartUncertain | State::QuiesceUncertain
+                        ));
                         unit.state = State::Stopped;
                     }
                 }
@@ -1113,6 +1182,8 @@ impl UnitBuilder<'_> {
                     dependencies: self.dependencies,
                     dependents: self.dependents,
                     state: State::Stopped,
+                    pending_input: None,
+                    pending_start: None,
                     pending_stop: None,
                     inspect_sensitivity: self.inspect_sensitivity,
                 },
