@@ -4,10 +4,12 @@
 //! Snapshot quiesce transactions: bounded quiesce of every unit for save, and
 //! restart after a failed save.
 
+use super::PendingStop;
 use super::State;
 use super::StateRequest;
 use super::StateUnits;
 use super::state_change;
+use futures::FutureExt;
 use futures::future::join_all;
 use mesh::CancelContext;
 use std::time::Duration;
@@ -49,14 +51,13 @@ impl StateUnits {
             Stopped,
             DependencyFailed,
             NotSent(anyhow::Error),
-            Uncertain(anyhow::Error),
+            Uncertain(anyhow::Error, Option<PendingStop>),
         }
 
         let context = CancelContext::new().with_timeout(timeout);
         let mut operations = Vec::new();
         let mut failures = Vec::new();
         let mut uncertain = false;
-        let mut stopped_any = false;
         let mut quiesced_units = Vec::new();
         let ready_set;
         {
@@ -74,6 +75,15 @@ impl StateUnits {
                         failures.push((
                             unit.name.to_string(),
                             "unit is in terminal state StartFailedStopped".to_owned(),
+                        ));
+                        continue;
+                    }
+                    State::QuiesceFailedStopped => {
+                        ready_set.done(id, false);
+                        uncertain = true;
+                        failures.push((
+                            unit.name.to_string(),
+                            "unit is in terminal state QuiesceFailedStopped".to_owned(),
                         ));
                         continue;
                     }
@@ -101,7 +111,9 @@ impl StateUnits {
                 let dependencies = unit.dependents.iter().copied().collect::<Vec<_>>();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
-                let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
+                let mut stop = PendingStop {
+                    future: state_change(name.clone(), unit, StateRequest::Stop, Some(())).boxed(),
+                };
                 operations.push(async move {
                     let ready = match context
                         .until_cancelled(ready_set.wait("quiesce_for_save", id, &dependencies))
@@ -118,13 +130,14 @@ impl StateUnits {
                         return (name, id, UnitResult::DependencyFailed);
                     }
 
-                    let result = match context.until_cancelled(stop).await {
+                    let result = match context.until_cancelled(stop.future.as_mut()).await {
                         Ok(Ok(Some(()))) => UnitResult::Stopped,
-                        Ok(Ok(None)) => {
-                            UnitResult::Uncertain(anyhow::anyhow!("stop request was not sent"))
-                        }
-                        Ok(Err(error)) => UnitResult::Uncertain(error.into()),
-                        Err(reason) => UnitResult::Uncertain(reason.into()),
+                        Ok(Ok(None)) => UnitResult::Uncertain(
+                            anyhow::anyhow!("stop request was not sent"),
+                            None,
+                        ),
+                        Ok(Err(error)) => UnitResult::Uncertain(error.into(), None),
+                        Err(reason) => UnitResult::Uncertain(reason.into(), Some(stop)),
                     };
                     ready_set.done(id, matches!(result, UnitResult::Stopped));
                     (name, id, result)
@@ -138,13 +151,16 @@ impl StateUnits {
         tracing::info!(duration = ?Instant::now() - start, "save quiesce complete");
 
         let mut inner = self.inner.lock();
+        let mut stopped_ids = Vec::new();
         for (name, id, result) in results {
-            stopped_any |= matches!(&result, UnitResult::Stopped);
             let Some(unit) = inner.units.get_mut(&id) else {
                 continue;
             };
             match result {
-                UnitResult::Stopped => unit.state = State::Stopped,
+                UnitResult::Stopped => {
+                    unit.state = State::Stopped;
+                    stopped_ids.push(id);
+                }
                 UnitResult::DependencyFailed => {
                     unit.state = State::Running;
                     failures.push((
@@ -156,11 +172,23 @@ impl StateUnits {
                     unit.state = State::Running;
                     failures.push((name.to_string(), format!("{error:#}")));
                 }
-                UnitResult::Uncertain(error) => {
+                UnitResult::Uncertain(error, pending_stop) => {
                     unit.state = State::QuiesceUncertain;
+                    assert!(unit.pending_stop.is_none());
+                    unit.pending_stop = pending_stop;
                     uncertain = true;
                     failures.push((name.to_string(), format!("{error:#}")));
                 }
+            }
+        }
+        if !failures.is_empty() {
+            uncertain |= !stopped_ids.is_empty();
+            for id in stopped_ids {
+                let Some(unit) = inner.units.get_mut(&id) else {
+                    continue;
+                };
+                assert_eq!(unit.state, State::Stopped);
+                unit.state = State::QuiesceFailedStopped;
             }
         }
         drop(inner);
@@ -170,7 +198,6 @@ impl StateUnits {
             self.save_quiesced_units = Some(quiesced_units);
             Ok(())
         } else {
-            uncertain |= stopped_any;
             Err(QuiesceForSaveError {
                 failures,
                 uncertain,

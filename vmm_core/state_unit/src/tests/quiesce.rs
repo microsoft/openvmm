@@ -8,6 +8,7 @@ use crate::State;
 use crate::StateRequest;
 use crate::StateUnit;
 use crate::StateUnits;
+use crate::run_async_unit;
 use crate::run_unit;
 use futures::StreamExt;
 use inspect::InspectMut;
@@ -52,6 +53,43 @@ impl StateUnit for SlowStopUnit {
 }
 
 impl InspectMut for SlowStopUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
+struct AsyncSlowStopUnit {
+    driver: DefaultDriver,
+    delay: Duration,
+    stops: Arc<AtomicUsize>,
+}
+
+impl StateUnit for &'_ AsyncSlowStopUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+        pal_async::timer::PolledTimer::new(&self.driver)
+            .sleep(self.delay)
+            .await;
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for &'_ AsyncSlowStopUnit {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond();
     }
@@ -278,6 +316,41 @@ async fn test_stop_cleans_up_uncertain_quiesce(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_stop_awaits_timed_out_async_stop(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let stops = Arc::new(AtomicUsize::new(0));
+    let _unit = units
+        .add("async-slow")
+        .spawn(&driver, {
+            let driver = driver.clone();
+            let stops = stops.clone();
+            |recv| {
+                run_async_unit(
+                    AsyncSlowStopUnit {
+                        driver,
+                        delay: Duration::from_millis(100),
+                        stops,
+                    },
+                    recv,
+                )
+            }
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    let error = units
+        .quiesce_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(error.has_uncertain_state());
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
+
+    units.stop().await;
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
+    assert!(!units.is_running());
+}
+
+#[async_test]
 async fn test_quiesce_readiness_timeout_is_bounded(driver: DefaultDriver) {
     let mut units = StateUnits::new();
     let a = units
@@ -347,14 +420,10 @@ async fn test_quiesce_partial_success_is_uncertain(driver: DefaultDriver) {
     assert!(error.has_uncertain_state());
     assert!(started.elapsed() < Duration::from_millis(500));
     assert_eq!(stops.load(Ordering::Relaxed), 1);
-    assert!(
-        units
-            .inner
-            .lock()
-            .units
-            .values()
-            .any(|unit| unit.name.as_ref() == "independent" && unit.state == State::Stopped)
-    );
+    assert!(units.check_no_terminal_units("test").is_err());
+    assert!(units.inner.lock().units.values().any(|unit| {
+        unit.name.as_ref() == "independent" && unit.state == State::QuiesceFailedStopped
+    }));
 }
 
 #[async_test]
