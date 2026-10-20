@@ -1945,3 +1945,16 @@ macro_rules! get_registers {
     };
     (@def $_:expr) => { Default::default() };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities;
+
+    #[test]
+    fn scheduler_features_query_succeeds() {
+        if !capabilities::hypervisor_present().unwrap_or(false) {
+            return;
+        }
+        capabilities::scheduler_features().unwrap();
+    }
+}
