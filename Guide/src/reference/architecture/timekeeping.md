@@ -291,12 +291,26 @@ source. Saving reference time rounds the nanosecond clock upward to
 reference time uses `KVM_SET_CLOCK` with flags zero; it does not request
 KVM's optional UTC-based addition of elapsed downtime.
 
-That setter rebases the KVM clock; it does not freeze it, rewind raw
-guest TSC, or undo a LAPIC timer expiration. KVM can record timer work
-while userspace has stopped running VPs. The backend currently exposes
-no `PartitionTimeControl`, and its x86 `can_freeze_time` is false.
-Rebasing reference time alone would not implement full counter and
-timer freeze semantics.
+After rebasing the KVM clock, that setter also moves the guest TSC so
+its origin matches the clock's again. Partition creation and machine
+reset do the same. Each alignment writes one shared
+`KVM_VCPU_TSC_OFFSET` to every VP and leaves the TSC slightly ahead of
+the reference clock: at least 20 us, plus the measured error of the
+TSC/clock pairing it computed from. This applies to every x86
+partition, enlightened or not. Kernels without the TSC offset VP
+attribute (before Linux 5.16) skip it and log a warning.
+
+A restore writes reference time before any VP's TSC. When the partition
+has a reference time element, each VP's TSC write then reapplies the
+offset from that alignment instead of storing the saved counter, so the
+restored TSC and clock keep the same relationship. Without that
+element, the saved TSC is stored as saved.
+
+None of this freezes the clock or undoes a LAPIC timer expiration. KVM
+can record timer work while userspace has stopped running VPs. The
+backend currently exposes no `PartitionTimeControl`, and its x86
+`can_freeze_time` is false. Rebasing reference time alone would not
+implement full counter and timer freeze semantics.
 
 KVM's synthetic-timer snapshot path saves config/count MSRs, but cannot
 preserve timer adjustment or undelivered expiration-message state.
