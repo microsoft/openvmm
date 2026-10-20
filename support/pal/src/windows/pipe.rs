@@ -49,9 +49,7 @@ use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
-use windows_sys::Win32::Storage::FileSystem::FILE_TYPE_PIPE;
 use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
-use windows_sys::Win32::Storage::FileSystem::GetFileType;
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Ioctl::FILE_ANY_ACCESS;
 use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
@@ -283,15 +281,6 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         let write_pipe = File::from_raw_handle(write_pipe_handle.cast::<c_void>());
         Ok((read_pipe, write_pipe))
     }
-}
-
-/// Returns whether `file` is a pipe, as reported by `GetFileType`.
-///
-/// `GetFileType` also reports sockets as pipes, so this does not guarantee that
-/// [`PipeExt`] operations succeed on `file`.
-pub fn is_pipe(file: &File) -> bool {
-    // SAFETY: `file` owns a valid Windows handle.
-    unsafe { GetFileType(file.as_raw_handle()) == FILE_TYPE_PIPE }
 }
 
 pub trait PipeExt {
@@ -669,7 +658,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(dacl_sddl(&server).unwrap(), "D:P(A;;FA;;;OW)");
-        assert!(is_pipe(&server));
         assert!(!server.is_pipe_peer_closed().unwrap());
         assert!(server.get_pipe_peer_process_id().is_err());
 
@@ -686,7 +674,6 @@ mod tests {
             client.get_pipe_peer_process_id().unwrap(),
             std::process::id()
         );
-        assert!(is_pipe(&client));
         assert!(!server.is_pipe_peer_closed().unwrap());
 
         drop(client);
@@ -773,7 +760,6 @@ mod tests {
     #[test]
     fn peer_helpers_reject_non_pipes() {
         let file = File::open(std::env::current_exe().unwrap()).unwrap();
-        assert!(!is_pipe(&file));
         assert!(file.get_pipe_peer_process_id().is_err());
         assert!(file.is_pipe_peer_closed().is_err());
     }
