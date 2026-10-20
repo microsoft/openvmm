@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements the partition mapper, which is responsible for mapping regions
-//! into VM partitions.
+//! Implements the partition mapper, which maps regions into VM partitions.
 
 // UNSAFETY: Calling unsafe partition memory mapping functions.
 #![expect(unsafe_code)]
@@ -36,7 +35,7 @@ pub enum PartitionMapperError {
 impl PartitionMapper {
     /// Returns a new partition mapper.
     ///
-    /// If `pin_mappings`, call [`PartitionMemoryMap::pin_range`] on any region that is mapped.
+    /// If `pin_mappings`, call [`PartitionMemoryMap::pin_range`] on each mapped region.
     pub fn new(
         partition: &Arc<dyn PartitionMemoryMap>,
         mapper: Arc<VaMapper>,
@@ -61,48 +60,38 @@ impl PartitionMapper {
         range: MemoryRange,
         params: MapParams,
     ) -> Result<(), PartitionMapperError> {
-        // Ensure this range does not exceed the mapper's reserved VA range.
         assert!(range.end() <= self.mapper.len() as u64);
-
-        // If the partition is gone then there is nothing to do.
         let Some(partition) = self.partition.upgrade() else {
             return Ok(());
         };
-
         let addr = range.start().checked_add(self.offset).unwrap();
         let size = range.len() as usize;
         let data = self.mapper.as_ptr().wrapping_add(range.start() as usize);
-
         match self.mapper.process() {
             None => {
-                // SAFETY: Mapper will ensure the VA range is reserved (but not
-                // necessarily mapped) for its lifetime.
+                // SAFETY: The mapper retains the VA reservation for this mapping.
                 unsafe { partition.map_range(data, size, addr, params.writable, params.executable) }
             }
-            Some(process) => {
-                match process {
-                    #[cfg(not(windows))]
-                    _ => unreachable!(),
-                    #[cfg(windows)]
-                    process => {
-                        // SAFETY: Mapper will ensure the VA range is reserved (but not
-                        // necessarily mapped) for its lifetime.
-                        unsafe {
-                            partition.map_remote_range(
-                                process.as_handle(),
-                                data,
-                                size,
-                                addr,
-                                params.writable,
-                                params.executable,
-                            )
-                        }
+            Some(process) => match process {
+                #[cfg(not(windows))]
+                _ => unreachable!(),
+                #[cfg(windows)]
+                process => {
+                    // SAFETY: The mapper retains the remote VA reservation.
+                    unsafe {
+                        partition.map_remote_range(
+                            process.as_handle(),
+                            data,
+                            size,
+                            addr,
+                            params.writable,
+                            params.executable,
+                        )
                     }
                 }
-            }
+            },
         }
         .map_err(PartitionMapperError::Map)?;
-
         if params.prefetch {
             if let Err(err) = partition.prefetch_range(addr, size as u64) {
                 tracing::warn!(
@@ -113,27 +102,20 @@ impl PartitionMapper {
                 );
             }
         }
-
         if self.pin_mappings {
             if let Err(err) = partition.pin_range(addr, size as u64) {
-                // Unmap the range to ensure we stay in a consistent state.
                 partition
                     .unmap_range(addr, size as u64)
                     .expect("unmap cannot fail");
                 return Err(PartitionMapperError::Pin(err));
             }
         }
-
         Ok(())
     }
 
-    /// Unmaps regions in `range`.
+    /// Unmaps complete regions contained in `range`.
     ///
-    /// `range` may overlap zero, one, or many regions that were mapped with
-    /// `map_region`, but it must fully contain any regions it overlaps.
-    ///
-    /// This cannot fail, but on some hypervisors, it may panic on partial
-    /// region unmap.
+    /// This cannot fail, but some hypervisors panic on a partial region unmap.
     pub fn unmap_region(&mut self, range: MemoryRange) {
         if let Some(partition) = self.partition.upgrade() {
             partition
@@ -145,8 +127,148 @@ impl PartitionMapper {
 
 impl Drop for PartitionMapper {
     fn drop(&mut self) {
-        // Ensure everything is unmapped from the partition since the underlying
-        // VA is going away.
+        // Unmap before releasing the VA reservation.
         self.unmap_region(MemoryRange::new(0..self.mapper.len() as u64));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mapping_manager::MappingManager;
+    use pal_async::task::Spawn;
+    use parking_lot::Mutex;
+
+    struct TestPartition {
+        mapper: Weak<VaMapper>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Drop for TestPartition {
+        fn drop(&mut self) {
+            self.events.lock().push("partition closed");
+        }
+    }
+
+    impl PartitionMemoryMap for TestPartition {
+        unsafe fn map_range(
+            &self,
+            _data: *mut u8,
+            _size: usize,
+            _addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            self.events.lock().push("mapped");
+            Ok(())
+        }
+
+        fn unmap_range(&self, _addr: u64, _size: u64) -> anyhow::Result<()> {
+            assert!(self.mapper.upgrade().is_some());
+            self.events.lock().push("unmapped");
+            Ok(())
+        }
+
+        #[cfg(windows)]
+        unsafe fn map_remote_range(
+            &self,
+            _process: std::os::windows::io::BorrowedHandle<'_>,
+            _data: *mut u8,
+            _size: usize,
+            _addr: u64,
+            _writable: bool,
+            _exec: bool,
+        ) -> anyhow::Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn secondary_loans_precede_partition_unmap(spawn: impl Spawn) {
+        use crate::mapping_manager::MappingBacking;
+        use crate::mapping_manager::MemoryPolicy;
+        use crate::region_manager::MappingType;
+        use crate::region_manager::RegionManager;
+        use guestmem::GuestMemory;
+
+        let mm = MappingManager::new_without_primary(&spawn, 0x10000, None);
+        let mapper = mm.client().new_mapper(true).await.unwrap();
+        let secondary = mm.client().new_local_secondary_mapper().await.unwrap();
+        let regions = RegionManager::new(&spawn, mm.client().clone());
+        let mut region = regions
+            .client()
+            .new_region(
+                "loan-partition".into(),
+                MemoryRange::new(0..0x4000),
+                0,
+                MappingType::Ram,
+            )
+            .await
+            .unwrap();
+        region
+            .add_mapping(
+                MemoryRange::new(0..0x4000),
+                MappingBacking::File {
+                    mappable: sparse_mmap::alloc_shared_memory(0x4000, "loan-partition")
+                        .unwrap()
+                        .into(),
+                    file_offset: 0,
+                },
+                true,
+                MemoryPolicy::none(),
+            )
+            .await
+            .unwrap();
+        region
+            .map(MapParams {
+                writable: true,
+                executable: false,
+                prefetch: false,
+            })
+            .await
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let partition: Arc<dyn PartitionMemoryMap> = Arc::new(TestPartition {
+            mapper: Arc::downgrade(&mapper),
+            events: events.clone(),
+        });
+        regions
+            .client()
+            .add_partition(PartitionMapper::new(&partition, mapper.clone(), 0, false))
+            .await
+            .unwrap();
+        let gm = GuestMemory::new("secondary partition", secondary);
+        let first = gm
+            .lock_user_gpns(guestmem::AccessType::Read, &[0, 1])
+            .unwrap();
+        let second = gm.lock_user_gpns(guestmem::AccessType::Read, &[1]).unwrap();
+        assert!(region.unmap().await.is_err());
+        assert!(region.teardown().await.is_err());
+        assert_eq!(*events.lock(), ["mapped"]);
+        drop(first);
+        assert!(region.teardown().await.is_err());
+        assert_eq!(*events.lock(), ["mapped"]);
+        drop(second);
+        region.teardown().await.unwrap();
+        assert_eq!(*events.lock(), ["mapped", "unmapped"]);
+        assert!(gm.read_plain::<u64>(0).is_err());
+    }
+
+    #[pal_async::async_test]
+    async fn mapper_unmaps_while_backing_and_partition_are_alive(spawn: impl Spawn) {
+        let manager = MappingManager::new_without_primary(&spawn, 0x10000, None);
+        let mapper = manager.client().new_mapper(true).await.unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let partition: Arc<dyn PartitionMemoryMap> = Arc::new(TestPartition {
+            mapper: Arc::downgrade(&mapper),
+            events: events.clone(),
+        });
+        let weak = Arc::downgrade(&partition);
+        drop(PartitionMapper::new(&partition, mapper, 0, false));
+        assert_eq!(*events.lock(), ["unmapped"]);
+        drop(partition);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(*events.lock(), ["unmapped", "partition closed"]);
+        drop(manager);
     }
 }

@@ -240,6 +240,8 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                                         disk: FileDiskHandle(erofs_file.into()).into_resource(),
                                         read_only: true,
                                         serial: None,
+                                        bounce_io: false,
+                                        bounce_disk: None,
                                     }
                                     .into_resource(),
                                 )
@@ -511,6 +513,7 @@ mod tap {
                     max_queues: None,
                     mac_address: TAP_MAC_ADDRESS,
                     endpoint,
+                    bounce_io: false,
                 }
                 .into_resource(),
             )
@@ -549,6 +552,8 @@ mod tap {
                             disk: FileDiskHandle(erofs_file.into()).into_resource(),
                             read_only: true,
                             serial: None,
+                            bounce_io: false,
+                            bounce_disk: None,
                         }
                         .into_resource(),
                     )

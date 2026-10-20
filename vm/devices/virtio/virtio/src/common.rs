@@ -131,7 +131,7 @@ impl VirtioQueueCallbackWork {
 
     /// Discards the payload buffer descriptors and returns the lightweight
     /// [`QueueCompletion`] token, which carries only the state
-    /// [`VirtioQueue::complete_prepared`] needs to publish the used ring entry.
+    /// [`VirtioQueue::complete`] needs to publish the used ring entry.
     ///
     /// Use this to buffer a completion (e.g. for in-order publication) without
     /// retaining the full payload.
@@ -382,22 +382,17 @@ impl VirtioQueue {
 
     /// Complete a descriptor previously obtained from this queue.
     ///
-    /// Writes `bytes_written` to the used ring and delivers an interrupt
-    /// to the guest (unless interrupt suppression is active).
-    ///
-    /// Takes ownership of the work item, ensuring it can only be completed
-    /// once.
-    pub fn complete(&mut self, work: VirtioQueueCallbackWork, bytes_written: u32) {
-        self.complete_prepared(work.into_completion(), bytes_written);
-    }
-
     /// Completes a descriptor from a lightweight [`QueueCompletion`] token
     /// previously obtained via [`VirtioQueueCallbackWork::into_completion`].
     ///
-    /// Equivalent to [`complete`](Self::complete) but does not require holding
-    /// the payload, so callers that buffer completions can store only the
-    /// token.
-    pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+    /// Reports used-ring and notification-state errors. An error can follow
+    /// visible publication. The caller must retire the queue, not replay the
+    /// completion.
+    pub fn complete(
+        &mut self,
+        completion: QueueCompletion,
+        bytes_written: u32,
+    ) -> Result<(), QueueError> {
         // The completion token is consumed even if publishing it to the used ring
         // fails, so release its in-flight capacity before attempting the write.
         self.core.work_completed(&completion);
@@ -405,17 +400,16 @@ impl VirtioQueue {
             .complete
             .complete_descriptor(&completion, bytes_written)
         {
-            Ok(true) => {
-                self.notify_guest.deliver();
-            }
+            Ok(true) => self.notify_guest.deliver(),
             Ok(false) => {}
             Err(err) => {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to complete descriptor"
-                );
+                // Notification-state failure may follow a visible used marker.
+                // A spurious interrupt is preferable to hiding that completion.
+                self.notify_guest.deliver();
+                return Err(err);
             }
         }
+        Ok(())
     }
 
     fn poll_next_buffer(

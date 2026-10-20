@@ -652,7 +652,8 @@ impl virt::Processor for MshvProcessor<'_> {
                 }
             }
 
-            match self.runner.run() {
+            let exit = self.runner.run();
+            match exit {
                 Ok(exit) => {
                     self.handle_exit(&exit, dev).await?;
                 }
@@ -924,17 +925,27 @@ impl virt::PartitionMemoryMapper for MshvPartition {
 
 // TODO: figure out a better abstraction that also works for KVM and WHP.
 impl virt::PartitionHostAccess for MshvPartitionInner {
-    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
-        // TODO: The current prototype only provides the acquisition half of
-        // the host-visibility lifecycle. This is sufficient for single-threaded
-        // bring-up with no concurrent page-state changes, but the GPA attribute
-        // intercept revocation path must share serialized state with
-        // acquire_snp_host_access before concurrent use is safe.
-        // TODO: Investigate whether MSHV supports read-only host-access
-        // requests and use `_write` to avoid granting write access for reads.
+    fn install_user_locks(&self, locks: Arc<guestmem::GuestMemoryUserLocks>) -> anyhow::Result<()> {
         #[cfg(guest_arch = "x86_64")]
-        if self.isolation.snp().is_some() {
-            return arch::acquire_snp_host_access(self, _addr, _size);
+        if let Some(snp) = self.isolation.snp() {
+            return snp.install_user_locks(locks);
+        }
+        let _ = locks;
+        Ok(())
+    }
+
+    fn supports_user_locks(&self) -> bool {
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(snp) = self.isolation.snp() {
+            return snp.supports_user_locks();
+        }
+        false
+    }
+
+    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(snp) = self.isolation.snp() {
+            return snp.acquire_host_access(self, _addr, _size, _write);
         }
         anyhow::bail!("acquiring host access is not supported")
     }
@@ -950,6 +961,21 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         exec: bool,
     ) -> anyhow::Result<()> {
         let mut state = self.memory.lock();
+        #[cfg(guest_arch = "x86_64")]
+        let _changes = if let Some(snp) = self.isolation.snp() {
+            let mut changes = vec![snp.prepare_mapping_change(addr, size as u64)?];
+            for range in state.ranges.iter().flatten() {
+                if range.region.userspace_addr == data as u64 {
+                    changes.push(snp.prepare_mapping_change(
+                        range.region.guest_pfn << HV_PAGE_SHIFT,
+                        range.region.size,
+                    )?);
+                }
+            }
+            changes
+        } else {
+            Vec::new()
+        };
 
         // Memory slots cannot be resized but can be moved within the guest
         // address space. Find the existing slot if there is one.
@@ -1008,6 +1034,12 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             .ok_or_else(|| anyhow::anyhow!("unmap range overflows the guest address space"))?
             >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
+        #[cfg(guest_arch = "x86_64")]
+        let _change = self
+            .isolation
+            .snp()
+            .map(|snp| snp.prepare_mapping_change(addr, size))
+            .transpose()?;
         for range in state.ranges.iter().flatten() {
             let region_start = range.region.guest_pfn;
             let region_end = region_start
@@ -1100,7 +1132,6 @@ impl MshvDoorbellEntry {
         if ret < 0 {
             return Err(io::Error::last_os_error());
         }
-
         Ok(Self {
             partition: Arc::downgrade(partition),
             event,

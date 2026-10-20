@@ -132,6 +132,9 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let range = self.validated_memory_range(offset, len)?;
         let mut state = self.state.lock();
+        if let Some(handle) = &state.handle {
+            block_on(handle.remove_mappings(range)).map_err(io::Error::other)?;
+        }
         state.mappings.retain(|mapping| {
             if !range.contains(&mapping.range) && range.overlaps(&mapping.range) {
                 todo!("support overlapping mappings");
@@ -139,9 +142,6 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
             range.contains(&mapping.range)
         });
 
-        if let Some(handle) = &state.handle {
-            block_on(handle.remove_mappings(range));
-        }
         Ok(())
     }
 }
@@ -154,9 +154,13 @@ impl MappableGuestMemory for DeviceMemoryControl {
         #[expect(clippy::await_holding_lock)] // Treat all this as sync for now.
         block_on(async {
             let mut state = self.0.state.lock();
-            if let Some(handle) = state.handle.take() {
-                handle.teardown().await;
+            if let Some(handle) = &state.handle {
+                handle.unmap().await.map_err(io::Error::other)?;
             }
+            if let Some(handle) = &mut state.handle {
+                handle.teardown().await.map_err(io::Error::other)?;
+            }
+            state.handle = None;
             let handle = self
                 .0
                 .region_manager
@@ -201,8 +205,18 @@ impl MappableGuestMemory for DeviceMemoryControl {
 
     fn unmap_from_guest(&mut self) {
         let mut state = self.0.state.lock();
-        if let Some(handle) = state.handle.take() {
-            block_on(handle.teardown());
+        if let Some(handle) = &state.handle {
+            if let Err(error) = block_on(handle.unmap()) {
+                tracing::error!(%error, "device memory unmap denied; retaining live mapping");
+                return;
+            }
         }
+        if let Some(handle) = &mut state.handle {
+            if let Err(error) = block_on(handle.teardown()) {
+                tracing::error!(%error, "device memory teardown failed");
+                return;
+            }
+        }
+        state.handle = None;
     }
 }

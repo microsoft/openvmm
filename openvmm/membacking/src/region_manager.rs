@@ -286,16 +286,20 @@ struct RegionManagerTaskInner {
     dma_mappers: Vec<DmaMapper>,
     next_dma_mapper_id: u64,
     mapping_manager: MappingManagerClient,
+    user_locks: Option<Arc<guestmem::GuestMemoryUserLocks>>,
 }
 
 #[derive(MeshPayload)]
 enum RegionRequest {
+    #[cfg(test)]
+    RegionCount(Rpc<(), usize>),
     AddRegion(Rpc<RegionParams, Result<RegionId, AddRegionError>>),
-    RemoveRegion(Rpc<RegionId, ()>),
+    RemoveRegion(FailableRpc<RegionId, ()>),
+    DisposeRegion(RegionId, mesh::Sender<RegionRequest>),
     MapRegion(FailableRpc<(RegionId, MapParams), ()>),
-    UnmapRegion(Rpc<RegionId, ()>),
+    UnmapRegion(FailableRpc<RegionId, ()>),
     AddMapping(FailableRpc<(RegionId, RegionMappingParams), ()>),
-    RemoveMappings(Rpc<(RegionId, MemoryRange), ()>),
+    RemoveMappings(FailableRpc<(RegionId, MemoryRange), ()>),
     AddPartition(
         LocalOnly<Rpc<PartitionMapper, Result<(), crate::partition_mapper::PartitionMapperError>>>,
     ),
@@ -333,6 +337,7 @@ pub enum AddRegionError {
 
 impl RegionManagerTask {
     fn new(mapping_manager: MappingManagerClient) -> Self {
+        let user_locks = mapping_manager.local_user_locks();
         Self {
             regions: Vec::new(),
             next_region_id: 1,
@@ -341,6 +346,7 @@ impl RegionManagerTask {
                 partitions: Vec::new(),
                 dma_mappers: Vec::new(),
                 next_dma_mapper_id: 0,
+                user_locks,
             },
         }
     }
@@ -348,12 +354,14 @@ impl RegionManagerTask {
     async fn run(&mut self, req_recv: &mut mesh::Receiver<RegionRequest>) {
         while let Some(req) = req_recv.next().await {
             match req {
+                #[cfg(test)]
+                RegionRequest::RegionCount(rpc) => rpc.handle_sync(|()| self.regions.len()),
                 RegionRequest::AddMapping(rpc) => {
                     rpc.handle_failable(async |(id, params)| self.add_mapping(id, params).await)
                         .await
                 }
                 RegionRequest::RemoveMappings(rpc) => {
-                    rpc.handle(async |(id, range)| self.remove_mappings(id, range).await)
+                    rpc.handle_failable(async |(id, range)| self.remove_mappings(id, range).await)
                         .await
                 }
                 RegionRequest::AddPartition(LocalOnly(rpc)) => {
@@ -370,15 +378,36 @@ impl RegionManagerTask {
                 }
                 RegionRequest::AddRegion(rpc) => rpc.handle_sync(|params| self.add_region(params)),
                 RegionRequest::RemoveRegion(rpc) => {
-                    rpc.handle(async |id| self.unmap_region(id, true).await)
+                    rpc.handle_failable(async |id| self.unmap_region(id, true).await)
                         .await
+                }
+                RegionRequest::DisposeRegion(id, send) => {
+                    if let Err(error) = self.unmap_region(id, true).await {
+                        if matches!(
+                            error.downcast_ref::<guestmem::GuestMemoryUserLockError>(),
+                            Some(guestmem::GuestMemoryUserLockError::UserLocked(_))
+                        ) {
+                            if let Some(locks) = &self.inner.user_locks {
+                                let range = self.regions[self.region_index(id)].params.range;
+                                let ranges = self.change_ranges(range);
+                                locks.notify_when_unlocked(
+                                    ranges,
+                                    Box::new(move || {
+                                        send.send(RegionRequest::DisposeRegion(id, send.clone()));
+                                    }),
+                                );
+                            }
+                        } else {
+                            tracing::error!(%error, ?id, "deferred region removal failed; retaining region");
+                        }
+                    }
                 }
                 RegionRequest::MapRegion(rpc) => {
                     rpc.handle_failable(async |(id, params)| self.map_region(id, params).await)
                         .await
                 }
                 RegionRequest::UnmapRegion(rpc) => {
-                    rpc.handle(async |id| self.unmap_region(id, false).await)
+                    rpc.handle_failable(async |id| self.unmap_region(id, false).await)
                         .await
                 }
                 RegionRequest::Inspect(deferred) => {
@@ -568,8 +597,55 @@ impl RegionManagerTask {
     }
 
     async fn map_region(&mut self, id: RegionId, map_params: MapParams) -> anyhow::Result<()> {
+        if self.regions[self.region_index(id)].map_params == Some(map_params) {
+            return Ok(());
+        }
+        let range = self.regions[self.region_index(id)].params.range;
+        let _change = self.prepare_user_mapping_change(range)?;
+        let state = self.region_state();
+        if let Err(error) = self.map_region_inner(id, map_params).await {
+            self.restore_region_state(&state)
+                .await
+                .context("region map rollback failed")?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn region_state(&self) -> Vec<(Option<MapParams>, bool)> {
+        self.regions
+            .iter()
+            .map(|region| (region.map_params, region.is_active))
+            .collect()
+    }
+
+    async fn restore_region_state(
+        &mut self,
+        state: &[(Option<MapParams>, bool)],
+    ) -> anyhow::Result<()> {
+        for (region, &(_, was_active)) in self.regions.iter_mut().zip(state) {
+            if region.is_active && !was_active {
+                self.inner.disable_region(region, false).await?;
+            }
+        }
+        for (region, &(params, _)) in self.regions.iter_mut().zip(state) {
+            region.map_params = params;
+        }
+        for (region, &(_, was_active)) in self.regions.iter_mut().zip(state) {
+            if was_active && !region.is_active {
+                self.inner.enable_region(region).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn map_region_inner(
+        &mut self,
+        id: RegionId,
+        map_params: MapParams,
+    ) -> anyhow::Result<()> {
         let index = self.region_index(id);
-        let region = &mut self.regions[index];
+        let region = &self.regions[index];
         let range = region.params.range;
         let priority = region.params.priority;
         if region.map_params == Some(map_params) {
@@ -599,7 +675,7 @@ impl RegionManagerTask {
                 // Overlay disable: a higher/equal-priority region is taking
                 // over this range, so the disabled region may be re-enabled
                 // later. This is transient.
-                self.inner.disable_region(other_region, true).await;
+                self.inner.disable_region(other_region, true).await?;
             }
         }
 
@@ -610,8 +686,20 @@ impl RegionManagerTask {
         Ok(())
     }
 
-    async fn unmap_region(&mut self, id: RegionId, remove: bool) {
-        let index = self.region_index(id);
+    async fn unmap_region(&mut self, id: RegionId, remove: bool) -> anyhow::Result<()> {
+        let Some(index) = self.regions.iter().position(|region| region.id == id) else {
+            // A cancelled teardown can already have removed the region before
+            // its handle retries or sends deferred disposal.
+            anyhow::ensure!(remove, "cannot unmap unknown region {id:?}");
+            return Ok(());
+        };
+        let _change = self
+            .prepare_user_mapping_change(self.regions[index].params.range)
+            .map_err(|error| {
+                tracing::error!(%error, ?id, "cannot unmap region while CPU loans are held");
+                error
+            })?;
+        let state = self.region_state();
         let region = &mut self.regions[index];
         tracing::debug!(
             name = region.params.name,
@@ -624,20 +712,43 @@ impl RegionManagerTask {
         if active_range.is_some() {
             // A removal is a permanent teardown; keeping the region registered
             // (remove == false) is transient, since a re-map can re-enable it.
-            self.inner.disable_region(region, !remove).await;
+            self.inner.disable_region(region, !remove).await?;
         }
 
+        region.map_params = None;
+        if let Some(range) = active_range {
+            if let Err(error) = self.enable_best_region(range).await {
+                self.restore_region_state(&state)
+                    .await
+                    .context("region unmap rollback failed")?;
+                return Err(error);
+            }
+        }
         if remove {
             self.regions.remove(index);
-        } else {
-            region.map_params = None;
         }
-        if let Some(range) = active_range {
-            self.enable_best_region(range).await.expect(
-                "failed to re-enable region after unmap; \
-                 this should not fail because the region was previously active",
-            );
-        }
+        Ok(())
+    }
+
+    fn prepare_user_mapping_change(
+        &self,
+        range: MemoryRange,
+    ) -> anyhow::Result<Option<guestmem::GuestMemoryChangeGuard>> {
+        let Some(locks) = &self.inner.user_locks else {
+            return Ok(None);
+        };
+        Ok(Some(locks.begin_change(&self.change_ranges(range))?))
+    }
+
+    fn change_ranges(&self, range: MemoryRange) -> Vec<std::ops::Range<u64>> {
+        let mut ranges = vec![range.start()..range.end()];
+        ranges.extend(
+            self.regions
+                .iter()
+                .filter(|region| region.is_active && region.params.range.overlaps(&range))
+                .map(|region| region.params.range.start()..region.params.range.end()),
+        );
+        ranges
     }
 
     async fn add_mapping(
@@ -657,6 +768,16 @@ impl RegionManagerTask {
         }
 
         let index = self.region_index(id);
+        let _change = if self.regions[index].is_active {
+            let range = range_within(self.regions[index].params.range, params.range_in_region);
+            self.inner
+                .user_locks
+                .as_ref()
+                .map(|locks| locks.begin_change(&[range.start()..range.end()]))
+                .transpose()?
+        } else {
+            None
+        };
         let region = &mut self.regions[index];
 
         // TODO: split and remove existing mappings, atomically. This is
@@ -698,7 +819,7 @@ impl RegionManagerTask {
                     for dm in &self.inner.dma_mappers[..dma_idx] {
                         dm.unmap_dma(range);
                     }
-                    self.inner.mapping_manager.remove_mappings(range).await;
+                    self.inner.mapping_manager.remove_mappings(range).await?;
                     return Err(e);
                 }
             }
@@ -708,7 +829,11 @@ impl RegionManagerTask {
         Ok(())
     }
 
-    async fn remove_mappings(&mut self, id: RegionId, range_in_region: MemoryRange) {
+    async fn remove_mappings(
+        &mut self,
+        id: RegionId,
+        range_in_region: MemoryRange,
+    ) -> anyhow::Result<()> {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
         let active_range = region.active_range();
@@ -726,39 +851,108 @@ impl RegionManagerTask {
         } else {
             Vec::new()
         };
+        let _change = if removed_ranges.is_empty() {
+            None
+        } else {
+            let ranges: Vec<_> = removed_ranges
+                .iter()
+                .map(|range| range.start()..range.end())
+                .collect();
+            self.inner
+                .user_locks
+                .as_ref()
+                .map(|locks| locks.begin_change(&ranges))
+                .transpose()?
+        };
 
-        region.mappings.retain_mut(|mapping| {
+        for mapping in &region.mappings {
             if !range_in_region.contains(&mapping.params.range_in_region) {
                 assert!(
                     !range_in_region.overlaps(&mapping.params.range_in_region),
                     "no partial unmappings allowed"
                 );
-                return true;
             }
-            false
-        });
+        }
         if let Some(region_range) = active_range {
             // Unmap DMA mappers first — IOMMU entries must be removed before
             // the VA mappings are torn down (same ordering as disable_region).
-            for &removed in &removed_ranges {
-                for dma_mapper in &self.inner.dma_mappers {
-                    dma_mapper.unmap_dma(removed);
-                }
-            }
+            self.inner.unmap_dma_ranges(region, &removed_ranges)?;
 
-            self.inner
+            if let Err(error) = self
+                .inner
                 .mapping_manager
                 .remove_mappings(range_within(region_range, range_in_region))
-                .await;
+                .await
+            {
+                self.inner.restore_dma(region, &removed_ranges)?;
+                return Err(error.into());
+            }
 
             // Currently there is no need to tell the partitions about the
             // removed mappings; they will find out when the underlying VA is
             // invalidated by the kernel.
         }
+        region
+            .mappings
+            .retain(|mapping| !range_in_region.contains(&mapping.params.range_in_region));
+        Ok(())
     }
 }
 
 impl RegionManagerTaskInner {
+    fn restore_dma(&self, region: &Region, ranges: &[MemoryRange]) -> anyhow::Result<()> {
+        for mapping in region.mappings.iter().filter(|mapping| {
+            ranges.iter().any(|range| {
+                range.contains(&range_within(
+                    region.params.range,
+                    mapping.params.range_in_region,
+                ))
+            })
+        }) {
+            for mapper in &self.dma_mappers {
+                mapper.map_dma(SubMapping {
+                    range: range_within(region.params.range, mapping.params.range_in_region),
+                    backing: &mapping.params.backing,
+                    writable: mapping.params.writable && region.map_params.unwrap().writable,
+                    mapping_type: region.params.mapping_type,
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn unmap_dma_ranges(&self, region: &Region, ranges: &[MemoryRange]) -> anyhow::Result<()> {
+        let mut completed: Vec<(usize, MemoryRange)> = Vec::new();
+        for (index, mapper) in self.dma_mappers.iter().enumerate() {
+            for &range in ranges {
+                if let Err(error) = mapper.target.unmap_dma(range) {
+                    for (index, range) in completed {
+                        for mapping in region.mappings.iter().filter(|mapping| {
+                            range.contains(&range_within(
+                                region.params.range,
+                                mapping.params.range_in_region,
+                            ))
+                        }) {
+                            self.dma_mappers[index].map_dma(SubMapping {
+                                range: range_within(
+                                    region.params.range,
+                                    mapping.params.range_in_region,
+                                ),
+                                backing: &mapping.params.backing,
+                                writable: mapping.params.writable
+                                    && region.map_params.unwrap().writable,
+                                mapping_type: region.params.mapping_type,
+                            })?;
+                        }
+                    }
+                    return Err(error);
+                }
+                completed.push((index, range));
+            }
+        }
+        Ok(())
+    }
+
     async fn enable_region(&mut self, region: &mut Region) -> anyhow::Result<()> {
         assert!(!region.is_active);
         let map_params = region.map_params.unwrap();
@@ -797,7 +991,7 @@ impl RegionManagerTaskInner {
                 }
                 self.mapping_manager
                     .remove_mappings(region.params.range)
-                    .await;
+                    .await?;
                 return Err(e).context(format!(
                     "failed to map {} during region enable",
                     range_within(region.params.range, mapping.params.range_in_region),
@@ -830,7 +1024,7 @@ impl RegionManagerTaskInner {
                     }
                     self.mapping_manager
                         .remove_mappings(region.params.range)
-                        .await;
+                        .await?;
                     return Err(e).context(format!(
                         "DMA mapper failed to map {range} during region enable"
                     ));
@@ -839,11 +1033,20 @@ impl RegionManagerTaskInner {
         }
 
         // Map the region into the partitions.
-        for partition in &mut self.partitions {
-            partition
+        for index in 0..self.partitions.len() {
+            if let Err(error) = self.partitions[index]
                 .map_region(region.params.range, map_params)
                 .await
-                .expect("cannot recover from failed mapping");
+            {
+                for partition in &mut self.partitions[..index] {
+                    partition.unmap_region(region.params.range);
+                }
+                self.unmap_dma_ranges(region, &[region.params.range])?;
+                self.mapping_manager
+                    .remove_mappings(region.params.range)
+                    .await?;
+                return Err(error.into());
+            }
         }
 
         region.is_active = true;
@@ -857,13 +1060,10 @@ impl RegionManagerTaskInner {
     /// permanently removed. Private/anonymous RAM is backed solely by the VA
     /// mapping itself, so tearing it down decommits and zeroes its pages — a
     /// transient disable of such a region would silently lose guest memory.
-    /// That path is not reachable today (nothing transiently disables a RAM
-    /// region, which is the highest priority), so guard it with an assert to
-    /// turn a future regression into an immediate, located panic rather than
-    /// silent corruption.
-    async fn disable_region(&mut self, region: &mut Region, transient: bool) {
+    /// Reject that operation before changing the backing.
+    async fn disable_region(&mut self, region: &mut Region, transient: bool) -> anyhow::Result<()> {
         assert!(region.is_active);
-        assert!(
+        anyhow::ensure!(
             !transient
                 || region
                     .mappings
@@ -884,25 +1084,51 @@ impl RegionManagerTaskInner {
         // released by unmap_dma, and the underlying pages must still be
         // valid at that point).
         let region_range = region.params.range;
-        for dma_mapper in &mut self.dma_mappers {
-            dma_mapper.unmap_dma(region_range);
-        }
+        self.unmap_dma_ranges(region, &[region_range])?;
 
         for partition in &mut self.partitions {
             partition.unmap_region(region_range);
         }
-        self.mapping_manager.remove_mappings(region_range).await;
+        if let Err(error) = self.mapping_manager.remove_mappings(region_range).await {
+            for partition in &self.partitions {
+                partition
+                    .map_region(region_range, region.map_params.unwrap())
+                    .await?;
+            }
+            self.restore_dma(region, &[region_range])?;
+            return Err(error.into());
+        }
         region.is_active = false;
+        Ok(())
     }
 }
 
 impl RegionManager {
     /// Returns a new region manager that sends mappings to `mapping_manager`.
+    #[cfg(test)]
     pub fn new(spawn: impl Spawn, mapping_manager: MappingManagerClient) -> Self {
+        let locks = mapping_manager.local_user_locks();
+        Self::new_inner(spawn, mapping_manager, locks)
+    }
+
+    pub(crate) fn new_with_user_locks(
+        spawn: impl Spawn,
+        mapping_manager: MappingManagerClient,
+        locks: Arc<guestmem::GuestMemoryUserLocks>,
+    ) -> Self {
+        Self::new_inner(spawn, mapping_manager, Some(locks))
+    }
+
+    fn new_inner(
+        spawn: impl Spawn,
+        mapping_manager: MappingManagerClient,
+        locks: Option<Arc<guestmem::GuestMemoryUserLocks>>,
+    ) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("region_manager", {
                 let mut task = RegionManagerTask::new(mapping_manager);
+                task.inner.user_locks = locks;
                 async move {
                     task.run(&mut req_recv).await;
                 }
@@ -1061,11 +1287,11 @@ impl RegionHandle {
     }
 
     /// Unmaps this region.
-    pub async fn unmap(&self) {
-        let _ = self
-            .req_send
+    pub async fn unmap(&self) -> Result<(), RemoteError> {
+        self.req_send
             .call(RegionRequest::UnmapRegion, self.id.unwrap())
-            .await;
+            .await
+            .map_err(RemoteError::new)?
     }
 
     /// Adds a mapping to the region.
@@ -1106,27 +1332,35 @@ impl RegionHandle {
     /// Removes the mappings in `range` within this region.
     ///
     /// TODO: allow this to split mappings.
-    pub async fn remove_mappings(&self, range: MemoryRange) {
-        let _ = self
-            .req_send
+    pub async fn remove_mappings(&self, range: MemoryRange) -> Result<(), RemoteError> {
+        self.req_send
             .call(RegionRequest::RemoveMappings, (self.id.unwrap(), range))
-            .await;
+            .await
+            .map_err(RemoteError::new)?
     }
 
-    /// Tears the region down, waiting for all mappings to be unreferenced.
-    pub async fn teardown(mut self) {
-        let _ = self
-            .req_send
-            .call(RegionRequest::RemoveRegion, self.id.take().unwrap())
-            .await;
+    /// Removes the region. On failure, the handle remains usable for retry.
+    ///
+    /// Cancellation can leave removal in flight. Retrying removal, or dropping
+    /// the handle afterward, is safe even if that request already succeeded.
+    pub async fn teardown(&mut self) -> Result<(), RemoteError> {
+        let Some(id) = self.id else {
+            return Ok(());
+        };
+        self.req_send
+            .call(RegionRequest::RemoveRegion, id)
+            .await
+            .map_err(RemoteError::new)??;
+        self.id = None;
+        Ok(())
     }
 }
 
 impl Drop for RegionHandle {
     fn drop(&mut self) {
         if let Some(id) = self.id {
-            let _recv = self.req_send.call(RegionRequest::RemoveRegion, id);
-            // Don't wait for the response.
+            self.req_send
+                .send(RegionRequest::DisposeRegion(id, self.req_send.clone()));
         }
     }
 }
@@ -1147,11 +1381,244 @@ mod tests {
     use crate::region_manager::RegionMappingParams;
     use crate::region_manager::RegionParams;
     use memory_range::MemoryRange;
+    use mesh::rpc::RpcSend;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use parking_lot::Mutex;
     use std::ops::Range;
     use std::sync::Arc;
+
+    #[async_test]
+    async fn secondary_loans_reject_changes_before_dma_or_va_effects(spawn: impl Spawn) {
+        let mm = MappingManager::new_without_primary(&spawn, 0x200000, None);
+        let primary = mm.client().new_mapper(true).await.unwrap();
+        let secondary = mm.client().new_local_secondary_mapper().await.unwrap();
+        let mut task = DmaTestTask {
+            task: RegionManagerTask::new(mm.client().clone()),
+            mappable: test_mappable(),
+        };
+        let id = task.add_region(0..0x10000).await;
+        task.add_mapping(id, 0..0x4000).await;
+        let target = Arc::new(RecordingDmaTarget::default());
+        task.task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+        target.take_events();
+        let gm = guestmem::GuestMemory::new("secondary", secondary);
+        let pgm = guestmem::GuestMemory::new("primary", primary);
+        gm.write_plain(0, &42u64).unwrap();
+        let first = gm
+            .lock_user_gpns(guestmem::AccessType::Read, &[0, 1])
+            .unwrap();
+        let second = gm.lock_user_gpns(guestmem::AccessType::Read, &[1]).unwrap();
+        task.add_mapping(id, 0x8000..0xc000).await;
+        task.task
+            .remove_mappings(id, MemoryRange::new(0x8000..0xc000))
+            .await
+            .unwrap();
+        assert_eq!(
+            target.take_events(),
+            [
+                DmaEvent::Map(MemoryRange::new(0x8000..0xc000)),
+                DmaEvent::Unmap(MemoryRange::new(0x8000..0xc000)),
+            ]
+        );
+        assert!(
+            task.task
+                .remove_mappings(id, MemoryRange::new(0..0x4000))
+                .await
+                .is_err()
+        );
+        assert!(task.task.unmap_region(id, true).await.is_err());
+        assert!(
+            mm.client()
+                .remove_mappings(MemoryRange::new(0..0x4000))
+                .await
+                .is_err()
+        );
+        assert!(target.take_events().is_empty());
+        assert_eq!(task.task.regions.len(), 1);
+        assert!(task.task.regions[0].is_active);
+        assert_eq!(task.task.regions[0].mappings.len(), 1);
+        assert_eq!(pgm.read_plain::<u64>(0).unwrap(), 42);
+        drop(first);
+        assert!(task.task.unmap_region(id, true).await.is_err());
+        assert!(target.take_events().is_empty());
+        drop(second);
+        task.task.unmap_region(id, true).await.unwrap();
+        assert!(task.task.regions.is_empty());
+        assert_eq!(
+            target.take_events(),
+            [DmaEvent::Unmap(MemoryRange::new(0..0x10000))]
+        );
+        assert!(pgm.read_plain::<u64>(0).is_err());
+    }
+
+    #[async_test]
+    async fn teardown_keeps_handle_and_drop_retries_after_last_loan(spawn: impl Spawn) {
+        let mm = MappingManager::new_without_primary(&spawn, 0x10000, None);
+        let mapper = mm.client().new_mapper(true).await.unwrap();
+        let regions = super::RegionManager::new(&spawn, mm.client().clone());
+        let mut handle = regions
+            .client()
+            .new_region(
+                "loan".into(),
+                MemoryRange::new(0..0x4000),
+                0,
+                MappingType::Ram,
+            )
+            .await
+            .unwrap();
+        handle
+            .add_mapping(
+                MemoryRange::new(0..0x4000),
+                MappingBacking::File {
+                    mappable: test_mappable(),
+                    file_offset: 0,
+                },
+                true,
+                MemoryPolicy::none(),
+            )
+            .await
+            .unwrap();
+        handle
+            .map(MapParams {
+                writable: true,
+                executable: false,
+                prefetch: false,
+            })
+            .await
+            .unwrap();
+        let gm = guestmem::GuestMemory::new("loan", mapper);
+        let first = gm
+            .lock_user_gpns(guestmem::AccessType::Read, &[0, 1])
+            .unwrap();
+        let second = gm.lock_user_gpns(guestmem::AccessType::Read, &[1]).unwrap();
+        assert!(handle.teardown().await.is_err());
+        assert!(handle.id.is_some());
+        drop(handle);
+        assert_eq!(
+            regions
+                .client
+                .req_send
+                .call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            1
+        );
+        drop(first);
+        assert_eq!(
+            regions
+                .client
+                .req_send
+                .call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            1
+        );
+        drop(second);
+        assert_eq!(
+            regions
+                .client
+                .req_send
+                .call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(gm.read_plain::<u64>(0).is_err());
+    }
+
+    #[async_test]
+    async fn cancelled_teardown_allows_retry_drop_and_duplicate_disposal(spawn: impl Spawn) {
+        let mm = MappingManager::new_without_primary(&spawn, 0x10000, None);
+        let mut task = RegionManagerTask::new(mm.client().clone());
+        let (send, mut recv) = mesh::mpsc_channel();
+        let mut handles = Vec::new();
+        for index in 0..2 {
+            let id = task
+                .add_region(RegionParams {
+                    name: format!("cancelled-{index}"),
+                    range: MemoryRange::new(index * 0x1000..(index + 1) * 0x1000),
+                    priority: 0,
+                    mapping_type: MappingType::Ram,
+                })
+                .unwrap();
+            handles.push(super::RegionHandle {
+                id: Some(id),
+                req_send: send.clone(),
+            });
+        }
+        // The manager is not running yet, so polling submits each request
+        // without any possibility of receiving its response.
+        for handle in &mut handles {
+            let mut teardown = Box::pin(handle.teardown());
+            assert!(futures::poll!(&mut teardown).is_pending());
+            drop(teardown);
+        }
+        spawn
+            .spawn("cancelled_teardown_regions", async move {
+                task.run(&mut recv).await;
+            })
+            .detach();
+        assert_eq!(
+            send.call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            0
+        );
+        let mut retry = handles.remove(0);
+        let retry_id = retry.id.unwrap();
+        retry.teardown().await.unwrap();
+        assert!(retry.id.is_none());
+        retry.teardown().await.unwrap();
+        drop(retry);
+        let dropped = handles.pop().unwrap();
+        let dropped_id = dropped.id.unwrap();
+        drop(dropped);
+        for id in [retry_id, dropped_id, dropped_id] {
+            send.send(super::RegionRequest::DisposeRegion(id, send.clone()));
+        }
+        assert_eq!(
+            send.call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            0
+        );
+        // Absence only makes removal idempotent; ordinary unmap still fails.
+        assert!(
+            send.call(super::RegionRequest::UnmapRegion, retry_id)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let client = super::RegionManagerClient {
+            req_send: send.clone(),
+        };
+        let region = client
+            .new_region(
+                "responsive".into(),
+                MemoryRange::new(0..0x1000),
+                0,
+                MappingType::Ram,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            send.call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            1
+        );
+        drop(region);
+        assert_eq!(
+            send.call(super::RegionRequest::RegionCount, ())
+                .await
+                .unwrap(),
+            0
+        );
+    }
 
     /// Records map/unmap calls for test assertions.
     #[derive(Default)]
@@ -1160,6 +1627,8 @@ mod tests {
         /// Ranges for which `map_dma` was called with no backing fd
         /// (`mappable: None`), i.e., the anonymous/private-RAM VA path.
         backingless_maps: Mutex<Vec<MemoryRange>>,
+        fail_unmap: std::sync::atomic::AtomicBool,
+        fail_map: std::sync::atomic::AtomicBool,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1170,6 +1639,12 @@ mod tests {
 
     impl DmaTarget for RecordingDmaTarget {
         unsafe fn map_dma(&self, request: DmaMapRequest<'_>) -> anyhow::Result<()> {
+            anyhow::ensure!(
+                !self
+                    .fail_map
+                    .swap(false, std::sync::atomic::Ordering::Relaxed),
+                "injected DMA map failure"
+            );
             if request.mappable.is_none() {
                 self.backingless_maps.lock().push(request.range);
             }
@@ -1178,6 +1653,10 @@ mod tests {
         }
 
         fn unmap_dma(&self, range: MemoryRange) -> anyhow::Result<()> {
+            anyhow::ensure!(
+                !self.fail_unmap.load(std::sync::atomic::Ordering::Relaxed),
+                "injected DMA unmap failure"
+            );
             self.events.lock().push(DmaEvent::Unmap(range));
             Ok(())
         }
@@ -1191,6 +1670,103 @@ mod tests {
         fn take_backingless_maps(&self) -> Vec<MemoryRange> {
             std::mem::take(&mut self.backingless_maps.lock())
         }
+    }
+
+    #[async_test]
+    async fn dma_unmap_failure_keeps_region_and_mapping_records(spawn: impl Spawn) {
+        let mut task = DmaTestTask::new(&spawn);
+        let id = task.add_region(0..0x10000).await;
+        task.add_mapping(id, 0..0x4000).await;
+        let mapper = task
+            .task
+            .inner
+            .mapping_manager
+            .new_mapper(true)
+            .await
+            .unwrap();
+        let gm = guestmem::GuestMemory::new("DMA rollback", mapper);
+        gm.write_plain(0, &42u64).unwrap();
+        let first = Arc::new(RecordingDmaTarget::default());
+        let second = Arc::new(RecordingDmaTarget::default());
+        task.task
+            .add_dma_mapper(first.clone(), false)
+            .await
+            .unwrap();
+        task.task
+            .add_dma_mapper(second.clone(), false)
+            .await
+            .unwrap();
+        first.take_events();
+        second.take_events();
+        second
+            .fail_unmap
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            task.task
+                .remove_mappings(id, MemoryRange::new(0..0x4000))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            first.take_events(),
+            [
+                DmaEvent::Unmap(MemoryRange::new(0..0x4000)),
+                DmaEvent::Map(MemoryRange::new(0..0x4000)),
+            ]
+        );
+        assert!(task.task.unmap_region(id, true).await.is_err());
+        assert_eq!(task.task.regions.len(), 1);
+        assert_eq!(task.task.regions[0].mappings.len(), 1);
+        assert!(task.task.regions[0].is_active);
+        assert_eq!(gm.read_plain::<u64>(0).unwrap(), 42);
+        second
+            .fail_unmap
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        task.task.unmap_region(id, true).await.unwrap();
+        assert!(task.task.regions.is_empty());
+        assert!(gm.read_plain::<u64>(0).is_err());
+    }
+
+    #[async_test]
+    async fn failed_overlay_enable_restores_active_region(spawn: impl Spawn) {
+        let mut task = DmaTestTask::new(&spawn);
+        let base = task.add_region(0..0x10000).await;
+        task.add_mapping(base, 0..0x4000).await;
+        let target = Arc::new(RecordingDmaTarget::default());
+        task.task
+            .add_dma_mapper(target.clone(), false)
+            .await
+            .unwrap();
+        let overlay = task
+            .task
+            .add_region(RegionParams {
+                name: "overlay".into(),
+                range: MemoryRange::new(0..0x10000),
+                priority: 1,
+                mapping_type: MappingType::Device,
+            })
+            .unwrap();
+        task.add_mapping(overlay, 0..0x4000).await;
+        // Reject only the next map, then permit the original mapping's rollback.
+        target
+            .fail_map
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let result = task
+            .task
+            .map_region(
+                overlay,
+                MapParams {
+                    writable: true,
+                    executable: true,
+                    prefetch: false,
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(task.task.regions[0].is_active);
+        assert!(task.task.regions[0].map_params.is_some());
+        assert!(task.task.regions[1].map_params.is_none());
+        assert!(!task.task.regions[1].is_active);
     }
 
     /// Create a dummy Mappable for tests (cross-platform).
@@ -1230,7 +1806,7 @@ mod tests {
             }
 
             async fn remove(&mut self, id: RegionId) {
-                self.0.unmap_region(id, true).await;
+                self.0.unmap_region(id, true).await.unwrap();
             }
         }
 
@@ -1373,7 +1949,8 @@ mod tests {
         // Removing the mapping should unmap it.
         t.task
             .remove_mappings(r, MemoryRange::new(0x0..0x4000))
-            .await;
+            .await
+            .unwrap();
         assert_eq!(
             target.take_events(),
             vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x4000))]
@@ -1477,7 +2054,7 @@ mod tests {
         target.take_events(); // discard replay
 
         // Disabling the region should unmap the entire region range.
-        t.task.unmap_region(r, false).await;
+        t.task.unmap_region(r, false).await.unwrap();
         assert_eq!(
             target.take_events(),
             vec![DmaEvent::Unmap(MemoryRange::new(0x0..0x10000))]
@@ -1513,7 +2090,7 @@ mod tests {
         t.add_mapping(r, 0x0..0x4000).await;
 
         // Disable the region before registering the mapper.
-        t.task.unmap_region(r, false).await;
+        t.task.unmap_region(r, false).await.unwrap();
 
         let target = Arc::new(RecordingDmaTarget::default());
         let _id = t.task.add_dma_mapper(target.clone(), false).await.unwrap();
@@ -1616,7 +2193,7 @@ mod tests {
         t.add_mapping(r, 0x0..0x4000).await;
 
         // Disable so we can re-enable with DMA mappers present.
-        t.task.unmap_region(r, false).await;
+        t.task.unmap_region(r, false).await.unwrap();
 
         let good_target = Arc::new(RecordingDmaTarget::default());
         let _good_id = t
@@ -1672,7 +2249,7 @@ mod tests {
         t.add_mapping(r, 0x8000..0xC000).await;
 
         // Disable the region so we can re-enable with a DMA mapper present.
-        t.task.unmap_region(r, false).await;
+        t.task.unmap_region(r, false).await.unwrap();
 
         // Register a DMA mapper that fails on the third map_dma call
         // (i.e., the third sub-mapping). The first two succeed.

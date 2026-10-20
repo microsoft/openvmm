@@ -277,7 +277,10 @@ impl ConsoleWorker {
                     loop {
                         let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
                         let work = work.consume();
-                        transmitq.complete(work, 0);
+                        transmitq
+                            .complete(work.into_completion(), 0)
+                            .map_err(std::io::Error::other)
+                            .map_err(WorkerError::Virtio)?;
                         *partial_transmit = 0;
                     }
                 };
@@ -307,7 +310,10 @@ impl ConsoleWorker {
                             // immediately without calling poll_read (which
                             // would return Ok(0) and look like a disconnect).
                             let work = work.consume();
-                            receiveq.complete(work, 0);
+                            receiveq
+                                .complete(work.into_completion(), 0)
+                                .map_err(std::io::Error::other)
+                                .map_err(WorkerError::Virtio)?;
                             continue 'rx;
                         }
                         let n = BUF_SIZE.min(writeable_len);
@@ -326,9 +332,15 @@ impl ConsoleWorker {
                                         error = &err as &dyn std::error::Error,
                                         "failed to write to guest receive buffer"
                                     );
-                                    receiveq.complete(work, 0);
+                                    receiveq
+                                        .complete(work.into_completion(), 0)
+                                        .map_err(std::io::Error::other)
+                                        .map_err(WorkerError::Virtio)?;
                                 } else {
-                                    receiveq.complete(work, n as u32);
+                                    receiveq
+                                        .complete(work.into_completion(), n as u32)
+                                        .map_err(std::io::Error::other)
+                                        .map_err(WorkerError::Virtio)?;
                                 }
                             }
                             Err(_) => {
@@ -375,7 +387,10 @@ impl ConsoleWorker {
                         }
                         *partial_transmit = 0;
                         let work = work.consume();
-                        transmitq.complete(work, 0);
+                        transmitq
+                            .complete(work.into_completion(), 0)
+                            .map_err(std::io::Error::other)
+                            .map_err(WorkerError::Virtio)?;
                     }
                 };
 

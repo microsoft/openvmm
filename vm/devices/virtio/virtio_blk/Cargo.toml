@@ -10,6 +10,7 @@ rust-version.workspace = true
 vm_resource.workspace = true
 
 disk_backend.workspace = true
+disk_backend_resources.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
@@ -27,8 +28,12 @@ futures.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 disklayer_ram.workspace = true
+mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true

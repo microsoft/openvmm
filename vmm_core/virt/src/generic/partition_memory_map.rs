@@ -68,10 +68,26 @@ pub trait PartitionMemoryMap: Send + Sync {
 /// merely because the guest marked it shared. The VMM must also ask the
 /// hypervisor to grant the host permission to touch the existing backing.
 pub trait PartitionHostAccess: Send + Sync {
+    /// Attaches the backing's CPU-loan tracker before exposing any locks.
+    fn install_user_locks(
+        &self,
+        _locks: std::sync::Arc<guestmem::GuestMemoryUserLocks>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Whether runtime CPU-only loans can be acquired from this partition.
+    fn supports_user_locks(&self) -> bool {
+        false
+    }
+
     /// Acquires host access without changing guest visibility.
     ///
-    /// TODO: This trait is sufficient for MSHV bring-up, but a redesign is
-    /// required to safely lower host access and track that pages are not
-    /// currently in use before revoking access.
+    /// Called on a contained mapping fault. Confirmed grants remain until a
+    /// guest attribute conflict requires their release.
+    /// Repeated acquisition and read-to-write upgrades must be supported.
+    ///
+    /// An error does not promise that no page in the range was granted.
+    /// The backend owns permission-state recovery and backing lifetime on failure.
     fn acquire_host_access(&self, addr: u64, size: u64, write: bool) -> anyhow::Result<()>;
 }

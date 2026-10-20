@@ -121,6 +121,8 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
+    fail_read_at: Mutex<Option<u64>>,
+    fail_write_at: Mutex<Option<u64>>,
     doorbell_count: AtomicUsize,
     /// The doorbells that are currently INSTALLED, i.e. whose registration
     /// object is still alive.
@@ -248,6 +250,12 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         dest: *mut u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        if *self.fail_read_at.lock() == Some(address) {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                io::Error::other("injected read failure"),
+            ));
+        }
         match self.memory_map.lock().get(address, len) {
             Some((_, value)) => {
                 // SAFETY: guaranteed by caller
@@ -269,6 +277,12 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         src: *const u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        if *self.fail_write_at.lock() == Some(address) {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                io::Error::other("injected write failure"),
+            ));
+        }
         match self.memory_map.lock().get(address, len) {
             Some((true, value)) => {
                 // SAFETY: guaranteed by caller
@@ -2499,8 +2513,12 @@ async fn verify_queue_simple_inner(mut guest: VirtioTestGuest) {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
                     match work.payload[0].address {
-                        addr if addr == base_addr => queue.complete(work, 123),
-                        addr if addr == base_addr + 0x1000 => queue.complete(work, 456),
+                        addr if addr == base_addr => {
+                            queue.complete(work.into_completion(), 123).unwrap()
+                        }
+                        addr if addr == base_addr + 0x1000 => {
+                            queue.complete(work.into_completion(), 456).unwrap()
+                        }
                         _ => panic!("Unexpected address {}", work.payload[0].address),
                     }
                 },
@@ -2557,7 +2575,7 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
-                    queue.complete(work, 123);
+                    queue.complete(work.into_completion(), 123).unwrap();
                     completed.send(());
                 },
             ),
@@ -2663,8 +2681,12 @@ async fn verify_queue_indirect_inner(mut guest: VirtioTestGuest) {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
                     match work.payload[0].address {
-                        0xffffffff00000000u64 => queue.complete(work, 123),
-                        addr if addr == base_addr + 0x1000 => queue.complete(work, 456),
+                        0xffffffff00000000u64 => {
+                            queue.complete(work.into_completion(), 123).unwrap()
+                        }
+                        addr if addr == base_addr + 0x1000 => {
+                            queue.complete(work.into_completion(), 456).unwrap()
+                        }
                         _ => panic!("Unexpected address {}", work.payload[0].address),
                     }
                 },
@@ -2721,10 +2743,10 @@ async fn verify_queue_linked_inner(mut guest: VirtioTestGuest) {
                             assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
                             assert_eq!(work.payload[i].length, 0x1000);
                         }
-                        queue.complete(work, 123);
+                        queue.complete(work.into_completion(), 123).unwrap();
                     } else {
                         assert_eq!(work.payload.len(), 1);
-                        queue.complete(work, 456);
+                        queue.complete(work.into_completion(), 456).unwrap();
                     }
                 },
             ),
@@ -2783,7 +2805,7 @@ async fn verify_packed_queue_linked_wrapping(driver: DefaultDriver) {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     let len = work.payload.len() as u32;
-                    queue.complete(work, len);
+                    queue.complete(work.into_completion(), len).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -2834,7 +2856,7 @@ async fn verify_packed_indirect_ignores_next_flag(driver: DefaultDriver) {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     let len = work.payload.len() as u32;
-                    queue.complete(work, len);
+                    queue.complete(work.into_completion(), len).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -2897,7 +2919,7 @@ async fn verify_packed_queue_non_power_of_two(driver: DefaultDriver) {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     let len = work.payload.len() as u32;
-                    queue.complete(work, len);
+                    queue.complete(work.into_completion(), len).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -2944,10 +2966,10 @@ async fn verify_queue_indirect_linked_inner(mut guest: VirtioTestGuest) {
                             );
                             assert_eq!(work.payload[i].length, 0x1000);
                         }
-                        queue.complete(work, 123);
+                        queue.complete(work.into_completion(), 123).unwrap();
                     } else {
                         assert_eq!(work.payload.len(), 1);
-                        queue.complete(work, 456);
+                        queue.complete(work.into_completion(), 456).unwrap();
                     }
                 },
             ),
@@ -3003,9 +3025,9 @@ async fn verify_queue_avail_rollover_inner(mut guest: VirtioTestGuest) {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].length, 0x1000);
                     if work.payload[0].address == base_addr {
-                        queue.complete(work, 123);
+                        queue.complete(work.into_completion(), 123).unwrap();
                     } else if work.payload[0].address == base_addr + 0x1000 {
-                        queue.complete(work, 456);
+                        queue.complete(work.into_completion(), 456).unwrap();
                     } else {
                         panic!(
                             "Unexpected descriptor address {:x}",
@@ -3066,7 +3088,9 @@ async fn verify_multi_queue_inner(mut guest: VirtioTestGuest) {
                     assert_eq!(work.payload.len(), 1);
                     assert_eq!(work.payload[0].address, base_addr);
                     assert_eq!(work.payload[0].length, 0x1000);
-                    queue.complete(work, 123 * queue_index as u32);
+                    queue
+                        .complete(work.into_completion(), 123 * queue_index as u32)
+                        .unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -3146,7 +3170,7 @@ async fn verify_device_queue_simple_inner(
             assert_eq!(work.payload.len(), 1);
             assert_eq!(work.payload[0].address, base_addr);
             assert_eq!(work.payload[0].length, 0x1000);
-            queue.complete(work, 123);
+            queue.complete(work.into_completion(), 123).unwrap();
         },
     );
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
@@ -3229,7 +3253,9 @@ async fn verify_device_multi_queue_inner(
             assert_eq!(work.payload.len(), 1);
             assert_eq!(work.payload[0].address, base_addr[i as usize]);
             assert_eq!(work.payload[0].length, 0x1000);
-            queue.complete(work, 123 * i as u32);
+            queue
+                .complete(work.into_completion(), 123 * i as u32)
+                .unwrap();
         },
     );
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
@@ -3325,7 +3351,9 @@ async fn verify_device_multi_queue_pci_inner(
             assert_eq!(work.payload.len(), 1);
             assert_eq!(work.payload[0].address, base_addr[i as usize]);
             assert_eq!(work.payload[0].length, 0x1000);
-            queue.complete(work, 123 * i as u32);
+            queue
+                .complete(work.into_completion(), 123 * i as u32)
+                .unwrap();
         })),
     );
 
@@ -3575,7 +3603,7 @@ async fn verify_chain_at_queue_size_succeeds(driver: DefaultDriver) {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     assert_eq!(work.payload.len(), queue_size as usize);
-                    queue.complete(work, 42);
+                    queue.complete(work.into_completion(), 42).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -3704,7 +3732,7 @@ async fn verify_indirect_chain_at_queue_size_succeeds(driver: DefaultDriver) {
             process_work: Box::new(
                 move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
                     assert_eq!(work.payload.len(), queue_size as usize);
-                    queue.complete(work, 99);
+                    queue.complete(work.into_completion(), 99).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -3742,7 +3770,7 @@ async fn verify_normal_then_indirect_succeeds(driver: DefaultDriver) {
                     // 1 normal descriptor + 3 indirect entries = 4 payload entries.
                     // (The indirect head descriptor is not itself a payload entry.)
                     assert_eq!(work.payload.len(), 4);
-                    queue.complete(work, 77);
+                    queue.complete(work.into_completion(), 77).unwrap();
                 },
             ),
             notify: Interrupt::from_fn(move || {
@@ -3859,7 +3887,7 @@ async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
 
     // Consume the peeked work and complete it.
     let work = peeked2.consume();
-    queue.complete(work, 42);
+    queue.complete(work.into_completion(), 42).unwrap();
 
     // Now the used ring should have the completion.
     let (_, len) = guest.get_next_completed(0).expect("completion expected");
@@ -3941,7 +3969,7 @@ async fn verify_peek_then_next(mut guest: VirtioTestGuest) {
         .unwrap()
         .expect("first descriptor via next");
     let first_desc = work.descriptor_index();
-    queue.complete(work, 10);
+    queue.complete(work.into_completion(), 10).unwrap();
 
     // Now the next descriptor should be different.
     let work2 = queue.try_next().unwrap().expect("second descriptor");
@@ -3950,7 +3978,7 @@ async fn verify_peek_then_next(mut guest: VirtioTestGuest) {
         first_desc,
         "second descriptor should differ"
     );
-    queue.complete(work2, 20);
+    queue.complete(work2.into_completion(), 20).unwrap();
 
     let (_, len) = guest.get_next_completed(0).expect("first completion");
     assert_eq!(len, 10);
@@ -4023,7 +4051,7 @@ async fn verify_packed_peek_linked(mut guest: VirtioTestGuest) {
     // Consume and complete.
     let work = peeked2.consume();
     assert_eq!(work.payload.len(), desc_count as usize);
-    queue.complete(work, 99);
+    queue.complete(work.into_completion(), 99).unwrap();
 
     let (_, len) = guest.get_next_completed(0).expect("completion expected");
     assert_eq!(len, 99);
@@ -4063,7 +4091,7 @@ async fn split_queue_state_advances_on_pop(driver: DefaultDriver) {
     let state = queue.queue_state();
     assert_eq!(state.avail_index, 1);
     // Complete the descriptor → used_index advances
-    queue.complete(work, 0);
+    queue.complete(work.into_completion(), 0).unwrap();
     let state = queue.queue_state();
     assert_eq!(state.used_index, 1);
 }
@@ -4576,7 +4604,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             },
             Some(Arc::new(
                 |_i, queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
-                    queue.complete(work, 42);
+                    queue.complete(work.into_completion(), 42).unwrap();
                 },
             )),
         )),
@@ -4934,6 +4962,47 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 
     let result = dev.save();
     assert!(result.is_err(), "save should fail for unsupported device");
+}
+
+#[async_test]
+async fn transport_save_defers_to_device_capability_without_kernel_locks(driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    for policy in [
+        guestmem::GuestMemoryIoPolicy::Direct,
+        guestmem::GuestMemoryIoPolicy::CopyOnly,
+    ] {
+        let memory = GuestMemory::allocate(4096);
+        let memory = if policy == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            memory.copy_only_view()
+        } else {
+            memory
+        };
+        assert_eq!(
+            memory.supports_kernel_lock(),
+            policy == guestmem::GuestMemoryIoPolicy::Direct
+        );
+        let mut device = VirtioMmioDevice::new(
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+            &driver,
+            memory,
+            LineInterrupt::detached(),
+            None,
+            0,
+            1,
+        )
+        .unwrap();
+        assert!(device.save().is_ok());
+    }
 }
 
 #[async_test]
@@ -5384,7 +5453,7 @@ async fn packed_full_ring_chain_toggles_wrap_counters(driver: DefaultDriver) {
         4,
         "chain should span all four descriptors"
     );
-    queue.complete(work, 4);
+    queue.complete(work.into_completion(), 4).unwrap();
 
     // After one full lap a spec-conformant device must have toggled both wrap
     // counters. The packed queue state encodes the wrap bit at bit 15, so a
@@ -5467,11 +5536,15 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
     let mut used_idx = 0;
 
     // Complete the last descriptor first: nothing may be published yet.
-    in_order.complete(&mut queue, w2.into_completion(), 22);
+    in_order
+        .complete(&mut queue, w2.into_completion(), 22)
+        .unwrap();
     assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
 
     // Complete descriptor 0: it publishes, but descriptor 2 must wait for 1.
-    in_order.complete(&mut queue, w0.into_completion(), 10);
+    in_order
+        .complete(&mut queue, w0.into_completion(), 10)
+        .unwrap();
     assert_eq!(
         read_used(&mem, used_addr, size, &mut used_idx),
         Some((0, 10))
@@ -5479,7 +5552,9 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
     assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
 
     // Complete descriptor 1: now 1 and the already-filled 2 flush in order.
-    in_order.complete(&mut queue, w1.into_completion(), 11);
+    in_order
+        .complete(&mut queue, w1.into_completion(), 11)
+        .unwrap();
     assert_eq!(
         read_used(&mem, used_addr, size, &mut used_idx),
         Some((1, 11))
@@ -5490,13 +5565,10 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
     );
 }
 
-/// Completing the same descriptor twice while it is still outstanding is an
-/// internal invariant violation (the device rejects guest-induced duplicates
-/// upstream), so the in-order helper must fail fast rather than silently
-/// stalling the used ring.
+/// Short RX buffers can be rejected before the device records their indices.
+/// Guest-provided duplicates must retire the tracker, not panic.
 #[async_test]
-#[should_panic(expected = "completed more than once")]
-async fn in_order_double_complete_panics(driver: DefaultDriver) {
+async fn in_order_duplicate_short_buffer_completion_retires_tracker(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
@@ -5543,7 +5615,7 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
             desc_addr,
             i,
             data_addr + i as u64 * 0x100,
-            0x100,
+            if i == 1 { 1 } else { 0x100 },
             DescriptorFlags::new().with_write(true),
             0,
         );
@@ -5551,14 +5623,187 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
     }
     make_available(&mem, avail_addr, size, 1, &mut avail_idx);
 
-    let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w0 = in_order.try_next(&mut queue).unwrap().unwrap();
     let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
     let w1b = in_order.try_next(&mut queue).unwrap().unwrap();
 
-    // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
-    // behind it; completing index 1 twice while buffered must panic.
-    in_order.complete(&mut queue, w1a.into_completion(), 1);
-    in_order.complete(&mut queue, w1b.into_completion(), 1);
+    assert_eq!(w1a.get_payload_length(true), 1);
+    assert_eq!(w1b.get_payload_length(true), 1);
+    // Hold descriptor 0 while both short copies of descriptor 1 are rejected.
+    in_order
+        .complete(&mut queue, w1a.into_completion(), 0)
+        .unwrap();
+    let state = queue.queue_state();
+    assert_eq!(
+        in_order
+            .complete(&mut queue, w1b.into_completion(), 0)
+            .unwrap_err()
+            .to_string(),
+        "invalid or duplicate in-order completion"
+    );
+    assert_eq!(in_order.outstanding(), 3);
+    assert_eq!(
+        in_order
+            .complete(&mut queue, w0.into_completion(), 0)
+            .unwrap_err()
+            .to_string(),
+        "in-order queue is retired"
+    );
+    for _ in 0..2 {
+        assert!(matches!(
+            in_order.try_next(&mut queue),
+            Err(error) if error.to_string() == "in-order queue is retired"
+        ));
+        assert_eq!(queue.queue_state(), state);
+    }
+    assert_eq!(crate::test_helpers::read_used_idx(&mem, used_addr), 0);
+}
+
+async fn verify_in_order_completion_failure_retires(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    for packed in [false, true] {
+        for notification_failure in [false, true] {
+            let test_mem = VirtioTestMemoryAccess::new();
+            let mut guest = if packed {
+                VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, false)
+            } else {
+                VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, false)
+            };
+            let params = guest.queue_params(0);
+            let mut queue = VirtioQueue::new(
+                guest.queue_features(),
+                params,
+                guest.mem(),
+                Interrupt::from_fn(|| {}),
+                PolledWait::new(&driver, Event::new()).unwrap(),
+                None,
+            )
+            .unwrap();
+            guest.add_to_avail_queue(0);
+            guest.add_to_avail_queue(0);
+            let mut tracker = InOrderCompletion::new(2);
+            let completion = tracker
+                .try_next(&mut queue)
+                .unwrap()
+                .unwrap()
+                .into_completion();
+            if notification_failure {
+                *test_mem.fail_read_at.lock() = Some(params.avail_addr);
+            } else {
+                *test_mem.fail_write_at.lock() = Some(if packed {
+                    params.desc_addr
+                } else {
+                    params.used_addr + USED_OFFSET_RING
+                });
+            }
+            assert!(tracker.complete(&mut queue, completion, 42).is_err());
+            *test_mem.fail_read_at.lock() = None;
+            *test_mem.fail_write_at.lock() = None;
+            assert_eq!(
+                guest.get_next_completed(0),
+                notification_failure.then_some((0, 42))
+            );
+            let state = queue.queue_state();
+            for _ in 0..2 {
+                assert!(matches!(
+                    tracker.try_next(&mut queue),
+                    Err(error) if error.to_string() == "in-order queue is retired"
+                ));
+                assert_eq!(queue.queue_state(), state);
+            }
+            assert!(queue.try_next().unwrap().is_some());
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_complete_failure_retires_tracker(driver: DefaultDriver) {
+    verify_in_order_completion_failure_retires(driver).await;
+}
+
+#[async_test]
+async fn queue_complete_error_notifies_and_consumes_once(driver: DefaultDriver) {
+    for packed in [false, true] {
+        for notification_failure in [false, true] {
+            let test_mem = VirtioTestMemoryAccess::new();
+            let mut guest = if packed {
+                VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)
+            } else {
+                VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)
+            };
+            let params = guest.queue_params(0);
+            let interrupts = Arc::new(AtomicUsize::new(0));
+            let mut queue = VirtioQueue::new(
+                guest.queue_features(),
+                params,
+                guest.mem(),
+                Interrupt::from_fn({
+                    let interrupts = interrupts.clone();
+                    move || {
+                        interrupts.fetch_add(1, Ordering::Relaxed);
+                    }
+                }),
+                PolledWait::new(&driver, Event::new()).unwrap(),
+                None,
+            )
+            .unwrap();
+            guest.add_to_avail_queue(0);
+            guest.add_to_avail_queue(0);
+            let completion = queue.try_next().unwrap().unwrap().into_completion();
+            let _outstanding = queue.try_next().unwrap().unwrap().into_completion();
+            if notification_failure {
+                *test_mem.fail_read_at.lock() = Some(if packed {
+                    params.avail_addr
+                } else {
+                    params.avail_addr + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE * 2
+                });
+            } else {
+                *test_mem.fail_write_at.lock() = Some(if packed {
+                    params.desc_addr
+                } else {
+                    params.used_addr + USED_OFFSET_RING
+                });
+            }
+            assert!(matches!(
+                queue.complete(completion, 42),
+                Err(QueueError::Memory(_))
+            ));
+            assert_eq!(interrupts.load(Ordering::Relaxed), 1);
+            *test_mem.fail_read_at.lock() = None;
+            *test_mem.fail_write_at.lock() = None;
+            assert_eq!(
+                guest.get_next_completed(0),
+                notification_failure.then_some((0, 42))
+            );
+            assert!(guest.get_next_completed(0).is_none());
+            let state = queue.queue_state();
+            assert_eq!(
+                state.used_index,
+                u16::from(notification_failure) | if packed { 0x8000 } else { 0 }
+            );
+
+            // The failed completion releases exactly one in-flight slot.
+            if !notification_failure {
+                guest.free_descriptor(0, 0);
+            }
+            guest.add_to_avail_queue(0);
+            let _replacement = queue.try_next().unwrap().unwrap().into_completion();
+            guest.free_descriptor(0, 1);
+            guest.add_to_avail_queue(0);
+            let error = next_error(&mut queue);
+            assert!(matches!(
+                queue_error(&error),
+                Some(QueueError::TooManyInFlightDescriptors {
+                    in_flight: 2,
+                    requested: 1,
+                    queue_size: 2,
+                })
+            ));
+            assert_eq!(queue.queue_state().used_index, state.used_index);
+            assert_eq!(interrupts.load(Ordering::Relaxed), 1);
+        }
+    }
 }
 
 const BOUND_TEST_QUEUE_SIZE: u16 = 4;
@@ -5797,7 +6042,9 @@ async fn split_queue_stays_retired_after_capacity_error(driver: DefaultDriver) {
 
     // Completions still publish to the used ring, so a device can drain its
     // in-flight work after the failure.
-    queue.complete(works.remove(0), 1);
+    queue
+        .complete(works.remove(0).into_completion(), 1)
+        .unwrap();
     assert!(
         matches!(queue.try_next(), Ok(None)),
         "freeing capacity must not revive a retired queue"
