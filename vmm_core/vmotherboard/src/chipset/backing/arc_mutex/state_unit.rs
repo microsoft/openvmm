@@ -172,11 +172,14 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
     }
 
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.device.clone().close().quiesce_input().await
+        // VPs are still running during input transitions. Keep the mutex open
+        // so concurrent guest accesses wait instead of panicking on a closed
+        // mutex.
+        self.device.lock().quiesce_input().await
     }
 
     async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.device.clone().close().resume_input().await
+        self.device.lock().resume_input().await
     }
 
     async fn reset(&mut self) -> anyhow::Result<()> {
@@ -197,5 +200,137 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
     async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
         // TODO: make async
         self.device.clone().close().restore(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArcMutexChipsetDeviceUnit;
+    use chipset_device::ChipsetDevice;
+    use closeable_mutex::CloseableMutex;
+    use futures::channel::oneshot;
+    use futures::poll;
+    use inspect::InspectMut;
+    use state_unit::StateUnit;
+    use std::panic::AssertUnwindSafe;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::ProtobufSaveRestore;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SavedStateBlob;
+
+    struct TestDevice {
+        quiesce_started: Arc<AtomicBool>,
+        quiesce_release: Option<oneshot::Receiver<()>>,
+        resume_started: Arc<AtomicBool>,
+        resume_release: Option<oneshot::Receiver<()>>,
+    }
+
+    impl ChipsetDevice for TestDevice {}
+
+    impl InspectMut for TestDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.respond();
+        }
+    }
+
+    impl ChangeDeviceState for TestDevice {
+        fn start(&mut self) {}
+
+        async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+            self.quiesce_started.store(true, Ordering::Relaxed);
+            self.quiesce_release
+                .take()
+                .expect("quiesce hook called once")
+                .await
+                .map_err(|_| anyhow::anyhow!("quiesce release dropped"))
+        }
+
+        async fn resume_input(&mut self) -> anyhow::Result<()> {
+            self.resume_started.store(true, Ordering::Relaxed);
+            self.resume_release
+                .take()
+                .expect("resume hook called once")
+                .await
+                .map_err(|_| anyhow::anyhow!("resume release dropped"))
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl ProtobufSaveRestore for TestDevice {
+        fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
+            Ok(SavedStateBlob::new(NoSavedState))
+        }
+
+        fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    fn guest_lock(
+        device: Arc<CloseableMutex<TestDevice>>,
+    ) -> (std::thread::JoinHandle<()>, mpsc::Receiver<bool>) {
+        let (ready_send, ready_recv) = mpsc::sync_channel(0);
+        let (result_send, result_recv) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            ready_send.send(()).unwrap();
+            let succeeded =
+                std::panic::catch_unwind(AssertUnwindSafe(|| drop(device.lock()))).is_ok();
+            result_send.send(succeeded).unwrap();
+        });
+        ready_recv.recv().unwrap();
+        (thread, result_recv)
+    }
+
+    #[pal_async::async_test]
+    async fn test_input_hooks_defer_guest_lock(_driver: pal_async::DefaultDriver) {
+        let quiesce_started = Arc::new(AtomicBool::new(false));
+        let resume_started = Arc::new(AtomicBool::new(false));
+        let (quiesce_release_send, quiesce_release) = oneshot::channel();
+        let (resume_release_send, resume_release) = oneshot::channel();
+        let device = Arc::new(CloseableMutex::new(TestDevice {
+            quiesce_started: quiesce_started.clone(),
+            quiesce_release: Some(quiesce_release),
+            resume_started: resume_started.clone(),
+            resume_release: Some(resume_release),
+        }));
+        let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+
+        {
+            let mut quiesce = std::pin::pin!(StateUnit::quiesce_input(&mut unit));
+            assert!(poll!(quiesce.as_mut()).is_pending());
+            assert!(quiesce_started.load(Ordering::Relaxed));
+            let (thread, guest_result) = guest_lock(device.clone());
+            assert!(matches!(
+                guest_result.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ));
+            quiesce_release_send.send(()).unwrap();
+            quiesce.await.unwrap();
+            assert_eq!(guest_result.recv_timeout(Duration::from_secs(1)), Ok(true));
+            thread.join().unwrap();
+        }
+
+        let mut resume = std::pin::pin!(StateUnit::resume_input(&mut unit));
+        assert!(poll!(resume.as_mut()).is_pending());
+        assert!(resume_started.load(Ordering::Relaxed));
+        let (thread, guest_result) = guest_lock(device);
+        assert!(matches!(
+            guest_result.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        resume_release_send.send(()).unwrap();
+        resume.await.unwrap();
+        assert_eq!(guest_result.recv_timeout(Duration::from_secs(1)), Ok(true));
+        thread.join().unwrap();
     }
 }
