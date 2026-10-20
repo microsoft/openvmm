@@ -53,7 +53,6 @@ const MAX_DEVICE_RANGES: usize = 16;
 const MAX_STATE_UNITS: usize = 512;
 const MAX_ATTACHMENTS: usize = 64;
 const MAX_ATTACHMENT_IDENTITY_BYTES: usize = 4096;
-const MAX_COMMAND_LINE_BYTES: usize = 64 * 1024;
 
 /// A guest RAM range and its corresponding offset in `memory.bin`.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
@@ -1726,14 +1725,10 @@ pub(super) fn validate_machine_contract_shape(
                 == openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
         "snapshot microVM shared-status interrupt contract is invalid"
     );
-    anyhow::ensure!(
-        contract.effective_command_line.len() < MAX_COMMAND_LINE_BYTES,
-        "snapshot command line exceeds the 64-KiB limit"
-    );
-    anyhow::ensure!(
-        !contract.effective_command_line.contains('\0'),
-        "snapshot command line contains an embedded NUL"
-    );
+    // A restore reuses the saved string verbatim, so it is checked as saved
+    // and never rewritten to fit.
+    openvmm_defs::microvm::check_microvm_command_line(&contract.effective_command_line)
+        .context("snapshot effective command line is invalid")?;
     validate_sha256(
         &contract.effective_command_line_sha256,
         "effective command line",
@@ -4055,6 +4050,42 @@ mod tests {
         expected.set_effective_command_line("console=other".to_owned());
         let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(err.to_string().contains("command line"));
+    }
+
+    #[test]
+    fn machine_contract_command_line_fits_the_guest_kernel_limit() {
+        use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+        use openvmm_defs::microvm::check_microvm_command_line;
+
+        // Text and its terminating NUL must fit in the guest kernel's buffer:
+        // a saved line of 2,047 bytes passes, and one of 2,048 fails with the
+        // shared check's error, whose text openvmm_defs tests.
+        let prefix = "console=hvc0 ";
+        let line = |length: usize| {
+            let fill = length
+                .checked_sub(prefix.len())
+                .expect("the prefix fits within the limit");
+            format!("{prefix}{}", "x".repeat(fill))
+        };
+        let mut contract = test_machine_contract();
+        contract.set_effective_command_line(line(MICROVM_COMMAND_LINE_MAX_SIZE - 1));
+        validate_machine_contract_shape(&contract, 1024, 2).unwrap();
+
+        let over = line(MICROVM_COMMAND_LINE_MAX_SIZE);
+        let expected = check_microvm_command_line(&over).unwrap_err();
+        contract.set_effective_command_line(over);
+        let error = validate_machine_contract_shape(&contract, 1024, 2).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            format!("snapshot effective command line is invalid: {expected}")
+        );
+
+        contract.set_effective_command_line("console=hvc0 \0".to_owned());
+        let error = validate_machine_contract_shape(&contract, 1024, 2).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("contains an embedded NUL"),
+            "{error:#}"
+        );
     }
 
     #[test]
