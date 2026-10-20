@@ -706,7 +706,7 @@ fn test_status_write_failure_does_not_complete_or_advance() {
 struct CallbackRoute(Box<dyn Fn() + Send + Sync>);
 
 impl iommu_common::RetranslateInterrupts for CallbackRoute {
-    fn device_id(&self) -> u16 {
+    fn device_id(&self) -> u32 {
         0
     }
     fn retranslate(&self) {

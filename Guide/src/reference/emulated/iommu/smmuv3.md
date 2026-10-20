@@ -62,13 +62,36 @@ an event, per the SMMUv3 architecture.
 
 By default the SMMU walks the guest's structures in software: it reads the
 STE, then the CD, then walks the stage-1 page tables to produce a GPA for
-each DMA access and MSI write. Faults are recorded to the guest's event
+each DMA access. MSI delivery caches successful translations as described
+below. Faults are recorded to the guest's event
 queue and signalled with the EVTQ interrupt.
 
 This works for emulated devices, whose DMA already flows through the VMM.
 It cannot work for a VFIO-assigned device, whose DMA never reaches the VMM
 — so assigning a device behind a non-accelerated SMMU is rejected at
 startup rather than silently ignoring the guest's translations.
+
+### MSI translation and acceleration
+
+Programming an MSI route does not perform a translation or report a fault.
+The first actual interrupt resolves the guest-programmed IOVA through the
+SMMU. Direct-call interrupts cache the resolved destination. For event-backed
+interrupts, userspace consumes and delivers the first notification, then binds
+the same event to the kernel if the destination supports accelerated delivery.
+Subsequent notifications can then bypass userspace.
+
+Configuration and TLB maintenance invalidate cached MSI translations, including
+those belonging to software-only streams. The implementation conservatively
+invalidates all MSI routes for that SMMU. Global policy changes, stream-table
+changes, reset, and restore also invalidate them. Invalidation synchronously
+revokes existing kernel bindings and serializes with in-flight route
+installation before completing; the next notification resolves in userspace
+again. Notifications pending on the event survive the handoff.
+
+Failed translations are not cached. They abort or report a fault only when an
+interrupt is delivered, and later interrupts retry translation. An invalidation
+alone does not generate a guest fault. Masked vectors remain pending rather
+than being resolved or accelerated.
 
 ## Accelerated translation
 

@@ -764,6 +764,9 @@ impl SmmuDevice {
             ) || (opcode == CmdOpcode::ATC_INV && self.idr0.ats());
 
             if forwardable {
+                // MSI routes also cache stage-1 translations, independently
+                // of whether a stream has a hardware-accelerated DMA backend.
+                self.shared_state.invalidate_msi_routes();
                 // SID-based invalidations (CFGI_CD/CFGI_CD_ALL, and ATC_INV
                 // once ATS is on) target one stream and carry its StreamID at
                 // qw0[63:32]. They only affect host state while the stream is
@@ -828,8 +831,8 @@ impl SmmuDevice {
                 // ILLEGAL STE produces, and the guest's next CFGI_STE retries.
                 CmdOpcode::CFGI_STE => {
                     let cmd = CmdCfgiSte::from(entry.qw0);
-                    // Emulated devices: no-op (no STE cache). Accelerated
-                    // streams: the emulator re-reads and re-applies the STE.
+                    // Revoke cached MSI translations even for software streams.
+                    self.shared_state.invalidate_msi_routes();
                     if let Err(e) = self.shared_state.apply_stream_config(cmd.sid()) {
                         tracelimit::warn_ratelimited!(
                             error = &*e as &dyn std::error::Error,
@@ -841,6 +844,7 @@ impl SmmuDevice {
 
                 // CFGI_STE_RANGE: re-drive every backend in the SID range.
                 CmdOpcode::CFGI_STE_RANGE => {
+                    self.shared_state.invalidate_msi_routes();
                     // §4.3.2: the bottom Range+1 bits of the StreamID are
                     // IGNORED, aligning the range to its size. Range=31
                     // (CFGI_ALL) spans the full 2^32 StreamIDs, so compute in
@@ -1388,6 +1392,7 @@ mod tests {
     use super::*;
     use crate::spec::events::EvtEntry;
     use crate::spec::registers::*;
+    use test_with_tracing::test;
     use zerocopy::FromBytes;
     use zerocopy::IntoBytes;
 
@@ -1863,6 +1868,84 @@ mod tests {
         dev.guest_memory
             .write_plain(addr, entry)
             .expect("write cmd entry");
+    }
+
+    #[test]
+    fn maintenance_revokes_cached_software_msi_before_sync() {
+        use crate::spec::ste::Ste;
+        use crate::spec::ste::SteConfig;
+        use crate::spec::ste::SteDw0;
+        use crate::spec::ste::SteDw1;
+        use pci_core::msi::MsiConnection;
+        use pci_core::msi::SignalMsi;
+        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::Ordering;
+
+        struct Sink(AtomicU32);
+        impl SignalMsi for Sink {
+            fn signal_msi(&self, _: Option<u32>, _: u64, _: u32) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        for opcode in [
+            CmdOpcode::CFGI_STE,
+            CmdOpcode::CFGI_STE_RANGE,
+            CmdOpcode::CFGI_CD,
+            CmdOpcode::CFGI_CD_ALL,
+            CmdOpcode::TLBI_NH_ALL,
+            CmdOpcode::TLBI_NH_ASID,
+            CmdOpcode::TLBI_NH_VA,
+            CmdOpcode::TLBI_NH_VAA,
+            CmdOpcode::TLBI_NSNH_ALL,
+        ] {
+            let mut dev = make_cmdq_test_device();
+            let base = 0x3_0000;
+            let mut ste = Ste {
+                qw0: SteDw0::new().with_v(true).with_config(SteConfig::BYPASS.0),
+                qw1: SteDw1::new(),
+                _qw2_7: [0; 6],
+            };
+            dev.guest_memory.write_plain(base, &ste).unwrap();
+            dev.shared_state.set_strtab(base, 1);
+            transition_to_enabled(&dev.shared_state);
+            let sink = Arc::new(Sink(AtomicU32::new(0)));
+            let connection = MsiConnection::new();
+            connection.connect(Arc::new(crate::shared::SmmuSignalMsi::new(
+                dev.shared_state.clone(),
+                0,
+                sink.clone(),
+            )));
+            let target = connection.target();
+            target.signal_msi(0x1000, 42);
+            ste.qw0.set_config(SteConfig::ABORT.0);
+            dev.guest_memory.write_plain(base, &ste).unwrap();
+            target.signal_msi(0x1000, 42);
+            assert_eq!(sink.0.load(Ordering::SeqCst), 2);
+
+            write_cmdq_entry(
+                &dev,
+                0,
+                &CmdEntry {
+                    qw0: opcode.0.into(),
+                    qw1: 0,
+                },
+            );
+            write_cmdq_entry(
+                &dev,
+                1,
+                &CmdEntry {
+                    qw0: CmdSync::new()
+                        .with_opcode(CmdOpcode::CMD_SYNC.0)
+                        .with_cs(SyncCs::SIG_SEV.0)
+                        .into(),
+                    qw1: 0,
+                },
+            );
+            write32(&mut dev, CMDQ_PROD, 2);
+            assert_eq!(CmdqCons::from(read32(&mut dev, CMDQ_CONS)).rd(), 2);
+            target.signal_msi(0x1000, 42);
+            assert_eq!(sink.0.load(Ordering::SeqCst), 2, "{opcode:?}");
+        }
     }
 
     #[test]

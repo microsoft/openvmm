@@ -9,7 +9,32 @@
 //! a caller-owned event for kernel-mediated delivery.
 
 use pal_event::Event;
+use std::sync::Arc;
 use vmcore::irqfd::KernelMsiBinding;
+use vmcore::irqfd::RetranslateInterrupts;
+
+/// A resolved MSI destination, valid until its registered consumer is invalidated.
+#[derive(Clone)]
+pub struct ResolvedMsi {
+    /// Destination after address and identity translation.
+    pub target: Arc<dyn SignalMsi>,
+    /// Translated device identity.
+    pub devid: Option<u32>,
+    /// Translated destination address.
+    pub address: u64,
+    /// Translated interrupt data.
+    pub data: u32,
+}
+
+/// Result of resolving an actual MSI transaction.
+pub enum MsiResolution {
+    /// Use the original destination and parameters without translation.
+    Direct,
+    /// Cache this translated destination until invalidation.
+    Resolved(ResolvedMsi),
+    /// The transaction was aborted or faulted. Do not cache this outcome.
+    Failed,
+}
 
 /// An object that can signal MSI interrupts.
 ///
@@ -26,6 +51,25 @@ use vmcore::irqfd::KernelMsiBinding;
 /// only `signal_msi` and inherit the default `bind_msi` (which returns `None`,
 /// so callers fall back to `signal_msi`).
 pub trait SignalMsi: Send + Sync {
+    /// Registers a cached consumer before its first lookup.
+    ///
+    /// Translating wrappers must forward this to any inner translating layer.
+    /// Configuration changes must invalidate consumers after publishing the new
+    /// state, without holding locks needed by resolution or delivery.
+    fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let _ = route;
+    }
+
+    /// Resolves an actual interrupt for cached delivery and optional binding.
+    ///
+    /// May report guest faults, so callers must not invoke this just because a
+    /// route was programmed or invalidated. A successful result must preserve
+    /// both userspace delivery and kernel binding semantics.
+    fn resolve_msi(&self, devid: Option<u32>, address: u64, data: u32) -> MsiResolution {
+        let _ = (devid, address, data);
+        MsiResolution::Direct
+    }
+
     /// Signals a message-signaled interrupt at the specified address with the specified data.
     ///
     /// `devid` is an optional device identity. Its meaning is layer-dependent:

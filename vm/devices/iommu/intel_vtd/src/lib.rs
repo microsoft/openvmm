@@ -3329,8 +3329,8 @@ mod tests {
     }
 
     impl iommu_common::RetranslateInterrupts for CountingRoute {
-        fn device_id(&self) -> u16 {
-            self.device_id
+        fn device_id(&self) -> u32 {
+            self.device_id.into()
         }
 
         fn retranslate(&self) {

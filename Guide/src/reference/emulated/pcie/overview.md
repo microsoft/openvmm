@@ -104,6 +104,13 @@ a GICv3 ITS or a GICv2m MSI frame, depending on the platform:
 The MSI controller can be overridden with the `--gic-msi`
 CLI option (`auto`, `its`, or `v2m`).
 
+MSI routes resolve lazily on delivery, not when the guest programs or unmasks
+a vector. Event-backed routes initially deliver in userspace, then bind the
+same event to the kernel when the destination supports acceleration.
+Reprogramming or translation invalidation revokes that binding; the next
+interrupt resolves again. See [SMMU MSI translation](../iommu/smmuv3.md#msi-translation-and-acceleration)
+for the translation-cache and fault-reporting behavior.
+
 ### Implementation notes
 
 ```admonish note title="No Command Completed support"

@@ -218,12 +218,12 @@ impl IoApicRouting for IoApicRoutingInner {
 }
 
 impl RetranslateInterrupts for IoApicRoutingInner {
-    fn device_id(&self) -> u16 {
+    fn device_id(&self) -> u32 {
         self.state
             .lock()
             .remap
             .as_ref()
-            .map_or(0, |remap| remap.rid)
+            .map_or(0, |remap| remap.rid.into())
     }
 
     fn retranslate(&self) {

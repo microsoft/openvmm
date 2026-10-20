@@ -15,22 +15,24 @@
 //!
 //! [`SmmuSignalMsi`] implements [`SignalMsi`], translating the MSI address
 //! (which may be an IOVA) to a GPA before forwarding to the inner MSI
-//! target — both for usermode [`signal_msi`](SignalMsi::signal_msi) and for
-//! kernel-mediated [`bind_msi`](SignalMsi::bind_msi).
+//! target. Cached routes resolve on delivery and are revoked on SMMU
+//! configuration changes or translation maintenance.
 
 use crate::spec::events::EventId;
 use crate::spec::events::EvtEntry;
 use crate::spec::registers;
 use crate::translate;
+use chipset_device::msi::MsiResolution;
+use chipset_device::msi::ResolvedMsi;
 use guestmem::GuestMemory;
-use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Weak;
-use vmcore::irqfd::KernelMsiBinding;
+use vmcore::irqfd::RetranslateInterrupts;
+use vmcore::irqfd::RetranslateInterruptsList;
 use vmcore::line_interrupt::LineInterrupt;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -324,6 +326,7 @@ enum TranslateResult {
 /// wrappers can write fault events and signal overflow without going through
 /// the emulator.
 pub struct SmmuSharedState {
+    msi_routes: RetranslateInterruptsList,
     /// Translation configuration — RwLock for concurrent DMA reads.
     inner: RwLock<SharedStateInner>,
     /// Guest memory for reading page tables and stream table entries.
@@ -457,6 +460,7 @@ impl SmmuSharedState {
     ) -> Arc<Self> {
         let oas_mask = (1u64 << oas_bits) - 1;
         Arc::new(Self {
+            msi_routes: RetranslateInterruptsList::new(),
             inner: RwLock::new(SharedStateInner {
                 capabilities_frozen: false,
                 enabled: false,
@@ -654,6 +658,7 @@ impl SmmuSharedState {
     /// so host attachments change before this value is published.
     pub(crate) fn set_gbpa_abort(&self, abort: bool) {
         self.inner.write().gbpa_abort = abort;
+        self.invalidate_msi_routes();
     }
 
     /// Snapshots the currently effective translation policy.
@@ -674,6 +679,8 @@ impl SmmuSharedState {
         inner.gbpa_abort = policy.gbpa_abort;
         inner.strtab_base = policy.strtab_base;
         inner.strtab_log2size = policy.strtab_log2size;
+        drop(inner);
+        self.invalidate_msi_routes();
     }
 
     /// Updates the stream table configuration (called by SmmuDevice on
@@ -682,6 +689,16 @@ impl SmmuSharedState {
         let mut inner = self.inner.write();
         inner.strtab_base = base;
         inner.strtab_log2size = log2size;
+        drop(inner);
+        self.invalidate_msi_routes();
+    }
+
+    /// Revokes all cached MSI translations before maintenance completes.
+    ///
+    /// Call after publishing configuration changes, without holding `inner`:
+    /// callbacks serialize with route resolution, which takes its read lock.
+    pub(crate) fn invalidate_msi_routes(&self) {
+        self.msi_routes.invalidate(None);
     }
 
     /// Updates the event queue configuration (called by SmmuDevice on
@@ -1455,71 +1472,47 @@ impl SmmuSignalMsi {
 }
 
 impl SignalMsi for SmmuSignalMsi {
+    fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        self.shared.msi_routes.register(route);
+        self.inner.register_msi_route(route);
+    }
+
     fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
-        // MsiTarget resolves devid to a BDF before calling us.
+        if let MsiResolution::Resolved(resolved) = self.resolve_msi(devid, address, data) {
+            resolved
+                .target
+                .signal_msi(resolved.devid, resolved.address, resolved.data);
+        }
+    }
+
+    fn resolve_msi(&self, devid: Option<u32>, address: u64, data: u32) -> MsiResolution {
         let Some(bdf) = devid else {
-            return;
+            tracelimit::warn_ratelimited!("smmu: MSI without a requester ID");
+            return MsiResolution::Failed;
         };
         let sid = self.stream_id_base + (bdf & 0xFFFF);
 
-        match self.shared.translate(sid, address, true) {
-            TranslateResult::Bypass => {
-                self.inner.signal_msi(devid, address, data);
-            }
-            TranslateResult::Translated(gpa) => {
-                self.inner.signal_msi(devid, gpa, data);
-            }
+        let address = match self.shared.translate(sid, address, true) {
+            TranslateResult::Bypass => address,
+            TranslateResult::Translated(gpa) => gpa,
             TranslateResult::GlobalAbort | TranslateResult::Abort => {
-                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
-                // STE with `Config[2]==0`. Drop the MSI.
                 tracelimit::warn_ratelimited!(sid, address, "smmu: MSI aborted, no event");
+                return MsiResolution::Failed;
             }
             TranslateResult::Fault(event) => {
                 self.shared.write_event(event);
                 tracelimit::warn_ratelimited!(sid, address, "smmu: MSI translation fault");
+                return MsiResolution::Failed;
             }
-        }
-    }
-
-    fn bind_msi(
-        &self,
-        fd: &Event,
-        devid: Option<u32>,
-        address: u64,
-        data: u32,
-    ) -> Option<Box<dyn KernelMsiBinding>> {
-        // Translate the (possibly IOVA) MSI address through the SMMU, then bind
-        // the fd against the underlying sink at the translated address.
-        // Translation happens at route-programming time (when the guest writes
-        // the MSI-X table), not per-interrupt; a later page-table change
-        // requires the guest to re-program MSI-X (the normal IOMMU flow).
-        //
-        // `MsiTarget` resolves devid to a BDF before calling us.
-        let bdf = devid?;
-        let sid = self.stream_id_base + (bdf & 0xFFFF);
-
-        match self.shared.translate(sid, address, true) {
-            TranslateResult::Bypass => self.inner.bind_msi(fd, devid, address, data),
-            TranslateResult::Translated(gpa) => self.inner.bind_msi(fd, devid, gpa, data),
-            TranslateResult::GlobalAbort | TranslateResult::Abort => {
-                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
-                // STE with `Config[2]==0`. Drop the route.
-                tracelimit::warn_ratelimited!(
-                    sid,
-                    address,
-                    "smmu: irqfd MSI route aborted, no event"
-                );
-                None
-            }
-            TranslateResult::Fault(event) => {
-                self.shared.write_event(event);
-                tracelimit::warn_ratelimited!(
-                    sid,
-                    address,
-                    "smmu: irqfd MSI route translation fault"
-                );
-                None
-            }
+        };
+        match self.inner.resolve_msi(devid, address, data) {
+            MsiResolution::Direct => MsiResolution::Resolved(ResolvedMsi {
+                target: self.inner.clone(),
+                devid,
+                address,
+                data,
+            }),
+            resolution => resolution,
         }
     }
 }
@@ -1542,7 +1535,9 @@ mod tests {
     use crate::spec::ste::SteDw1;
     use parking_lot::Mutex;
     use pci_core::bus_range::AssignedBusRange;
+    use pci_core::msi::MsiConnection;
     use std::sync::Arc;
+    use test_with_tracing::test;
 
     // Memory layout for tests. All addresses fit within a 6 MB allocation
     // to avoid excessive memory usage in test processes.
@@ -1810,6 +1805,165 @@ mod tests {
     fn evtq_event_count(state: &SmmuSharedState) -> u32 {
         let index_mask = evtq_index_mask(EVTQ_LOG2SIZE);
         state.evtq_prod().wr().wrapping_sub(state.evtq_cons().rd()) & index_mask
+    }
+
+    #[test]
+    fn cached_msi_retries_faults_and_invalidates_successful_translations() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let state = make_shared_state(&gm);
+        let sink = MockSignalMsi::new();
+        let connection = MsiConnection::new();
+        connection.connect(Arc::new(SmmuSignalMsi::new(
+            state.clone(),
+            TEST_STREAM_ID_BASE,
+            sink.clone(),
+        )));
+        let target = connection.msi_target(make_bus_range(), 0);
+
+        state.invalidate_msi_routes();
+        assert_eq!(evtq_event_count(&state), 0);
+        target.signal_msi(0x40, 42);
+        target.signal_msi(0x40, 42);
+        assert_eq!(evtq_event_count(&state), 2);
+        assert!(sink.take_calls().is_empty());
+
+        setup_translation(&gm, expected_sid());
+        target.signal_msi(0x40, 42);
+        assert_eq!(sink.take_calls()[0].1, DATA_GPA + 0x40);
+        write_pt_desc(&gm, PT_L3_BASE, page_desc(DATA_GPA + 0x1000));
+        target.signal_msi(0x40, 42);
+        assert_eq!(sink.take_calls()[0].1, DATA_GPA + 0x40);
+        state.invalidate_msi_routes();
+        target.signal_msi(0x40, 42);
+        assert_eq!(sink.take_calls()[0].1, DATA_GPA + 0x1040);
+
+        let mut policy = state.translation_policy();
+        policy.enabled = false;
+        policy.gbpa_abort = true;
+        state.transition_translation_policy(policy, "test MSI abort");
+        target.signal_msi(0x40, 42);
+        assert!(sink.take_calls().is_empty());
+        assert_eq!(evtq_event_count(&state), 2);
+        policy.gbpa_abort = false;
+        state.transition_translation_policy(policy, "test MSI bypass");
+        target.signal_msi(0x40, 42);
+        assert_eq!(sink.take_calls()[0].1, 0x40);
+    }
+
+    struct KernelSink {
+        calls: Mutex<Vec<(u64, u32)>>,
+        binds: Mutex<Vec<(u64, u32)>>,
+        live: Arc<std::sync::atomic::AtomicU32>,
+        bound: pal_event::Event,
+    }
+
+    struct KernelBinding(Arc<std::sync::atomic::AtomicU32>);
+
+    impl vmcore::irqfd::KernelMsiBinding for KernelBinding {
+        fn update(&self, _: Option<u32>, _: u64, _: u32) -> bool {
+            panic!("raw route updates must resolve again on delivery");
+        }
+    }
+
+    impl Drop for KernelBinding {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl SignalMsi for KernelSink {
+        fn signal_msi(&self, _: Option<u32>, address: u64, data: u32) {
+            self.calls.lock().push((address, data));
+        }
+
+        fn bind_msi(
+            &self,
+            _: &pal_event::Event,
+            _: Option<u32>,
+            address: u64,
+            data: u32,
+        ) -> Option<Box<dyn vmcore::irqfd::KernelMsiBinding>> {
+            self.binds.lock().push((address, data));
+            self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.bound.signal();
+            Some(Box::new(KernelBinding(self.live.clone())))
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn event_msi_promotes_and_revokes_translated_bindings(driver: pal_async::DefaultDriver) {
+        use std::sync::atomic::Ordering;
+        let gm = GuestMemory::allocate(0x60_0000);
+        setup_translation(&gm, expected_sid());
+        let state = make_shared_state(&gm);
+        let sink = Arc::new(KernelSink {
+            calls: Mutex::new(Vec::new()),
+            binds: Mutex::new(Vec::new()),
+            live: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            bound: pal_event::Event::new(),
+        });
+        let mut bound = pal_async::wait::PolledWait::new(&driver, sink.bound.clone()).unwrap();
+        let connection = MsiConnection::new();
+        connection.connect(Arc::new(SmmuSignalMsi::new(
+            state.clone(),
+            TEST_STREAM_ID_BASE,
+            sink.clone(),
+        )));
+        connection.enable_msi_routes(Arc::new(driver));
+        let route = connection
+            .msi_target(make_bus_range(), 0)
+            .new_route()
+            .unwrap()
+            .unwrap();
+        route.enable(0x40, 42);
+        assert!(sink.binds.lock().is_empty());
+        route.event().signal();
+        bound.wait().await.unwrap();
+        assert_eq!(*sink.calls.lock(), [(DATA_GPA + 0x40, 42)]);
+        assert_eq!(*sink.binds.lock(), [(DATA_GPA + 0x40, 42)]);
+        assert!(!route.consume_pending());
+
+        // A notification pending during revocation remains on the same event.
+        route.event().signal();
+        write_pt_desc(&gm, PT_L3_BASE, page_desc(DATA_GPA + 0x1000));
+        state.invalidate_msi_routes();
+        bound.wait().await.unwrap();
+        assert_eq!(
+            *sink.calls.lock(),
+            [(DATA_GPA + 0x40, 42), (DATA_GPA + 0x1040, 42)]
+        );
+        assert_eq!(sink.binds.lock()[1], (DATA_GPA + 0x1040, 42));
+
+        // Reprogramming invalidates without binding or reporting a fault.
+        route.enable(0x80, 43);
+        assert_eq!(sink.live.load(Ordering::SeqCst), 0);
+        assert_eq!(sink.binds.lock().len(), 2);
+        route.signal();
+        bound.wait().await.unwrap();
+        assert_eq!(sink.binds.lock()[2], (DATA_GPA + 0x1080, 43));
+        write_pt_desc(&gm, PT_L3_BASE, 0);
+        state.invalidate_msi_routes();
+        assert_eq!(evtq_event_count(&state), 0);
+        route.signal();
+        route.signal();
+        assert_eq!(evtq_event_count(&state), 2);
+        assert_eq!(sink.live.load(Ordering::SeqCst), 0);
+        setup_translation(&gm, expected_sid());
+        route.signal();
+        bound.wait().await.unwrap();
+        assert_eq!(sink.binds.lock()[3], (DATA_GPA + 0x80, 43));
+
+        route.disable();
+        state.invalidate_msi_routes();
+        route.event().signal();
+        assert!(route.consume_pending());
+        assert!(!route.consume_pending());
+        assert_eq!(sink.live.load(Ordering::SeqCst), 0);
+        route.enable(0x80, 43);
+        route.signal();
+        bound.wait().await.unwrap();
+        drop(route);
+        assert_eq!(sink.live.load(Ordering::SeqCst), 0);
     }
 
     // =========================================================================

@@ -10,6 +10,78 @@
 //! into the guest VM.
 
 use pal_event::Event;
+use parking_lot::Mutex;
+use std::sync::Arc;
+use std::sync::Weak;
+
+/// A cached interrupt consumer notified when its translation becomes stale.
+pub trait RetranslateInterrupts: Send + Sync {
+    /// The source identity used for selective invalidation.
+    fn device_id(&self) -> u32;
+
+    /// Invalidates cached delivery state before returning.
+    ///
+    /// Kernel bindings must be revoked synchronously. Resolution and fault
+    /// reporting can then be deferred until the next actual interrupt.
+    fn retranslate(&self);
+}
+
+/// Weak registrations for interrupt translation invalidation.
+#[derive(Default)]
+pub struct RetranslateInterruptsList {
+    routes: Mutex<Vec<Weak<dyn RetranslateInterrupts>>>,
+}
+
+impl RetranslateInterruptsList {
+    /// Creates an empty list.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a consumer.
+    pub fn register(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        let mut routes = self.routes.lock();
+        routes.retain(|route| route.strong_count() != 0);
+        if !routes
+            .iter()
+            .any(|existing| existing.ptr_eq(&Arc::downgrade(route)))
+        {
+            routes.push(Arc::downgrade(route));
+        }
+    }
+
+    /// Removes a consumer and expired registrations.
+    pub fn unregister(&self, route: &Arc<dyn RetranslateInterrupts>) {
+        self.routes.lock().retain(|weak| {
+            weak.upgrade()
+                .is_some_and(|existing| !Arc::ptr_eq(&existing, route))
+        });
+    }
+
+    /// Invalidates one source, or all sources when `device_id` is `None`.
+    ///
+    /// Callbacks run without the list lock. Registration must precede lookup,
+    /// and each consumer must serialize lookup/installation with its callback.
+    pub fn invalidate(&self, device_id: Option<u32>) {
+        let routes = {
+            let mut routes = self.routes.lock();
+            let mut live = Vec::new();
+            routes.retain(|weak| match weak.upgrade() {
+                Some(route) => {
+                    live.push(route);
+                    true
+                }
+                None => false,
+            });
+            live
+        };
+        for route in routes {
+            if device_id.is_none() || device_id == Some(route.device_id()) {
+                route.retranslate();
+            }
+        }
+    }
+}
 
 /// Trait for partitions that support irqfd-based interrupt delivery.
 ///
@@ -107,5 +179,49 @@ pub struct IrqFdBinding(pub Box<dyn IrqFdRoute>);
 impl KernelMsiBinding for IrqFdBinding {
     fn update(&self, devid: Option<u32>, address: u64, data: u32) -> bool {
         self.0.enable(address, data, devid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    struct ReentrantRoute {
+        list: Arc<RetranslateInterruptsList>,
+        retranslates: AtomicU32,
+    }
+
+    impl RetranslateInterrupts for ReentrantRoute {
+        fn device_id(&self) -> u32 {
+            assert!(self.list.routes.try_lock().is_some());
+            0x10007
+        }
+
+        fn retranslate(&self) {
+            self.retranslates.fetch_add(1, Ordering::SeqCst);
+            assert!(self.list.routes.try_lock().is_some());
+        }
+    }
+
+    #[test]
+    fn invalidation_is_reentrant_and_preserves_full_identity() {
+        let list = Arc::new(RetranslateInterruptsList::new());
+        let route = Arc::new(ReentrantRoute {
+            list: list.clone(),
+            retranslates: AtomicU32::new(0),
+        });
+        let route_dyn = route.clone() as Arc<dyn RetranslateInterrupts>;
+        list.register(&route_dyn);
+        list.register(&route_dyn);
+        list.invalidate(Some(7));
+        assert_eq!(route.retranslates.load(Ordering::SeqCst), 0);
+        list.invalidate(Some(0x10007));
+        assert_eq!(route.retranslates.load(Ordering::SeqCst), 1);
+        list.unregister(&route_dyn);
+        list.invalidate(None);
+        assert_eq!(route.retranslates.load(Ordering::SeqCst), 1);
     }
 }

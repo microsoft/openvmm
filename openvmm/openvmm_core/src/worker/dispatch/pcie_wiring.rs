@@ -73,7 +73,16 @@ impl pci_core::msi::SignalMsi for IrqFdSignalMsi {
         address: u64,
         data: u32,
     ) -> Option<Box<dyn vmcore::irqfd::KernelMsiBinding>> {
-        let route = self.irqfd.as_ref()?.new_irqfd_route(fd.clone()).ok()?;
+        let route = match self.irqfd.as_ref()?.new_irqfd_route(fd.clone()) {
+            Ok(route) => route,
+            Err(error) => {
+                tracelimit::warn_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to allocate MSI kernel binding; using software delivery"
+                );
+                return None;
+            }
+        };
         if !route.enable(address, data, devid) {
             return None;
         }

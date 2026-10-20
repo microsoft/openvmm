@@ -4110,9 +4110,9 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
- "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
+ "vmcore",
 ]
 
 [[package]]
@@ -6561,6 +6561,7 @@ dependencies = [
  "pal_async",
  "pal_event",
  "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -8037,6 +8038,7 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -10729,6 +10731,7 @@ dependencies = [
  "parking_lot",
  "save_restore_derive",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
