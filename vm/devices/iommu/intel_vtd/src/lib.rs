@@ -103,7 +103,7 @@ pub const MMIO_REGION_SIZE: u64 = spec::registers::MMIO_REGION_SIZE;
 // Hardcoded Capability Values (1B.3)
 // =============================================================================
 
-/// Implementation version 1.0 (§11.4.1), not a specification revision.
+/// Value returned by the VT-d version register (major = 1, minor = 0).
 const VER_VALUE: u32 = VersionReg::new().with_max(1).with_min(0).into_bits();
 
 /// Maximum guest address width in bits.
