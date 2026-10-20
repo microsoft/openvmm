@@ -3820,19 +3820,25 @@ mod tests {
 
     #[test]
     fn machine_contract_command_line_fits_the_guest_kernel_limit() {
-        // Text and its terminating NUL must fit in 2,048 bytes, the guest
-        // kernel's buffer.
-        let line = |length: usize| format!("console=hvc0 {}", "x".repeat(length - 13));
+        use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+        use openvmm_defs::microvm::check_microvm_command_line;
+
+        // Text and its terminating NUL must fit in the guest kernel's buffer:
+        // a saved line of 2,047 bytes passes, and one of 2,048 fails with the
+        // shared check's error, whose text openvmm_defs tests.
+        let prefix = "console=hvc0 ";
+        let line = |length: usize| format!("{prefix}{}", "x".repeat(length - prefix.len()));
         let mut contract = test_machine_contract();
-        contract.set_effective_command_line(line(2047));
+        contract.set_effective_command_line(line(MICROVM_COMMAND_LINE_MAX_SIZE - 1));
         validate_machine_contract_shape(&contract, 1024, 2).unwrap();
 
-        contract.set_effective_command_line(line(2048));
+        let over = line(MICROVM_COMMAND_LINE_MAX_SIZE);
+        let expected = check_microvm_command_line(&over).unwrap_err();
+        contract.set_effective_command_line(over);
         let error = validate_machine_contract_shape(&contract, 1024, 2).unwrap_err();
         assert_eq!(
             format!("{error:#}"),
-            "snapshot effective command line is invalid: microVM kernel command line is \
-             2048 bytes; the limit is 2047 bytes plus the terminating NUL"
+            format!("snapshot effective command line is invalid: {expected}")
         );
 
         contract.set_effective_command_line("console=hvc0 \0".to_owned());

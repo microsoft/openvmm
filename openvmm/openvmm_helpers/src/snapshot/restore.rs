@@ -505,6 +505,8 @@ mod tests {
     use super::super::publish::write_snapshot_from_memory_and_scratch_files;
     use super::super::tests::test_manifest;
     use super::*;
+    use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::check_microvm_command_line;
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
@@ -694,10 +696,20 @@ mod tests {
         std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
         // A snapshot whose saved command line no longer fits, as one captured
-        // under a larger limit would record.
+        // under a larger limit would record: one byte over the limit.
         let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
         let mut contract = test_machine_contract();
-        contract.set_effective_command_line(format!("console=hvc0 {}", "x".repeat(2048 - 13)));
+        let prefix = "console=hvc0 ";
+        let saved = format!(
+            "{prefix}{}",
+            "x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE - prefix.len())
+        );
+        // The shared check's error, whose text openvmm_defs tests.
+        let expected = format!(
+            "snapshot effective command line is invalid: {}",
+            check_microvm_command_line(&saved).unwrap_err()
+        );
+        contract.set_effective_command_line(saved);
         manifest.machine_contract = Some(contract);
         let encoded = mesh::payload::encode(manifest);
         std::fs::write(snap_dir.join(MANIFEST_FILE_NAME), &encoded).unwrap();
@@ -716,13 +728,7 @@ mod tests {
             read_snapshot_manifest(&snap_dir).err().unwrap(),
         ] {
             let error = format!("{error:#}");
-            assert!(
-                error.contains(
-                    "snapshot effective command line is invalid: microVM kernel command line \
-                     is 2048 bytes; the limit is 2047 bytes plus the terminating NUL"
-                ),
-                "{error}"
-            );
+            assert!(error.contains(&expected), "{error}");
         }
         // The restore neither rewrites the saved string nor migrates the snapshot.
         assert_eq!(
