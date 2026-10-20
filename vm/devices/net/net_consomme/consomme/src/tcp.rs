@@ -849,6 +849,8 @@ impl<T: Client> Access<'_, T> {
                                         max_connections,
                                         "dropping inbound TCP flow because the active-flow limit was reached"
                                     );
+                                    // Drain another accept or re-arm listener readiness.
+                                    cx.waker().wake_by_ref();
                                     return true;
                                 }
                                 let mut sender = Sender {
