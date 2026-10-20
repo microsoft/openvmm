@@ -1258,7 +1258,7 @@ impl VmService {
                 }
             }
 
-            for virtio_console in devices_config.virtio_consoles {
+            for (index, virtio_console) in devices_config.virtio_consoles.into_iter().enumerate() {
                 if !virtio_console.socket_path.is_empty() {
                     let (serial_fn, action) = open_socket_backend(virtio_console.connect);
                     let backend =
@@ -1271,9 +1271,14 @@ impl VmService {
                     let resource: Resource<VirtioDeviceHandle> =
                         virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
                     if cfg!(windows) || cfg!(target_os = "macos") {
+                        // VMBus sorts VPCI offers by instance ID, comparing data1 first.
+                        let instance_id = Guid {
+                            data1: u32::try_from(index).context("too many virtio consoles")?,
+                            ..Guid::new_random()
+                        };
                         config.vpci_devices.push(VpciDeviceConfig {
                             vtl: DeviceVtl::Vtl0,
-                            instance_id: Guid::new_random(),
+                            instance_id,
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
                             vnode: None,
                         });

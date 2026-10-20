@@ -341,6 +341,7 @@ async fn test_ttrpc_interface(
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
     }
 
+    let console_markers = ["ttrpc-console-0-marker", "ttrpc-console-1-marker"];
     for i in 0..3 {
         let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
         let console_path = if i == 2 {
@@ -348,6 +349,7 @@ async fn test_ttrpc_interface(
         } else {
             tempdir.path().join(format!("console-{i}.sock"))
         };
+        let second_console_path = tempdir.path().join(format!("console-second-{i}.sock"));
         if i == 2 {
             std::fs::write(&console_path, b"stale console contents")?;
             std::fs::write(&append_console_path, b"stale append contents")?;
@@ -395,11 +397,21 @@ async fn test_ttrpc_interface(
         } else {
             None
         };
-        let console_listener = if use_connect {
-            Some(UnixListener::bind(&console_path).unwrap())
+        let console_paths = if i != 2 {
+            vec![&console_path, &second_console_path]
         } else {
-            None
+            Vec::new()
         };
+        let console_listeners = console_paths
+            .iter()
+            .map(|path| {
+                if use_connect {
+                    UnixListener::bind(path).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
 
         // On iteration 0, exercise the richer CreateVM surface: a NUMA
         // topology (replacing flat memory), an explicit processor topology,
@@ -652,12 +664,12 @@ async fn test_ttrpc_interface(
                                 )),
                                 ..Default::default()
                             }],
-                            virtio_consoles: (i != 2)
-                                .then(|| vmservice::VirtioConsoleConfig {
-                                    socket_path: console_path.to_string_lossy().into(),
+                            virtio_consoles: console_paths
+                                .iter()
+                                .map(|path| vmservice::VirtioConsoleConfig {
+                                    socket_path: path.to_string_lossy().into(),
                                     connect: use_connect,
                                 })
-                                .into_iter()
                                 .collect(),
                             virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
@@ -871,25 +883,16 @@ async fn test_ttrpc_interface(
             UnixStream::connect(&com1_path).unwrap()
         };
 
-        let _console_task = if i == 2 {
-            None
-        } else {
-            // Get the console connection the same way.
-            let console = if let Some(listener) = console_listener {
-                let (stream, _) = listener.accept().unwrap();
+        let mut consoles = Vec::new();
+        for (path, listener) in console_paths.iter().zip(console_listeners) {
+            let console = if let Some(listener) = listener {
+                let (stream, _) = listener.accept()?;
                 stream
             } else {
-                UnixStream::connect(&console_path).unwrap()
+                UnixStream::connect(path)?
             };
-            Some(driver.spawn(
-                "console",
-                petri::log_task(
-                    params.log_source.log_file("virtio-console").unwrap(),
-                    PolledSocket::new(&driver, console).unwrap(),
-                    "virtio console",
-                ),
-            ))
-        };
+            consoles.push(PolledSocket::new(&driver, console)?);
+        }
 
         let _com1_task = driver.spawn(
             "com1",
@@ -947,6 +950,11 @@ async fn test_ttrpc_interface(
                             .run()
                             .await?;
                     } else {
+                        let sh = agent.unix_shell();
+                        for (index, marker) in console_markers.iter().enumerate() {
+                            let command = format!("printf {marker} > /dev/hvc{index}");
+                            cmd!(sh, "sh -c {command}").run().await?;
+                        }
                         validate_pcie_config(&agent).await?;
                         #[cfg(windows)]
                         {
@@ -987,6 +995,23 @@ async fn test_ttrpc_interface(
                         .start(vmservice::Vm::TeardownVm, ())
                         .await
                         .unwrap();
+
+                    CancelContext::new()
+                        .with_timeout(Duration::from_secs(60))
+                        .until_cancelled(async {
+                            for (console, marker) in consoles.iter_mut().zip(console_markers) {
+                                let mut output = Vec::new();
+                                console.read_to_end(&mut output).await?;
+                                assert_eq!(
+                                    output,
+                                    marker.as_bytes(),
+                                    "virtio console output reached the wrong socket"
+                                );
+                            }
+                            anyhow::Ok(())
+                        })
+                        .await
+                        .context("timed out reading virtio console output")??;
 
                     let props = query_props().await.unwrap();
                     assert_eq!(
