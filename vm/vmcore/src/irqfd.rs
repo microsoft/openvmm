@@ -90,6 +90,13 @@ impl RetranslateInterruptsList {
 /// event is signaled, the kernel looks up the GSI routing and injects the
 /// configured MSI into the guest without a usermode transition.
 pub trait IrqFd: Send + Sync {
+    /// Whether the interrupt source can signal its event without an irqfd
+    /// binding. Direct-assignment backends may need the binding to establish
+    /// the physical device's interrupt mapping.
+    fn supports_eventfd_fallback(&self) -> bool {
+        true
+    }
+
     /// Creates a new irqfd route bound to the caller-supplied `event`.
     ///
     /// Allocates a GSI and (for backends that arm eagerly) registers `event`

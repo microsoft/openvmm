@@ -26,13 +26,14 @@ pub struct ResolvedMsi {
     pub data: u32,
 }
 
-/// Result of resolving an actual MSI transaction.
+/// Result of preparing an MSI destination without delivering a transaction.
 pub enum MsiResolution {
     /// Use the original destination and parameters without translation.
     Direct,
     /// Cache this translated destination until invalidation.
     Resolved(ResolvedMsi),
-    /// The transaction was aborted or faulted. Do not cache this outcome.
+    /// No destination could be prepared. No guest fault has been reported.
+    /// Actual software delivery must retry through `signal_msi`.
     Failed,
 }
 
@@ -51,6 +52,15 @@ pub enum MsiResolution {
 /// only `signal_msi` and inherit the default `bind_msi` (which returns `None`,
 /// so callers fall back to `signal_msi`).
 pub trait SignalMsi: Send + Sync {
+    /// Whether an event-backed source can notify userspace without a kernel
+    /// binding. This describes the source transport, not software injection.
+    ///
+    /// Translating wrappers must preserve this capability. Kernel-only sources
+    /// must remain unbound, rather than be polled, if preparation fails.
+    fn supports_eventfd_fallback(&self) -> bool {
+        true
+    }
+
     /// Registers a cached consumer before its first lookup.
     ///
     /// Translating wrappers must forward this to any inner translating layer.
@@ -60,11 +70,11 @@ pub trait SignalMsi: Send + Sync {
         let _ = route;
     }
 
-    /// Resolves an actual interrupt for cached delivery and optional binding.
+    /// Prepares a destination for cached delivery and optional kernel binding.
     ///
-    /// May report guest faults, so callers must not invoke this just because a
-    /// route was programmed or invalidated. A successful result must preserve
-    /// both userspace delivery and kernel binding semantics.
+    /// Must not deliver an interrupt or report guest-visible faults: this runs
+    /// on route programming and invalidation, even if no interrupt ever fires.
+    /// A successful result must preserve userspace and kernel delivery semantics.
     fn resolve_msi(&self, devid: Option<u32>, address: u64, data: u32) -> MsiResolution {
         let _ = (devid, address, data);
         MsiResolution::Direct
@@ -83,8 +93,9 @@ pub trait SignalMsi: Send + Sync {
     ///
     /// Returns `Some(binding)` if the address decodes to a kernel-serviceable
     /// sink (the returned [`KernelMsiBinding`] owns the kernel registration and
-    /// unbinds on drop), or `None` if it does not — in which case the caller
-    /// should deliver via [`signal_msi`](Self::signal_msi) in usermode instead.
+    /// unbinds on drop), or `None` if it does not. Userspace event delivery is
+    /// possible only when [`supports_eventfd_fallback`](Self::supports_eventfd_fallback)
+    /// permits it.
     ///
     /// The default returns `None`: emulated sinks are not kernel-serviceable.
     fn bind_msi(

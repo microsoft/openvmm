@@ -186,6 +186,12 @@ impl MshvIrqFd {
 }
 
 impl IrqFd for MshvIrqFd {
+    fn supports_eventfd_fallback(&self) -> bool {
+        // Direct attach needs IRQ-bypass registration to establish the
+        // physical interrupt mapping; an eventfd alone cannot capture it.
+        false
+    }
+
     fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
         let gsi = self
             .partition
@@ -224,10 +230,8 @@ impl MshvIrqFdRoute {
         let mut armed = self.armed.lock();
         if *armed {
             // SAFETY: `self.event` is the same event passed to `register_irqfd`.
-            if let Err(e) = unsafe { self.partition.unregister_irqfd(&self.event, self.gsi) } {
-                tracelimit::warn_ratelimited!(error = ?e, gsi = self.gsi, "failed to unregister irqfd");
-                return;
-            }
+            unsafe { self.partition.unregister_irqfd(&self.event, self.gsi) }
+                .expect("failed to revoke MSI kernel binding");
             *armed = false;
         }
     }

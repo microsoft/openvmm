@@ -62,6 +62,12 @@ struct IrqFdSignalMsi {
 }
 
 impl pci_core::msi::SignalMsi for IrqFdSignalMsi {
+    fn supports_eventfd_fallback(&self) -> bool {
+        self.irqfd
+            .as_ref()
+            .is_none_or(|irqfd| irqfd.supports_eventfd_fallback())
+    }
+
     fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
         self.signal_msi.signal_msi(devid, address, data);
     }
@@ -78,7 +84,7 @@ impl pci_core::msi::SignalMsi for IrqFdSignalMsi {
             Err(error) => {
                 tracelimit::warn_ratelimited!(
                     error = error.as_ref() as &dyn std::error::Error,
-                    "failed to allocate MSI kernel binding; using software delivery"
+                    "failed to allocate MSI kernel binding"
                 );
                 return None;
             }

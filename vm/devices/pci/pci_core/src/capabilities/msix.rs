@@ -134,8 +134,8 @@ struct MsiInterruptInner {
     #[inspect(skip)]
     target: MsiTarget,
     /// Optional kernel-mediated route for direct interrupt delivery.
-    /// When present, delivery resolves and optionally accelerates the route;
-    /// reprogramming and masking revoke its cached binding.
+    /// When present, programming and invalidation eagerly prepare its binding;
+    /// masking revokes it.
     #[inspect(skip)]
     route: Option<MsiRoute>,
     pending: bool,
@@ -191,9 +191,10 @@ impl MsiInterrupt {
         state.data = data;
         state.enabled = true;
 
-        // Update the raw route without resolving it until delivery.
         if let Some(route) = &state.route {
             state.enable_route(route);
+        } else {
+            state.target.prepare_msi(address, data);
         }
 
         if state.pending {
@@ -205,6 +206,7 @@ impl MsiInterrupt {
     pub fn disable(&self) {
         let mut state = self.0.lock();
         state.enabled = false;
+        state.target.clear_prepared_msi();
         if let Some(route) = &state.route {
             route.disable();
         }
@@ -252,6 +254,7 @@ impl InterruptTarget for MsiInterruptTarget {
             }
             None => return None,
         };
+        state.target.clear_prepared_msi();
         if state.enabled {
             state.enable_route(&route);
         } else {
@@ -754,7 +757,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn route_binds_on_delivery_not_unmask(driver: DefaultDriver) {
+    async fn route_binds_on_unmask_without_delivery(driver: DefaultDriver) {
         let (msi_conn, log) = route_conn(Arc::new(driver));
         let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
 
@@ -782,8 +785,6 @@ mod tests {
         log.lock().clear();
         msix.write_u32(12, 0);
 
-        assert!(log.lock().is_empty());
-        msix.interrupt(0).unwrap().deliver();
         assert!(log.lock().contains(&RouteCall::SetMsi {
             address: 0xFEE00000,
             data: 0x42
@@ -886,8 +887,7 @@ mod tests {
         // Change data while still unmasked.
         msix.write_u32(8, 0x99);
 
-        assert_eq!(*log.lock(), vec![RouteCall::ClearMsi { data: 0x42 }]);
-        msix.interrupt(0).unwrap().deliver();
+        assert!(log.lock().contains(&RouteCall::ClearMsi { data: 0x42 }));
         assert!(log.lock().contains(&RouteCall::SetMsi {
             address: 0xFEE00000,
             data: 0x99

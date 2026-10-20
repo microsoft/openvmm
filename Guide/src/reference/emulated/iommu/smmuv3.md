@@ -73,25 +73,34 @@ startup rather than silently ignoring the guest's translations.
 
 ### MSI translation and acceleration
 
-Programming an MSI route does not perform a translation or report a fault.
-The first actual interrupt resolves the guest-programmed IOVA through the
-SMMU. Direct-call interrupts cache the resolved destination. For event-backed
-interrupts, userspace consumes and delivers the first notification, then binds
-the same event to the kernel if the destination supports accelerated delivery.
-Subsequent notifications can then bypass userspace.
+Programming or unmasking an MSI route eagerly prepares the guest-programmed
+IOVA through the SMMU, without injecting an interrupt or reporting a guest
+fault. Direct-call interrupts cache the prepared destination. Event-backed
+routes bind the caller-owned event immediately when the destination supports
+kernel delivery, so even the first physical interrupt can bypass userspace.
+One-off MSI calls without prior configuration prepare their destination when
+called.
 
 Configuration and TLB maintenance invalidate cached MSI translations, including
 those belonging to software-only streams. The implementation conservatively
 invalidates all MSI routes for that SMMU. Global policy changes, stream-table
 changes, reset, and restore also invalidate them. Invalidation synchronously
-revokes existing kernel bindings and serializes with in-flight route
-installation before completing; the next notification resolves in userspace
-again. Notifications pending on the event survive the handoff.
+revokes existing kernel bindings, prepares the updated destination, and
+installs a replacement when possible before completing. It serializes with
+in-flight route installation to prevent a stale binding from being installed
+after completion.
 
-Failed translations are not cached. They abort or report a fault only when an
-interrupt is delivered, and later interrupts retry translation. An invalidation
-alone does not generate a guest fault. Masked vectors remain pending rather
-than being resolved or accelerated.
+Failed preparation leaves the route unbound and generates no guest fault.
+Reprogramming or invalidation retries it. Where the source can notify
+userspace without a kernel binding, software delivery also retries and reports
+faults only for actual interrupts. Masked vectors are not prepared or rebound.
+
+MSHV event-backed routes conservatively require a kernel binding: direct
+attach on both x86 and ARM64 needs IRQ-bypass registration to establish the
+physical interrupt mapping. If preparation or binding fails, OpenVMM logs the
+unbound route rather than polling its eventfd as a software fallback. A later
+invalidation or reprogramming can restore delivery; the VMM cannot report
+per-interrupt translation faults for physical interrupts it cannot receive.
 
 ## Accelerated translation
 

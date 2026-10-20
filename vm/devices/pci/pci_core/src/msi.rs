@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::future::poll_fn;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -33,10 +34,9 @@ use vmcore::irqfd::RetranslateInterruptsList;
 /// guest reprograms the MSI address. Exactly one consumer reads the fd at a
 /// time: the kernel binding, or the usermode fallback task.
 ///
-/// Programming and invalidation leave the route unresolved. Its first signal
-/// is delivered in userspace, then a successful resolution may bind the event
-/// for subsequent kernel delivery. Invalidation synchronously revokes that
-/// binding before returning to software delivery.
+/// Programming prepares the destination and binds the event immediately when
+/// possible. Invalidation revokes and refreshes the binding synchronously.
+/// Preparation never delivers an interrupt or reports a guest fault.
 pub struct MsiRoute {
     default_rid: DefaultRid,
     event: Event,
@@ -52,6 +52,7 @@ struct MsiRequest {
 }
 
 struct CachedMsi {
+    this: Weak<Self>,
     connection: Arc<RwLock<MsiTargetInner>>,
     state: Mutex<CachedMsiState>,
 }
@@ -89,7 +90,8 @@ impl CachedMsiState {
 
 impl CachedMsi {
     fn new(connection: Arc<RwLock<MsiTargetInner>>) -> Arc<Self> {
-        let cached = Arc::new(Self {
+        let cached = Arc::new_cyclic(|this| Self {
+            this: this.clone(),
             connection: connection.clone(),
             state: Mutex::new(CachedMsiState::default()),
         });
@@ -103,7 +105,7 @@ impl CachedMsi {
     // The state lock covers registration, resolution, delivery, and binding.
     // An invalidation callback therefore cannot return before a racing
     // installation has either completed and been revoked, or observed new state.
-    fn deliver(self: &Arc<Self>, state: &mut CachedMsiState, request: MsiRequest) {
+    fn prepare(&self, state: &mut CachedMsiState, request: MsiRequest) {
         let router = self.connection.read().signal_msi.clone();
         if !state
             .router
@@ -111,7 +113,9 @@ impl CachedMsi {
             .is_some_and(|old| Arc::ptr_eq(old, &router))
         {
             state.invalidate();
-            router.register_msi_route(&(self.clone() as Arc<dyn RetranslateInterrupts>));
+            router.register_msi_route(
+                &(self.this.upgrade().expect("live MSI cache") as Arc<dyn RetranslateInterrupts>),
+            );
             state.router = Some(router.clone());
         }
         if state.resolved.is_none() {
@@ -124,15 +128,11 @@ impl CachedMsi {
                     data: request.data,
                 }),
                 MsiResolution::Resolved(resolved) => Some(resolved),
-                MsiResolution::Failed => return,
+                MsiResolution::Failed => None,
             };
         }
-        let resolved = state.resolved.as_ref().unwrap();
-        resolved
-            .target
-            .signal_msi(resolved.devid, resolved.address, resolved.data);
         if state.binding.is_none() {
-            if let Some(wait) = &state.wait {
+            if let (Some(wait), Some(resolved)) = (&state.wait, &state.resolved) {
                 state.binding = resolved.target.bind_msi(
                     wait.get(),
                     resolved.devid,
@@ -140,6 +140,42 @@ impl CachedMsi {
                     resolved.data,
                 );
             }
+        }
+        if state.wait.is_some()
+            && state.binding.is_none()
+            && !state.router.as_ref().unwrap().supports_eventfd_fallback()
+        {
+            tracelimit::warn_ratelimited!(
+                devid = request.devid,
+                address = request.address,
+                data = request.data,
+                "MSI source requires a kernel binding; leaving route unbound until reprogramming or invalidation"
+            );
+        }
+    }
+
+    fn configure(&self, request: Option<MsiRequest>) {
+        let mut state = self.state.lock();
+        state.configure(request);
+        if let Some(request) = request {
+            self.prepare(&mut state, request);
+        }
+    }
+
+    fn deliver(&self, state: &mut CachedMsiState, request: MsiRequest) {
+        self.prepare(state, request);
+        if let Some(resolved) = &state.resolved {
+            resolved
+                .target
+                .signal_msi(resolved.devid, resolved.address, resolved.data);
+        } else {
+            // Preparation is non-faulting. Only this actual transaction may
+            // publish a translation fault, and it retries against current state.
+            state
+                .router
+                .as_ref()
+                .unwrap()
+                .signal_msi(request.devid, request.address, request.data);
         }
     }
 
@@ -156,7 +192,12 @@ impl CachedMsi {
         }
         state.waker = Some(cx.waker().clone());
         if let Some(request) = state.request {
-            if state.binding.is_none() {
+            if state.binding.is_none()
+                && state
+                    .router
+                    .as_ref()
+                    .is_some_and(|router| router.supports_eventfd_fallback())
+            {
                 let wait = state.wait.as_mut().unwrap();
                 if let Poll::Ready(result) = wait.poll_wait(cx) {
                     result.expect("waiting on an owned MSI event cannot fail");
@@ -179,7 +220,13 @@ impl RetranslateInterrupts for CachedMsi {
     }
 
     fn retranslate(&self) {
-        self.state.lock().invalidate();
+        let mut state = self.state.lock();
+        state.invalidate();
+        if !state.closed {
+            if let Some(request) = state.request {
+                self.prepare(&mut state, request);
+            }
+        }
     }
 }
 
@@ -234,7 +281,7 @@ impl MsiRoute {
     }
 
     fn set(&self, address: u64, data: u32, rid: u32) {
-        self.cached.state.lock().configure(Some(MsiRequest {
+        self.cached.configure(Some(MsiRequest {
             devid: Some(rid),
             address,
             data,
@@ -256,7 +303,7 @@ impl MsiRoute {
     /// [`enable`](Self::enable) is called, or can be drained via
     /// [`consume_pending`](Self::consume_pending).
     pub fn disable(&self) {
-        self.cached.state.lock().configure(None);
+        self.cached.configure(None);
     }
 
     /// Drains pending interrupt state and returns whether an interrupt
@@ -426,9 +473,9 @@ impl MsiConnection {
     ///
     /// The wiring calls this only on platforms that support kernel-mediated
     /// routes. After it is called, [`MsiTarget::new_route`] can create
-    /// [`MsiRoute`] instances: each starts in userspace and promotes to a kernel
-    /// binding after its first successful delivery. Invalidation or reprogramming
-    /// revokes the binding and wakes the userspace consumer.
+    /// [`MsiRoute`] instances: programming prepares and binds the destination,
+    /// and invalidation refreshes it synchronously. Userspace event delivery is
+    /// used only when the source transport supports it.
     pub fn enable_msi_routes(&self, driver: Arc<dyn SpawnDriver>) {
         let mut inner = self.inner.write();
         inner.driver = Some(driver);
@@ -463,6 +510,22 @@ impl Default for MsiConnection {
 }
 
 impl MsiTarget {
+    /// Prepares a configured MSI destination without delivering an interrupt or
+    /// reporting a guest fault. Invalidation refreshes it before returning.
+    pub fn prepare_msi(&self, address: u64, data: u32) {
+        let request = resolve_default_rid(&self.default_rid).map(|devid| MsiRequest {
+            devid: Some(devid),
+            address,
+            data,
+        });
+        self.cached.configure(request);
+    }
+
+    /// Stops preparing a masked or otherwise inactive configured MSI.
+    pub fn clear_prepared_msi(&self) {
+        self.cached.configure(None);
+    }
+
     /// Returns a new `MsiTarget` sharing the same connection and bus
     /// range but with the given `devfn` in the default BDF.
     ///
@@ -572,9 +635,9 @@ impl MsiTarget {
     ///
     /// The route inherits this target's default BDF source so that
     /// [`MsiRoute::enable`] resolves the BDF the same way
-    /// [`signal_msi`](Self::signal_msi) does. It owns a fresh event, initially
-    /// consumed in userspace. Actual delivery resolves the destination and
-    /// optionally binds the event for subsequent kernel delivery.
+    /// [`signal_msi`](Self::signal_msi) does. It owns a fresh event, bound on
+    /// programming when the destination supports kernel delivery. Unbound
+    /// events are polled only if the source supports userspace notification.
     ///
     /// Returns `None` if kernel-mediated routes have not been enabled on the
     /// connection (see [`MsiConnection::enable_msi_routes`]).
@@ -693,6 +756,7 @@ mod tests {
             routes: RetranslateInterruptsList,
             entered: Barrier,
             release: Barrier,
+            prepares: AtomicU32,
             live: Arc<AtomicU32>,
         }
         struct Binding(Arc<AtomicU32>);
@@ -710,10 +774,14 @@ mod tests {
             fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
                 self.routes.register(route);
             }
-            fn signal_msi(&self, _: Option<u32>, _: u64, _: u32) {}
+            fn signal_msi(&self, _: Option<u32>, _: u64, _: u32) {
+                panic!("preparation must not deliver an interrupt");
+            }
             fn resolve_msi(&self, _: Option<u32>, _: u64, _: u32) -> MsiResolution {
-                self.entered.wait();
-                self.release.wait();
+                if self.prepares.fetch_add(1, Ordering::SeqCst) == 0 {
+                    self.entered.wait();
+                    self.release.wait();
+                }
                 MsiResolution::Direct
             }
             fn bind_msi(
@@ -731,15 +799,15 @@ mod tests {
             routes: RetranslateInterruptsList::new(),
             entered: Barrier::new(2),
             release: Barrier::new(2),
+            prepares: AtomicU32::new(0),
             live: Arc::new(AtomicU32::new(0)),
         });
         let connection = MsiConnection::new();
         connection.connect(router.clone());
         connection.enable_msi_routes(Arc::new(driver));
         let route = connection.target().new_route().unwrap().unwrap();
-        route.enable(0x1000, 42);
         std::thread::scope(|scope| {
-            let delivery = scope.spawn(|| route.signal());
+            let preparation = scope.spawn(|| route.enable(0x1000, 42));
             router.entered.wait();
             let (started_tx, started_rx) = std::sync::mpsc::channel();
             let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -752,14 +820,15 @@ mod tests {
             started_rx.recv().unwrap();
             let early_completion = done_rx.recv_timeout(Duration::from_millis(50));
             router.release.wait();
-            delivery.join().unwrap();
+            preparation.join().unwrap();
             invalidation.join().unwrap();
             assert!(matches!(
                 early_completion,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
             ));
-            assert_eq!(router.live.load(Ordering::SeqCst), 0);
-            assert!(route.cached.state.lock().resolved.is_none());
+            assert_eq!(router.live.load(Ordering::SeqCst), 1);
+            assert_eq!(router.prepares.load(Ordering::SeqCst), 2);
+            assert!(route.cached.state.lock().resolved.is_some());
         });
     }
 
@@ -787,6 +856,183 @@ mod tests {
         route.signal();
         assert_eq!(sink.pop(), Some((Some(0), 0x1000, 42)));
         assert_eq!(binds.lock().len(), 1);
+    }
+
+    struct TransportRouter {
+        routes: RetranslateInterruptsList,
+        valid: std::sync::atomic::AtomicBool,
+        bindable: std::sync::atomic::AtomicBool,
+        fallback: bool,
+        prepares: std::sync::atomic::AtomicU32,
+        binds: std::sync::atomic::AtomicU32,
+        signals: std::sync::atomic::AtomicU32,
+        delivered: Event,
+    }
+
+    impl TransportRouter {
+        fn new(fallback: bool) -> Arc<Self> {
+            Arc::new(Self {
+                routes: RetranslateInterruptsList::new(),
+                valid: false.into(),
+                bindable: true.into(),
+                fallback,
+                prepares: 0.into(),
+                binds: 0.into(),
+                signals: 0.into(),
+                delivered: Event::new(),
+            })
+        }
+    }
+
+    impl SignalMsi for TransportRouter {
+        fn supports_eventfd_fallback(&self) -> bool {
+            self.fallback
+        }
+
+        fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
+            self.routes.register(route);
+        }
+
+        fn resolve_msi(&self, _: Option<u32>, _: u64, _: u32) -> MsiResolution {
+            self.prepares
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.valid.load(std::sync::atomic::Ordering::SeqCst) {
+                MsiResolution::Direct
+            } else {
+                MsiResolution::Failed
+            }
+        }
+
+        fn signal_msi(&self, _: Option<u32>, _: u64, _: u32) {
+            self.signals
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.delivered.signal();
+        }
+
+        fn bind_msi(
+            &self,
+            _: &Event,
+            _: Option<u32>,
+            _: u64,
+            _: u32,
+        ) -> Option<Box<dyn KernelMsiBinding>> {
+            if !self.bindable.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(Box::new(RecordingBinding))
+        }
+    }
+
+    #[async_test]
+    async fn kernel_only_source_recovers_without_a_first_notification(driver: DefaultDriver) {
+        use std::sync::atomic::Ordering;
+        let router = TransportRouter::new(false);
+        let connection = MsiConnection::new();
+        connection.connect(router.clone());
+        connection.enable_msi_routes(Arc::new(driver));
+        let route = connection.target().new_route().unwrap().unwrap();
+        route.enable(0x1000, 42);
+        route.event().signal();
+        assert!(
+            route
+                .cached
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert!(
+            route.consume_pending(),
+            "kernel-only transport must not be polled"
+        );
+        assert_eq!(router.binds.load(Ordering::SeqCst), 0);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+
+        router.valid.store(true, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert!(route.cached.state.lock().binding.is_some());
+        assert_eq!(router.binds.load(Ordering::SeqCst), 1);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+
+        router.valid.store(false, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert!(route.cached.state.lock().binding.is_none());
+        route.event().signal();
+        assert!(
+            route
+                .cached
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert!(route.consume_pending());
+        router.valid.store(true, Ordering::SeqCst);
+        route.enable(0x1000, 42);
+        assert_eq!(router.binds.load(Ordering::SeqCst), 2);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+
+        // A valid translation does not imply the backend can bind the source.
+        router.bindable.store(false, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert!(route.cached.state.lock().resolved.is_some());
+        assert!(route.cached.state.lock().binding.is_none());
+        route.event().signal();
+        assert!(
+            route
+                .cached
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert!(route.consume_pending());
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+        router.bindable.store(true, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert_eq!(router.binds.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn configured_direct_target_refreshes_without_delivery() {
+        use std::sync::atomic::Ordering;
+        let router = TransportRouter::new(true);
+        router.valid.store(true, Ordering::SeqCst);
+        let connection = MsiConnection::new();
+        connection.connect(router.clone());
+        let target = connection.target();
+        target.prepare_msi(0x1000, 42);
+        assert_eq!(router.prepares.load(Ordering::SeqCst), 1);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+        router.routes.invalidate(None);
+        assert_eq!(router.prepares.load(Ordering::SeqCst), 2);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+        target.signal_msi(0x1000, 42);
+        assert_eq!(router.prepares.load(Ordering::SeqCst), 2);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 1);
+        target.clear_prepared_msi();
+        router.routes.invalidate(None);
+        assert_eq!(router.prepares.load(Ordering::SeqCst), 2);
+    }
+
+    #[async_test]
+    async fn software_fallback_reports_only_actual_notifications(driver: DefaultDriver) {
+        use std::sync::atomic::Ordering;
+        let router = TransportRouter::new(true);
+        let mut delivered = PolledWait::new(&driver, router.delivered.clone()).unwrap();
+        let connection = MsiConnection::new();
+        connection.connect(router.clone());
+        connection.enable_msi_routes(Arc::new(driver));
+        let route = connection.target().new_route().unwrap().unwrap();
+        route.enable(0x1000, 42);
+        router.routes.invalidate(None);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 0);
+        for count in 1..=2 {
+            route.event().signal();
+            delivered.wait().await.unwrap();
+            assert_eq!(router.signals.load(Ordering::SeqCst), count);
+            assert_eq!(router.binds.load(Ordering::SeqCst), 0);
+        }
+        router.valid.store(true, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert!(route.cached.state.lock().binding.is_some());
+        assert_eq!(router.binds.load(Ordering::SeqCst), 1);
+        assert_eq!(router.signals.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -883,8 +1129,6 @@ mod tests {
             .unwrap()
             .unwrap();
         route.enable(0xFEE0_0000, 55);
-        assert!(binds.lock().is_empty());
-        route.signal();
 
         let log = binds.lock();
         assert_eq!(log.len(), 1);
@@ -904,8 +1148,6 @@ mod tests {
             .unwrap();
         let rid: u16 = (7 << 8) | 0x0A;
         route.enable_with_rid(rid, 0xBEEF, 77);
-        assert!(binds.lock().is_empty());
-        route.signal();
 
         let log = binds.lock();
         assert_eq!(log.len(), 1);
