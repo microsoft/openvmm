@@ -92,7 +92,11 @@ pub trait ConfigureChipsetDevice: Send {
 #[async_trait]
 trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
+    /// Runs with the ArcMutex chipset lock held; must not await work that
+    /// requires the same lock.
     async fn quiesce_input(&mut self) -> anyhow::Result<()>;
+    /// Runs with the ArcMutex chipset lock held; must not await work that
+    /// requires the same lock.
     async fn resume_input(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
     async fn reset(&mut self);
