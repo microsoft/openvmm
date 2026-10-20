@@ -145,8 +145,9 @@ message UEFI {
 
 message MemoryConfig {
     uint64 memory_mb = 1;
-    // The fields below are not supported yet. CreateVM fails if any is set.
+    // Guest RAM is always pageable (overcommit allowed); this field is ignored.
     bool allow_overcommit = 2;
+    // The fields below are not supported yet. CreateVM fails if any is set.
     bool deferred_commit = 3;
     bool hot_hint = 4;
     bool cold_hint = 5;

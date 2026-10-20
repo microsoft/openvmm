@@ -612,8 +612,9 @@ impl IommufdContexts {
 /// silently ignoring them.
 fn validate_resource_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
     if let Some(m) = &config.memory_config {
+        // `allow_overcommit` is not checked: pageable, VA-backed guest RAM is
+        // what OpenVMM already does, and proto3 cannot tell `false` from unset.
         for (set, name) in [
-            (m.allow_overcommit, "allow_overcommit"),
             (m.deferred_commit, "deferred_commit"),
             (m.hot_hint, "hot_hint"),
             (m.cold_hint, "cold_hint"),
@@ -2618,6 +2619,7 @@ mod resource_config_tests {
         let ok = config(
             vmservice::MemoryConfig {
                 memory_mb: 1024,
+                allow_overcommit: true,
                 ..Default::default()
             },
             vmservice::ProcessorConfig {
@@ -2634,10 +2636,6 @@ mod resource_config_tests {
         let memory = |m: vmservice::MemoryConfig| config(m, Default::default());
         let processor = |p: vmservice::ProcessorConfig| config(Default::default(), p);
         let cases = [
-            memory(vmservice::MemoryConfig {
-                allow_overcommit: true,
-                ..Default::default()
-            }),
             memory(vmservice::MemoryConfig {
                 deferred_commit: true,
                 ..Default::default()
