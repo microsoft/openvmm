@@ -1499,10 +1499,6 @@ impl SmmuSignalMsi {
 }
 
 impl SignalMsi for SmmuSignalMsi {
-    fn supports_eventfd_fallback(&self) -> bool {
-        self.inner.supports_eventfd_fallback()
-    }
-
     fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
         self.shared.msi_routes.register(route);
         self.inner.register_msi_route(route);

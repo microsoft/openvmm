@@ -107,8 +107,10 @@ CLI option (`auto`, `its`, or `v2m`).
 Configured MSI routes prepare on programming or unmasking, without injecting
 an interrupt or reporting a guest fault. Event-backed routes bind immediately
 when supported; reprogramming and translation invalidation synchronously
-refresh the destination. Software eventfd fallback is used only when the
-source transport supports it, not for MSHV direct attach. See
+refresh the destination. Software eventfd fallback is selected per producer,
+independently of the destination. VFIO detects the assigned device's host IOMMU
+locally; `hyperv-iommu` requires a kernel binding, while ordinary event producers
+on the same backend do not. See
 [SMMU MSI translation](../iommu/smmuv3.md#msi-translation-and-acceleration)
 for the cache and fault-reporting behavior.
 

@@ -49,18 +49,9 @@ pub enum MsiResolution {
 ///
 /// Both decode the address the same way; `bind_msi` is just the
 /// kernel-accelerated binding time of `signal_msi`. Emulated sinks implement
-/// only `signal_msi` and inherit the default `bind_msi` (which returns `None`,
-/// so callers fall back to `signal_msi`).
+/// only `signal_msi` and inherit the default `bind_msi` (which returns `None`).
+/// Producers that support software delivery can then use `signal_msi`.
 pub trait SignalMsi: Send + Sync {
-    /// Whether an event-backed source can notify userspace without a kernel
-    /// binding. This describes the source transport, not software injection.
-    ///
-    /// Translating wrappers must preserve this capability. Kernel-only sources
-    /// must remain unbound, rather than be polled, if preparation fails.
-    fn supports_eventfd_fallback(&self) -> bool {
-        true
-    }
-
     /// Registers a cached consumer before its first lookup.
     ///
     /// Translating wrappers must forward this to any inner translating layer.
@@ -93,9 +84,8 @@ pub trait SignalMsi: Send + Sync {
     ///
     /// Returns `Some(binding)` if the address decodes to a kernel-serviceable
     /// sink (the returned [`KernelMsiBinding`] owns the kernel registration and
-    /// unbinds on drop), or `None` if it does not. Userspace event delivery is
-    /// possible only when [`supports_eventfd_fallback`](Self::supports_eventfd_fallback)
-    /// permits it.
+    /// unbinds on drop), or `None` if it does not. The caller decides whether
+    /// its event producer supports userspace delivery without a binding.
     ///
     /// The default returns `None`: emulated sinks are not kernel-serviceable.
     fn bind_msi(

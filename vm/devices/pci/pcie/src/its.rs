@@ -66,10 +66,6 @@ impl ItsIrqFd {
 }
 
 impl IrqFd for ItsIrqFd {
-    fn supports_eventfd_fallback(&self) -> bool {
-        self.inner.supports_eventfd_fallback()
-    }
-
     fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
         let inner_route = self.inner.new_irqfd_route(event)?;
         Ok(Box::new(ItsIrqFdRoute {

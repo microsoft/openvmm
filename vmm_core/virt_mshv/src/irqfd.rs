@@ -186,12 +186,6 @@ impl MshvIrqFd {
 }
 
 impl IrqFd for MshvIrqFd {
-    fn supports_eventfd_fallback(&self) -> bool {
-        // Direct attach needs IRQ-bypass registration to establish the
-        // physical interrupt mapping; an eventfd alone cannot capture it.
-        false
-    }
-
     fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
         let gsi = self
             .partition

@@ -46,9 +46,11 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
+use std::path::Path;
 use std::sync::Arc;
 use vfio_assigned_device_resources::BarAddressConfig;
 use vmcore::device_state::ChangeDeviceState;
+use vmcore::interrupt::InterruptEventSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -453,6 +455,8 @@ impl VfioAssignedPciDevice {
         accel_stream: Option<iommufd_nesting::AccelStream>,
         pasid_capabilities: Option<PasidCapabilities>,
     ) -> anyhow::Result<Self> {
+        let event_source =
+            interrupt_event_source(Path::new(&format!("/sys/bus/pci/devices/{pci_id}")))?;
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
             .context("failed to get VFIO config region info")?;
@@ -529,7 +533,7 @@ impl VfioAssignedPciDevice {
         // single pass. This discovers MSI-X (for emulation) and PM (for
         // BAR unmap on D-state transitions), and builds the config patch
         // table that hides capabilities the guest shouldn't see.
-        let caps = discover_capabilities(&vfio_device, msi_target);
+        let caps = discover_capabilities(&vfio_device, msi_target, event_source);
         let msix = caps.msix;
         let pm_csr_offset = caps.pm_csr_offset;
         let pcie_flr_control_offset = caps.pcie_flr_control_offset;
@@ -1067,6 +1071,27 @@ fn apply_bar_addresses(
     Ok(bars)
 }
 
+fn interrupt_event_source(device_sysfs_path: &Path) -> anyhow::Result<InterruptEventSource> {
+    let path = device_sysfs_path.join("iommu");
+    let iommu = std::fs::read_link(&path).with_context(|| {
+        format!(
+            "failed to identify VFIO interrupt transport via {}",
+            path.display()
+        )
+    })?;
+    let name = iommu
+        .file_name()
+        .with_context(|| format!("invalid IOMMU link target at {}", path.display()))?;
+
+    // Hyper-V's host IOMMU registers this name on both x86 and ARM64.
+    // Assigned-device interrupts need IRQ-bypass setup before they can flow.
+    Ok(if name == "hyperv-iommu" {
+        InterruptEventSource::RequiresKernelBinding
+    } else {
+        InterruptEventSource::Independent
+    })
+}
+
 /// Read physical BAR base addresses from the host kernel's resource table.
 ///
 /// Parses `/sys/bus/pci/devices/<bdf>/resource` which has one line per
@@ -1137,6 +1162,7 @@ struct DiscoveredCapabilities {
 fn discover_capabilities(
     config: &dyn ConfigSpaceRead,
     msi_target: &MsiTarget,
+    event_source: InterruptEventSource,
 ) -> DiscoveredCapabilities {
     let mut result = DiscoveredCapabilities {
         msix: None,
@@ -1233,7 +1259,12 @@ fn discover_capabilities(
             // PBA: one bit per vector, rounded up to QWORD boundary.
             let pba_size = (table_count as u64).div_ceil(64) * 8;
 
-            let (emulator, msix_cap) = MsixEmulator::new(table_bir, table_count, msi_target);
+            let (emulator, msix_cap) = MsixEmulator::new_with_event_source(
+                table_bir,
+                table_count,
+                msi_target,
+                event_source,
+            );
 
             tracing::info!(
                 table_count,
@@ -2127,6 +2158,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interrupt_transport_is_selected_from_the_device_iommu() {
+        let root = tempfile::tempdir().unwrap();
+        for (name, expected) in [
+            ("hyperv-iommu", InterruptEventSource::RequiresKernelBinding),
+            ("dmar0", InterruptEventSource::Independent),
+            ("arm-smmu-v3.0", InterruptEventSource::Independent),
+        ] {
+            let iommu = root.path().join("iommu-devices").join(name);
+            std::fs::create_dir_all(&iommu).unwrap();
+            for relative in [false, true] {
+                let device = root.path().join(format!("{name}-{relative}"));
+                std::fs::create_dir(&device).unwrap();
+                let target = if relative {
+                    Path::new("../iommu-devices").join(name)
+                } else {
+                    iommu.clone()
+                };
+                std::os::unix::fs::symlink(target, device.join("iommu")).unwrap();
+                assert_eq!(interrupt_event_source(&device).unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn interrupt_transport_detection_does_not_hide_sysfs_errors() {
+        let device = tempfile::tempdir().unwrap();
+        let error = interrupt_event_source(device.path()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound,
+        );
+        std::fs::create_dir(device.path().join("iommu")).unwrap();
+        let error = interrupt_event_source(device.path()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput,
+        );
+    }
+
     // --- PM capability discovery tests ---
 
     #[test]
@@ -2138,7 +2209,7 @@ mod tests {
         cfg.write_u32(0x40, MockConfigSpace::cap_header(0x01, 0x00));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert_eq!(caps.pm_csr_offset, Some(0x44)); // cap_offset + 4
         assert!(caps.msix.is_none());
@@ -2155,7 +2226,7 @@ mod tests {
         cfg.write_u32(0x60, MockConfigSpace::cap_header(0x01, 0x00));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert_eq!(caps.pm_csr_offset, Some(0x64));
     }
@@ -2166,7 +2237,7 @@ mod tests {
         // Cap ptr is 0 → no capabilities
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert_eq!(caps.pm_csr_offset, None);
         assert!(caps.msix.is_none());
@@ -2190,7 +2261,7 @@ mod tests {
         cfg.write_u32(0x48, 0x2000 | 2); // BIR=2, offset=0x2000
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         let msix = caps.msix.as_ref().expect("MSI-X should be discovered");
         assert_eq!(msix.vector_count, 3);
@@ -2217,7 +2288,7 @@ mod tests {
         cfg.write_u32(0x68, 0x1000); // PBA BIR=0, offset=0x1000
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert_eq!(caps.pm_csr_offset, Some(0x44));
         let msix = caps.msix.as_ref().expect("MSI-X should be discovered");
@@ -2240,7 +2311,11 @@ mod tests {
                 .into_bits(),
         );
 
-        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        let discovered = discover_capabilities(
+            &cfg,
+            &MsiTarget::disconnected(),
+            InterruptEventSource::Independent,
+        );
         assert_eq!(discovered.pcie_flr_control_offset, Some(0x48));
     }
 
@@ -2253,7 +2328,11 @@ mod tests {
             MockConfigSpace::cap_header(caps::CapabilityId::PCI_EXPRESS.0, 0),
         );
 
-        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        let discovered = discover_capabilities(
+            &cfg,
+            &MsiTarget::disconnected(),
+            InterruptEventSource::Independent,
+        );
         assert_eq!(discovered.pcie_flr_control_offset, None);
     }
 
@@ -2270,7 +2349,11 @@ mod tests {
             .with_capabilities(capabilities.into_bits());
         cfg.write_u32(0x40, header.into_bits());
 
-        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        let discovered = discover_capabilities(
+            &cfg,
+            &MsiTarget::disconnected(),
+            InterruptEventSource::Independent,
+        );
         assert_eq!(discovered.af_flr_control_offset, Some(0x44));
     }
 
@@ -2283,7 +2366,11 @@ mod tests {
             .with_length(6);
         cfg.write_u32(0x40, header.into_bits());
 
-        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        let discovered = discover_capabilities(
+            &cfg,
+            &MsiTarget::disconnected(),
+            InterruptEventSource::Independent,
+        );
         assert_eq!(discovered.af_flr_control_offset, None);
     }
 
@@ -2356,7 +2443,7 @@ mod tests {
         cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0x10, 1, 0));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         let patch = caps
             .config_patches
@@ -2376,7 +2463,7 @@ mod tests {
         cfg.write_u32(0x200, MockConfigSpace::ext_cap_header(0x15, 1, 0));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert!(
             caps.config_patches.contains_key(&0x100),
@@ -2397,7 +2484,11 @@ mod tests {
             MockConfigSpace::ext_cap_header(caps::ExtendedCapabilityId::PASID.0, 1, 0),
         );
 
-        let discovered = discover_capabilities(&cfg, &MsiTarget::disconnected());
+        let discovered = discover_capabilities(
+            &cfg,
+            &MsiTarget::disconnected(),
+            InterruptEventSource::Independent,
+        );
         assert_eq!(discovered.last_ext_cap_offset, Some(0x100));
         assert_eq!(discovered.pasid_cap_offset, Some(0x100));
     }
@@ -2507,7 +2598,7 @@ mod tests {
 
         let msi = MsiTarget::disconnected();
         // Should not hang — the 48-iteration limit catches cycles.
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         // We don't care about the result, just that it terminates.
         assert_eq!(caps.pm_csr_offset, None);
@@ -2521,7 +2612,7 @@ mod tests {
         cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0xFF, 1, 0x50));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         // Should terminate after the first cap without crashing.
         assert!(!caps.config_patches.contains_key(&0x50));
@@ -2538,7 +2629,7 @@ mod tests {
         cfg.write_u32(0x100, MockConfigSpace::ext_cap_header(0xFF, 1, 0x103));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         // Should stop at the malformed pointer.
         assert_eq!(caps.config_patches.len(), 1); // only multi-function
@@ -2552,7 +2643,7 @@ mod tests {
         cfg.write_u32(0x40, MockConfigSpace::cap_header(0x01, 0x00));
 
         let msi = MsiTarget::disconnected();
-        let caps = discover_capabilities(&cfg, &msi);
+        let caps = discover_capabilities(&cfg, &msi, InterruptEventSource::Independent);
 
         assert_eq!(caps.pm_csr_offset, Some(0x44));
     }

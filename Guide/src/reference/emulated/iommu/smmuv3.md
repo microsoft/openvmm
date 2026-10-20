@@ -95,12 +95,21 @@ Reprogramming or invalidation retries it. Where the source can notify
 userspace without a kernel binding, software delivery also retries and reports
 faults only for actual interrupts. Masked vectors are not prepared or rebound.
 
-MSHV event-backed routes conservatively require a kernel binding: direct
-attach on both x86 and ARM64 needs IRQ-bypass registration to establish the
-physical interrupt mapping. If preparation or binding fails, OpenVMM logs the
-unbound route rather than polling its eventfd as a software fallback. A later
-invalidation or reprogramming can restore delivery; the VMM cannot report
-per-interrupt translation faults for physical interrupts it cannot receive.
+Fallback requirements belong to the interrupt producer, not the MSI sink.
+VFIO identifies the assigned device's host IOMMU locally through
+`/sys/bus/pci/devices/<BDF>/iommu`. A `hyperv-iommu` target selects events that
+require a kernel binding: direct attach on both x86 and ARM64 needs IRQ-bypass
+registration to establish the physical interrupt mapping. Other IOMMUs select
+independent events. An unreadable or invalid link fails device initialization
+rather than assuming software fallback. VFIO supplies this requirement to its
+MSI-X routes; no hypervisor-backend policy is threaded through VM setup.
+Other event producers using the same MSHV destination can still use software
+fallback.
+
+If a kernel-only source cannot be bound, OpenVMM logs the unbound route rather
+than polling its eventfd as a software fallback. A later invalidation or
+reprogramming can restore delivery; the VMM cannot report per-interrupt
+translation faults for physical interrupts it cannot receive.
 
 ## Accelerated translation
 

@@ -131,6 +131,7 @@ pub(crate) struct MsiInterrupt(#[inspect(flatten)] Arc<Mutex<MsiInterruptInner>>
 
 #[derive(Inspect)]
 struct MsiInterruptInner {
+    event_source: vmcore::interrupt::InterruptEventSource,
     #[inspect(skip)]
     target: MsiTarget,
     /// Optional kernel-mediated route for direct interrupt delivery.
@@ -149,6 +150,7 @@ struct MsiInterruptInner {
 impl Debug for MsiInterruptInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MsiInterruptInner")
+            .field("event_source", &self.event_source)
             .field("pending", &self.pending)
             .field("enabled", &self.enabled)
             .field("address", &self.address)
@@ -174,7 +176,15 @@ impl MsiInterruptInner {
 
 impl MsiInterrupt {
     pub fn new(target: MsiTarget) -> Self {
+        Self::new_with_event_source(target, vmcore::interrupt::InterruptEventSource::Independent)
+    }
+
+    fn new_with_event_source(
+        target: MsiTarget,
+        event_source: vmcore::interrupt::InterruptEventSource,
+    ) -> Self {
         Self(Arc::new(Mutex::new(MsiInterruptInner {
+            event_source,
             target,
             route: None,
             pending: false,
@@ -246,7 +256,7 @@ impl InterruptTarget for MsiInterruptTarget {
         if let Some(route) = &state.route {
             return Some(Arc::new(route.event().clone()));
         }
-        let route = match state.target.new_route() {
+        let route = match state.target.new_route_for_source(state.event_source) {
             Some(Ok(route)) => route,
             Some(Err(e)) => {
                 tracelimit::warn_ratelimited!(error = ?e, "failed to allocate MSI route");
@@ -389,10 +399,33 @@ impl MsixEmulator {
     /// fixed offsets into the BAR for both of those tables. It would be nice to
     /// re-visit this code and make it more flexible.
     pub fn new(bar: u8, count: u16, msi_target: &MsiTarget) -> (Self, impl PciCapability + use<>) {
+        Self::new_with_event_source(
+            bar,
+            count,
+            msi_target,
+            vmcore::interrupt::InterruptEventSource::Independent,
+        )
+    }
+
+    /// Creates MSI-X vectors with the interrupt producer's event requirements.
+    /// Emulated devices normally use [`Self::new`]; assignment transports may
+    /// require a kernel binding even when the destination supports software delivery.
+    /// The source requirement is fixed before any backing event is exposed.
+    pub fn new_with_event_source(
+        bar: u8,
+        count: u16,
+        msi_target: &MsiTarget,
+        event_source: vmcore::interrupt::InterruptEventSource,
+    ) -> (Self, impl PciCapability + use<>) {
         let state = MsixState {
             enabled: false,
             vectors: (0..count)
-                .map(|_| MsixMessageTableEntry::new(MsiInterrupt::new(msi_target.clone())))
+                .map(|_| {
+                    MsixMessageTableEntry::new(MsiInterrupt::new_with_event_source(
+                        msi_target.clone(),
+                        event_source,
+                    ))
+                })
                 .collect(),
         };
         let state = Arc::new(Mutex::new(state));

@@ -20,6 +20,7 @@ use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use vmcore::interrupt::InterruptEventSource;
 use vmcore::irqfd::KernelMsiBinding;
 use vmcore::irqfd::RetranslateInterrupts;
 use vmcore::irqfd::RetranslateInterruptsList;
@@ -63,6 +64,7 @@ struct CachedMsiState {
     router: Option<Arc<dyn SignalMsi>>,
     resolved: Option<ResolvedMsi>,
     binding: Option<Box<dyn KernelMsiBinding>>,
+    event_source: Option<InterruptEventSource>,
     // Unix waits consume the event only inside poll_wait, under this lock.
     // A readiness notification can outlive promotion, but cannot read the fd
     // while a kernel binding owns it.
@@ -141,9 +143,8 @@ impl CachedMsi {
                 );
             }
         }
-        if state.wait.is_some()
+        if state.event_source == Some(InterruptEventSource::RequiresKernelBinding)
             && state.binding.is_none()
-            && !state.router.as_ref().unwrap().supports_eventfd_fallback()
         {
             tracelimit::warn_ratelimited!(
                 devid = request.devid,
@@ -193,10 +194,7 @@ impl CachedMsi {
         state.waker = Some(cx.waker().clone());
         if let Some(request) = state.request {
             if state.binding.is_none()
-                && state
-                    .router
-                    .as_ref()
-                    .is_some_and(|router| router.supports_eventfd_fallback())
+                && state.event_source == Some(InterruptEventSource::Independent)
             {
                 let wait = state.wait.as_mut().unwrap();
                 if let Poll::Ready(result) = wait.poll_wait(cx) {
@@ -642,12 +640,27 @@ impl MsiTarget {
     /// Returns `None` if kernel-mediated routes have not been enabled on the
     /// connection (see [`MsiConnection::enable_msi_routes`]).
     pub fn new_route(&self) -> Option<anyhow::Result<MsiRoute>> {
+        self.new_route_for_source(InterruptEventSource::Independent)
+    }
+
+    /// Creates an event-backed route with the producer's delivery requirements.
+    ///
+    /// A source requiring a kernel binding stays unbound on preparation failure,
+    /// rather than being polled as if it could notify userspace independently.
+    pub fn new_route_for_source(
+        &self,
+        source: InterruptEventSource,
+    ) -> Option<anyhow::Result<MsiRoute>> {
         let driver = self.inner.read().driver.clone()?;
         Some((|| {
             let event = Event::new();
             let wait = PolledWait::new(&*driver, event.clone())?;
             let cached = CachedMsi::new(self.inner.clone());
-            cached.state.lock().wait = Some(wait);
+            {
+                let mut state = cached.state.lock();
+                state.wait = Some(wait);
+                state.event_source = Some(source);
+            }
             let task_cached = cached.clone();
             let task = driver.spawn("msi-route", poll_fn(move |cx| task_cached.poll(cx)));
             Ok(MsiRoute {
@@ -862,7 +875,6 @@ mod tests {
         routes: RetranslateInterruptsList,
         valid: std::sync::atomic::AtomicBool,
         bindable: std::sync::atomic::AtomicBool,
-        fallback: bool,
         prepares: std::sync::atomic::AtomicU32,
         binds: std::sync::atomic::AtomicU32,
         signals: std::sync::atomic::AtomicU32,
@@ -870,12 +882,11 @@ mod tests {
     }
 
     impl TransportRouter {
-        fn new(fallback: bool) -> Arc<Self> {
+        fn new() -> Arc<Self> {
             Arc::new(Self {
                 routes: RetranslateInterruptsList::new(),
                 valid: false.into(),
                 bindable: true.into(),
-                fallback,
                 prepares: 0.into(),
                 binds: 0.into(),
                 signals: 0.into(),
@@ -885,10 +896,6 @@ mod tests {
     }
 
     impl SignalMsi for TransportRouter {
-        fn supports_eventfd_fallback(&self) -> bool {
-            self.fallback
-        }
-
         fn register_msi_route(&self, route: &Arc<dyn RetranslateInterrupts>) {
             self.routes.register(route);
         }
@@ -927,11 +934,15 @@ mod tests {
     #[async_test]
     async fn kernel_only_source_recovers_without_a_first_notification(driver: DefaultDriver) {
         use std::sync::atomic::Ordering;
-        let router = TransportRouter::new(false);
+        let router = TransportRouter::new();
         let connection = MsiConnection::new();
         connection.connect(router.clone());
         connection.enable_msi_routes(Arc::new(driver));
-        let route = connection.target().new_route().unwrap().unwrap();
+        let route = connection
+            .target()
+            .new_route_for_source(InterruptEventSource::RequiresKernelBinding)
+            .unwrap()
+            .unwrap();
         route.enable(0x1000, 42);
         route.event().signal();
         assert!(
@@ -991,7 +1002,7 @@ mod tests {
     #[test]
     fn configured_direct_target_refreshes_without_delivery() {
         use std::sync::atomic::Ordering;
-        let router = TransportRouter::new(true);
+        let router = TransportRouter::new();
         router.valid.store(true, Ordering::SeqCst);
         let connection = MsiConnection::new();
         connection.connect(router.clone());
@@ -1013,7 +1024,7 @@ mod tests {
     #[async_test]
     async fn software_fallback_reports_only_actual_notifications(driver: DefaultDriver) {
         use std::sync::atomic::Ordering;
-        let router = TransportRouter::new(true);
+        let router = TransportRouter::new();
         let mut delivered = PolledWait::new(&driver, router.delivered.clone()).unwrap();
         let connection = MsiConnection::new();
         connection.connect(router.clone());
@@ -1033,6 +1044,46 @@ mod tests {
         assert!(route.cached.state.lock().binding.is_some());
         assert_eq!(router.binds.load(Ordering::SeqCst), 1);
         assert_eq!(router.signals.load(Ordering::SeqCst), 2);
+    }
+
+    #[async_test]
+    async fn sources_sharing_a_sink_keep_independent_fallback_requirements(driver: DefaultDriver) {
+        use std::sync::atomic::Ordering;
+        let router = TransportRouter::new();
+        let mut delivered = PolledWait::new(&driver, router.delivered.clone()).unwrap();
+        let connection = MsiConnection::new();
+        connection.connect(router.clone());
+        connection.enable_msi_routes(Arc::new(driver));
+        let target = connection.target();
+        let independent = target.new_route().unwrap().unwrap();
+        let kernel_only = target
+            .new_route_for_source(InterruptEventSource::RequiresKernelBinding)
+            .unwrap()
+            .unwrap();
+        independent.enable(0x1000, 42);
+        kernel_only.enable(0x1000, 43);
+
+        for _ in 0..2 {
+            kernel_only.event().signal();
+            assert!(
+                kernel_only
+                    .cached
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            assert!(kernel_only.consume_pending());
+            independent.event().signal();
+            delivered.wait().await.unwrap();
+            connection.connect(router.clone());
+        }
+        assert_eq!(router.signals.load(Ordering::SeqCst), 2);
+        assert_eq!(router.binds.load(Ordering::SeqCst), 0);
+
+        router.valid.store(true, Ordering::SeqCst);
+        router.routes.invalidate(None);
+        assert!(independent.cached.state.lock().binding.is_some());
+        assert!(kernel_only.cached.state.lock().binding.is_some());
+        assert_eq!(router.binds.load(Ordering::SeqCst), 2);
     }
 
     #[test]
