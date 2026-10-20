@@ -15,8 +15,10 @@ get_protocol.workspace = true
 guid.workspace = true
 mesh.workspace = true
 tee_call.workspace = true
+x86defs.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 cvm_tracing.workspace = true
 
 base64.workspace = true
@@ -31,6 +33,9 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+parking_lot.workspace = true
+inspect.workspace = true
+scsi_buffers.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
 disklayer_ram.workspace = true
 disk_backend.workspace = true
