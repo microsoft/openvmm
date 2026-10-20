@@ -16,6 +16,7 @@ use crate::ShutdownKind;
 use crate::disk_image::AgentImage;
 use crate::disk_image::ImageEntry;
 use crate::disk_image::SECTOR_SIZE;
+use crate::mshv_boot::MshvBoot;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::test::PetriPostTestHook;
 use crate::vtl2_settings::ControllerType;
@@ -660,6 +661,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let isolated_without_paravisor = artifacts.firmware.is_isolated_without_paravisor();
+        match &artifacts.firmware {
+            Firmware::Uefi {
+                guest: UefiGuest::Mshv(_),
+                ..
+            } => anyhow::ensure!(
+                artifacts.arch == MachineArch::X86_64,
+                "mshv boot requires x86-64 UEFI"
+            ),
+            Firmware::OpenhclUefi {
+                guest: UefiGuest::Mshv(_),
+                ..
+            } => anyhow::bail!("mshv boot with OpenHCL is not supported"),
+            _ => {}
+        }
         let (guest_quirks, vmm_quirks) = T::quirks(&artifacts.firmware);
         let expected_boot_event = artifacts.firmware.expected_boot_event();
         let boot_device_type = match artifacts.firmware {
@@ -1135,7 +1150,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         ))
     }
 
-    fn add_boot_disk(mut self) -> Self {
+    fn add_boot_disk(mut self) -> anyhow::Result<Self> {
         if self.boot_device_type.requires_vtl2() && !self.is_openhcl() {
             panic!("boot device type {:?} requires vtl2", self.boot_device_type);
         }
@@ -1156,7 +1171,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .enable_vpci_boot = true;
         }
 
-        if let Some(boot_drive) = self.config.firmware.boot_drive() {
+        let builder = if let Some(boot_drive) = self.config.firmware.boot_drive()? {
             match self.boot_device_type {
                 BootDeviceType::None => unreachable!(),
                 BootDeviceType::Ide => self.add_ide_drive(
@@ -1274,7 +1289,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }
         } else {
             self
-        }
+        };
+        Ok(builder)
     }
 
     /// Whether the VTL0 agent disk will actually be added.
@@ -1357,7 +1373,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     async fn run_core(mut self) -> anyhow::Result<PetriVm<T>> {
         // Add the boot disk now to allow the test to modify the boot type
         // Add the agent disks now to allow the test to add custom files
-        self = self.add_boot_disk().add_agent_disks()?;
+        self = self.add_boot_disk()?.add_agent_disks()?;
 
         // Auto-prepare the initrd with pipette injected if needed.
         // This centralizes the injection logic so backends only ever
@@ -3558,15 +3574,17 @@ impl Firmware {
 
     fn os_flavor(&self) -> OsFlavor {
         match self {
-            Firmware::Uefi {
-                guest: UefiGuest::Custom { os_flavor, .. },
+            Firmware::LinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::Uefi {
+                guest: UefiGuest::Mshv(_),
                 ..
             }
             | Firmware::OpenhclUefi {
-                guest: UefiGuest::Custom { os_flavor, .. },
+                guest: UefiGuest::Mshv(_),
                 ..
-            } => *os_flavor,
-            Firmware::LinuxDirect { .. }
+            }
+            | Firmware::LinuxDirect { .. }
             | Firmware::IgvmLinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
@@ -3752,19 +3770,22 @@ impl Firmware {
         }
     }
 
-    fn boot_drive(&self) -> Option<Drive> {
+    fn boot_drive(&self) -> anyhow::Result<Option<Drive>> {
         if let Firmware::Uefi {
-            guest: UefiGuest::Custom { disk, .. },
+            guest: UefiGuest::Mshv(boot),
             ..
         }
         | Firmware::OpenhclUefi {
-            guest: UefiGuest::Custom { disk, .. },
+            guest: UefiGuest::Mshv(boot),
             ..
         } = self
         {
-            return Some(Drive::new(Some(disk.clone()), false));
+            return Ok(Some(Drive::new(
+                Some(boot.build().context("composing mshv boot disk")?),
+                false,
+            )));
         }
-        match self {
+        Ok(match self {
             Firmware::LinuxDirect { .. }
             | Firmware::IgvmLinuxDirect { .. }
             | Firmware::OpenhclLinuxDirect { .. } => None,
@@ -3775,7 +3796,7 @@ impl Firmware {
                 guest.disk_path().map(|dp| (dp, false))
             }
         }
-        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd))
+        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd)))
     }
 
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
@@ -3829,13 +3850,9 @@ impl PcatGuest {
 /// will be automatically configured.
 #[derive(Debug)]
 pub enum UefiGuest {
-    /// Boot a complete caller-supplied disk, including a temporary raw image.
-    Custom {
-        /// Boot disk and its lifetime.
-        disk: Disk,
-        /// Operating system supplied by the image.
-        os_flavor: OsFlavor,
-    },
+    /// Compose an mshv root-partition boot disk from resolved artifacts and a
+    /// prepared initrd. Requires x86-64 UEFI without OpenHCL.
+    Mshv(MshvBoot),
     /// Mount a VHD as the boot drive.
     Vhd(BootImageConfig<boot_image_type::Vhd>),
     /// The UEFI test image produced by our guest-test infrastructure.
@@ -3860,7 +3877,7 @@ impl UefiGuest {
             UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
             UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
             UefiGuest::None => None,
-            UefiGuest::Custom { .. } => None,
+            UefiGuest::Mshv(_) => None,
         }
     }
 }

@@ -87,25 +87,18 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
             kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
             initrd: ResolvedArtifact::from_local_path(config.initrd.clone()),
         },
-        IncubatorBoot::Mshv(boot) => {
-            let disk = petri::mshv_boot::MshvBoot {
-                kernel: &config.kernel,
-                initrd: &initrd,
-                boot_artifacts: &boot.boot_artifacts,
-            }
-            .build()?;
-            Firmware::Uefi {
-                uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
-                guest: petri::UefiGuest::Custom {
-                    disk,
-                    os_flavor: petri_artifacts_common::tags::OsFlavor::Linux,
-                },
-                uefi_config: petri::UefiConfig {
-                    default_boot_always_attempt: true,
-                    ..Default::default()
-                },
-            }
-        }
+        IncubatorBoot::Mshv(boot) => Firmware::Uefi {
+            uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
+            guest: petri::UefiGuest::Mshv(petri::mshv_boot::MshvBoot {
+                kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
+                initrd: initrd.clone(),
+                boot_artifacts: ResolvedArtifact::from_local_path(boot.boot_artifacts.clone()),
+            }),
+            uefi_config: petri::UefiConfig {
+                default_boot_always_attempt: true,
+                ..Default::default()
+            },
+        },
     };
     let bound_command = matches!(config.profile.boot, IncubatorBoot::Mshv(_));
     let code = pal_async::DefaultPool::run_with(async |driver| match &config.profile.incubator {

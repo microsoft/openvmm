@@ -1,41 +1,43 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Prepare an mshv boot disk independently of the VM that will launch it.
+//! Inputs for an mshv root partition booted through UEFI.
 
 use crate::Disk;
 use crate::PetriInitrd;
+use crate::ResolvedArtifact;
 use crate::mshv_image::MshvImage;
-use std::path::Path;
 use std::sync::Arc;
 
 /// Explicit boot media for an x86-64 mshv root partition.
 ///
-/// This prepares guest media only. The caller supplies UEFI firmware and
+/// Pass this recipe to [`crate::UefiGuest::Mshv`]. Petri composes and owns the
+/// boot disk when preparing the VM. The caller supplies UEFI firmware and
 /// configures nested virtualization, storage, networking, and file shares.
-pub struct MshvBoot<'a> {
+#[derive(Debug)]
+pub struct MshvBoot {
     /// Linux kernel with mshv EFI-launch support.
-    pub kernel: &'a Path,
+    pub kernel: ResolvedArtifact,
     /// Prepared initrd and its entry point.
-    pub initrd: &'a PetriInitrd,
+    pub initrd: PetriInitrd,
     /// Extracted artifact directory containing `boot/`.
-    pub boot_artifacts: &'a Path,
+    pub boot_artifacts: ResolvedArtifact,
 }
 
-impl MshvBoot<'_> {
-    /// Compose a temporary raw disk for [`crate::UefiGuest::Custom`].
+impl MshvBoot {
+    /// Compose a temporary raw disk for the guest's boot drive.
     ///
     /// Copies the prepared initrd unchanged. This neither prepares the guest
     /// userspace nor selects its agent, network, or trust store.
-    pub fn build(&self) -> anyhow::Result<Disk> {
+    pub(crate) fn build(&self) -> anyhow::Result<Disk> {
         let image = tempfile::NamedTempFile::new()?.into_temp_path();
         fs_err::remove_file(&image)?;
-        let boot = self.boot_artifacts.join("boot");
+        let boot = self.boot_artifacts.get().join("boot");
         MshvImage {
             shim: &boot.join("EFI/BOOT/bootx64.efi"),
             grub: &boot.join("EFI/BOOT/grubx64.efi"),
             payload: &boot,
-            kernel: self.kernel,
+            kernel: self.kernel.get(),
             initrd: self.initrd.path.as_ref(),
             kernel_cmdline: &format!("console=ttyS0 rdinit={} panic=-1", self.initrd.rdinit_param),
         }
@@ -76,9 +78,9 @@ mod tests {
             rdinit_param: "/caller-init".into(),
         };
         let disk = MshvBoot {
-            kernel: &kernel,
-            initrd: &initrd,
-            boot_artifacts: temp.path(),
+            kernel: ResolvedArtifact::from_local_path(kernel),
+            initrd,
+            boot_artifacts: ResolvedArtifact::from_local_path(temp.path().to_path_buf()),
         }
         .build()?;
         let Disk::Temporary(path) = &disk else {

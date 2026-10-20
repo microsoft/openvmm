@@ -55,13 +55,16 @@ mod tests {
     use crate::ResolvedArtifact;
     use crate::UefiConfig;
     use crate::UefiGuest;
+    use crate::mshv_boot::MshvBoot;
     use petri_artifacts_common::tags::OsFlavor;
     use test_with_tracing::test;
 
-    fn builder(
+    fn builder_with_guest(
         driver: &pal_async::DefaultDriver,
         logs: &PetriLogSource,
         firmware: &std::path::Path,
+        guest: UefiGuest,
+        arch: MachineArch,
     ) -> anyhow::Result<PetriVmBuilder<OpenVmmPetriBackend>> {
         Ok(PetriVmBuilder::minimal(
             "platform",
@@ -70,16 +73,13 @@ mod tests {
                 backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
                 firmware: Firmware::Uefi {
                     uefi_firmware: ResolvedArtifact::from_local_path(firmware.to_path_buf()),
-                    guest: UefiGuest::Custom {
-                        disk: Disk::Memory(64 * crate::SIZE_1_MB),
-                        os_flavor: OsFlavor::Linux,
-                    },
+                    guest,
                     uefi_config: UefiConfig {
                         disable_frontpage: false,
                         ..Default::default()
                     },
                 },
-                arch: MachineArch::X86_64,
+                arch,
                 agent_image: None,
                 openhcl_agent_image: None,
                 pipette_binary: None,
@@ -90,10 +90,134 @@ mod tests {
         .with_external_pipette())
     }
 
+    fn mshv_guest(dir: &std::path::Path) -> anyhow::Result<UefiGuest> {
+        let boot = dir.join("boot");
+        fs_err::create_dir_all(boot.join("Windows/System32"))?;
+        fs_err::create_dir_all(boot.join("EFI/BOOT"))?;
+        for name in [
+            "HvLoader.efi",
+            "lxhvloader.dll",
+            "Windows/System32/hvix64.exe",
+            "Windows/System32/hvax64.exe",
+            "EFI/BOOT/bootx64.efi",
+            "EFI/BOOT/grubx64.efi",
+        ] {
+            fs_err::write(boot.join(name), name)?;
+        }
+        let kernel = dir.join("kernel");
+        fs_err::write(&kernel, b"root kernel")?;
+        let initrd = tempfile::NamedTempFile::new_in(dir)?;
+        fs_err::write(initrd.path(), b"prepared initrd")?;
+        Ok(UefiGuest::Mshv(MshvBoot {
+            kernel: ResolvedArtifact::from_local_path(kernel),
+            initrd: crate::PetriInitrd {
+                path: crate::TempOrPersistentPath::Temp(std::sync::Arc::new(
+                    initrd.into_temp_path(),
+                )),
+                rdinit_param: "/caller-init".into(),
+            },
+            boot_artifacts: ResolvedArtifact::from_local_path(dir.to_path_buf()),
+        }))
+    }
+
+    #[test]
+    fn mshv_guest_prepares_an_owned_boot_disk() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let logs = PetriLogSource::file_only(temp.path())?;
+        pal_async::DefaultPool::run_with(async |driver| {
+            let guest = mshv_guest(temp.path())?;
+            let UefiGuest::Mshv(boot) = &guest else {
+                unreachable!()
+            };
+            let initrd = boot.initrd.path.as_ref().to_path_buf();
+            let builder = builder_with_guest(
+                &driver,
+                &logs,
+                &temp.path().join("unused-firmware"),
+                guest,
+                MachineArch::X86_64,
+            )?
+            .with_boot_device_type(BootDeviceType::PcieVirtioBlk)
+            .with_pcie_boot_port("s1rc0rp0");
+            assert!(builder.config.pcie_virtio_blk_drives.is_empty());
+            assert_eq!(builder.properties().os_flavor, OsFlavor::Linux);
+            assert!(!builder.properties().is_linux_direct);
+            let builder = builder.add_boot_disk()?;
+            let [drive] = builder.config.pcie_virtio_blk_drives.as_slice() else {
+                panic!("expected one mshv boot disk")
+            };
+            assert_eq!(drive.port_name, "s1rc0rp0");
+            let Some(Disk::Temporary(path)) = &drive.drive.disk else {
+                panic!("expected an owned temporary disk")
+            };
+            let output = path.to_path_buf();
+            assert!(output.exists());
+            assert!(initrd.exists());
+            drop(builder);
+            assert!(!output.exists());
+            assert!(!initrd.exists());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn mshv_guest_rejects_unsupported_firmware_and_reports_missing_inputs() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let logs = PetriLogSource::file_only(temp.path())?;
+        pal_async::DefaultPool::run_with(async |driver| {
+            let error = builder_with_guest(
+                &driver,
+                &logs,
+                &temp.path().join("unused-firmware"),
+                mshv_guest(temp.path())?,
+                MachineArch::Aarch64,
+            )
+            .expect_err("mshv requires x86-64");
+            assert!(error.to_string().contains("x86-64 UEFI"), "{error:#}");
+            let error = PetriVmBuilder::minimal(
+                "unsupported",
+                &logs,
+                PetriVmArtifacts {
+                    backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                    firmware: Firmware::OpenhclUefi {
+                        guest: mshv_guest(temp.path())?,
+                        igvm_firmware: crate::IgvmFirmwareSource::VmgsOrInBox,
+                        isolation: None,
+                        uefi_config: Default::default(),
+                        openhcl_config: Default::default(),
+                    },
+                    arch: MachineArch::X86_64,
+                    agent_image: None,
+                    openhcl_agent_image: None,
+                    pipette_binary: None,
+                    nested_test: None,
+                },
+                &driver,
+            )
+            .expect_err("mshv with OpenHCL is unsupported");
+            assert!(error.to_string().contains("OpenHCL"), "{error:#}");
+            let builder = builder_with_guest(
+                &driver,
+                &logs,
+                &temp.path().join("unused-firmware"),
+                mshv_guest(temp.path())?,
+                MachineArch::X86_64,
+            )?;
+            fs_err::remove_file(temp.path().join("kernel"))?;
+            let error = builder.add_boot_disk().expect_err("missing kernel");
+            assert!(
+                error.to_string().contains("composing mshv boot disk"),
+                "{error:#}"
+            );
+            assert!(format!("{error:#}").contains("kernel"), "{error:#}");
+            Ok(())
+        })
+    }
+
     async fn configure(
         builder: PetriVmBuilder<OpenVmmPetriBackend>,
     ) -> anyhow::Result<PetriVmConfigOpenVmm> {
-        let mut builder = builder.add_boot_disk().add_agent_disks()?;
+        let mut builder = builder.add_boot_disk()?.add_agent_disks()?;
         let properties = builder.properties();
         let modify = builder.modify_vmm_config.take();
         let config = PetriVmConfigOpenVmm::new(
@@ -169,14 +293,21 @@ mod tests {
         let firmware = tempfile::NamedTempFile::new()?;
         let logs = PetriLogSource::file_only(temp.path())?;
         pal_async::DefaultPool::run_with(async |driver| {
-            let builder = builder(&driver, &logs, firmware.path())?
-                .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
-                .with_mshv_platform()?
-                .with_shared_directory("data", temp.path(), "/mounted elsewhere")?
-                .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1));
+            let builder = builder_with_guest(
+                &driver,
+                &logs,
+                firmware.path(),
+                mshv_guest(temp.path())?,
+                MachineArch::X86_64,
+            )?
+            .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+            .with_mshv_platform()?
+            .with_shared_directory("data", temp.path(), "/mounted elsewhere")?
+            .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1));
             assert!(matches!(
                 builder.config.firmware,
                 Firmware::Uefi {
+                    guest: UefiGuest::Mshv(_),
                     uefi_config: UefiConfig {
                         disable_frontpage: false,
                         ..
@@ -227,16 +358,22 @@ mod tests {
         let logs = PetriLogSource::file_only(temp.path())?;
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         pal_async::DefaultPool::run_with(async |driver| {
-            let builder = builder(&driver, &logs, firmware.path())?
-                .try_modify_backend(|b| b.with_pcie_root_topology_at(1, 1, 1, 1))
-                .with_mshv_platform()?
-                .modify_backend({
-                    let called = called.clone();
-                    move |b| {
-                        called.store(true, std::sync::atomic::Ordering::Relaxed);
-                        b
-                    }
-                });
+            let builder = builder_with_guest(
+                &driver,
+                &logs,
+                firmware.path(),
+                mshv_guest(temp.path())?,
+                MachineArch::X86_64,
+            )?
+            .try_modify_backend(|b| b.with_pcie_root_topology_at(1, 1, 1, 1))
+            .with_mshv_platform()?
+            .modify_backend({
+                let called = called.clone();
+                move |b| {
+                    called.store(true, std::sync::atomic::Ordering::Relaxed);
+                    b
+                }
+            });
             let error = configure(builder).await.err().expect("segment conflict");
             assert!(error.to_string().contains("overlaps"), "{error:#}");
             Ok::<_, anyhow::Error>(())

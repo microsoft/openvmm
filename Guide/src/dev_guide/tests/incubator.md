@@ -64,6 +64,11 @@ Omit `--no-pty` and run `/bin/sh` for an interactive session. Pipette must be
 inside the shared directory. Keep the mshv root kernel separate from any
 child VM's kernel, and the native outer OpenVMM separate from guest binaries.
 
+Incubator supplies Petri with a `UefiGuest::Mshv` boot recipe: resolved kernel
+and payload paths plus an owned, prepared initrd. Petri composes and owns the
+temporary boot disk during VM preparation; the separate mshv platform preset
+configures nested virtualization and the required devices.
+
 For OpenVMM **without mshv**, use
 `petri/incubator/profiles/x86_64-openvmm.toml` with a native executable path,
 an ordinary x64 Linux kernel, and the test initrd. No firmware or hypervisor
