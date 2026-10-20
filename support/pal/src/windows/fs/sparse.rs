@@ -65,7 +65,9 @@ unsafe fn device_io_control(
         OwnedHandle::from_raw_handle(event)
     };
     let mut overlapped = Overlapped::new();
-    overlapped.set_event(event.as_raw_handle());
+    // Setting the low bit suppresses an IOCP packet for this internally
+    // waited operation. Keep `event` itself untagged so it closes normally.
+    overlapped.set_event(event.as_raw_handle().map_addr(|address| address | 1));
     let mut returned = 0;
     // SAFETY: the caller guarantees the buffer contracts, and `overlapped`
     // and its event remain live until completion below.
@@ -313,6 +315,7 @@ pub fn zero_range(file: &fs::File, start: u64, end: u64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::windows::IoCompletionPort;
     use std::fs::OpenOptions;
     use std::io::Read;
     use std::io::Seek;
@@ -321,6 +324,7 @@ mod tests {
     use std::os::windows::fs::OpenOptionsExt;
     use std::path::Path;
     use std::path::PathBuf;
+    use std::time::Duration;
     use test_with_tracing::test;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
@@ -469,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapped_handles_are_supported() {
+    fn internally_waited_overlapped_controls_do_not_notify_iocp() {
         const FILE_LENGTH: u64 = 64 * 1024;
 
         let root = TestDirectory::new();
@@ -494,6 +498,12 @@ mod tests {
             .custom_flags(FILE_FLAG_OVERLAPPED)
             .open(destination_path)
             .unwrap();
+        let iocp = IoCompletionPort::new();
+        // SAFETY: `destination` owns a valid handle for the duration of the
+        // association.
+        unsafe {
+            iocp.associate(destination.as_raw_handle(), 1).unwrap();
+        }
 
         set_sparse(&destination).unwrap();
         allocated_ranges(&destination, FILE_LENGTH).unwrap();
@@ -504,5 +514,8 @@ mod tests {
                 .is_empty()
         );
         duplicate_extents(&source, &destination, 0).unwrap();
+
+        let mut entries = [Default::default()];
+        assert_eq!(iocp.get(&mut entries, Some(Duration::ZERO)), 0);
     }
 }
