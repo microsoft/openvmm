@@ -931,6 +931,8 @@ fn build_effective_microvm_command_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::check_microvm_command_line;
     use test_with_tracing::test;
 
     #[test]
@@ -1018,14 +1020,17 @@ mod tests {
             )
         };
         // The profile's tokens follow the caller's, and the guest kernel must
-        // receive both: 2,047 bytes of text pass, and 2,048 fail.
-        let fill = 2047 - (build(1).unwrap().len() - 1);
+        // receive both: 2,047 bytes of text pass, and 2,048 fail with the
+        // shared check's error, whose text openvmm_defs tests.
+        let fill = MICROVM_COMMAND_LINE_MAX_SIZE - 1 - (build(1).unwrap().len() - 1);
         let longest = build(fill).unwrap();
-        assert_eq!(longest.len(), 2047);
+        assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
         assert!(longest.ends_with(" nvx_lifecycle=one-shot"), "{longest}");
+        let expected =
+            check_microvm_command_line(&"x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE)).unwrap_err();
         assert_eq!(
             build(fill + 1).unwrap_err().to_string(),
-            "microVM kernel command line is 2048 bytes; the limit is 2047 bytes plus the terminating NUL"
+            expected.to_string()
         );
     }
 }
