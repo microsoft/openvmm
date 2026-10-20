@@ -932,6 +932,7 @@ fn build_effective_microvm_command_line(
 mod tests {
     use super::*;
     use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::MICROVM_CONSOLE_COMMAND_LINE;
     use openvmm_defs::microvm::check_microvm_command_line;
     use test_with_tracing::test;
 
@@ -1021,16 +1022,23 @@ mod tests {
         };
         // The profile's tokens follow the caller's, and the guest kernel must
         // receive both: 2,047 bytes of text pass, and 2,048 fail with the
-        // shared check's error, whose text openvmm_defs tests.
-        let fill = MICROVM_COMMAND_LINE_MAX_SIZE - 1 - (build(1).unwrap().len() - 1);
+        // shared check's error, whose text openvmm_defs tests. The expected
+        // line comes from the profile's own tokens, not from the builder.
+        let profile_tokens = " nr_cpus=8 nvx_workload_uid=4294967295 \
+                              nvx_workload_gid=4294967295 nvx_lifecycle=one-shot";
+        let expected = |fill: usize| {
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} {}{profile_tokens}",
+                "x".repeat(fill)
+            )
+        };
+        let fill = MICROVM_COMMAND_LINE_MAX_SIZE
+            - 1
+            - (MICROVM_CONSOLE_COMMAND_LINE.len() + 1 + profile_tokens.len());
         let longest = build(fill).unwrap();
+        assert_eq!(longest, expected(fill));
         assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
-        assert!(longest.ends_with(" nvx_lifecycle=one-shot"), "{longest}");
-        let expected =
-            check_microvm_command_line(&"x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE)).unwrap_err();
-        assert_eq!(
-            build(fill + 1).unwrap_err().to_string(),
-            expected.to_string()
-        );
+        let over = check_microvm_command_line(&expected(fill + 1)).unwrap_err();
+        assert_eq!(build(fill + 1).unwrap_err().to_string(), over.to_string());
     }
 }
