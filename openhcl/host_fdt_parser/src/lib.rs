@@ -29,9 +29,6 @@ pub struct VmbusInfo {
     /// Parsed sorted mmio ranges from the device tree.
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_helpers::mmio_internal"))]
     pub mmio: ArrayVec<MemoryRange, 2>,
-    /// Connection ID for the vmbus root device.
-    #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub connection_id: u32,
 }
 
 /// Information about the GIC.
@@ -921,20 +918,7 @@ fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, ErrorKind<
             }
         };
 
-    let connection_id = node
-        .find_property("microsoft,message-connection-id")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
-            node_name: node.name,
-            prop_name: "microsoft,message-connection-id",
-        })?
-        .read_u32(0)
-        .map_err(ErrorKind::Prop)?;
-
-    Ok(VmbusInfo {
-        mmio,
-        connection_id,
-    })
+    Ok(VmbusInfo { mmio })
 }
 
 fn parse_simple_bus<'a>(
@@ -1279,7 +1263,6 @@ mod tests {
         p_compatible: fdt::builder::StringId,
         p_ranges: fdt::builder::StringId,
         p_vtl: fdt::builder::StringId,
-        p_vmbus_connection_id: fdt::builder::StringId,
     }
 
     fn add_vmbus<'a>(
@@ -1314,8 +1297,6 @@ mod tests {
             .unwrap()
             .add_u32(ids.p_vtl, vtl as u32)
             .unwrap()
-            .add_u32(ids.p_vmbus_connection_id, vmbus_info.connection_id)
-            .unwrap()
             .end_node()
             .unwrap()
     }
@@ -1341,9 +1322,6 @@ mod tests {
             .unwrap();
         let p_numa_node_id = builder.add_string("numa-node-id").unwrap();
         let p_compatible = builder.add_string("compatible").unwrap();
-        let p_vmbus_connection_id = builder
-            .add_string("microsoft,message-connection-id")
-            .unwrap();
         let p_vtl = builder
             .add_string(igvm_defs::dt::IGVM_DT_VTL_PROPERTY)
             .unwrap();
@@ -1491,7 +1469,6 @@ mod tests {
             p_compatible,
             p_ranges,
             p_vtl,
-            p_vmbus_connection_id,
         };
 
         // VTL0 vmbus root device
@@ -1665,7 +1642,7 @@ mod tests {
     #[test]
     fn test_basic_dt() {
         let orig = create_parsed(
-            2672,
+            2640,
             &[
                 MemoryEntry {
                     range: MemoryRange::try_new(0..(1024 * HV_PAGE_SIZE)).unwrap(),
@@ -1697,14 +1674,12 @@ mod tests {
                     MemoryRange::try_new((4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::try_new((102400 * HV_PAGE_SIZE)..(102800 * HV_PAGE_SIZE)).unwrap(),
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -1901,14 +1876,12 @@ mod tests {
                     (4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -1945,14 +1918,12 @@ mod tests {
                     MemoryRange::try_new((4000 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::EMPTY,
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[
                     MemoryRange::try_new((4020 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::EMPTY,
                 ]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -2056,8 +2027,8 @@ mod tests {
         let orig = create_parsed(
             match com3_serial {
                 ComInfo::None => unreachable!(),
-                ComInfo::Ns16550 { .. } => 2560,
-                ComInfo::Pl011 { .. } => 2512,
+                ComInfo::Ns16550 { .. } => 2528,
+                ComInfo::Pl011 { .. } => 2480,
             },
             &[
                 MemoryEntry {
@@ -2090,14 +2061,12 @@ mod tests {
                     MemoryRange::try_new((4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::try_new((102400 * HV_PAGE_SIZE)..(102800 * HV_PAGE_SIZE)).unwrap(),
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             com3_serial.clone(),
