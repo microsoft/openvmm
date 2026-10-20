@@ -2009,13 +2009,14 @@ mod tests {
         assert!(build_microvm_command_line(&["foo=bar\0baz".into()], false).is_err());
         // The text and its terminating NUL must fit in the guest kernel's
         // buffer: 2,047 bytes of text pass, and 2,048 fail with the shared
-        // check's error, whose text openvmm_defs tests.
+        // check's error for that line, whose text openvmm_defs tests.
+        let line = |fill: usize| format!("{MICROVM_BASE_COMMAND_LINE} {}", "x".repeat(fill));
         let fill = MICROVM_COMMAND_LINE_MAX_SIZE - 1 - MICROVM_BASE_COMMAND_LINE.len() - 1;
         let longest = build_microvm_command_line(&["x".repeat(fill)], false).unwrap();
+        assert_eq!(longest, line(fill));
         assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
         let error = build_microvm_command_line(&["x".repeat(fill + 1)], false).unwrap_err();
-        let expected =
-            check_microvm_command_line(&"x".repeat(MICROVM_COMMAND_LINE_MAX_SIZE)).unwrap_err();
+        let expected = check_microvm_command_line(&line(fill + 1)).unwrap_err();
         assert_eq!(error.to_string(), expected.to_string());
     }
 
