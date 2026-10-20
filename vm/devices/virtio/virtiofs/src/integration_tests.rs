@@ -9,6 +9,7 @@
 
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+use crate::virtio::VirtioFsDeviceOptions;
 use fuse::protocol::*;
 use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
@@ -71,7 +72,12 @@ impl TestHarness {
 
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
+        let device = VirtioFsDevice::new(
+            &driver_source,
+            "testfs",
+            fs,
+            VirtioFsDeviceOptions::default(),
+        );
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();

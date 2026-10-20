@@ -913,12 +913,22 @@ message VirtioFs {
     // Additional backend mount options, separated by ';'. When read_only is
     // set, "ro" is appended.
     string mount_options = 4;
-    reserved 5;
-    // Windows only. Expose shared-memory section objects instead of host files.
-    // root_path is the NT path of an existing object directory, e.g.
-    // \Sessions\1\BaseNamedObjects\<name>. read_only and mount_options must be
-    // unset; access uses the VM service process token.
-    bool shared_mem = 6;
+    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    WindowsOptions windows_options = 7;
+
+    message WindowsOptions {
+        // A token handle duplicated into the VM service process. OpenVMM
+        // duplicates the token for host filesystem access. The caller may
+        // close the handle after this RPC succeeds. Zero uses the VM service
+        // process token.
+        uint64 user_token_handle = 1;
+        // Expose shared-memory section objects instead of host files.
+        // root_path is the NT path of an existing object directory, e.g.
+        // \Sessions\1\BaseNamedObjects\<name>. read_only, mount_options, and
+        // user_token_handle must be unset; access uses the VM service process
+        // token.
+        bool shared_mem = 2;
+    }
 }
 
 message VirtioConsoleConfig {

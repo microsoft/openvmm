@@ -619,7 +619,7 @@ async fn test_ttrpc_interface(
                                 root_path: virtiofs_root.to_string_lossy().into(),
                                 read_only: i == 0,
                                 mount_options: String::new(),
-                                shared_mem: false,
+                                windows_options: None,
                             }],
                             // A SCSI controller keeps a request channel
                             // alive for the lifetime of the VM, which used
@@ -774,7 +774,7 @@ async fn test_ttrpc_interface(
                                 root_path: hotplug_virtiofs_root.to_string_lossy().into(),
                                 read_only: true,
                                 mount_options: String::new(),
-                                shared_mem: false,
+                                windows_options: None,
                             },
                         ))),
                     },
@@ -1303,7 +1303,7 @@ fn virtio_fs_vpci_request(
                 root_path: root_path.to_string_lossy().into_owned(),
                 read_only,
                 mount_options: String::new(),
-                shared_mem: false,
+                windows_options: None,
             },
         ))),
     }
