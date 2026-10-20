@@ -209,9 +209,9 @@ mod tests {
     use super::ArcMutexChipsetDeviceUnit;
     use chipset_device::ChipsetDevice;
     use closeable_mutex::CloseableMutex;
-    use futures::channel::oneshot;
     use futures::poll;
     use inspect::InspectMut;
+    use mesh::OneshotReceiver;
     use state_unit::StateUnit;
     use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
@@ -228,9 +228,9 @@ mod tests {
 
     struct TestDevice {
         quiesce_started: Arc<AtomicBool>,
-        quiesce_release: Option<oneshot::Receiver<()>>,
+        quiesce_release: Option<OneshotReceiver<()>>,
         resume_started: Arc<AtomicBool>,
-        resume_release: Option<oneshot::Receiver<()>>,
+        resume_release: Option<OneshotReceiver<()>>,
     }
 
     impl ChipsetDevice for TestDevice {}
@@ -296,8 +296,8 @@ mod tests {
     async fn test_input_hooks_defer_guest_lock(_driver: pal_async::DefaultDriver) {
         let quiesce_started = Arc::new(AtomicBool::new(false));
         let resume_started = Arc::new(AtomicBool::new(false));
-        let (quiesce_release_send, quiesce_release) = oneshot::channel();
-        let (resume_release_send, resume_release) = oneshot::channel();
+        let (quiesce_release_send, quiesce_release) = mesh::oneshot();
+        let (resume_release_send, resume_release) = mesh::oneshot();
         let device = Arc::new(CloseableMutex::new(TestDevice {
             quiesce_started: quiesce_started.clone(),
             quiesce_release: Some(quiesce_release),
@@ -315,7 +315,7 @@ mod tests {
                 guest_result.recv_timeout(Duration::from_millis(100)),
                 Err(mpsc::RecvTimeoutError::Timeout)
             ));
-            quiesce_release_send.send(()).unwrap();
+            quiesce_release_send.send(());
             quiesce.await.unwrap();
             assert_eq!(guest_result.recv_timeout(Duration::from_secs(1)), Ok(true));
             thread.join().unwrap();
@@ -329,7 +329,7 @@ mod tests {
             guest_result.recv_timeout(Duration::from_millis(100)),
             Err(mpsc::RecvTimeoutError::Timeout)
         ));
-        resume_release_send.send(()).unwrap();
+        resume_release_send.send(());
         resume.await.unwrap();
         assert_eq!(guest_result.recv_timeout(Duration::from_secs(1)), Ok(true));
         thread.join().unwrap();
