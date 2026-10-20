@@ -102,35 +102,39 @@ impl DeviceRegionState {
     }
 
     /// Removes `range` from the region. Mappings that partially overlap
-    /// `range` are split, and the parts outside `range` are mapped again.
-    /// virtiofs DAX relies on this to replace or upgrade existing mappings.
-    fn remove_range(&mut self, range: MemoryRange) -> io::Result<()> {
-        let (overlapping, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mappings)
-            .into_iter()
-            .partition(|mapping| mapping.range.overlaps(&range));
-        self.mappings = kept;
-        for mapping in overlapping {
-            if let Some(handle) = &self.handle {
-                block_on(handle.remove_mappings(mapping.range));
+    /// `range` are split, leaving the unaffected portions mapped. virtiofs
+    /// DAX relies on this to replace or upgrade existing mappings.
+    fn remove_range(&mut self, range: MemoryRange) {
+        let mut kept = Vec::new();
+        for mapping in std::mem::take(&mut self.mappings) {
+            if !mapping.range.overlaps(&range) {
+                kept.push(mapping);
+                continue;
             }
-            if mapping.range.start() < range.start() {
-                self.add_mapping(DeviceMapping {
-                    range: MemoryRange::new(mapping.range.start()..range.start()),
+
+            let removed = mapping.range.intersection(&range);
+            if let Some(handle) = &self.handle {
+                block_on(handle.remove_mappings(removed));
+            }
+
+            if mapping.range.start() < removed.start() {
+                kept.push(DeviceMapping {
+                    range: MemoryRange::new(mapping.range.start()..removed.start()),
                     file_offset: mapping.file_offset,
                     mappable: mapping.mappable.clone(),
                     writable: mapping.writable,
-                })?;
+                });
             }
-            if mapping.range.end() > range.end() {
-                self.add_mapping(DeviceMapping {
-                    range: MemoryRange::new(range.end()..mapping.range.end()),
-                    file_offset: mapping.file_offset + (range.end() - mapping.range.start()),
+            if mapping.range.end() > removed.end() {
+                kept.push(DeviceMapping {
+                    range: MemoryRange::new(removed.end()..mapping.range.end()),
+                    file_offset: mapping.file_offset + (removed.end() - mapping.range.start()),
                     mappable: mapping.mappable,
                     writable: mapping.writable,
-                })?;
+                });
             }
         }
-        Ok(())
+        self.mappings = kept;
     }
 }
 
@@ -157,13 +161,14 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         };
 
         let mut state = self.state.lock();
-        state.remove_range(range)?;
+        state.remove_range(range);
         state.add_mapping(new_mapping)
     }
 
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let range = self.validated_memory_range(offset, len)?;
-        self.state.lock().remove_range(range)
+        self.state.lock().remove_range(range);
+        Ok(())
     }
 }
 
@@ -225,5 +230,36 @@ impl MappableGuestMemory for DeviceMemoryControl {
         if let Some(handle) = state.handle.take() {
             block_on(handle.teardown());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeviceMapping;
+    use super::DeviceRegionState;
+    use memory_range::MemoryRange;
+
+    #[test]
+    fn remove_range_preserves_unaffected_mapping_fragments() {
+        let mappable = sparse_mmap::alloc_shared_memory(0x10000, "test")
+            .unwrap()
+            .into();
+        let mut state = DeviceRegionState {
+            handle: None,
+            mappings: vec![DeviceMapping {
+                range: MemoryRange::new(0..0x10000),
+                file_offset: 0,
+                mappable,
+                writable: true,
+            }],
+        };
+
+        state.remove_range(MemoryRange::new(0x4000..0x8000));
+
+        assert_eq!(state.mappings.len(), 2);
+        assert_eq!(state.mappings[0].range, MemoryRange::new(0..0x4000));
+        assert_eq!(state.mappings[0].file_offset, 0);
+        assert_eq!(state.mappings[1].range, MemoryRange::new(0x8000..0x10000));
+        assert_eq!(state.mappings[1].file_offset, 0x8000);
     }
 }
