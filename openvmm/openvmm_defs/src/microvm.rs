@@ -2286,16 +2286,19 @@ mod tests {
         assert!(build_microvm_command_line(&["nr_cpus=1".to_owned()], false).is_err());
     }
 
+    // The exact text of the limit error, which callers may match. The other
+    // crates' tests take it from check_microvm_command_line.
     const LIMIT_ERROR: &str = "microVM kernel command line is 2048 bytes; the limit is 2047 bytes plus the terminating NUL";
 
     #[test]
     fn microvm_command_line_fits_the_guest_kernel_limit() {
-        // 2,047 bytes of text and the terminating NUL fill the guest kernel's
-        // 2,048-byte buffer.
+        // The limit is the x86 guest kernel's COMMAND_LINE_SIZE: 2,047 bytes
+        // of text and the terminating NUL fill its 2,048-byte buffer.
         assert_eq!(MICROVM_COMMAND_LINE_MAX_SIZE, 2048);
-        check_microvm_command_line(&"x".repeat(2047)).unwrap();
+        let max_text = MICROVM_COMMAND_LINE_MAX_SIZE - 1;
+        check_microvm_command_line(&"x".repeat(max_text)).unwrap();
         assert_eq!(
-            check_microvm_command_line(&"x".repeat(2048))
+            check_microvm_command_line(&"x".repeat(max_text + 1))
                 .unwrap_err()
                 .to_string(),
             LIMIT_ERROR
@@ -2307,19 +2310,13 @@ mod tests {
             "microVM kernel command line contains an embedded NUL"
         );
 
-        let longest = build_microvm_command_line(
-            &["x".repeat(2047 - MICROVM_CONSOLE_COMMAND_LINE.len() - 1)],
-            true,
-        )
-        .unwrap();
-        assert_eq!(longest.len(), 2047);
+        let fill = max_text - MICROVM_CONSOLE_COMMAND_LINE.len() - 1;
+        let longest = build_microvm_command_line(&["x".repeat(fill)], true).unwrap();
+        assert_eq!(longest.len(), max_text);
         assert_eq!(
-            build_microvm_control_command_line(
-                &["x".repeat(2048 - MICROVM_CONSOLE_COMMAND_LINE.len() - 1)],
-                true,
-            )
-            .unwrap_err()
-            .to_string(),
+            build_microvm_control_command_line(&["x".repeat(fill + 1)], true)
+                .unwrap_err()
+                .to_string(),
             LIMIT_ERROR
         );
     }
@@ -2343,17 +2340,21 @@ mod tests {
                 " nvx_lifecycle=one-shot",
             ),
         ];
+        let max_text = MICROVM_COMMAND_LINE_MAX_SIZE - 1;
         for (append, token) in appends {
-            let mut longest = "x".repeat(2047 - token.len());
+            let mut longest = "x".repeat(max_text - token.len());
             append(&mut longest).unwrap();
-            assert_eq!(longest.len(), 2047);
+            assert_eq!(longest.len(), max_text);
             assert!(longest.ends_with(token));
-            let mut over = "x".repeat(2048 - token.len());
+            let mut over = "x".repeat(max_text + 1 - token.len());
             assert_eq!(append(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
         }
 
         // Device discovery and the network bootstrap come last, so the line
-        // that they complete is the effective one.
+        // that they complete is the effective one. The line with a one-byte
+        // argument gives the profile's share of it; padded to the limit, the
+        // line must equal that one with only the argument longer, so that no
+        // token is lost, and still end with the network bootstrap.
         let network: MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         let discover = |cmdline: &mut String| {
             append_microvm_virtio_discovery(
@@ -2368,10 +2369,10 @@ mod tests {
         };
         let mut shortest = build_microvm_command_line(&["x".to_owned()], false).unwrap();
         discover(&mut shortest).unwrap();
-        let fill = 2047 - (shortest.len() - 1);
+        let fill = max_text - (shortest.len() - 1);
         let mut longest = build_microvm_command_line(&["x".repeat(fill)], false).unwrap();
         discover(&mut longest).unwrap();
-        assert_eq!(longest.len(), 2047);
+        assert_eq!(longest.len(), max_text);
         assert_eq!(
             longest,
             shortest.replacen(" x ", &format!(" {} ", "x".repeat(fill)), 1)
