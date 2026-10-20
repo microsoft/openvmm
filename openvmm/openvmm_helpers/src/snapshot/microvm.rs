@@ -3827,7 +3827,12 @@ mod tests {
         // a saved line of 2,047 bytes passes, and one of 2,048 fails with the
         // shared check's error, whose text openvmm_defs tests.
         let prefix = "console=hvc0 ";
-        let line = |length: usize| format!("{prefix}{}", "x".repeat(length - prefix.len()));
+        let line = |length: usize| {
+            let fill = length
+                .checked_sub(prefix.len())
+                .expect("the prefix fits within the limit");
+            format!("{prefix}{}", "x".repeat(fill))
+        };
         let mut contract = test_machine_contract();
         contract.set_effective_command_line(line(MICROVM_COMMAND_LINE_MAX_SIZE - 1));
         validate_machine_contract_shape(&contract, 1024, 2).unwrap();
