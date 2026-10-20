@@ -32,6 +32,7 @@ pub struct VirtioWorkPool {
     rx_capacity_drops: u64,
     rx_memory_write_drops: u64,
     rx_incomplete_drops: u64,
+    rx_unsupported_offload_drops: u64,
 }
 
 impl VirtioWorkPool {
@@ -42,7 +43,11 @@ impl VirtioWorkPool {
         )
         .field("rx_capacity_drops", self.rx_capacity_drops)
         .field("rx_memory_write_drops", self.rx_memory_write_drops)
-        .field("rx_incomplete_drops", self.rx_incomplete_drops);
+        .field("rx_incomplete_drops", self.rx_incomplete_drops)
+        .field(
+            "rx_unsupported_offload_drops",
+            self.rx_unsupported_offload_drops,
+        );
     }
 
     /// Create a new instance.
@@ -53,6 +58,7 @@ impl VirtioWorkPool {
             rx_capacity_drops: 0,
             rx_memory_write_drops: 0,
             rx_incomplete_drops: 0,
+            rx_unsupported_offload_drops: 0,
         }
     }
 
@@ -148,6 +154,17 @@ impl VirtioWorkPool {
             .as_mut()
             .expect("invalid buffer index")
             .write_failed = true;
+    }
+
+    fn fail_unsupported_offload(&mut self, id: RxId) {
+        self.rx_unsupported_offload_drops += 1;
+        self.rx_packets[id.0 as usize]
+            .as_mut()
+            .expect("invalid buffer index")
+            .write_failed = true;
+        tracelimit::warn_ratelimited!(
+            "dropping RX packet with ECN metadata because VIRTIO_NET_F_GUEST_ECN is not supported"
+        );
     }
 }
 
@@ -268,6 +285,10 @@ impl BufferAccess for VirtioWorkPool {
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
+        if metadata.gso.is_some_and(|gso| gso.ecn) {
+            self.fail_unsupported_offload(id);
+            return;
+        }
         assert_eq!(metadata.offset, 0);
         assert!(metadata.len > 0);
 
@@ -301,7 +322,6 @@ impl BufferAccess for VirtioWorkPool {
             (
                 crate::VirtioNetHeaderGso::new()
                     .with_protocol(protocol)
-                    .with_ecn(gso.ecn)
                     .into_bits(),
                 gso.header_len,
                 gso.max_segment_size,
