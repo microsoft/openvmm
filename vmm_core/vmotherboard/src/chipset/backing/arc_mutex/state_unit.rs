@@ -174,7 +174,8 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         // VPs are still running during input transitions. Keep the mutex open
         // so concurrent guest accesses wait instead of panicking on a closed
-        // mutex.
+        // mutex. The guard stays held across the await, so hooks must not wait
+        // for work that requires this device lock.
         self.device.lock().quiesce_input().await
     }
 
