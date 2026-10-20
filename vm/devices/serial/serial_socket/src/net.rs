@@ -183,11 +183,15 @@ impl AsyncRead for SocketSerialBackend {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(0));
         };
-        let r = ready!(Pin::new(current).poll_read(cx, buf));
-        if matches!(r, Ok(0)) {
-            self.current = None;
+        let result = ready!(Pin::new(current).poll_read(cx, buf));
+        match result {
+            Ok(0) | Err(_) => {
+                self.current = None;
+                // SerialIo reports transport disconnects as EOF.
+                Poll::Ready(Ok(0))
+            }
+            result => Poll::Ready(result),
         }
-        Poll::Ready(r)
     }
 }
 
@@ -211,21 +215,105 @@ impl AsyncWrite for SocketSerialBackend {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(()));
         };
-        let r = ready!(Pin::new(current).poll_flush(cx));
-        if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-            return Poll::Ready(Ok(()));
+        let result = ready!(Pin::new(current).poll_flush(cx));
+        if result.is_err() {
+            self.current = None;
         }
-        Poll::Ready(r)
+        Poll::Ready(result)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let Some(current) = &mut self.current else {
             return Poll::Ready(Ok(()));
         };
-        let r = ready!(Pin::new(current).poll_close(cx));
-        if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-            return Poll::Ready(Ok(()));
+        let result = ready!(Pin::new(current).poll_close(cx));
+        if result.is_err() {
+            self.current = None;
         }
-        Poll::Ready(r)
+        Poll::Ready(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::AsyncReadExt;
+    use futures::AsyncWriteExt;
+    use futures::future::poll_fn;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    fn new_backend(driver: DefaultDriver) -> (SocketSerialBackend, SocketAddr) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let backend =
+            SocketSerialBackend::new(Box::new(driver), OpenSocketSerialConfig::from(listener))
+                .unwrap();
+        (backend, address)
+    }
+
+    async fn connect_peer(backend: &mut SocketSerialBackend, address: SocketAddr) -> TcpStream {
+        let peer = TcpStream::connect(address).unwrap();
+        poll_fn(|cx| backend.poll_connect(cx)).await.unwrap();
+        assert!(backend.is_connected());
+        peer
+    }
+
+    fn reset_peer(peer: TcpStream) {
+        let peer = Socket::from(peer);
+        peer.set_linger(Some(Duration::ZERO)).unwrap();
+        drop(peer);
+    }
+
+    async fn write_until_failure(backend: &mut SocketSerialBackend) -> io::Error {
+        let buf = [0x5a; 64 * 1024];
+        for _ in 0..128 {
+            match backend.write(&buf).await {
+                Ok(n) => {
+                    assert_ne!(n, 0);
+                    std::thread::yield_now();
+                }
+                Err(err) => return err,
+            }
+        }
+        panic!("reset peer did not fail a write after bounded retries");
+    }
+
+    #[async_test]
+    async fn write_failure_drops_connection_and_accepts_replacement(driver: DefaultDriver) {
+        let (mut backend, address) = new_backend(driver);
+        let peer = connect_peer(&mut backend, address).await;
+        reset_peer(peer);
+
+        let err = write_until_failure(&mut backend).await;
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::ConnectionReset
+            ),
+            "unexpected reset error: {err:?}"
+        );
+        assert!(!backend.is_connected());
+        assert_eq!(backend.write(b"dropped").await.unwrap(), 7);
+
+        let _replacement = connect_peer(&mut backend, address).await;
+    }
+
+    #[async_test]
+    async fn read_failure_returns_eof_and_accepts_replacement(driver: DefaultDriver) {
+        let (mut backend, address) = new_backend(driver);
+        let peer = connect_peer(&mut backend, address).await;
+        reset_peer(peer);
+
+        let mut buf = [0];
+        assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
+        assert!(!backend.is_connected());
+        assert_eq!(backend.read(&mut buf).await.unwrap(), 0);
+
+        let _replacement = connect_peer(&mut backend, address).await;
     }
 }
