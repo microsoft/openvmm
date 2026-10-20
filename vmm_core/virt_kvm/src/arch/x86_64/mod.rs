@@ -572,9 +572,10 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             tsc_achieved_lead_ns = alignment.map(|a| a.achieved_lead_ns),
             "partition created"
         );
-        let aligned_tsc_offset = alignment
-            .map(|_| self.vm.vp(bsp_apic_id).tsc_offset())
-            .transpose()?;
+        let aligned_tsc_offset =
+            recorded_tsc_offset(self.config.hv_config.is_some(), alignment.is_some(), || {
+                self.vm.vp(bsp_apic_id).tsc_offset()
+            })?;
 
         let mut gsi_routing = GsiRouting::new();
 
@@ -1156,6 +1157,25 @@ fn prime_reference_clock_pairing(vm: &kvm::Partition) -> Result<(), KvmError> {
         );
     }
     Ok(())
+}
+
+/// The offset a later `Tsc` state write reapplies, or `None` to store the written counter.
+///
+/// Only a partition with a reference time element records one. Its restore always writes the
+/// clock (`set_reftime`) before any vp's counter, so the offset recorded there belongs to the
+/// same operation. Without that element a restore neither sets the clock nor aligns, the saved
+/// counter is the only record of the guest's time, and it has to be stored as saved:
+/// reapplying the offset from creation would move the guest counter by however long ago that
+/// was.
+fn recorded_tsc_offset<E>(
+    has_reference_time: bool,
+    aligned: bool,
+    read_offset: impl FnOnce() -> Result<u64, E>,
+) -> Result<Option<u64>, E> {
+    if !(has_reference_time && aligned) {
+        return Ok(None);
+    }
+    read_offset().map(Some)
 }
 
 /// Puts the guest timestamp counter on the partition reference clock's origin, a
@@ -1897,9 +1917,10 @@ impl KvmPartitionInner {
             bsp,
             self.vps.iter().map(|vp| vp.vp_info.apic_id),
         )?;
-        *self.aligned_tsc_offset.lock() = alignment
-            .map(|_| self.kvm.vp(bsp).tsc_offset())
-            .transpose()?;
+        *self.aligned_tsc_offset.lock() =
+            recorded_tsc_offset(self.hv1_enabled, alignment.is_some(), || {
+                self.kvm.vp(bsp).tsc_offset()
+            })?;
         Ok(alignment)
     }
 
@@ -3014,6 +3035,7 @@ mod tsc_alignment_tests {
     use super::ns_from_guest_tsc_ticks;
     use super::ns_from_guest_tsc_ticks_rounding_up;
     use super::pair_guest_tsc_with_reference_clock;
+    use super::recorded_tsc_offset;
     use super::tsc_offset_aligned_to_reference_clock;
 
     /// A plausible guest TSC rate for the hosts this runs on, in kHz.
@@ -3811,5 +3833,34 @@ mod tsc_alignment_tests {
         );
         // And a rate the kernel should never report does not divide by zero.
         assert_eq!(ns_from_guest_tsc_ticks(1_000, 0), 0);
+    }
+
+    #[test]
+    fn only_a_partition_with_a_reference_clock_reapplies_an_offset() {
+        let read = || Ok::<u64, ()>(0x1234);
+        assert_eq!(recorded_tsc_offset(true, true, read), Ok(Some(0x1234)));
+        // Without a reference time element a restore never sets the clock, so the saved counter
+        // must be stored; an offset from creation would shift the guest's time.
+        assert_eq!(recorded_tsc_offset(false, true, read), Ok(None));
+        // No alignment (the kernel lacks the offset attribute): nothing to reapply.
+        assert_eq!(recorded_tsc_offset(true, false, read), Ok(None));
+    }
+
+    #[test]
+    fn the_offset_is_read_only_when_it_will_be_recorded() {
+        let mut reads = 0;
+        let _ = recorded_tsc_offset(false, true, || {
+            reads += 1;
+            Ok::<u64, ()>(0)
+        });
+        let _ = recorded_tsc_offset(true, false, || {
+            reads += 1;
+            Ok::<u64, ()>(0)
+        });
+        assert_eq!(reads, 0);
+        assert_eq!(
+            recorded_tsc_offset(true, true, || Err::<u64, &str>("ioctl")),
+            Err("ioctl")
+        );
     }
 }
