@@ -364,8 +364,7 @@ impl Queue for TapQueue {
                                 "dropping TAP packet larger than guest receive buffer"
                             );
                         }
-                        cx.waker().wake_by_ref();
-                        break;
+                        pool.write_drop(rx, frame_len);
                     }
 
                     self.inner.rx_ready.push_back(rx);

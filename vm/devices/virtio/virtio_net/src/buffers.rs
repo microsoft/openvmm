@@ -376,4 +376,12 @@ impl BufferAccess for VirtioWorkPool {
             .expect("invalid buffer index")
             .len = metadata.len as u32;
     }
+
+    fn write_drop(&mut self, id: RxId, packet_len: usize) {
+        let capacity = self.rx_packets[id.0 as usize]
+            .as_ref()
+            .expect("invalid buffer index")
+            .cap;
+        self.fail_capacity(id, packet_len, capacity);
+    }
 }

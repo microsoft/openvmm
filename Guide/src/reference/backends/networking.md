@@ -135,6 +135,12 @@ For virtio-net, a capacity or guest-memory write failure leaves the
 descriptor as a dropped receive and increments an explicit drop counter;
 it is never counted as a successfully received packet.
 
+When a backend consumes a host packet but cannot use the posted receive
+buffer, it calls `BufferAccess::write_drop` before returning the buffer ID.
+Each frontend then prepares a safe protocol-specific dropped completion,
+preventing stale guest-visible data while allowing unusable buffers to retire
+instead of blocking later receive buffers.
+
 ## Lifecycle
 
 1. The frontend creates a
