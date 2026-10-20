@@ -35,6 +35,7 @@ mod start;
 
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::future::join_all;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
@@ -79,8 +80,9 @@ pub enum StateRequest {
 
     /// Stop asynchronous operations.
     ///
-    /// The handler must be safe after any delivered start attempt and
-    /// idempotent when a previous stop response was not observed.
+    /// The handler must be safe after any delivered start attempt. An
+    /// outstanding stop request is retained until its response is observed, so
+    /// another stop request will not overlap it.
     Stop(Rpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
@@ -112,8 +114,8 @@ pub trait StateUnit: InspectMut {
     /// Stop asynchronous processing.
     ///
     /// This must be safe after a failed or partially completed
-    /// [`StateUnit::start`] and idempotent if a previous stop response was not
-    /// observed.
+    /// [`StateUnit::start`]. [`StateUnits`] retains an outstanding stop request
+    /// until its response is observed instead of issuing an overlapping stop.
     async fn stop(&mut self);
 
     /// Reset to initial state.
@@ -238,6 +240,7 @@ enum State {
     StartUncertain,
     StartFailedStopped,
     QuiesceUncertain,
+    QuiesceFailedStopped,
 }
 
 #[derive(Debug)]
@@ -254,7 +257,18 @@ struct Unit {
     dependencies: Vec<u64>,
     dependents: Vec<u64>,
     state: State,
+    pending_stop: Option<PendingStop>,
     inspect_sensitivity: inspect::SensitivityLevel,
+}
+
+struct PendingStop {
+    future: BoxFuture<'static, Result<Option<()>, UnitRecvError>>,
+}
+
+impl Debug for PendingStop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingStop").finish_non_exhaustive()
+    }
 }
 
 /// An error returned when a state unit name is already in use.
@@ -489,7 +503,10 @@ impl StateUnits {
                 .filter(|unit| {
                     matches!(
                         unit.state,
-                        State::StartUncertain | State::StartFailedStopped | State::QuiesceUncertain
+                        State::StartUncertain
+                            | State::StartFailedStopped
+                            | State::QuiesceUncertain
+                            | State::QuiesceFailedStopped
                     )
                 })
                 .map(|unit| {
@@ -525,27 +542,58 @@ impl StateUnits {
     /// Stops all the state units.
     pub async fn stop(&mut self) {
         assert!(self.running);
-        // Make uncertain transitions receive Stop and already-cleaned start
-        // failures skip it, then restore the terminal markers after the
-        // ordered operation.
         let terminal_states = {
-            let mut inner = self.inner.lock();
+            let inner = self.inner.lock();
             inner
                 .units
-                .iter_mut()
+                .iter()
                 .filter_map(|(&id, unit)| {
-                    let state = unit.state;
-                    match state {
-                        State::StartUncertain | State::QuiesceUncertain => {
-                            unit.state = State::Running
-                        }
-                        State::StartFailedStopped => unit.state = State::Stopped,
-                        _ => return None,
-                    }
-                    Some((id, state))
+                    matches!(
+                        unit.state,
+                        State::StartUncertain
+                            | State::StartFailedStopped
+                            | State::QuiesceUncertain
+                            | State::QuiesceFailedStopped
+                    )
+                    .then_some((id, unit.state))
                 })
                 .collect::<Vec<_>>()
         };
+
+        // A bounded quiesce may stop waiting for an RPC response while the
+        // handler is still running. Complete those RPCs before deciding
+        // whether a cleanup Stop still needs to be sent.
+        self.finish_pending_stops().await;
+
+        // Make uncertain transitions receive Stop and already-cleaned start
+        // failures skip it, then restore the terminal markers after the
+        // ordered operation.
+        {
+            let mut inner = self.inner.lock();
+            for &(id, state) in &terminal_states {
+                let Some(unit) = inner.units.get_mut(&id) else {
+                    continue;
+                };
+                match state {
+                    State::StartUncertain => {
+                        assert_eq!(unit.state, state);
+                        unit.state = State::Running;
+                    }
+                    State::QuiesceUncertain => match unit.state {
+                        State::QuiesceUncertain => unit.state = State::Running,
+                        State::Stopped => {}
+                        current => {
+                            panic!("unit {} in {current:?} state after pending stop", unit.name);
+                        }
+                    },
+                    State::StartFailedStopped | State::QuiesceFailedStopped => {
+                        assert_eq!(unit.state, state);
+                        unit.state = State::Stopped;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
         // Stop units in reverse dependency order so that a dependency is not
         // stopped before its dependant.
         self.run_op(
@@ -567,6 +615,47 @@ impl StateUnits {
             }
         }
         self.running = false;
+    }
+
+    async fn finish_pending_stops(&self) {
+        let pending = {
+            let mut inner = self.inner.lock();
+            inner
+                .units
+                .iter_mut()
+                .filter_map(|(&id, unit)| {
+                    unit.pending_stop.take().map(|pending| {
+                        assert_eq!(unit.state, State::QuiesceUncertain);
+                        (id, pending)
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let results = join_all(
+            pending
+                .into_iter()
+                .map(|(id, pending)| async move { (id, pending.future.await) }),
+        )
+        .await;
+
+        let mut inner = self.inner.lock();
+        for (id, result) in results {
+            match result {
+                Ok(Some(())) => {
+                    if let Some(unit) = inner.units.get_mut(&id) {
+                        assert_eq!(unit.state, State::QuiesceUncertain);
+                        unit.state = State::Stopped;
+                    }
+                }
+                Ok(None) => unreachable!("pending stop did not contain an RPC"),
+                Err(error) => {
+                    if inner.units.contains_key(&id) {
+                        panic!("{error:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Resets all the state units.
@@ -973,6 +1062,7 @@ impl UnitBuilder<'_> {
                     dependencies: self.dependencies,
                     dependents: self.dependents,
                     state: State::Stopped,
+                    pending_stop: None,
                     inspect_sensitivity: self.inspect_sensitivity,
                 },
             );
