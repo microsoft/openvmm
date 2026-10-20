@@ -69,5 +69,8 @@ serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
 serde = { workspace = true, features = ["std"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+test_igvm_agent_lib.workspace = true
+
 [lints]
 workspace = true

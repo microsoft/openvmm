@@ -118,6 +118,7 @@ impl FaultControllerTdispInterface {
                     range_id: MSIX_RANGE_ID,
                 },
             ],
+            device_specific_info: Vec::new(),
         }
     }
 }
