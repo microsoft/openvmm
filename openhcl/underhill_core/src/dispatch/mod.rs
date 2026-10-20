@@ -87,6 +87,12 @@ pub enum UhVmRpc {
     MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
+enum SaveReason {
+    Diagnostic,
+    Servicing,
+    WorkerRestart,
+}
+
 #[async_trait]
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
@@ -319,7 +325,12 @@ impl LoadedVm {
                         let state = async {
                             let running = self.stop().await;
                             match self
-                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .save(
+                                    SaveReason::WorkerRestart,
+                                    None,
+                                    KeepAliveConfig::Disabled,
+                                    KeepAliveConfig::Disabled,
+                                )
                                 .await
                             {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
@@ -406,7 +417,12 @@ impl LoadedVm {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self
-                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .save(
+                                    SaveReason::Diagnostic,
+                                    None,
+                                    KeepAliveConfig::Disabled,
+                                    KeepAliveConfig::Disabled,
+                                )
                                 .await;
                             if running {
                                 self.start(None).await;
@@ -743,27 +759,13 @@ impl LoadedVm {
 
             let mut state = self
                 .save(
+                    SaveReason::Servicing,
                     Some(deadline),
                     self.nvme_keep_alive.clone(),
                     self.mana_keep_alive.clone(),
                 )
                 .await?;
             state.init_state.correlation_id = Some(correlation_id);
-
-            // Unload any network devices, but only when MANA keepalive is enabled.
-            // When disabled, save() already unloaded them.
-            let shutdown_mana = async {
-                if self.mana_keep_alive.is_enabled()
-                    && let Some(network_settings) = self.network_settings.as_mut()
-                {
-                    network_settings
-                        .unload_for_servicing()
-                        .instrument(
-                            tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id),
-                        )
-                        .await;
-                }
-            };
 
             // If keepalive is enabled, partially reset all user-mode NVMe devices after save.
             let shutdown_nvme = async {
@@ -800,7 +802,7 @@ impl LoadedVm {
             )
             .context("failed to write persisted info")?;
 
-            let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            let (r, ()) = (shutdown_pci, shutdown_nvme).join().await;
             r?;
 
             Ok(state)
@@ -930,6 +932,7 @@ impl LoadedVm {
 
     async fn save(
         &mut self,
+        reason: SaveReason,
         _deadline: Option<std::time::Instant>,
         nvme_keepalive_mode: KeepAliveConfig,
         mana_keepalive_mode: KeepAliveConfig,
@@ -941,10 +944,10 @@ impl LoadedVm {
         // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
-        // Unload any network devices, but only if MANA keepalive is disabled.
-        // Preserve the synthetic NIC state units, then unload the network devices
-        // before saving the DMA manager state to exclude MANA allocations.
-        let units = if !mana_keepalive_mode.is_enabled() {
+        // For servicing without MANA keepalive, preserve the synthetic NIC state
+        // units and unload MANA to exclude its allocations from the DMA snapshot.
+        let units = if matches!(reason, SaveReason::Servicing) && !mana_keepalive_mode.is_enabled()
+        {
             let units = self.save_units().await.context("state unit save failed")?;
             if let Some(network_settings) = self.network_settings.as_mut() {
                 // DEVNOTE: Unloading the network devices is destructive. If a later

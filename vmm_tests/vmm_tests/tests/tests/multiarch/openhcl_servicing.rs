@@ -1865,6 +1865,29 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic_diagnostic_save(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_mana_keepalive(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    configure_mana_nic(&agent).await?;
+    validate_mana_nic(&agent).await?;
+
+    let state = vm.dump_openhcl_saved_state().await?;
+    assert!(!state.is_empty(), "diagnostic save returned empty state");
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.

@@ -108,6 +108,7 @@ async fn create_mana_device(
     keepalive_mode: KeepAliveConfig,
     dma_clients: VfioDmaClients,
     mut mana_state: Option<&ManaSavedState>,
+    is_restoring: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let vtl2_vfid = vfid_from_guid(vtl2_vf_instance_id);
     // This guards from situations where we have saved state from keepalive
@@ -124,10 +125,8 @@ async fn create_mana_device(
         let _ = mana_state.take();
     }
 
-    // Guard against missing saved state when keepalive is enabled.
-    // On initial boot, there will be no pending buffers making this a no-op.
-    // On servicing restore, pending buffers are cleared.
-    if mana_state.is_none() && keepalive_mode.is_enabled() {
+    // Only servicing restore can leave pending buffers without MANA saved state.
+    if is_restoring && mana_state.is_none() && keepalive_mode.is_enabled() {
         tracelimit::info_ratelimited!(vtl2_vfid, "missing saved state but keepalive is enabled");
         discard_pending_mana_buffers(&dma_clients)?;
     }
@@ -1011,7 +1010,8 @@ impl HclNetworkVFManagerWorker {
             self.max_sub_channels,
             KeepAliveConfig::Disabled,
             self.dma_clients.clone(),
-            None, // No ManaSavedState
+            None,  // No ManaSavedState
+            false, // Not a restore
         )
         .await
         {
@@ -1901,6 +1901,7 @@ impl HclNetworkVFManager {
             keepalive_mode.clone(),
             dma_clients.clone(),
             mana_state,
+            netvsp_state.is_some(),
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
