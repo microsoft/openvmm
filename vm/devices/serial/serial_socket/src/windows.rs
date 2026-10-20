@@ -130,6 +130,16 @@ impl WindowsPipeSerialBackend {
         }
         Ok(())
     }
+
+    fn disconnect_and_log_failure(&mut self, reason: &'static str) {
+        if let Err(error) = self.disconnect() {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                reason,
+                "failed to prepare named pipe for reconnection"
+            );
+        }
+    }
 }
 
 impl From<WindowsPipeSerialBackend> for Resource<SerialBackendHandle> {
@@ -161,12 +171,7 @@ impl SerialIo for WindowsPipeSerialBackend {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(())),
             PipeState::Connected(pipe) => {
                 ready!(pipe.poll_closing(cx))?;
-                if let Err(err) = self.disconnect() {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to prepare named pipe for reconnection"
-                    );
-                }
+                self.disconnect_and_log_failure("peer closed");
                 Poll::Ready(Ok(()))
             }
         }
@@ -182,16 +187,18 @@ impl AsyncRead for WindowsPipeSerialBackend {
         match &mut self.state {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(0)),
             PipeState::Connected(pipe) => {
-                let r = ready!(Pin::new(pipe).poll_read(cx, buf));
-                if matches!(r, Ok(0)) {
-                    if let Err(err) = self.disconnect() {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "failed to prepare named pipe for reconnection"
-                        );
+                let result = ready!(Pin::new(pipe).poll_read(cx, buf));
+                match result {
+                    Ok(0) => {
+                        self.disconnect_and_log_failure("read EOF");
+                        Poll::Ready(Ok(0))
                     }
+                    Err(_) => {
+                        self.disconnect_and_log_failure("read failure");
+                        Poll::Ready(Ok(0))
+                    }
+                    result => Poll::Ready(result),
                 }
-                Poll::Ready(r)
             }
         }
     }
@@ -207,13 +214,8 @@ impl AsyncWrite for WindowsPipeSerialBackend {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(buf.len())),
             PipeState::Connected(pipe) => {
                 let result = ready!(Pin::new(pipe).poll_write(cx, buf));
-                if result.is_err()
-                    && let Err(error) = self.disconnect()
-                {
-                    tracing::error!(
-                        error = &error as &dyn std::error::Error,
-                        "failed to prepare named pipe after a write failure"
-                    );
+                if result.is_err() {
+                    self.disconnect_and_log_failure("write failure");
                 }
                 Poll::Ready(result)
             }
@@ -224,11 +226,11 @@ impl AsyncWrite for WindowsPipeSerialBackend {
         match &mut self.state {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(())),
             PipeState::Connected(pipe) => {
-                let r = ready!(Pin::new(pipe).poll_flush(cx));
-                if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-                    return Poll::Ready(Ok(()));
+                let result = ready!(Pin::new(pipe).poll_flush(cx));
+                if result.is_err() {
+                    self.disconnect_and_log_failure("flush failure");
                 }
-                Poll::Ready(r)
+                Poll::Ready(result)
             }
         }
     }
@@ -237,11 +239,11 @@ impl AsyncWrite for WindowsPipeSerialBackend {
         match &mut self.state {
             PipeState::Done | PipeState::Listening(_) => Poll::Ready(Ok(())),
             PipeState::Connected(pipe) => {
-                let r = ready!(Pin::new(pipe).poll_close(cx));
-                if matches!(&r, Err(err) if err.kind() == io::ErrorKind::BrokenPipe) {
-                    return Poll::Ready(Ok(()));
+                let result = ready!(Pin::new(pipe).poll_close(cx));
+                if result.is_err() {
+                    self.disconnect_and_log_failure("close failure");
                 }
-                Poll::Ready(r)
+                Poll::Ready(result)
             }
         }
     }
