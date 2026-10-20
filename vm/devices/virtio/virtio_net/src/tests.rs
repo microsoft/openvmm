@@ -1050,13 +1050,50 @@ async fn rx_header_first_payload_failure_is_dropped(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
-    harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + 64);
+    let header_gpa = harness.alloc_data(NET_HEADER_SIZE);
+    harness
+        .mem
+        .write_at(header_gpa, &vec![0u8; NET_HEADER_SIZE as usize])
+        .unwrap();
+    let flags = DescriptorFlags::new().with_write(true).with_next(true);
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        0,
+        header_gpa,
+        NET_HEADER_SIZE,
+        flags,
+        1,
+    );
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        1,
+        TOTAL_MEM_SIZE as u64,
+        128,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(
+        &harness.mem,
+        RX_AVAIL_ADDR,
+        QUEUE_SIZE,
+        0,
+        &mut harness.rx_avail_idx,
+    );
+    harness.rx_event.signal();
+
     handle.wait_for_rx_pending().await;
     handle.inject_rx_packet_header_first(&[0xaa; 128]);
 
     let (id, len) = harness.wait_for_rx_used().await;
     assert_eq!(id, 0);
     assert_eq!(len, 0, "failed payload write must not be published");
+    assert_eq!(
+        read_virtio_header(&harness.mem, header_gpa).num_buffers,
+        1,
+        "header write should succeed before the payload write fails"
+    );
 }
 
 /// Post 3 TX packets one at a time, each completing synchronously.
