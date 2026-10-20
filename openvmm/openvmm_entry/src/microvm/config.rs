@@ -952,6 +952,9 @@ fn build_effective_microvm_command_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
+    use openvmm_defs::microvm::MICROVM_CONSOLE_COMMAND_LINE;
+    use openvmm_defs::microvm::check_microvm_command_line;
     use test_with_tracing::test;
 
     #[test]
@@ -1021,5 +1024,51 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn effective_command_line_limit_includes_the_profile_tokens() {
+        let build = |fill: usize| {
+            build_effective_microvm_command_line(
+                &["x".repeat(fill)],
+                8,
+                true,
+                true,
+                Some(cli_args::microvm::MicrovmWorkloadIdentityCli {
+                    uid: u32::MAX,
+                    gid: u32::MAX,
+                }),
+                Some(cli_args::microvm::MicrovmLifecycleCli::OneShot),
+            )
+        };
+        // The profile's tokens follow the caller's, and the guest kernel must
+        // receive both: 2,047 bytes of text pass, and 2,048 fail with the
+        // shared check's error, whose text openvmm_defs tests. The expected
+        // line joins the console command line, the caller's argument, and the
+        // tokens as the profile's own functions write them, whose formats
+        // openvmm_defs tests, so it does not come from the builder.
+        let mut profile_tokens = String::new();
+        openvmm_defs::microvm::append_microvm_processor_limit(&mut profile_tokens, 8).unwrap();
+        openvmm_defs::microvm::append_microvm_workload_identity(
+            &mut profile_tokens,
+            u32::MAX,
+            u32::MAX,
+        )
+        .unwrap();
+        openvmm_defs::microvm::append_microvm_lifecycle(&mut profile_tokens, false).unwrap();
+        let expected = |fill: usize| {
+            format!(
+                "{MICROVM_CONSOLE_COMMAND_LINE} {}{profile_tokens}",
+                "x".repeat(fill)
+            )
+        };
+        let fill = (MICROVM_COMMAND_LINE_MAX_SIZE - 1)
+            .checked_sub(MICROVM_CONSOLE_COMMAND_LINE.len() + 1 + profile_tokens.len())
+            .expect("the profile's tokens leave room for the caller's argument");
+        let longest = build(fill).unwrap();
+        assert_eq!(longest, expected(fill));
+        assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
+        let over = check_microvm_command_line(&expected(fill + 1)).unwrap_err();
+        assert_eq!(build(fill + 1).unwrap_err().to_string(), over.to_string());
     }
 }
