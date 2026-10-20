@@ -2286,9 +2286,16 @@ mod tests {
         assert!(build_microvm_command_line(&["nr_cpus=1".to_owned()], false).is_err());
     }
 
-    // The exact text of the limit error, which callers may match. The other
-    // crates' tests take it from check_microvm_command_line.
-    const LIMIT_ERROR: &str = "microVM kernel command line is 2048 bytes; the limit is 2047 bytes plus the terminating NUL";
+    // The exact text of the limit error for a command line one byte over the
+    // limit, which callers may match. The other crates' tests take it from
+    // check_microvm_command_line.
+    fn limit_error() -> String {
+        format!(
+            "microVM kernel command line is {} bytes; the limit is {} bytes plus the terminating NUL",
+            MICROVM_COMMAND_LINE_MAX_SIZE,
+            MICROVM_COMMAND_LINE_MAX_SIZE - 1
+        )
+    }
 
     #[test]
     fn microvm_command_line_fits_the_guest_kernel_limit() {
@@ -2301,7 +2308,7 @@ mod tests {
             check_microvm_command_line(&"x".repeat(max_text + 1))
                 .unwrap_err()
                 .to_string(),
-            LIMIT_ERROR
+            limit_error()
         );
         assert_eq!(
             check_microvm_command_line("console=hvc0 \0")
@@ -2310,14 +2317,16 @@ mod tests {
             "microVM kernel command line contains an embedded NUL"
         );
 
-        let fill = max_text - MICROVM_CONSOLE_COMMAND_LINE.len() - 1;
+        let fill = max_text
+            .checked_sub(MICROVM_CONSOLE_COMMAND_LINE.len() + 1)
+            .expect("the console command line leaves room for the caller's argument");
         let longest = build_microvm_command_line(&["x".repeat(fill)], true).unwrap();
         assert_eq!(longest.len(), max_text);
         assert_eq!(
             build_microvm_control_command_line(&["x".repeat(fill + 1)], true)
                 .unwrap_err()
                 .to_string(),
-            LIMIT_ERROR
+            limit_error()
         );
     }
 
@@ -2342,12 +2351,15 @@ mod tests {
         ];
         let max_text = MICROVM_COMMAND_LINE_MAX_SIZE - 1;
         for (append, token) in appends {
-            let mut longest = "x".repeat(max_text - token.len());
+            let fill = max_text
+                .checked_sub(token.len())
+                .expect("the token fits within the limit");
+            let mut longest = "x".repeat(fill);
             append(&mut longest).unwrap();
             assert_eq!(longest.len(), max_text);
             assert!(longest.ends_with(token));
-            let mut over = "x".repeat(max_text + 1 - token.len());
-            assert_eq!(append(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
+            let mut over = "x".repeat(fill + 1);
+            assert_eq!(append(&mut over).unwrap_err().to_string(), limit_error());
         }
 
         // Device discovery and the network bootstrap come last, so the line
@@ -2385,7 +2397,7 @@ mod tests {
         assert_eq!(longest.len(), max_text);
         assert!(longest.ends_with(" virtnet_gw6=fd00::a00:1"));
         let mut over = build_microvm_command_line(&["x".repeat(fill + 1)], false).unwrap();
-        assert_eq!(discover(&mut over).unwrap_err().to_string(), LIMIT_ERROR);
+        assert_eq!(discover(&mut over).unwrap_err().to_string(), limit_error());
     }
 
     #[test]

@@ -2011,7 +2011,9 @@ mod tests {
         // buffer: 2,047 bytes of text pass, and 2,048 fail with the shared
         // check's error for that line, whose text openvmm_defs tests.
         let line = |fill: usize| format!("{MICROVM_BASE_COMMAND_LINE} {}", "x".repeat(fill));
-        let fill = MICROVM_COMMAND_LINE_MAX_SIZE - 1 - MICROVM_BASE_COMMAND_LINE.len() - 1;
+        let fill = (MICROVM_COMMAND_LINE_MAX_SIZE - 1)
+            .checked_sub(MICROVM_BASE_COMMAND_LINE.len() + 1)
+            .expect("the base command line leaves room for the caller's argument");
         let longest = build_microvm_command_line(&["x".repeat(fill)], false).unwrap();
         assert_eq!(longest, line(fill));
         assert_eq!(longest.len(), MICROVM_COMMAND_LINE_MAX_SIZE - 1);
