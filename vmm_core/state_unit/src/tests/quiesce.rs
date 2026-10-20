@@ -95,6 +95,55 @@ impl InspectMut for &'_ AsyncSlowStopUnit {
     }
 }
 
+struct AsyncSlowInputUnit {
+    driver: DefaultDriver,
+    delay: Duration,
+    quiesces: Arc<AtomicUsize>,
+    resumes: Arc<AtomicUsize>,
+    stops: Arc<AtomicUsize>,
+}
+
+impl StateUnit for &'_ AsyncSlowInputUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.quiesces.fetch_add(1, Ordering::Relaxed);
+        pal_async::timer::PolledTimer::new(&self.driver)
+            .sleep(self.delay)
+            .await;
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.resumes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for &'_ AsyncSlowInputUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
 struct SlowRollbackStartUnit {
     driver: DefaultDriver,
     starts: u32,
@@ -104,7 +153,7 @@ impl StateUnit for SlowRollbackStartUnit {
     async fn start(&mut self) -> anyhow::Result<()> {
         if self.starts != 0 {
             pal_async::timer::PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
+                .sleep(Duration::from_millis(100))
                 .await;
         }
         self.starts += 1;
@@ -127,6 +176,93 @@ impl StateUnit for SlowRollbackStartUnit {
 }
 
 impl InspectMut for SlowRollbackStartUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
+struct RollbackStartUnit {
+    starts: Arc<AtomicUsize>,
+    stops: Arc<AtomicUsize>,
+    fail_resume: bool,
+}
+
+impl StateUnit for RollbackStartUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let start = self.starts.fetch_add(1, Ordering::Relaxed);
+        anyhow::ensure!(
+            !self.fail_resume || start == 0,
+            "intentional rollback start failure"
+        );
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        self.stops.fetch_add(1, Ordering::Relaxed);
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for RollbackStartUnit {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+        req.respond();
+    }
+}
+
+struct AsyncRollbackCleanupUnit {
+    driver: DefaultDriver,
+    starts: Arc<AtomicUsize>,
+    stops: Arc<AtomicUsize>,
+    fail_resume: bool,
+    cleanup_delay: Option<Duration>,
+}
+
+impl StateUnit for &'_ AsyncRollbackCleanupUnit {
+    async fn start(&mut self) -> anyhow::Result<()> {
+        let start = self.starts.fetch_add(1, Ordering::Relaxed);
+        anyhow::ensure!(
+            !self.fail_resume || start == 0,
+            "intentional rollback start failure"
+        );
+        Ok(())
+    }
+
+    async fn stop(&mut self) {
+        let stop = self.stops.fetch_add(1, Ordering::Relaxed);
+        if stop != 0 {
+            if let Some(delay) = self.cleanup_delay {
+                pal_async::timer::PolledTimer::new(&self.driver)
+                    .sleep(delay)
+                    .await;
+            }
+        }
+    }
+
+    async fn reset(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        Ok(None)
+    }
+
+    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+        Err(RestoreError::SavedStateNotSupported)
+    }
+}
+
+impl InspectMut for &'_ AsyncRollbackCleanupUnit {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond();
     }
@@ -372,6 +508,69 @@ async fn test_input_hook_timeout_is_bounded(driver: DefaultDriver) {
     assert!(started.elapsed() < Duration::from_millis(500));
     assert_eq!(failing_counts.quiesces.load(Ordering::Relaxed), 1);
     assert_eq!(counts.quiesces.load(Ordering::Relaxed), 1);
+}
+
+#[async_test]
+async fn test_input_timeout_is_serialized_with_resume_and_stop(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let quiesces = Arc::new(AtomicUsize::new(0));
+    let resumes = Arc::new(AtomicUsize::new(0));
+    let stops = Arc::new(AtomicUsize::new(0));
+    let _unit = units
+        .add("slow-input")
+        .spawn(&driver, {
+            let driver = driver.clone();
+            let quiesces = quiesces.clone();
+            let resumes = resumes.clone();
+            let stops = stops.clone();
+            |recv| {
+                run_async_unit(
+                    AsyncSlowInputUnit {
+                        driver,
+                        delay: Duration::from_millis(100),
+                        quiesces,
+                        resumes,
+                        stops,
+                    },
+                    recv,
+                )
+            }
+        })
+        .unwrap();
+    units.start().await.unwrap();
+
+    units
+        .quiesce_input_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    let started = std::time::Instant::now();
+    let error = units
+        .resume_input_after_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("waiting for previous input operation")
+    );
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert_eq!(resumes.load(Ordering::Relaxed), 0);
+
+    units
+        .resume_input_after_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert_eq!(quiesces.load(Ordering::Relaxed), 1);
+    assert_eq!(resumes.load(Ordering::Relaxed), 1);
+
+    units
+        .quiesce_input_for_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    units.stop().await;
+    assert_eq!(quiesces.load(Ordering::Relaxed), 2);
+    assert_eq!(resumes.load(Ordering::Relaxed), 1);
+    assert_eq!(stops.load(Ordering::Relaxed), 1);
 }
 
 #[async_test]
@@ -693,7 +892,144 @@ async fn test_rollback_start_timeout_is_bounded(driver: DefaultDriver) {
         .unwrap_err();
     assert!(error.to_string().contains("snapshot rollback"));
     assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(units.is_running());
+    units.stop().await;
     assert!(!units.is_running());
+}
+
+#[async_test]
+async fn test_rollback_start_failure_stops_restarted_units(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let successful_starts = Arc::new(AtomicUsize::new(0));
+    let successful_stops = Arc::new(AtomicUsize::new(0));
+    let _successful = units
+        .add("successful")
+        .spawn(&driver, |recv| {
+            run_unit(
+                RollbackStartUnit {
+                    starts: successful_starts.clone(),
+                    stops: successful_stops.clone(),
+                    fail_resume: false,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    let failing_starts = Arc::new(AtomicUsize::new(0));
+    let failing_stops = Arc::new(AtomicUsize::new(0));
+    let _failing = units
+        .add("failing")
+        .spawn(&driver, |recv| {
+            run_unit(
+                RollbackStartUnit {
+                    starts: failing_starts.clone(),
+                    stops: failing_stops.clone(),
+                    fail_resume: true,
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    units.start().await.unwrap();
+    units
+        .quiesce_for_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+
+    let error = units
+        .resume_after_failed_save(Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("failing: intentional rollback start failure")
+    );
+    assert!(!units.is_running());
+    assert_eq!(successful_starts.load(Ordering::Relaxed), 2);
+    assert_eq!(successful_stops.load(Ordering::Relaxed), 2);
+    assert_eq!(failing_starts.load(Ordering::Relaxed), 2);
+    assert_eq!(failing_stops.load(Ordering::Relaxed), 2);
+    assert!(
+        units
+            .inner
+            .lock()
+            .units
+            .values()
+            .all(|unit| { matches!(unit.state, State::Stopped | State::StartFailedStopped) })
+    );
+}
+
+#[async_test]
+async fn test_rollback_cleanup_timeout_is_bounded(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let slow_starts = Arc::new(AtomicUsize::new(0));
+    let slow_stops = Arc::new(AtomicUsize::new(0));
+    let _slow = units
+        .add("slow-cleanup")
+        .spawn(&driver, {
+            let driver = driver.clone();
+            let starts = slow_starts.clone();
+            let stops = slow_stops.clone();
+            |recv| {
+                run_async_unit(
+                    AsyncRollbackCleanupUnit {
+                        driver,
+                        starts,
+                        stops,
+                        fail_resume: false,
+                        cleanup_delay: Some(Duration::from_secs(1)),
+                    },
+                    recv,
+                )
+            }
+        })
+        .unwrap();
+    let failing_starts = Arc::new(AtomicUsize::new(0));
+    let failing_stops = Arc::new(AtomicUsize::new(0));
+    let _failing = units
+        .add("failing")
+        .spawn(&driver, {
+            let driver = driver.clone();
+            let starts = failing_starts.clone();
+            let stops = failing_stops.clone();
+            |recv| {
+                run_async_unit(
+                    AsyncRollbackCleanupUnit {
+                        driver,
+                        starts,
+                        stops,
+                        fail_resume: true,
+                        cleanup_delay: None,
+                    },
+                    recv,
+                )
+            }
+        })
+        .unwrap();
+    units.start().await.unwrap();
+    units
+        .quiesce_for_save(Duration::from_secs(1))
+        .await
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let error = units
+        .resume_after_failed_save(Duration::from_millis(10))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("slow-cleanup"));
+    assert!(started.elapsed() < Duration::from_millis(500));
+    assert!(units.is_running());
+    assert_eq!(slow_starts.load(Ordering::Relaxed), 2);
+    assert_eq!(slow_stops.load(Ordering::Relaxed), 2);
+    assert_eq!(failing_starts.load(Ordering::Relaxed), 2);
+    assert_eq!(failing_stops.load(Ordering::Relaxed), 2);
+
+    units.stop().await;
+    assert!(!units.is_running());
+    assert_eq!(slow_stops.load(Ordering::Relaxed), 2);
+    assert_eq!(failing_stops.load(Ordering::Relaxed), 2);
 }
 
 #[async_test]

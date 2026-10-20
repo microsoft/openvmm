@@ -5,6 +5,8 @@
 //! vCPU boundary, bounded quiesce of every unit for save, and restart after a
 //! failed save.
 
+use super::PendingInput;
+use super::PendingStart;
 use super::PendingStop;
 use super::State;
 use super::StateRequest;
@@ -42,7 +44,8 @@ impl StateUnits {
     /// snapshot vCPU boundary.
     ///
     /// Stopped units are skipped, and terminal lifecycle states fail the
-    /// transaction. Exclusive access serializes this with input resume.
+    /// transaction. Timed-out handlers are retained so a later input or
+    /// lifecycle transition waits for their completion.
     pub async fn quiesce_input_for_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("quiesce_input", timeout, StateRequest::QuiesceInput)
             .await
@@ -52,7 +55,8 @@ impl StateUnits {
     /// snapshot boundary.
     ///
     /// Stopped units are skipped, and terminal lifecycle states fail the
-    /// transaction. Exclusive access serializes this with input quiesce.
+    /// transaction. Timed-out handlers are retained so later transitions
+    /// cannot overlap them.
     pub async fn resume_input_after_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         self.run_input_op("resume_input", timeout, StateRequest::ResumeInput)
             .await
@@ -62,54 +66,115 @@ impl StateUnits {
         &mut self,
         operation: &'static str,
         timeout: Duration,
-        request: impl Copy + FnOnce(FailableRpc<(), ()>) -> StateRequest,
+        request: impl 'static + Copy + Send + FnOnce(FailableRpc<(), ()>) -> StateRequest,
     ) -> anyhow::Result<()> {
+        enum InputResult {
+            Completed(anyhow::Result<()>),
+            TimedOut {
+                reason: anyhow::Error,
+                pending: PendingInput,
+                waiting_for_previous: bool,
+            },
+        }
+
         let context = CancelContext::new().with_timeout(timeout);
-        let (operations, mut failures) = {
-            let inner = self.inner.lock();
-            let mut failures = Vec::new();
-            let operations = inner
-                .units
-                .values()
-                .filter_map(|unit| match unit.state {
+        let mut operations = Vec::new();
+        let mut failures = Vec::new();
+        {
+            let mut inner = self.inner.lock();
+            for (&id, unit) in &mut inner.units {
+                match unit.state {
                     State::Running => {
                         let name = unit.name.clone();
-                        let request = state_change(name.clone(), unit, request, Some(()));
+                        let previous = unit.pending_input.take();
+                        let mut current = PendingInput {
+                            future: state_change(name.clone(), unit, request, Some(()))
+                                .map(|result| -> anyhow::Result<()> {
+                                    match result {
+                                        Ok(Some(Ok(()))) => Ok(()),
+                                        Ok(Some(Err(error))) => Err(error.into()),
+                                        Ok(None) => Err(anyhow::anyhow!("request was not sent")),
+                                        Err(error) => Err(error.into()),
+                                    }
+                                })
+                                .boxed(),
+                        };
                         let mut context = context.clone();
-                        Some(async move {
-                            let result = context.until_cancelled(request).await;
-                            (name, result)
-                        })
+                        operations.push(async move {
+                            if let Some(mut previous) = previous {
+                                if let Err(reason) =
+                                    context.until_cancelled(previous.future.as_mut()).await
+                                {
+                                    return (
+                                        name,
+                                        id,
+                                        InputResult::TimedOut {
+                                            reason: reason.into(),
+                                            pending: previous,
+                                            waiting_for_previous: true,
+                                        },
+                                    );
+                                }
+                            }
+
+                            let result =
+                                match context.until_cancelled(current.future.as_mut()).await {
+                                    Ok(result) => InputResult::Completed(result),
+                                    Err(reason) => InputResult::TimedOut {
+                                        reason: reason.into(),
+                                        pending: current,
+                                        waiting_for_previous: false,
+                                    },
+                                };
+                            (name, id, result)
+                        });
                     }
-                    State::Stopped => None,
-                    State::StartUncertain | State::StartFailedStopped | State::QuiesceUncertain => {
+                    State::Stopped => {}
+                    State::StartUncertain
+                    | State::StartFailedStopped
+                    | State::QuiesceUncertain
+                    | State::QuiesceFailedStopped => {
                         failures.push(format!(
                             "{}: unit is in terminal state {:?}",
                             unit.name, unit.state
                         ));
-                        None
                     }
                     state => {
                         failures.push(format!(
                             "{}: unit is in unexpected state {state:?}",
                             unit.name
                         ));
-                        None
                     }
-                })
-                .collect::<Vec<_>>();
-            (operations, failures)
-        };
-        let results = join_all(operations).await;
-        for (name, result) in results {
-            match result {
-                Ok(Ok(Some(Ok(())))) => {}
-                Ok(Ok(Some(Err(error)))) => failures.push(format!("{name}: {error}")),
-                Ok(Ok(None)) => failures.push(format!("{name}: request was not sent")),
-                Ok(Err(error)) => failures.push(format!("{name}: {error}")),
-                Err(reason) => failures.push(format!("{name}: {operation} timed out: {reason}")),
+                }
             }
         }
+
+        let results = join_all(operations).await;
+        let mut inner = self.inner.lock();
+        for (name, id, result) in results {
+            match result {
+                InputResult::Completed(Ok(())) => {}
+                InputResult::Completed(Err(error)) => failures.push(format!("{name}: {error}")),
+                InputResult::TimedOut {
+                    reason,
+                    pending,
+                    waiting_for_previous,
+                } => {
+                    if let Some(unit) = inner.units.get_mut(&id) {
+                        assert!(unit.pending_input.is_none());
+                        unit.pending_input = Some(pending);
+                    }
+                    let waiting = if waiting_for_previous {
+                        " waiting for previous input operation"
+                    } else {
+                        ""
+                    };
+                    failures.push(format!("{name}: {operation} timed out{waiting}: {reason}"));
+                }
+            }
+        }
+        drop(inner);
+
         anyhow::ensure!(
             failures.is_empty(),
             "{operation} failed: {}",
@@ -288,7 +353,9 @@ impl StateUnits {
     }
 
     /// Restarts every unit after a save failure that occurred after a fully
-    /// successful quiesce but before publication committed.
+    /// successful quiesce but before publication committed. Restart and
+    /// cleanup share `timeout`; timed-out transitions are retained for later
+    /// termination cleanup.
     pub async fn resume_after_failed_save(&mut self, timeout: Duration) -> anyhow::Result<()> {
         anyhow::ensure!(!self.running, "VM was not successfully quiesced for save");
         let quiesced_units = self
@@ -309,7 +376,7 @@ impl StateUnits {
             DependencyFailed,
             NotSent(anyhow::Error),
             Failed(anyhow::Error),
-            Uncertain(anyhow::Error),
+            Uncertain(anyhow::Error, Option<PendingStart>),
         }
 
         let context = CancelContext::new().with_timeout(timeout);
@@ -327,7 +394,8 @@ impl StateUnits {
                 let dependencies = unit.dependencies.clone();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
-                let start = state_change(name.clone(), unit, StateRequest::Start, Some(()));
+                let mut start =
+                    state_change(name.clone(), unit, StateRequest::Start, Some(())).boxed();
                 operations.push(async move {
                     let ready = match context
                         .until_cancelled(ready_set.wait("snapshot_rollback", id, &dependencies))
@@ -344,14 +412,20 @@ impl StateUnits {
                         return (name, id, StartResult::DependencyFailed);
                     }
 
-                    let result = match context.until_cancelled(start).await {
+                    let result = match context.until_cancelled(start.as_mut()).await {
                         Ok(Ok(Some(Ok(())))) => StartResult::Started,
                         Ok(Ok(Some(Err(error)))) => StartResult::Failed(error.into()),
-                        Ok(Ok(None)) => {
-                            StartResult::Uncertain(anyhow::anyhow!("start request was not sent"))
-                        }
-                        Ok(Err(error)) => StartResult::Uncertain(error.into()),
-                        Err(reason) => StartResult::Uncertain(reason.into()),
+                        Ok(Ok(None)) => StartResult::Uncertain(
+                            anyhow::anyhow!("start request was not sent"),
+                            None,
+                        ),
+                        Ok(Err(error)) => StartResult::Uncertain(error.into(), None),
+                        Err(reason) => StartResult::Uncertain(
+                            reason.into(),
+                            Some(PendingStart {
+                                future: start.map(|result| result.map(|_| ())).boxed(),
+                            }),
+                        ),
                     };
                     ready_set.done(id, matches!(result, StartResult::Started));
                     (name, id, result)
@@ -362,40 +436,175 @@ impl StateUnits {
 
         let results = join_all(operations).await;
         let mut failures = Vec::new();
-        let mut inner = self.inner.lock();
-        for (name, id, result) in results {
-            let Some(unit) = inner.units.get_mut(&id) else {
-                continue;
-            };
-            match result {
-                StartResult::Started => unit.state = State::Running,
-                StartResult::DependencyFailed => {
-                    unit.state = State::Stopped;
-                    failures.push(format!("{name}: a dependency did not restart"));
-                }
-                StartResult::NotSent(error) => {
-                    unit.state = State::Stopped;
-                    failures.push(format!("{name}: {error:#}"));
-                }
-                StartResult::Failed(error) => {
-                    unit.state = State::QuiesceUncertain;
-                    failures.push(format!("{name}: {error:#}"));
-                }
-                StartResult::Uncertain(error) => {
-                    unit.state = State::QuiesceUncertain;
-                    failures.push(format!("{name}: {error:#}"));
+        let mut started_ids = Vec::new();
+        let mut failed_or_uncertain_ids = Vec::new();
+        {
+            let mut inner = self.inner.lock();
+            for (name, id, result) in results {
+                let Some(unit) = inner.units.get_mut(&id) else {
+                    continue;
+                };
+                match result {
+                    StartResult::Started => {
+                        unit.state = State::Running;
+                        started_ids.push(id);
+                    }
+                    StartResult::DependencyFailed => {
+                        unit.state = State::Stopped;
+                        failures.push(format!("{name}: a dependency did not restart"));
+                    }
+                    StartResult::NotSent(error) => {
+                        unit.state = State::Stopped;
+                        failures.push(format!("{name}: {error:#}"));
+                    }
+                    StartResult::Failed(error) => {
+                        unit.state = State::StartUncertain;
+                        failed_or_uncertain_ids.push(id);
+                        failures.push(format!("{name}: {error:#}"));
+                    }
+                    StartResult::Uncertain(error, pending_start) => {
+                        unit.state = State::StartUncertain;
+                        assert!(unit.pending_start.is_none());
+                        unit.pending_start = pending_start;
+                        failed_or_uncertain_ids.push(id);
+                        failures.push(format!("{name}: {error:#}"));
+                    }
                 }
             }
         }
-        drop(inner);
 
-        anyhow::ensure!(
-            failures.is_empty(),
-            "snapshot rollback could not safely restart all state units: {}",
-            failures.join("; ")
-        );
+        if !failures.is_empty() {
+            let cleanup_failures = self
+                .stop_after_failed_snapshot_restart(context, &failed_or_uncertain_ids, &started_ids)
+                .await;
+            self.running = !cleanup_failures.is_empty();
+            failures.extend(cleanup_failures);
+            anyhow::bail!(
+                "snapshot rollback could not safely restart all state units: {}",
+                failures.join("; ")
+            );
+        }
         self.running = true;
         self.save_quiesced_units = None;
         Ok(())
+    }
+
+    async fn stop_after_failed_snapshot_restart(
+        &self,
+        context: CancelContext,
+        failed_or_uncertain_ids: &[u64],
+        started_ids: &[u64],
+    ) -> Vec<String> {
+        enum CleanupResult {
+            Stopped(State),
+            DependencyFailed,
+            NotSent(anyhow::Error),
+            Uncertain(anyhow::Error, Option<PendingStop>),
+        }
+
+        let unit_ids = failed_or_uncertain_ids
+            .iter()
+            .chain(started_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        let mut operations = Vec::new();
+        let mut failures = Vec::new();
+        let ready_set;
+        {
+            let mut inner = self.inner.lock();
+            ready_set = inner.ready_set(Some(&unit_ids));
+            for (&id, unit) in inner
+                .units
+                .iter_mut()
+                .filter(|(id, _)| ready_set.0.contains_key(id))
+            {
+                if unit.pending_start.is_some() {
+                    assert!(failed_or_uncertain_ids.contains(&id));
+                    assert_eq!(unit.state, State::StartUncertain);
+                    ready_set.done(id, false);
+                    failures.push(format!(
+                        "{}: failed_start_cleanup deferred until pending start completes",
+                        unit.name
+                    ));
+                    continue;
+                }
+
+                let (op, old_state, stopped_state) = if failed_or_uncertain_ids.contains(&id) {
+                    (
+                        "failed_start_cleanup",
+                        State::StartUncertain,
+                        State::StartFailedStopped,
+                    )
+                } else {
+                    ("failed_start_rollback", State::Running, State::Stopped)
+                };
+                assert_eq!(unit.state, old_state);
+                let name = unit.name.clone();
+                let dependents = unit.dependents.clone();
+                let ready_set = ready_set.clone();
+                let mut context = context.clone();
+                let mut stop = PendingStop {
+                    future: state_change(name.clone(), unit, StateRequest::Stop, Some(())).boxed(),
+                };
+                operations.push(async move {
+                    let ready = match context
+                        .until_cancelled(ready_set.wait(op, id, &dependents))
+                        .await
+                    {
+                        Ok(ready) => ready,
+                        Err(reason) => {
+                            ready_set.done(id, false);
+                            return (name, id, op, CleanupResult::NotSent(reason.into()));
+                        }
+                    };
+                    if !ready {
+                        ready_set.done(id, false);
+                        return (name, id, op, CleanupResult::DependencyFailed);
+                    }
+
+                    let result = match context.until_cancelled(stop.future.as_mut()).await {
+                        Ok(Ok(Some(()))) => CleanupResult::Stopped(stopped_state),
+                        Ok(Ok(None)) => CleanupResult::Uncertain(
+                            anyhow::anyhow!("stop request was not sent"),
+                            None,
+                        ),
+                        Ok(Err(error)) => CleanupResult::Uncertain(error.into(), None),
+                        Err(reason) => CleanupResult::Uncertain(reason.into(), Some(stop)),
+                    };
+                    ready_set.done(id, matches!(result, CleanupResult::Stopped(_)));
+                    (name, id, op, result)
+                });
+                unit.state = State::Stopping;
+            }
+        }
+
+        let results = join_all(operations).await;
+        let mut inner = self.inner.lock();
+        for (name, id, op, result) in results {
+            let Some(unit) = inner.units.get_mut(&id) else {
+                continue;
+            };
+            assert_eq!(unit.state, State::Stopping);
+            match result {
+                CleanupResult::Stopped(stopped_state) => unit.state = stopped_state,
+                CleanupResult::DependencyFailed => {
+                    unit.state = State::StartUncertain;
+                    failures.push(format!(
+                        "{name}: {op} stop skipped because a dependent was not stopped"
+                    ));
+                }
+                CleanupResult::NotSent(error) => {
+                    unit.state = State::StartUncertain;
+                    failures.push(format!("{name}: {op} stop was not sent: {error:#}"));
+                }
+                CleanupResult::Uncertain(error, pending_stop) => {
+                    unit.state = State::StartUncertain;
+                    assert!(unit.pending_stop.is_none());
+                    unit.pending_stop = pending_stop;
+                    failures.push(format!("{name}: {op} stop failed: {error:#}"));
+                }
+            }
+        }
+        failures
     }
 }
