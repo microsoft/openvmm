@@ -16,7 +16,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 x86defs.workspace = true
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh_protobuf.workspace = true
 pal_event.workspace = true
 tracelimit.workspace = true

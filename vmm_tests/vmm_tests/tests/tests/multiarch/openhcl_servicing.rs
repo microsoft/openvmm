@@ -15,6 +15,7 @@ use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeControllerHandle;
 use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
@@ -334,10 +335,7 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
 }
 
 #[vmm_test(
-    unstable(
-        reason = "The 78 MiB release layout is not downgrade-compatible with the 70 MiB release baseline",
-        openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64]
-    ),
+    openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, LATEST_RELEASE_STANDARD_AARCH64]
@@ -729,6 +727,74 @@ async fn servicing_test_keepalive_disable_through_inspect(
         .expect("IDENTIFY verification should pass and return a valid result.");
 
     fault_start_updater.set(false).await;
+
+    Ok(())
+}
+
+/// Test that servicing works for all combinations of NVMe and MANA keepalives,
+/// verifying that the two keepalive mechanisms are independent, and that all
+/// resources are correctly freed when keepalive is disabled even if the other
+/// keepalive is enabled (e.g. DMA allocations).
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_test_nvme_and_mana_keepalive_combinations(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+
+    let scsi_controller_guid = Guid::new_random();
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
+    let (mut vm, agent) = create_keepalive_test_config_default(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    for (nvme_ka_enabled, mana_ka_enabled) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        flags.enable_nvme_keepalive = nvme_ka_enabled;
+        flags.enable_mana_keepalive = mana_ka_enabled;
+
+        tracing::info!(nvme_ka_enabled, mana_ka_enabled, "Testing servicing");
+
+        agent.ping().await?;
+
+        // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+        // to /dev/sda or /dev/sdb depending on timing.
+        let device_paths = get_device_paths(
+            &agent,
+            scsi_controller_guid,
+            vec![ExpectedGuestDevice {
+                lun: VTL0_NVME_LUN,
+                disk_size_sectors: (DEFAULT_DISK_SIZE / SCSI_SECTOR_SIZE) as usize,
+                friendly_name: "nvme_disk".to_string(),
+            }],
+        )
+        .await?;
+        assert!(device_paths.len() == 1);
+        let disk_path = &device_paths[0];
+
+        // Make sure the disk showed up.
+        let sh = agent.unix_shell();
+        cmd!(sh, "ls {disk_path}").run().await?;
+
+        // Test that inspect serialization works with the old version.
+        vm.test_inspect_openhcl().await?;
+
+        vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+        agent.ping().await?;
+
+        // Test that inspect serialization works with the new version.
+        vm.test_inspect_openhcl().await?;
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
@@ -1802,22 +1868,81 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
+///
+/// When keepalive is not enabled at boot, resources will not be preserved during
+/// servicing, even if flags are set to `true`. This is true for both NVME and MANA.
+#[derive(Clone, Copy)]
+struct ServicingKeepAliveOperations {
+    enable_mana_keepalive_at_boot: bool,
+    disable_nvme_keepalive_at_boot: bool,
+    enable_nvme_keepalive_during_servicing: bool,
+    enable_mana_keepalive_during_servicing: bool,
+}
+
+fn mana_nic_servicing_config(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    options: ServicingKeepAliveOperations,
+) -> PetriVmBuilder<OpenVmmPetriBackend> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+
+    config
+        .with_vmbus_redirect(true)
+        .with_mana_keepalive(options.enable_mana_keepalive_at_boot)
+        .with_openhcl_command_line(&format!(
+            "OPENHCL_DISABLE_NVME_KEEP_ALIVE={}",
+            u8::from(options.disable_nvme_keepalive_at_boot)
+        ))
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(Guid::new_random())
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(VTL0_NVME_LUN)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
+        .modify_backend(move |b| {
+            b.with_nic().with_custom_config(|c| {
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: KEEPALIVE_VTL2_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(DEFAULT_DISK_SIZE),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        requests: None,
+                    }
+                    .into_resource(),
+                    vnode: None,
+                });
+            })
+        })
+}
+
 async fn mana_nic_servicing_core(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     igvm_file: ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,
-    enable_nvme_keepalive: bool,
-    enable_mana_keepalive: bool,
+    options: ServicingKeepAliveOperations,
 ) -> Result<(), anyhow::Error> {
-    let mut flags = config.default_servicing_flags();
-    flags.enable_nvme_keepalive = enable_nvme_keepalive;
-    flags.enable_mana_keepalive = enable_mana_keepalive;
+    let mut flags: OpenHclServicingFlags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = options.enable_nvme_keepalive_during_servicing;
+    flags.enable_mana_keepalive = options.enable_mana_keepalive_during_servicing;
 
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_mana_keepalive(enable_mana_keepalive)
-        .modify_backend(|b| b.with_nic())
-        .run()
-        .await?;
+    let (mut vm, agent) = mana_nic_servicing_config(config, options).run().await?;
 
     configure_mana_nic(&agent).await?;
     validate_mana_nic(&agent).await?;
@@ -1833,35 +1958,157 @@ async fn mana_nic_servicing_core(
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing(
+async fn mana_nic_servicing_all_disabled(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, false, false).await
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: false,
+            disable_nvme_keepalive_at_boot: true,
+            enable_nvme_keepalive_during_servicing: false,
+            enable_mana_keepalive_during_servicing: false,
+        },
+    )
+    .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing_keepalive(
+async fn mana_nic_servicing_all_enabled(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, true, true).await
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: true,
+            disable_nvme_keepalive_at_boot: false,
+            enable_nvme_keepalive_during_servicing: true,
+            enable_mana_keepalive_during_servicing: true,
+        },
+    )
+    .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing_only_mana_keepalive(
+async fn mana_nic_servicing_mana_keepalive_only(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, false, true).await
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: true,
+            disable_nvme_keepalive_at_boot: true,
+            enable_nvme_keepalive_during_servicing: false,
+            enable_mana_keepalive_during_servicing: true,
+        },
+    )
+    .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn mana_nic_servicing_only_nvme_keepalive(
+async fn mana_nic_servicing_nvme_keepalive_only(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    mana_nic_servicing_core(config, igvm_file, true, false).await
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: false,
+            disable_nvme_keepalive_at_boot: false,
+            enable_nvme_keepalive_during_servicing: true,
+            enable_mana_keepalive_during_servicing: false,
+        },
+    )
+    .await
+}
+
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_both_boot_with_neither(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: true,
+            disable_nvme_keepalive_at_boot: false,
+            enable_nvme_keepalive_during_servicing: false,
+            enable_mana_keepalive_during_servicing: false,
+        },
+    )
+    .await
+}
+
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_both_boot_with_nvme_only(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let options = ServicingKeepAliveOperations {
+        enable_mana_keepalive_at_boot: true,
+        disable_nvme_keepalive_at_boot: false,
+        enable_nvme_keepalive_during_servicing: true,
+        enable_mana_keepalive_during_servicing: false,
+    };
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = options.enable_nvme_keepalive_during_servicing;
+    flags.enable_mana_keepalive = options.enable_mana_keepalive_during_servicing;
+
+    let (mut vm, agent) = mana_nic_servicing_config(config, options).run().await?;
+
+    configure_mana_nic(&agent).await?;
+    validate_mana_nic(&agent).await?;
+
+    let error = vm
+        .restart_openhcl(igvm_file, flags)
+        .await
+        .expect_err("MANA allocations should fail DMA manager restore validation");
+    assert!(
+        format!("{error:#}").contains("unrestored allocations found"),
+        "unexpected servicing error: {error:#}"
+    );
+
+    // No graceful shutdown.
+
+    Ok(())
+}
+
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_both_boot_with_mana_only(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let options = ServicingKeepAliveOperations {
+        enable_mana_keepalive_at_boot: true,
+        disable_nvme_keepalive_at_boot: false,
+        enable_nvme_keepalive_during_servicing: false,
+        enable_mana_keepalive_during_servicing: true,
+    };
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = options.enable_nvme_keepalive_during_servicing;
+    flags.enable_mana_keepalive = options.enable_mana_keepalive_during_servicing;
+
+    let (mut vm, agent) = mana_nic_servicing_config(config, options).run().await?;
+
+    configure_mana_nic(&agent).await?;
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, flags).await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
 }
 
 /// Test servicing an OpenHCL VM when NVME keepalive is enabled but then

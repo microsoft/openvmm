@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements a command line utility to generate IGVM files.
+//! Host-side command-line utility for constructing IGVM files.
+//!
+//! `igvmfilegen` combines a configuration manifest with firmware, kernel,
+//! initrd, boot-shim, and sidecar resources; lays them out for the selected
+//! platforms; and emits launch measurements and endorsement data.
+//!
+//! The OpenHCL build normally invokes this tool through `cargo xflowey
+//! build-igvm`, which supplies a supported manifest and all resource paths.
+//! Direct commands are useful when developing image layouts.
 
 #![forbid(unsafe_code)]
 
@@ -649,7 +657,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         let igvm_output: file_loader::IgvmOutput = match &config.image {
             Image::SnpLinuxDirect {
                 linux,
-                processor_count,
                 memory_page_count,
                 c_bit_position,
             } => {
@@ -675,7 +682,6 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
                 R::build_snp_linux_direct(snp_linux_direct::BuildParams {
                     linux,
-                    processor_count: *processor_count,
                     memory_page_count: *memory_page_count,
                     c_bit_position: *c_bit_position,
                     policy: SnpPolicy::from(*policy).with_debug(*enable_debug as u8),

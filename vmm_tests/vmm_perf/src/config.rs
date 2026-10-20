@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::str::FromStr;
 
 const MIB_PER_GIB: u64 = 1024;
 const DEFAULT_CPU_COUNT: u64 = 16;
@@ -20,26 +21,81 @@ pub(crate) enum VmmPerfProfile {
     BootTime,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VmmPerfProfileVariant {
+    profile: VmmPerfProfile,
+    modifiers: Vec<String>,
+}
+
 impl VmmPerfProfile {
     const ALL: [Self; 3] = [Self::Fio, Self::Iperf3, Self::BootTime];
 
     pub(crate) fn all() -> &'static [Self] {
         &Self::ALL
     }
+}
 
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::Fio => "fio",
-            Self::Iperf3 => "iperf3",
-            Self::BootTime => "boot_time",
+impl FromStr for VmmPerfProfileVariant {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut parts = value.split(':');
+        let profile = match parts.next().unwrap_or_default().trim() {
+            "fio" => VmmPerfProfile::Fio,
+            "iperf3" => VmmPerfProfile::Iperf3,
+            "boot-time" => VmmPerfProfile::BootTime,
+            profile => {
+                return Err(format!(
+                    "unsupported VMM.Perf profile {profile:?}; expected fio, iperf3, or boot-time"
+                ));
+            }
+        };
+        let mut modifiers = Vec::new();
+        for modifier in parts {
+            let modifier = validate_modifier(modifier)?;
+            if modifiers.contains(&modifier) {
+                return Err(format!("duplicate VMM.Perf profile modifier {modifier:?}"));
+            }
+            modifiers.push(modifier);
+        }
+        if modifiers.is_empty() && !matches!(profile, VmmPerfProfile::BootTime) {
+            modifiers.push("vmbus".into());
+        }
+        Ok(Self { profile, modifiers })
+    }
+}
+
+impl VmmPerfProfileVariant {
+    pub(crate) fn defaults() -> Vec<Self> {
+        VmmPerfProfile::all()
+            .iter()
+            .map(|profile| match profile {
+                VmmPerfProfile::Fio => "fio",
+                VmmPerfProfile::Iperf3 => "iperf3",
+                VmmPerfProfile::BootTime => "boot-time",
+            })
+            .map(|profile| profile.parse().expect("default profile is valid"))
+            .collect()
+    }
+
+    pub(crate) fn name(&self) -> String {
+        let profile = match self.profile {
+            VmmPerfProfile::Fio => "fio",
+            VmmPerfProfile::Iperf3 => "iperf3",
+            VmmPerfProfile::BootTime => "boot_time",
+        };
+        if self.modifiers.is_empty() {
+            profile.into()
+        } else {
+            format!("{profile}_{}", self.modifiers.join("_").replace('-', "_"))
         }
     }
 
-    pub(crate) fn file(self) -> String {
+    pub(crate) fn file(&self) -> String {
         self.file_for(std::env::consts::ARCH, std::env::consts::OS)
     }
 
-    fn file_for(self, architecture: &str, operating_system: &str) -> String {
+    fn file_for(&self, architecture: &str, operating_system: &str) -> String {
         let architecture = match architecture {
             "x86_64" => "X64",
             "aarch64" => "ARM64",
@@ -51,13 +107,41 @@ impl VmmPerfProfile {
             _ => unreachable!("unsupported VMM.Perf host operating system"),
         };
         let boot_mode = "UEFI";
-        let profile = match self {
-            Self::Fio => "FIO-VMBUS",
-            Self::Iperf3 => "IPERF3-VMBUS",
-            Self::BootTime => "BOOTTIME",
+        let workload = match self.profile {
+            VmmPerfProfile::Fio => "FIO",
+            VmmPerfProfile::Iperf3 => "IPERF3",
+            VmmPerfProfile::BootTime => "BOOTTIME",
+        };
+        let profile = if self.modifiers.is_empty() {
+            workload.into()
+        } else {
+            format!(
+                "{workload}-{}",
+                self.modifiers.join("-").to_ascii_uppercase()
+            )
         };
         format!("PERF-OPENVMM-{architecture}-{platform}-{boot_mode}-{profile}.json")
     }
+
+    pub(crate) fn temp_dir_prefix(&self) -> &'static str {
+        match self.profile {
+            VmmPerfProfile::Fio => "f-",
+            VmmPerfProfile::Iperf3 => "i-",
+            VmmPerfProfile::BootTime => "b-",
+        }
+    }
+}
+
+fn validate_modifier(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
+        return Err("profile modifier must contain only ASCII letters or numbers".into());
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -251,7 +335,7 @@ fn scalar_to_string(name: &str, value: &serde_json::Value) -> anyhow::Result<Str
 #[cfg(test)]
 mod tests {
     use super::ConfigSelection;
-    use super::VmmPerfProfile;
+    use super::VmmPerfProfileVariant;
     use super::selected_configs;
     use super::validate_name;
     use crate::host::HostCapacity;
@@ -354,10 +438,13 @@ mod tests {
     #[test]
     fn builds_profile_file_names_for_supported_platforms() {
         for (profile, suffix) in [
-            (VmmPerfProfile::Fio, "FIO-VMBUS"),
-            (VmmPerfProfile::Iperf3, "IPERF3-VMBUS"),
-            (VmmPerfProfile::BootTime, "BOOTTIME"),
+            ("fio", "FIO-VMBUS"),
+            ("fio:virtio", "FIO-VIRTIO"),
+            ("iperf3", "IPERF3-VMBUS"),
+            ("iperf3:virtio", "IPERF3-VIRTIO"),
+            ("boot-time", "BOOTTIME"),
         ] {
+            let profile = profile.parse::<VmmPerfProfileVariant>().unwrap();
             assert_eq!(
                 profile.file_for("x86_64", "linux"),
                 format!("PERF-OPENVMM-X64-LINUX-UEFI-{suffix}.json")
@@ -374,6 +461,23 @@ mod tests {
                 profile.file_for("aarch64", "windows"),
                 format!("PERF-OPENVMM-ARM64-WIN-UEFI-{suffix}.json")
             );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_test_modifiers() {
+        for profile in [
+            "",
+            "unknown",
+            "fio:",
+            "fio:.",
+            "fio:../virtio",
+            "fio:virtio/vmbus",
+            "fio:virtio_vmbus",
+            "fio:a-b",
+            "fio:virtio:virtio",
+        ] {
+            assert!(profile.parse::<VmmPerfProfileVariant>().is_err());
         }
     }
 }

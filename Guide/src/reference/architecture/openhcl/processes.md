@@ -1,63 +1,39 @@
 # OpenHCL Processes and Components
 
-This document describes the major software components and processes that make up the OpenHCL paravisor environment.
+This page identifies the major software components and long-running processes
+in OpenHCL. See the [OpenHCL boot flow](./boot.md) for their startup order.
 
-## Boot Shim (`openhcl_boot`)
+## Boot components
 
-The boot shim is the first code that executes in VTL2. It is responsible for early hardware initialization and preparing the environment for the Linux kernel.
+The host loads these components before the main paravisor process starts:
 
-**Source code:** [openhcl/openhcl_boot](https://github.com/microsoft/openvmm/tree/main/openhcl/openhcl_boot) | **Docs:** [openhcl_boot rustdoc](https://openvmm.dev/rustdoc/linux/openhcl_boot/index.html)
-
-**Key Responsibilities:**
-
-- **Hardware Initialization:** Sets up CPU state, enables MMU, and configures initial page tables.
-- **Configuration Parsing:** Receives boot parameters from the host that were generated at IGVM build time. In the case of isolated VMs, `openhcl_boot` will also filter this host-provided configuration to remove elements that can weaken the isolated VM guarantees (such as exposing debugging interfaces).
-- **Device Tree Construction:** Builds a device tree describing the hardware configuration (CPU topology, memory regions, devices).
-- **Sidecar Initialization:** Sets up control structures for the Sidecar kernel (x86_64 only).
-- **Kernel Handoff:** Transfers control to the Linux kernel.
-
-## Linux Kernel
-
-OpenHCL runs on top of a minimal, specialized Linux kernel. This kernel provides core operating system services such as memory management, scheduling, and device drivers.
-
-**Key Responsibilities:**
-
-- **Hardware Abstraction:** Manages CPU and memory resources.
-- **Device Drivers:** Provides drivers for paravisor-specific hardware and standard devices.
-- **Filesystem:** Mounts the initial ramdisk (initrd) as the root filesystem.
-- **Process Management:** Launches the initial userspace process (`underhill_init`).
-
-## Sidecar Kernel (x86_64)
-
-On x86_64 systems, OpenHCL includes a "sidecar" kernel — a lightweight, bare-metal kernel that runs on a subset of CPUs to improve boot performance and reduce resource usage.
-
-For more details, see the [Sidecar Architecture](./sidecar.md) page.
-
-**Source code:** [openhcl/sidecar](https://github.com/microsoft/openvmm/tree/main/openhcl/sidecar) | **Docs:** [sidecar rustdoc](https://openvmm.dev/rustdoc/linux/sidecar/index.html)
-
-**Key Responsibilities:**
-
-- **Fast Boot:** Allows secondary CPUs (APs) to boot quickly without initializing the full Linux kernel.
-- **Dispatch Loop:** Runs a minimal loop waiting for commands from the host or the main kernel.
-- **On-Demand Conversion:** Can be converted to a full Linux CPU when required.
-
-## Init Process (`underhill_init`)
-
-`underhill_init` is the first userspace process (PID 1) started by the Linux kernel. It acts as the system service manager for the paravisor environment.
-
-**Source code:** [openhcl/underhill_init](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_init) | **Docs:** [underhill_init rustdoc](https://openvmm.dev/rustdoc/linux/underhill_init/index.html)
-
-**Key Responsibilities:**
-
-- **System Setup:** Mounts necessary filesystems (e.g., `/proc`, `/sys`, `/dev`).
-- **Environment Preparation:** Sets up the execution environment for the paravisor.
-- **Process Launch:** `exec`s the main paravisor process (`openvmm_hcl`).
+- [`openhcl_boot` source](https://github.com/microsoft/openvmm/tree/main/openhcl/openhcl_boot)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/openhcl_boot/index.html)):
+	Initializes VTL2, validates its inputs, builds the Linux device tree, and
+	transfers control to Linux.
+- **Linux kernel:** Provides memory management, scheduling, process support,
+	and the drivers used by the paravisor.
+- [`sidecar` source](https://github.com/microsoft/openvmm/tree/main/openhcl/sidecar)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/sidecar/index.html)):
+	Runs a small dispatch kernel on selected x86_64 processors that have not been
+	brought online in Linux. See [Sidecar Kernel](./sidecar.md).
+- [`underhill_init` source](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_init)
+	([rustdoc](https://openvmm.dev/rustdoc/linux/underhill_init/index.html)):
+	Runs as Linux PID 1, prepares the user-mode environment, and replaces itself
+	with `openvmm_hcl`.
 
 ## Paravisor (`openvmm_hcl`)
 
-`openvmm_hcl` is the central management process of the OpenHCL paravisor. It runs in userspace and orchestrates the virtualization services.
+`openvmm_hcl` is the central OpenHCL management process. It runs in Linux
+userspace and orchestrates virtualization services.
 
-**Source code:** [openhcl/openvmm_hcl](https://github.com/microsoft/openvmm/tree/main/openhcl/openvmm_hcl) | **Docs:** [openvmm_hcl rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_hcl/index.html)
+For its startup, worker, trust, packaging, and diagnostics contracts, see the
+dedicated [`openvmm_hcl`](./openvmm_hcl.md) page.
+
+**Source code:**
+[openhcl/openvmm_hcl](https://github.com/microsoft/openvmm/tree/main/openhcl/openvmm_hcl)
+| **Docs:**
+[openvmm_hcl rustdoc](https://openvmm.dev/rustdoc/linux/openvmm_hcl/index.html)
 
 **Key Responsibilities:**
 
@@ -68,21 +44,30 @@ For more details, see the [Sidecar Architecture](./sidecar.md) page.
 
 ## VM Worker (`underhill_vm`)
 
-The VM worker process (`underhill_vm`) is responsible for the high-performance data path of the virtual machine. It is spawned by `openvmm_hcl`.
+The VM worker process (`underhill_vm`) owns the VM's high-performance data path
+and is spawned by `openvmm_hcl`.
 
-**Source code:** [openhcl/underhill_core](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_core) | **Docs:** [underhill_core rustdoc](https://openvmm.dev/rustdoc/linux/underhill_core/index.html)
+**Source code:**
+[openhcl/underhill_core](https://github.com/microsoft/openvmm/tree/main/openhcl/underhill_core)
+| **Docs:**
+[underhill_core rustdoc](https://openvmm.dev/rustdoc/linux/underhill_core/index.html)
 
 **Key Responsibilities:**
 
 - **VP Loop:** Runs the virtual processor loop, handling VM exits.
-- **Device Emulation:** Coordinates device emulation for the guest VM. Some devices run in-process while others run in separate device worker processes for isolation.
+- **Device Emulation:** Coordinates in-process devices and isolated device
+  workers.
 - **I/O Processing:** Handles high-speed I/O operations.
 
 ## Diagnostics Server (`diag_server`)
 
-The diagnostics server provides an interface for debugging and monitoring the OpenHCL environment.
+The diagnostics server exposes development and monitoring operations for the
+OpenHCL environment.
 
-**Source code:** [openhcl/diag_server](https://github.com/microsoft/openvmm/tree/main/openhcl/diag_server) | **Docs:** [diag_server rustdoc](https://openvmm.dev/rustdoc/linux/diag_server/index.html)
+**Source code:**
+[openhcl/diag_server](https://github.com/microsoft/openvmm/tree/main/openhcl/diag_server)
+| **Docs:**
+[diag_server rustdoc](https://openvmm.dev/rustdoc/linux/diag_server/index.html)
 
 **Key Responsibilities:**
 
@@ -92,9 +77,13 @@ The diagnostics server provides an interface for debugging and monitoring the Op
 
 ## Profiler Worker (`profiler_worker`)
 
-The profiler worker is an on-demand process used for performance analysis (only works if an Microsoft internal-only binary is located at a known location).
+The profiler worker is an optional, on-demand process used for performance
+analysis when the selected build includes its required profiling components.
 
-**Source code:** [openhcl/profiler_worker](https://github.com/microsoft/openvmm/tree/main/openhcl/profiler_worker) | **Docs:** [profiler_worker rustdoc](https://openvmm.dev/rustdoc/linux/profiler_worker/index.html)
+**Source code:**
+[openhcl/profiler_worker](https://github.com/microsoft/openvmm/tree/main/openhcl/profiler_worker)
+| **Docs:**
+[profiler_worker rustdoc](https://openvmm.dev/rustdoc/linux/profiler_worker/index.html)
 
 **Key Responsibilities:**
 
@@ -103,19 +92,26 @@ The profiler worker is an on-demand process used for performance analysis (only 
 
 ## Device Worker Processes
 
-OpenHCL supports running chipset device emulators in separate, isolated processes using the `chipset_device_worker` framework. This provides security isolation and fault tolerance by sandboxing device emulation logic.
+OpenHCL can run chipset device emulators in separate processes through the
+`chipset_device_worker` framework. This isolates device logic from the main VM
+worker.
 
-**Source code:** [workers/chipset_device_worker](https://github.com/microsoft/openvmm/tree/main/workers/chipset_device_worker) | **Docs:** [chipset_device_worker rustdoc](https://openvmm.dev/rustdoc/linux/chipset_device_worker/index.html)
+**Source code:**
+[workers/chipset_device_worker](https://github.com/microsoft/openvmm/tree/main/workers/chipset_device_worker)
+| **Docs:**
+[chipset_device_worker rustdoc](https://openvmm.dev/rustdoc/linux/chipset_device_worker/index.html)
 
 **Key Responsibilities:**
 
-- **Device Isolation:** Runs specific device emulators in separate processes to isolate them from the main VM worker.
-- **I/O Proxying:** Forwards device I/O operations (MMIO, PIO, PCI config space) between the VM worker and the device worker.
-- **Memory Access:** Provides proxied access to guest memory for devices that need to read/write VM memory.
+- **Device Isolation:** Runs selected emulators outside the main VM worker.
+- **I/O Proxying:** Forwards MMIO, PIO, and PCI configuration operations.
+- **Memory Access:** Proxies guest-memory access needed by the device.
 - **State Management:** Handles device save/restore operations across process boundaries.
 
 **Current Use Cases:**
 
-- **TPM Emulation:** The virtual TPM (vTPM) runs in a separate device worker process for enhanced security isolation, protecting sensitive cryptographic operations and state from other components.
+- **TPM Emulation:** The virtual TPM can run in a separate worker to isolate
+  cryptographic operations and state.
 
-This architecture can be extended to isolate other chipset devices as needed for security or reliability requirements.
+This architecture can be extended to isolate other chipset devices when their
+security or reliability requirements justify a process boundary.

@@ -4,7 +4,6 @@
 //! Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
 
 use crate::pipelines::vmm_tests_run::VmmTestTargetCli;
-use crate::pipelines::vmm_tests_run::resolve_incubator;
 use crate::pipelines::vmm_tests_run::resolve_target;
 use anyhow::Context;
 use flowey::node::prelude::ReadVar;
@@ -13,9 +12,10 @@ use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::parse_vmm_test_image;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use vmm_test_images::KnownTestArtifacts;
 
 /// Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
 #[derive(clap::Args)]
@@ -35,8 +35,8 @@ pub struct VmmTestsRunTargetCli {
     filter: String,
 
     /// The test artifacts to download.
-    #[clap(long, value_delimiter = ',')]
-    artifacts: Vec<KnownTestArtifacts>,
+    #[clap(long, value_delimiter = ',', value_parser = parse_vmm_test_image)]
+    artifacts: Vec<ErasedVmmTestImage>,
 
     /// Prep steps variants to run
     #[clap(long, value_delimiter = ',')]
@@ -74,11 +74,6 @@ pub struct VmmTestsRunTargetCli {
     /// How many times to run the tests
     #[clap(long)]
     repetitions: Option<u64>,
-
-    /// Run tests inside an emulated incubator.
-    #[clap(long, num_args = 0..=1)]
-    #[expect(clippy::option_option)]
-    incubator: Option<Option<PathBuf>>,
 }
 
 impl IntoPipeline for VmmTestsRunTargetCli {
@@ -101,23 +96,12 @@ impl IntoPipeline for VmmTestsRunTargetCli {
             needs_hardware_isolation,
             needs_igvm_agent,
             repetitions,
-            incubator,
         } = self;
-
-        // When --incubator is set, --target must also be specified
-        // to indicate the cross-compilation target for the incubator.
-        if incubator.is_some() && target.is_none() {
-            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
-        }
 
         let repetitions =
             NonZeroU64::new(repetitions.unwrap_or(1)).context("repetitions must not be zero")?;
 
         let target = resolve_target(target, backend_hint)?;
-
-        let incubator_profile = incubator
-            .map(|i| resolve_incubator(i, &target))
-            .transpose()?;
 
         let external_deps = match target.as_triple().operating_system {
             target_lexicon::OperatingSystem::Windows => {
@@ -179,7 +163,6 @@ impl IntoPipeline for VmmTestsRunTargetCli {
                         require_2mb_hugetlb: false, // TODO
                     },
                     repetitions,
-                    incubator_profile,
                     done: ctx.new_done_handle(),
                 },
             );

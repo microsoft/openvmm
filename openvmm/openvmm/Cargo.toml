@@ -21,7 +21,6 @@ default = [
   "disklayer_sqlite",
 ]
 
-# see the `openvmm_entry` crate for more info on these features
 gdb = ["openvmm_resources/gdb"]
 vendored_crypto = ["crypto/vendored"]
 tpm = [

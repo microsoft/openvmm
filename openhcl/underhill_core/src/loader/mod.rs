@@ -712,6 +712,7 @@ pub fn write_uefi_config(
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
         flags.set_force_dma_bounce_enabled(platform_config.general.force_dma_bounce_enabled);
+        flags.set_ipmi_enabled(platform_config.general.ipmi_enabled);
         flags.set_disable_sha1_pcr(disable_sha1_pcr);
 
         // Some settings do not depend on host config

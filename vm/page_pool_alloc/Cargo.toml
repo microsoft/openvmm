@@ -12,7 +12,7 @@ sparse_mmap.workspace = true
 vmcore.workspace = true
 memory_range = { workspace = true, features = [ "inspect", "mesh" ] }
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 safeatomic.workspace = true
 

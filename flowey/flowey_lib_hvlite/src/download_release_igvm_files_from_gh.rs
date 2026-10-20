@@ -81,8 +81,8 @@ pub mod resolve {
                 ReadVar::from_static(request.release_version.branch_name());
 
             let run = ctx.reqv(|v| gh_workflow_id::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
                 commit_or_branch: gh_workflow_id::GitCommitOrBranch::Branch(branch_name),
                 pipeline_name: "openvmm-ci.yaml".into(),
                 require_run_status: Some(gh_workflow_id::GhRunStatus::Success),
@@ -100,8 +100,8 @@ pub mod resolve {
 
             let downloaded_artifact =
                 ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
-                    repo_owner: "microsoft".into(),
-                    repo_name: "openvmm".into(),
+                    repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                    repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
                     file_name: format!("{arch_str}-openhcl-igvm"),
                     path: v,
                     run_id: run_id.clone(),

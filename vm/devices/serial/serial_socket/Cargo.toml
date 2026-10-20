@@ -16,10 +16,14 @@ unix_socket = { workspace = true, features = ["mesh"] }
 pal_async.workspace = true
 futures.workspace = true
 socket2.workspace = true
+tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 pal.workspace = true
-tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

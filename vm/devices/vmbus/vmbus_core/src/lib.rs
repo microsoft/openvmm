@@ -1,20 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(test), no_std)]
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 pub mod protocol;
 
-use futures::StreamExt;
+use alloc::format;
+use alloc::string::String;
+use core::str::FromStr;
 use guid::Guid;
 use inspect::Inspect;
 use protocol::HEADER_SIZE;
 use protocol::MAX_MESSAGE_SIZE;
 use protocol::MessageHeader;
 use protocol::VmbusMessage;
-use std::str::FromStr;
-use std::task::Poll;
 use thiserror::Error;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -22,43 +25,6 @@ use zerocopy::KnownLayout;
 
 /// The standard, non-redirected synthetic interrupt used by VMBus.
 pub const VMBUS_SINT: u8 = 2;
-
-#[derive(Debug)]
-pub struct TaggedStream<T, S>(Option<T>, S);
-
-impl<T: Clone, S: futures::Stream + Unpin> TaggedStream<T, S> {
-    pub fn new(t: T, s: S) -> Self {
-        Self(Some(t), s)
-    }
-
-    pub fn value(&self) -> Option<&T> {
-        self.0.as_ref()
-    }
-}
-
-impl<T: Clone, S: futures::Stream + Unpin> futures::Stream for TaggedStream<T, S>
-where
-    Self: Unpin,
-{
-    type Item = (T, Option<S::Item>);
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Some(t) = this.0.clone() {
-            let v = std::task::ready!(this.1.poll_next_unpin(cx));
-            if v.is_none() {
-                // Return `None` next time poll_next is called.
-                this.0 = None;
-            }
-            Poll::Ready(Some((t, v)))
-        } else {
-            Poll::Ready(None)
-        }
-    }
-}
 
 /// Represents information about a negotiated version.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Inspect)]

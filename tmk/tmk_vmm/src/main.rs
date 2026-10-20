@@ -1,11 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A simple VMM for loading and running test microkernels (TMKs) but does not
-//! support general-purpose VMs.
+//! Host-side executor for Test Microkernel (TMK) binaries.
 //!
-//! This is used to test the underlying VMM infrastructure without the complexity
-//! of the full OpenVMM stack.
+//! `tmk_vmm` parses a TMK ELF image, discovers tests from its `tmk_tests`
+//! section, creates a minimal single-processor VM, and reports guest log,
+//! completion, panic, and fault events. This exercises hypervisor and processor
+//! infrastructure without firmware, a general-purpose guest OS, or the full
+//! OpenVMM device stack.
+//!
+//! It can run directly on supported host hypervisors or inside OpenHCL.
+//! Use `tmk_vmm --tmk <image> --list` to enumerate tests, or omit `--list`
+//! and optionally pass test names to run them.
 
 mod host_vmm;
 mod load;

@@ -44,7 +44,7 @@ x86defs.workspace = true
 # support/
 cache_topology.workspace = true
 closeable_mutex.workspace = true
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 pal_async.workspace = true
 
@@ -61,6 +61,9 @@ zerocopy.workspace = true
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 cvm_tracing.workspace = true
 iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
+
+[dev-dependencies]
+test_with_tracing.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
