@@ -927,7 +927,7 @@ fn parse_vnet_hdr(
             if hdr.gso_type.ecn() {
                 return Err(InvalidRxMetadata::UnexpectedEcn);
             }
-            if !hdr.flags.needs_csum() {
+            if !hdr.flags.needs_csum() && !hdr.flags.data_valid() {
                 return Err(InvalidRxMetadata::UnsupportedChecksumOffload);
             }
             let layout = parse_tcp_gso_layout(frame, rx_protocol)?;
@@ -939,7 +939,9 @@ fn parse_vnet_hdr(
             if hdr.gso_size == 0 || hdr.gso_size as usize > payload_len {
                 return Err(InvalidRxMetadata::InvalidGsoSize);
             }
-            if usize::from(hdr.csum_start) != layout.tcp_start || hdr.csum_offset != 16 {
+            if hdr.flags.needs_csum()
+                && (usize::from(hdr.csum_start) != layout.tcp_start || hdr.csum_offset != 16)
+            {
                 return Err(InvalidRxMetadata::InvalidChecksumOffset);
             }
             Some(RxGso {
@@ -1170,6 +1172,32 @@ mod tests {
                 protocol: RxGsoProtocol::TcpV6,
                 header_len: 74,
                 max_segment_size: 1440,
+                ecn: false,
+            })
+        );
+    }
+
+    #[test]
+    fn rx_metadata_accepts_data_valid_tcp_gso_without_checksum_offsets() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            ..Default::default()
+        };
+        let frame = tcp_gso_frame(RxGsoProtocol::TcpV4, false, 20, 1460);
+        let meta = parse_vnet_hdr(&hdr, &frame, all_rx_offloads()).unwrap();
+        assert_eq!(meta.ip_checksum, RxChecksumState::Good);
+        assert_eq!(meta.l4_checksum, RxChecksumState::Good);
+        assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
+        assert_eq!(meta.checksum_offload, None);
+        assert_eq!(
+            meta.gso,
+            Some(RxGso {
+                protocol: RxGsoProtocol::TcpV4,
+                header_len: 54,
+                max_segment_size: 1460,
                 ecn: false,
             })
         );
