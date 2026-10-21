@@ -110,12 +110,14 @@ impl DeviceRegionState {
     /// Removes `range` from the region. Mappings that partially overlap
     /// `range` are split, leaving the unaffected portions mapped. virtiofs
     /// DAX relies on this to replace or upgrade existing mappings.
-    fn remove_range(&mut self, range: MemoryRange) -> io::Result<()> {
+    /// Returns the removed portions so a failed replacement can restore them.
+    fn remove_range(&mut self, range: MemoryRange) -> io::Result<Vec<DeviceMapping>> {
         if let Some(handle) = &self.handle {
             block_on(handle.remove_mappings(range)).map_err(io::Error::other)?;
         }
 
         let mut kept = Vec::new();
+        let mut removed_mappings = Vec::new();
         for mapping in std::mem::take(&mut self.mappings) {
             if !mapping.range.overlaps(&range) {
                 kept.push(mapping);
@@ -123,6 +125,12 @@ impl DeviceRegionState {
             }
 
             let removed = mapping.range.intersection(&range);
+            removed_mappings.push(DeviceMapping {
+                range: removed,
+                file_offset: mapping.file_offset + (removed.start() - mapping.range.start()),
+                mappable: mapping.mappable.clone(),
+                writable: mapping.writable,
+            });
             if mapping.range.start() < removed.start() {
                 kept.push(DeviceMapping {
                     range: MemoryRange::new(mapping.range.start()..removed.start()),
@@ -141,7 +149,7 @@ impl DeviceRegionState {
             }
         }
         self.mappings = kept;
-        Ok(())
+        Ok(removed_mappings)
     }
 }
 
@@ -177,8 +185,21 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         };
 
         let mut state = self.state.lock();
-        state.remove_range(range)?;
-        state.add_mapping(new_mapping)
+        let removed = state.remove_range(range)?;
+        if let Err(mapping_error) = state.add_mapping(new_mapping) {
+            for mapping in removed {
+                let range = mapping.range;
+                if let Err(error) = state.add_mapping(mapping) {
+                    tracelimit::error_ratelimited!(
+                        %range,
+                        error = &error as &dyn std::error::Error,
+                        "failed to restore device memory mapping during rollback"
+                    );
+                }
+            }
+            return Err(mapping_error);
+        }
+        Ok(())
     }
 
     fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
@@ -252,11 +273,15 @@ impl MappableGuestMemory for DeviceMemoryControl {
 #[cfg(test)]
 mod tests {
     use super::DeviceMapping;
+    use super::DeviceMemoryMapper;
     use super::DeviceMemoryRegion;
     use super::DeviceRegionState;
     use crate::mapping_manager::MappingManager;
     use crate::region_manager::RegionManager;
+    use futures::executor::block_on;
+    use guestmem::GuestMemory;
     use guestmem::MappedMemoryRegion;
+    use guestmem::MemoryMapper;
     use memory_range::MemoryRange;
     use pal_async::DefaultPool;
     use parking_lot::Mutex;
@@ -359,6 +384,51 @@ mod tests {
             region.unmap(0xf000, 0x1000).unwrap();
             assert!(region.state.lock().mappings.is_empty());
         });
+    }
+
+    #[test]
+    fn failed_replacement_restores_active_mapping() {
+        let (thread, spawn) = DefaultPool::spawn_on_thread("device-memory-test");
+        {
+            let mapping_manager = MappingManager::new_without_primary(&spawn, 0x20000, None);
+            let region_manager = RegionManager::new(&spawn, mapping_manager.client().clone());
+            let memory = GuestMemory::new(
+                "test",
+                block_on(mapping_manager.client().new_mapper(true)).unwrap(),
+            );
+            let (mut control, region) = DeviceMemoryMapper::new(region_manager.client().clone())
+                .new_region(0x10000, "test".into())
+                .unwrap();
+            let section = sparse_mmap::alloc_shared_memory(0x20000, "test").unwrap();
+            region.map(0, &section, 0x4000, 0x10000, true).unwrap();
+            control.map_to_guest(0, true).unwrap();
+
+            let pattern: Vec<_> = (0..0x10000).map(|i| (i / 0x1000) as u8).collect();
+            memory.write_at(0, &pattern).unwrap();
+
+            let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+            let read_only = sparse_mmap::new_mappable_from_file(&file, false, false).unwrap();
+            for (offset, len) in [(0x4000, 0x4000), (0, 0x10000)] {
+                assert!(region.map(offset, &read_only, 0, len, true).is_err());
+
+                let mut data = vec![0; pattern.len()];
+                memory.read_at(0, &mut data).unwrap();
+                assert_eq!(data, pattern);
+                memory
+                    .write_at(offset as u64, &pattern[offset..offset + len])
+                    .unwrap();
+            }
+
+            region.unmap(0, 0x10000).unwrap();
+            assert!(memory.read_at(0, &mut [0]).is_err());
+            region.map(0, &section, 0x4000, 0x10000, true).unwrap();
+            let mut data = vec![0; pattern.len()];
+            memory.read_at(0, &mut data).unwrap();
+            assert_eq!(data, pattern);
+            control.unmap_from_guest();
+        }
+        drop(spawn);
+        thread.join().unwrap();
     }
 
     #[test]
