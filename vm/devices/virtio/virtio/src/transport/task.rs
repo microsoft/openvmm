@@ -14,6 +14,7 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
+use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
@@ -23,6 +24,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use pci_core::capabilities::msix::MsixInterrupt;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -53,6 +55,12 @@ pub enum DeviceCommand {
         offset: u16,
         len: u8,
         data: [u8; 8],
+        deferred: DeferredWrite,
+    },
+    /// Finish a queue mapping and any STATUS update from the same write.
+    MapInterrupt {
+        interrupt: MsixInterrupt,
+        status: Option<DeferredToken>,
         deferred: DeferredWrite,
     },
     /// Inspect the device state.
@@ -283,6 +291,20 @@ pub async fn run_device_task(
             }
             DeviceCommand::Reset(rpc) => {
                 rpc.handle(async |()| task.reset().await).await;
+            }
+            DeviceCommand::MapInterrupt {
+                interrupt,
+                status,
+                deferred,
+            } => {
+                std::future::poll_fn(|cx| interrupt.poll_mapping(cx)).await;
+                if let Some(status) = status
+                    && let Err(error) = status.write_future().await
+                {
+                    deferred.complete_error(error);
+                    continue;
+                }
+                deferred.complete();
             }
             DeviceCommand::ReadConfig {
                 offset,

@@ -250,6 +250,7 @@ impl PollWait for Wait {
             }
             WaitState::Waiting(waker) => {
                 if self.tp_wait.cancel() {
+                    *state = WaitState::NotWaiting;
                     // SAFETY: dropping the reference count from poll_wait.
                     unsafe {
                         drop(Arc::from_raw(Arc::as_ptr(&self.inner)));
