@@ -38,8 +38,9 @@ service VM {
     // it requires a running VM with Hyper-V enlightenments and VMBus enabled,
     // and a guest that services the request. This implementation waits for the
     // guest's acknowledgement before returning success.
-    // The request is bounded by the caller's deadline or 30 seconds, whichever
-    // is earlier. Cancellation does not undo an already delivered request.
+    // The caller controls the deadline; there is no server-imposed timeout.
+    // Without a deadline, this waits for acknowledgement, cancellation, or a
+    // channel error. Cancellation does not undo an already delivered request.
     // There is no fallback to another mechanism or to hard power-off.
     rpc ShutdownVM(ShutdownVMRequest) returns (google.protobuf.Empty);
 

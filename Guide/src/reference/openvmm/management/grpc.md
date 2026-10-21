@@ -133,10 +133,11 @@ ACPI power-button shutdown is not yet implemented by this RPC. If added, it
 would not imply a guest acknowledgement or guarantee that the guest's
 power-button policy initiates shutdown.
 
-The request has a maximum wait of 30 seconds, shortened by the caller's
-deadline. Set a shorter RPC timeout on the client, not in
-`ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can limit the
-acknowledgement wait to five seconds:
+The caller controls the acknowledgement deadline; there is no server-imposed
+timeout. Without a deadline, the request waits for acknowledgement,
+cancellation, or a channel error. Callers should set an RPC timeout on the
+client, not in `ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can
+limit the acknowledgement wait to five seconds:
 
 ```rust
 let result = client
