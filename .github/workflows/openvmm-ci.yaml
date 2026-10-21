@@ -15,6 +15,7 @@ on:
     branches:
     - main
     - release/*
+    - feature/microvm/**
     paths-ignore:
     - Guide/**
     - petri/logview/**
