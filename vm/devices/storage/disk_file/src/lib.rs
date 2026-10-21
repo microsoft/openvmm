@@ -107,8 +107,15 @@ impl FileDisk {
         let file = self.file.clone();
         let offset = sector << self.sector_shift;
         let buffer = unblock(move || -> Result<_, std::io::Error> {
-            file.read_at(&mut buffer, offset)?;
-            Ok(buffer)
+            let count = file.read_at(&mut buffer, offset)?;
+            if count != buffer.len() {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "short disk read",
+                ))
+            } else {
+                Ok(buffer)
+            }
         })
         .await
         .map_err(DiskError::Io)?;
@@ -129,9 +136,16 @@ impl FileDisk {
         let file = self.file.clone();
         buffers.reader().read(&mut buffer)?;
         let offset = sector << self.sector_shift;
-        unblock(move || file.write_at(&buffer, offset))
-            .await
-            .map_err(DiskError::Io)?;
+        unblock(move || -> Result<(), std::io::Error> {
+            let count = file.write_at(&buffer, offset)?;
+            if count != buffer.len() {
+                Err(std::io::Error::other("short disk write"))
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(DiskError::Io)?;
         Ok(())
     }
 
@@ -224,6 +238,28 @@ mod tests {
         let file = tempfile::tempfile().unwrap();
         file.set_len(DISK_SIZE).unwrap();
         Disk::new(FileDisk::open(file, false).unwrap()).unwrap()
+    }
+
+    #[async_test]
+    async fn short_read_returns_error() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(DISK_SIZE).unwrap();
+        let disk = FileDisk::open(file.try_clone().unwrap(), false).unwrap();
+        file.set_len((SECTOR_SIZE + SECTOR_SIZE / 2) as u64)
+            .unwrap();
+
+        let mem = GuestMemory::allocate(SECTOR_SIZE);
+        mem.write_at(0, &[0xcd; SECTOR_SIZE]).unwrap();
+        let buffers = OwnedRequestBuffers::linear(0, SECTOR_SIZE, true);
+        let result = disk.read(&buffers.buffer(&mem), 1).await;
+
+        assert!(
+            matches!(result, Err(DiskError::Io(ref error)) if error.kind() == std::io::ErrorKind::UnexpectedEof),
+            "{result:?}"
+        );
+        let mut contents = [0; SECTOR_SIZE];
+        mem.read_at(0, &mut contents).unwrap();
+        assert_eq!(contents, [0xcd; SECTOR_SIZE]);
     }
 
     #[async_test]

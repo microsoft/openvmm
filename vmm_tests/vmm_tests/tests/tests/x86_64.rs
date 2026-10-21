@@ -6,6 +6,8 @@
 mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
+#[cfg(target_os = "linux")]
+mod snp_linux_direct;
 mod storage;
 
 use anyhow::Context;
