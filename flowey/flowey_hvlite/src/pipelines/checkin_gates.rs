@@ -129,7 +129,15 @@ impl IntoPipeline for CheckinGatesCli {
 
         // configure pr/ci branch triggers and add gh pipeline name
         {
-            let branches = vec!["main".into(), "release/*".into()];
+            // `feature/microvm/**` covers the MicroVM branches in
+            // microsoft/openvmm (`feature/microvm/dev` and
+            // `feature/microvm/release/*`). `**` is required because `*` does
+            // not match `/` in GitHub branch filters.
+            let branches = vec![
+                "main".into(),
+                "release/*".into(),
+                "feature/microvm/**".into(),
+            ];
 
             // Paths that don't affect the Rust build or tests. Changes
             // to only these paths will not trigger the CI pipeline on push.
