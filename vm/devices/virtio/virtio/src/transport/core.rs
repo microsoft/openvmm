@@ -24,6 +24,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pci_core::capabilities::msix::MsixInterrupt;
 use std::sync::Arc;
 use std::task::Poll;
 use vmcore::interrupt::Interrupt;
@@ -110,6 +111,7 @@ impl VirtioTransportCore {
         driver: &impl Spawn,
         guest_memory: GuestMemory,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
+        interrupts: Vec<MsixInterrupt>,
     ) -> std::io::Result<Self> {
         let traits = device.traits();
         let queues: Vec<QueueData> = (0..traits.max_queues)
@@ -140,7 +142,7 @@ impl VirtioTransportCore {
 
         let (sender, receiver) = mesh::channel();
         let device_task = driver.spawn("virtio-device-task", async move {
-            run_device_task(device, receiver).await;
+            run_device_task(device, receiver, interrupts).await;
         });
 
         Ok(Self {
@@ -428,6 +430,8 @@ impl VirtioTransportCore {
     /// `ChangeDeviceState::reset()` implementation.
     pub async fn reset(&mut self, ops: &mut dyn TransportOps) {
         let _ = self.state.drain().await;
+        // A queued mapping may be waiting for this STATUS write.
+        drop(self.pending_status_deferred.take());
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
         self.reset_status(ops);
     }

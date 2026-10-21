@@ -14,6 +14,7 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
+use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
@@ -23,6 +24,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+use pci_core::capabilities::msix::MsixInterrupt;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -55,6 +57,12 @@ pub enum DeviceCommand {
         offset: u16,
         len: u8,
         data: [u8; 8],
+        deferred: DeferredWrite,
+    },
+    /// Finish a queue mapping and any STATUS update from the same write.
+    MapInterrupt {
+        interrupt: MsixInterrupt,
+        status: Option<DeferredToken>,
         deferred: DeferredWrite,
     },
     /// Inspect the device state.
@@ -256,7 +264,27 @@ impl DeviceTask {
 /// Runs the device task, processing commands from the transport.
 pub async fn run_device_task(
     device: Box<dyn DynVirtioDevice>,
+    recv: mesh::Receiver<DeviceCommand>,
+    interrupts: Vec<MsixInterrupt>,
+) {
+    // Keep software interrupts progressing while commands await device IO.
+    let events = std::future::poll_fn(|cx| {
+        for interrupt in &interrupts {
+            if interrupt.poll_event(cx).is_ready() {
+                cx.waker().wake_by_ref();
+            }
+        }
+        Poll::<()>::Pending
+    });
+    let commands = std::pin::pin!(run_device_commands(device, recv, &interrupts));
+    let events = std::pin::pin!(events);
+    futures::future::select(commands, events).await;
+}
+
+async fn run_device_commands(
+    device: Box<dyn DynVirtioDevice>,
     mut recv: mesh::Receiver<DeviceCommand>,
+    interrupts: &[MsixInterrupt],
 ) {
     let mut task = DeviceTask {
         max_queues: device.traits().max_queues,
@@ -272,7 +300,14 @@ pub async fn run_device_task(
                 rpc.handle(async |()| task.disable().await).await;
             }
             DeviceCommand::Stop(rpc) => {
-                rpc.handle(async |()| task.stop().await).await;
+                rpc.handle(async |()| {
+                    let states = task.stop().await;
+                    for interrupt in interrupts {
+                        std::future::poll_fn(|cx| interrupt.poll_drain(cx)).await;
+                    }
+                    states
+                })
+                .await;
             }
             DeviceCommand::Start(rpc) => {
                 // Start is used by ChangeDeviceState::start(), which is
@@ -290,6 +325,20 @@ pub async fn run_device_task(
                 drop(task);
                 rpc.complete(());
                 return;
+            }
+            DeviceCommand::MapInterrupt {
+                interrupt,
+                status,
+                deferred,
+            } => {
+                std::future::poll_fn(|cx| interrupt.poll_mapping(cx)).await;
+                if let Some(status) = status
+                    && let Err(error) = status.write_future().await
+                {
+                    deferred.complete_error(error);
+                    continue;
+                }
+                deferred.complete();
             }
             DeviceCommand::ReadConfig {
                 offset,
@@ -388,4 +437,134 @@ pub fn defer_config_write(
         deferred,
     });
     IoResult::Defer(token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DeviceTraits;
+    use crate::VirtioDevice;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pci_core::capabilities::msix::MsixEmulator;
+    use pci_core::msi::MsiConnection;
+    use std::future::Future;
+    use std::future::poll_fn;
+
+    #[derive(InspectMut)]
+    struct IdleDevice;
+
+    impl VirtioDevice for IdleDevice {
+        fn traits(&self) -> DeviceTraits {
+            DeviceTraits::default()
+        }
+
+        async fn read_registers_u32(&mut self, _: u16) -> u32 {
+            0
+        }
+
+        async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+
+        async fn start_queue(
+            &mut self,
+            _: u16,
+            _: QueueResources,
+            _: &VirtioDeviceFeatures,
+            _: Option<QueueState>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+            None
+        }
+    }
+
+    #[async_test]
+    async fn stop_drains_software_interrupt_before_acknowledging(driver: DefaultDriver) {
+        use vmcore::save_restore::ProtobufSaveRestore;
+
+        for vector in [Some(0), None] {
+            let conn = MsiConnection::new();
+            let (msix, mut cap) = MsixEmulator::new(2, 1, &conn.target());
+            let source = msix.new_interrupt(&driver).unwrap();
+            assert!(source.set_vector(vector));
+            let interrupt = source.interrupt();
+            let (event, proxy) = interrupt.event_or_proxy(&driver).unwrap();
+            assert!(proxy.is_none());
+
+            let (sender, receiver) = mesh::channel();
+            let mut stopped = sender.call(DeviceCommand::Stop, ());
+            let interrupts = [source];
+            let mut commands = std::pin::pin!(run_device_commands(
+                Box::new(IdleDevice),
+                receiver,
+                &interrupts
+            ));
+            event.signal();
+            poll_fn(|cx| {
+                assert!(commands.as_mut().poll(cx).is_pending());
+                Pin::new(&mut stopped).poll(cx)
+            })
+            .await
+            .unwrap();
+
+            let saved = cap.save().unwrap();
+            let (restored, mut restored_cap) = MsixEmulator::new(2, 1, &conn.target());
+            restored_cap.restore(saved).unwrap();
+            assert_eq!(restored.read_u32(16), u32::from(vector.is_some()));
+            assert!(!event.try_wait());
+        }
+    }
+
+    #[async_test]
+    async fn software_interrupt_while_mapping_waits_for_status(driver: DefaultDriver) {
+        let conn = MsiConnection::new();
+        let (msix, _cap) = MsixEmulator::new(2, 1, &conn.target());
+        let source = msix.new_interrupt(&driver).unwrap();
+        assert!(source.set_vector(Some(0)));
+        let interrupt = source.interrupt();
+        let (event, proxy) = interrupt.event_or_proxy(&driver).unwrap();
+        assert!(proxy.is_none());
+
+        let (sender, receiver) = mesh::channel();
+        let (status, status_token) = defer_write();
+        let (deferred, mut token) = defer_write();
+        sender.send(DeviceCommand::MapInterrupt {
+            interrupt: source.clone(),
+            status: Some(status_token),
+            deferred,
+        });
+        let mut task = std::pin::pin!(run_device_task(
+            Box::new(IdleDevice),
+            receiver,
+            vec![source]
+        ));
+        let mut timer = pal_async::timer::PolledTimer::new(&driver);
+        let mut timeout = std::pin::pin!(timer.sleep(std::time::Duration::from_secs(5)));
+        event.signal();
+        poll_fn(|cx| {
+            assert!(
+                timeout.as_mut().poll(cx).is_pending(),
+                "software interrupt stalled"
+            );
+            assert!(task.as_mut().poll(cx).is_pending());
+            assert!(token.poll_write(cx).is_pending());
+            if msix.read_u32(16) == 1 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+
+        status.complete();
+        poll_fn(|cx| {
+            assert!(task.as_mut().poll(cx).is_pending());
+            token.poll_write(cx)
+        })
+        .await
+        .unwrap();
+    }
 }

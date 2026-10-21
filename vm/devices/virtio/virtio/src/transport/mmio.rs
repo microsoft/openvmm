@@ -126,7 +126,13 @@ impl VirtioMmioDevice {
             status: 0,
         }));
 
-        let core = VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        let core = VirtioTransportCore::new(
+            device,
+            driver,
+            guest_memory,
+            doorbell_registration,
+            Vec::new(),
+        )?;
 
         Ok(Self {
             core,
