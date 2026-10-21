@@ -77,7 +77,13 @@ struct DeviceMapping {
 
 impl DeviceMemoryRegion {
     fn validated_memory_range(&self, offset: usize, len: usize) -> io::Result<MemoryRange> {
-        (offset..offset.wrapping_add(len))
+        let end = offset
+            .checked_add(len)
+            .filter(|&end| len != 0 && end <= self.len)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid device memory range")
+            })?;
+        (offset..end)
             .try_into()
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
     }
@@ -148,12 +154,21 @@ impl MappedMemoryRegion for DeviceMemoryRegion {
         len: usize,
         writable: bool,
     ) -> io::Result<()> {
+        let range = self.validated_memory_range(offset, len)?;
+        if !file_offset.is_multiple_of(hvdef::HV_PAGE_SIZE)
+            || file_offset.checked_add(range.len() - 1).is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unaligned or overflowing backing range",
+            ));
+        }
+
         #[cfg(unix)]
         let mappable = section.as_fd().try_clone_to_owned()?;
         #[cfg(windows)]
         let mappable = section.as_handle().try_clone_to_owned()?;
 
-        let range = self.validated_memory_range(offset, len)?;
         let new_mapping = DeviceMapping {
             range,
             file_offset,
@@ -237,8 +252,114 @@ impl MappableGuestMemory for DeviceMemoryControl {
 #[cfg(test)]
 mod tests {
     use super::DeviceMapping;
+    use super::DeviceMemoryRegion;
     use super::DeviceRegionState;
+    use crate::mapping_manager::MappingManager;
+    use crate::region_manager::RegionManager;
+    use guestmem::MappedMemoryRegion;
     use memory_range::MemoryRange;
+    use pal_async::DefaultPool;
+    use parking_lot::Mutex;
+    use std::io;
+    use test_with_tracing::test;
+
+    fn with_region(test: impl FnOnce(&DeviceMemoryRegion)) {
+        DefaultPool::run_with(|spawn| async move {
+            let mapping_manager = MappingManager::new_without_primary(&spawn, 0x20000, None);
+            let region_manager = RegionManager::new(&spawn, mapping_manager.client().clone());
+            let region = DeviceMemoryRegion {
+                debug_name: "test".into(),
+                len: 0x10000,
+                region_manager: region_manager.client().clone(),
+                state: Mutex::new(DeviceRegionState {
+                    handle: None,
+                    mappings: Vec::new(),
+                }),
+            };
+            test(&region);
+        });
+    }
+
+    #[test]
+    fn invalid_device_ranges_preserve_existing_mapping() {
+        with_region(|region| {
+            let section = sparse_mmap::alloc_shared_memory(0x10000, "test").unwrap();
+            region.map(0, &section, 0, 0x10000, true).unwrap();
+
+            for (offset, len) in [
+                (0x4000, 0),
+                (0x4001, 0x1000),
+                (0x4000, 0x1001),
+                (0xf000, 0x2000),
+                (0x10000, 0x1000),
+                (usize::MAX - 0xfff, 0x1000),
+            ] {
+                assert_eq!(
+                    region
+                        .map(offset, &section, 0, len, false)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::InvalidInput,
+                    "map offset={offset:#x}, len={len:#x}",
+                );
+                assert_eq!(
+                    region.unmap(offset, len).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput,
+                    "unmap offset={offset:#x}, len={len:#x}",
+                );
+
+                let state = region.state.lock();
+                assert_eq!(state.mappings.len(), 1);
+                assert_eq!(state.mappings[0].range, MemoryRange::new(0..0x10000));
+                assert_eq!(state.mappings[0].file_offset, 0);
+                assert!(state.mappings[0].writable);
+            }
+        });
+    }
+
+    #[test]
+    fn invalid_backing_ranges_preserve_existing_mapping() {
+        with_region(|region| {
+            let section = sparse_mmap::alloc_shared_memory(0x10000, "test").unwrap();
+            region.map(0, &section, 0, 0x10000, true).unwrap();
+
+            for file_offset in [1, u64::MAX - 0xfff] {
+                assert_eq!(
+                    region
+                        .map(0x4000, &section, file_offset, 0x2000, false)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::InvalidInput,
+                );
+
+                let state = region.state.lock();
+                assert_eq!(state.mappings.len(), 1);
+                assert_eq!(state.mappings[0].range, MemoryRange::new(0..0x10000));
+                assert_eq!(state.mappings[0].file_offset, 0);
+                assert!(state.mappings[0].writable);
+            }
+        });
+    }
+
+    #[test]
+    fn mapping_at_device_boundary_can_be_replaced_and_unmapped() {
+        with_region(|region| {
+            let section = sparse_mmap::alloc_shared_memory(0x10000, "test").unwrap();
+            region.map(0xf000, &section, 0xf000, 0x1000, false).unwrap();
+            region.map(0xf000, &section, 0xf000, 0x1000, true).unwrap();
+
+            {
+                let state = region.state.lock();
+                assert_eq!(state.mappings.len(), 1);
+                assert_eq!(state.mappings[0].range, MemoryRange::new(0xf000..0x10000));
+                assert_eq!(state.mappings[0].file_offset, 0xf000);
+                assert!(state.mappings[0].writable);
+            }
+
+            region.unmap(0xf000, 0x1000).unwrap();
+            assert!(region.state.lock().mappings.is_empty());
+        });
+    }
 
     #[test]
     fn remove_range_preserves_unaffected_mapping_fragments() {
