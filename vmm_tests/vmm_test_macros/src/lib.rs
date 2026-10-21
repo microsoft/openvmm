@@ -79,6 +79,7 @@ enum HostVendor {
 enum Firmware {
     LinuxDirect,
     LinuxDirectBzImage,
+    SnpLinuxDirect,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
@@ -155,6 +156,7 @@ impl ResolvedConfig {
         let firmware_prefix = match &self.firmware {
             Firmware::LinuxDirect => "linux",
             Firmware::LinuxDirectBzImage => "linux_bzimage",
+            Firmware::SnpLinuxDirect => "snp_linux_direct",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
@@ -163,9 +165,10 @@ impl ResolvedConfig {
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
-                None
-            }
+            Firmware::LinuxDirect
+            | Firmware::LinuxDirectBzImage
+            | Firmware::SnpLinuxDirect
+            | Firmware::OpenhclLinuxDirect => None,
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
@@ -173,6 +176,7 @@ impl ResolvedConfig {
         let options_prefix = match &self.firmware {
             Firmware::LinuxDirect
             | Firmware::LinuxDirectBzImage
+            | Firmware::SnpLinuxDirect
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
@@ -258,6 +262,9 @@ impl ToTokens for FirmwareAndArch {
             }
             Firmware::LinuxDirectBzImage => {
                 quote!(::petri::Firmware::linux_direct_bzimage(resolver))
+            }
+            Firmware::SnpLinuxDirect => {
+                quote!(::petri::Firmware::snp_linux_direct(resolver))
             }
             Firmware::Pcat(guest) => {
                 quote!(::petri::Firmware::pcat(resolver, #guest))
@@ -665,6 +672,7 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
     let (arch, firmware) = match remainder {
         "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
         "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
+        "snp_linux_direct_x64" => (MachineArch::X86_64, Firmware::SnpLinuxDirect),
         "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
         "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
         "pcat_x64" => (
@@ -691,7 +699,7 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
             MachineArch::Aarch64,
             Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
         ),
-        "openhcl_linux_direct_aarch64" | "pcat_aarch64" => {
+        "openhcl_linux_direct_aarch64" | "pcat_aarch64" | "snp_linux_direct_aarch64" => {
             return Err(Error::new(
                 word.span(),
                 "aarch64 is not supported for this firmware, use x64 instead",
@@ -1044,6 +1052,7 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
+/// - `openvmm_snp_linux_direct_x64`: SEV-SNP Linux-direct IGVM (x86_64 only)
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
@@ -1402,6 +1411,16 @@ fn build_requirements(
     requires_capabilities: &[&'static str],
 ) -> TokenStream {
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
+    if matches!(firmware, Firmware::SnpLinuxDirect) {
+        requirement_expr = quote!(#requirement_expr
+            .and(::petri::requirements::TestRequirement::OpenVmmHypervisor(
+                ::petri::requirements::OpenVmmHypervisor::Mshv
+            ))
+            .and(::petri::requirements::TestRequirement::Vendor(
+                ::petri::requirements::Vendor::Amd
+            ))
+        );
+    }
     let mut is_vbs = false;
     // Add isolation requirement if specified
     if let Firmware::OpenhclUefi(

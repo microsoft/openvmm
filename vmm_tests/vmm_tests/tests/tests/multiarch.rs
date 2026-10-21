@@ -737,6 +737,53 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     Ok(())
 }
 
+/// Preserve a multi-socket topology and agent connectivity across repeated resets.
+#[vmm_test(openvmm_linux_direct_x64)]
+async fn reboot_multisocket(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            enable_smt: Some(false),
+            ..Default::default()
+        })
+        .run()
+        .await?;
+
+    let mut previous_boot_id = None;
+    for boot in 0..=5 {
+        let shell = agent.unix_shell();
+        let online = shell.read_file("/sys/devices/system/cpu/online").await?;
+        anyhow::ensure!(online.trim() == "0-3", "boot {boot}: online CPUs: {online}");
+        let boot_id = shell.read_file("/proc/sys/kernel/random/boot_id").await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
+        for cpu in 0..4 {
+            let socket = shell
+                .read_file(format!(
+                    "/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id"
+                ))
+                .await?;
+            anyhow::ensure!(
+                socket.trim().parse::<u32>()? == cpu / 2,
+                "boot {boot}: CPU {cpu} socket: {socket}"
+            );
+        }
+        agent.ping().await?;
+        if boot != 5 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Configure Guest VSM and reboot the VM to verify it works.
 #[vmm_test(
     unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),

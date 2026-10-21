@@ -189,6 +189,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             synic_ports: Default::default(),
             isolation: MshvIsolationState::None,
             time_frozen: true.into(),
+            reset_with_scrub: false.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
             gsi_states: parking_lot::Mutex::new(Box::new(
                 [crate::irqfd::GsiState::Unallocated; crate::irqfd::NUM_GSIS],
@@ -277,10 +278,8 @@ impl virt::Partition for MshvPartition {
     }
 }
 
-impl virt::ResetPartition for MshvPartition {
-    type Error = Error;
-
-    fn reset(&self) -> Result<(), Error> {
+impl MshvPartition {
+    pub(super) fn reset_arch_state(&self, _scrubbed: bool) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -393,18 +392,35 @@ impl virt::BindProcessor for MshvProcessorBinder {
             self.vcpufd.as_ref().unwrap()
         };
 
-        // Set the MPIDR for this VP; otherwise, the hypervisor assigns a value
-        // that would not match the identity firmware advertises.
-        vcpufd
+        let runner = MshvVpRunner { vcpufd };
+
+        let this = MshvProcessor {
+            partition: &self.partition,
+            inner,
+            vpindex: self.vpindex,
+            runner,
+            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
+        };
+        this.finish_reset()?;
+        Ok(this)
+    }
+}
+
+impl MshvProcessor<'_> {
+    pub(super) fn finish_reset(&self) -> Result<(), Error> {
+        // The hypervisor's default MPIDR need not match firmware's topology.
+        self.runner
+            .vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((
                 HvArm64RegisterName::MpidrEl1,
-                u64::from(inner.vp_info.mpidr),
+                u64::from(self.inner.vp_info.mpidr),
             ))])
             .map_err(ErrorInner::Register)?;
 
         // Set the GIC redistributor base for this VP (GICv3 only).
-        if let Some(gicr) = inner.vp_info.gicr {
-            vcpufd
+        if let Some(gicr) = self.inner.vp_info.gicr {
+            self.runner
+                .vcpufd
                 .set_hvdef_regs(&[HvRegisterAssoc::from((
                     HvArm64RegisterName::GicrBaseGpa,
                     gicr,
@@ -412,19 +428,9 @@ impl virt::BindProcessor for MshvProcessorBinder {
                 .map_err(ErrorInner::Register)?;
         }
 
-        let runner = MshvVpRunner { vcpufd };
-
-        Ok(MshvProcessor {
-            partition: &self.partition,
-            inner,
-            vpindex: self.vpindex,
-            runner,
-            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
-        })
+        Ok(())
     }
-}
 
-impl MshvProcessor<'_> {
     async fn handle_memory_intercept(
         &mut self,
         message: &HvMessage,

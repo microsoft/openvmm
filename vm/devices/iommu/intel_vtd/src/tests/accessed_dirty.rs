@@ -1,7 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::scalable_fixture::DIRECTORY;
+use super::scalable_fixture::Fixture;
+use super::scalable_fixture::GPA;
+use super::scalable_fixture::IOVA;
+use super::scalable_fixture::LOWER;
+use super::scalable_fixture::PASID_TABLE;
+use super::scalable_fixture::ROOT;
+use super::scalable_fixture::SL_ROOT;
+use super::scalable_fixture::UNMAPPED;
+use super::scalable_fixture::UPPER;
+use super::scalable_fixture::final_ecap;
+use super::scalable_fixture::put;
+use super::scalable_fixture::walk;
+use super::scalable_fixture::walk_at;
 use super::*;
+use iommu_common::IommuTranslator;
 use std::sync::Barrier;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -1114,13 +1129,7 @@ fn concurrent_translators_mark_shared_and_independent_guest_memory_tables() {
                                 f.dev
                                     .shared
                                     .translator()
-                                    .translate_with_capabilities(
-                                        rid,
-                                        IOVA,
-                                        write,
-                                        final_ecap(),
-                                        |gpa| gpa
-                                    )
+                                    .translate(rid, IOVA, write, |gpa| gpa)
                                     .unwrap(),
                                 output
                             );
@@ -1139,12 +1148,12 @@ fn concurrent_translators_mark_shared_and_independent_guest_memory_tables() {
 }
 
 fn prepare_invalidation(f: &mut Fixture, data: u32) {
-    // Global context/PASID caches, domain IOTLB with both drains, then a fenced
+    // Global context/PASID/IOTLB caches with both drains, then a fenced
     // status-write wait. ATS is off, so no device-TLB invalidation is needed.
     for (index, words) in [
         [0x11, 0, 0, 0],
         [0x37, 0, 0, 0],
-        [(0xbeef << 16) | 0xe2, 0, 0, 0],
+        [0xd2, 0, 0, 0],
         [(u64::from(data) << 32) | 0x65, STATUS, 0, 0],
     ]
     .iter()
@@ -1153,16 +1162,17 @@ fn prepare_invalidation(f: &mut Fixture, data: u32) {
         put(&f.gm, QUEUE + index as u64 * 32, words);
     }
     f.gm.write_plain(STATUS, &0u32).unwrap();
-    let mut state = f.dev.shared.state.write();
-    state.iqa = IqaReg::from(QUEUE | (1 << 11));
-    state.iqh = IqhReg::new();
-    state.iqt = IqtReg::new();
-    state.gsts.set_qies(true);
+    // Quiesce translation before disabling/reprogramming the queue.
+    let qie = read32(&mut f.dev, 0x01c) & (1 << 26);
+    write32(&mut f.dev, 0x018, qie);
+    write32(&mut f.dev, 0x018, 0);
+    write64(&mut f.dev, 0x088, 0);
+    write64(&mut f.dev, 0x090, QUEUE | (1 << 11));
+    write32(&mut f.dev, 0x018, (1 << 31) | (1 << 26));
 }
 
 fn complete_invalidation(dev: &mut IntelVtdDevice) {
-    dev.shared.state.write().iqt = IqtReg::from(128);
-    dev.process_invalidation_queue_with_capabilities(CapReg::from(CAP_VALUE), final_ecap());
+    write64(dev, 0x088, 128);
 }
 
 fn invalidate_and_wait(f: &mut Fixture, data: u32) {
@@ -1171,6 +1181,94 @@ fn invalidate_and_wait(f: &mut Fixture, data: u32) {
     assert_eq!(read64(&mut f.dev, 0x080), 128);
     assert_eq!(read32(&mut f.dev, 0x034) & (1 << 4), 0);
     assert_eq!(u32::from_le(f.gm.read_plain::<u32>(STATUS).unwrap()), data);
+}
+
+#[test]
+fn production_dma_isolates_lower_upper_devices_domains_and_ad_policy() {
+    let mut f = Fixture::new(0x007f, 63, 0);
+    enable_ad(&f, true, true);
+    let first = walk(&f.gm, 4, 1, IOVA, GPA);
+    let second_gpa = 0xa0000;
+    let second_iova = IOVA & ((1 << 39) - 1);
+    let second = walk_at(&f.gm, ALTERNATE, 3, 1, second_iova, second_gpa);
+    put(&f.gm, ROOT + 8, &[UPPER | 1]);
+    put(&f.gm, UPPER, &[DIRECTORY | 1, 65, 0, 0]);
+    put(&f.gm, DIRECTORY + 8, &[PASID_TABLE | 1]);
+    put(
+        &f.gm,
+        PASID_TABLE + 64,
+        &[
+            ALTERNATE | 1 | (1 << 2) | (2 << 6),
+            0x1234 | (1 << 23),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ],
+    );
+    let original_first: Vec<_> = first.iter().map(|&a| f.word(a)).collect();
+    let original_second: Vec<_> = second.iter().map(|&a| f.word(a)).collect();
+    let translator = f.dev.shared.translator();
+    for (rid, iova, output, payload) in [
+        (f.rid, IOVA, GPA | 0xabc, [0x5a, 0xa5]),
+        (0x0080, second_iova, second_gpa | 0xabc, [0x12, 0x34]),
+    ] {
+        translator
+            .translate(rid, iova, true, |gpa| {
+                assert_eq!(gpa, output);
+                f.gm.write_at(gpa, &payload).unwrap();
+            })
+            .unwrap();
+    }
+    for (index, &address) in first.iter().enumerate() {
+        assert_eq!(
+            f.word(address),
+            original_first[index] | A | if index == 3 { D } else { 0 }
+        );
+    }
+    for (index, &address) in second.iter().enumerate() {
+        assert_eq!(f.word(address), original_second[index]);
+    }
+    assert_eq!(
+        f.gm.read_plain::<[u8; 2]>(GPA | 0xabc).unwrap(),
+        [0x5a, 0xa5]
+    );
+    assert_eq!(
+        translator
+            .translate(0x0080, second_iova, false, |gpa| f
+                .gm
+                .read_plain::<[u8; 2]>(gpa)
+                .unwrap())
+            .unwrap(),
+        [0x12, 0x34]
+    );
+
+    // Changing one domain's tracking policy must not affect the other.
+    put(
+        &f.gm,
+        PASID_TABLE + 64,
+        &[f.word(PASID_TABLE + 64) | (1 << 9)],
+    );
+    invalidate_and_wait(&mut f, 1);
+    translator
+        .translate(0x0080, second_iova, false, |_| ())
+        .unwrap();
+    for (index, &address) in second.iter().enumerate() {
+        assert_eq!(f.word(address), original_second[index] | A);
+    }
+    translator
+        .translate(0x0080, second_iova, true, |_| ())
+        .unwrap();
+    assert_eq!(f.word(second[2]), original_second[2] | A | D);
+    for (index, &address) in first.iter().enumerate() {
+        assert_eq!(
+            f.word(address),
+            original_first[index] | A | if index == 3 { D } else { 0 }
+        );
+    }
+    assert_eq!(read32(&mut f.dev, 0x034), 0);
 }
 
 #[test]
@@ -1308,7 +1406,7 @@ fn marking_precedes_dma_even_when_the_dma_closure_fails() {
                 .dev
                 .shared
                 .translator()
-                .translate_with_capabilities(f.rid, IOVA, write, final_ecap(), |gpa| {
+                .translate(f.rid, IOVA, write, |gpa| {
                     assert_eq!(gpa, GPA | 0xabc);
                     assert!(f.dev.shared.state.try_write().is_none());
                     for (index, &address) in entries.iter().enumerate() {
@@ -1365,7 +1463,7 @@ fn tracked_dma_and_atomic_marks_drain_before_invalidation_wait() {
             let dma = scope.spawn(move || {
                 shared
                     .translator()
-                    .translate_with_capabilities(rid, IOVA, write, final_ecap(), |gpa| {
+                    .translate(rid, IOVA, write, |gpa| {
                         assert_eq!(gpa, GPA | 0xabc);
                         for (index, &address) in entries.iter().enumerate() {
                             assert_eq!(

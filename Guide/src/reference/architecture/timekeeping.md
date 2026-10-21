@@ -261,6 +261,12 @@ freeze/thaw updates `TimeFreeze`. Guest reference-TSC-page exposure is
 capability-dependent and is currently disabled for MSHV SNP partitions.
 That restriction is separate from freezing the partition.
 
+For non-isolated VM reset, `virt_mshv` uses `MSHV_SCRUB_PARTITION` when the
+kernel implements it, then explicitly reasserts `TimeFreeze`. An `ENOTTY`
+response selects the existing state-by-state reset path; other scrub
+errors fail reset. Per-VP user-mode state is reset on both paths, while a
+successful scrub replaces bulk hypervisor-state writes.
+
 `virt_whp` offloads Hyper-V facilities when offload is enabled, the
 required WHP features are available, and a user-mode APIC is not selected.
 Otherwise, its x86 software path uses `hv1_emulator` with a

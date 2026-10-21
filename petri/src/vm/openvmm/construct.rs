@@ -184,6 +184,9 @@ impl PetriVmConfigOpenVmm {
                 Firmware::LinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
                 }
+                Firmware::IgvmLinuxDirect { .. } => {
+                    vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
+                }
                 Firmware::OpenhclLinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HclHost
                 }
@@ -685,6 +688,9 @@ impl PetriVmConfigOpenVmm {
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
+                    Some(IsolationType::Snp) => {
+                        Some(openvmm_defs::config::IsolationType::Snp { host_data: None })
+                    }
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
@@ -830,7 +836,9 @@ impl PetriVmConfigSetupCore<'_> {
         let mut serial_tasks = Vec::new();
 
         let serial0_log_file = logger.log_file(match self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => "linux",
+            Firmware::LinuxDirect { .. }
+            | Firmware::IgvmLinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. } => "linux",
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => "pcat",
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
         })?;
@@ -859,7 +867,10 @@ impl PetriVmConfigSetupCore<'_> {
             None
         };
 
-        if self.firmware.is_linux_direct() && self.pipette_rdinit_param.is_none() {
+        if self.firmware.is_linux_direct()
+            && !self.firmware.is_isolated_without_paravisor()
+            && self.pipette_rdinit_param.is_none()
+        {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
             // agent so we can send shell commands to launch pipette.
             let (serial1_host, serial1) = self.create_serial_stream()?;
@@ -908,6 +919,15 @@ impl PetriVmConfigSetupCore<'_> {
         };
 
         Ok(match (self.arch, &self.firmware) {
+            (MachineArch::X86_64, Firmware::IgvmLinuxDirect { igvm_path, .. }) => LoadMode::Igvm {
+                file: File::open(igvm_path.clone())
+                    .context("failed to open Linux-direct IGVM")?
+                    .into(),
+                cmdline: String::new(),
+                vtl2_base_address: Vtl2BaseAddressType::File,
+                com_serial: None,
+                personality: IgvmPersonality::LinuxDirect,
+            },
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
                     MachineArch::X86_64 => "console=ttyS0",
@@ -1271,6 +1291,7 @@ impl PetriVmConfigSetupCore<'_> {
                 ))
             }
             Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::IgvmLinuxDirect { .. }
             | Firmware::LinuxDirect { .. }
             | Firmware::Uefi { .. }
             | Firmware::OpenhclUefi { .. } => None,

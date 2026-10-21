@@ -42,36 +42,17 @@ fn make_queue(dw: bool, mode: u8) -> (IntelVtdDevice, GuestMemory, Arc<Recording
         msi.clone(),
     );
     write64(&mut dev, 0x090, BASE | ((dw as u64) << 11));
-    // Only the private processing policy uses the future capabilities. There
-    // is no alternate device configuration or guest-visible ECAP value.
-    {
-        let mut state = dev.shared.state.write();
-        state.latched_rtaddr = RtaddrReg::from(u64::from(mode) << 10);
-        state.gsts.set_qies(true);
-    }
+    write64(&mut dev, 0x020, u64::from(mode) << 10);
+    write32(&mut dev, 0x018, (1 << 30) | (1 << 26));
     (dev, gm, msi)
 }
 
 fn final_ecap() -> EcapReg {
     EcapReg::from(ECAP_VALUE)
-        .with_smts(true)
-        .with_ssts(true)
-        .with_smpwcs(true)
-        .with_ssads(true)
-        .with_rps(true)
 }
 
-fn run_future_queue(dev: &mut IntelVtdDevice, tail: u64) {
-    dev.shared.state.write().iqt = IqtReg::from(tail);
-    dev.process_invalidation_queue_with_capabilities(CapReg::from(CAP_VALUE), final_ecap());
-}
-
-fn submit(dev: &mut IntelVtdDevice, tail: u64, dw: bool) {
-    if dw {
-        run_future_queue(dev, tail);
-    } else {
-        write64(dev, 0x088, tail);
-    }
+fn run_queue(dev: &mut IntelVtdDevice, tail: u64) {
+    write64(dev, 0x088, tail);
 }
 
 fn put(gm: &GuestMemory, offset: u64, words: [u64; 4], dw: bool) {
@@ -90,13 +71,8 @@ fn assert_queue(dev: &mut IntelVtdDevice, head: u64, error: bool) {
     assert_eq!(FstsReg::from(read32(dev, 0x034)).iqe(), error);
 }
 
-fn recover(dev: &mut IntelVtdDevice, dw: bool) {
-    if dw {
-        dev.shared.state.write().fsts.set_iqe(false);
-        dev.process_invalidation_queue_with_capabilities(CapReg::from(CAP_VALUE), final_ecap());
-    } else {
-        write32(dev, 0x034, 1 << 4);
-    }
+fn recover(dev: &mut IntelVtdDevice) {
+    write32(dev, 0x034, 1 << 4);
 }
 
 #[test]
@@ -125,7 +101,7 @@ fn test_queue_sizes_stride_and_wrap() {
             {
                 put(&gm, offset, wait(i as u32 + 1, SW), dw);
             }
-            submit(&mut dev, 2 * stride, dw);
+            run_queue(&mut dev, 2 * stride);
             assert_queue(&mut dev, 2 * stride, false);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 4);
         }
@@ -143,7 +119,7 @@ fn test_maximum_queue_consumes_n_minus_one_descriptors() {
             put(&gm, offset, [0x11, 0, 0, 0], dw);
         }
         put(&gm, tail - stride, wait(0x12345678, SW), dw);
-        submit(&mut dev, tail, dw);
+        run_queue(&mut dev, tail);
         assert_queue(&mut dev, tail, false);
         assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0x12345678);
     }
@@ -164,11 +140,11 @@ fn test_scalable_queue_processes_all_cache_granularities() {
     }
     let offset = descriptors.len() as u64 * 32;
     put(&gm, offset, wait(0xcafe, SW | FN), true);
-    run_future_queue(&mut dev, offset + 32);
+    run_queue(&mut dev, offset + 32);
     assert_queue(&mut dev, offset + 32, false);
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xcafe);
     assert_eq!(read64(&mut dev, 0x010), ECAP_VALUE);
-    assert_eq!(ECAP_VALUE & ((1 << 43) | (0x1f << 45)), 0);
+    assert_eq!(read64(&mut dev, 0x010), 0x0003_6800_00f0_10db);
 }
 
 #[test]
@@ -183,31 +159,51 @@ fn test_legacy_queue_uses_only_16_bytes() {
 }
 
 #[test]
-fn test_raw_mmio_dw_is_bit_11_and_remains_gated() {
-    let (mut dev, gm, msi) = make_queue(false, 0);
-    write32(&mut dev, 0x018, 0);
-    write64(&mut dev, 0x090, BASE | (1 << 11));
-    put(&gm, 0, wait(0xbeef, SW), true);
-    write64(&mut dev, 0x088, 32);
-    assert_queue(&mut dev, 0, false); // QI disabled.
-    write32(&mut dev, 0x018, 1 << 26);
-    assert_queue(&mut dev, 0, true);
-    assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
-    assert!(msi.events.lock().is_empty());
-    assert_eq!(read64(&mut dev, 0x090), BASE | (1 << 11));
-    assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
-    assert_eq!(read64(&mut dev, 0x010), 0x00f0_10db);
-    // Repair the queue width and resume using ordinary guest MMIO.
-    write32(&mut dev, 0x018, 0);
-    write64(&mut dev, 0x090, BASE);
-    write64(&mut dev, 0x088, 16);
-    write32(&mut dev, 0x018, 1 << 26);
-    write32(&mut dev, 0x034, 1 << 4);
-    assert_queue(&mut dev, 16, false);
-    assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xbeef);
-    assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
-    write32(&mut dev, 0x038, 0);
-    assert!(msi.events.lock().is_empty());
+fn test_raw_mmio_dw_is_bit_11_and_supported_in_both_modes() {
+    for mode in [0, 1] {
+        let (mut dev, gm, msi) = make_queue(false, 0);
+        write32(&mut dev, 0x018, 0);
+        write64(&mut dev, 0x020, mode << 10);
+        write32(&mut dev, 0x018, 1 << 30);
+        write64(&mut dev, 0x090, BASE | (1 << 11));
+        put(&gm, 0, wait(0xbeef, SW), true);
+        write64(&mut dev, 0x088, 32);
+        assert_queue(&mut dev, 0, false); // QI disabled.
+        write32(&mut dev, 0x018, 1 << 26);
+        assert_queue(&mut dev, 32, false);
+        assert_eq!(read64(&mut dev, 0x090), BASE | (1 << 11));
+        assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xbeef);
+        assert_eq!(read64(&mut dev, 0x010), 0x0003_6800_00f0_10db);
+        assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+        assert!(msi.events.lock().is_empty());
+
+        // DW=1 is supported: fault on a zero Type 0 descriptor, not the width.
+        write64(&mut dev, 0x088, 64);
+        assert_queue(&mut dev, 32, true);
+        assert!(FectlReg::from(read32(&mut dev, 0x038)).ip());
+        assert!(msi.events.lock().is_empty());
+        put(&gm, 32, wait(0xcafe, SW), true);
+        write32(&mut dev, 0x034, 1 << 4);
+        assert_queue(&mut dev, 64, false);
+        assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xcafe);
+        assert!(!FectlReg::from(read32(&mut dev, 0x038)).ip());
+        write32(&mut dev, 0x038, 0);
+        assert!(msi.events.lock().is_empty());
+
+        // The predecessor profile did not support DW=1 in either mode.
+        assert!(
+            InvalidationQueue::new(&dev.shared.state.read(), EcapReg::from(0x00f0_10db)).is_err()
+        );
+        write32(&mut dev, 0x018, 0);
+        write64(&mut dev, 0x090, BASE);
+        write64(&mut dev, 0x088, 16);
+        write32(&mut dev, 0x018, 1 << 26);
+        assert_queue(&mut dev, if mode == 0 { 16 } else { 0 }, mode != 0);
+        assert_eq!(
+            gm.read_plain::<u32>(STATUS).unwrap(),
+            if mode == 0 { 0xbeef } else { 0xcafe }
+        );
+    }
 }
 
 #[test]
@@ -218,7 +214,7 @@ fn test_queue_policy_uses_latched_mode() {
     write64(&mut dev, 0x088, 16);
     assert_queue(&mut dev, 16, false);
     put(&gm, 16, wait(2, SW), false);
-    // SRTP latches the mode; production does not yet advertise SMTS.
+    // SRTP latches scalable mode, which requires 256-bit descriptors.
     write32(&mut dev, 0x018, (1 << 30) | (1 << 26));
     assert_queue(&mut dev, 16, true);
     write64(&mut dev, 0x088, 32);
@@ -239,14 +235,14 @@ fn test_invalid_tail_alignment_range_and_reserved_bits() {
         {
             let (mut dev, gm, _) = make_queue(dw, 0);
             put(&gm, 0, wait(0xdead, SW), dw);
-            submit(&mut dev, tail, dw);
+            run_queue(&mut dev, tail);
             assert_queue(&mut dev, 0, true);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
             // Even a valid tail cannot cause fetches until IQE is cleared.
             let stride = if dw { 32 } else { 16 };
-            submit(&mut dev, stride, dw);
+            run_queue(&mut dev, stride);
             assert_queue(&mut dev, 0, true);
-            recover(&mut dev, dw);
+            recover(&mut dev);
             assert_queue(&mut dev, stride, false);
         }
     }
@@ -276,7 +272,7 @@ fn test_invalid_head_is_bounded_and_mmio_head_is_read_only() {
             write64(&mut dev, 0x080, head);
             assert_eq!(read64(&mut dev, 0x080), 0);
             dev.shared.state.write().iqh = IqhReg::from(head);
-            submit(&mut dev, 0, dw);
+            run_queue(&mut dev, 0);
             assert_queue(&mut dev, head, true);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
         }
@@ -292,7 +288,7 @@ fn test_invalid_base_reserved_bits_and_address_overflow() {
         {
             let (mut dev, gm, _) = make_queue(dw, 0);
             dev.shared.state.write().iqa = IqaReg::from(iqa | ((dw as u64) << 11));
-            submit(&mut dev, 0, dw);
+            run_queue(&mut dev, 0);
             assert_queue(&mut dev, 0, true);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
         }
@@ -300,7 +296,7 @@ fn test_invalid_base_reserved_bits_and_address_overflow() {
         let (mut dev, _, _) = make_queue(dw, 0);
         dev.shared.state.write().iqa = IqaReg::from(0xffff_ffff_ffff_f000 | ((dw as u64) << 11));
         assert!(InvalidationQueue::new(&dev.shared.state.read(), final_ecap()).is_ok());
-        submit(&mut dev, if dw { 32 } else { 16 }, dw);
+        run_queue(&mut dev, if dw { 32 } else { 16 });
         assert_queue(&mut dev, 0, true);
     }
 }
@@ -322,7 +318,7 @@ fn test_fetch_failure_stops_at_unreadable_descriptor() {
             gm.write_at(base + 4096 - stride + i as u64 * 8, &word.to_le_bytes())
                 .unwrap();
         }
-        submit(&mut dev, 4096 + stride, dw);
+        run_queue(&mut dev, 4096 + stride);
         assert_queue(&mut dev, 4096, true);
         assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0xabcd);
     }
@@ -348,7 +344,7 @@ fn test_256bit_fetch_requires_readable_upper_half() {
         state.iqa = IqaReg::from(BASE | (1 << 11));
         state.gsts.set_qies(true);
     }
-    run_future_queue(&mut dev, 32);
+    run_queue(&mut dev, 32);
     assert_queue(&mut dev, 0, true);
 }
 
@@ -363,13 +359,13 @@ fn test_iqe_stops_at_invalid_descriptor_then_resumes() {
             put(&gm, 0, wait(1, SW), dw);
             put(&gm, stride, [bad, 0, 0, 0], dw);
             put(&gm, 2 * stride, wait(3, SW), dw);
-            submit(&mut dev, 3 * stride, dw);
+            run_queue(&mut dev, 3 * stride);
             assert_queue(&mut dev, stride, true);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 1);
             put(&gm, stride, [0x11, 0, 0, 0], dw);
-            submit(&mut dev, 3 * stride, dw);
+            run_queue(&mut dev, 3 * stride);
             assert_queue(&mut dev, stride, true);
-            recover(&mut dev, dw);
+            recover(&mut dev);
             assert_queue(&mut dev, 3 * stride, false);
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 3);
         }
@@ -386,7 +382,7 @@ fn test_256bit_padding_and_reserved_fields_stop_processing() {
                 words[word] = 1 << bit;
                 put(&gm, 0, words, true);
                 put(&gm, 32, wait(1, SW), true);
-                run_future_queue(&mut dev, 64);
+                run_queue(&mut dev, 64);
                 assert_queue(&mut dev, 0, true);
                 assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
             }
@@ -408,7 +404,7 @@ fn test_descriptor_mode_and_width_restrictions_in_queue() {
     ] {
         let (mut dev, gm, _) = make_queue(dw, mode);
         put(&gm, 0, [descriptor, 0, 0, 0], dw);
-        run_future_queue(&mut dev, if dw { 32 } else { 16 });
+        run_queue(&mut dev, if dw { 32 } else { 16 });
         assert_queue(&mut dev, 0, true);
     }
 }
@@ -610,7 +606,7 @@ fn test_wait_sw_if_fn_combinations() {
             write32(&mut dev, 0x0a4, 0x61);
             write32(&mut dev, 0x0a8, 0xfee02000);
             put(&gm, 0, wait(0x12345678, flags << 4), dw);
-            submit(&mut dev, if dw { 32 } else { 16 }, dw);
+            run_queue(&mut dev, if dw { 32 } else { 16 });
             assert_queue(&mut dev, if dw { 32 } else { 16 }, false);
             let expected_status = if flags & 2 != 0 { 0x12345678 } else { 0 };
             assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), expected_status);
@@ -643,7 +639,7 @@ fn test_zero_flag_wait_after_queue_work_has_no_notification() {
         // Type 5 remains a wait with notifications and fence disabled; status
         // data/address are ignored when SW=0 (§6.5.2.8).
         put(&gm, stride, wait(0xdeadbeef, 0), dw);
-        submit(&mut dev, 2 * stride, dw);
+        run_queue(&mut dev, 2 * stride);
         assert_queue(&mut dev, 2 * stride, false);
         assert_eq!(route.retranslate_count.load(Ordering::SeqCst), 1);
         assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0x12345678);
@@ -685,18 +681,18 @@ fn test_wait_interrupt_coalescing_and_pending_acknowledgement() {
 
 #[test]
 fn test_status_write_failure_does_not_complete_or_advance() {
-    for dw in [false, true] {
-        let (mut dev, gm, msi) = make_queue(dw, 0);
+    for (dw, mode) in [(false, 0), (true, 0), (true, 1)] {
+        let (mut dev, gm, msi) = make_queue(dw, mode);
         let mut bad = wait(1, SW | IF);
         bad[1] = 0xffff_ffff_ffff_fffc;
         put(&gm, 0, bad, dw);
         write32(&mut dev, 0x0a0, 0);
-        submit(&mut dev, if dw { 32 } else { 16 }, dw);
+        run_queue(&mut dev, if dw { 32 } else { 16 });
         assert_queue(&mut dev, 0, true);
         assert_eq!(read32(&mut dev, 0x09c), 0);
         assert!(msi.events.lock().is_empty());
         put(&gm, 0, wait(2, SW | IF), dw);
-        recover(&mut dev, dw);
+        recover(&mut dev);
         assert_queue(&mut dev, if dw { 32 } else { 16 }, false);
         assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 2);
         assert_eq!(msi.events.lock().len(), 1);
@@ -716,8 +712,8 @@ impl iommu_common::RetranslateInterrupts for CallbackRoute {
 
 #[test]
 fn test_route_retranslation_precedes_wait_and_can_reenter_state() {
-    for dw in [false, true] {
-        let (mut dev, gm, msi) = make_queue(dw, 0);
+    for (dw, mode) in [(false, 0), (true, 0), (true, 1)] {
+        let (mut dev, gm, msi) = make_queue(dw, mode);
         let shared = dev.shared.clone();
         let irte = Irte {
             lo: IrteLo::new()
@@ -727,11 +723,8 @@ fn test_route_retranslation_precedes_wait_and_can_reenter_state() {
             hi: IrteHi::new(),
         };
         gm.write_at(0x80000, irte.as_bytes()).unwrap();
-        {
-            let mut state = shared.state.write();
-            state.latched_irta = IrtaReg::new().with_irta(0x80);
-            state.gsts.set_ires(true);
-        }
+        write64(&mut dev, 0x0b8, 0x80000);
+        write32(&mut dev, 0x018, (1 << 26) | (1 << 24) | (1 << 25));
         let initial =
             iommu_common::InterruptRemapper::remap_msi(&*shared, 0, 0xfee00010, 0).unwrap();
         assert_eq!(initial.1 & 0xff, 0x45);
@@ -771,7 +764,7 @@ fn test_route_retranslation_precedes_wait_and_can_reenter_state() {
         let stride = if dw { 32 } else { 16 };
         put(&gm, 0, [4, 0, 0, 0], dw);
         put(&gm, stride, wait(2, SW | IF | FN), dw);
-        submit(&mut dev, 2 * stride, dw);
+        run_queue(&mut dev, 2 * stride);
         assert_queue(&mut dev, 2 * stride, false);
         assert_eq!(gm.read_plain::<u32>(STATUS + 4).unwrap(), 1);
         assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 2);
@@ -795,7 +788,7 @@ fn test_fenced_wait_completes_before_following_callback() {
     put(&gm, 0, wait(1, SW | IF | FN), true);
     put(&gm, 32, [4, 0, 0, 0], true);
     put(&gm, 64, wait(2, SW), true);
-    run_future_queue(&mut dev, 96);
+    run_queue(&mut dev, 96);
     assert_queue(&mut dev, 96, false);
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 2);
 }
@@ -812,12 +805,12 @@ fn test_valid_interrupt_invalidation_completes_before_later_error() {
     put(&gm, 0, [4, 0, 0, 0], true);
     put(&gm, 32, [0, 0, 0, 0], true);
     put(&gm, 64, wait(1, SW), true);
-    run_future_queue(&mut dev, 96);
+    run_queue(&mut dev, 96);
     assert_queue(&mut dev, 32, true);
     assert_eq!(route.retranslate_count.load(Ordering::SeqCst), 1);
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 0);
     put(&gm, 32, [0x11, 0, 0, 0], true);
-    recover(&mut dev, true);
+    recover(&mut dev);
     assert_queue(&mut dev, 96, false);
     assert_eq!(route.retranslate_count.load(Ordering::SeqCst), 1);
     assert_eq!(gm.read_plain::<u32>(STATUS).unwrap(), 1);
@@ -874,7 +867,7 @@ fn test_inflight_dma_drains_before_invalidation_wait() {
                     "DMA op must retain its read lock"
                 );
                 let invalidation = scope.spawn(|| {
-                    submit(&mut dev, 2 * stride, dw);
+                    run_queue(&mut dev, 2 * stride);
                     done_tx.send(()).unwrap();
                 });
                 // parking_lot blocks new readers once this writer is queued.
