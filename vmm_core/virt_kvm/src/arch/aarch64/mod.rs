@@ -42,6 +42,7 @@ use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2;
 use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
 use kvm::kvm_regs;
 use kvm::user_pt_regs;
+use pal_event::Event;
 use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -1111,14 +1112,17 @@ impl pci_core::msi::SignalMsi for GicItsSignalMsi {
 }
 
 impl virt::irqfd::IrqFd for KvmIrqFdState {
-    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+    fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
         match &self.partition.gic_msi {
-            GicMsiController::Its(its) => {
-                Ok(Box::new(self.new_irqfd_route(KvmItsRouteBuilder {
+            GicMsiController::Its(its) => Ok(Box::new(self.new_irqfd_route(
+                event,
+                KvmItsRouteBuilder {
                     translater_addr: its.its_base + GITS_TRANSLATER_OFFSET,
-                })?))
-            }
-            GicMsiController::V2m(_) => Ok(Box::new(self.new_irqfd_route(KvmGicV2mRouteBuilder)?)),
+                },
+            )?)),
+            GicMsiController::V2m(_) => Ok(Box::new(
+                self.new_irqfd_route(event, KvmGicV2mRouteBuilder)?,
+            )),
             GicMsiController::None => {
                 anyhow::bail!("no MSI controller configured for irqfd")
             }

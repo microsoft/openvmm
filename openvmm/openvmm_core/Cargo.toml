@@ -96,6 +96,7 @@ inspect.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+pal_event.workspace = true
 range_map_vec.workspace = true
 sparse_mmap.workspace = true
 

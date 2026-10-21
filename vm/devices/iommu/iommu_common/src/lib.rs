@@ -23,11 +23,11 @@
 
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryBackingError;
-use parking_lot::Mutex;
 use pci_core::bus_range::AssignedBusRange;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::Weak;
+pub use vmcore::irqfd::RetranslateInterrupts;
+pub use vmcore::irqfd::RetranslateInterruptsList;
 
 /// Trait for IOMMU translation backends.
 ///
@@ -436,88 +436,9 @@ pub trait InterruptRemapper: Send + Sync {
     fn unregister_route(&self, route: &Arc<dyn RetranslateInterrupts>);
 }
 
-/// Trait for pre-registered interrupt routes that can be retranslated on
-/// IOMMU invalidation.
-///
-/// Routes that cache translated MSI parameters (e.g., IOAPIC routes
-/// registered with KVM, or IrqFd routes) implement this trait so the
-/// IOMMU can ask them to retranslate when the guest issues an
-/// `INVALIDATE_INTERRUPT_TABLE` command.
-pub trait RetranslateInterrupts: Send + Sync {
-    /// The device ID (BDF) this route is associated with.
-    fn device_id(&self) -> u16;
-
-    /// Re-translate all cached routes and re-push any that changed to
-    /// the hypervisor.
-    fn retranslate(&self);
-}
-
-/// Shared infrastructure for managing registered interrupt routes.
-///
-/// IOMMU implementations embed this struct and delegate
-/// `register_route`/`unregister_route` to it. On invalidation commands,
-/// call [`invalidate`](RetranslateInterruptsList::invalidate) to retranslate
-/// matching routes.
-///
-/// Routes are stored as `Weak` references and cleaned up lazily.
-pub struct RetranslateInterruptsList {
-    routes: Mutex<Vec<Weak<dyn RetranslateInterrupts>>>,
-}
-
-impl RetranslateInterruptsList {
-    /// Create an empty route list.
-    pub fn new() -> Self {
-        Self {
-            routes: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Register a route for invalidation callbacks.
-    pub fn register(&self, route: &Arc<dyn RetranslateInterrupts>) {
-        let mut routes = self.routes.lock();
-        routes.push(Arc::downgrade(route));
-    }
-
-    /// Unregister a route. Removes all dead weak references as well.
-    pub fn unregister(&self, route: &Arc<dyn RetranslateInterrupts>) {
-        let mut routes = self.routes.lock();
-        routes.retain(|w| w.upgrade().is_some_and(|r| !Arc::ptr_eq(&r, route)));
-    }
-
-    /// Invalidate routes for a specific device, or all routes if
-    /// `device_id` is `None`.
-    ///
-    /// For each matching route, calls `retranslate`. Dead references are
-    /// cleaned up lazily.
-    pub fn invalidate(&self, device_id: Option<u16>) {
-        let routes = {
-            let mut routes = self.routes.lock();
-            let mut live_routes = Vec::new();
-
-            routes.retain(|weak| {
-                let Some(route) = weak.upgrade() else {
-                    return false; // dead, remove
-                };
-                live_routes.push(route);
-                true
-            });
-
-            live_routes
-        };
-
-        for route in routes {
-            if device_id.is_none() || device_id == Some(route.device_id()) {
-                route.retranslate();
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
 
     /// Identity translator: GPA == IOVA, never faults. Records nothing — the
     /// `rid` validation happens in `TranslatingMemory` before `translate` is
@@ -551,38 +472,6 @@ mod tests {
         let r = AssignedBusRange::new();
         r.set_bus_range(secondary, subordinate);
         r
-    }
-
-    struct ReentrantRoute {
-        list: Arc<RetranslateInterruptsList>,
-        retranslates: AtomicU32,
-    }
-
-    impl RetranslateInterrupts for ReentrantRoute {
-        fn device_id(&self) -> u16 {
-            assert!(self.list.routes.try_lock().is_some());
-            7
-        }
-
-        fn retranslate(&self) {
-            self.retranslates.fetch_add(1, Ordering::SeqCst);
-            assert!(self.list.routes.try_lock().is_some());
-        }
-    }
-
-    #[test]
-    fn invalidate_does_not_hold_lock_during_retranslate() {
-        let list = Arc::new(RetranslateInterruptsList::new());
-        let route = Arc::new(ReentrantRoute {
-            list: list.clone(),
-            retranslates: AtomicU32::new(0),
-        });
-        let route_dyn = route.clone() as Arc<dyn RetranslateInterrupts>;
-        list.register(&route_dyn);
-
-        list.invalidate(Some(7));
-
-        assert_eq!(route.retranslates.load(Ordering::SeqCst), 1);
     }
 
     #[test]

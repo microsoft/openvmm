@@ -62,13 +62,54 @@ an event, per the SMMUv3 architecture.
 
 By default the SMMU walks the guest's structures in software: it reads the
 STE, then the CD, then walks the stage-1 page tables to produce a GPA for
-each DMA access and MSI write. Faults are recorded to the guest's event
+each DMA access. MSI delivery caches successful translations as described
+below. Faults are recorded to the guest's event
 queue and signalled with the EVTQ interrupt.
 
 This works for emulated devices, whose DMA already flows through the VMM.
 It cannot work for a VFIO-assigned device, whose DMA never reaches the VMM
 — so assigning a device behind a non-accelerated SMMU is rejected at
 startup rather than silently ignoring the guest's translations.
+
+### MSI translation and acceleration
+
+Programming or unmasking an MSI route eagerly prepares the guest-programmed
+IOVA through the SMMU, without injecting an interrupt or reporting a guest
+fault. Direct-call interrupts cache the prepared destination. Event-backed
+routes bind the caller-owned event immediately when the destination supports
+kernel delivery, so even the first physical interrupt can bypass userspace.
+One-off MSI calls without prior configuration prepare their destination when
+called.
+
+Configuration and TLB maintenance invalidate cached MSI translations, including
+those belonging to software-only streams. The implementation conservatively
+invalidates all MSI routes for that SMMU. Global policy changes, stream-table
+changes, reset, and restore also invalidate them. Invalidation synchronously
+revokes existing kernel bindings, prepares the updated destination, and
+installs a replacement when possible before completing. It serializes with
+in-flight route installation to prevent a stale binding from being installed
+after completion.
+
+Failed preparation leaves the route unbound and generates no guest fault.
+Reprogramming or invalidation retries it. Where the source can notify
+userspace without a kernel binding, software delivery also retries and reports
+faults only for actual interrupts. Masked vectors are not prepared or rebound.
+
+Fallback requirements belong to the interrupt producer, not the MSI sink.
+VFIO identifies the assigned device's host IOMMU locally through
+`/sys/bus/pci/devices/<BDF>/iommu`. A `hyperv-iommu` target selects events that
+require a kernel binding: direct attach on both x86 and ARM64 needs IRQ-bypass
+registration to establish the physical interrupt mapping. Other IOMMUs select
+independent events. An unreadable or invalid link fails device initialization
+rather than assuming software fallback. VFIO supplies this requirement to its
+MSI-X routes; no hypervisor-backend policy is threaded through VM setup.
+Other event producers using the same MSHV destination can still use software
+fallback.
+
+If a kernel-only source cannot be bound, OpenVMM logs the unbound route rather
+than polling its eventfd as a software fallback. A later invalidation or
+reprogramming can restore delivery; the VMM cannot report per-interrupt
+translation faults for physical interrupts it cannot receive.
 
 ## Accelerated translation
 

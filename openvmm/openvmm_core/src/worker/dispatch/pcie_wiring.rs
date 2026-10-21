@@ -16,6 +16,7 @@
 use crate::partition::HvlitePartition;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
+use pal_async::driver::SpawnDriver;
 use pci_core::dma::DmaTarget;
 use std::sync::Arc;
 use vm_topology::processor::ProcessorTopology;
@@ -37,6 +38,9 @@ pub(super) struct PcieMsiPlatform<'a> {
     /// Processor topology (determines ITS wrapping on aarch64).
     #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
     pub processor_topology: &'a ProcessorTopology,
+    /// Driver for userspace delivery when an MSI route cannot be bound in the
+    /// kernel.
+    pub driver: Arc<dyn SpawnDriver>,
     /// x86 IOMMU shared state for interrupt remapping, or `None` if this
     /// entity is not behind an IOMMU.
     #[cfg(guest_arch = "x86_64")]
@@ -50,6 +54,42 @@ pub(super) enum X86IommuSharedState<'a> {
     IntelVtd(&'a Arc<intel_vtd::VtdSharedState>),
 }
 
+/// Adapts the legacy split userspace/irqfd interfaces into one address-bound
+/// MSI router.
+struct IrqFdSignalMsi {
+    signal_msi: Arc<dyn pci_core::msi::SignalMsi>,
+    irqfd: Option<Arc<dyn vmcore::irqfd::IrqFd>>,
+}
+
+impl pci_core::msi::SignalMsi for IrqFdSignalMsi {
+    fn signal_msi(&self, devid: Option<u32>, address: u64, data: u32) {
+        self.signal_msi.signal_msi(devid, address, data);
+    }
+
+    fn bind_msi(
+        &self,
+        fd: &pal_event::Event,
+        devid: Option<u32>,
+        address: u64,
+        data: u32,
+    ) -> Option<Box<dyn vmcore::irqfd::KernelMsiBinding>> {
+        let route = match self.irqfd.as_ref()?.new_irqfd_route(fd.clone()) {
+            Ok(route) => route,
+            Err(error) => {
+                tracelimit::warn_ratelimited!(
+                    error = error.as_ref() as &dyn std::error::Error,
+                    "failed to allocate MSI kernel binding"
+                );
+                return None;
+            }
+        };
+        if !route.enable(address, data, devid) {
+            return None;
+        }
+        Some(Box::new(vmcore::irqfd::IrqFdBinding(route)))
+    }
+}
+
 /// Wrapped `SignalMsi` and `IrqFd` for a PCIe entity.
 ///
 /// Produced by [`PcieMsiPlatform::wrap_msi`]. Use [`connect_to`] to
@@ -61,11 +101,10 @@ pub(super) struct PcieMsiRouting {
     /// MSI signaling target with platform wrapping applied. `None` if
     /// the partition does not provide MSI support.
     pub signal_msi: Option<Arc<dyn pci_core::msi::SignalMsi>>,
-    /// IrqFd for kernel-accelerated MSI delivery with platform wrapping
-    /// applied. `None` if the partition does not provide irqfd support,
-    /// or if IOMMU interrupt remapping is active (irqfd is not yet
-    /// supported through the emulated IOMMU).
-    pub irqfd: Option<Arc<dyn vmcore::irqfd::IrqFd>>,
+    /// Whether kernel-mediated MSI routes are available.
+    pub supports_routes: bool,
+    /// Driver used for userspace fallback delivery.
+    pub driver: Arc<dyn SpawnDriver>,
 }
 
 impl PcieMsiRouting {
@@ -74,8 +113,8 @@ impl PcieMsiRouting {
         if let Some(target) = self.signal_msi {
             msi_conn.connect(target);
         }
-        if let Some(fd) = self.irqfd {
-            msi_conn.connect_irqfd(fd);
+        if self.supports_routes {
+            msi_conn.enable_msi_routes(self.driver);
         }
     }
 }
@@ -124,7 +163,16 @@ impl PcieMsiPlatform<'_> {
             irqfd = None;
         }
 
-        PcieMsiRouting { signal_msi, irqfd }
+        let supports_routes = irqfd.is_some();
+        let signal_msi = signal_msi.map(|signal_msi| {
+            Arc::new(IrqFdSignalMsi { signal_msi, irqfd }) as Arc<dyn pci_core::msi::SignalMsi>
+        });
+
+        PcieMsiRouting {
+            signal_msi,
+            supports_routes,
+            driver: self.driver.clone(),
+        }
     }
 }
 
@@ -212,14 +260,12 @@ pub(super) fn build_device_wiring(params: PcieDeviceWiringParams<'_>) -> PcieDev
             Arc::new(smmu::SmmuSignalMsi::new(shared.clone(), 0, inner_msi))
                 as Arc<dyn pci_core::msi::SignalMsi>
         });
-        let irqfd = msi
-            .irqfd
-            .map(|fd| shared.wrap_irqfd(0, fd) as Arc<dyn vmcore::irqfd::IrqFd>);
         return PcieDeviceWiring {
             dma_target,
             msi: PcieMsiRouting {
                 signal_msi: smmu_msi,
-                irqfd,
+                supports_routes: msi.supports_routes,
+                driver: msi.driver,
             },
         };
     }

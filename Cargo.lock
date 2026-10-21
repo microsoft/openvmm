@@ -624,6 +624,7 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
+ "pal_event",
  "tdisp",
  "vmcore",
  "zerocopy",
@@ -4109,9 +4110,9 @@ name = "iommu_common"
 version = "0.0.0"
 dependencies = [
  "guestmem",
- "parking_lot",
  "pci_core",
  "thiserror 2.0.16",
+ "vmcore",
 ]
 
 [[package]]
@@ -5948,6 +5949,7 @@ dependencies = [
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "pci_bus",
  "pci_core",
@@ -6557,8 +6559,10 @@ dependencies = [
  "inspect",
  "mesh",
  "open_enum",
+ "pal_async",
  "pal_event",
  "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -8035,6 +8039,7 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -9622,6 +9627,7 @@ dependencies = [
  "pci_core",
  "pci_resources",
  "smmu",
+ "tempfile",
  "test_with_tracing",
  "tracelimit",
  "tracing",
@@ -10740,6 +10746,7 @@ dependencies = [
  "parking_lot",
  "save_restore_derive",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

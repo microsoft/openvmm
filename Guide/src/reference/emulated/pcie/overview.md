@@ -104,6 +104,16 @@ a GICv3 ITS or a GICv2m MSI frame, depending on the platform:
 The MSI controller can be overridden with the `--gic-msi`
 CLI option (`auto`, `its`, or `v2m`).
 
+Configured MSI routes prepare on programming or unmasking, without injecting
+an interrupt or reporting a guest fault. Event-backed routes bind immediately
+when supported; reprogramming and translation invalidation synchronously
+refresh the destination. Software eventfd fallback is selected per producer,
+independently of the destination. VFIO detects the assigned device's host IOMMU
+locally; `hyperv-iommu` requires a kernel binding, while ordinary event producers
+on the same backend do not. See
+[SMMU MSI translation](../iommu/smmuv3.md#msi-translation-and-acceleration)
+for the cache and fault-reporting behavior.
+
 ### Implementation notes
 
 ```admonish note title="No Command Completed support"
