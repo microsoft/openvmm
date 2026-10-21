@@ -227,24 +227,31 @@ impl SplitQueueCompleteWork {
         self.last_used_index
     }
 
-    pub fn complete_descriptor(
+    pub fn complete_descriptors(
         &mut self,
-        descriptor_index: u16,
-        bytes_written: u32,
+        completions: impl ExactSizeIterator<Item = (u16, u32)>,
     ) -> Result<bool, QueueError> {
-        self.set_used_descriptor(self.last_used_index, descriptor_index, bytes_written)?;
-        let last_used_index = self.last_used_index;
-        self.last_used_index = self.last_used_index.wrapping_add(1);
+        if completions.len() == 0 {
+            return Ok(false);
+        }
+
+        let old_used_index = self.last_used_index;
+        let mut new_used_index = old_used_index;
+        for (descriptor_index, bytes_written) in completions {
+            self.set_used_descriptor(new_used_index, descriptor_index, bytes_written)?;
+            new_used_index = new_used_index.wrapping_add(1);
+        }
 
         // Ensure used element writes are ordered before used index write.
         atomic::fence(atomic::Ordering::Release);
-        self.set_used_index(self.last_used_index)?;
+        self.set_used_index(new_used_index)?;
+        self.last_used_index = new_used_index;
 
         // Ensure the used index write is visible before reading the field that
         // determines whether to signal.
         atomic::fence(atomic::Ordering::SeqCst);
         let send_signal = if self.use_ring_event_index {
-            last_used_index == self.get_used_event()?
+            needs_event(self.get_used_event()?, new_used_index, old_used_index)
         } else {
             !self.get_available_flags()?.no_interrupt()
         };
@@ -294,4 +301,8 @@ impl SplitQueueCompleteWork {
             .write_plain::<u16_le>(spec::USED_OFFSET_IDX, &index.into())
             .map_err(QueueError::Memory)
     }
+}
+
+fn needs_event(event_index: u16, new_index: u16, old_index: u16) -> bool {
+    new_index.wrapping_sub(event_index).wrapping_sub(1) < new_index.wrapping_sub(old_index)
 }

@@ -398,13 +398,29 @@ impl VirtioQueue {
     /// the payload, so callers that buffer completions can store only the
     /// token.
     pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+        let mut completions = [(completion, bytes_written)];
+        self.complete_prepared_batch(&mut completions);
+    }
+
+    /// Completes a batch of descriptors and delivers at most one interrupt.
+    ///
+    /// Used-ring entries are published together so the ring implementation can
+    /// update its producer state and evaluate interrupt suppression once.
+    pub fn complete_prepared_batch(&mut self, completions: &mut [(QueueCompletion, u32)]) {
+        if completions.is_empty() {
+            return;
+        }
+
         // The completion token is consumed even if publishing it to the used ring
         // fails, so release its in-flight capacity before attempting the write.
-        self.core.work_completed(&completion);
-        match self
-            .complete
-            .complete_descriptor(&completion, bytes_written)
-        {
+        for (completion, _) in completions.iter() {
+            self.core.work_completed(completion);
+        }
+        match self.complete.complete_descriptors(
+            completions
+                .iter()
+                .map(|(completion, bytes_written)| (completion, *bytes_written)),
+        ) {
             Ok(true) => {
                 self.notify_guest.deliver();
             }

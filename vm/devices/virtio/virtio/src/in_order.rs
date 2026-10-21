@@ -47,6 +47,8 @@ pub struct InOrderCompletion {
     /// device detects and treats as fatal.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
+    #[inspect(skip)]
+    publish: Vec<(QueueCompletion, u32)>,
 }
 
 struct Completed {
@@ -60,6 +62,7 @@ impl InOrderCompletion {
         Self {
             order: VecDeque::with_capacity(queue_size as usize),
             completed: (0..queue_size).map(|_| None).collect(),
+            publish: Vec::with_capacity(queue_size as usize),
         }
     }
 
@@ -110,44 +113,40 @@ impl InOrderCompletion {
         completion: QueueCompletion,
         bytes_written: u32,
     ) {
-        let idx = completion.descriptor_index();
+        self.complete_batch(queue, [(completion, bytes_written)]);
+    }
 
-        // Fast path: the completing descriptor is the one at the front of the
-        // consumption order — the overwhelmingly common case, since an ordered
-        // backend completes in the order buffers were posted. Publish it
-        // directly, with no `completed` slot write/read. (When `idx` is at the
-        // front, its slot is guaranteed empty: any completed front descriptor is
-        // published and popped immediately, so the front is always outstanding
-        // on entry.)
-        if self.order.front() == Some(&idx) {
-            self.order.pop_front();
-            queue.complete_prepared(completion, bytes_written);
-            if !self.order.is_empty() {
-                self.drain_completed_prefix(queue);
-            }
-            return;
+    /// Records a batch of completions and publishes the longest contiguous
+    /// completed prefix with a single used-ring flush.
+    pub fn complete_batch(
+        &mut self,
+        queue: &mut VirtioQueue,
+        completions: impl IntoIterator<Item = (QueueCompletion, u32)>,
+    ) {
+        for (completion, bytes_written) in completions {
+            let idx = completion.descriptor_index();
+            let slot = self
+                .completed
+                .get_mut(idx as usize)
+                .expect("completed descriptor index must be within the queue size");
+            assert!(
+                slot.is_none(),
+                "descriptor {idx} completed more than once while outstanding"
+            );
+            *slot = Some(Completed {
+                completion,
+                bytes_written,
+            });
         }
 
-        // Slow path: an out-of-order completion. Buffer it until the
-        // descriptors ahead of it have been published. Because `idx` is not at
-        // the front, nothing new can be published yet.
-        let slot = self
-            .completed
-            .get_mut(idx as usize)
-            .expect("completed descriptor index must be within the queue size");
-        assert!(
-            slot.is_none(),
-            "descriptor {idx} completed more than once while outstanding"
-        );
-        *slot = Some(Completed {
-            completion,
-            bytes_written,
-        });
+        self.drain_completed_prefix();
+        queue.complete_prepared_batch(&mut self.publish);
+        self.publish.clear();
     }
 
     /// Publishes the longest run of already-completed descriptors at the front
     /// of the consumption order, in order.
-    fn drain_completed_prefix(&mut self, queue: &mut VirtioQueue) {
+    fn drain_completed_prefix(&mut self) {
         while let Some(&front) = self.order.front() {
             let Some(Completed {
                 completion,
@@ -157,7 +156,7 @@ impl InOrderCompletion {
                 break;
             };
             self.order.pop_front();
-            queue.complete_prepared(completion, bytes_written);
+            self.publish.push((completion, bytes_written));
         }
     }
 
