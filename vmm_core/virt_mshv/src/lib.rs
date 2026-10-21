@@ -482,7 +482,12 @@ impl virt::ResetPartition for MshvPartition {
         } = self;
         let MshvPartitionInner {
             vmfd,
-            bsp_vcpufd: _,
+            #[cfg(guest_arch = "aarch64")]
+                bsp_vcpufd: _,
+            #[cfg(guest_arch = "x86_64")]
+                finalized: _,
+            #[cfg(guest_arch = "x86_64")]
+                finalize_lock: _,
             memory: _,
             gm: _,
             mem_layout: _,
@@ -490,8 +495,11 @@ impl virt::ResetPartition for MshvPartition {
             #[cfg(guest_arch = "x86_64")]
             irq_routes,
             gsi_states: _,
-            caps: _,
+            #[cfg(guest_arch = "aarch64")]
+                caps: _,
             synic_ports: _,
+            #[cfg(guest_arch = "x86_64")]
+                config: _,
             #[cfg(guest_arch = "x86_64")]
                 software_devices: _,
             isolation: _,
