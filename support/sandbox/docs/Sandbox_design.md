@@ -154,7 +154,7 @@ them.
 | **D10** | **`mesh_process` stays role-agnostic.** OpenVMM owns role selection and passes the resulting `Profile`; Mesh calls `sandbox::prepare` and passes the prepared launch data intact to PAL. Mesh worker names are not security selectors. |
 | **D11** | **Mount namespace + bind mounts + `pivot_root` is the primary Linux FS isolation mechanism.** Landlock is a supplement, applied opportunistically with ABI-aware degradation. |
 | **D12** | **Empty network namespace is the primary Linux network restriction.** Landlock network needs ABI 4 / kernel 6.7, above both baselines. |
-| **D13** | **Seccomp is opt-in per worker class**, composed from library-contributed requirements plus explicit additions. `RET_KILL_PROCESS` in production. |
+| **D13** | **Seccomp is opt-in per worker class**, composed additively from library-contributed requirements plus explicit additions. Derived profiles union their syscall denials with the base profile and cannot remove an existing denial. `RET_KILL_PROCESS` in production. |
 | **D14** | **Sandbox setup fails closed.** A requested namespace or required confinement primitive that cannot be applied aborts the worker launch; there is no retry with a weaker namespace set. |
 | **D15** | **Namespace UID/GID 0 map to the spawning process's effective UID/GID.** Distinct outer host identities are deferred until the control process has an explicit identity allocator. |
 | **D16** | **No PID namespace in the initial integration.** User, mount, and (unless networking is unrestricted) network namespaces are created at clone time. |
@@ -438,7 +438,7 @@ crate boundary.
 
 | Type | Role |
 |---|---|
-| `Profile` / `Builder` | A linked, immutable policy built from `Profile::deny_all()`. The widening-only builder grants filesystem paths, network scope, optional syscall filtering, and platform capabilities. |
+| `Profile` / `Builder` | A linked, immutable policy built from `Profile::deny_all()`. The widening-only builder grants filesystem paths, network scope, optional syscall filtering, and platform capabilities. Syscall deny lists compose by union, so deriving a profile cannot remove a base denial. |
 | `Restrictions` | Additive-only post-initialization narrowing. Linux currently implements stacked seccomp denials. |
 | `Identity` | Optional requested UID/GID and Windows AppContainer moniker. |
 | `HandleTag` / `RawHandle` | Describe child-visible handles that the process builder must preserve. The sandbox crate does not interpret their meaning. |

@@ -58,8 +58,9 @@ impl Profile {
     /// The builder starts from a clone of this profile's grants, so the
     /// original is left intact and any number of variants can be derived from a
     /// single base. Because a [`Builder`] only ever widens, the accumulating
-    /// dimensions (filesystem and capabilities) can only grow; the scalar
-    /// dimensions (`name`, `network`, `syscalls`) are replaced by a later call.
+    /// dimensions (filesystem and capabilities) can only grow, syscall denials
+    /// can only be added, and the scalar dimensions (`name` and `network`) are
+    /// replaced by a later call.
     ///
     /// Prefer exposing a reusable base as a `fn() -> Builder` — see
     /// [`profiles`](crate::profiles) — and reach for `edit` only when you
@@ -133,15 +134,31 @@ impl Builder {
         self
     }
 
-    /// Set the worker's syscall-filtering policy.
+    /// Add to the worker's syscall-filtering policy.
     ///
     /// Syscall filtering is opt-in per worker class: the default is
     /// [`Syscalls::Unfiltered`] (no seccomp filter). [`Syscalls::Deny`]
     /// installs a seccomp filter that blocks the crate's built-in set of
     /// dangerous, namespace-escape, and historically CVE-prone syscalls, plus
     /// any additional syscalls named in the list.
+    ///
+    /// Successive calls compose monotonically: deny lists are unioned while
+    /// preserving first-seen order, and [`Syscalls::Unfiltered`] is the
+    /// identity. Once a base profile opts into filtering, a derived profile
+    /// cannot remove that filter or any of its denials.
     pub fn syscalls(mut self, policy: Syscalls) -> Self {
-        self.inner.syscalls = policy;
+        if let Syscalls::Deny(additional) = policy {
+            match &mut self.inner.syscalls {
+                current @ Syscalls::Unfiltered => *current = Syscalls::Deny(additional),
+                Syscalls::Deny(existing) => {
+                    for name in additional {
+                        if !existing.contains(&name) {
+                            existing.push(name);
+                        }
+                    }
+                }
+            }
+        }
         self
     }
 
@@ -383,6 +400,49 @@ mod tests {
         assert_eq!(
             profile.inner.syscalls,
             Syscalls::Deny(vec!["socket".to_string()])
+        );
+    }
+
+    #[test]
+    fn syscall_denials_are_additive_and_deduplicated() {
+        let profile = Profile::deny_all()
+            .syscalls(Syscalls::deny(["socket", "kill"]))
+            .syscalls(Syscalls::deny(["kill", "tkill"]))
+            .build();
+
+        assert_eq!(
+            profile.inner.syscalls,
+            Syscalls::Deny(vec![
+                "socket".to_string(),
+                "kill".to_string(),
+                "tkill".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn unfiltered_does_not_remove_existing_syscall_denials() {
+        let profile = Profile::deny_all()
+            .syscalls(Syscalls::deny(["socket"]))
+            .syscalls(Syscalls::Unfiltered)
+            .build();
+
+        assert_eq!(
+            profile.inner.syscalls,
+            Syscalls::Deny(vec!["socket".to_string()])
+        );
+    }
+
+    #[test]
+    fn edited_profile_adds_to_existing_syscall_denials() {
+        let base = Profile::deny_all()
+            .syscalls(Syscalls::deny(["socket"]))
+            .build();
+        let derived = base.edit().syscalls(Syscalls::deny(["kill"])).build();
+
+        assert_eq!(
+            derived.inner.syscalls,
+            Syscalls::Deny(vec!["socket".to_string(), "kill".to_string()])
         );
     }
 }
