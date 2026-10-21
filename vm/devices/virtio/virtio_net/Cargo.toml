@@ -30,9 +30,11 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+chipset_device.workspace = true
 futures.workspace = true
 mesh.workspace = true
 pal_event.workspace = true
+pci_core.workspace = true
 parking_lot.workspace = true
 test_with_tracing.workspace = true
 

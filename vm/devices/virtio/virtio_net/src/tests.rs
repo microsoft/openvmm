@@ -33,6 +33,7 @@ use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
@@ -471,6 +472,67 @@ struct TestHarness {
 }
 
 impl TestHarness {
+    fn resources(&self, idx: u16) -> QueueResources {
+        let (desc_addr, avail_addr, used_addr, event, interrupt) = if idx == 0 {
+            (
+                RX_DESC_ADDR,
+                RX_AVAIL_ADDR,
+                RX_USED_ADDR,
+                &self.rx_event,
+                &self.rx_interrupt_event,
+            )
+        } else {
+            (
+                TX_DESC_ADDR,
+                TX_AVAIL_ADDR,
+                TX_USED_ADDR,
+                &self.tx_event,
+                &self.tx_interrupt_event,
+            )
+        };
+        QueueResources {
+            params: QueueParams {
+                size: QUEUE_SIZE,
+                enable: true,
+                desc_addr,
+                avail_addr,
+                used_addr,
+            },
+            guest_memory: self.mem.clone(),
+            event: event.clone(),
+            notify: Interrupt::from_event(interrupt.clone()),
+        }
+    }
+
+    async fn restore_queues(&mut self, states: &[Option<QueueState>]) -> MockQueueHandle {
+        for idx in 0..2 {
+            let state = self
+                .device
+                .restore_queue(
+                    idx,
+                    self.resources(idx),
+                    &VirtioDeviceFeatures::new(),
+                    states[idx as usize].unwrap(),
+                )
+                .unwrap();
+            self.device
+                .start_queue(
+                    idx,
+                    self.resources(idx),
+                    &VirtioDeviceFeatures::new(),
+                    Some(state),
+                )
+                .await
+                .unwrap();
+        }
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.queue_handle_rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     fn new(driver: &DefaultDriver) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
@@ -516,7 +578,644 @@ impl TestHarness {
             next_data_offset: DATA_BASE,
         }
     }
+}
 
+#[async_test]
+async fn pause_resumes_same_backend_and_pending_work(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut backend = harness.enable_and_get_handle().await;
+    backend.tx_avail_behavior.lock().sync = false;
+    harness.post_rx_buffer_and_signal(6, 256);
+    backend.wait_for_rx_pending().await;
+    harness.post_rx_buffer_and_signal(3, NET_HEADER_SIZE - 1);
+    harness.post_rx_buffer_and_signal(8, 256);
+    backend.wait_for_rx_pending().await;
+    harness.post_tx_and_signal(0, 64);
+    backend.wait_for_tx_avail().await;
+
+    for _ in 0..2 {
+        let states = harness.device.pause().await.unwrap();
+        assert_eq!(
+            states[0],
+            Some(QueueState {
+                avail_index: 3,
+                used_index: 0
+            })
+        );
+        assert_eq!(
+            states[1],
+            Some(QueueState {
+                avail_index: 1,
+                used_index: 0
+            })
+        );
+        harness.device.resume().await;
+    }
+    harness.device.pause().await.unwrap();
+    backend.inject_rx_packet(b"after pause");
+    backend.complete_tx(vec![TxId(0)]);
+    assert_eq!(harness.mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 0);
+    assert_eq!(harness.mem.read_plain::<u16>(TX_USED_ADDR + 2).unwrap(), 0);
+    harness.device.resume().await;
+    assert_eq!(harness.wait_for_rx_used().await.0, 6);
+    assert_eq!(harness.wait_for_rx_used().await, (3, 0));
+    assert_eq!(harness.wait_for_used().await.0, 0);
+    harness.device.reset().await;
+}
+
+#[async_test]
+async fn cursor_restore_reposts_rx_and_drops_only_consumed_tx(driver: DefaultDriver) {
+    let mut source = TestHarness::new(&driver);
+    let mut old_backend = source.enable_and_get_handle().await;
+    old_backend.tx_avail_behavior.lock().sync = false;
+    for idx in [6, 2] {
+        source.post_rx_buffer_and_signal(idx, 256);
+        old_backend.wait_for_rx_pending().await;
+    }
+    source.post_tx_and_signal(0, 64);
+    old_backend.wait_for_tx_avail().await;
+    let states = source.device.pause().await.unwrap();
+    source.post_tx_and_signal(2, 64);
+    let mut snapshot = vec![0; TOTAL_MEM_SIZE];
+    source.mem.read_at(0, &mut snapshot).unwrap();
+    source.device.reset().await;
+    assert_eq!(source.mem.read_plain::<u16>(TX_USED_ADDR + 2).unwrap(), 0);
+    assert_eq!(source.mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 0);
+
+    let mut restored = TestHarness::new(&driver);
+    restored.mem.write_at(0, &snapshot).unwrap();
+    let mut backend = restored.restore_queues(&states).await;
+    backend.wait_for_rx_pending().await;
+    backend.wait_for_rx_pending().await;
+    backend.wait_for_tx_avail().await;
+    assert_eq!(
+        backend
+            .rx_pending
+            .lock()
+            .iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>(),
+        [6, 2]
+    );
+    let sent = backend.take_tx_avail_log();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0][0].tx_id, Some(2));
+    assert_eq!(restored.wait_for_used().await, (0, 0));
+    assert_eq!(restored.wait_for_used().await.0, 2);
+    backend.inject_rx_packet(b"restored");
+    assert_eq!(restored.wait_for_rx_used().await.0, 6);
+    restored.device.reset().await;
+}
+
+fn restore_transport(
+    transport: &mut virtio::transport::VirtioMmioDevice,
+    features: VirtioDeviceFeatures,
+    states: &[Option<QueueState>],
+) -> Result<(), vmcore::save_restore::RestoreError> {
+    use vmcore::save_restore::SaveRestore;
+    let mut saved = transport.save().unwrap();
+    saved.common.device_status = virtio::spec::VirtioDeviceStatus::new()
+        .with_acknowledge(true)
+        .with_driver(true)
+        .with_features_ok(true)
+        .with_driver_ok(true)
+        .into();
+    saved.common.driver_feature_banks = vec![features.bank(0), features.bank(1)];
+    for (i, (desc, avail, used)) in [
+        (RX_DESC_ADDR, RX_AVAIL_ADDR, RX_USED_ADDR),
+        (TX_DESC_ADDR, TX_AVAIL_ADDR, TX_USED_ADDR),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let q = &mut saved.queues[i].common;
+        q.size = QUEUE_SIZE;
+        q.enable = true;
+        q.desc_addr = desc;
+        q.avail_addr = avail;
+        q.used_addr = used;
+        q.queue_state = states[i];
+    }
+    transport.restore(saved)
+}
+
+#[async_test]
+async fn packed_transport_restore_completes_tx_before_start_and_preserves_rx(
+    driver: DefaultDriver,
+) {
+    use chipset_device::mmio::MmioIntercept;
+    use virtio::spec::queue::PackedDescriptor;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+
+    fn descriptor(
+        mem: &GuestMemory,
+        base: u64,
+        idx: u16,
+        addr: u64,
+        len: u32,
+        flags: DescriptorFlags,
+    ) {
+        mem.write_plain(
+            base + u64::from(idx) * 16,
+            &PackedDescriptor {
+                address: addr.into(),
+                length: len.into(),
+                buffer_id: idx.into(),
+                flags_raw: u16::from(flags).into(),
+            },
+        )
+        .unwrap();
+    }
+    let features = VirtioDeviceFeatures::new().with_ring_packed(true);
+    let mut source = TestHarness::new(&driver);
+    let mut old_backend = source.enable_and_get_handle_with_features(features).await;
+    old_backend.tx_avail_behavior.lock().sync = false;
+    for i in 0..2 {
+        descriptor(
+            &source.mem,
+            RX_DESC_ADDR,
+            i,
+            0x22000 + u64::from(i) * 256,
+            256,
+            DescriptorFlags::new().with_available(true).with_write(true),
+        );
+    }
+    source.rx_event.signal();
+    old_backend.wait_for_rx_pending().await;
+    old_backend.wait_for_rx_pending().await;
+    source.mem.write_at(0x24000, &[0; 12]).unwrap();
+    source.mem.write_at(0x24100, &[0xab; 64]).unwrap();
+    descriptor(
+        &source.mem,
+        TX_DESC_ADDR,
+        0,
+        0x24000,
+        12,
+        DescriptorFlags::new().with_available(true).with_next(true),
+    );
+    descriptor(
+        &source.mem,
+        TX_DESC_ADDR,
+        1,
+        0x24100,
+        64,
+        DescriptorFlags::new().with_available(true),
+    );
+    source.tx_event.signal();
+    old_backend.wait_for_tx_avail().await;
+    let states = source.device.pause().await.unwrap();
+    assert_eq!(
+        states[1],
+        Some(QueueState {
+            avail_index: 0x8002,
+            used_index: 0x8000
+        })
+    );
+    let mut memory = vec![0; TOTAL_MEM_SIZE];
+    source.mem.read_at(0, &mut memory).unwrap();
+    source.device.reset().await;
+    drop(source);
+
+    let mut restored = TestHarness::new(&driver);
+    restored.mem.write_at(0, &memory).unwrap();
+    let target = TestLineInterruptTarget::new_arc();
+    let interrupt = LineInterrupt::new_with_target("restore", target.clone(), 0);
+    let mut transport = virtio::transport::VirtioMmioDevice::new(
+        Box::new(restored.device),
+        &driver,
+        restored.mem.clone(),
+        interrupt,
+        None,
+        0,
+        0x1000,
+    )
+    .unwrap();
+    restore_transport(&mut transport, features, &states).unwrap();
+    assert!(
+        restored.queue_handle_rx.try_recv().is_err(),
+        "restore must not create backend queues"
+    );
+    let saved = transport.save().unwrap();
+    assert_eq!(
+        saved.queues[1].common.queue_state,
+        Some(QueueState {
+            avail_index: 0x8002,
+            used_index: 0x8002
+        })
+    );
+    assert!(saved.queues[1].common.pending_interrupt);
+    assert_eq!(saved.interrupt_status, 0);
+    assert!(!target.is_high(0));
+    // A second save/restore before start must retain the deferred notification.
+    transport.restore(saved).unwrap();
+    transport.start();
+    assert!(target.is_high(0));
+    transport.mmio_write(0x64, &1u32.to_le_bytes()).unwrap();
+    assert!(!target.is_high(0));
+    let mut backend = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(restored.queue_handle_rx.next())
+        .await
+        .unwrap()
+        .unwrap();
+    backend.wait_for_rx_pending().await;
+    backend.wait_for_rx_pending().await;
+    assert!(
+        backend.take_tx_avail_log().is_empty(),
+        "restored TX must not be resent"
+    );
+    backend.inject_rx_packet(b"after restore");
+    mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(std::future::poll_fn(|cx| target.poll_high(cx, 0)))
+        .await
+        .unwrap();
+    let completed: PackedDescriptor = restored.mem.read_plain(RX_DESC_ADDR).unwrap();
+    assert!(DescriptorFlags::from(completed.flags_raw.get()).used());
+    assert_eq!(completed.length.get(), 12 + b"after restore".len() as u32);
+    let mut packet = [0; 13];
+    restored.mem.read_at(0x22000 + 12, &mut packet).unwrap();
+    assert_eq!(&packet, b"after restore");
+    transport.mmio_write(0x64, &1u32.to_le_bytes()).unwrap();
+    descriptor(
+        &restored.mem,
+        TX_DESC_ADDR,
+        2,
+        0x24000,
+        12,
+        DescriptorFlags::new().with_available(true).with_next(true),
+    );
+    descriptor(
+        &restored.mem,
+        TX_DESC_ADDR,
+        3,
+        0x24100,
+        64,
+        DescriptorFlags::new().with_available(true),
+    );
+    // The transport owns its own event, so send the guest's queue notify.
+    transport.mmio_write(0x50, &1u32.to_le_bytes()).unwrap();
+    backend.wait_for_tx_avail().await;
+    mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(std::future::poll_fn(|cx| target.poll_high(cx, 0)))
+        .await
+        .unwrap();
+    let completed: PackedDescriptor = restored.mem.read_plain(TX_DESC_ADDR + 2 * 16).unwrap();
+    assert!(DescriptorFlags::from(completed.flags_raw.get()).used());
+    transport.stop().await;
+    transport.reset().await;
+}
+
+#[async_test]
+async fn pci_restore_tx_notification_survives_resave_and_vector_mask(driver: DefaultDriver) {
+    use chipset_device::mmio::{ExternallyManagedMmioIntercepts, MmioIntercept};
+    use chipset_device::pci::{
+        ByteEnabledDwordRead, ByteEnabledDwordWrite, PciConfigByteEnable, PciConfigSpace,
+    };
+    use pci_core::msi::MsiConnection;
+    use pci_core::spec::cfg_space;
+    use pci_core::test_helpers::TestPciInterruptController;
+    use virtio::PciInterruptModel;
+    use virtio::transport::VirtioPciDevice;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::{SaveRestore, SavedStateBlob};
+
+    const BAR0: u64 = 0x1000_0000;
+    const BAR2: u64 = 0x2000_0000;
+    const VECTOR: u16 = 3;
+    const MSI_ADDRESS: u64 = 0xfee0_0000;
+    const MSI_DATA: u32 = 0x41;
+    let mut source = TestHarness::new(&driver);
+    let mut backend = source.enable_and_get_handle().await;
+    backend.tx_avail_behavior.lock().sync = false;
+    source.post_tx_and_signal(0, 64);
+    backend.wait_for_tx_avail().await;
+    let states = source.device.pause().await.unwrap();
+    let mut memory = vec![0; TOTAL_MEM_SIZE];
+    source.mem.read_at(0, &mut memory).unwrap();
+    source.device.reset().await;
+    drop(source);
+
+    for masked in [false, true] {
+        let harness = TestHarness::new(&driver);
+        harness.mem.write_at(0, &memory).unwrap();
+        let connection = MsiConnection::new();
+        let interrupts = TestPciInterruptController::new();
+        connection.connect(interrupts.signal_msi());
+        let mut transport = VirtioPciDevice::new(
+            Box::new(harness.device),
+            &driver,
+            harness.mem.clone(),
+            PciInterruptModel::Msix(&connection.target()),
+            None,
+            &mut ExternallyManagedMmioIntercepts,
+            None,
+        )
+        .unwrap();
+        for (offset, value) in [
+            (0x10, BAR0 as u32),
+            (0x14, 0),
+            (0x18, BAR2 as u32),
+            (0x1c, 0),
+        ] {
+            transport
+                .pci_cfg_write(offset, ByteEnabledDwordWrite::with_all_bytes_enabled(value))
+                .unwrap();
+        }
+        transport
+            .pci_cfg_write(
+                4,
+                ByteEnabledDwordWrite::new(
+                    cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits()
+                        .into(),
+                    PciConfigByteEnable::LOW_WORD,
+                ),
+            )
+            .unwrap();
+        let entry = BAR2 + u64::from(VECTOR) * 16;
+        transport
+            .mmio_write(entry, &MSI_ADDRESS.to_le_bytes())
+            .unwrap();
+        transport
+            .mmio_write(entry + 8, &MSI_DATA.to_le_bytes())
+            .unwrap();
+        transport
+            .mmio_write(entry + 12, &u32::from(masked).to_le_bytes())
+            .unwrap();
+        transport
+            .pci_cfg_write(
+                0x40,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(0x8000_0000),
+            )
+            .unwrap();
+        let mut pba = 0;
+        transport
+            .pci_cfg_read(0x48, ByteEnabledDwordRead::with_all_bytes_enabled(&mut pba))
+            .unwrap();
+        let pba_addr = BAR2 + u64::from(pba & !7);
+        let read_pba = |dev: &mut VirtioPciDevice| {
+            let mut bytes = [0; 4];
+            dev.mmio_read(pba_addr, &mut bytes).unwrap();
+            u32::from_le_bytes(bytes)
+        };
+
+        let mut saved = transport.save().unwrap();
+        saved.common.device_status = virtio::spec::VirtioDeviceStatus::new()
+            .with_acknowledge(true)
+            .with_driver(true)
+            .with_features_ok(true)
+            .with_driver_ok(true)
+            .into();
+        for (i, (desc, avail, used)) in [
+            (RX_DESC_ADDR, RX_AVAIL_ADDR, RX_USED_ADDR),
+            (TX_DESC_ADDR, TX_AVAIL_ADDR, TX_USED_ADDR),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let q = &mut saved.queues[i];
+            q.common.size = QUEUE_SIZE;
+            q.common.enable = true;
+            q.common.desc_addr = desc;
+            q.common.avail_addr = avail;
+            q.common.used_addr = used;
+            q.common.queue_state = states[i];
+            q.msix_vector = if i == 1 { VECTOR } else { 1 };
+        }
+        transport.restore(saved).unwrap();
+        assert_eq!(harness.mem.read_plain::<u16>(TX_USED_ADDR + 2).unwrap(), 1);
+        assert!(transport.save().unwrap().queues[1].common.pending_interrupt);
+        assert!(interrupts.get_next_interrupt().is_none());
+        assert_eq!(read_pba(&mut transport), 0);
+        // Exercise the serialized state, not just an in-memory field copy.
+        let resaved = SavedStateBlob::new(transport.save().unwrap());
+        transport.restore(resaved.parse().unwrap()).unwrap();
+        assert!(interrupts.get_next_interrupt().is_none());
+        assert_eq!(read_pba(&mut transport), 0);
+        transport.start();
+        if masked {
+            assert!(interrupts.get_next_interrupt().is_none());
+            assert_eq!(read_pba(&mut transport), 1 << VECTOR);
+            transport
+                .mmio_write(entry + 12, &0u32.to_le_bytes())
+                .unwrap();
+        }
+        assert_eq!(
+            interrupts.get_next_interrupt(),
+            Some((MSI_ADDRESS, MSI_DATA))
+        );
+        assert!(interrupts.get_next_interrupt().is_none());
+        assert_eq!(read_pba(&mut transport), 0);
+        // Neither another mask transition nor pause/resume may replay it.
+        transport
+            .mmio_write(entry + 12, &1u32.to_le_bytes())
+            .unwrap();
+        transport
+            .mmio_write(entry + 12, &0u32.to_le_bytes())
+            .unwrap();
+        transport.stop().await;
+        transport.start();
+        assert!(interrupts.get_next_interrupt().is_none());
+        transport.stop().await;
+        transport.reset().await;
+    }
+}
+
+#[async_test]
+async fn transport_restore_rejects_missing_cursors_and_bad_tx_synchronously(driver: DefaultDriver) {
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::save_restore::SaveRestore;
+    let mut harness = TestHarness::new(&driver);
+    let mut transport = virtio::transport::VirtioMmioDevice::new(
+        Box::new(harness.device),
+        &driver,
+        harness.mem.clone(),
+        LineInterrupt::detached(),
+        None,
+        0,
+        0x1000,
+    )
+    .unwrap();
+    let err = restore_transport(
+        &mut transport,
+        VirtioDeviceFeatures::new(),
+        &[Some(QueueState::default()), None],
+    )
+    .unwrap_err();
+    assert!(format!("{:#}", anyhow::Error::new(err)).contains("no saved progress"));
+    // Inactive, configured queues may legitimately have no saved progress.
+    let mut inactive = transport.save().unwrap();
+    inactive.common.device_status = 0;
+    inactive.queues[1].common.enable = true;
+    inactive.queues[1].common.queue_state = None;
+    transport.restore(inactive).unwrap();
+
+    // The cursor claims one outstanding TX, but no descriptor is available.
+    let err = restore_transport(
+        &mut transport,
+        VirtioDeviceFeatures::new(),
+        &[
+            Some(QueueState::default()),
+            Some(QueueState {
+                avail_index: 1,
+                used_index: 0,
+            }),
+        ],
+    )
+    .unwrap_err();
+    assert!(format!("{:#}", anyhow::Error::new(err)).contains("no longer available"));
+    assert!(harness.queue_handle_rx.try_recv().is_err());
+}
+
+#[async_test]
+async fn in_place_reset_does_not_publish_pre_snapshot_tx(driver: DefaultDriver) {
+    use chipset_device::mmio::MmioIntercept;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::save_restore::SaveRestore;
+    let mut harness = TestHarness::new(&driver);
+    let mut transport = virtio::transport::VirtioMmioDevice::new(
+        Box::new(harness.device),
+        &driver,
+        harness.mem.clone(),
+        LineInterrupt::detached(),
+        None,
+        0,
+        0x1000,
+    )
+    .unwrap();
+    restore_transport(
+        &mut transport,
+        VirtioDeviceFeatures::new(),
+        &[Some(QueueState::default()); 2],
+    )
+    .unwrap();
+    transport.start();
+    let mut backend = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(harness.queue_handle_rx.next())
+        .await
+        .unwrap()
+        .unwrap();
+    backend.tx_avail_behavior.lock().sync = false;
+    harness.mem.write_at(DATA_BASE, &[0; 12]).unwrap();
+    post_tx_packet(&harness.mem, 0, DATA_BASE, 12, &[(DATA_BASE + 0x100, 64)]);
+    make_available(&harness.mem, TX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut 0);
+    transport.mmio_write(0x50, &1u32.to_le_bytes()).unwrap();
+    backend.wait_for_tx_avail().await;
+    transport.stop().await;
+    let saved = transport.save().unwrap();
+    assert_eq!(
+        saved.queues[1].common.queue_state,
+        Some(QueueState {
+            avail_index: 1,
+            used_index: 0
+        })
+    );
+    transport.reset().await;
+    assert_eq!(harness.mem.read_plain::<u16>(TX_USED_ADDR + 2).unwrap(), 0);
+    transport.restore(saved).unwrap();
+    assert_eq!(harness.mem.read_plain::<u16>(TX_USED_ADDR + 2).unwrap(), 1);
+    assert!(transport.save().unwrap().queues[1].common.pending_interrupt);
+    transport.reset().await;
+}
+
+#[async_test]
+async fn strong_stop_rewinds_rx_and_completes_tx_in_either_order(driver: DefaultDriver) {
+    for order in [[0, 1], [1, 0]] {
+        let mut harness = TestHarness::new(&driver);
+        let mut backend = harness.enable_and_get_handle().await;
+        backend.tx_avail_behavior.lock().sync = false;
+        harness.post_rx_buffer_and_signal(4, 256);
+        backend.wait_for_rx_pending().await;
+        harness.post_tx_and_signal(0, 64);
+        backend.wait_for_tx_avail().await;
+        // Keep the sibling parked while stopping the pair.
+        harness.device.pause().await.unwrap();
+        let mut states = [None; 2];
+        for idx in order {
+            states[idx as usize] = harness.device.stop_queue(idx).await;
+            assert_eq!(harness.device.stop_queue(idx).await, None);
+        }
+        assert_eq!(
+            states[0],
+            Some(QueueState {
+                avail_index: 0,
+                used_index: 0
+            })
+        );
+        assert_eq!(
+            states[1],
+            Some(QueueState {
+                avail_index: 1,
+                used_index: 1
+            })
+        );
+        assert_eq!(harness.wait_for_used().await, (0, 0));
+        let mut backend = harness.restore_queues(&states).await;
+        backend.wait_for_rx_pending().await;
+        backend.inject_rx_packet(b"restarted");
+        assert_eq!(harness.wait_for_rx_used().await.0, 4);
+        harness.device.reset().await;
+    }
+}
+
+#[async_test]
+async fn disabled_tx_without_rx_consumes_without_sending(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.device.set_queue_enabled(1, false).await.unwrap();
+    harness
+        .device
+        .start_queue(1, harness.resources(1), &VirtioDeviceFeatures::new(), None)
+        .await
+        .unwrap();
+    let mut backend = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(harness.queue_handle_rx.next())
+        .await
+        .unwrap()
+        .unwrap();
+    harness.post_tx_and_signal(0, 64);
+    assert_eq!(harness.wait_for_used().await, (0, 0));
+    assert!(backend.take_tx_avail_log().is_empty());
+    harness.device.set_queue_enabled(1, true).await.unwrap();
+    harness.post_tx_and_signal(2, 64);
+    backend.wait_for_tx_avail().await;
+    assert_eq!(harness.wait_for_used().await.0, 2);
+    harness.device.reset().await;
+}
+
+#[async_test]
+async fn disabled_rx_retains_available_buffers_until_enabled(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut backend = harness.enable_and_get_handle().await;
+    harness.post_rx_buffer_and_signal(4, 256);
+    backend.wait_for_rx_pending().await;
+    harness.device.set_queue_enabled(0, false).await.unwrap();
+    let mut backend = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(harness.queue_handle_rx.next())
+        .await
+        .unwrap()
+        .unwrap();
+    harness.post_tx_and_signal(0, 64);
+    harness.wait_for_used().await;
+    assert!(backend.rx_pending.lock().is_empty());
+    assert_eq!(harness.mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 0);
+    harness.device.set_queue_enabled(0, true).await.unwrap();
+    backend.wait_for_rx_pending().await;
+    backend.inject_rx_packet(b"enabled again");
+    assert_eq!(harness.wait_for_rx_used().await.0, 4);
+    harness.device.reset().await;
+}
+
+impl TestHarness {
     /// Enable the device and retrieve the MockQueueHandle.
     async fn enable_and_get_handle(&mut self) -> MockQueueHandle {
         self.enable_and_get_handle_with_features(VirtioDeviceFeatures::new())

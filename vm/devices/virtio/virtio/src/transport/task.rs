@@ -3,10 +3,9 @@
 
 //! Device task and shared transport state machine for virtio transports.
 //!
-//! Both the PCI and MMIO transports spawn an async task that owns the
-//! `Box<dyn DynVirtioDevice>` and processes commands via a mesh channel.
-//! The transports become thin MMIO/PCI forwarders that send RPCs to
-//! the task.
+//! Both transports host the device in a `TaskControl`, processing commands
+//! while running and accessing the device inline for fallible restore while
+//! parked.
 
 use crate::DynVirtioDevice;
 use crate::QueueResources;
@@ -26,6 +25,10 @@ use mesh::rpc::RpcSend;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::InspectTaskMut;
+use task_control::StopTask;
 
 /// Commands sent from the transport to the device task.
 pub enum DeviceCommand {
@@ -39,8 +42,6 @@ pub enum DeviceCommand {
     Stop(Rpc<(), Vec<Option<QueueState>>>),
     /// ChangeDeviceState::start() — restart queues with saved states.
     Start(FailableRpc<StartParams, ()>),
-    /// ChangeDeviceState::reset() — stop queues, reset device.
-    Reset(Rpc<(), ()>),
     /// Config register read at byte offset with byte length.
     ReadConfig {
         offset: u16,
@@ -55,8 +56,6 @@ pub enum DeviceCommand {
         data: [u8; 8],
         deferred: DeferredWrite,
     },
-    /// Inspect the device state.
-    Inspect(inspect::Deferred),
 }
 
 /// How a deferred config read completion should be sized and positioned.
@@ -183,13 +182,40 @@ impl TransportState {
 }
 
 /// Owns the virtio device and processes commands from the transport.
-struct DeviceTask {
+pub struct DeviceTask {
     device: Box<dyn DynVirtioDevice>,
     max_queues: u16,
+    paused: bool,
+    restoring: bool,
 }
 
 impl DeviceTask {
+    pub fn new(device: Box<dyn DynVirtioDevice>) -> Self {
+        Self {
+            max_queues: device.traits().max_queues,
+            device,
+            paused: false,
+            restoring: false,
+        }
+    }
+
+    /// Subsequent activation must abandon old runtime state, not resume it.
+    /// Teardown remains async and must not access the restored guest memory.
+    pub fn prepare_restore(&mut self) -> &mut dyn DynVirtioDevice {
+        self.restoring = true;
+        self.paused = false;
+        &mut *self.device
+    }
+
+    async fn finish_restore(&mut self) {
+        if std::mem::take(&mut self.restoring) {
+            self.device.reset().await;
+        }
+    }
+
     async fn enable(&mut self, params: EnableParams) -> bool {
+        self.finish_restore().await;
+        self.paused = false;
         for (idx, resources) in params.queues {
             if let Err(err) = self
                 .device
@@ -215,6 +241,10 @@ impl DeviceTask {
     }
 
     async fn stop(&mut self) -> Vec<Option<QueueState>> {
+        if let Some(states) = self.device.pause().await {
+            self.paused = true;
+            return states;
+        }
         let mut states = vec![None; self.max_queues as usize];
         for idx in 0..self.max_queues {
             states[idx as usize] = self.device.stop_queue(idx).await;
@@ -223,6 +253,11 @@ impl DeviceTask {
     }
 
     async fn start(&mut self, params: StartParams) -> anyhow::Result<()> {
+        self.finish_restore().await;
+        if std::mem::take(&mut self.paused) {
+            self.device.resume().await;
+            return Ok(());
+        }
         for (idx, resources, initial_state) in params.queues {
             self.device
                 .start_queue(idx, resources, &params.features, initial_state)
@@ -239,38 +274,34 @@ impl DeviceTask {
         Ok(())
     }
 
-    async fn reset(&mut self) {
-        self.stop_all_queues().await;
+    pub async fn reset(&mut self) {
+        // A paused device owns live work from the pre-snapshot execution.
+        // Reset must discard it, not complete it into memory that will be used
+        // with restored cursors (including in-place save/reset/restore).
+        if !self.paused && !self.restoring {
+            self.stop_all_queues().await;
+        }
         self.device.reset().await;
+        self.paused = false;
+        self.restoring = false;
     }
 
     async fn stop_all_queues(&mut self) {
+        self.paused = false;
         for idx in 0..self.max_queues {
             self.device.stop_queue(idx).await;
         }
     }
-}
-
-/// Runs the device task, processing commands from the transport.
-pub async fn run_device_task(
-    device: Box<dyn DynVirtioDevice>,
-    mut recv: mesh::Receiver<DeviceCommand>,
-) {
-    let mut task = DeviceTask {
-        max_queues: device.traits().max_queues,
-        device,
-    };
-
-    while let Some(cmd) = recv.next().await {
+    async fn handle_command(&mut self, cmd: DeviceCommand) {
         match cmd {
             DeviceCommand::Enable(rpc) => {
-                rpc.handle(async |params| task.enable(params).await).await;
+                rpc.handle(async |params| self.enable(params).await).await;
             }
             DeviceCommand::Disable(rpc) => {
-                rpc.handle(async |()| task.disable().await).await;
+                rpc.handle(async |()| self.disable().await).await;
             }
             DeviceCommand::Stop(rpc) => {
-                rpc.handle(async |()| task.stop().await).await;
+                rpc.handle(async |()| self.stop().await).await;
             }
             DeviceCommand::Start(rpc) => {
                 // Start is used by ChangeDeviceState::start(), which is
@@ -278,11 +309,8 @@ pub async fn run_device_task(
                 // but not propagated to the transport.
                 // TODO: update ChangeDeviceState to allow async start()
                 // so failures can be handled by the transport.
-                rpc.handle_failable(async |params| task.start(params).await)
+                rpc.handle_failable(async |params| self.start(params).await)
                     .await;
-            }
-            DeviceCommand::Reset(rpc) => {
-                rpc.handle(async |()| task.reset().await).await;
             }
             DeviceCommand::ReadConfig {
                 offset,
@@ -294,7 +322,7 @@ pub async fn run_device_task(
                 let end = offset as usize + len as usize;
                 let mut buf = [0u8; 12];
                 for word_off in (start_word as usize..end).step_by(4) {
-                    let val = task.device.read_registers_u32(word_off as u16).await;
+                    let val = self.device.read_registers_u32(word_off as u16).await;
                     let i = word_off - start_word as usize;
                     buf[i..i + 4].copy_from_slice(&val.to_ne_bytes());
                 }
@@ -316,7 +344,7 @@ pub async fn run_device_task(
                 deferred,
             } => {
                 if len == 4 && offset & 3 == 0 {
-                    task.device
+                    self.device
                         .write_registers_u32(
                             offset,
                             u32::from_ne_bytes(data[..4].try_into().unwrap()),
@@ -328,7 +356,7 @@ pub async fn run_device_task(
                     let byte_off = (offset - start_word) as usize;
                     let mut buf = [0u8; 12];
                     for word_off in (start_word as usize..end).step_by(4) {
-                        let val = task.device.read_registers_u32(word_off as u16).await;
+                        let val = self.device.read_registers_u32(word_off as u16).await;
                         let i = word_off - start_word as usize;
                         buf[i..i + 4].copy_from_slice(&val.to_ne_bytes());
                     }
@@ -336,14 +364,45 @@ pub async fn run_device_task(
                     for word_off in (start_word as usize..end).step_by(4) {
                         let i = word_off - start_word as usize;
                         let val = u32::from_ne_bytes(buf[i..i + 4].try_into().unwrap());
-                        task.device.write_registers_u32(word_off as u16, val).await;
+                        self.device.write_registers_u32(word_off as u16, val).await;
                     }
                 }
                 deferred.complete();
             }
-            DeviceCommand::Inspect(deferred) => {
-                deferred.inspect(&mut *task.device);
-            }
+        }
+    }
+}
+
+pub struct DeviceRunner {
+    recv: mesh::Receiver<DeviceCommand>,
+}
+
+impl DeviceRunner {
+    pub fn new(recv: mesh::Receiver<DeviceCommand>) -> Self {
+        Self { recv }
+    }
+}
+
+impl AsyncRun<DeviceTask> for DeviceRunner {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut DeviceTask,
+    ) -> Result<(), Cancelled> {
+        // Commands already dequeued must finish before parking.
+        while let Some(cmd) = stop.until_stopped(self.recv.next()).await? {
+            state.handle_command(cmd).await;
+        }
+        Ok(())
+    }
+}
+
+impl InspectTaskMut<DeviceTask> for DeviceRunner {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>, state: Option<&mut DeviceTask>) {
+        if let Some(state) = state {
+            state.device.inspect_mut(req);
+        } else {
+            req.ignore();
         }
     }
 }

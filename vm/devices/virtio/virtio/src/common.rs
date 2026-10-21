@@ -311,6 +311,33 @@ impl VirtioQueue {
         }
     }
 
+    /// Returns outstanding buffers to the available side without completing
+    /// them. Only valid for an in-order device, after releasing all backend
+    /// ownership and discarding every outstanding work/completion token.
+    pub fn rewind_uncompleted(&mut self) {
+        self.core.rewind(self.complete.used_index());
+    }
+
+    /// Recovers an in-order queue's saved outstanding range by completing it
+    /// with zero bytes, without submitting it to a backend. Newly available
+    /// buffers beyond the saved consumption cursor are left untouched.
+    pub fn complete_uncompleted(&mut self) -> Result<(), Error> {
+        let mut remaining = self.core.in_flight();
+        self.rewind_uncompleted();
+        while remaining != 0 {
+            let work = self.try_next()?.ok_or_else(|| {
+                Error::other("saved outstanding descriptor is no longer available")
+            })?;
+            let consumed = self.core.in_flight();
+            remaining = remaining.checked_sub(consumed).ok_or_else(|| {
+                Error::other("saved consumption cursor falls inside a descriptor chain")
+            })?;
+            self.try_complete_prepared(work.into_completion(), 0)
+                .map_err(Error::other)?;
+        }
+        Ok(())
+    }
+
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///
@@ -398,24 +425,29 @@ impl VirtioQueue {
     /// the payload, so callers that buffer completions can store only the
     /// token.
     pub fn complete_prepared(&mut self, completion: QueueCompletion, bytes_written: u32) {
+        if let Err(err) = self.try_complete_prepared(completion, bytes_written) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to complete descriptor"
+            );
+        }
+    }
+
+    fn try_complete_prepared(
+        &mut self,
+        completion: QueueCompletion,
+        bytes_written: u32,
+    ) -> Result<(), QueueError> {
         // The completion token is consumed even if publishing it to the used ring
         // fails, so release its in-flight capacity before attempting the write.
         self.core.work_completed(&completion);
-        match self
+        if self
             .complete
-            .complete_descriptor(&completion, bytes_written)
+            .complete_descriptor(&completion, bytes_written)?
         {
-            Ok(true) => {
-                self.notify_guest.deliver();
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to complete descriptor"
-                );
-            }
+            self.notify_guest.deliver();
         }
+        Ok(())
     }
 
     fn poll_next_buffer(

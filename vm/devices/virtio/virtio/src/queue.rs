@@ -225,6 +225,19 @@ pub(crate) struct QueueCoreGetWork {
 }
 
 impl QueueCoreGetWork {
+    pub fn in_flight(&self) -> u16 {
+        self.in_flight
+    }
+
+    pub fn rewind(&mut self, used: u16) {
+        match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.rewind(used),
+            QueueGetWorkInner::Packed(packed) => packed.rewind(used),
+        }
+        self.in_flight = 0;
+        self.armed = false;
+    }
+
     pub fn avail_index(&self) -> u16 {
         match &self.inner {
             QueueGetWorkInner::Split(split) => split.last_avail_index(),

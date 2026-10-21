@@ -9,7 +9,10 @@
 //! are present.
 
 use guestmem::GuestMemory;
+use pal_async::driver::Driver;
+use pal_async::wait::PolledWait;
 use pal_event::Event;
+use std::task::{Context, Poll};
 use virtio::QueueResources;
 use virtio::queue::QueueParams;
 use virtio::queue::QueueState;
@@ -23,6 +26,7 @@ pub struct QueueSetup {
     addrs: Option<QueueAddrs>,
     /// Kick eventfd from SET_VRING_KICK.
     kick: Option<Event>,
+    kick_wait: Option<PolledWait<Event>>,
     /// Call interrupt from SET_VRING_CALL.
     call: Option<Interrupt>,
     /// Raw value from SET_VRING_BASE.
@@ -33,6 +37,8 @@ pub struct QueueSetup {
     base: u32,
     /// Whether this queue is currently active (started).
     active: bool,
+    pub enabled: bool,
+    started: bool,
     /// Queue state saved when the queue was stopped via
     /// SET_VRING_ENABLE(0). GET_VRING_BASE returns this if the queue
     /// has already been stopped.
@@ -58,9 +64,12 @@ impl QueueSetup {
             size: None,
             addrs: None,
             kick: None,
+            kick_wait: None,
             call: None,
             base: 0,
             active: false,
+            enabled: false,
+            started: false,
             saved_state: None,
         }
     }
@@ -84,6 +93,45 @@ impl QueueSetup {
         self.kick = Some(event);
     }
 
+    pub fn watch_kick(&mut self, driver: &(impl Driver + ?Sized)) -> std::io::Result<()> {
+        self.kick_wait = self
+            .kick
+            .as_ref()
+            .map(|event| PolledWait::new(driver, event.clone()))
+            .transpose()?;
+        Ok(())
+    }
+
+    pub fn poll_start(
+        &mut self,
+        cx: &mut Context<'_>,
+        process_disabled: bool,
+    ) -> Poll<std::io::Result<()>> {
+        if self.active {
+            return Poll::Pending;
+        }
+        if !self.started {
+            let Some(wait) = &mut self.kick_wait else {
+                return Poll::Pending;
+            };
+            std::task::ready!(wait.poll_wait(cx))?;
+            self.started = true;
+        }
+        if (self.enabled || process_disabled)
+            && self.size.is_some()
+            && self.addrs.is_some()
+            && self.kick.is_some()
+        {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    pub fn request_start(&mut self) {
+        self.started = true;
+    }
+
     /// Store the call interrupt (from SET_VRING_CALL).
     pub fn set_call(&mut self, interrupt: Interrupt) {
         self.call = Some(interrupt);
@@ -95,6 +143,18 @@ impl QueueSetup {
     /// For packed ring, bits 0-15 = avail state, bits 16-31 = used state.
     pub fn set_base(&mut self, base: u32) {
         self.base = base;
+        self.saved_state = None;
+    }
+
+    pub fn base(&self) -> u32 {
+        self.base
+    }
+
+    pub fn stop(&mut self) {
+        self.set_inactive();
+        self.kick_wait = None;
+        self.kick = None;
+        self.call = None;
     }
 
     /// Whether this queue is currently active (started).
@@ -105,23 +165,27 @@ impl QueueSetup {
     /// Mark this queue as active.
     pub fn set_active(&mut self) {
         self.active = true;
+        self.started = true;
     }
 
     /// Mark this queue as inactive.
     pub fn set_inactive(&mut self) {
         self.active = false;
+        self.started = false;
     }
 
     /// Mark this queue as inactive and save its state for later
     /// retrieval by GET_VRING_BASE.
     pub fn set_inactive_with_state(&mut self, state: QueueState) {
         self.active = false;
+        self.started = false;
         self.saved_state = Some(state);
+        self.base = state.avail_index as u32 | ((state.used_index as u32) << 16);
     }
 
     /// Take the saved queue state (from a prior SET_VRING_ENABLE(0)).
-    pub fn take_saved_state(&mut self) -> Option<QueueState> {
-        self.saved_state.take()
+    pub fn saved_state(&self) -> Option<QueueState> {
+        self.saved_state
     }
 
     /// Try to build `QueueResources` for activation.
@@ -162,9 +226,12 @@ impl QueueSetup {
         self.size = None;
         self.addrs = None;
         self.kick = None;
+        self.kick_wait = None;
         self.call = None;
         self.base = 0;
         self.active = false;
+        self.enabled = false;
+        self.started = false;
         self.saved_state = None;
     }
 }
