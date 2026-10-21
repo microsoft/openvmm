@@ -588,6 +588,9 @@ impl UnderhillVmWorker {
             None => (None, None),
             Some(ServicingState { init_state, units }) => (Some(init_state), Some(units)),
         };
+        let restore_hardware_reseal = crate::hardware_reseal::has_saved_state(
+            servicing_unit_state.as_deref().unwrap_or_default(),
+        )?;
 
         // Build the VM.
         let mut vm = new_underhill_vm(
@@ -598,6 +601,8 @@ impl UnderhillVmWorker {
                 get_client: get_client.clone(),
                 dps,
                 servicing_state: servicing_init_state,
+                restore_hardware_reseal,
+                saved_state_from_host,
                 boot_init,
                 env_cfg: params.env_cfg.clone(),
                 remote_console_cfg: params.remote_console_cfg,
@@ -656,6 +661,10 @@ struct UhVmParams {
     dps: DevicePlatformSettings,
     /// Provides non-recoverable configuration needed for servicing.
     servicing_state: Option<servicing::ServicingInitState>,
+    /// Whether the state-unit list includes a resealer snapshot.
+    restore_hardware_reseal: bool,
+    /// Host-returned servicing bytes do not establish a trusted TCB floor.
+    saved_state_from_host: bool,
     /// Perform boot initialization tasks such as protecting VTL2 memory.
     boot_init: bool,
     /// Environment configuration.
@@ -1502,12 +1511,21 @@ async fn new_underhill_vm(
         mut get_client,
         mut dps,
         servicing_state,
+        restore_hardware_reseal,
+        saved_state_from_host,
         boot_init,
         env_cfg,
         remote_console_cfg,
         debugger_rpc,
         control_send,
     } = params;
+
+    // Enqueue registration before platform security initialization. GET latches
+    // earlier notifications until registration is processed. The callback only
+    // latches a bounded wakeup; no hardware or VMGS I/O runs on the GET loop.
+    let migration_notification = Arc::new(crate::hardware_reseal::MigrationNotification::default());
+    let notification = migration_notification.clone();
+    get_client.set_post_live_migration_callback(Box::new(move || notification.notify()));
 
     if let Ok(kernel_boot_time) = std::env::var("KERNEL_BOOT_TIME") {
         if let Ok(kernel_boot_time_ns) = kernel_boot_time.parse::<u64>() {
@@ -2232,7 +2250,7 @@ async fn new_underhill_vm(
     // that is passed to vTPM.
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
-    let platform_attestation_data = {
+    let mut platform_attestation_data = {
         if !is_restoring && let Some(vmgs) = vmgs.as_mut() {
             // Perform attestation by calling `initialize_platform_security`. This
             // will unlock the VMGS file internally.
@@ -2275,6 +2293,7 @@ async fn new_underhill_vm(
                 },
                 agent_data: None,
                 guest_secret_key: None,
+                runtime_tcb_floor: None,
             }
         }
     };
@@ -2300,6 +2319,44 @@ async fn new_underhill_vm(
     resolver.add_resolver(
         guest_emulation_transport::resolver::IpmiSelEventSinkResolver(get_client.clone()),
     );
+
+    let hardware_reseal_enabled = vmgs.as_ref().is_some_and(|(_, vmgs)| vmgs.encrypted())
+        && !matches!(hardware_sealing_policy, HardwareSealingPolicy::None)
+        && tee_call.as_ref().is_some_and(|tee| {
+            tee.supports_get_derived_key().is_some()
+                && !(matches!(tee.tee_type(), tee_call::TeeType::Tdx)
+                    && matches!(hardware_sealing_policy, HardwareSealingPolicy::Signer))
+        });
+
+    // Reuse observations from boot's existing local report calls, including
+    // reports obtained before a failed SKR call-out. Do not initialize from
+    // VMGS metadata or lazily from the first post-migration report.
+    let runtime_tcb_floor = platform_attestation_data.runtime_tcb_floor.take();
+    let enrolled = crate::hardware_reseal::should_enable(
+        hardware_reseal_enabled,
+        runtime_tcb_floor.is_some(),
+        is_restoring.then_some(crate::hardware_reseal::RestoreContext {
+            has_saved_state: restore_hardware_reseal,
+            from_host: saved_state_from_host,
+        }),
+    )?;
+    if hardware_reseal_enabled && !enrolled {
+        if is_restoring {
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "runtime hardware resealing disabled: no saved runtime TCB floor"
+            );
+        } else {
+            // Preserve boot's existing hardware recovery behavior, but never
+            // enable runtime resealing without successful boot sealing and a
+            // trustworthy source floor.
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "runtime hardware resealing disabled: boot sealing or trusted TCB floor unavailable"
+            );
+        }
+    }
+    let hardware_reseal_enabled = enrolled;
 
     let (vmgs_client, vmgs) = if let Some((meta, vmgs)) = vmgs {
         // Spawn the VMGS client for multi-task access.
@@ -2836,8 +2893,41 @@ async fn new_underhill_vm(
     };
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
-    // Set do-nothing callback.
-    get_client.set_post_live_migration_callback(Box::new(|| {}));
+    let hardware_reseal = if hardware_reseal_enabled {
+        let timer = pal_async::timer::PolledTimer::new(tp.driver(0));
+        let vmgs = vmgs_client
+            .as_ref()
+            .expect("resealing requires VMGS")
+            .clone();
+        let tee = tee_call.expect("resealing requires a TEE");
+        let resealer = if is_restoring {
+            // The normal state-unit restore installs the source floor before
+            // start. This constructor performs no hardware or VMGS operations.
+            crate::hardware_reseal::HardwareReseal::new_for_restore(
+                migration_notification,
+                timer,
+                vmgs,
+                tee,
+                attestation_vm_config.clone(),
+            )
+        } else {
+            crate::hardware_reseal::HardwareReseal::new(
+                migration_notification,
+                timer,
+                vmgs,
+                tee,
+                attestation_vm_config.clone(),
+                runtime_tcb_floor.expect("resealing requires a trusted boot TCB floor"),
+            )
+        };
+        Some(
+            state_units
+                .add(crate::hardware_reseal::STATE_UNIT_NAME)
+                .spawn(tp, |recv| resealer.run(recv))?,
+        )
+    } else {
+        None
+    };
 
     let mut input_distributor = InputDistributor::new(remote_console_cfg.input);
     resolver.add_async_resolver::<KeyboardInputHandleKind, _, MultiplexedInputHandle, _>(
@@ -3997,6 +4087,7 @@ async fn new_underhill_vm(
         measured_product_policy: measured_vtl2_info.measured_product_policy().clone(),
 
         _input_distributor: input_distributor,
+        hardware_reseal,
 
         crash_notification_recv,
         control_send,
