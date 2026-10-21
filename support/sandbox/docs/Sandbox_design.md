@@ -528,7 +528,7 @@ alternatives most likely to be reconsidered.
 | **User NS (`CLONE_NEWUSER`)** | **Unprivileged bootstrap** for the other `CLONE_NEW*` calls, and the substrate for the UID remap. | 3.8+ | Not a boundary in its own right in our model. Where the control process already has `CAP_SYS_ADMIN` (OpenHCL), it is still used, because it is what makes the uid_map remap possible. Blocked on some distros — see [§7.6](#76-deployment-surface--degradation-matrix). |
 | **Linux capabilities + securebits** | **Configuration hygiene** (R-S4). Drop all five sets to empty, then lock securebits so they cannot be re-acquired. | Universal | `SECBIT_NOROOT_LOCKED \| SECBIT_NO_SETUID_FIXUP_LOCKED \| SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED`. Without the locked securebits, a UID-0 worker regains caps across `execve`. |
 | **`PR_SET_NO_NEW_PRIVS`** | Prerequisite for unprivileged seccomp and Landlock. | 3.5+ | Set in **`apply`**, right before the filters it enables. Survives `execve` and cannot be cleared. |
-| **seccomp-bpf** | **Dangerous syscall denial** (R-S8), **opt-in per worker class** (D13, R-S13). | Universal | Current profiles use a default-allow denylist to avoid maintaining each worker's complete link-set-dependent syscall inventory. The mandatory baseline blocks namespace escapes and historically risky kernel surfaces; profiles may add further denials. `RET_KILL_PROCESS` in production and `EPERM` in debug builds. Filters stack, which makes `tighten` monotonic. Blind to io_uring SQE opcodes — see below. |
+| **seccomp-bpf** | **Dangerous syscall denial** (R-S8), **opt-in per worker class** (D13, R-S13). | Universal | Current profiles use a default-allow denylist to avoid maintaining each worker's complete link-set-dependent syscall inventory. The authoritative platform policy catalog classifies mandatory baseline denials and workload-dependent optional denials; profiles may add further role-specific denials. `RET_KILL_PROCESS` in production and `EPERM` in debug builds. Filters stack, which makes `tighten` monotonic. Blind to io_uring SQE opcodes — see below. |
 | **Landlock** | **Supplementary FS restriction** (D11), applied opportunistically with ABI-aware degradation (D16). | 5.13+ | Explicitly *not* the primary FS mechanism. On the OpenVMM-host baseline it is ABI 1 only: no `FS_REFER`, no `FS_TRUNCATE`, so it cannot fully restrict cross-directory rename or `O_TRUNC`. Applied *before* seccomp (C7) so the final filter can deny the Landlock syscalls. |
 | **IPC / UTS / cgroup NS** | Cheap defense-in-depth name hiding. Default-on wherever mount NS is on. | Universal | Not boundaries on their own. |
 | **PID NS** | **Omitted** (C2). | — | `unshare(CLONE_NEWPID)` moves only future children; `execve` does not move the caller. R-S6 is met by other means — see the supporting controls below. |
@@ -1259,8 +1259,11 @@ complete per-worker syscall inventories. Update the policy as follows:
 1. Identify a syscall that provides an unnecessary privilege, escape vector,
    or disproportionately risky kernel attack surface.
 2. Confirm that the affected worker classes do not legitimately require it.
-3. Add it to the mandatory baseline when it is universally inappropriate, or
-   to the relevant profile's additional deny list when role-specific.
+3. Add it to the platform policy catalog as mandatory when it is universally
+   inappropriate, optional when profiling may demonstrate a workload need, or
+   to the relevant profile's additional deny list when role-specific. The
+   seccomp backend derives its mandatory baseline from this catalog; do not add
+   a second backend-only list.
 4. Document the security rationale and add focused filter-construction or
    enforcement coverage.
 5. Run the affected workers through their full lifecycle, including shutdown

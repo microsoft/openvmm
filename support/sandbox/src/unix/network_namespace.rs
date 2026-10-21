@@ -39,7 +39,7 @@ pub fn bring_up_loopback() -> io::Result<()> {
     // Read current flags.
     // SAFETY: SIOCGIFFLAGS with a valid ifreq pointer; the kernel fills
     // in ifr_ifru.ifru_flags on success.
-    unsafe { libc::ioctl(raw_fd, libc::SIOCGIFFLAGS, &mut ifr) }.syscall_result()?;
+    unsafe { libc::ioctl(raw_fd, libc::SIOCGIFFLAGS as _, &mut ifr) }.syscall_result()?;
 
     // OR in IFF_UP.
     //
@@ -51,7 +51,7 @@ pub fn bring_up_loopback() -> io::Result<()> {
 
     // Write the flags back.
     // SAFETY: SIOCSIFFLAGS with a valid ifreq pointer.
-    unsafe { libc::ioctl(raw_fd, libc::SIOCSIFFLAGS, &ifr) }.syscall_result()?;
+    unsafe { libc::ioctl(raw_fd, libc::SIOCSIFFLAGS as _, &ifr) }.syscall_result()?;
 
     Ok(())
 }

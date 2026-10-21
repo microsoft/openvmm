@@ -59,112 +59,24 @@ const _: () = {
     assert!(folded == CLONE_NEW_MASK);
 };
 
-/// The mandatory-deny list — the curated set of syscalls the denylist filter
-/// always blocks, because they are namespace-escape vectors or historical
-/// kernel-CVE fodder that a sandboxed worker never legitimately needs.
+/// Resolve the mandatory syscall policy into architecture-native numbers.
 ///
-/// [`build_denylist_filter`] blanket-denies every syscall on this list. A
-/// profile can widen the deny set further but can never remove an entry, so an
-/// escape-vector syscall can never be re-enabled by a profile author's mistake
-/// (R-S12, fail-loud).
-///
-/// See the module docs for the rationale. Where a citation is given, it
-/// points at the primary reference sandbox that classifies the syscall
-/// as privileged / dangerous.
-pub fn mandatory_deny_syscall_nrs() -> Vec<i64> {
-    // `mut` is only needed to push `modify_ldt` below on x86 targets.
-    #[cfg_attr(
-        not(any(target_arch = "x86", target_arch = "x86_64")),
-        expect(unused_mut)
-    )]
-    let mut v = vec![
-        // ---- Namespace nesting ----
-        libc::SYS_unshare,
-        libc::SYS_setns,
-        // ---- Mount manipulation ----
-        libc::SYS_mount,
-        libc::SYS_umount2,
-        libc::SYS_pivot_root,
-        libc::SYS_chroot,
-        libc::SYS_move_mount,
-        libc::SYS_fsopen,
-        libc::SYS_fsconfig,
-        libc::SYS_fsmount,
-        libc::SYS_fspick,
-        libc::SYS_open_tree,
-        libc::SYS_mount_setattr,
-        // ---- Kernel-bug surface ----
-        libc::SYS_bpf,
-        libc::SYS_keyctl,
-        libc::SYS_add_key,
-        libc::SYS_request_key,
-        libc::SYS_perf_event_open,
-        // `userfaultfd` — CVE-2021-3347 (UAF privilege escalation) and
-        // long history of similar bugs.
-        libc::SYS_userfaultfd,
-        libc::SYS_io_uring_setup,
-        libc::SYS_io_uring_enter,
-        libc::SYS_io_uring_register,
-        // ---- Module loading ----
-        libc::SYS_init_module,
-        libc::SYS_finit_module,
-        libc::SYS_delete_module,
-        // ---- System control ----
-        libc::SYS_reboot,
-        libc::SYS_kexec_load,
-        libc::SYS_kexec_file_load,
-        libc::SYS_swapon,
-        libc::SYS_swapoff,
-        libc::SYS_sysfs,
-        libc::SYS_syslog,
-        libc::SYS_iopl,
-        libc::SYS_ioperm,
-        libc::SYS_vhangup,
-        libc::SYS_personality,
-        // `acct` — process accounting; Docker requires `CAP_SYS_PACCT`,
-        // Firejail `@default`, systemd `@privileged`.
-        libc::SYS_acct,
-        // ---- UTS / hostname ----
-        libc::SYS_sethostname,
-        libc::SYS_setdomainname,
-        // ---- Filesystem monitoring / privileged fs control ----
-        libc::SYS_fanotify_init,
-        libc::SYS_quotactl,
-        // ---- Capability manipulation ----
-        libc::SYS_capset,
-        // ---- Cross-process ----
-        libc::SYS_ptrace,
-        libc::SYS_process_vm_readv,
-        libc::SYS_process_vm_writev,
-        libc::SYS_pidfd_getfd,
-        // ---- Handle bypass ----
-        libc::SYS_name_to_handle_at,
-        libc::SYS_open_by_handle_at,
-        // ---- Clock manipulation ----
-        libc::SYS_clock_settime,
-        libc::SYS_clock_adjtime,
-        libc::SYS_adjtimex,
-        libc::SYS_settimeofday,
-        // ---- Memory policy ----
-        libc::SYS_set_mempolicy,
-        libc::SYS_migrate_pages,
-        libc::SYS_move_pages,
-        libc::SYS_mbind,
-        // ---- Debug ----
-        libc::SYS_kcmp,
-        // ---- Historical / defense-in-depth ----
-        //
-        // `vmsplice` — CVE-2008-0600.
-        libc::SYS_vmsplice,
-        libc::SYS_ioprio_set,
-    ];
-
-    // `modify_ldt` — historical x86/x86_64 LDT-based privilege
-    // escalation class (e.g. CVE-2015-8328).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    v.push(libc::SYS_modify_ldt);
-
-    v
+/// `clone3` is mandatory but deliberately omitted here because
+/// [`build_clone3_enosys_filter`] must return `ENOSYS` rather than the normal
+/// deny action so libc can fall back to the argument-filtered `clone`.
+pub fn mandatory_deny_syscall_nrs() -> io::Result<Vec<i64>> {
+    crate::platform_syscall_denylist()
+        .filter(|entry| entry.enforcement == crate::Enforcement::Mandatory)
+        .filter(|entry| entry.name != "clone3")
+        .map(|entry| {
+            nr_for_name(entry.name).ok_or_else(|| {
+                io::Error::other(format!(
+                    "mandatory syscall policy does not resolve on this architecture: {:?}",
+                    entry.name
+                ))
+            })
+        })
+        .collect()
 }
 
 /// Build the `clone3`-to-`ENOSYS` overlay filter.
@@ -346,12 +258,17 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         // Configurable sandbox denylist
         "acct" => libc::SYS_acct,
         "add_key" => libc::SYS_add_key,
+        "adjtimex" => libc::SYS_adjtimex,
         "bpf" => libc::SYS_bpf,
+        "capset" => libc::SYS_capset,
         "chroot" => libc::SYS_chroot,
         "clone3" => libc::SYS_clone3,
+        "clock_adjtime" => libc::SYS_clock_adjtime,
+        "clock_settime" => libc::SYS_clock_settime,
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "create_module" => libc::SYS_create_module,
         "delete_module" => libc::SYS_delete_module,
+        "fanotify_init" => libc::SYS_fanotify_init,
         "finit_module" => libc::SYS_finit_module,
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "fork" => libc::SYS_fork,
@@ -367,24 +284,46 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "ioperm" => libc::SYS_ioperm,
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "iopl" => libc::SYS_iopl,
+        "ioprio_set" => libc::SYS_ioprio_set,
         "kcmp" => libc::SYS_kcmp,
         "kexec_file_load" => libc::SYS_kexec_file_load,
         "kexec_load" => libc::SYS_kexec_load,
         "keyctl" => libc::SYS_keyctl,
+        "mbind" => libc::SYS_mbind,
+        "migrate_pages" => libc::SYS_migrate_pages,
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        "modify_ldt" => libc::SYS_modify_ldt,
         "mount" => libc::SYS_mount,
         "mount_setattr" => libc::SYS_mount_setattr,
         "move_mount" => libc::SYS_move_mount,
+        "move_pages" => libc::SYS_move_pages,
+        "name_to_handle_at" => libc::SYS_name_to_handle_at,
+        "open_by_handle_at" => libc::SYS_open_by_handle_at,
         "open_tree" => libc::SYS_open_tree,
+        "perf_event_open" => libc::SYS_perf_event_open,
+        "personality" => libc::SYS_personality,
+        "pidfd_getfd" => libc::SYS_pidfd_getfd,
         "pivot_root" => libc::SYS_pivot_root,
         "process_vm_readv" => libc::SYS_process_vm_readv,
         "process_vm_writev" => libc::SYS_process_vm_writev,
         "ptrace" => libc::SYS_ptrace,
+        "quotactl" => libc::SYS_quotactl,
         "reboot" => libc::SYS_reboot,
         "request_key" => libc::SYS_request_key,
+        "set_mempolicy" => libc::SYS_set_mempolicy,
+        "setdomainname" => libc::SYS_setdomainname,
+        "sethostname" => libc::SYS_sethostname,
         "setns" => libc::SYS_setns,
+        "settimeofday" => libc::SYS_settimeofday,
+        "swapoff" => libc::SYS_swapoff,
+        "swapon" => libc::SYS_swapon,
+        "sysfs" => libc::SYS_sysfs,
+        "syslog" => libc::SYS_syslog,
         "umount2" => libc::SYS_umount2,
         "unshare" => libc::SYS_unshare,
         "userfaultfd" => libc::SYS_userfaultfd,
+        "vhangup" => libc::SYS_vhangup,
+        "vmsplice" => libc::SYS_vmsplice,
         "waitid" => libc::SYS_waitid,
         // Architecture-specific: `arch_prctl` is x86-only.
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -418,7 +357,7 @@ pub fn build_denylist_filter(
 
     // Blanket-deny the baseline set. It never overlaps the argument-guarded
     // syscalls above, so `or_default` leaves their rules intact.
-    for nr in mandatory_deny_syscall_nrs() {
+    for nr in mandatory_deny_syscall_nrs()? {
         rules.entry(nr).or_default();
     }
     // Profile-specified extras are unconditional denies. An extra that names an
@@ -447,6 +386,11 @@ pub fn apply_denylist(extra_deny_names: &[&str], deny_action: SeccompAction) -> 
     let survival = survival_syscall_nrs();
     let mut extra = Vec::with_capacity(extra_deny_names.len());
     for name in extra_deny_names {
+        // clone3 is always handled by the ENOSYS overlay below. Adding it to
+        // the normal filter would prevent libc's fallback to clone.
+        if *name == "clone3" {
+            continue;
+        }
         let nr = nr_for_name(name).ok_or_else(|| {
             io::Error::other(format!("unknown syscall name in denylist: {name:?}"))
         })?;
@@ -492,7 +436,7 @@ fn finalize_filter(
 fn ioctl_deny_rules() -> io::Result<Vec<SeccompRule>> {
     Ok(vec![
         SeccompRule::new(vec![
-            SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::TIOCSTI)
+            SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::TIOCSTI as _)
                 .map_err(|e| io::Error::other(format!("seccomp condition: {e}")))?,
         ])
         .map_err(|e| io::Error::other(format!("seccomp rule: {e}")))?,
@@ -564,7 +508,7 @@ mod tests {
         // The baseline denylist must be non-empty and must never contain a
         // survival syscall — `apply_denylist` relies on that invariant so a
         // profile can't blanket-deny a syscall the worker needs to exit.
-        let denied = mandatory_deny_syscall_nrs();
+        let denied = mandatory_deny_syscall_nrs().expect("mandatory policy must resolve");
         assert!(!denied.is_empty());
         for nr in survival_syscall_nrs() {
             assert!(
@@ -578,6 +522,38 @@ mod tests {
     fn clone3_enosys_filter_builds() {
         let bpf = build_clone3_enosys_filter().expect("should build clone3 ENOSYS filter");
         assert!(!bpf.is_empty());
+    }
+
+    #[test]
+    fn configured_syscall_policy_is_unique_and_resolvable() {
+        let mut names = std::collections::BTreeSet::new();
+        for entry in crate::platform_syscall_denylist() {
+            assert!(
+                names.insert(entry.name),
+                "duplicate policy for {}",
+                entry.name
+            );
+            assert!(
+                nr_for_name(entry.name).is_some(),
+                "policy syscall does not resolve: {}",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn optional_syscalls_are_not_in_mandatory_baseline() {
+        let mandatory = mandatory_deny_syscall_nrs().expect("mandatory policy must resolve");
+        for entry in crate::platform_syscall_denylist()
+            .filter(|entry| entry.enforcement == crate::Enforcement::Optional)
+        {
+            let nr = nr_for_name(entry.name).expect("optional policy must resolve");
+            assert!(
+                !mandatory.contains(&nr),
+                "optional syscall is mandatory: {}",
+                entry.name
+            );
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Platform-specific configurable syscall denials.
+//! Authoritative platform-specific syscall denial policy.
 
 /// Whether denying a syscall is required or workload-dependent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,11 @@ pub struct DeniedSyscall {
     pub reason: Option<&'static str>,
 }
 
-/// Iterate over the syscall denials configured for the current platform.
+/// Iterate over the syscall denial policy for the current platform.
+///
+/// Backends compile mandatory entries into their baseline enforcement.
+/// Profiling may omit optional entries when a workload demonstrates a need for
+/// them.
 pub fn platform_syscall_denylist() -> impl Iterator<Item = &'static DeniedSyscall> {
     #[cfg(target_os = "linux")]
     {
