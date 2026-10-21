@@ -7,6 +7,7 @@ use self::capabilities::*;
 use super::StalledIo;
 use super::core::QueueDoorbell;
 use super::core::TransportOps;
+use super::core::VIRTIO_MSI_NO_VECTOR;
 use super::core::VirtioTransportCore;
 use super::task::ConfigReadCompletion;
 use super::task::defer_config_read;
@@ -194,7 +195,7 @@ impl TransportOps for PciTransport {
         if let InterruptKind::IntX(line) = &self.interrupt_kind {
             line.set_level(false);
         }
-        self.msix_config_vector = 0;
+        self.msix_config_vector = VIRTIO_MSI_NO_VECTOR;
     }
 
     fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell> {
@@ -378,7 +379,7 @@ impl VirtioPciDevice {
                 config_space,
                 interrupt_kind,
                 interrupt_status: Arc::new(Mutex::new(0)),
-                msix_config_vector: 0,
+                msix_config_vector: VIRTIO_MSI_NO_VECTOR,
                 shared_memory_size,
                 pci_cfg_access,
                 pci_cfg_data_offset,
