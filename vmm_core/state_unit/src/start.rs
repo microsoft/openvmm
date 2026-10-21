@@ -128,7 +128,7 @@ impl StateUnits {
         }
     }
 
-    async fn stop_after_failed_start(
+    pub(super) async fn stop_after_failed_start(
         &self,
         failed_or_uncertain_ids: &[u64],
         started_ids: &[u64],
@@ -139,6 +139,7 @@ impl StateUnits {
             .copied()
             .collect::<Vec<_>>();
         let mut operations = Vec::new();
+        let mut failures = Vec::new();
         let ready_set;
         {
             let mut inner = self.inner.lock();
@@ -148,6 +149,16 @@ impl StateUnits {
                 .iter_mut()
                 .filter(|(id, _)| ready_set.0.contains_key(id))
             {
+                if unit.pending_start.is_some() {
+                    assert!(failed_or_uncertain_ids.contains(&id));
+                    assert_eq!(unit.state, State::StartUncertain);
+                    ready_set.done(id, false);
+                    failures.push(format!(
+                        "{}: failed_start_cleanup deferred until pending start completes",
+                        unit.name
+                    ));
+                    continue;
+                }
                 let (op, old_state, stopped_state) = if failed_or_uncertain_ids.contains(&id) {
                     (
                         "failed_start_cleanup",
@@ -174,9 +185,7 @@ impl StateUnits {
                 unit.state = State::Stopping;
             }
         }
-
         let results = join_all(operations).await;
-        let mut failures = Vec::new();
         let mut inner = self.inner.lock();
         for (name, id, op, stopped_state, result) in results {
             let Some(unit) = inner.units.get_mut(&id) else {
