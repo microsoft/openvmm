@@ -631,6 +631,9 @@ impl VirtioTestGuest {
             .unwrap();
         // setup config interrupt
         dev.pci_device
+            .mmio_write(bar_address1 + 16, &0u16.to_le_bytes())
+            .unwrap();
+        dev.pci_device
             .mmio_write(bar_address2, &0_u64.to_le_bytes())
             .unwrap(); // vector
         dev.pci_device
@@ -2402,11 +2405,11 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 12), 0);
     // max queues and the msix vector for config changes
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 16), 1 << 16);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 16), 0x1ffff);
     // queue index, config generation and device status
     assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 0);
     // current queue size and msix vector
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x100);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0xffff0100);
     pci_test_device.write_u32(bar_address1 + 24, 0x20);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x20);
     // current queue enabled and notify offset
@@ -3373,6 +3376,46 @@ async fn verify_device_split_multi_queue_pci(driver: DefaultDriver) {
         .with_bank(1, VIRTIO_F_VERSION_1);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
+
+#[async_test]
+async fn pci_msix_vectors_unmapped_on_reset(driver: DefaultDriver) {
+    fn assert_unmapped(dev: &mut VirtioPciDevice) {
+        let config = dev.read_u32(16);
+        assert_eq!(config as u16, 0xffff);
+        for idx in 0..config >> 16 {
+            dev.write_u32(20, idx << 16);
+            assert_eq!(dev.read_u32(24) >> 16, 0xffff);
+        }
+    }
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 3, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 3, &test_mem, None);
+    assert_unmapped(&mut dev.pci_device);
+
+    dev.pci_device.write_u32(16, 0);
+    for idx in 0..3 {
+        dev.pci_device
+            .write_u32(20, (idx << 16) | VIRTIO_ACKNOWLEDGE);
+        dev.pci_device.write_u32(24, (idx << 16) | 4);
+    }
+    dev.pci_device.write_u32(20, 0);
+    assert_unmapped(&mut dev.pci_device);
+
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.pci_device.write_u32(20, 0);
+    dev.pci_device.stop().await;
+    assert_unmapped(&mut dev.pci_device);
+
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.pci_device.reset().await;
+    assert_unmapped(&mut dev.pci_device);
+}
+
 #[async_test]
 async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
     let num_queues = 5;

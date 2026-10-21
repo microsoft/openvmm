@@ -30,13 +30,15 @@ use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 
+pub(super) const VIRTIO_MSI_NO_VECTOR: u16 = 0xffff;
+
 /// Per-queue transport data shared between PCI and MMIO.
 #[derive(Inspect)]
 pub(crate) struct QueueData {
     #[inspect(flatten)]
     pub params: QueueParams,
     pub initial_size: u16,
-    /// MSI-X vector for this queue (PCI only; always 0 for MMIO).
+    /// MSI-X vector for this queue. Unused for MMIO.
     pub msix_vector: u16,
     #[inspect(skip)]
     pub event: pal_event::Event,
@@ -114,7 +116,7 @@ impl VirtioTransportCore {
                         ..Default::default()
                     },
                     initial_size: size,
-                    msix_vector: 0,
+                    msix_vector: VIRTIO_MSI_NO_VECTOR,
                     event: pal_event::Event::new(),
                     saved_state: None,
                 })
@@ -238,7 +240,7 @@ impl VirtioTransportCore {
                 size: *initial_size,
                 ..Default::default()
             };
-            *msix_vector = 0;
+            *msix_vector = VIRTIO_MSI_NO_VECTOR;
         }
     }
 
