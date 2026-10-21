@@ -55,6 +55,7 @@ use tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+use tpm_resources::AkCertResponse;
 use tpm_resources::TpmLogEvent;
 use tpm_resources::TpmLogger;
 use tpm_resources::TpmRegisterLayout;
@@ -225,12 +226,14 @@ pub struct TpmKeys {
 }
 
 type AkCertRequestFuture = Box<
-    dyn Send + Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>>,
+    dyn Send
+        + Future<Output = Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>>>,
 >;
 
 struct AkCertRequest {
     is_renew: bool,
     start_time: std::time::SystemTime,
+    has_cert: bool,
     fut: Pin<AkCertRequestFuture>,
 }
 
@@ -1129,7 +1132,7 @@ impl Tpm {
     fn create_ak_cert_request_or_attestation_report(
         &mut self,
         is_attestation_report: bool,
-    ) -> Result<Vec<u8>, TpmError> {
+    ) -> Result<tpm_resources::AkCertRequest, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
 
         // Read the guest attestation input from `TPM_NV_INDEX_GUEST_ATTESTATION_INPUT` nv index
@@ -1145,6 +1148,20 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadFromNvIndex)?;
         }
 
+        let existing_cert = if !is_attestation_report {
+            match self.read_ak_cert() {
+                Ok(cert) => cert,
+                Err(error) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &error as &dyn std::error::Error,
+                        "Failed to read existing AK certificate; requesting a replacement"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let keys = self.keys.as_ref().expect("Tpm keys uninitialized");
         let request_ak_cert_helper = self
             .ak_cert_type
@@ -1163,6 +1180,7 @@ impl Tpm {
                 &keys.ek_pub.exponent,
                 &guest_attestation_input,
                 is_attestation_report,
+                existing_cert.as_deref(),
             )
             .map_err(|error| TpmErrorKind::CreateAkCertRequest {
                 is_attestation_report,
@@ -1170,6 +1188,23 @@ impl Tpm {
             })?;
 
         Ok(ak_cert_request)
+    }
+
+    fn read_ak_cert(&mut self) -> Result<Option<Vec<u8>>, tpm_lib::Error> {
+        let Some(index) = self
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_AIK_CERT)?
+        else {
+            return Ok(None);
+        };
+        let mut cert = vec![0; usize::from(index.nv_public.nv_public.data_size.get())];
+        match self
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut cert)?
+        {
+            tpm_lib::NvIndexState::Available => Ok(Some(cert)),
+            tpm_lib::NvIndexState::Unallocated | tpm_lib::NvIndexState::Uninitialized => Ok(None),
+        }
     }
 
     /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT`.
@@ -1183,7 +1218,7 @@ impl Tpm {
             .write_to_nv_index(
                 auth_value,
                 TPM_NV_INDEX_ATTESTATION_REPORT,
-                &attestation_report,
+                &attestation_report.data,
             )
             .map_err(TpmErrorKind::WriteToNvIndex)?;
 
@@ -1219,6 +1254,7 @@ impl Tpm {
         );
 
         let ak_cert_request = self.create_ak_cert_request_or_attestation_report(false)?;
+        let has_cert = ak_cert_request.has_cert;
         let request_ak_cert_helper = self
             .ak_cert_type
             .get_ak_cert_helper()
@@ -1227,7 +1263,7 @@ impl Tpm {
             let request_ak_cert_helper = request_ak_cert_helper.clone();
             async move {
                 request_ak_cert_helper
-                    .request_ak_cert(ak_cert_request)
+                    .request_ak_cert(ak_cert_request.data)
                     .await
             }
         };
@@ -1235,6 +1271,7 @@ impl Tpm {
         self.async_ak_cert_request = Some(Box::pin(AkCertRequest {
             is_renew,
             start_time: std::time::SystemTime::now(),
+            has_cert,
             fut: Box::pin(fut),
         }));
 
@@ -1248,11 +1285,16 @@ impl Tpm {
 
     /// Poll the AK cert request made by `get_ak_cert`. This function is called by [`PollDevice::poll_device`].
     fn poll_ak_cert_request(&mut self, cx: &mut std::task::Context<'_>) {
+        // get_ak_cert takes this waker to schedule the next request. Refresh it
+        // before polling so even an immediately ready result and early return
+        // leave a waker available for the following renewal.
+        self.waker = Some(cx.waker().clone());
         if let Some(async_ak_cert_request) = self.async_ak_cert_request.as_mut() {
             let is_renew = async_ak_cert_request.is_renew;
+            let has_cert = async_ak_cert_request.has_cert;
 
             if let Poll::Ready(result) = async_ak_cert_request.fut.as_mut().poll(cx) {
-                // Once the received the response, update the renew time using `SystemTime::now`.
+                // Capture the response time for successful renewal and retry backoff.
                 // DEVNOTE: The system time may not reflect the real time when suspension and resumption occur.
                 // See more details in `refresh_device_attestation_data_on_nv_read`.
                 let now = std::time::SystemTime::now();
@@ -1263,15 +1305,26 @@ impl Tpm {
 
                 // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => {
-                        // Set the renew time if successfully receiving the data.
-                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                    Ok(AkCertResponse::NoRenewal) => {
+                        if !has_cert {
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                "Host declined AK certificate renewal without existing certificate metadata"
+                            );
+                            self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
+                            return;
+                        }
                         self.ak_cert_renew_time = Some(now);
-
-                        data
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            op_type = ?LogOpType::AkCertProvision,
+                            is_renew,
+                            "Host indicated that the existing AK certificate does not need renewal"
+                        );
+                        return;
                     }
-                    Ok(_data) => {
+                    Ok(AkCertResponse::Certificate(data)) if !data.is_empty() => data,
+                    Ok(AkCertResponse::Certificate(_data)) => {
                         tracelimit::warn_ratelimited!(
                             CVM_ALLOWED,
                             op_type = ?LogOpType::AkCertProvision,
@@ -1324,9 +1377,11 @@ impl Tpm {
                         error = &e as &dyn std::error::Error,
                         "Failed write new TPM AK cert to NV index"
                     );
+                    self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
                     return;
                 }
 
+                self.ak_cert_renew_time = Some(now);
                 let duration = now.duration_since(std::time::UNIX_EPOCH);
 
                 tracing::info!(
@@ -1343,7 +1398,6 @@ impl Tpm {
                 );
             }
         }
-        self.waker = Some(cx.waker().clone());
     }
 
     /// Renew device attestation data (i.e., attestation report and AK cert) on NV_Read if needed
@@ -2181,12 +2235,17 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
     use tpm_protocol::tpm20proto::TpmaNvBits;
     use tpm_resources::RequestAkCert;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-    struct TestRequestAkCertHelper;
+    #[derive(Default)]
+    struct TestRequestAkCertHelper {
+        expected_input: Option<(bool, Option<Vec<u8>>)>,
+    }
 
     #[async_trait::async_trait]
     impl RequestAkCert for TestRequestAkCertHelper {
@@ -2198,15 +2257,42 @@ mod tests {
             _ek_pub_exponent: &[u8],
             _guest_input: &[u8],
             _is_attestation_report: bool,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Vec::new())
+            _existing_cert: Option<&[u8]>,
+        ) -> Result<tpm_resources::AkCertRequest, Box<dyn std::error::Error + Send + Sync>>
+        {
+            if let Some((is_report, cert)) = &self.expected_input {
+                assert_eq!(_is_attestation_report, *is_report);
+                assert_eq!(_existing_cert, cert.as_deref());
+            }
+            Ok(tpm_resources::AkCertRequest {
+                data: Vec::new(),
+                has_cert: _existing_cert.is_some(),
+            })
         }
 
         async fn request_ak_cert(
             &self,
             _request: Vec<u8>,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-            Ok(Vec::new())
+        ) -> Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>> {
+            Ok(AkCertResponse::Certificate(Vec::new()))
+        }
+    }
+
+    #[derive(Default)]
+    struct TestTpmLogger {
+        ak_cert_renewal_failures: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TpmLogger for TestTpmLogger {
+        async fn log_event_and_flush(&self, event: TpmLogEvent) {
+            self.log_event(event);
+        }
+
+        fn log_event(&self, event: TpmLogEvent) {
+            assert!(matches!(event, TpmLogEvent::AkCertRenewalFailed));
+            self.ak_cert_renewal_failures
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -2231,7 +2317,7 @@ mod tests {
             monotonic_timer,
             false,
             false,
-            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper), Some(true)),
+            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), Some(true)),
             None,
             None,
             false,
@@ -2254,6 +2340,220 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    fn complete_ak_cert_request(tpm: &mut Tpm, has_cert: bool, response: AkCertResponse) {
+        // Model get_ak_cert consuming the previously registered waker.
+        tpm.waker = None;
+        tpm.async_ak_cert_request = Some(Box::pin(AkCertRequest {
+            is_renew: true,
+            start_time: std::time::SystemTime::now(),
+            has_cert,
+            fut: Box::pin(std::future::ready(Ok(response))),
+        }));
+        tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(Waker::noop()));
+        assert!(tpm.async_ak_cert_request.is_none());
+        assert!(tpm.waker.is_some());
+    }
+
+    #[async_test]
+    async fn test_ready_ak_cert_response_wakes_next_request() {
+        #[derive(Default)]
+        struct WakeCounter(AtomicUsize);
+
+        impl std::task::Wake for WakeCounter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            tpm.ak_cert_type =
+                TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), Some(true));
+            tpm.allow_ak_cert_renewal = true;
+
+            for (has_cert, result) in [
+                (true, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::Certificate(Vec::new()))),
+                (
+                    false,
+                    Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                        std::io::Error::other("test request failure"),
+                    )),
+                ),
+            ] {
+                // Starting a request consumes the stored waker. A different
+                // poll waker must replace it, including on all early returns.
+                let previous = Arc::new(WakeCounter::default());
+                tpm.waker = Some(Waker::from(previous.clone()));
+                tpm.get_ak_cert(true).unwrap();
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                assert!(tpm.waker.is_none());
+                let request = tpm.async_ak_cert_request.as_mut().unwrap();
+                request.has_cert = has_cert;
+                request.fut = Box::pin(std::future::ready(result));
+
+                let next = Arc::new(WakeCounter::default());
+                let waker = Waker::from(next.clone());
+                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+                assert!(tpm.waker.as_ref().unwrap().will_wake(&waker));
+
+                tpm.get_ak_cert(true).unwrap();
+                assert!(tpm.async_ak_cert_request.is_some());
+                assert_eq!(next.0.load(Ordering::Relaxed), 1);
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+            }
+        }
+    }
+
+    #[async_test]
+    async fn test_ak_cert_renewal_lifecycle() {
+        use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+
+            let old_time = std::time::UNIX_EPOCH;
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::NoRenewal);
+            assert_eq!(tpm.ak_cert_renew_time, Some(old_time));
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+
+            // Exercise a v1.85 index larger than the legacy 4KiB buffer.
+            let size = match version {
+                TpmVersion::V138 => 1024,
+                TpmVersion::V185 => 8192,
+            };
+            tpm.tpm_engine_helper
+                .nv_define_space(TPM20_RH_PLATFORM, 0, TPM_NV_INDEX_AIK_CERT, size)
+                .unwrap();
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+            let original = vec![0xa5; usize::from(size)];
+            tpm.tpm_engine_helper
+                .write_to_nv_index(0, TPM_NV_INDEX_AIK_CERT, &original)
+                .unwrap();
+            assert_eq!(
+                tpm.read_ak_cert().unwrap().as_deref(),
+                Some(original.as_slice())
+            );
+
+            // No-renewal must not require NV write authorization or alter its bytes.
+            assert!(tpm.auth_value.is_none());
+            complete_ak_cert_request(&mut tpm, true, AkCertResponse::NoRenewal);
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+            // Merely having bytes in NV is insufficient if metadata could not be parsed.
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::NoRenewal);
+            assert_eq!(tpm.ak_cert_renew_time, Some(old_time));
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+            tpm.auth_value = Some(0);
+            let replacement = b"replacement certificate";
+            complete_ak_cert_request(
+                &mut tpm,
+                true,
+                AkCertResponse::Certificate(replacement.to_vec()),
+            );
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            let current = tpm.read_ak_cert().unwrap().unwrap();
+            assert!(current.starts_with(replacement));
+
+            // Each new request reads the current NV data; guest reports omit it.
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            for is_report in [false, true] {
+                tpm.ak_cert_type = TpmAkCertType::Trusted(
+                    Arc::new(TestRequestAkCertHelper {
+                        expected_input: Some((is_report, (!is_report).then(|| current.clone()))),
+                    }),
+                    Some(true),
+                );
+                let request = tpm
+                    .create_ak_cert_request_or_attestation_report(is_report)
+                    .unwrap();
+                assert_eq!(request.has_cert, !is_report);
+            }
+
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::Certificate(Vec::new()));
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), current);
+        }
+    }
+
+    #[async_test]
+    async fn test_ak_cert_write_failure_preserves_renewal_time() {
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let logger = Arc::new(TestTpmLogger::default());
+            tpm.logger = Some(logger.clone());
+            tpm.tpm_engine_helper
+                .nv_define_space(TPM20_RH_PLATFORM, 0, TPM_NV_INDEX_AIK_CERT, 1024)
+                .unwrap();
+            let original = vec![0xa5; 1024];
+            let replacement = b"replacement certificate";
+            let oversized = vec![0x5a; 1025];
+            let mut failures = 0;
+
+            for old_time in [None, Some(std::time::UNIX_EPOCH)] {
+                for (auth_value, data) in [(0, oversized.as_slice()), (1, replacement.as_slice())] {
+                    tpm.tpm_engine_helper
+                        .write_to_nv_index(0, TPM_NV_INDEX_AIK_CERT, &original)
+                        .unwrap();
+                    tpm.auth_value = Some(auth_value);
+                    tpm.ak_cert_renew_time = old_time;
+                    complete_ak_cert_request(
+                        &mut tpm,
+                        true,
+                        AkCertResponse::Certificate(data.to_vec()),
+                    );
+                    failures += 1;
+                    assert_eq!(tpm.ak_cert_renew_time, old_time);
+                    assert_eq!(
+                        logger.ak_cert_renewal_failures.load(Ordering::Relaxed),
+                        failures
+                    );
+                    assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+                    tpm.auth_value = Some(0);
+                    complete_ak_cert_request(
+                        &mut tpm,
+                        true,
+                        AkCertResponse::Certificate(replacement.to_vec()),
+                    );
+                    assert!(tpm.ak_cert_renew_time > old_time);
+                    assert_eq!(
+                        logger.ak_cert_renewal_failures.load(Ordering::Relaxed),
+                        failures
+                    );
+                    let mut expected = replacement.to_vec();
+                    expected.resize(original.len(), 0);
+                    assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), expected);
+                }
+            }
+        }
     }
 
     /// Each library validates NVRAM against its compiled-in size.

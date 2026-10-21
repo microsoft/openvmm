@@ -70,6 +70,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -83,7 +84,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -103,6 +104,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
+use serial_core::resources::NullSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -366,19 +368,9 @@ async fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
-            SerialConfigCli::File(path) => {
-                let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
-                let file = fs_err::File::create(path).context("failed to create file")?;
-
-                thread::Builder::new()
-                    .name(name.to_owned())
-                    .spawn(move || {
-                        let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
-                    })
-                    .unwrap();
-                Some(config)
-            }
+            SerialConfigCli::File(path) => Some(serial_io::file_serial(&path, false)?),
             SerialConfigCli::None => None,
+            SerialConfigCli::Null => Some(NullSerialBackendHandle.into_resource()),
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
             }
@@ -1389,10 +1381,12 @@ async fn vm_config_from_command_line(
             } else {
                 Vtl2BaseAddressType::File
             },
-            com_serial: has_com3.then(|| SerialInformation {
-                io_port: ComPort::Com3.io_port(),
-                irq: ComPort::Com3.irq().into(),
-            }),
+            com_serial: has_com3.then_some(UartId::Com(ComPort::Com3)),
+            personality: match igvm.personality {
+                IgvmPersonalityCli::Openhcl => IgvmPersonality::Openhcl,
+                IgvmPersonalityCli::Uefi => IgvmPersonality::Uefi,
+                IgvmPersonalityCli::LinuxDirect => IgvmPersonality::LinuxDirect,
+            },
         };
 
         // An IGVM launch carries no SMBIOS field of its own; the identity is

@@ -46,6 +46,23 @@ pub fn anonymous_serial_pair(
     ))
 }
 
+pub fn file_serial(path: &Path, append: bool) -> anyhow::Result<Resource<SerialBackendHandle>> {
+    let file = fs_err::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .open(path)
+        .with_context(|| format!("failed to open serial output file '{}'", path.display()))?;
+    Ok(
+        serial_socket::file::FileSerialConfig::new(
+            file.into(),
+            path.to_string_lossy().into_owned(),
+        )
+        .into_resource(),
+    )
+}
+
 pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
     #[cfg(windows)]
     {

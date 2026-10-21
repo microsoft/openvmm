@@ -659,6 +659,44 @@ async fn static_dns_a_record_answered(driver: DefaultDriver) {
     );
 }
 
+#[pal_async::async_test]
+async fn static_dns_aaaa_query_answered_without_data(driver: DefaultDriver) {
+    let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+    consomme.dns =
+        dns_resolver::DnsResolver::without_backend(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS);
+    consomme
+        .add_dns_record(StaticDnsRecord::A([10, 0, 0, 5]), "example.com")
+        .unwrap();
+
+    let query = dns_resolver::build_query(0x1234, "example.com", DnsQueryType::Aaaa);
+    let mut buf = vec![0u8; 1514];
+    let len = build_ipv4_dns_query(
+        &mut buf,
+        consomme.params_mut().client_mac,
+        consomme.params_mut().gateway_mac,
+        consomme.params_mut().client_ip,
+        consomme.params_mut().gateway_ip,
+        40000,
+        &query,
+    );
+    let mut client = CapturingClient::new(driver);
+    consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE)
+        .expect("static AAAA query should be handled locally");
+
+    assert_eq!(client.received.len(), 1);
+    let eth = EthernetFrame::new_checked(client.received[0].as_slice()).unwrap();
+    let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+    let udp = UdpPacket::new_checked(ipv4.payload()).unwrap();
+    let response = udp.payload();
+    assert_eq!(&response[..2], &query[..2]);
+    assert_eq!(&response[2..4], &[0x85, 0x80]);
+    assert_eq!(&response[4..6], &[0, 1]);
+    assert_eq!(&response[6..12], &[0; 6]);
+    assert_eq!(&response[12..], &query[12..]);
+}
+
 /// Static records are still inspected when the platform resolver backend is
 /// unavailable and the guest is using the advertised external DNS server.
 #[pal_async::async_test]

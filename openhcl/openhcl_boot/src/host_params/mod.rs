@@ -99,11 +99,9 @@ impl PartitionInfo {
             },
             vmbus_vtl2: VmbusInfo {
                 mmio: ArrayVec::new_const(),
-                connection_id: 0,
             },
             vmbus_vtl0: VmbusInfo {
                 mmio: ArrayVec::new_const(),
-                connection_id: 0,
             },
             cmdline: ArrayString::new_const(),
             com3_serial: ComInfo::None,

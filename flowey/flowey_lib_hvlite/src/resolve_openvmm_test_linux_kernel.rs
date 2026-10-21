@@ -30,9 +30,11 @@ pub enum LinuxTestKernelVersion {
     /// Published **aarch64-only**. Beyond the ARM CCA host bits it is built
     /// for, it also enables the P2PDMA / vfio-dmabuf / iommufd config
     /// (`CONFIG_PCI_P2PDMA`, `CONFIG_VFIO_PCI_DMABUF`, `CONFIG_IOMMUFD`,
-    /// `CONFIG_ARM_SMMU_V3`) that the incubator's VFIO device-assignment tests
+    /// `CONFIG_ARM_SMMU_V3`) that the emulator VFIO device-assignment tests
     /// need to exercise device-BAR P2P DMA, which predate the 6.18 test kernel.
     CcaV15,
+    /// The x86_64-only SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+    SnpGuest,
 }
 
 impl LinuxTestKernelVersion {
@@ -43,16 +45,19 @@ impl LinuxTestKernelVersion {
             Self::Linux6_1 => "6.1",
             Self::Linux6_18 => "6.18",
             Self::CcaV15 => "cca-v15",
+            Self::SnpGuest => "snp-guest",
         }
     }
 
     /// Whether this kernel version is published for the given architecture.
     ///
-    /// Most versions ship for both architectures; `cca-v15` is aarch64-only.
+    /// Most versions ship for both architectures; `cca-v15` is aarch64-only
+    /// and `snp-guest` is x86_64-only.
     pub fn is_available_for(self, arch: CommonArch) -> bool {
         match self {
             Self::Linux6_1 | Self::Linux6_18 => true,
             Self::CcaV15 => matches!(arch, CommonArch::Aarch64),
+            Self::SnpGuest => matches!(arch, CommonArch::X86_64),
         }
     }
 }
@@ -93,13 +98,16 @@ pub const DEFAULT_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
     LinuxTestKernelVersion::Linux6_18;
 
 /// The Linux test kernel used as the **L1 host image** for the aarch64 QEMU-TCG
-/// incubator. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship the
-/// P2PDMA / vfio-dmabuf / iommufd config
-/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so incubator VFIO
+/// emulated tests. Unlike [`DEFAULT_LINUX_TEST_KERNEL_VERSION`], this must ship
+/// the P2PDMA / vfio-dmabuf / iommufd config
+/// ([`LinuxTestKernelVersion::CcaV15`], Linux 7.2.0-rc1) so emulated VFIO
 /// device-assignment tests can exercise device-BAR peer-to-peer DMA. Aarch64
-/// only (the incubator is aarch64-only).
-pub const INCUBATOR_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
-    LinuxTestKernelVersion::CcaV15;
+/// only.
+pub const CCA_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion = LinuxTestKernelVersion::CcaV15;
+
+/// The x86_64 SEV-SNP guest kernel used by the SNP Linux-direct IGVM.
+pub const SNP_GUEST_LINUX_TEST_KERNEL_VERSION: LinuxTestKernelVersion =
+    LinuxTestKernelVersion::SnpGuest;
 
 flowey_config! {
     /// Config for the resolve_openvmm_test_linux_kernel node.

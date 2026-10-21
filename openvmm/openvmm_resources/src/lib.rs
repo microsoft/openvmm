@@ -51,6 +51,8 @@ vm_resource::register_static_resolvers! {
 
     // Serial ports
     serial_core::disconnected::resolver::DisconnectedSerialBackendResolver,
+    serial_core::null::resolver::NullSerialBackendResolver,
+    serial_socket::file::FileSerialResolver,
     #[cfg(windows)]
     serial_socket::windows::WindowsPipeSerialResolver,
     serial_socket::net::SocketSerialResolver,

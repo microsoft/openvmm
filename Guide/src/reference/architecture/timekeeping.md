@@ -219,13 +219,13 @@ have different stop/start anchors.
 | Snapshot restore | Restores stopped software time and the state supported by each backend/device. A time-state setter must not implicitly thaw a supporting backend. |
 | VTL scrub | May reset and freeze a backing VTL clock. The partition unit thaws it before restarting VPs; this is not a freeze of every VTL. |
 
-The x86 `virt` saved-state model treats reference time, reference-page
-configuration, TSC, and APIC state as separate elements. Reference time
-is included only when Hyper-V enlightenments are enabled; lifecycle
-freezing cannot therefore be hidden in its setter. The
-`can_freeze_time` capability also governs whether advancing TSC/APIC
-and reference-time state can be compared during state validation. A
-reference-clock-only implementation is not sufficient to claim that
+The x86 `virt` model separates reference time/page, TSC, APIC, and TSC deadline.
+Deadline state requires guest/backend support and restores after APIC/TSC:
+zero disarms; absent state is not restored. Native MSHV/WHP and KVM support
+it, unlike software APICs. Reference time is included only when Hyper-V
+enlightenments are enabled; lifecycle freezing cannot be hidden in its setter.
+Lifecycle freeze is separate; `can_freeze_time` gates exact state comparison.
+A reference-clock-only implementation is not sufficient to claim that
 capability.
 
 Arm state coverage differs: the generic `virt` partition-state schema is
@@ -260,6 +260,12 @@ Creation freezes the partition before guest initialization; runtime
 freeze/thaw updates `TimeFreeze`. Guest reference-TSC-page exposure is
 capability-dependent and is currently disabled for MSHV SNP partitions.
 That restriction is separate from freezing the partition.
+
+For non-isolated VM reset, `virt_mshv` uses `MSHV_SCRUB_PARTITION` when the
+kernel implements it, then explicitly reasserts `TimeFreeze`. An `ENOTTY`
+response selects the existing state-by-state reset path; other scrub
+errors fail reset. Per-VP user-mode state is reset on both paths, while a
+successful scrub replaces bulk hypervisor-state writes.
 
 `virt_whp` offloads Hyper-V facilities when offload is enabled, the
 required WHP features are available, and a user-mode APIC is not selected.

@@ -250,7 +250,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         tracing::level_filters::LevelFilter::INFO
     };
 
-    let log_source = petri::try_init_tracing(&args.log_dir, default_level)
+    let log_source = petri::try_init_tracing(&args.log_dir, default_level, None)
         .context("failed to initialize tracing")?;
     LOG_SOURCE
         .set(log_source)

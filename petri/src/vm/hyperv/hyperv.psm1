@@ -130,6 +130,8 @@ function New-CustomVM
 
         [bool] $EnableHibernation = $false,
 
+        [bool] $EnableOpenHCL = $false,
+
         [string] $FirmwareFile = $null,
 
         [string] $FirmwareParameters = $null,
@@ -261,10 +263,11 @@ function New-CustomVM
         $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
     }
 
-    if ($FirmwareFile) {
-        # Enable OpenHCL by feature
+    if ($EnableOpenHCL -or $FirmwareFile) {
         $vssdProperties["GuestFeatureSet"] = 0x00000201
-        # Set the OpenHCL image file path
+    }
+
+    if ($FirmwareFile) {
         $vssdProperties["FirmwareFile"] = $FirmwareFile
     }
 
