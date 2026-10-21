@@ -36,20 +36,11 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let mut get_mdbook_mermaid = Vec::new();
-
-        for req in requests {
-            match req {
-                Request::GetMdbookMermaid(v) => get_mdbook_mermaid.push(v),
-            }
-        }
-
-        let version = config
-            .version
-            .ok_or(anyhow::anyhow!("missing config: version"))?;
-        let get_mdbook_mermaid = get_mdbook_mermaid;
-
-        // -- end of req processing -- //
+        let (version, get_mdbook_mermaid) = crate::download_mdbook::collect_download_requests(
+            config.version,
+            requests,
+            |Request::GetMdbookMermaid(v)| v,
+        )?;
 
         if get_mdbook_mermaid.is_empty() {
             return Ok(());

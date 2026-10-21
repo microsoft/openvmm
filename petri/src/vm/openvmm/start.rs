@@ -63,17 +63,19 @@ impl PetriVmConfigOpenVmm {
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
         // TODO: virtio vsock doesn't support save/restore yet
-        // save/restore yet.
+        // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
         let supports_save_restore = !resources.properties.is_openhcl
+            && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
-            && !resources.properties.use_virtio_vsock;
+            && !resources.properties.use_virtio_vsock
+            && !config.hypervisor.nested_virt;
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
@@ -92,7 +94,7 @@ impl PetriVmConfigOpenVmm {
                 // Quiet down `hyper_util`'s connection-pool debug spam that
                 // `disk_blob` triggers on every HTTP range request.
                 ("OPENVMM_LOG".into(), "debug,hyper_util=info".into()),
-                ("OPENVMM_SHOW_SPANS".into(), "true".into()),
+                ("OPENVMM_SHOW_SPANS".into(), "false".into()),
             ]),
             Some(OpenvmmLogConfig::BuiltInDefault) => BTreeMap::new(),
             Some(OpenvmmLogConfig::Custom(levels)) => levels

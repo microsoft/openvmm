@@ -21,7 +21,7 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
-use cxl_spec::spec::CfmwsWindowRestrictions;
+use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
@@ -672,7 +672,7 @@ options:
     pub smmu: Vec<SmmuCli>,
 
     /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     ///
     /// Prefix the binding with `debugger-mode:` to run this COM port in
     /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
@@ -686,25 +686,25 @@ options:
     pub com1: Option<ComSerialConfigCli>,
 
     /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<ComSerialConfigCli>,
 
     /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<ComSerialConfigCli>,
 
     /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<ComSerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
@@ -712,7 +712,7 @@ options:
     #[clap(long)]
     pub serial_tx_only: bool,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -773,18 +773,19 @@ options:
     #[clap(long, requires("pcat"), value_name = "FILE")]
     pub pcat_firmware: Option<PathBuf>,
 
-    /// boot IGVM file
-    #[clap(long, conflicts_with("kernel"), value_name = "FILE")]
-    pub igvm: Option<PathBuf>,
-
-    /// select the chipset and device personality for a non-VTL2 IGVM
+    /// boot an IGVM with required firmware and personality options
     #[clap(
         long,
-        requires("igvm"),
-        conflicts_with_all = ["vtl2", "uefi", "pcat"],
-        value_enum
+        conflicts_with_all = ["kernel", "pcat"],
+        value_name = "OPTIONS",
+        long_help = r#"Boot an IGVM file.
+
+Syntax: --igvm firmware=<FILE>,personality=<openhcl|uefi|linux-direct>
+
+Both firmware and personality are required; neither has a default.
+The openhcl personality requires explicit --hv --vtl2."#
     )]
-    pub igvm_personality: Option<IgvmPersonalityCli>,
+    pub igvm: Option<IgvmCli>,
 
     /// specify igvm vtl2 relocation type
     /// (absolute=\<addr\>, disable, auto=\<filesize,or memory size\>, vtl2=\<filesize,or memory size\>,)
@@ -843,7 +844,7 @@ options:
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
-    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 
@@ -1420,9 +1421,6 @@ impl Options {
     pub fn effective_uefi(&self) -> anyhow::Result<Option<UefiCli>> {
         let mut uefi = match &self.uefi {
             Some(uefi) => uefi.clone(),
-            None if self.igvm.is_some() && !self.pcat && self.igvm_personality.is_none() => {
-                UefiCli::default()
-            }
             None => return Ok(None),
         };
 
@@ -1545,11 +1543,35 @@ impl Options {
 
     /// Validates IGVM personality selection.
     pub fn validate_igvm_options(&self) -> anyhow::Result<()> {
-        if self.igvm.is_some() && !self.vtl2 && self.igvm_personality.is_none() {
-            anyhow::bail!("--igvm-personality is required for non-VTL2 IGVM boots");
+        let Some(igvm) = &self.igvm else {
+            return Ok(());
+        };
+        match igvm.personality {
+            IgvmPersonalityCli::Openhcl => {
+                anyhow::ensure!(
+                    self.hv && self.vtl2,
+                    "--igvm personality=openhcl requires --hv --vtl2"
+                );
+            }
+            IgvmPersonalityCli::Uefi | IgvmPersonalityCli::LinuxDirect => {
+                anyhow::ensure!(
+                    !self.vtl2,
+                    "--vtl2 requires --igvm personality=openhcl for IGVM boots"
+                );
+                anyhow::ensure!(
+                    self.uefi.is_none(),
+                    "--uefi is only supported with --igvm personality=openhcl"
+                );
+            }
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+pub struct IgvmCli {
+    pub firmware: PathBuf,
+    pub personality: IgvmPersonalityCli,
 }
 
 #[derive(Clone, Debug, Default, vmm_cli::KeyValueArgs)]
@@ -2252,6 +2274,13 @@ impl FromStr for DiskCliKind {
                     Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
+                "delay" => {
+                    let (delay_ms, kind) = arg.split_once(':').context("expected delay_ms:kind")?;
+                    DiskCliKind::DelayDiskWrapper {
+                        delay_ms: delay_ms.parse().context("invalid disk delay")?,
+                        disk: Box::new(kind.parse()?),
+                    }
+                }
                 "file" => {
                     let FileOpts {
                         path,
@@ -2822,10 +2851,11 @@ impl FromStr for ComSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
+    Null,
     Console,
     NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
@@ -2848,6 +2878,7 @@ impl FromStr for SerialConfigCli {
 
         let ret = match first_key {
             "none" => SerialConfigCli::None,
+            "null" => SerialConfigCli::Null,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
             "file" => match first_value {
@@ -3234,8 +3265,20 @@ pub enum IsolationCli {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
 pub enum IgvmPersonalityCli {
+    /// OpenHCL paravisor hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware loaded directly from the IGVM.
     Uefi,
+    /// Linux kernel loaded directly from the IGVM.
     LinuxDirect,
+}
+
+impl FromStr for IgvmPersonalityCli {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        ValueEnum::from_str(value, false)
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -4250,6 +4293,10 @@ mod tests {
         assert_eq!(
             SerialConfigCli::from_str("none").unwrap(),
             SerialConfigCli::None
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("null").unwrap(),
+            SerialConfigCli::Null
         );
         assert_eq!(
             SerialConfigCli::from_str("console").unwrap(),
@@ -5696,84 +5743,175 @@ mod tests {
     }
 
     #[test]
-    fn test_igvm_personality_required_without_vtl2() {
-        let opt = Options::try_parse_from(["openvmm", "--igvm", "guest.igvm"]).unwrap();
-        assert_eq!(
-            opt.validate_igvm_options().unwrap_err().to_string(),
-            "--igvm-personality is required for non-VTL2 IGVM boots"
-        );
+    fn test_igvm_requires_firmware_and_personality() {
+        for (options, missing) in [
+            ("firmware=guest.igvm", "personality"),
+            ("personality=openhcl", "firmware"),
+        ] {
+            for extra in [vec![], vec!["--hv", "--vtl2"]] {
+                let mut args = vec!["openvmm", "--igvm", options];
+                args.extend(extra);
+                let err = Options::try_parse_from(args).err().unwrap();
+                assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(err.to_string().contains(missing));
+                assert!(err.to_string().contains("required"));
+            }
+        }
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        opt.validate_igvm_options().unwrap();
     }
 
     #[test]
     fn test_igvm_personality_values() {
         for (value, expected) in [
+            ("openhcl", IgvmPersonalityCli::Openhcl),
             ("uefi", IgvmPersonalityCli::Uefi),
             ("linux-direct", IgvmPersonalityCli::LinuxDirect),
         ] {
-            let opt = Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--igvm-personality",
-                value,
-            ])
-            .unwrap();
-            opt.validate_igvm_options().unwrap();
-            assert_eq!(opt.igvm_personality, Some(expected));
-        }
-
-        assert!(
-            Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--igvm-personality",
-                "pcat",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_vtl2_igvm_keeps_implicit_hcl_personality() {
-        let opt =
-            Options::try_parse_from(["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"]).unwrap();
-        opt.validate_igvm_options().unwrap();
-        assert_eq!(opt.igvm_personality, None);
-    }
-
-    #[test]
-    fn test_igvm_personality_conflicts_with_vtl2() {
-        assert!(
-            Options::try_parse_from([
-                "openvmm",
-                "--igvm",
-                "guest.igvm",
-                "--hv",
-                "--vtl2",
-                "--igvm-personality",
-                "linux-direct",
-            ])
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn test_igvm_personality_conflicts_with_external_firmware() {
-        for personality in ["uefi", "linux-direct"] {
-            for firmware in ["--uefi", "--pcat"] {
-                assert!(
-                    Options::try_parse_from([
-                        "openvmm",
-                        "--igvm",
-                        "guest.igvm",
-                        "--igvm-personality",
-                        personality,
-                        firmware,
-                    ])
-                    .is_err()
-                );
+            let options = format!("firmware=guest.igvm,personality={value}");
+            let mut args = vec!["openvmm", "--igvm", &options];
+            if expected == IgvmPersonalityCli::Openhcl {
+                args.extend(["--hv", "--vtl2"]);
             }
+            let opt = Options::try_parse_from(args).unwrap();
+            opt.validate_igvm_options().unwrap();
+            assert_eq!(
+                opt.igvm,
+                Some(IgvmCli {
+                    firmware: PathBuf::from("guest.igvm"),
+                    personality: expected,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_igvm_options_accept_reordered_keys_and_windows_paths() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            r"personality=uefi,firmware=C:\VM Images\guest=1.igvm",
+        ])
+        .unwrap();
+        assert_eq!(
+            opt.igvm,
+            Some(IgvmCli {
+                firmware: PathBuf::from(r"C:\VM Images\guest=1.igvm"),
+                personality: IgvmPersonalityCli::Uefi,
+            })
+        );
+    }
+
+    #[test]
+    fn test_igvm_options_reject_invalid_values() {
+        for options in [
+            "",
+            "guest.igvm",
+            "firmware=,personality=uefi",
+            "firmware=guest.igvm,personality=",
+            "firmware=guest.igvm,personality=pcat",
+            "firmware=guest.igvm,personality=UEFI",
+            "firmware=guest.igvm,personality=uefi,unknown=on",
+            "firmware=guest.igvm,firmware=other.igvm,personality=uefi",
+            "firmware=guest.igvm,personality=uefi,personality=linux-direct",
+        ] {
+            let err = Options::try_parse_from(["openvmm", "--igvm", options])
+                .err()
+                .unwrap();
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn test_igvm_rejects_separate_personality_flag() {
+        let err = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=uefi",
+            "--igvm-personality",
+            "uefi",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn test_openhcl_igvm_personality() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=openhcl",
+            "--hv",
+            "--vtl2",
+        ])
+        .unwrap();
+        opt.validate_igvm_options().unwrap();
+        assert_eq!(
+            opt.igvm.as_ref().unwrap().personality,
+            IgvmPersonalityCli::Openhcl
+        );
+        assert!(opt.effective_uefi().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_openhcl_igvm_requires_explicit_vtl2_and_hv() {
+        for extra in [vec![], vec!["--hv"], vec!["--vtl2"]] {
+            let mut args = vec![
+                "openvmm",
+                "--igvm",
+                "firmware=guest.igvm,personality=openhcl",
+            ];
+            args.extend(extra);
+            match Options::try_parse_from(args) {
+                Ok(opt) => assert_eq!(
+                    opt.validate_igvm_options().unwrap_err().to_string(),
+                    "--igvm personality=openhcl requires --hv --vtl2"
+                ),
+                Err(err) => {
+                    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+                    assert!(err.to_string().contains("--hv"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_non_openhcl_igvm_personalities_reject_vtl2_and_uefi() {
+        for personality in ["uefi", "linux-direct"] {
+            let options = format!("firmware=guest.igvm,personality={personality}");
+            for extra in [vec!["--uefi"], vec!["--hv", "--vtl2"]] {
+                let mut args = vec!["openvmm", "--igvm", &options];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                assert!(opt.validate_igvm_options().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn test_openhcl_igvm_accepts_uefi_settings() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--igvm",
+            "firmware=guest.igvm,personality=openhcl",
+            "--hv",
+            "--vtl2",
+            "--uefi",
+            "console=com1,disable_frontpage",
+        ])
+        .unwrap();
+        opt.validate_igvm_options().unwrap();
+        let uefi = opt.effective_uefi().unwrap().unwrap();
+        assert!(matches!(uefi.console, Some(UefiConsoleModeCli::Com1)));
+        assert!(uefi.disable_frontpage);
+    }
+
+    #[test]
+    fn test_igvm_personality_conflicts_with_pcat() {
+        for personality in ["openhcl", "uefi", "linux-direct"] {
+            let options = format!("firmware=guest.igvm,personality={personality}");
+            assert!(Options::try_parse_from(["openvmm", "--igvm", &options, "--pcat"]).is_err());
         }
     }
 

@@ -5,28 +5,42 @@
 
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use inspect::Inspect;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
 use pci_core::spec::caps::dvsec::DvsecHeader1;
 use pci_core::spec::caps::dvsec::DvsecHeader2;
 
-use super::spec::CXL_DVSEC_VENDOR_ID;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_CONTROL_WRITABLE_MASK;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_CONTROL2_WRITABLE_MASK;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_ID;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_LENGTH;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_REVISION;
-use super::spec::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_STATUS_RW1CS_MASK;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability2;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecControl;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecControl2;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecExtendedCapability;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecReceivedModifiedTsDataPhase1;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecRegisterOffset;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecStatus;
-use super::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecStatus2;
+use cxl_spec::pci_registers::CXL_DVSEC_VENDOR_ID;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_CONTROL_WRITABLE_MASK;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_CONTROL2_WRITABLE_MASK;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_ID;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_LENGTH;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_REVISION;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CXL_FLEX_BUS_PORT_DVSEC_STATUS_RW1CS_MASK;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability2;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecControl;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecControl2;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecReceivedModifiedTsDataPhase1;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecRegisterOffset;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecStatus;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecStatus2;
+
+/// CXL Flex Bus Port PCIe Designated Vendor-Specific Extended Capability (DVSEC).
+#[derive(Clone, Inspect)]
+pub struct CxlFlexBusPortDvsecExtendedCapability {
+    pub(crate) capability: CxlFlexBusPortDvsecCapability,
+    pub(crate) control: CxlFlexBusPortDvsecControl,
+    pub(crate) status: CxlFlexBusPortDvsecStatus,
+    pub(crate) received_modified_ts_data_phase1: CxlFlexBusPortDvsecReceivedModifiedTsDataPhase1,
+    pub(crate) capability2: CxlFlexBusPortDvsecCapability2,
+    pub(crate) control2: CxlFlexBusPortDvsecControl2,
+    pub(crate) status2: CxlFlexBusPortDvsecStatus2,
+    pub(crate) reset_baseline_capability: CxlFlexBusPortDvsecCapability,
+    pub(crate) reset_baseline_capability2: CxlFlexBusPortDvsecCapability2,
+}
 
 impl Default for CxlFlexBusPortDvsecExtendedCapability {
     fn default() -> Self {

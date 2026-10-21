@@ -6759,9 +6759,7 @@ async fn rndis_send_lso_packet_with_vlan_ppi(driver: DefaultDriver) {
     );
 }
 
-/// Helper to initialize RNDIS and set the packet filter on a channel so
-/// that RX packets will be delivered to the guest.
-async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+async fn initialize_rndis_control(channel: &mut TestNicChannel<'_>) {
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
@@ -6780,8 +6778,9 @@ async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
         .await
         .unwrap();
     assert_eq!(init_complete.status, rndisprot::STATUS_SUCCESS);
+}
 
-    // Set packet filter so RX packets are delivered to the guest.
+async fn set_packet_filter(channel: &mut TestNicChannel<'_>) {
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_SET_MSG,
@@ -6801,6 +6800,13 @@ async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
         .await
         .unwrap();
     assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+}
+
+/// Helper to initialize RNDIS and set the packet filter on a channel so
+/// that RX packets will be delivered to the guest.
+async fn initialize_rndis_for_rx(channel: &mut TestNicChannel<'_>) {
+    initialize_rndis_control(channel).await;
+    set_packet_filter(channel).await;
 }
 
 /// Helper to inject an RX packet on queue 0, read it from the guest channel,
@@ -7734,6 +7740,93 @@ async fn oid_query_mac_options_reports_vlan_support(driver: DefaultDriver) {
     assert_ne!(options & rndisprot::MAC_OPTION_NO_LOOPBACK, 0);
     assert_ne!(options & rndisprot::MAC_OPTION_COPY_LOOKAHEAD_DATA, 0);
     assert_ne!(options & rndisprot::MAC_OPTION_TRANSFERS_NOT_PEND, 0);
+}
+
+#[async_test]
+async fn oid_set_current_lookahead_allows_rx_initialization(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_control(&mut channel).await;
+
+    let request_id = 10;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD,
+                information_buffer_length: size_of::<u32>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &(DEFAULT_MTU - net_backend::ETHERNET_HEADER_LEN).to_le_bytes(),
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+
+    set_packet_filter(&mut channel).await;
+
+    let data = vec![0xAA; 60];
+    let metadata = RxMetadata {
+        len: data.len(),
+        ..Default::default()
+    };
+    let parser = channel.rndis_message_parser();
+    let ppi = inject_and_parse_rx(&mut channel, &endpoint_state, &parser, data, metadata).await;
+    assert!(ppi.vlan.is_none());
+}
+
+#[async_test]
+async fn oid_set_current_lookahead_rejects_short_payload(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_control(&mut channel).await;
+
+    let request_id = 11;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD,
+                information_buffer_length: 3,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &[0; 3],
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    assert_eq!(set_complete.status, rndisprot::STATUS_FAILURE);
 }
 
 #[async_test]

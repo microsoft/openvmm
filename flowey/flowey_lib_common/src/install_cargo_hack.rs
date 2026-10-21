@@ -3,7 +3,6 @@
 
 //! Install a cached copy of `cargo-hack`.
 
-use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
 flowey_config! {
@@ -83,60 +82,22 @@ impl FlowNodeWithConfig for Node {
 
             move |rt| {
                 let cache_dir = rt.read(cache_dir);
+                let hitvar = rt.read(hitvar);
+                let cargo_install_persistent_dir = rt.read(cargo_install_persistent_dir);
+                let rust_toolchain = rt.read(rust_toolchain);
+                let cargo_home = rt.read(cargo_home);
 
-                let cached_bin_path = cache_dir.join(&cargo_hack_bin);
-                let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
-                    assert!(cached_bin_path.exists());
-                    Some(cached_bin_path.clone())
-                } else {
-                    None
-                };
-
-                let path_to_cargo_hack = if let Some(cached) = cached {
-                    cached
-                } else {
-                    let root = rt.read(cargo_install_persistent_dir).unwrap_or("./".into());
-
-                    let rust_toolchain = rt.read(rust_toolchain);
-                    let run = |offline| {
-                        let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
-
-                        flowey::shell_cmd!(
-                            rt,
-                            "cargo {rust_toolchain...}
-                                install
-                                --locked
-                                {offline...}
-                                --root {root}
-                                --target-dir {root}
-                                --version {version}
-                                cargo-hack
-                            "
-                        )
-                        .run()
-                    };
-
-                    // Try --offline to avoid an unnecessary git fetch on rerun.
-                    if run(Some("--offline")).is_err() {
-                        // Try again without --offline.
-                        run(None)?;
-                    }
-
-                    let out_bin = root.absolute()?.join("bin").join(&cargo_hack_bin);
-
-                    // Move the compiled binary into the cache directory.
-                    fs_err::rename(out_bin, &cached_bin_path)?;
-                    cached_bin_path.absolute()?
-                };
-
-                // Copy the binary into Cargo's bin directory so it is available
-                // as `cargo hack`.
-                fs_err::copy(
-                    &path_to_cargo_hack,
-                    rt.read(cargo_home).join("bin").join(&cargo_hack_bin),
-                )?;
-
-                Ok(())
+                crate::_util::cargo_install::install_cached_cargo_binary(
+                    rt,
+                    cache_dir,
+                    hitvar,
+                    cargo_install_persistent_dir,
+                    rust_toolchain,
+                    cargo_home,
+                    "cargo-hack",
+                    &version,
+                    &cargo_hack_bin,
+                )
             }
         });
 

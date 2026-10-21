@@ -19,8 +19,8 @@
 use super::vm_loaders::igvm::Vtl2MemoryLayoutRequest;
 use anyhow::Context;
 use anyhow::bail;
-use cxl_spec::spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
-use cxl_spec::spec::CXL_HPA_ALIGNMENT;
+use cxl_spec::CXL_HOST_BRIDGE_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_HPA_ALIGNMENT;
 use memory_range::MemoryRange;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;

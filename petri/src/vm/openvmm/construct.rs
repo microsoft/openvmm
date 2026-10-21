@@ -9,6 +9,7 @@ use super::PetriVmResourcesOpenVmm;
 use crate::Drive;
 use crate::EfiDiagnosticsLogLevel;
 use crate::Firmware;
+use crate::IgvmFirmwareSource;
 use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
@@ -49,13 +50,14 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
@@ -112,7 +114,7 @@ impl PetriVmConfigOpenVmm {
         openvmm_path: &ResolvedArtifact,
         petri_vm_config: PetriVmConfig,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<Self> {
         let PetriVmConfig {
             name: _,
@@ -123,16 +125,26 @@ impl PetriVmConfigOpenVmm {
             ipmi_enabled,
             memory,
             proc_topology,
+            nested_virt_enabled,
             vmgs,
             tpm: tpm_config,
             vmbus_storage_controllers,
             pcie_nvme_drives,
             pcie_virtio_blk_drives,
             physical_nvme_devices,
+            guest_shares,
         } = petri_vm_config;
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
+        }
+        assert!(guest_shares.is_empty());
+
+        if matches!(
+            firmware.openhcl_firmware(),
+            Some(IgvmFirmwareSource::VmgsOrInBox)
+        ) {
+            anyhow::bail!("loading OpenHCL from VMGS is only supported by the Hyper-V backend");
         }
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
@@ -171,6 +183,9 @@ impl PetriVmConfigOpenVmm {
             match firmware {
                 Firmware::LinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
+                }
+                Firmware::IgvmLinuxDirect { .. } => {
+                    vm_manifest_builder::BaseChipsetType::EnlightenedLinuxDirect
                 }
                 Firmware::OpenhclLinuxDirect { .. } => {
                     vm_manifest_builder::BaseChipsetType::HclHost
@@ -673,10 +688,13 @@ impl PetriVmConfigOpenVmm {
                 with_vtl2,
                 with_isolation: match firmware.isolation() {
                     Some(IsolationType::Vbs) => Some(openvmm_defs::config::IsolationType::Vbs),
+                    Some(IsolationType::Snp) => {
+                        Some(openvmm_defs::config::IsolationType::Snp { host_data: None })
+                    }
                     None => None,
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
-                nested_virt: false,
+                nested_virt: nested_virt_enabled,
             },
             vmbus: if properties.no_vmbus {
                 None
@@ -766,7 +784,7 @@ impl PetriVmConfigOpenVmm {
                 openvmm_path: openvmm_path.clone(),
                 vtl2_vsock_path,
                 _vsock_path: vsock_path,
-                properties,
+                properties: properties.clone(),
                 #[cfg(windows)]
                 _switch_ports: Vec::new(),
             },
@@ -818,7 +836,9 @@ impl PetriVmConfigSetupCore<'_> {
         let mut serial_tasks = Vec::new();
 
         let serial0_log_file = logger.log_file(match self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => "linux",
+            Firmware::LinuxDirect { .. }
+            | Firmware::IgvmLinuxDirect { .. }
+            | Firmware::OpenhclLinuxDirect { .. } => "linux",
             Firmware::Pcat { .. } | Firmware::OpenhclPcat { .. } => "pcat",
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => "uefi",
         })?;
@@ -847,7 +867,10 @@ impl PetriVmConfigSetupCore<'_> {
             None
         };
 
-        if self.firmware.is_linux_direct() && self.pipette_rdinit_param.is_none() {
+        if self.firmware.is_linux_direct()
+            && !self.firmware.is_isolated_without_paravisor()
+            && self.pipette_rdinit_param.is_none()
+        {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
             // agent so we can send shell commands to launch pipette.
             let (serial1_host, serial1) = self.create_serial_stream()?;
@@ -896,6 +919,15 @@ impl PetriVmConfigSetupCore<'_> {
         };
 
         Ok(match (self.arch, &self.firmware) {
+            (MachineArch::X86_64, Firmware::IgvmLinuxDirect { igvm_path, .. }) => LoadMode::Igvm {
+                file: File::open(igvm_path.clone())
+                    .context("failed to open Linux-direct IGVM")?
+                    .into(),
+                cmdline: String::new(),
+                vtl2_base_address: Vtl2BaseAddressType::File,
+                com_serial: None,
+                personality: IgvmPersonality::LinuxDirect,
+            },
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
                     MachineArch::X86_64 => "console=ttyS0",
@@ -1003,11 +1035,11 @@ impl PetriVmConfigSetupCore<'_> {
             (
                 MachineArch::X86_64,
                 Firmware::OpenhclLinuxDirect {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     openhcl_config,
                 }
                 | Firmware::OpenhclUefi {
-                    igvm_path,
+                    igvm_firmware: IgvmFirmwareSource::File(igvm_path),
                     guest: _,       // load_boot_disk
                     isolation: _,   // new via Firmware::isolation
                     uefi_config: _, // config_openhcl_vmbus_devices
@@ -1099,17 +1131,15 @@ impl PetriVmConfigSetupCore<'_> {
                     }
                 });
 
-                let file = File::open(igvm_path.clone())
+                let file = File::open(igvm_path.get())
                     .context("failed to open openhcl firmware file")?
                     .into();
                 LoadMode::Igvm {
                     file,
                     cmdline: cmdline.unwrap_or_default(),
                     vtl2_base_address,
-                    com_serial: Some(SerialInformation {
-                        io_port: ComPort::Com3.io_port(),
-                        irq: ComPort::Com3.irq().into(),
-                    }),
+                    com_serial: self.enable_serial.then_some(UartId::Com(ComPort::Com3)),
+                    personality: IgvmPersonality::Openhcl,
                 }
             }
             (a, f) => anyhow::bail!("Unsupported firmware {f:?} for arch {a:?}"),
@@ -1261,6 +1291,7 @@ impl PetriVmConfigSetupCore<'_> {
                 ))
             }
             Firmware::OpenhclLinuxDirect { .. }
+            | Firmware::IgvmLinuxDirect { .. }
             | Firmware::LinuxDirect { .. }
             | Firmware::Uefi { .. }
             | Firmware::OpenhclUefi { .. } => None,

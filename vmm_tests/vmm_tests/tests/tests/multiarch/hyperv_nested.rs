@@ -25,6 +25,7 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
         .with_no_vmbus()
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .with_default_boot_always_attempt(true)
+        .with_nested_virt()
         .modify_backend(|b| {
             // Root ports:
             //   s0rc0rp0 — boot NVMe (auto)
@@ -37,7 +38,7 @@ async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow
             // vendor: Windows loads its AMD or Intel IOMMU driver based on the
             // CPU vendor and will reject a mismatched DMAR/IVRS table, leaving
             // interrupt remapping unprogrammed and boot I/O interrupts blocked.
-            let b = b.with_nested_virt().with_pcie_root_topology(1, 1, 4);
+            let b = b.with_pcie_root_topology(1, 1, 4);
             // Enable hugepages on Windows to improve performance. Linux has THP
             // and doesn't need this.
             //

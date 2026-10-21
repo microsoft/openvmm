@@ -4,7 +4,6 @@
 //! A local-only job that builds everything needed and runs the VMM tests
 
 use crate::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
-use crate::build_incubator::IncubatorProfileNameOrPath;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmOutput;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
@@ -21,7 +20,9 @@ use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
+use petri_artifacts_core::ArtifactId;
 use petri_artifacts_vmm_test::ErasedVmmTestImage;
+use petri_artifacts_vmm_test::env::VMM_TEST_IMAGES;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -89,10 +90,6 @@ flowey_request! {
 
         pub repetitions: NonZeroU64,
 
-        /// Optional: incubator profile path. When set, tests run inside
-        /// an emulated VM instead of on the host.
-        pub incubator_profile: Option<IncubatorProfileNameOrPath>,
-
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -104,17 +101,18 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_guest_test_uefi::Node>();
-        ctx.import::<crate::build_incubator::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
         ctx.import::<crate::build_test_igvm_agent_rpc_server::Node>();
+        ctx.import::<crate::build_vmfirmwareigvm_dll::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::init_vmm_tests_content_dir::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
@@ -140,7 +138,6 @@ impl SimpleFlowNode for Node {
             petri_params,
             disable_secure_avic,
             repetitions,
-            incubator_profile,
             done,
         } = request;
 
@@ -233,6 +230,7 @@ impl SimpleFlowNode for Node {
                 custom_target: None,
                 extra_features: BTreeSet::new(),
                 disable_secure_avic,
+                uefi_firmware_flavor: None,
                 confidential_debug: true,
                 openhcl_igvm,
                 openhcl_igvm_extras,
@@ -272,6 +270,34 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+        let snp_linux_direct_igvm_x64 = build.snp_linux_direct_igvm_x64.then(|| {
+            ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
+                snp_linux_direct_igvm: v,
+            })
+        });
+
+        let mut build_vmfirmwareigvm = |openhcl_igvm| {
+            ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
+                arch: CommonArch::X86_64,
+                openhcl_igvm,
+                resource_id: crate::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
+                dll_version: ReadVar::from_static(
+                    crate::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
+                ),
+                internal_dll_name:
+                    petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::FILENAME.into(),
+                vmfirmwareigvm_dll: v,
+            })
+        };
+        let vmfirmwareigvm_cvm_x64 = build
+            .vmfirmwareigvm_cvm_x64
+            .then(|| {
+                let openhcl_cvm = openhcl_cvm_x64
+                    .clone()
+                    .context("the CVM firmware DLL requires an x64 CVM IGVM")?;
+                anyhow::Ok(build_vmfirmwareigvm(openhcl_cvm))
+            })
+            .transpose()?;
 
         let mut build_openvmm = |target| {
             let output = ctx.reqv(|v| crate::build_openvmm::Request {
@@ -564,32 +590,6 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        let mut build_incubator = |target| {
-            let output = ctx.reqv(|v| crate::build_incubator::Request {
-                target: CommonTriple::Custom(modify_and_validate_target(target)),
-                profile: if release {
-                    CommonProfile::Release
-                } else {
-                    CommonProfile::Debug
-                },
-                incubator: v,
-            });
-            if copy_extras {
-                copy_to_dir.push((
-                    extras_dir.to_owned(),
-                    output.map(ctx, |x| {
-                        let crate::build_incubator::IncubatorOutput { bin: _, dbg } = x;
-                        dbg
-                    }),
-                ));
-            }
-            output
-        };
-
-        let incubator_linux_x64 = build
-            .incubator_linux_x64
-            .then(|| build_incubator(VmmTestsBuiltArtifacts::incubator_linux_x64_target()));
-
         let mut build_vmm_tests_nextest_archive = |target| {
             ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
                 target,
@@ -672,7 +672,6 @@ impl SimpleFlowNode for Node {
             nextest_vmm_tests_archive_linux_x64,
             nextest_vmm_tests_archive_linux_musl_x64,
             nextest_vmm_tests_archive_linux_musl_aarch64,
-            incubator_linux_x64,
             prep_steps_windows_x64,
             prep_steps_linux_musl_x64,
             test_igvm_agent_rpc_server_windows_x64,
@@ -697,7 +696,9 @@ impl SimpleFlowNode for Node {
             openhcl_standard_dev_x64,
             openhcl_standard_dev_aarch64,
             openhcl_cvm_x64,
+            vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
+            snp_linux_direct_igvm_x64,
             tmks_x64,
             tmks_aarch64,
             tmk_vmm_windows_x64,
@@ -757,8 +758,8 @@ impl SimpleFlowNode for Node {
                 vmm_tests_target: target_triple.clone(),
                 built_artifacts,
                 prebuilt_artifacts,
+                uefi_firmware_flavor: None,
                 is_repo_root: true,
-                needs_incubator_profiles: incubator_profile.is_some(),
                 needs_virtio_win_drivers,
                 needs_release_igvm,
                 done: v,
@@ -857,11 +858,6 @@ impl SimpleFlowNode for Node {
                         run_target_args.push("--needs-igvm-agent".into());
                     }
 
-                    if let Some(profile) = &incubator_profile {
-                        run_target_args.push("--incubator".into());
-                        run_target_args.push(profile.to_string().into());
-                    }
-
                     let dst = test_content_dir.join(script_name);
 
                     fs_err::write(
@@ -873,7 +869,7 @@ impl SimpleFlowNode for Node {
                     match target_triple.operating_system {
                         target_lexicon::OperatingSystem::Windows => {
                             let dst = if flowey_lib_common::_util::running_in_wsl(rt) {
-                                flowey_lib_common::_util::wslpath::linux_to_win(rt, dst)
+                                flowey_lib_common::_util::wslpath::linux_to_win(rt, dst)?
                                     .to_string_lossy()
                                     .replace("\\", "\\\\")
                             } else {
@@ -896,6 +892,7 @@ impl SimpleFlowNode for Node {
                 test_content_dir: Some(ReadVar::from_static(test_content_dir)),
                 built_artifacts,
                 prebuilt_artifacts,
+                uefi_firmware_flavor: None,
                 needs_virtio_win_drivers,
                 needs_release_igvm,
             };
@@ -910,7 +907,6 @@ impl SimpleFlowNode for Node {
                     downloaded_artifacts,
                     prep_steps_variants,
                     external_deps,
-                    incubator_profile,
                     upload_logs_on_success: true,
                     fail_job_on_test_fail: true,
                     repetitions,
@@ -946,7 +942,8 @@ pub(crate) fn init_artifacts_dir(
     test_content_dir: &Path,
     skip_vhd_prompt: bool,
 ) -> anyhow::Result<()> {
-    let vmm_test_artifacts_dir = test_content_dir.join("images");
+    let vmm_test_artifacts_dir = std::env::var(VMM_TEST_IMAGES)
+        .map_or_else(|_| test_content_dir.join("images"), PathBuf::from);
     ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
         custom_cache_dir: Some(vmm_test_artifacts_dir.clone()),
         skip_prompt: Some(skip_vhd_prompt),

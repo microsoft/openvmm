@@ -11,6 +11,10 @@
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
+pub(crate) const OPENVMM_GITHUB_OWNER: &str = "microsoft";
+pub(crate) const OPENVMM_GITHUB_REPO: &str = "openvmm";
+pub(crate) const OPENVMM_DEPS_GITHUB_REPO: &str = "openvmm-deps";
+
 /// Environment for OpenHCL builds that must use prebuilt native libraries.
 pub(crate) fn openhcl_build_env() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -70,6 +74,15 @@ impl From<CommonProfile> for crate::run_cargo_build::BuildProfile {
         match value {
             CommonProfile::Release => crate::run_cargo_build::BuildProfile::Release,
             CommonProfile::Debug => crate::run_cargo_build::BuildProfile::Debug,
+        }
+    }
+}
+
+impl From<CommonProfile> for flowey_lib_common::run_cargo_build::CargoBuildProfile {
+    fn from(value: CommonProfile) -> Self {
+        match value {
+            CommonProfile::Release => Self::Release,
+            CommonProfile::Debug => Self::Debug,
         }
     }
 }

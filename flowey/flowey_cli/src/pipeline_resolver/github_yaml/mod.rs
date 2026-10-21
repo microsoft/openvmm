@@ -169,10 +169,19 @@ pub fn github_yaml(
             FloweySource::Bootstrap { .. } => {
                 let flowey_path = "bootstrapped-flowey".to_string();
 
+                let gh_bootstrap_template = gh_bootstrap_template.as_ref().context(
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template_fn`",
+                )?(platform, arch)
+                .with_context(|| {
+                    format!(
+                        "while generating flowey bootstrap template for job '{label}' ({platform}/{arch})"
+                    )
+                })?;
+
                 // actual artifact publish happens at the end of the job
                 if gh_bootstrap_template.is_empty() {
                     anyhow::bail!(
-                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
+                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template_fn`"
                     )
                 }
 
@@ -606,6 +615,8 @@ EOF
             }
         }
 
+        let defaults = hoist_bash_shell(&mut gh_steps);
+
         github_jobs.insert(
             format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
@@ -646,6 +657,7 @@ EOF
                     .clone()
                     .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
+                defaults,
                 steps: gh_steps,
             },
         );
@@ -838,15 +850,13 @@ fn resolve_flow_as_github_yaml_steps(
                 can_merge,
                 code: _,
             } => {
-                output_steps.extend(bash_commands.push(
+                output_steps.extend(bash_commands.push_exec_snippet(
                     Some(label),
                     can_merge,
-                    crate::cli::exec_snippet::construct_exec_snippet_cli(
-                        flowey_bin,
-                        node_modpath,
-                        idx,
-                        job_idx,
-                    ),
+                    flowey_bin,
+                    node_modpath,
+                    idx,
+                    job_idx,
                 ));
             }
             Step::AdoYaml { label, .. } => {
@@ -971,5 +981,27 @@ fn resolve_flow_as_github_yaml_steps(
         steps: output_steps,
         request_db,
         config_db,
+    })
+}
+
+// Move all the bash shell specifications to job defaults to save some file size
+fn hoist_bash_shell(steps: &mut [serde_yaml::Value]) -> Option<github_yaml_defs::JobDefaults> {
+    let mut uses_bash = false;
+    for step in steps
+        .iter_mut()
+        .filter_map(serde_yaml::Value::as_mapping_mut)
+    {
+        if step.contains_key("run")
+            && step.get("shell").and_then(serde_yaml::Value::as_str) == Some("bash")
+        {
+            step.remove("shell");
+            uses_bash = true;
+        }
+    }
+
+    uses_bash.then(|| github_yaml_defs::JobDefaults {
+        run: github_yaml_defs::RunDefaults {
+            shell: "bash".into(),
+        },
     })
 }

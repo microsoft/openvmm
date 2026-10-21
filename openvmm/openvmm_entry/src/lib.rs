@@ -41,7 +41,7 @@ use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
-use cxl_spec::test::CxlTestDeviceHandle;
+use cxl::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -71,6 +71,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -84,7 +85,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -105,6 +106,7 @@ use pal_async::task::Task;
 use sandbox_profiles::SandboxRole;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
+use serial_core::resources::NullSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -237,19 +239,15 @@ fn build_switch_list(all_switches: &[cli_args::GenericPcieSwitchCli]) -> Vec<Pci
 }
 
 fn base_chipset_type(opt: &Options) -> BaseChipsetType {
-    if opt.igvm.is_some() {
-        match opt.igvm_personality {
-            None => BaseChipsetType::HclHost,
-            Some(IgvmPersonalityCli::Uefi) => BaseChipsetType::HypervGen2Uefi,
-            Some(IgvmPersonalityCli::LinuxDirect)
-                if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) =>
-            {
+    if let Some(igvm) = &opt.igvm {
+        match igvm.personality {
+            IgvmPersonalityCli::Openhcl => BaseChipsetType::HclHost,
+            IgvmPersonalityCli::Uefi => BaseChipsetType::HypervGen2Uefi,
+            IgvmPersonalityCli::LinuxDirect if opt.isolation.is_some() => {
                 BaseChipsetType::EnlightenedLinuxDirect
             }
-            Some(IgvmPersonalityCli::LinuxDirect) if opt.hv => {
-                BaseChipsetType::HyperVGen2LinuxDirect
-            }
-            Some(IgvmPersonalityCli::LinuxDirect) => BaseChipsetType::UnenlightenedLinuxDirect,
+            IgvmPersonalityCli::LinuxDirect if opt.hv => BaseChipsetType::HyperVGen2LinuxDirect,
+            IgvmPersonalityCli::LinuxDirect => BaseChipsetType::UnenlightenedLinuxDirect,
         }
     } else if matches!(opt.isolation, Some(cli_args::IsolationCli::Snp)) {
         BaseChipsetType::EnlightenedLinuxDirect
@@ -376,19 +374,9 @@ async fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
-            SerialConfigCli::File(path) => {
-                let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
-                let file = fs_err::File::create(path).context("failed to create file")?;
-
-                thread::Builder::new()
-                    .name(name.to_owned())
-                    .spawn(move || {
-                        let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
-                    })
-                    .unwrap();
-                Some(config)
-            }
+            SerialConfigCli::File(path) => Some(serial_io::file_serial(&path, false)?),
             SerialConfigCli::None => None,
+            SerialConfigCli::Null => Some(NullSerialBackendHandle.into_resource()),
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
             }
@@ -1300,7 +1288,12 @@ async fn vm_config_from_command_line(
         (base_template, custom_uefi_json)
     };
 
-    if uefi.is_some() || matches!(opt.igvm_personality, Some(IgvmPersonalityCli::Uefi)) {
+    if (uefi.is_some() && opt.igvm.is_none())
+        || opt
+            .igvm
+            .as_ref()
+            .is_some_and(|igvm| igvm.personality == IgvmPersonalityCli::Uefi)
+    {
         let log_level = match uefi_options.diagnostics.unwrap_or_default() {
             EfiDiagnosticsLogLevelCli::Default => firmware_uefi_resources::LogLevel::make_default(),
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
@@ -1356,7 +1349,7 @@ async fn vm_config_from_command_line(
         // memory come from the snapshot directory.
         load_mode = LoadMode::None;
         with_hv = true;
-    } else if let Some(path) = &opt.igvm {
+    } else if let Some(igvm) = &opt.igvm {
         let cli_args::UefiCli {
             firmware,
             debug: _,
@@ -1377,13 +1370,13 @@ async fn vm_config_from_command_line(
             !force_firmware_version,
             "--uefi force_firmware_version is not supported with --igvm"
         );
-        let file = fs_err::File::open(path)
+        let file = fs_err::File::open(&igvm.firmware)
             .context("failed to open igvm file")?
             .into();
         let cmdline = opt.cmdline.join(" ");
-        with_hv = match opt.igvm_personality {
-            None | Some(IgvmPersonalityCli::Uefi) => true,
-            Some(IgvmPersonalityCli::LinuxDirect) => opt.hv,
+        with_hv = match igvm.personality {
+            IgvmPersonalityCli::Openhcl | IgvmPersonalityCli::Uefi => true,
+            IgvmPersonalityCli::LinuxDirect => opt.hv,
         };
 
         load_mode = LoadMode::Igvm {
@@ -1394,10 +1387,12 @@ async fn vm_config_from_command_line(
             } else {
                 Vtl2BaseAddressType::File
             },
-            com_serial: has_com3.then(|| SerialInformation {
-                io_port: ComPort::Com3.io_port(),
-                irq: ComPort::Com3.irq().into(),
-            }),
+            com_serial: has_com3.then_some(UartId::Com(ComPort::Com3)),
+            personality: match igvm.personality {
+                IgvmPersonalityCli::Openhcl => IgvmPersonality::Openhcl,
+                IgvmPersonalityCli::Uefi => IgvmPersonality::Uefi,
+                IgvmPersonalityCli::LinuxDirect => IgvmPersonality::LinuxDirect,
+            },
         };
 
         // An IGVM launch carries no SMBIOS field of its own; the identity is
@@ -3037,7 +3032,7 @@ async fn run_control_inner(
         ged_rpc: resources.ged_rpc.clone(),
         vm_rpc: vm_rpc.clone(),
         paravisor_diag: Some(paravisor_diag),
-        igvm_path: opt.igvm.clone(),
+        igvm_path: opt.igvm.as_ref().map(|igvm| igvm.firmware.clone()),
         memory_backing_file: opt.memory_backing_file().cloned(),
         memory: opt.memory_size(),
         processors: opt.processors,
@@ -3205,22 +3200,14 @@ mod tests {
     fn maps_igvm_personalities_to_chipsets() {
         for (args, expected) in [
             (
-                vec![
-                    "openvmm",
-                    "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "uefi",
-                ],
+                vec!["openvmm", "--igvm", "firmware=guest.igvm,personality=uefi"],
                 BaseChipsetType::HypervGen2Uefi,
             ),
             (
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                 ],
                 BaseChipsetType::UnenlightenedLinuxDirect,
             ),
@@ -3228,9 +3215,7 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--hv",
                 ],
                 BaseChipsetType::HyperVGen2LinuxDirect,
@@ -3239,25 +3224,148 @@ mod tests {
                 vec![
                     "openvmm",
                     "--igvm",
-                    "guest.igvm",
-                    "--igvm-personality",
-                    "linux-direct",
+                    "firmware=guest.igvm,personality=linux-direct",
                     "--isolation",
                     "snp",
                 ],
                 BaseChipsetType::EnlightenedLinuxDirect,
             ),
             (
-                vec!["openvmm", "--igvm", "guest.igvm", "--hv", "--vtl2"],
+                vec![
+                    "openvmm",
+                    "--igvm",
+                    "firmware=guest.igvm,personality=openhcl",
+                    "--hv",
+                    "--vtl2",
+                ],
                 BaseChipsetType::HclHost,
             ),
         ] {
             let opt = Options::try_parse_from(args).unwrap();
+            opt.validate_igvm_options().unwrap();
             assert!(
                 std::mem::discriminant(&base_chipset_type(&opt))
                     == std::mem::discriminant(&expected)
             );
         }
+    }
+
+    #[test]
+    fn builds_openhcl_igvm_config_without_host_uefi() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let igvm_path = temp_dir.path().join("guest.igvm");
+            File::create(&igvm_path).unwrap();
+            let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
+            let mesh = VmmMesh::new(&driver, true).unwrap();
+
+            for (extra, expected_alias, expected_policy) in [
+                (vec![], true, Some(LateMapVtl0MemoryPolicy::Halt)),
+                (
+                    vec!["--uefi", "console=com1,disable_frontpage"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--net", "uh:consomme", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--isolation", "vbs", "--no-alias-map"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec!["--no-alias-map", "--late-map-vtl0-policy", "exception"],
+                    false,
+                    Some(LateMapVtl0MemoryPolicy::InjectException),
+                ),
+                (
+                    vec!["--late-map-vtl0-policy", "log"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Log),
+                ),
+                (
+                    vec!["--igvm-vtl2-relocation-type", "vtl2=filesize"],
+                    true,
+                    Some(LateMapVtl0MemoryPolicy::Halt),
+                ),
+                (
+                    vec![
+                        "--igvm-vtl2-relocation-type",
+                        "vtl2=filesize",
+                        "--late-map-vtl0-policy",
+                        "off",
+                    ],
+                    true,
+                    None,
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    &igvm_options,
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let (config, resources) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .unwrap();
+
+                assert!(matches!(config.load_mode, LoadMode::Igvm { .. }));
+                assert!(config.hypervisor.with_hv);
+                let vtl2 = config.hypervisor.with_vtl2.as_ref().unwrap();
+                assert_eq!(vtl2.vtl0_alias_map, expected_alias);
+                assert_eq!(vtl2.late_map_vtl0_memory, expected_policy);
+                assert!(config.vmbus.is_some());
+                assert!(config.vtl2_vmbus.is_some());
+                assert!(resources.ged_rpc.is_some());
+                for id in ["ged", "gel"] {
+                    assert!(
+                        config.vmbus_devices.iter().any(|(vtl, resource)| {
+                            *vtl == DeviceVtl::Vtl2 && resource.id() == id
+                        })
+                    );
+                }
+                assert!(
+                    config
+                        .chipset_devices
+                        .iter()
+                        .all(|device| { device.resource.id() != "hyperv_firmware_uefi" })
+                );
+            }
+            for (extra, expected_error) in [
+                (
+                    ["--net", "uh:consomme"],
+                    "must specify --no-alias-map to offer NICs to VTL2",
+                ),
+                (
+                    ["--isolation", "vbs"],
+                    "alias map not supported with isolation",
+                ),
+            ] {
+                let mut args = vec![
+                    "openvmm",
+                    "--igvm",
+                    &igvm_options,
+                    "--hv",
+                    "--vtl2",
+                    "--single-process",
+                ];
+                args.extend(extra);
+                let opt = Options::try_parse_from(args).unwrap();
+                let err = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(err.to_string(), expected_error);
+            }
+            mesh.shutdown().await;
+        });
     }
 
     #[test]

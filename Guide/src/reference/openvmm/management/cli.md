@@ -94,10 +94,14 @@ describes the source definitions.
 
   SNP support is currently limited to Linux direct boot and is intended for
   bring-up. It supports either loader-based kernel/initrd boot or an SNP IGVM
-  selected with `--igvm-personality linux-direct`. MSHV SNP can expose Hyper-V
+  selected with `--igvm firmware=<FILE>,personality=linux-direct`.
+  MSHV SNP can expose Hyper-V
   enlightenments with `--hv --no-vmbus`; VMBus devices remain unsupported.
   KVM SNP does not support Hyper-V enlightenments.
   The IGVM must use VTL0, no shared GPA boundary, and no relocation metadata.
+
+  For SNP Linux-direct IGVM images, see
+  [SEV-SNP IGVM Boot](../../devices/firmware/linux_direct.md#sev-snp-igvm-boot).
 
   SNP does not support UEFI, VTL2, or hugetlb-backed memory. In addition to
   the minimal emulated chipset and serial console, optional devices are
@@ -107,8 +111,8 @@ describes the source definitions.
 
   ```bash
   openvmm --hypervisor mshv --isolation snp \
-    --igvm path/to/snp-linux-direct.bin \
-    --igvm-personality linux-direct --com1 console \
+    --igvm firmware=path/to/snp-linux-direct.bin,personality=linux-direct \
+    --com1 console \
     --hv --no-vmbus -m 160MB -p 1
   ```
 * `--snp-restricted-injection`: Enable restricted interrupt injection in the
@@ -138,20 +142,28 @@ describes the source definitions.
   * `diagnostics=<default|info|full>`: Select the EFI diagnostics log level.
   * `default_boot_always_attempt`: Attempt the default boot path even if configured boot entries exist and fail.
 
-  With `--igvm --vtl2`, `--uefi` configures the UEFI firmware that OpenHCL
-  loads into VTL0. All options except `firmware` and
+  With IGVM `personality=openhcl`, `--uefi` configures the UEFI firmware
+  that OpenHCL loads into VTL0. All options except `firmware` and
   `force_firmware_version` are supported in this mode. Those options apply
   only when OpenVMM loads an external firmware image and are rejected with
   `--igvm`. Explicit non-VTL2 IGVM personalities do not accept `--uefi`.
 
   The previous standalone UEFI options remain accepted but are deprecated.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--igvm <FILE>`: Boot from an IGVM file.
-* `--igvm-personality <uefi|linux-direct>`: Select the chipset and
-  device shape for an IGVM boot without VTL2. This option is required with
-  `--igvm` unless `--vtl2` is present; there is no default for non-VTL2
-  boots. The personality does not select the isolation platform. Use
-  `--isolation` separately when required by the IGVM.
+* `--igvm <OPTIONS>`: Boot from an IGVM file. Options are comma-separated:
+  * `firmware=<FILE>`: Path to the IGVM file.
+  * `personality=<openhcl|uefi|linux-direct>`: Select the chipset and device
+    shape for the IGVM boot.
+
+  Both options are required; neither has a default. For example:
+
+  ```bash
+  openvmm --hv --vtl2 \
+    --igvm firmware=path/to/openhcl.igvm,personality=openhcl
+  ```
+
+  The personality does not select the isolation platform. Use `--isolation`
+  separately when required by the IGVM.
 
   The `uefi` personality uses the Gen2 device shape, but firmware is loaded
   from the IGVM. It does not select the normal external-UEFI load path. The
@@ -160,8 +172,13 @@ describes the source definitions.
   fails explicitly on backend and isolation combinations that cannot provide
   them.
 
-  With `--igvm --vtl2`, omit `--igvm-personality`. OpenVMM retains the
-  existing HCL-host device shape and VBS-compatible IGVM behavior.
+  The `openhcl` personality hosts the OpenHCL paravisor in VTL2 and requires
+  explicit `--hv --vtl2`. OpenHCL loads the VTL0 firmware; OpenVMM does not
+  add a host UEFI device. You can pass `--uefi` settings for the firmware
+  loaded by OpenHCL.
+
+  On x86, the IGVM device tree describes only some COM ports. See
+  [Device Tree](../../architecture/openvmm/device-tree.md).
 * `--tpm [VERSION]`: Add a vTPM device. Supported versions are `138` and
   `185`; a bare `--tpm` uses version `185`. The dotted forms `1.38` and `1.85`
   are also accepted.
@@ -310,7 +327,10 @@ Serial devices can be configured to appear as different devices inside the guest
 
 The `BACKEND` argument is the same for all serial devices:
 
-  * `none`: Serial output is dropped.
+  * `none`: No serial backend is configured. Depending on the chipset, the
+      serial device is either omitted or present with a disconnected backend.
+  * `null`: A connected serial backend accepts and discards all output and
+      never provides input.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
   * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set
@@ -612,7 +632,7 @@ named root complex. The flag is repeatable — use one `--intel-vtd` per
 root complex that should have an IOMMU. The guest discovers VT-d units
 via the ACPI DMAR table (not PCI config space).
 
-```sh
+```bash
 # Enable Intel VT-d on root complex rc0
 --intel-vtd rc0
 
@@ -622,3 +642,45 @@ via the ACPI DMAR table (not PCI config space).
 
 Mutually exclusive with `--amd-iommu` within the same VM (only one x86
 IOMMU type can be active).
+
+VT-d advertises legacy and scalable second-stage translation by default;
+there is no separate scalable-mode or accessed/dirty CLI flag. Both modes
+support 39-bit (3-level) and 48-bit (4-level) addresses, 4KB/2MB/1GB pages,
+pass-through, and interrupt remapping for MSI and IOAPIC routes. Legacy mode
+accepts 128-bit or 256-bit queued invalidations; scalable mode requires
+256-bit descriptors.
+
+The scalable profile advertises SMTS, SSTS, SMPWCS, SSADS, and RPS. Requests
+without a PASID use the context entry's implied `RID_PASID`, including
+nonzero values. Explicitly PASID-tagged requests, first-stage and nested
+translation, ATS, PRI, and supervisor requests are not supported. The
+implementation version remains 1.0; use CAP/ECAP, not VER, for discovery.
+
+Accessed/dirty tracking is optional and controlled by each PASID table
+entry's `SSADE` bit. With tracking enabled, translation atomically sets
+accessed (bit 8) on visited second-stage entries and dirty (bit 9) on an
+accepted write's leaf, before performing DMA. A later DMA operation failure
+does not undo those flags. Legacy translation and pass-through never set
+them. Updates require coherent page-table access (`PWSNP=1`); a required
+non-snooping update faults with reason `0x7c`, and an atomic-update failure
+faults with `0x7d`.
+
+Flags are sticky until guest software clears them. Quiesce relevant DMA,
+clear the flags, perform the required translation-cache invalidations, and
+wait for completion before resuming DMA. The emulator does not cache page
+walks, but software must still follow the architectural invalidation
+protocol. Unsynchronized clearing or reading does not provide a race-free
+dirty snapshot, and no migration bitmap API is provided.
+
+Linux 6.18 and Ubuntu 24.04's 6.8 kernel document `intel_iommu=on,sm_on`
+to request scalable mode and `intel_iommu=on,sm_off` to force legacy mode.
+These are guest kernel options, not OpenVMM options. For UEFI boots, configure
+them in the guest bootloader; a direct-boot kernel command line does not
+configure the disk's kernel. Scalable mode alone does not enable `SSADE`.
+OpenVMM inspection exposes the SRTP-latched `translation_table_mode` (0 for
+legacy, 1 for scalable), rather than just the pending RTADDR value.
+
+See the [`intel_vtd` crate documentation][intel-vtd-rustdoc] for implementation
+details.
+
+[intel-vtd-rustdoc]: https://openvmm.dev/rustdoc/linux/intel_vtd/index.html

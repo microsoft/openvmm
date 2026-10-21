@@ -11,6 +11,7 @@ use vmsocket::VmSocket;
 use crate::Disk;
 use crate::Drive;
 use crate::Firmware;
+use crate::IgvmFirmwareSource;
 use crate::IsolationType;
 use crate::ModifyFn;
 use crate::NoPetriVmInspector;
@@ -84,8 +85,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
     type VmRuntime = HyperVPetriRuntime;
     const SUPPORTS_VMBUS: bool = true;
 
-    fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
-        true
+    fn check_compat(firmware: &Firmware, _arch: MachineArch) -> bool {
+        !firmware.is_isolated_without_paravisor()
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -161,7 +162,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         Ok(Some((crash_disk_path, disk_opener)))
     }
 
-    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
+    fn build_custom_init_script(
+        _pipette_path: &str,
+        _mount_shares: Vec<(String, String)>,
+    ) -> Option<String> {
         None
     }
 
@@ -176,7 +180,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         config: PetriVmConfig,
         _modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let PetriVmResources {
             driver,
@@ -193,9 +197,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let temp_dir = tempfile::tempdir()?;
 
-        let igvm_file = properties
-            .is_openhcl
-            .then(|| temp_dir.path().join(IGVM_FILE_NAME));
+        let igvm_file = matches!(
+            config.firmware.openhcl_firmware(),
+            Some(IgvmFirmwareSource::File(_))
+        )
+        .then(|| temp_dir.path().join(IGVM_FILE_NAME));
 
         let mut openhcl_command_line = config.firmware.openhcl_config().map(|c| c.command_line());
 
@@ -441,19 +447,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
             imc_hiv,
             management_vtl_settings,
 
-            ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
+            ..HyperVNewCustomVMArgs::from_config(&config, properties)?
         };
 
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
-            // Copy the IGVM file locally, since it may not be accessible by
-            // Hyper-V (e.g., if it is in a WSL filesystem).
-            let local_path = igvm_file.as_ref().unwrap();
-            fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
-                .context("failed to copy igvm file")?;
-            acl_for_vm(local_path, Some(*vm.vmid()), false)
-                .context("failed to set ACL for igvm file")?;
+            if let Some(local_path) = &igvm_file {
+                // Hyper-V cannot access IGVM files in a WSL filesystem.
+                let Some(IgvmFirmwareSource::File(igvm_path)) = config.firmware.openhcl_firmware()
+                else {
+                    unreachable!();
+                };
+                fs_err::copy(igvm_path.get(), local_path).context("failed to copy igvm file")?;
+                acl_for_vm(local_path, Some(*vm.vmid()), false)
+                    .context("failed to set ACL for igvm file")?;
+            }
 
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {
@@ -502,7 +511,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 temp_dir,
                 output_dir: log_source.output_dir().to_owned(),
                 driver: driver.clone(),
-                properties,
+                properties: properties.clone(),
             },
             config
                 .firmware

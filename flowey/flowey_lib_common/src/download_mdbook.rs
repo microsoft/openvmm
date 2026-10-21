@@ -36,20 +36,8 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let mut get_mdbook = Vec::new();
-
-        for req in requests {
-            match req {
-                Request::GetMdbook(v) => get_mdbook.push(v),
-            }
-        }
-
-        let version = config
-            .version
-            .ok_or(anyhow::anyhow!("missing config: version"))?;
-        let get_mdbook = get_mdbook;
-
-        // -- end of req processing -- //
+        let (version, get_mdbook) =
+            collect_download_requests(config.version, requests, |Request::GetMdbook(v)| v)?;
 
         if get_mdbook.is_empty() {
             return Ok(());
@@ -57,6 +45,16 @@ impl FlowNodeWithConfig for Node {
 
         download_mdbook_tool(ctx, "mdbook", "rust-lang", "mdBook", &version, get_mdbook)
     }
+}
+
+pub(crate) fn collect_download_requests<T>(
+    version: Option<String>,
+    requests: Vec<T>,
+    get_path: impl FnMut(T) -> WriteVar<PathBuf>,
+) -> anyhow::Result<(String, Vec<WriteVar<PathBuf>>)> {
+    let version = version.ok_or(anyhow::anyhow!("missing config: version"))?;
+    let paths = requests.into_iter().map(get_path).collect();
+    Ok((version, paths))
 }
 
 pub(crate) fn download_mdbook_tool(

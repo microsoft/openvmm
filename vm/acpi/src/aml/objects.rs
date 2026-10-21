@@ -4,6 +4,7 @@
 //! Utilities for encoding various objects into ACPI Machine Language (AML).
 
 use super::helpers::*;
+use alloc::vec::Vec;
 
 /// A trait indicating that a particular type can be serialized
 /// into a byte stream of ACPI Machine Language (AML).
@@ -155,6 +156,7 @@ where
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use alloc::vec;
 
     #[test]
     fn verify_package() {

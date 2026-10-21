@@ -29,9 +29,6 @@ pub struct VmbusInfo {
     /// Parsed sorted mmio ranges from the device tree.
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_helpers::mmio_internal"))]
     pub mmio: ArrayVec<MemoryRange, 2>,
-    /// Connection ID for the vmbus root device.
-    #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub connection_id: u32,
 }
 
 /// Information about the GIC.
@@ -803,6 +800,10 @@ fn parse_compatible<'a>(
         "arm,armv8-pmuv3" => {
             parse_pmu_gsiv(node, pmu_gsiv)?;
         }
+        "pci-host-ecam-generic" => {
+            // OpenHCL does not use these host bridges. Match them so that the
+            // default arm does not warn.
+        }
         _ => {
             #[cfg(feature = "tracing")]
             tracing::warn!(?compatible, ?node.name,
@@ -917,20 +918,7 @@ fn parse_vmbus<'a>(node: &fdt::parser::Node<'a>) -> Result<VmbusInfo, ErrorKind<
             }
         };
 
-    let connection_id = node
-        .find_property("microsoft,message-connection-id")
-        .map_err(ErrorKind::Prop)?
-        .ok_or(ErrorKind::PropMissing {
-            node_name: node.name,
-            prop_name: "microsoft,message-connection-id",
-        })?
-        .read_u32(0)
-        .map_err(ErrorKind::Prop)?;
-
-    Ok(VmbusInfo {
-        mmio,
-        connection_id,
-    })
+    Ok(VmbusInfo { mmio })
 }
 
 fn parse_simple_bus<'a>(
@@ -1046,11 +1034,13 @@ fn parse_io_bus<'a>(
         // Linux kernel hard-codes COM3 to COM3_REG_BASE.
         // If work is ever done in the Linux kernel to instead
         // parse from DT, the 2nd condition can be removed.
-        if compatible == "ns16550" && base == COM3_REG_BASE {
-            *com3_serial = ComInfo::Ns16550 {
-                base,
-                current_speed,
-            };
+        if compatible == "ns16550" {
+            if base == COM3_REG_BASE {
+                *com3_serial = ComInfo::Ns16550 {
+                    base,
+                    current_speed,
+                };
+            }
         } else {
             #[cfg(feature = "tracing")]
             tracing::warn!(?node.name, ?compatible, ?base, ?current_speed,
@@ -1257,6 +1247,7 @@ mod tests {
     use fdt::builder::Builder;
     use fdt::builder::BuilderConfig;
     use fdt::builder::Nest;
+    use test_with_tracing::test;
 
     type TestParsedDeviceTree = ParsedDeviceTree<32, 32, 1024, 64>;
 
@@ -1272,7 +1263,6 @@ mod tests {
         p_compatible: fdt::builder::StringId,
         p_ranges: fdt::builder::StringId,
         p_vtl: fdt::builder::StringId,
-        p_vmbus_connection_id: fdt::builder::StringId,
     }
 
     fn add_vmbus<'a>(
@@ -1307,8 +1297,6 @@ mod tests {
             .unwrap()
             .add_u32(ids.p_vtl, vtl as u32)
             .unwrap()
-            .add_u32(ids.p_vmbus_connection_id, vmbus_info.connection_id)
-            .unwrap()
             .end_node()
             .unwrap()
     }
@@ -1334,9 +1322,6 @@ mod tests {
             .unwrap();
         let p_numa_node_id = builder.add_string("numa-node-id").unwrap();
         let p_compatible = builder.add_string("compatible").unwrap();
-        let p_vmbus_connection_id = builder
-            .add_string("microsoft,message-connection-id")
-            .unwrap();
         let p_vtl = builder
             .add_string(igvm_defs::dt::IGVM_DT_VTL_PROPERTY)
             .unwrap();
@@ -1484,7 +1469,6 @@ mod tests {
             p_compatible,
             p_ranges,
             p_vtl,
-            p_vmbus_connection_id,
         };
 
         // VTL0 vmbus root device
@@ -1658,7 +1642,7 @@ mod tests {
     #[test]
     fn test_basic_dt() {
         let orig = create_parsed(
-            2672,
+            2640,
             &[
                 MemoryEntry {
                     range: MemoryRange::try_new(0..(1024 * HV_PAGE_SIZE)).unwrap(),
@@ -1690,14 +1674,12 @@ mod tests {
                     MemoryRange::try_new((4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::try_new((102400 * HV_PAGE_SIZE)..(102800 * HV_PAGE_SIZE)).unwrap(),
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -1894,14 +1876,12 @@ mod tests {
                     (4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -1938,14 +1918,12 @@ mod tests {
                     MemoryRange::try_new((4000 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::EMPTY,
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[
                     MemoryRange::try_new((4020 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::EMPTY,
                 ]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             ComInfo::None,
@@ -1974,6 +1952,65 @@ mod tests {
         test_com3_serial_output(com3_serial);
     }
 
+    #[test]
+    fn serial_inventory_preserves_com3_selection() {
+        for mask in 0..16 {
+            let mut buffer = vec![0; 4096];
+            let mut builder = Builder::new(BuilderConfig {
+                blob_buffer: &mut buffer,
+                string_table_cap: 128,
+                memory_reservations: &[],
+            })
+            .unwrap();
+            let compatible = builder.add_string("compatible").unwrap();
+            let reg = builder.add_string("reg").unwrap();
+            let speed = builder.add_string("current-speed").unwrap();
+            let mut bus = builder
+                .start_node("")
+                .unwrap()
+                .start_node("pio-bus")
+                .unwrap()
+                .add_str(compatible, "x86-pio-bus")
+                .unwrap();
+            for (index, base) in [0x3f8, 0x2f8, 0x3e8, 0x2e8].into_iter().enumerate() {
+                if mask & (1 << index) == 0 {
+                    continue;
+                }
+                bus = bus
+                    .start_node(&format!("serial@{base:x}"))
+                    .unwrap()
+                    .add_str(compatible, "ns16550")
+                    .unwrap()
+                    .add_u64_array(reg, &[base, 8])
+                    .unwrap()
+                    .add_u32(speed, 115200)
+                    .unwrap()
+                    .end_node()
+                    .unwrap();
+            }
+            let root = bus.end_node().unwrap();
+            let root = root
+                .start_node("pcie@80000000")
+                .unwrap()
+                .add_str(compatible, "pci-host-ecam-generic")
+                .unwrap()
+                .end_node()
+                .unwrap();
+            let len = root.end_node().unwrap().build(0).unwrap();
+            let mut storage = TestParsedDeviceTree::new();
+            let parsed = TestParsedDeviceTree::parse(&buffer[..len], &mut storage).unwrap();
+            let expected = if mask & 4 == 0 {
+                ComInfo::None
+            } else {
+                ComInfo::Ns16550 {
+                    base: COM3_REG_BASE,
+                    current_speed: 115200,
+                }
+            };
+            assert_eq!(parsed.com3_serial, expected, "port mask {mask:#x}");
+        }
+    }
+
     /// tests serial output
     #[test]
     fn test_com3_serial_output_aarch64() {
@@ -1990,8 +2027,8 @@ mod tests {
         let orig = create_parsed(
             match com3_serial {
                 ComInfo::None => unreachable!(),
-                ComInfo::Ns16550 { .. } => 2560,
-                ComInfo::Pl011 { .. } => 2512,
+                ComInfo::Ns16550 { .. } => 2528,
+                ComInfo::Pl011 { .. } => 2480,
             },
             &[
                 MemoryEntry {
@@ -2024,14 +2061,12 @@ mod tests {
                     MemoryRange::try_new((4024 * HV_PAGE_SIZE)..(4096 * HV_PAGE_SIZE)).unwrap(),
                     MemoryRange::try_new((102400 * HV_PAGE_SIZE)..(102800 * HV_PAGE_SIZE)).unwrap(),
                 ]),
-                connection_id: 1,
             }),
             Some(VmbusInfo {
                 mmio: new_vmbus_mmio(&[MemoryRange::try_new(
                     (102800 * HV_PAGE_SIZE)..(102900 * HV_PAGE_SIZE),
                 )
                 .unwrap()]),
-                connection_id: 4,
             }),
             "THIS_IS_A_BOOT_ARG=1",
             com3_serial.clone(),
