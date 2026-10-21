@@ -115,6 +115,11 @@ struct CommandWritePlan {
     update_before_write: bool,
 }
 
+trait CommandWriteTarget {
+    fn write_physical_command(&mut self, offset: u16, value: ByteEnabledDwordWrite);
+    fn set_virtual_mmio(&mut self, enabled: bool, source: CommandWriteSource);
+}
+
 fn mse_mask() -> u32 {
     cfg_space::Command::new()
         .with_mmio_enabled(true)
@@ -157,6 +162,28 @@ fn command_write_plan(
         mmio_change,
         update_before_write: source == CommandWriteSource::DevicePower
             && mmio_change == Some(false),
+    }
+}
+
+fn execute_command_write(
+    target: &mut impl CommandWriteTarget,
+    offset: u16,
+    value: ByteEnabledDwordWrite,
+    mmio_enabled: bool,
+    source: CommandWriteSource,
+) {
+    let plan = command_write_plan(value, mmio_enabled, source);
+
+    if plan.update_before_write {
+        target.set_virtual_mmio(plan.mmio_change.unwrap(), source);
+    }
+
+    target.write_physical_command(offset, plan.physical_value);
+
+    if !plan.update_before_write {
+        if let Some(enabled) = plan.mmio_change {
+            target.set_virtual_mmio(enabled, source);
+        }
     }
 }
 
@@ -1002,30 +1029,25 @@ impl VfioAssignedPciDevice {
         value: ByteEnabledDwordWrite,
         source: CommandWriteSource,
     ) {
-        let plan = command_write_plan(value, self.mmio_enabled, source);
+        let mmio_enabled = self.mmio_enabled;
+        execute_command_write(self, offset, value, mmio_enabled, source);
+    }
+}
 
-        if plan.update_before_write {
-            self.apply_mmio_change(plan.mmio_change, source);
-        }
-
-        self.write_phys_config(offset, plan.physical_value);
-
-        if !plan.update_before_write {
-            self.apply_mmio_change(plan.mmio_change, source);
-        }
+impl CommandWriteTarget for VfioAssignedPciDevice {
+    fn write_physical_command(&mut self, offset: u16, value: ByteEnabledDwordWrite) {
+        self.write_phys_config(offset, value);
     }
 
-    fn apply_mmio_change(&mut self, mmio_change: Option<bool>, source: CommandWriteSource) {
-        if let Some(enabled) = mmio_change {
-            self.mmio_enabled = enabled;
-            self.update_bar_mappings();
-            tracing::debug!(
-                pci_id = self.pci_id.as_str(),
-                enabled,
-                ?source,
-                "MMIO state changed"
-            );
-        }
+    fn set_virtual_mmio(&mut self, enabled: bool, source: CommandWriteSource) {
+        self.mmio_enabled = enabled;
+        self.update_bar_mappings();
+        tracing::debug!(
+            pci_id = self.pci_id.as_str(),
+            enabled,
+            ?source,
+            "MMIO state changed"
+        );
     }
 }
 
@@ -2068,6 +2090,30 @@ mod tests {
     use pci_core::msi::MsiTarget;
     use test_with_tracing::test;
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum MockCommandEvent {
+        PhysicalWrite(ByteEnabledDwordWrite),
+        VirtualMmio(bool),
+    }
+
+    struct MockCommandTarget {
+        mmio_enabled: bool,
+        bar_mapped: bool,
+        events: Vec<MockCommandEvent>,
+    }
+
+    impl CommandWriteTarget for MockCommandTarget {
+        fn write_physical_command(&mut self, _offset: u16, value: ByteEnabledDwordWrite) {
+            self.events.push(MockCommandEvent::PhysicalWrite(value));
+        }
+
+        fn set_virtual_mmio(&mut self, enabled: bool, _source: CommandWriteSource) {
+            self.mmio_enabled = enabled;
+            self.bar_mapped = enabled;
+            self.events.push(MockCommandEvent::VirtualMmio(enabled));
+        }
+    }
+
     #[test]
     fn virtual_mse_read_honors_guest_state_and_byte_enables() {
         let mut command_status = u32::MAX;
@@ -2158,6 +2204,77 @@ mod tests {
             command_byte1.physical_value,
             ByteEnabledDwordWrite::new(0x5a00, PciConfigByteEnable::BYTE1)
         );
+    }
+
+    #[test]
+    fn guest_command_dispatch_shadows_mse_and_updates_mappings() {
+        let mut target = MockCommandTarget {
+            mmio_enabled: true,
+            bar_mapped: true,
+            events: Vec::new(),
+        };
+        let clear = ByteEnabledDwordWrite::new(0, PciConfigByteEnable::BYTE0);
+
+        execute_command_write(
+            &mut target,
+            HeaderType00::STATUS_COMMAND.0,
+            clear,
+            true,
+            CommandWriteSource::Guest,
+        );
+
+        assert_eq!(
+            target.events,
+            [
+                MockCommandEvent::PhysicalWrite(ByteEnabledDwordWrite::new(
+                    mse_mask(),
+                    PciConfigByteEnable::BYTE0
+                )),
+                MockCommandEvent::VirtualMmio(false),
+            ]
+        );
+        assert!(!target.mmio_enabled);
+        assert!(!target.bar_mapped);
+
+        let mut physical_command = mse_mask() | 0x100;
+        apply_virtual_mse_read(
+            ByteEnabledDwordRead::new(&mut physical_command, PciConfigByteEnable::LOW_WORD),
+            target.mmio_enabled,
+        );
+        assert_eq!(physical_command & mse_mask(), 0);
+
+        target.events.clear();
+        let status_only = ByteEnabledDwordWrite::new(0x00ab_0000, PciConfigByteEnable::BYTE2);
+        execute_command_write(
+            &mut target,
+            HeaderType00::STATUS_COMMAND.0,
+            status_only,
+            false,
+            CommandWriteSource::Guest,
+        );
+        assert_eq!(
+            target.events,
+            [MockCommandEvent::PhysicalWrite(status_only)]
+        );
+
+        target.events.clear();
+        let enable = ByteEnabledDwordWrite::new(mse_mask(), PciConfigByteEnable::BYTE0);
+        execute_command_write(
+            &mut target,
+            HeaderType00::STATUS_COMMAND.0,
+            enable,
+            false,
+            CommandWriteSource::Guest,
+        );
+        assert_eq!(
+            target.events,
+            [
+                MockCommandEvent::PhysicalWrite(enable),
+                MockCommandEvent::VirtualMmio(true),
+            ]
+        );
+        assert!(target.mmio_enabled);
+        assert!(target.bar_mapped);
     }
 
     #[test]
