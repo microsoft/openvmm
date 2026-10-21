@@ -410,6 +410,7 @@ impl MshvProtoPartition<'_> {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            tsc_deadline: false,
             vtom: None,
             physical_address_width: self
                 .vmfd
