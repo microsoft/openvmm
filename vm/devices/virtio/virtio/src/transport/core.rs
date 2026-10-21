@@ -422,6 +422,8 @@ impl VirtioTransportCore {
     /// `ChangeDeviceState::reset()` implementation.
     pub async fn reset(&mut self, ops: &mut dyn TransportOps) {
         let _ = self.state.drain().await;
+        // A queued mapping may be waiting for this STATUS write.
+        drop(self.pending_status_deferred.take());
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
         self.reset_status(ops);
     }

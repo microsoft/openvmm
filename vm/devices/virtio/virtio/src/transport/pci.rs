@@ -9,6 +9,7 @@ use super::core::TransportOps;
 use super::core::VIRTIO_MSI_NO_VECTOR;
 use super::core::VirtioTransportCore;
 use super::task::ConfigReadCompletion;
+use super::task::DeviceCommand;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use crate::DynVirtioDevice;
@@ -22,6 +23,7 @@ use crate::spec::pci::VirtioPciCommonCfg;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
@@ -44,6 +46,7 @@ use pci_core::PciInterruptPin;
 use pci_core::capabilities::PciCapability;
 use pci_core::capabilities::ReadOnlyCapability;
 use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::capabilities::msix::MsixInterrupt;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
@@ -132,6 +135,8 @@ struct PciTransport {
     interrupt_kind: InterruptKind,
     #[inspect(skip)]
     interrupt_status: Arc<Mutex<u32>>,
+    #[inspect(skip)]
+    queue_interrupts: Vec<MsixInterrupt>,
     msix_config_vector: u16,
     #[inspect(hex)]
     shared_memory_size: u64,
@@ -147,17 +152,24 @@ struct PciTransport {
     device_register_length: u32,
 }
 
-impl TransportOps for PciTransport {
-    fn create_queue_interrupt(&mut self, _idx: usize, msix_vector: u16) -> Interrupt {
-        match &self.interrupt_kind {
-            InterruptKind::Msix(msix) => {
-                if let Some(interrupt) = msix.interrupt(msix_vector) {
-                    interrupt
-                } else {
-                    tracelimit::warn_ratelimited!(msix_vector, "invalid MSIx vector specified");
-                    Interrupt::null()
-                }
+impl PciTransport {
+    fn set_queue_msix_vector(&mut self, idx: usize, vector: u16) -> u16 {
+        if let InterruptKind::Msix(_) = &self.interrupt_kind {
+            let index = (vector != VIRTIO_MSI_NO_VECTOR).then_some(vector);
+            if !self.queue_interrupts[idx].set_vector(index) {
+                tracelimit::warn_ratelimited!(vector, "invalid MSI-X vector specified");
+                return VIRTIO_MSI_NO_VECTOR;
             }
+        }
+        vector
+    }
+}
+
+impl TransportOps for PciTransport {
+    fn create_queue_interrupt(&mut self, idx: usize, msix_vector: u16) -> Interrupt {
+        self.set_queue_msix_vector(idx, msix_vector);
+        match &self.interrupt_kind {
+            InterruptKind::Msix(_) => self.queue_interrupts[idx].interrupt(),
             InterruptKind::IntX(line) => {
                 let interrupt_status = self.interrupt_status.clone();
                 let line = line.clone();
@@ -182,6 +194,9 @@ impl TransportOps for PciTransport {
     }
 
     fn reset_interrupts(&mut self) {
+        for interrupt in &self.queue_interrupts {
+            interrupt.set_vector(None);
+        }
         *self.interrupt_status.lock() = 0;
         if let InterruptKind::IntX(line) = &self.interrupt_kind {
             line.set_level(false);
@@ -203,9 +218,17 @@ pub struct VirtioPciDevice {
     core: VirtioTransportCore,
     #[inspect(flatten)]
     pci: PciTransport,
+    #[inspect(skip)]
+    pending_mapping: Option<MsixInterrupt>,
 }
 
 impl VirtioPciDevice {
+    #[cfg(test)]
+    pub(crate) fn queue_interrupt(&mut self, idx: usize) -> Interrupt {
+        self.pci
+            .create_queue_interrupt(idx, self.core.queues[idx].msix_vector)
+    }
+
     pub fn new(
         mut device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
@@ -357,13 +380,21 @@ impl VirtioPciDevice {
         };
 
         let core = VirtioTransportCore::new(device, driver, guest_memory, doorbell_registration)?;
+        let queue_interrupts = match &interrupt_kind {
+            InterruptKind::Msix(msix) => (0..traits.max_queues)
+                .map(|_| msix.new_interrupt())
+                .collect(),
+            InterruptKind::IntX(_) => Vec::new(),
+        };
 
         Ok(VirtioPciDevice {
             core,
+            pending_mapping: None,
             pci: PciTransport {
                 config_space,
                 interrupt_kind,
                 interrupt_status: Arc::new(Mutex::new(0)),
+                queue_interrupts,
                 msix_config_vector: VIRTIO_MSI_NO_VECTOR,
                 shared_memory_size,
                 pci_cfg_access,
@@ -486,15 +517,16 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::QUEUE_SIZE => {
                 let msix_vector = (val >> 16) as u16;
-                if !queues_locked && queue_select < self.core.queues.len() {
-                    let val = val as u16;
-                    let qd = &mut self.core.queues[queue_select];
-                    if val > MAX_QUEUE_SIZE {
-                        qd.params.size = MAX_QUEUE_SIZE;
-                    } else {
-                        qd.params.size = val;
+                if let Some(qd) = self.core.queues.get_mut(queue_select) {
+                    if !queues_locked {
+                        qd.params.size = (val as u16).min(MAX_QUEUE_SIZE);
                     }
-                    qd.msix_vector = msix_vector;
+                    qd.msix_vector = self.pci.set_queue_msix_vector(queue_select, msix_vector);
+                    if let Some(interrupt) = self.pci.queue_interrupts.get(queue_select)
+                        && interrupt.mapping_pending()
+                    {
+                        self.pending_mapping = Some(interrupt.clone());
+                    }
                 }
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
@@ -562,6 +594,28 @@ impl VirtioPciDevice {
             }
             ReadWriteRequestType::Read => Some(self.read_u32_local(offset)),
         });
+    }
+
+    fn complete_transport_write(&mut self, deferred: DeferredWrite) {
+        if let Some(interrupt) = self.pending_mapping.take() {
+            let status = if self.core.state.is_busy() && self.core.pending_status_deferred.is_none()
+            {
+                let (status, token) = defer_write();
+                self.core.pending_status_deferred = Some(status);
+                Some(token)
+            } else {
+                None
+            };
+            self.core.device_sender.send(DeviceCommand::MapInterrupt {
+                interrupt,
+                status,
+                deferred,
+            });
+        } else if self.core.state.is_busy() && self.core.pending_status_deferred.is_none() {
+            self.core.pending_status_deferred = Some(deferred);
+        } else {
+            deferred.complete();
+        }
     }
 
     /// Validate a guest-programmed `pci_cfg_data` access against the selected
@@ -668,7 +722,7 @@ impl VirtioPciDevice {
         self.write_pci_cfg_bar(bar, offset, data)
     }
 
-    /// Read `data.len()` bytes from a synchronous BAR region (BAR0 transport or
+    /// Read `data.len()` bytes from a BAR region (BAR0 transport or
     /// BAR2 MSI-X) on behalf of a `pci_cfg_data` access. The device-config
     /// region must be handled separately via deferral by the caller.
     fn read_pci_cfg_bar(&mut self, bar: u8, offset: u16, data: &mut [u8]) -> IoResult {
@@ -686,7 +740,7 @@ impl VirtioPciDevice {
         IoResult::Ok
     }
 
-    /// Write `data` to a synchronous BAR region (BAR0 transport or BAR2 MSI-X)
+    /// Write `data` to a BAR region (BAR0 transport or BAR2 MSI-X)
     /// on behalf of a `pci_cfg_data` access. The device-config region must be
     /// handled separately via deferral by the caller.
     fn write_pci_cfg_bar(&mut self, bar: u8, offset: u16, data: &[u8]) -> IoResult {
@@ -711,10 +765,15 @@ impl VirtioPciDevice {
             }
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
+        if bar == 0 && (self.core.state.is_busy() || self.pending_mapping.is_some()) {
+            let (deferred, token) = defer_write();
+            self.complete_transport_write(deferred);
+            return IoResult::Defer(token);
+        }
         IoResult::Ok
     }
 
-    /// Replay MMIO accesses that were stalled while the transport was busy.
+    /// Replay accesses that were stalled while the transport was busy.
     fn replay_stalled_io(&mut self) {
         let stalled = std::mem::take(&mut self.core.stalled_io);
         let mut iter = stalled.into_iter();
@@ -743,11 +802,10 @@ impl VirtioPciDevice {
                 } => {
                     if let Some((_, offset)) = self.pci.config_space.find_bar(address) {
                         self.write_transport(offset as u16, &data[..len]);
+                        self.complete_transport_write(deferred);
                         if self.core.state.is_busy() {
-                            self.core.pending_status_deferred = Some(deferred);
                             break;
                         }
-                        deferred.complete();
                     } else {
                         deferred.complete_error(IoError::InvalidRegister);
                     }
@@ -914,6 +972,9 @@ mod saved_state {
                 line.set_level(state.interrupt_status != 0);
             }
             self.pci.msix_config_vector = state.msix_config_vector;
+            for (idx, qd) in self.core.queues.iter_mut().enumerate() {
+                qd.msix_vector = self.pci.set_queue_msix_vector(idx, qd.msix_vector);
+            }
 
             Ok(())
         }
@@ -1028,9 +1089,9 @@ impl MmioIntercept for VirtioPciDevice {
             }
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
-        if bar == 0 && self.core.state.is_busy() {
+        if bar == 0 && (self.core.state.is_busy() || self.pending_mapping.is_some()) {
             let (deferred, token) = defer_write();
-            self.core.pending_status_deferred = Some(deferred);
+            self.complete_transport_write(deferred);
             return IoResult::Defer(token);
         }
         IoResult::Ok

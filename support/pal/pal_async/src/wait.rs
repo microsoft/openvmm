@@ -114,6 +114,11 @@ impl<T> PolledWait<T> {
         self.wait.poll_wait(cx)
     }
 
+    /// Cancels the wait and reports whether it consumed a signal.
+    pub fn poll_cancel_wait(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        self.wait.poll_cancel_wait(cx)
+    }
+
     /// Waits for the wait object to be signaled.
     pub fn wait(&mut self) -> impl '_ + Unpin + Future<Output = io::Result<()>> {
         poll_fn(move |cx| self.poll_wait(cx))

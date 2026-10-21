@@ -159,6 +159,14 @@ pub async fn wait_tests(driver: impl Driver) {
     }
     pend_once().await;
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    let _ = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+    event.try_wait();
+    assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+    event.signal();
+    pend_once().await;
+    assert!(event.try_wait());
+    event.signal();
+    poll_fn(|cx| poller.poll_wait(cx)).await.unwrap();
 }
 
 /// Runs socket-related tests.
