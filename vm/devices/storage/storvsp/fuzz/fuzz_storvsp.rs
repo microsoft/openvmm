@@ -329,7 +329,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
             let disk = scsidisk::SimpleScsiDisk::new(
                 disklayer_ram::ram_disk(64 * 512, false).unwrap(),
                 Default::default(),
-            );
+            )
+            .unwrap();
             // Ignore errors (e.g., duplicate paths) — fewer disks is fine.
             let _ = controller.attach(u.arbitrary()?, ScsiControllerDisk::new(Arc::new(disk)));
         }

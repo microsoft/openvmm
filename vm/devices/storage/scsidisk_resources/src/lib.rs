@@ -67,6 +67,32 @@ pub struct DiskParameters {
     /// Note that this will always report fully mapped LBAs, since the
     /// underlying disk implementation has no mechanism to report unmapped LBAs.
     pub get_lba_status: bool,
+    /// Host-managed zoned block device parameters.
+    pub host_managed_zoned: Option<HostManagedZonedParameters>,
+}
+
+/// Parameters for a host-managed zoned block device.
+#[derive(Debug, Clone, Protobuf)]
+pub struct HostManagedZonedParameters {
+    /// Zone size in bytes.
+    pub zone_size_bytes: u64,
+    /// Number of conventional zones at the beginning of the disk.
+    pub conventional_zone_count: u32,
+    /// Maximum number of sequential-write-required zones that may be open.
+    pub max_open_zones: u32,
+    /// Whether reads of unwritten blocks and reads across zone boundaries are supported.
+    pub unrestricted_read: bool,
+}
+
+impl Default for HostManagedZonedParameters {
+    fn default() -> Self {
+        Self {
+            zone_size_bytes: 256 * 1024 * 1024,
+            conventional_zone_count: 1,
+            max_open_zones: 32,
+            unrestricted_read: true,
+        }
+    }
 }
 
 /// The disk identity.

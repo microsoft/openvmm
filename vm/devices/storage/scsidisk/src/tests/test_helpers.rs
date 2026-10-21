@@ -30,6 +30,7 @@ use zerocopy::IntoBytes;
 pub struct TestDiskStorageState {
     pub storage: Vec<u8>,
     pub is_fua_set: bool,
+    pub sync_count: u64,
     pub sector_count: u64,
 }
 
@@ -62,6 +63,7 @@ impl TestDisk {
         let state = Arc::new(Mutex::new(TestDiskStorageState {
             storage: buffer,
             is_fua_set: false,
+            sync_count: 0,
             sector_count,
         }));
         (
@@ -141,6 +143,7 @@ impl DiskIo for TestDisk {
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.state.lock().sync_count += 1;
         Ok(())
     }
 
@@ -180,7 +183,7 @@ pub fn new_scsi_disk(
         Disk::new(disk).unwrap()
     };
 
-    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default());
+    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default()).unwrap();
     let sector_shift = logical_sector_size.trailing_zeros() as u8;
     let physical_extra_shift = physical_sector_size.trailing_zeros() as u8 - sector_shift;
     assert_eq!(scsi_disk.sector_size, logical_sector_size);

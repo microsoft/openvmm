@@ -7540,6 +7540,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "crc32fast",
  "disk_backend",
  "disk_prwrap",
  "futures",

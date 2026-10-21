@@ -1871,7 +1871,8 @@ mod tests {
         let disk = scsidisk::SimpleScsiDisk::new(
             disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
             Default::default(),
-        );
+        )
+        .unwrap();
         controller
             .attach(
                 ScsiPath {
@@ -2281,7 +2282,8 @@ mod tests {
             let disk = scsidisk::SimpleScsiDisk::new(
                 disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
                 Default::default(),
-            );
+            )
+            .unwrap();
             controller
                 .attach(
                     ScsiPath {
@@ -2388,10 +2390,9 @@ mod tests {
     async fn test_async_disk(driver: DefaultDriver) {
         let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
         let controller = ScsiController::new();
-        let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(
-            device,
-            Default::default(),
-        )));
+        let disk = ScsiControllerDisk::new(Arc::new(
+            scsidisk::SimpleScsiDisk::new(device, Default::default()).unwrap(),
+        ));
         controller
             .attach(
                 ScsiPath {

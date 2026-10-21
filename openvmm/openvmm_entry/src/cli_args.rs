@@ -426,6 +426,8 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
+    `zoned`                        present as a host-managed zoned SCSI disk
+    `restricted_read`              disallow reads of unwritten blocks and reads across sequential zones
 
 options:
     `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
@@ -433,6 +435,9 @@ options:
     `nsid=<N>`                     NVMe namespace ID (1-based), requires `on`; auto-assigned if omitted
     `lun=<N>`                      SCSI LUN (0-based), requires `on`; auto-assigned if omitted
     `relay=<ctrl>[:<loc>]`         relay through OpenHCL to the named OpenHCL controller, with optional location (LUN or NSID)
+    `zone_size=<size>`             zoned disk zone size (default 256M)
+    `conventional_zones=<N>`       conventional zones at the beginning of the disk (default 1)
+    `max_open_zones=<N>`           maximum open sequential-write-required zones (default 32)
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
@@ -2473,6 +2478,7 @@ pub struct DiskCli {
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
     pub relay: Option<(String, Option<u32>)>,
+    pub zoned: Option<scsidisk_resources::HostManagedZonedParameters>,
 }
 
 #[derive(Copy, Clone)]
@@ -2528,6 +2534,13 @@ struct DiskArgs {
     nsid: Option<u32>,
     lun: Option<u8>,
     relay: Option<RelayTarget>,
+    #[kv(flag)]
+    zoned: bool,
+    #[kv(flag)]
+    restricted_read: bool,
+    zone_size: Option<String>,
+    conventional_zones: Option<u32>,
+    max_open_zones: Option<u32>,
 }
 
 impl FromStr for DiskCli {
@@ -2551,6 +2564,10 @@ impl FromStr for DiskCli {
         let nsid = args.nsid;
         let lun = args.lun;
         let relay = args.relay.map(|r| (r.name, r.location));
+        let has_zoned_options = args.zone_size.is_some()
+            || args.conventional_zones.is_some()
+            || args.max_open_zones.is_some()
+            || args.restricted_read;
 
         if serial.as_ref().is_some_and(|serial| {
             serial.bytes().any(|byte| {
@@ -2602,6 +2619,49 @@ impl FromStr for DiskCli {
             anyhow::bail!("`relay` is incompatible with `uh` and `uh-nvme`");
         }
 
+        if has_zoned_options && !args.zoned {
+            anyhow::bail!("zoned disk options require `zoned`");
+        }
+
+        let zoned = if args.zoned {
+            if read_only
+                || is_dvd
+                || underhill.is_some()
+                || pcie_port.is_some()
+                || nsid.is_some()
+                || relay.is_some()
+            {
+                anyhow::bail!(
+                    "`zoned` is incompatible with `ro`, `dvd`, `uh`, `uh-nvme`, \
+                     `pcie_port`, `nsid`, and `relay`"
+                );
+            }
+
+            let mut parameters = scsidisk_resources::HostManagedZonedParameters::default();
+            if let Some(value) = args.zone_size {
+                parameters.zone_size_bytes =
+                    parse_memory(&value).context("invalid `zone_size` value")?;
+            }
+            if let Some(value) = args.conventional_zones {
+                parameters.conventional_zone_count = value;
+            }
+            if let Some(value) = args.max_open_zones {
+                parameters.max_open_zones = value;
+            }
+            parameters.unrestricted_read = !args.restricted_read;
+
+            if parameters.zone_size_bytes == 0 || parameters.zone_size_bytes % 512 != 0 {
+                anyhow::bail!("`zone_size` must be a nonzero multiple of 512 bytes");
+            }
+            if parameters.max_open_zones == 0 {
+                anyhow::bail!("`max_open_zones` must be nonzero");
+            }
+
+            Some(parameters)
+        } else {
+            None
+        };
+
         Ok(DiskCli {
             vtl,
             kind: args.kind,
@@ -2614,6 +2674,7 @@ impl FromStr for DiskCli {
             nsid,
             lun,
             relay,
+            zoned,
         })
     }
 }
@@ -6320,6 +6381,41 @@ mod tests {
         assert_eq!(d.controller.as_deref(), Some("scsi0"));
         assert_eq!(d.lun, Some(3));
         assert_eq!(d.nsid, None);
+    }
+
+    #[test]
+    fn test_disk_cli_zoned_defaults() {
+        let d = DiskCli::from_str("file:disk.vhd,on=scsi0,lun=1,zoned").unwrap();
+        let zoned = d.zoned.unwrap();
+        assert_eq!(zoned.zone_size_bytes, 256 * 1024 * 1024);
+        assert_eq!(zoned.conventional_zone_count, 1);
+        assert_eq!(zoned.max_open_zones, 32);
+        assert!(zoned.unrestricted_read);
+    }
+
+    #[test]
+    fn test_disk_cli_zoned_options() {
+        let d = DiskCli::from_str(
+            "file:disk.vhd,on=scsi0,zoned,zone_size=64M,conventional_zones=2,\
+             max_open_zones=8,restricted_read",
+        )
+        .unwrap();
+        let zoned = d.zoned.unwrap();
+        assert_eq!(zoned.zone_size_bytes, 64 * 1024 * 1024);
+        assert_eq!(zoned.conventional_zone_count, 2);
+        assert_eq!(zoned.max_open_zones, 8);
+        assert!(!zoned.unrestricted_read);
+    }
+
+    #[test]
+    fn test_disk_cli_zoned_errors() {
+        assert!(DiskCli::from_str("file:disk.vhd,zone_size=64M").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,zoned,zone_size=0").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,zoned,max_open_zones=0").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,zoned,ro").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,zoned,pcie_port=rp0").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=nvme0,zoned,nsid=1").is_err());
+        assert!(DiskCli::from_str("file:disk.vhd,on=scsi0,zoned,relay=target").is_err());
     }
 
     #[test]
