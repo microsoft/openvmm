@@ -90,9 +90,27 @@ impl Device {
             .context("persistent memory region is too large")?;
         let mappable = sparse_mmap::new_mappable_from_file(&file, writable, false)
             .context("failed to create file mapping")?;
+        #[cfg(windows)]
+        let flush_mapping = if writable {
+            let mapping = sparse_mmap::SparseMapping::new(file_len)
+                .context("failed to create flush mapping")?;
+            mapping
+                .map_file(0, file_len, &mappable, 0, true)
+                .context("failed to map persistent memory for flushing")?;
+            Some(mapping)
+        } else {
+            None
+        };
         Ok(Self {
             driver: driver_source.simple(),
-            worker: TaskControl::new(PmemWorker { writable, file }),
+            worker: TaskControl::new(PmemWorker {
+                writable,
+                file,
+                #[cfg(windows)]
+                file_len,
+                #[cfg(windows)]
+                flush_mapping,
+            }),
             mappable,
             padding,
             file_len,
@@ -215,6 +233,25 @@ impl VirtioDevice for Device {
 struct PmemWorker {
     writable: bool,
     file: fs::File,
+    #[cfg(windows)]
+    file_len: usize,
+    #[cfg(windows)]
+    #[inspect(skip)]
+    flush_mapping: Option<sparse_mmap::SparseMapping>,
+}
+
+impl PmemWorker {
+    fn flush(&self) -> anyhow::Result<()> {
+        #[cfg(windows)]
+        self.flush_mapping
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("flush mapping was not created"))?
+            .flush_view(0, self.file_len)
+            .context("failed to flush mapped persistent memory")?;
+        self.file
+            .sync_all()
+            .context("failed to flush persistent memory file")
+    }
 }
 
 impl InspectTaskMut<PmemQueue> for PmemWorker {
@@ -265,10 +302,10 @@ fn process_pmem_request(
                 // Ignore the request for read-only devices.
                 0
             }
-            0 => match worker.file.sync_all() {
+            0 => match worker.flush() {
                 Ok(()) => 0,
                 Err(err) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "flush error");
+                    tracing::error!(error = %err, "flush error");
                     1
                 }
             },
