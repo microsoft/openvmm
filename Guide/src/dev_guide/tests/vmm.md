@@ -65,6 +65,11 @@ the partition and bind its single VP before invoking the function. Cases have
 names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
 Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
 enlightenment offload on WHP.
+The clock contracts also have separately named Hv1-enabled cases:
+`initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
+`clock_restore_hv1`. These reuse the unenlightened contracts to check reference
+time as well as TSC, and require Hv1 in addition to each contract's other
+capabilities.
 Host requirements select the matching backend. Execution-host discovery probes
 the selected fixture's capabilities so unsupported time control, reset, Hv1,
 or TSC-deadline cases are reported as ignored, not passed. Probe errors fail the

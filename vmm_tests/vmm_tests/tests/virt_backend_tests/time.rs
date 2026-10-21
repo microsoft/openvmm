@@ -37,6 +37,14 @@ fn initial_frozen(
     initial.check_frozen(partition, processor)
 }
 
+backend_test!(initial_frozen_hv1, hv1: true, requires: [time_control, hv1]);
+fn initial_frozen_hv1(
+    partition: &(impl Partition + PartitionAccessState),
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    initial_frozen(partition, processor)
+}
+
 backend_test!(reset_clocks, requires: [time_control, reset]);
 fn reset_clocks(
     partition: &(impl Partition + PartitionAccessState),
@@ -52,6 +60,14 @@ fn reset_clocks(
     expected.check_frozen(partition, processor)
 }
 
+backend_test!(reset_clocks_hv1, hv1: true, requires: [time_control, reset, hv1]);
+fn reset_clocks_hv1(
+    partition: &(impl Partition + PartitionAccessState),
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    reset_clocks(partition, processor)
+}
+
 backend_test!(clock_restore, requires: [time_control, reset]);
 fn clock_restore(
     partition: &(impl Partition + PartitionAccessState),
@@ -63,6 +79,14 @@ fn clock_restore(
     saved.restore(partition, processor)?;
     expected.check(partition, processor)?;
     expected.check_frozen(partition, processor)
+}
+
+backend_test!(clock_restore_hv1, hv1: true, requires: [time_control, reset, hv1]);
+fn clock_restore_hv1(
+    partition: &(impl Partition + PartitionAccessState),
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    clock_restore(partition, processor)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -178,6 +202,14 @@ fn freeze_thaw(
         );
     }
     Ok(())
+}
+
+backend_test!(freeze_thaw_hv1, hv1: true, requires: [time_control, hv1]);
+fn freeze_thaw_hv1(
+    partition: &(impl Partition + PartitionAccessState),
+    processor: &mut impl Processor,
+) -> anyhow::Result<()> {
+    freeze_thaw(partition, processor)
 }
 
 fn reset(
