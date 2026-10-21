@@ -1458,7 +1458,7 @@ impl VmService {
 
     fn shutdown_vm(
         &self,
-        ctx: mesh::CancelContext,
+        mut ctx: mesh::CancelContext,
         request: vmservice::ShutdownVmRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::shutdown_vm_request::Mechanism;
@@ -1491,7 +1491,6 @@ impl VmService {
                 .clone(),
         };
         Ok(async move {
-            let mut ctx = ctx.with_timeout(Duration::from_secs(30));
             if let Some(reason) = ctx.cancelled().now_or_never() {
                 return Err(
                     anyhow!(reason).context("guest shutdown request cancelled or timed out")
@@ -2907,6 +2906,32 @@ mod shutdown_tests {
                 rpc.complete(ShutdownResult::Ok);
             };
             let (result, ()) = futures::join!(request, guest);
+            result.unwrap();
+        });
+    }
+
+    #[test]
+    fn shutdown_without_caller_deadline_waits_beyond_thirty_seconds() {
+        DefaultPool::run_with(async |driver| {
+            let (send, mut recv) = mesh::channel();
+            let service = service(driver.clone(), Some(send));
+            let ctx = mesh::CancelContext::new();
+            assert!(ctx.deadline().is_none());
+            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
+            let guest = async {
+                let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                    panic!("expected shutdown request");
+                };
+                pal_async::timer::PolledTimer::new(&driver)
+                    .sleep(Duration::from_secs(31))
+                    .await;
+                rpc.complete(ShutdownResult::Ok);
+            };
+            let (result, ()) = mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(40))
+                .until_cancelled(async { futures::join!(request, guest) })
+                .await
+                .expect("shutdown did not complete after the delayed acknowledgement");
             result.unwrap();
         });
     }

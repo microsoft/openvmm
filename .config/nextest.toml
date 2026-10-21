@@ -24,6 +24,15 @@
 # https://nexte.st/docs/configuration/?h=hierar#hierarchical-configuration
 
 [[profile.ci.overrides]]
+filter = 'package(openvmm_entry) and test(shutdown_without_caller_deadline_waits_beyond_thirty_seconds)'
+# This regression deliberately waits beyond the former 30-second server timeout.
+slow-timeout = { period = "45s", terminate-after = 1 }
+
+[[profile.agent.overrides]]
+filter = 'package(openvmm_entry) and test(shutdown_without_caller_deadline_waits_beyond_thirty_seconds)'
+slow-timeout = { period = "45s", terminate-after = 1 }
+
+[[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
