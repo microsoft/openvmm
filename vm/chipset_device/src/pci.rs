@@ -371,6 +371,20 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// `byte_offset` is guaranteed to be aligned to a 4-byte boundary.
     fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult;
 
+    /// Dispatch a PCI config space write issued as part of a device power or
+    /// ownership transition.
+    ///
+    /// The default implementation uses the normal config space write path.
+    /// Devices that virtualize guest-visible config state can override this to
+    /// preserve the physical lifecycle semantics of the write.
+    fn pci_cfg_write_for_device_power(
+        &mut self,
+        byte_offset: u16,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
+        self.pci_cfg_write(byte_offset, value)
+    }
+
     /// Dispatch a PCI configuration space read with full routing context.
     ///
     /// This method receives configuration space read with the access type,
@@ -462,6 +476,40 @@ pub trait PciConfigSpace: ChipsetDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct TestPciDevice {
+        last_write: Option<(u16, ByteEnabledDwordWrite)>,
+    }
+
+    impl ChipsetDevice for TestPciDevice {}
+
+    impl PciConfigSpace for TestPciDevice {
+        fn pci_cfg_read(
+            &mut self,
+            _byte_offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> IoResult {
+            IoResult::Ok
+        }
+
+        fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.last_write = Some((byte_offset, value));
+            IoResult::Ok
+        }
+    }
+
+    #[test]
+    fn device_power_write_forwards_to_normal_write_by_default() {
+        let mut device = TestPciDevice::default();
+        let value = ByteEnabledDwordWrite::new(0x1234, PciConfigByteEnable::LOW_WORD);
+
+        assert!(matches!(
+            device.pci_cfg_write_for_device_power(4, value),
+            IoResult::Ok
+        ));
+        assert_eq!(device.last_write, Some((4, value)));
+    }
 
     #[test]
     fn byte_enable_from_offset_len_rejects_invalid_accesses() {

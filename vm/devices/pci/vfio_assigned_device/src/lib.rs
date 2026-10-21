@@ -103,9 +103,16 @@ struct ConfigPatch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct VirtualizedCommandWrite {
+enum CommandWriteSource {
+    Guest,
+    DevicePower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandWritePlan {
     physical_value: ByteEnabledDwordWrite,
     mmio_change: Option<bool>,
+    update_before_write: bool,
 }
 
 fn mse_mask() -> u32 {
@@ -124,10 +131,11 @@ fn apply_virtual_mse_read(mut value: ByteEnabledDwordRead<'_>, mmio_enabled: boo
     value.set(value_with_virtual_mse);
 }
 
-fn virtualize_command_write(
+fn command_write_plan(
     value: ByteEnabledDwordWrite,
     mmio_enabled: bool,
-) -> VirtualizedCommandWrite {
+    source: CommandWriteSource,
+) -> CommandWritePlan {
     let mse_mask = mse_mask();
     let mmio_change = if value.valid_mask() & mse_mask != 0 {
         let command = cfg_space::Command::from_bits(value.extract_low());
@@ -137,9 +145,18 @@ fn virtualize_command_write(
         None
     };
 
-    VirtualizedCommandWrite {
-        physical_value: ByteEnabledDwordWrite::new(value.extract() | mse_mask, value.byte_enable()),
+    let physical_value = match source {
+        CommandWriteSource::Guest => {
+            ByteEnabledDwordWrite::new(value.extract() | mse_mask, value.byte_enable())
+        }
+        CommandWriteSource::DevicePower => value,
+    };
+
+    CommandWritePlan {
+        physical_value,
         mmio_change,
+        update_before_write: source == CommandWriteSource::DevicePower
+            && mmio_change == Some(false),
     }
 }
 
@@ -978,6 +995,38 @@ impl VfioAssignedPciDevice {
 
         self.active_bars = new_bars;
     }
+
+    fn write_command(
+        &mut self,
+        offset: u16,
+        value: ByteEnabledDwordWrite,
+        source: CommandWriteSource,
+    ) {
+        let plan = command_write_plan(value, self.mmio_enabled, source);
+
+        if plan.update_before_write {
+            self.apply_mmio_change(plan.mmio_change, source);
+        }
+
+        self.write_phys_config(offset, plan.physical_value);
+
+        if !plan.update_before_write {
+            self.apply_mmio_change(plan.mmio_change, source);
+        }
+    }
+
+    fn apply_mmio_change(&mut self, mmio_change: Option<bool>, source: CommandWriteSource) {
+        if let Some(enabled) = mmio_change {
+            self.mmio_enabled = enabled;
+            self.update_bar_mappings();
+            tracing::debug!(
+                pci_id = self.pci_id.as_str(),
+                enabled,
+                ?source,
+                "MMIO state changed"
+            );
+        }
+    }
 }
 
 /// Remove MSI-X table and PBA regions from the mmap areas for the
@@ -1687,8 +1736,8 @@ impl PciConfigSpace for VfioAssignedPciDevice {
 
     fn pci_cfg_read(&mut self, offset: u16, mut value: ByteEnabledDwordRead<'_>) -> IoResult {
         match HeaderType00(offset) {
-            // MSE is virtualized for the guest while it remains enabled on the
-            // physical device for the lifetime of the assignment.
+            // MSE is virtualized for ordinary guest config accesses. Device
+            // power and ownership transitions update the physical state.
             HeaderType00::STATUS_COMMAND => {
                 self.read_phys_config(offset, value.reborrow());
                 apply_virtual_mse_read(value.reborrow(), self.mmio_enabled);
@@ -1757,24 +1806,9 @@ impl PciConfigSpace for VfioAssignedPciDevice {
         match HeaderType00(offset) {
             // Command register: track MMIO enable/disable.
             HeaderType00::STATUS_COMMAND => {
-                let virtualized_write = virtualize_command_write(value, self.mmio_enabled);
-
                 // Forward all guest-written command/status bits except MSE,
                 // which remains enabled on the physical device.
-                self.write_phys_config(offset, virtualized_write.physical_value);
-
-                if let Some(enabled) = virtualized_write.mmio_change {
-                    self.mmio_enabled = enabled;
-                    self.update_bar_mappings();
-                }
-
-                if let Some(enabled) = virtualized_write.mmio_change {
-                    tracing::debug!(
-                        pci_id = self.pci_id.as_str(),
-                        enabled,
-                        "MMIO state changed by guest"
-                    );
-                }
+                self.write_command(offset, value, CommandWriteSource::Guest);
             }
             // BAR registers: mask and cache locally. If MMIO is active,
             // re-evaluate mappings so the device responds at the new address
@@ -1899,6 +1933,20 @@ impl PciConfigSpace for VfioAssignedPciDevice {
         }
 
         IoResult::Ok
+    }
+
+    fn pci_cfg_write_for_device_power(
+        &mut self,
+        offset: u16,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
+        match HeaderType00(offset) {
+            HeaderType00::STATUS_COMMAND => {
+                self.write_command(offset, value, CommandWriteSource::DevicePower);
+                IoResult::Ok
+            }
+            _ => self.pci_cfg_write(offset, value),
+        }
     }
 }
 
@@ -2053,20 +2101,23 @@ mod tests {
 
     #[test]
     fn virtual_mse_write_preserves_physical_enable_and_partial_writes() {
-        let clear = virtualize_command_write(
+        let clear = command_write_plan(
             ByteEnabledDwordWrite::new(0, PciConfigByteEnable::BYTE0),
             true,
+            CommandWriteSource::Guest,
         );
         assert_eq!(clear.mmio_change, Some(false));
+        assert!(!clear.update_before_write);
         assert_eq!(
             clear.physical_value.byte_enable(),
             PciConfigByteEnable::BYTE0
         );
         assert_eq!(clear.physical_value.extract() & mse_mask(), mse_mask());
 
-        let repeated_clear = virtualize_command_write(
+        let repeated_clear = command_write_plan(
             ByteEnabledDwordWrite::new(0, PciConfigByteEnable::BYTE0),
             false,
+            CommandWriteSource::Guest,
         );
         assert_eq!(repeated_clear.mmio_change, None);
         assert_eq!(
@@ -2074,9 +2125,10 @@ mod tests {
             mse_mask()
         );
 
-        let enable = virtualize_command_write(
+        let enable = command_write_plan(
             ByteEnabledDwordWrite::new(mse_mask() | 0x100, PciConfigByteEnable::LOW_WORD),
             false,
+            CommandWriteSource::Guest,
         );
         assert_eq!(enable.mmio_change, Some(true));
         assert_eq!(
@@ -2085,9 +2137,10 @@ mod tests {
         );
         assert_eq!(enable.physical_value.extract(), mse_mask() | 0x100);
 
-        let status_only = virtualize_command_write(
+        let status_only = command_write_plan(
             ByteEnabledDwordWrite::new(0x00ab_0000, PciConfigByteEnable::BYTE2),
             false,
+            CommandWriteSource::Guest,
         );
         assert_eq!(status_only.mmio_change, None);
         assert_eq!(
@@ -2095,9 +2148,10 @@ mod tests {
             ByteEnabledDwordWrite::new(0x00ab_0000, PciConfigByteEnable::BYTE2)
         );
 
-        let command_byte1 = virtualize_command_write(
+        let command_byte1 = command_write_plan(
             ByteEnabledDwordWrite::new(0x5a00, PciConfigByteEnable::BYTE1),
             false,
+            CommandWriteSource::Guest,
         );
         assert_eq!(command_byte1.mmio_change, None);
         assert_eq!(
@@ -2107,15 +2161,37 @@ mod tests {
     }
 
     #[test]
+    fn device_power_mse_write_reaches_hardware_with_safe_mapping_order() {
+        let clear_value = ByteEnabledDwordWrite::new(0, PciConfigByteEnable::LOW_WORD);
+        let clear = command_write_plan(clear_value, true, CommandWriteSource::DevicePower);
+        assert_eq!(clear.physical_value, clear_value);
+        assert_eq!(clear.mmio_change, Some(false));
+        assert!(clear.update_before_write);
+
+        let repeated_clear =
+            command_write_plan(clear_value, false, CommandWriteSource::DevicePower);
+        assert_eq!(repeated_clear.physical_value, clear_value);
+        assert_eq!(repeated_clear.mmio_change, None);
+        assert!(!repeated_clear.update_before_write);
+
+        let enable_value = ByteEnabledDwordWrite::new(mse_mask(), PciConfigByteEnable::LOW_WORD);
+        let enable = command_write_plan(enable_value, false, CommandWriteSource::DevicePower);
+        assert_eq!(enable.physical_value, enable_value);
+        assert_eq!(enable.mmio_change, Some(true));
+        assert!(!enable.update_before_write);
+    }
+
+    #[test]
     fn virtual_mse_transitions_control_bar_mappings() {
         let mut bars = [0; 6];
         bars[0] = 0x8000_0000;
         let mut bar_masks = [0; 6];
         bar_masks[0] = 0xffff_f000;
 
-        let clear = virtualize_command_write(
+        let clear = command_write_plan(
             ByteEnabledDwordWrite::new(0, PciConfigByteEnable::BYTE0),
             true,
+            CommandWriteSource::Guest,
         );
         let disabled = clear.mmio_change.unwrap();
         assert_eq!(
@@ -2123,9 +2199,10 @@ mod tests {
             None
         );
 
-        let enable = virtualize_command_write(
+        let enable = command_write_plan(
             ByteEnabledDwordWrite::new(mse_mask(), PciConfigByteEnable::BYTE0),
             false,
+            CommandWriteSource::Guest,
         );
         let enabled = enable.mmio_change.unwrap();
         assert_eq!(
