@@ -1644,6 +1644,7 @@ dependencies = [
  "scsi_buffers",
  "storage_tests",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -3246,8 +3247,11 @@ dependencies = [
  "inspect",
  "minircu",
  "pal_event",
+ "parking_lot",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "trycopy",
  "zerocopy",
 ]
@@ -3770,6 +3774,7 @@ dependencies = [
  "anyhow",
  "linkme",
  "mesh",
+ "test_with_tracing",
  "vm_resource",
 ]
 
@@ -4111,6 +4116,7 @@ dependencies = [
  "guestmem",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
 ]
 
@@ -4607,6 +4613,7 @@ dependencies = [
  "range_map_vec",
  "slab",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",
@@ -6068,6 +6075,7 @@ dependencies = [
  "net_backend_resources",
  "net_tap",
  "netvsp_resources",
+ "nix 0.30.1",
  "nvme_resources",
  "openvmm_build_info",
  "openvmm_defs",
@@ -6256,6 +6264,7 @@ dependencies = [
  "nvme",
  "nvme_test",
  "openvmm_core",
+ "pal_async",
  "rusqlite",
  "scsidisk",
  "serial_16550",
@@ -6277,6 +6286,7 @@ dependencies = [
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
+ "virtio_resources",
  "virtio_rng",
  "virtio_vsock",
  "virtiofs",
@@ -7508,6 +7518,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -10106,11 +10117,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "disk_backend",
+ "disk_backend_resources",
+ "disk_blockdevice",
  "disklayer_ram",
  "futures",
  "guestmem",
  "inspect",
  "inspect_counters",
+ "mesh",
+ "nix 0.30.1",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -10168,6 +10183,7 @@ dependencies = [
  "pal_async",
  "pal_event",
  "parking_lot",
+ "sparse_mmap",
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.16",
@@ -10226,6 +10242,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "net_backend_resources",
+ "test_with_tracing",
  "unix_socket",
  "vm_resource",
 ]

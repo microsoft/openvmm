@@ -235,6 +235,17 @@ impl PackedQueueCompleteWork {
         self.queue_desc
             .write_plain(descriptor_offset(self.next_index), &descriptor)
             .map_err(QueueError::Memory)?;
+        let completed_index = self.next_index;
+        let completed_wrap = self.wrapped_bit;
+        // A visible used marker must remain consumed even if notification
+        // metadata cannot be read.
+        let raw = self.next_index + context.descriptor_count;
+        self.next_index = if raw >= self.queue_size {
+            self.wrapped_bit = !self.wrapped_bit;
+            raw - self.queue_size
+        } else {
+            raw
+        };
         // Ensure the descriptor update is visible before checking if the guest requires notification.
         atomic::fence(atomic::Ordering::SeqCst);
         let driver_event: PackedEventSuppression = self
@@ -244,18 +255,88 @@ impl PackedQueueCompleteWork {
         let send_signal = match driver_event.flags() {
             EventSuppressionFlags::Disabled => false,
             EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
-                driver_event.offset() == self.next_index && driver_event.wrap() == self.wrapped_bit
+                driver_event.offset() == completed_index && driver_event.wrap() == completed_wrap
             }
             _ => true,
         };
-        // Wraps at most once (see `advance`); compare-and-subtract avoids a modulo.
-        let raw = self.next_index + context.descriptor_count;
-        self.next_index = if raw >= self.queue_size {
-            self.wrapped_bit = !self.wrapped_bit;
-            raw - self.queue_size
-        } else {
-            raw
-        };
         Ok(send_signal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn event_index_notifies_for_completed_slot_not_next() {
+        for (index, wrap) in [(5, true), (31, true), (5, false), (31, false)] {
+            let next_index = (index + 1) % 32;
+            let next_wrap = wrap ^ (next_index == 0);
+            for (event_index, event_wrap, expected_notify) in [
+                (index, wrap, true),
+                (next_index, next_wrap, false),
+                (index, !wrap, false),
+            ] {
+                let driver_event = GuestMemory::allocate(guestmem::PAGE_SIZE);
+                driver_event
+                    .write_plain(
+                        0,
+                        &PackedEventSuppression::new()
+                            .with_flags(EventSuppressionFlags::DescriptorIndex)
+                            .with_offset(event_index)
+                            .with_wrap(event_wrap),
+                    )
+                    .unwrap();
+                let mut queue = PackedQueueCompleteWork {
+                    queue_desc: GuestMemory::allocate(guestmem::PAGE_SIZE),
+                    driver_event,
+                    queue_size: 32,
+                    next_index: index,
+                    wrapped_bit: wrap,
+                    use_event_index: true,
+                };
+                let context = PackedQueueCompletionContext {
+                    buffer_id: 7,
+                    descriptor_count: 1,
+                };
+                assert_eq!(
+                    queue.complete_descriptor(&context, 512).unwrap(),
+                    expected_notify,
+                    "completed ({index}, {wrap}), event ({event_index}, {event_wrap})"
+                );
+                assert_eq!(
+                    queue.used_state(),
+                    next_index | (u16::from(next_wrap) << 15)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn published_completion_advances_even_when_notification_read_fails() {
+        for (index, expected) in [(0, 0x8001), (31, 0)] {
+            let descriptors = GuestMemory::allocate(guestmem::PAGE_SIZE);
+            let mut queue = PackedQueueCompleteWork {
+                queue_desc: descriptors.clone(),
+                driver_event: GuestMemory::allocate(0),
+                queue_size: 32,
+                next_index: index,
+                wrapped_bit: true,
+                use_event_index: true,
+            };
+            let context = PackedQueueCompletionContext {
+                buffer_id: 7,
+                descriptor_count: 1,
+            };
+            assert!(queue.complete_descriptor(&context, 512).is_err());
+            assert_eq!(queue.used_state(), expected);
+            let published = descriptors
+                .read_plain::<PackedDescriptor>(descriptor_offset(index))
+                .unwrap();
+            assert_eq!(published.buffer_id, 7);
+            assert_eq!(published.length, 512);
+            assert!(published.flags().used());
+        }
     }
 }

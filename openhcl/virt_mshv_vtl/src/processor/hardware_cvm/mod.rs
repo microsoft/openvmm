@@ -2061,7 +2061,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         gpn: u64,
         check_perms: HvMapGpaFlags,
         new_perms: Option<HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         self.protector.register_overlay_page(
             self.vtl,
             gpn,
@@ -2071,7 +2071,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
             self.tlb_access,
         )?;
         // TODO: underhill_mem should really be responsible for constructing the
-        // LockedPages, but that requires some refactoring. For now, we just use
+        // UserLockedPages, but that requires some refactoring. For now, we just use
         // guest memory to lock the pages. When this is cleaned up, don't forget
         // to also cleanup how underhill_mem handles locking overlay pages.
         //
@@ -2086,7 +2086,7 @@ impl hv1_emulator::VtlProtectAccess for CvmVtlProtectAccess<'_> {
         // violation.
         Ok(self
             .guest_memory
-            .lock_gpns(guestmem::AccessType::Read, false, &[gpn])
+            .lock_user_gpns(guestmem::AccessType::Read, &[gpn])
             .unwrap())
     }
 

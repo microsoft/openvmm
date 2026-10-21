@@ -59,6 +59,8 @@ mod secureboot;
 mod tpm;
 /// TPM tests that run against the 1.38 TPM reference implementation.
 mod tpm138;
+/// Tests that explicitly force owned virtio I/O staging.
+mod virtio_bounce;
 /// Tests for VLAN (802.1Q) support on virtual NICs.
 mod vlan;
 /// Tests of vmbus relay functionality.

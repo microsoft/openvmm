@@ -273,6 +273,7 @@ impl PetriVmConfigOpenVmm {
                     max_queues: None,
                     mac_address,
                     endpoint,
+                    bounce_io: false,
                 }
                 .into_resource(),
             )
@@ -311,6 +312,7 @@ impl PetriVmConfigOpenVmm {
                     max_queues: None,
                     mac_address,
                     endpoint,
+                    bounce_io: false,
                 }
                 .into_resource(),
             )

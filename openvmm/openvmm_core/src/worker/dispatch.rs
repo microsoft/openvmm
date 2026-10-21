@@ -1452,6 +1452,7 @@ impl InitializedVm {
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
+            .io_policy(proto.guest_memory_io_policy())
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
             .x86_legacy_support(
@@ -3059,6 +3060,7 @@ impl InitializedVm {
                     device,
                     VirtioResolveInput {
                         driver_source: &driver_source,
+                        guest_memory: Some(&gm),
                     },
                 )
                 .await?;

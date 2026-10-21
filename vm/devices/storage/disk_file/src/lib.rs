@@ -99,15 +99,34 @@ impl FileDisk {
 }
 
 impl FileDisk {
-    pub async fn read(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
-        if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
+    fn io_offset(&self, sector: u64, len: usize) -> Result<u64, DiskError> {
+        let offset = sector
+            .checked_mul(1 << self.sector_shift)
+            .ok_or(DiskError::IllegalBlock)?;
+        let end = offset
+            .checked_add(len as u64)
+            .ok_or(DiskError::IllegalBlock)?;
+        if end > self.metadata.disk_size {
             return Err(DiskError::IllegalBlock);
         }
-        let mut buffer = vec![0; buffers.len()];
+        Ok(offset)
+    }
+
+    fn io_buffer(len: usize) -> Result<Vec<u8>, DiskError> {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(len).map_err(|err| {
+            DiskError::Io(std::io::Error::new(std::io::ErrorKind::OutOfMemory, err))
+        })?;
+        buffer.resize(len, 0);
+        Ok(buffer)
+    }
+
+    pub async fn read(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
+        let offset = self.io_offset(sector, buffers.len())?;
+        let mut buffer = Self::io_buffer(buffers.len())?;
         let file = self.file.clone();
-        let offset = sector << self.sector_shift;
         let buffer = unblock(move || -> Result<_, std::io::Error> {
-            file.read_at(&mut buffer, offset)?;
+            ReadWriteAt::read_exact_at(file.as_ref(), &mut buffer, offset)?;
             Ok(buffer)
         })
         .await
@@ -120,18 +139,21 @@ impl FileDisk {
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        _fua: bool,
+        fua: bool,
     ) -> Result<(), DiskError> {
-        if ((sector << self.sector_shift) + buffers.len() as u64) > self.metadata.disk_size {
-            return Err(DiskError::IllegalBlock);
-        }
-        let mut buffer = vec![0; buffers.len()];
+        let offset = self.io_offset(sector, buffers.len())?;
+        let mut buffer = Self::io_buffer(buffers.len())?;
         let file = self.file.clone();
         buffers.reader().read(&mut buffer)?;
-        let offset = sector << self.sector_shift;
-        unblock(move || file.write_at(&buffer, offset))
-            .await
-            .map_err(DiskError::Io)?;
+        unblock(move || -> Result<(), std::io::Error> {
+            ReadWriteAt::write_all_at(file.as_ref(), &buffer, offset)?;
+            if fua {
+                file.sync_data()?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(DiskError::Io)?;
         Ok(())
     }
 
@@ -170,7 +192,7 @@ impl DiskIo for FileDisk {
     }
 
     fn is_fua_respected(&self) -> bool {
-        false
+        true
     }
 
     async fn read_vectored(
@@ -216,6 +238,7 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
+    use test_with_tracing::test;
 
     const SECTOR_SIZE: usize = 512;
     const DISK_SIZE: u64 = 1024 * 1024;
@@ -266,5 +289,79 @@ mod tests {
         mem.read_at(0, &mut buf).unwrap();
         assert_ne!(buf, [0xcd; SECTOR_SIZE], "read returned sector 0");
         assert!(matches!(r, Err(DiskError::IllegalBlock)), "{r:?}");
+    }
+
+    #[async_test]
+    async fn truncated_file_read_does_not_copy_padding() {
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(DISK_SIZE).unwrap();
+        let control = file.try_clone().unwrap();
+        let disk = Disk::new(FileDisk::open(file, false).unwrap()).unwrap();
+        control.set_len(0).unwrap();
+        let memory = GuestMemory::allocate(SECTOR_SIZE);
+        memory.write_at(0, &[0x73; SECTOR_SIZE]).unwrap();
+        let range = OwnedRequestBuffers::linear(0, SECTOR_SIZE, true);
+        let result = disk.read_vectored(&range.buffer(&memory), 0).await;
+        assert!(matches!(
+            result,
+            Err(DiskError::Io(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof
+        ));
+        let mut actual = [0; SECTOR_SIZE];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, [0x73; SECTOR_SIZE]);
+    }
+
+    #[async_test]
+    async fn large_copy_only_file_roundtrip() {
+        let size = 2 * 1024 * 1024;
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(size as u64).unwrap();
+        let disk = Disk::new(FileDisk::open(file, false).unwrap()).unwrap();
+        let memory = GuestMemory::allocate(size).copy_only_view();
+        let expected = vec![0x5a; size];
+        memory.write_at(0, &expected).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, size, false).buffer(&memory),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        memory.fill_at(0, 0, size).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, size, true).buffer(&memory),
+            0,
+        )
+        .await
+        .unwrap();
+        let mut actual = vec![0; size];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[async_test]
+    async fn copy_only_file_roundtrip_with_fua() {
+        let disk = file_disk();
+        assert!(disk.is_fua_respected());
+        let memory = GuestMemory::allocate(SECTOR_SIZE).copy_only_view();
+        memory.write_at(0, &[0x42; SECTOR_SIZE]).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_SIZE, false).buffer(&memory),
+            0,
+            true,
+        )
+        .await
+        .unwrap();
+        disk.sync_cache().await.unwrap();
+        memory.fill_at(0, 0, SECTOR_SIZE).unwrap();
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_SIZE, true).buffer(&memory),
+            0,
+        )
+        .await
+        .unwrap();
+        let mut actual = [0; SECTOR_SIZE];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, [0x42; SECTOR_SIZE]);
     }
 }
