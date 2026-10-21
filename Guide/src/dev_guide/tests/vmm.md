@@ -85,7 +85,7 @@ Use the existing VMM-test runner to select the executable:
 cargo xflowey vmm-tests-run --filter 'binary(virt_backend_tests)'
 ```
 
-Add `--build-only` to compile without accessing a hypervisor.
+Add `--build-only` to build without running the tests.
 
 ### "heavy" tests
 

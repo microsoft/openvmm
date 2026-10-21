@@ -201,6 +201,18 @@ fn freeze_thaw(
             "thaw included paused reference time: {before} -> {after}, limit {limit}"
         );
     }
+    std::thread::sleep(RUNNING_WAIT);
+    let running = ClockState::read(partition, processor)?;
+    anyhow::ensure!(
+        running.tsc > resumed.tsc,
+        "TSC did not advance after resuming from freeze"
+    );
+    if let (Some(before), Some(after)) = (resumed.reference, running.reference) {
+        anyhow::ensure!(
+            after > before,
+            "reference time did not advance after resuming from freeze"
+        );
+    }
     Ok(())
 }
 
