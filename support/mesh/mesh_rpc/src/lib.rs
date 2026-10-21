@@ -11,6 +11,16 @@
 //! Currently, the server supports the gRPC and ttrpc protocols, while the
 //! client only supports the ttrpc protocol.
 //!
+//! # Cancellation
+//!
+//! Request contexts are cancelled when the client connection closes. For gRPC,
+//! resetting a stream also cancels that request without cancelling other streams.
+//! The ttrpc protocol has no per-request cancellation message: dropping a call
+//! future alone does not notify the server.
+//!
+//! Service implementations must observe the supplied [`mesh::CancelContext`] to
+//! stop work on cancellation or deadline expiry.
+//!
 //! # Usage
 //!
 //! 1. Define your service in a `.proto` file.

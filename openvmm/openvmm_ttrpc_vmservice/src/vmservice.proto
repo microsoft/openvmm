@@ -32,6 +32,8 @@ service VM {
     // will shut down or has powered off. Mechanism-specific rejection errors
     // are reported when available.
     // Use WaitVM to observe a halt and TeardownVM to release resources.
+    // An unspecified mechanism uses the VM's default shutdown facility.
+    // An explicit mechanism must be available for that VM.
     // Currently only the Hyper-V shutdown integration component is supported;
     // it requires a running VM with Hyper-V enlightenments and VMBus enabled,
     // and a guest that services the request. This implementation waits for the
@@ -83,7 +85,9 @@ service VM {
 //
 message ShutdownVMRequest {
     enum Mechanism {
-        // Use Hyper-V IC. This default does not perform automatic fallback.
+        // Use the VM's default shutdown facility, established at VM creation.
+        // Currently Hyper-V IC is the only supported facility.
+        // This does not probe guest readiness or perform automatic fallback.
         MECHANISM_UNSPECIFIED = 0;
         // Explicitly request the Hyper-V shutdown integration component.
         MECHANISM_HYPERV_IC = 1;
@@ -91,9 +95,8 @@ message ShutdownVMRequest {
 
     // Unknown values are rejected, not treated as the default.
     Mechanism mechanism = 1;
-    // Set the guest-side force flag. Its interpretation is guest-specific and
-    // may cause loss of unsaved data. This never forces a host-side power-off
-    // or guarantees shutdown completion. Omitted means false.
+    // Set the force bit in the shutdown protocol. Interpretation is guest-specific.
+    // This is not a host-side hard power-off. Omitted means false.
     bool force = 2;
 }
 

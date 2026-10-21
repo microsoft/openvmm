@@ -51,17 +51,17 @@ separate from resource teardown.
 
 `ShutdownVMRequest` has two fields:
 
-* `mechanism`: `MECHANISM_UNSPECIFIED` (the default) selects Hyper-V IC, as
-  does explicit `MECHANISM_HYPERV_IC`. The default is not automatic mechanism
-  selection. Unknown values return `INVALID_ARGUMENT` without issuing a
-  shutdown request.
-* `force`: defaults to `false`. Setting it to `true` passes the guest-side
-  force flag to the IC. Its interpretation depends on the guest; it may
-  discard unsaved application data and does not guarantee shutdown completion.
-  It never requests a host-side hard power-off. Linux guests may handle
-  forced and non-forced IC requests identically.
+* `mechanism`: `MECHANISM_UNSPECIFIED` (the default) uses the VM's default
+  shutdown facility, established when the VM is created. This is not runtime
+  probing or a fallback sequence. Explicit `MECHANISM_HYPERV_IC` requires
+  Hyper-V IC to be available for that VM; it never selects another facility.
+  Unknown values return `INVALID_ARGUMENT` without issuing a shutdown request.
+* `force`: defaults to `false`. Sets the force bit in the shutdown protocol;
+  its interpretation is guest-specific. This is not a host-side hard power-off.
 
-An empty request preserves the default non-forced Hyper-V IC behavior.
+An empty request uses the VM's default facility without requesting force.
+Future VM configurations may use a different default facility without changing
+the request shape. Callers that specifically require IC can select it explicitly.
 For example, this JSON request explicitly selects IC and sets its force flag:
 
 ```json
@@ -84,7 +84,9 @@ policy for this sequence.
 Currently, the only implemented mechanism is the Hyper-V shutdown integration
 component (IC). The VM must be running, Hyper-V enlightenments and VMBus must
 be enabled, and the guest must support and service the request. API-created
-VMs expose the shutdown component when both features are enabled. This
+VMs expose the shutdown component and use it as their default shutdown facility
+when both features are enabled. Otherwise, no default facility is available,
+and an unspecified shutdown request returns `FAILED_PRECONDITION`. This
 implementation waits for the guest's acknowledgement before returning success.
 ACPI power-button shutdown is not yet implemented by this RPC. If added, it
 would not imply a guest acknowledgement or guarantee that the guest's
@@ -109,6 +111,12 @@ let result = client
 For gRPC clients, set the call's deadline/timeout using the client library.
 This limits waiting for the shutdown request response, not completion of the
 guest's shutdown sequence. Give `WaitVM` its own deadline for that wait.
+Closing the client connection cancels its pending requests. For gRPC,
+resetting a stream also cancels that request without affecting other streams.
+The ttrpc protocol has no per-request cancellation message: dropping the
+Rust call future alone does not notify the server. Use a deadline to bound
+an individual ttrpc request without closing the shared connection.
+Cancellation observed before dispatch prevents the IC request from being sent.
 Cancelling or timing out does not undo a request already delivered to the
 guest and never triggers a fallback to another mechanism or hard power-off.
 
@@ -116,8 +124,9 @@ With the current Hyper-V IC implementation, a missing, paused, or halted VM,
 disabled Hyper-V/VMBus, or an IC that reports not-ready returns
 `FAILED_PRECONDITION`. An IC request already in progress returns
 `ALREADY_EXISTS`; a guest rejection returns `INTERNAL` with the guest status
-code. Caller cancellation and deadline expiry are reported as `CANCELLED` and
-`DEADLINE_EXCEEDED`.
+code. Cancellation and deadline expiry map to `CANCELLED` and
+`DEADLINE_EXCEEDED`; a disconnected client or reset stream cannot receive
+the cancellation response.
 
 ## VPCI hotplug
 
