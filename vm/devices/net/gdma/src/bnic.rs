@@ -162,7 +162,8 @@ impl BufferAccess for GuestBuffers {
             flags,
             ..FromZeros::new_zeroed()
         };
-        packet.oob.ppi[0].pkt_len = metadata.len as u16;
+        // The CQE field is 16-bit; saturate malformed oversized frames instead of wrapping.
+        packet.oob.ppi[0].pkt_len = metadata.len.try_into().unwrap_or(u16::MAX);
     }
 
     fn write_drop(&mut self, id: RxId, packet_len: usize) {
@@ -798,5 +799,48 @@ mod tests {
         assert!(flags.offload_udp_checksum());
         assert!(!flags.offload_tcp_checksum());
         assert!(!flags.offload_tcp_segmentation());
+    }
+
+    #[test]
+    fn write_drop_reports_truncated_completion() {
+        let mut rx_packets = Slab::new();
+        let id = rx_packets.insert(RxPacket {
+            segments: Vec::new(),
+            len: 64,
+            wqe_offset: 0x1234,
+            oob: ManaRxcompOob::new_zeroed(),
+        });
+        let mut buffers = GuestBuffers {
+            gm: GuestMemory::empty(),
+            rx_packets,
+        };
+
+        buffers.write_drop(RxId(id as u32), 4096);
+
+        let packet = &buffers.rx_packets[id];
+        assert_eq!(packet.oob.cqe_hdr.cqe_type(), CQE_RX_TRUNCATED);
+        assert_eq!(packet.oob.cqe_hdr.client_type(), MANA_CQE_COMPLETION);
+        assert_eq!(packet.oob.rx_wqe_offset, 0x1234);
+        assert_eq!(packet.oob.ppi[0].pkt_len, 4096);
+        assert_eq!(packet.oob.flags.into_bits(), 0);
+    }
+
+    #[test]
+    fn write_drop_saturates_oversized_packet_length() {
+        let mut rx_packets = Slab::new();
+        let id = rx_packets.insert(RxPacket {
+            segments: Vec::new(),
+            len: 64,
+            wqe_offset: 0,
+            oob: ManaRxcompOob::new_zeroed(),
+        });
+        let mut buffers = GuestBuffers {
+            gm: GuestMemory::empty(),
+            rx_packets,
+        };
+
+        buffers.write_drop(RxId(id as u32), u16::MAX as usize + 1);
+
+        assert_eq!(buffers.rx_packets[id].oob.ppi[0].pkt_len, u16::MAX);
     }
 }

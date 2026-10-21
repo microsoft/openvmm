@@ -1058,6 +1058,81 @@ mod tests {
         frame
     }
 
+    fn assert_rx_metadata_invariants(
+        hdr: &VirtioNetHdr,
+        frame: &[u8],
+        result: Result<RxMetadata, InvalidRxMetadata>,
+    ) {
+        let Ok(metadata) = result else {
+            return;
+        };
+
+        assert_eq!(metadata.offset, 0);
+        assert_eq!(metadata.len, 0);
+        assert!(metadata.vlan.is_none());
+
+        let checksum_limit = metadata
+            .gso
+            .map(|gso| usize::from(gso.header_len))
+            .unwrap_or(frame.len());
+        if let Some(checksum) = metadata.checksum_offload {
+            let checksum_end =
+                usize::from(checksum.start) + usize::from(checksum.offset) + size_of::<u16>();
+            assert!(checksum_end <= checksum_limit);
+            assert!(hdr.flags.needs_csum());
+        } else {
+            assert_eq!(hdr.csum_start, 0);
+            assert_eq!(hdr.csum_offset, 0);
+        }
+
+        if let Some(gso) = metadata.gso {
+            let header_len = usize::from(gso.header_len);
+            assert!(header_len <= frame.len());
+            assert!(usize::from(gso.max_segment_size) <= frame.len() - header_len);
+            assert_ne!(gso.max_segment_size, 0);
+            assert_eq!(metadata.l4_protocol, L4Protocol::Tcp);
+            assert!(!gso.ecn);
+        }
+    }
+
+    fn stress_vnet_header_and_frame_mutations(base_hdr: VirtioNetHdr, base_frame: Vec<u8>) {
+        let mut header_bytes = [0; size_of::<VirtioNetHdr>()];
+        header_bytes.copy_from_slice(base_hdr.as_bytes());
+        for index in 0..header_bytes.len() {
+            for value in u8::MIN..=u8::MAX {
+                let mut mutated = header_bytes;
+                mutated[index] = value;
+                let hdr = VirtioNetHdr::read_from_bytes(&mutated).unwrap();
+                assert_rx_metadata_invariants(
+                    &hdr,
+                    &base_frame,
+                    parse_vnet_hdr(&hdr, &base_frame, all_rx_offloads()),
+                );
+            }
+        }
+
+        for len in 0..=base_frame.len() {
+            assert_rx_metadata_invariants(
+                &base_hdr,
+                &base_frame[..len],
+                parse_vnet_hdr(&base_hdr, &base_frame[..len], all_rx_offloads()),
+            );
+        }
+
+        const MUTATIONS: [u8; 9] = [0, 1, 6, 15, 32, 64, 96, 128, 255];
+        for index in 0..base_frame.len() {
+            for value in MUTATIONS {
+                let mut frame = base_frame.clone();
+                frame[index] = value;
+                assert_rx_metadata_invariants(
+                    &base_hdr,
+                    &frame,
+                    parse_vnet_hdr(&base_hdr, &frame, all_rx_offloads()),
+                );
+            }
+        }
+    }
+
     #[test]
     fn vnet_hdr_from_tx_metadata_csum() {
         let meta = TxMetadata {
@@ -1428,6 +1503,108 @@ mod tests {
             parse_vnet_hdr(&hdr, &frame, all_rx_offloads()).unwrap_err(),
             InvalidRxMetadata::UnsupportedVlanDepth
         );
+    }
+
+    #[test]
+    fn rx_metadata_negotiation_matrix() {
+        let checksum_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let checksum_frame = vec![0; 1500];
+        let tcpv4_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 64,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let tcpv4_frame = tcp_gso_frame(RxGsoProtocol::TcpV4, false, 20, 128);
+        let tcpv4_data_valid_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_data_valid(true),
+            csum_start: 0,
+            csum_offset: 0,
+            ..tcpv4_hdr
+        };
+        let tcpv6_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            hdr_len: 74,
+            gso_size: 64,
+            csum_start: 54,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let tcpv6_frame = tcp_gso_frame(RxGsoProtocol::TcpV6, false, 20, 128);
+
+        for checksum in [false, true] {
+            for tcpv4_gso in [false, true] {
+                for tcpv6_gso in [false, true] {
+                    let support = net_backend::RxOffloadSupport {
+                        checksum,
+                        tcpv4_gso,
+                        tcpv6_gso,
+                    };
+                    assert_eq!(
+                        parse_vnet_hdr(&checksum_hdr, &checksum_frame, support).is_ok(),
+                        checksum
+                    );
+                    assert_eq!(
+                        parse_vnet_hdr(&tcpv4_hdr, &tcpv4_frame, support).is_ok(),
+                        checksum && tcpv4_gso
+                    );
+                    assert_eq!(
+                        parse_vnet_hdr(&tcpv4_data_valid_hdr, &tcpv4_frame, support).is_ok(),
+                        tcpv4_gso
+                    );
+                    assert_eq!(
+                        parse_vnet_hdr(&tcpv6_hdr, &tcpv6_frame, support).is_ok(),
+                        checksum && tcpv6_gso
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rx_metadata_parser_survives_deterministic_mutations() {
+        let tcpv4_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 32,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        stress_vnet_header_and_frame_mutations(
+            tcpv4_hdr,
+            tcp_gso_frame(RxGsoProtocol::TcpV4, false, 20, 64),
+        );
+
+        let mut tcpv6_frame = vec![0; 14 + 40 + 8 * 4 + 20 + 64];
+        tcpv6_frame[12..14].copy_from_slice(&0x86dd_u16.to_be_bytes());
+        tcpv6_frame[14] = 0x60;
+        tcpv6_frame[14 + 6] = 0;
+        tcpv6_frame[54] = 43;
+        tcpv6_frame[62] = 60;
+        tcpv6_frame[70] = 51;
+        tcpv6_frame[78] = 6;
+        tcpv6_frame[86 + 12] = 5 << 4;
+        let tcpv6_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            hdr_len: 106,
+            gso_size: 32,
+            csum_start: 86,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        stress_vnet_header_and_frame_mutations(tcpv6_hdr, tcpv6_frame);
     }
 
     #[test]

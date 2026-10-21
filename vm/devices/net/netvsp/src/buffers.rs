@@ -309,12 +309,19 @@ impl BufferAccess for BufferPool {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::BufferPool;
     use crate::buffers::GuestBuffers;
     use crate::buffers::GuestBuffersError;
+    use crate::buffers::RX_HEADER_LEN;
     use crate::buffers::compute_buffer_segments;
     use crate::buffers::sub_allocation_size_for_mtu;
+    use crate::rndisprot;
     use guestmem::GuestMemory;
+    use net_backend::BufferAccess;
     use net_backend::RxBufferSegment;
+    use net_backend::RxId;
+    use std::mem::size_of;
+    use std::sync::Arc;
     use vmbus_channel::gpadl::GpadlMap;
     use vmbus_core::protocol::GpadlId;
     use vmbus_ring::gparange::GpaRange;
@@ -425,5 +432,56 @@ mod tests {
             compute_buffer_segments(&mut v, &gpns, range);
             check(&v, data);
         }
+    }
+
+    #[test]
+    fn write_drop_reports_zero_length_packet() {
+        const PAGE_SIZE: usize = 4096;
+        const PAGE_COUNT: usize = 2;
+        const SUBALLOCATION_SIZE: u32 = 2048;
+        const STALE_PAYLOAD_LEN: usize = 32;
+
+        let mem = GuestMemory::allocate(PAGE_SIZE * PAGE_COUNT);
+        let hdr = GpaRange {
+            len: (PAGE_SIZE * PAGE_COUNT) as u32,
+            offset: 0,
+        };
+        let mut range_buffer = vec![u64::from_le_bytes(hdr.as_bytes().try_into().unwrap())];
+        range_buffer.extend(0..PAGE_COUNT as u64);
+        let ranges = MultiPagedRangeBuf::from_range_buffer(1, range_buffer).unwrap();
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(4);
+        gpadl_map.add(gpadl_id, ranges);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+        let buffers = GuestBuffers::new(mem.clone(), gpadl_view, SUBALLOCATION_SIZE, 1514).unwrap();
+        let mut pool = BufferPool::new(Arc::new(buffers));
+
+        mem.write_at(RX_HEADER_LEN as u64, &[0xa5; STALE_PAYLOAD_LEN])
+            .unwrap();
+        pool.write_drop(RxId(0), STALE_PAYLOAD_LEN);
+
+        let header: rndisprot::MessageHeader = mem.read_plain(0).unwrap();
+        let packet: rndisprot::Packet = mem
+            .read_plain(size_of::<rndisprot::MessageHeader>() as u64)
+            .unwrap();
+        let ppi_offset = size_of::<rndisprot::MessageHeader>() + size_of::<rndisprot::Packet>();
+        let ppi: rndisprot::PerPacketInfo = mem.read_plain(ppi_offset as u64).unwrap();
+        let checksum_info: u32 = mem
+            .read_plain((ppi_offset + size_of::<rndisprot::PerPacketInfo>()) as u64)
+            .unwrap();
+        let mut stale_payload = [0; STALE_PAYLOAD_LEN];
+        mem.read_at(RX_HEADER_LEN as u64, &mut stale_payload)
+            .unwrap();
+
+        assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_PACKET_MSG);
+        assert_eq!(header.message_length, SUBALLOCATION_SIZE);
+        assert_eq!(packet.data_length, 0);
+        assert_eq!(
+            packet.per_packet_info_length,
+            (size_of::<rndisprot::PerPacketInfo>() + size_of::<u32>()) as u32
+        );
+        assert_eq!(ppi.typ, rndisprot::PPI_TCP_IP_CHECKSUM);
+        assert_eq!(checksum_info, 0);
+        assert_eq!(stale_payload, [0xa5; STALE_PAYLOAD_LEN]);
     }
 }
