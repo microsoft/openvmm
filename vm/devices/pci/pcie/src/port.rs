@@ -63,6 +63,8 @@ fn validate_cxl_component_register_access(offset: u64, len: usize) -> Result<(),
 /// capabilities does not require changing every constructor signature.
 #[derive(Debug, Default, Clone)]
 pub struct PciePortSettings {
+    /// Enables attention button ejection on a hotplug port.
+    pub attention_button: bool,
     /// ACS capability bits to advertise on this port. `0` means the ACS
     /// extended capability is not present.
     pub acs_capabilities_supported: u16,
@@ -377,6 +379,9 @@ impl PcieDownstreamPort {
         if hotplug {
             let slot_num = slot_number.unwrap_or(0);
             pcie_cap = pcie_cap.with_hotplug_support(slot_num);
+            if settings.attention_button {
+                pcie_cap = pcie_cap.with_attention_button();
+            }
         }
 
         if let Some(max_prefixes) = settings.tlp_prefixing_supported {
@@ -895,7 +900,39 @@ impl PcieDownstreamPort {
         Ok(())
     }
 
-    /// Hot-remove the device from this port at runtime.
+    /// Requests guest ejection while keeping the endpoint accessible.
+    ///
+    /// # Returns
+    ///
+    /// The completion receiver from [`PciExpressCapability::request_hotplug_eject`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the port is empty, lacks a PCIe capability, or cannot
+    /// start ejection.
+    pub fn request_hotplug_remove_device(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+        let pcie = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .ok_or_else(|| anyhow::anyhow!("port '{}' has no PCIe capability", self.name))?;
+        let completion = pcie.request_hotplug_eject()?;
+        self.fire_hotplug_msi();
+        Ok(completion)
+    }
+
+    /// Disconnects the endpoint and signals physical removal.
+    ///
+    /// For orderly removal, first await the receiver returned by
+    /// [`Self::request_hotplug_remove_device`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the slot is empty or does not support hotplug.
     pub fn hotplug_remove_device(&mut self) -> anyhow::Result<()> {
         let is_hotplug_capable = self
             .cfg_space
@@ -966,6 +1003,7 @@ mod tests {
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
                 tlp_prefixing_supported: None,
+                ..Default::default()
             },
             Some(&mut mmio),
             Some(PortBarDefinition {
@@ -1558,6 +1596,7 @@ mod tests {
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
                 tlp_prefixing_supported: None,
+                ..Default::default()
             },
             None,
             Some(PortBarDefinition {

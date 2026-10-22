@@ -26,10 +26,30 @@ pub trait FlrHandler: Send + Sync + Inspect {
     fn initiate_flr(&self);
 }
 
+/// Failure to start orderly PCIe ejection.
+#[derive(Debug, thiserror::Error)]
+pub enum PcieEjectError {
+    /// The port does not implement hotplug.
+    #[error("port is not hotplug capable")]
+    NotHotplugCapable,
+    /// The port does not advertise attention button ejection.
+    #[error("port does not support attention button ejection")]
+    AttentionButtonUnsupported,
+    /// No endpoint is physically present.
+    #[error("slot is empty")]
+    EmptySlot,
+    /// Required guest hotplug interrupts are disabled.
+    #[error("guest has not enabled orderly PCIe ejection")]
+    InterruptDisabled,
+}
+
 #[derive(Debug, Inspect)]
 struct PciExpressState {
     registers: PciExpressRegisters,
     presence_detect_state: bool,
+    eject_requested: bool,
+    #[inspect(skip)]
+    eject_completion: Option<mesh::OneshotSender<()>>,
 }
 
 #[derive(Debug, Inspect)]
@@ -48,6 +68,8 @@ impl PciExpressState {
         Self {
             registers: PciExpressRegisters::new(),
             presence_detect_state: false,
+            eject_requested: false,
+            eject_completion: None,
         }
     }
 
@@ -55,8 +77,17 @@ impl PciExpressState {
         let Self {
             registers,
             presence_detect_state: _,
+            eject_requested,
+            eject_completion,
         } = self;
+        *eject_requested = false;
+        *eject_completion = None;
         *registers = PciExpressRegisters::new();
+    }
+
+    fn slot_powered_off(&self) -> bool {
+        self.registers.slot_control.power_controller_control()
+            && self.registers.slot_control.power_indicator_control() == 0b11
     }
 
     fn slot_status(
@@ -82,7 +113,10 @@ impl PciExpressState {
         pci_express::LinkStatus::new()
             .with_current_link_speed(LinkSpeed::Speed32_0GtS)
             .with_negotiated_link_width(LinkWidth::X16)
-            .with_data_link_layer_link_active(self.presence_detect_state)
+            .with_data_link_layer_link_active(
+                self.presence_detect_state
+                    && !self.registers.slot_control.power_controller_control(),
+            )
     }
 }
 
@@ -219,6 +253,13 @@ impl PciExpressCapability {
             state.registers.slot_status_events.into_bits()
                 & !(written_status.into_bits() & self.slot_status_rw1c_mask()),
         );
+
+        if state.slot_powered_off() {
+            state.eject_requested = false;
+            if let Some(completion) = state.eject_completion.take() {
+                completion.send(());
+            }
+        }
     }
 
     fn slot_control_writable_mask(&self) -> u16 {
@@ -436,12 +477,31 @@ impl PciExpressCapability {
             .with_hot_plug_capable(true)
             .with_no_command_completed_support(true)
             .with_physical_slot_number(slot_number);
-
         // Enable Data Link Layer Link Active Reporting when hotplug is enabled
         self.link_capabilities = self
             .link_capabilities
             .with_data_link_layer_link_active_reporting(true);
 
+        self
+    }
+
+    /// Enables attention button, power controller and power indicator support.
+    ///
+    /// # Panics
+    ///
+    /// Panics if hotplug support has not been configured.
+    pub fn with_attention_button(mut self) -> Self {
+        assert!(self.slot_capabilities.hot_plug_capable());
+        self.slot_capabilities = self
+            .slot_capabilities
+            .with_attention_button_present(true)
+            .with_power_controller_present(true)
+            .with_power_indicator_present(true);
+        self.state
+            .lock()
+            .registers
+            .slot_control
+            .set_power_indicator_control(0b11);
         self
     }
 
@@ -467,6 +527,60 @@ impl PciExpressCapability {
     pub fn set_presence_detect_state(&self, present: bool) {
         let mut state = self.state.lock();
         state.presence_detect_state = present;
+        if !present {
+            state.eject_requested = false;
+            state.eject_completion = None;
+        }
+    }
+
+    /// Requests orderly ejection without changing physical presence.
+    ///
+    /// Retrying replaces the pending receiver without another attention button
+    /// event, which could cancel guest ejection.
+    ///
+    /// # Returns
+    ///
+    /// A receiver signaled when slot power and the power indicator are off.
+    /// It is ready immediately if both are already off. Reset or physical
+    /// removal cancels a pending receiver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PcieEjectError`] if hotplug or attention button support is
+    /// unavailable, the slot is empty, or required interrupts are disabled.
+    pub fn request_hotplug_eject(&self) -> Result<mesh::OneshotReceiver<()>, PcieEjectError> {
+        if !self.slot_capabilities.hot_plug_capable() {
+            return Err(PcieEjectError::NotHotplugCapable);
+        }
+        if !self.slot_capabilities.attention_button_present() {
+            return Err(PcieEjectError::AttentionButtonUnsupported);
+        }
+        let mut state = self.state.lock();
+        if !state.presence_detect_state {
+            return Err(PcieEjectError::EmptySlot);
+        }
+        let (send, recv) = mesh::oneshot();
+        if state.slot_powered_off() {
+            send.send(());
+        } else {
+            if !state.registers.slot_control.hot_plug_interrupt_enable()
+                || !state
+                    .registers
+                    .slot_control
+                    .attention_button_pressed_enable()
+            {
+                return Err(PcieEjectError::InterruptDisabled);
+            }
+            if !state.eject_requested {
+                state
+                    .registers
+                    .slot_status_events
+                    .set_attention_button_pressed(true);
+                state.eject_requested = true;
+            }
+            state.eject_completion = Some(send);
+        }
+        Ok(recv)
     }
 
     /// Set the RW1C changed bits in Slot Status to signal a hotplug event.
@@ -501,6 +615,10 @@ impl PciExpressCapability {
             return;
         }
         state.presence_detect_state = present;
+        if !present {
+            state.eject_requested = false;
+            state.eject_completion = None;
+        }
 
         state
             .registers
@@ -771,6 +889,19 @@ impl PciCapability for PciExpressCapability {
     fn reset(&mut self) {
         let mut state = self.state.lock();
         state.reset_registers();
+        let present = state.presence_detect_state;
+        if self.slot_capabilities.power_controller_present() {
+            state
+                .registers
+                .slot_control
+                .set_power_controller_control(!present);
+        }
+        if self.slot_capabilities.power_indicator_present() {
+            state
+                .registers
+                .slot_control
+                .set_power_indicator_control(if present { 0b01 } else { 0b11 });
+        }
     }
 
     fn as_pci_express(&self) -> Option<&PciExpressCapability> {
@@ -809,6 +940,8 @@ mod save_restore {
             pub device_control_2: u16,
             #[mesh(7)]
             pub link_control_2: u16,
+            #[mesh(8)]
+            pub eject_requested: bool,
         }
     }
 
@@ -820,6 +953,8 @@ mod save_restore {
             let PciExpressState {
                 registers,
                 presence_detect_state: _,
+                eject_requested,
+                eject_completion: _,
             } = &*state;
             let PciExpressRegisters {
                 device_control,
@@ -838,6 +973,7 @@ mod save_restore {
                 root_control: root_control.into_bits(),
                 device_control_2: device_control_2.into_bits(),
                 link_control_2: link_control_2.into_bits(),
+                eject_requested: *eject_requested,
             })
         }
 
@@ -850,11 +986,16 @@ mod save_restore {
                 root_control,
                 device_control_2,
                 link_control_2,
+                eject_requested,
             } = saved;
             let mut state = self.state.lock();
+            state.eject_completion = None;
+            state.eject_requested = eject_requested;
             let PciExpressState {
                 registers,
                 presence_detect_state: _,
+                eject_requested: _,
+                eject_completion: _,
             } = &mut *state;
             *registers = PciExpressRegisters {
                 device_control: pci_express::DeviceControl::from_bits(
@@ -894,6 +1035,220 @@ mod tests {
     use chipset_device::pci::PciConfigByteEnable;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use vmcore::save_restore::SaveRestore;
+
+    fn eject_control() -> pci_express::SlotControl {
+        pci_express::SlotControl::new()
+            .with_hot_plug_interrupt_enable(true)
+            .with_attention_button_pressed_enable(true)
+            .with_power_indicator_control(0b01)
+    }
+
+    fn poll_eject(
+        completion: &mut mesh::OneshotReceiver<()>,
+    ) -> std::task::Poll<Result<(), mesh::RecvError>> {
+        Future::poll(
+            std::pin::Pin::new(completion),
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        )
+    }
+
+    #[test]
+    fn test_hotplug_reset_power_controls_follow_capabilities() {
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            for (power_controller, power_indicator) in
+                [(false, false), (true, false), (false, true), (true, true)]
+            {
+                let mut cap = PciExpressCapability::new(port_type, None).with_hotplug_support(1);
+                cap.slot_capabilities = cap
+                    .slot_capabilities
+                    .with_power_controller_present(power_controller)
+                    .with_power_indicator_present(power_indicator);
+                for present in [false, true] {
+                    cap.set_presence_detect_state(present);
+                    cap.reset();
+                    let control =
+                        pci_express::SlotControl::from_bits(read_cap_u32(&cap, 0x18) as u16);
+                    assert_eq!(
+                        control.power_controller_control(),
+                        power_controller && !present
+                    );
+                    assert_eq!(
+                        control.power_indicator_control(),
+                        if power_indicator {
+                            if present { 0b01 } else { 0b11 }
+                        } else {
+                            0
+                        }
+                    );
+
+                    cap.set_hotplug_state(true);
+                    let link =
+                        pci_express::LinkStatus::from_bits((read_cap_u32(&cap, 0x10) >> 16) as u16);
+                    assert_eq!(
+                        link.data_link_layer_link_active(),
+                        present || !power_controller
+                    );
+                    let saved = cap.save().unwrap();
+                    cap.restore(saved).unwrap();
+                    assert_eq!(read_cap_u32(&cap, 0x18) as u16, control.into_bits());
+                    let restored_link =
+                        pci_express::LinkStatus::from_bits((read_cap_u32(&cap, 0x10) >> 16) as u16);
+                    assert_eq!(restored_link.into_bits(), link.into_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_orderly_eject_waits_for_power_and_indicator() {
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            let mut cap = PciExpressCapability::new(port_type, None)
+                .with_hotplug_support(1)
+                .with_attention_button();
+            cap.set_presence_detect_state(true);
+            write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+            let mut completion = cap.request_hotplug_eject().unwrap();
+            assert!(poll_eject(&mut completion).is_pending());
+            let status =
+                pci_express::SlotStatus::from_bits((read_cap_u32(&cap, 0x18) >> 16) as u16);
+            assert!(status.attention_button_pressed());
+            assert!(!status.presence_detect_changed());
+            assert_eq!(status.presence_detect_state(), 1);
+            assert!(cap.state.lock().link_status().data_link_layer_link_active());
+
+            let clear_button = pci_express::SlotStatus::new()
+                .with_attention_button_pressed(true)
+                .into_bits();
+            write_cap_u32(
+                &mut cap,
+                0x18,
+                u32::from(eject_control().into_bits()) | (u32::from(clear_button) << 16),
+            );
+            assert!(poll_eject(&mut completion).is_pending());
+
+            let power_off = eject_control().with_power_controller_control(true);
+            write_cap_u32(&mut cap, 0x18, u32::from(power_off.into_bits()));
+            assert!(poll_eject(&mut completion).is_pending());
+            write_cap_u32(
+                &mut cap,
+                0x18,
+                u32::from(power_off.with_power_indicator_control(0b11).into_bits()),
+            );
+            assert!(matches!(
+                poll_eject(&mut completion),
+                std::task::Poll::Ready(Ok(()))
+            ));
+            assert!(cap.state.lock().presence_detect_state);
+            assert!(!cap.state.lock().link_status().data_link_layer_link_active());
+        }
+    }
+
+    #[test]
+    fn test_orderly_eject_retry_does_not_cancel_guest_request() {
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        cap.set_presence_detect_state(true);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        drop(cap.request_hotplug_eject().unwrap());
+        let clear_button = pci_express::SlotStatus::new()
+            .with_attention_button_pressed(true)
+            .into_bits();
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(eject_control().into_bits()) | (u32::from(clear_button) << 16),
+        );
+        let saved = cap.save().unwrap();
+        cap.restore(saved).unwrap();
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        assert!(poll_eject(&mut completion).is_pending());
+        assert!(
+            !cap.state
+                .lock()
+                .registers
+                .slot_status_events
+                .attention_button_pressed()
+        );
+        assert!(cap.state.lock().presence_detect_state);
+        drop(completion);
+
+        write_cap_u32(
+            &mut cap,
+            0x18,
+            u32::from(
+                eject_control()
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11)
+                    .into_bits(),
+            ),
+        );
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        assert!(matches!(
+            poll_eject(&mut completion),
+            std::task::Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn test_orderly_eject_rejects_unavailable_slots() {
+        let cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::NotHotplugCapable)
+        ));
+        let cap = cap.with_hotplug_support(1);
+        assert!(!cap.slot_capabilities.attention_button_present());
+        assert!(!cap.slot_capabilities.power_controller_present());
+        assert!(!cap.slot_capabilities.power_indicator_present());
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::AttentionButtonUnsupported)
+        ));
+        let cap = cap.with_attention_button();
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::EmptySlot)
+        ));
+        cap.set_presence_detect_state(true);
+        assert!(matches!(
+            cap.request_hotplug_eject(),
+            Err(PcieEjectError::InterruptDisabled)
+        ));
+        assert!(cap.state.lock().presence_detect_state);
+    }
+
+    #[test]
+    fn test_orderly_eject_reset_cancels_wait() {
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None)
+            .with_hotplug_support(1)
+            .with_attention_button();
+        cap.set_presence_detect_state(true);
+        write_cap_u32(&mut cap, 0x18, u32::from(eject_control().into_bits()));
+        let mut completion = cap.request_hotplug_eject().unwrap();
+        cap.reset();
+        assert!(matches!(
+            poll_eject(&mut completion),
+            std::task::Poll::Ready(Err(_))
+        ));
+        assert!(cap.state.lock().presence_detect_state);
+        assert!(
+            !cap.state
+                .lock()
+                .registers
+                .slot_status_events
+                .attention_button_pressed()
+        );
+        assert!(cap.state.lock().link_status().data_link_layer_link_active());
+    }
 
     #[derive(Debug)]
     struct TestFlrHandler {

@@ -25,6 +25,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieHotplugConfig;
 use openvmm_defs::config::PcieIommuConfig;
 use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
@@ -505,7 +506,7 @@ impl PetriVmConfigOpenVmm {
                     .map(|i| PciePortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
                         devfn: None,
-                        hotplug: true,
+                        hotplug: Some(PcieHotplugConfig::default()),
                         acs_capabilities_supported: Some(0),
                         cxl: false,
                         pasid: false,
@@ -551,7 +552,7 @@ impl PetriVmConfigOpenVmm {
                 .map(|i| PciePortConfig {
                     name: format!("{switch_name}-downstream-{i}"),
                     devfn: None,
-                    hotplug,
+                    hotplug: hotplug.then_some(PcieHotplugConfig::default()),
                     acs_capabilities_supported: Some(0),
                     cxl: false,
                     pasid: false,
