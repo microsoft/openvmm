@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::BindingReportState;
+use super::EnumerationResult;
 use super::Vtl2DeviceState;
 use super::discard_pending_mana_buffers;
 use memory_range::MemoryRange;
@@ -57,46 +59,123 @@ fn discard_pending_mana_buffers_releases_restored_allocations() {
 
 #[test]
 fn enumeration_after_startup_from_missing_is_accepted() {
+    let shutdown_active = false;
     let mut state = Vtl2DeviceState::Missing;
-
     state.device_started();
-
-    assert!(
-        state.device_enumerated(false),
-        "late enumeration after successful startup must be accepted"
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::ReportBinding,
     );
-    assert_eq!(state, Vtl2DeviceState::Present);
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
+
+    // A duplicate enumeration request does not report another binding.
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::Ignored
+    );
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
 }
 
 #[test]
-fn enumeration_before_startup_then_duplicate_is_rejected() {
+fn enumeration_before_startup_from_missing_is_accepted() {
+    let shutdown_active = false;
     let mut state = Vtl2DeviceState::Missing;
-
-    assert!(state.device_enumerated(false));
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::WaitForDevice
+    );
     assert_eq!(state, Vtl2DeviceState::DeviceEnumerated);
-
     state.device_started();
-    assert_eq!(state, Vtl2DeviceState::Present);
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
 
-    assert!(!state.device_enumerated(false));
-    assert_eq!(state, Vtl2DeviceState::Present);
+    // A duplicate enumeration request does not report another binding.
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::Ignored
+    );
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
 }
 
 #[test]
-fn enumeration_in_initial_present_is_rejected() {
-    let mut state = Vtl2DeviceState::Present;
-
-    assert!(!state.device_enumerated(false));
-    assert_eq!(state, Vtl2DeviceState::Present);
+fn enumeration_in_initial_present_is_ignored() {
+    let shutdown_active = false;
+    let mut state = Vtl2DeviceState::Present {
+        binding_report: BindingReportState::Done,
+    };
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::Ignored
+    );
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
 }
 
 #[test]
-fn enumeration_during_shutdown_is_rejected_without_state_change() {
-    let mut missing = Vtl2DeviceState::Missing;
-    assert!(!missing.device_enumerated(true));
-    assert_eq!(missing, Vtl2DeviceState::Missing);
+fn enumeration_in_reconfiguring_is_ignored() {
+    let shutdown_active = false;
+    let mut state = Vtl2DeviceState::Reconfiguring;
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::Ignored
+    );
+    assert_eq!(state, Vtl2DeviceState::Reconfiguring);
+    // Finish Reconfiguring
+    state.device_started();
+    assert_eq!(
+        state,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        }
+    );
+    assert_eq!(
+        state.device_enumerated(shutdown_active),
+        EnumerationResult::Ignored
+    );
+}
 
-    let mut present = Vtl2DeviceState::Present;
-    assert!(!present.device_enumerated(true));
-    assert_eq!(present, Vtl2DeviceState::Present);
+#[test]
+fn enumeration_during_shutdown_is_ignored() {
+    let shutdown_active = true;
+    for original in [
+        Vtl2DeviceState::DeviceEnumerated,
+        Vtl2DeviceState::Missing,
+        Vtl2DeviceState::Reconfiguring,
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::WaitingForEnumeration,
+        },
+        Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        },
+    ] {
+        let mut state = original;
+        assert_eq!(
+            state.device_enumerated(shutdown_active),
+            EnumerationResult::Ignored
+        );
+        assert_eq!(state, original);
+    }
 }
