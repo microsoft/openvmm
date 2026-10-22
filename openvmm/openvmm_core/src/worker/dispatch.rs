@@ -2817,8 +2817,11 @@ impl InitializedVm {
         #[cfg(guest_arch = "aarch64")]
         let smmu_devices = {
             let acpi_available = match &cfg.load_mode {
+                // MP-table boot is x86-only; loading the firmware rejects it.
                 LoadMode::Linux {
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::DeviceTree,
+                    boot_mode:
+                        openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+                        | openvmm_defs::config::LinuxDirectBootMode::MpTable,
                     ..
                 } => false,
                 LoadMode::Linux {
@@ -3761,6 +3764,9 @@ impl LoadedVmInner {
 
                 if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
                     anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
+                }
+                if boot_mode == LinuxDirectBootMode::MpTable {
+                    anyhow::bail!("MP-table boot mode is not supported on aarch64");
                 }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
