@@ -31,7 +31,7 @@ use std::time::UNIX_EPOCH;
 
 const MAX_STRING_LEN: usize = 16 * 1024;
 const TRACE_BUFFER_CAPACITY: usize = 256 * 1024;
-const PTRACE_REQUEST_GET_SYSCALL_INFO: libc::c_int = 0x420e;
+const PTRACE_REQUEST_GET_SYSCALL_INFO: libc::c_uint = 0x420e;
 const PTRACE_SYSCALL_INFO_OP_EXIT: u8 = 2;
 const PTRACE_SYSCALL_INFO_OP_SECCOMP: u8 = 3;
 
@@ -178,7 +178,7 @@ fn trace_process(
     let mut output = BufWriter::with_capacity(TRACE_BUFFER_CAPACITY, File::create(&trace_path)?);
 
     wait_for_initial_stop(root_pid)?;
-    ptrace(libc::PTRACE_SEIZE, root_pid, 0, trace_options() as usize)?;
+    ptrace(libc::PTRACE_SEIZE as _, root_pid, 0, trace_options() as usize)?;
     // Release the pre-exec group stop. PTRACE_O_TRACEEXEC guarantees another
     // stop before the child's new image executes user code.
     // SAFETY: kill accepts any PID and signal value; errors are reported via errno.
@@ -292,7 +292,7 @@ fn handle_ptrace_event(
     ) {
         let mut message = 0usize;
         ptrace(
-            libc::PTRACE_GETEVENTMSG,
+            libc::PTRACE_GETEVENTMSG as _,
             tid,
             0,
             std::ptr::from_mut(&mut message) as usize,
@@ -566,14 +566,14 @@ fn resume_task(tid: i32, awaiting_syscall_exit: bool, signal: i32) -> io::Result
 }
 
 fn resume_cont(tid: i32, signal: i32) -> io::Result<()> {
-    resume_ptrace(libc::PTRACE_CONT, tid, signal)
+    resume_ptrace(libc::PTRACE_CONT as _, tid, signal)
 }
 
 fn resume_syscall(tid: i32, signal: i32) -> io::Result<()> {
-    resume_ptrace(libc::PTRACE_SYSCALL, tid, signal)
+    resume_ptrace(libc::PTRACE_SYSCALL as _, tid, signal)
 }
 
-fn resume_ptrace(request: libc::c_int, tid: i32, signal: i32) -> io::Result<()> {
+fn resume_ptrace(request: libc::c_uint, tid: i32, signal: i32) -> io::Result<()> {
     // A task may exit between waitpid reporting its stop and this resume.
     // Treat that race as normal completion; all other ptrace errors are fatal.
     match ptrace(request, tid, 0, signal as usize) {
@@ -582,7 +582,7 @@ fn resume_ptrace(request: libc::c_int, tid: i32, signal: i32) -> io::Result<()> 
     }
 }
 
-fn ptrace(request: libc::c_int, pid: i32, address: usize, data: usize) -> io::Result<()> {
+fn ptrace(request: libc::c_uint, pid: i32, address: usize, data: usize) -> io::Result<()> {
     // SAFETY: each caller supplies the address and data layout required by the
     // specific ptrace request; kernel errors are returned through errno.
     let result = unsafe {
@@ -639,6 +639,12 @@ fn sanitize_name(name: &str) -> String {
 mod tests {
     use super::*;
     use std::io::BufRead;
+
+    #[test]
+    fn ptrace_syscall_info_matches_linux_abi() {
+        assert_eq!(size_of::<PtraceSyscallInfo>(), 88);
+        assert_eq!(std::mem::offset_of!(PtraceSyscallInfo, u), 24);
+    }
 
     #[test]
     fn process_names_are_safe_for_file_names() {
