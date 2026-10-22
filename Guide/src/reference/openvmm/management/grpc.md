@@ -96,9 +96,11 @@ The caller controls the acknowledgement deadline; there is no server-imposed
 timeout. Without a deadline, the request waits for acknowledgement,
 cancellation, or a channel error. Callers should set an RPC timeout on the
 client, not in `ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can
-limit the acknowledgement wait to five seconds:
+limit the acknowledgement wait to five seconds. This example assumes an
+initialized `client` in an async context and
+`use openvmm_ttrpc_vmservice as vmservice;`:
 
-```rust
+```rust,ignore
 let result = client
     .call()
     .timeout(Some(std::time::Duration::from_secs(5)))
