@@ -559,19 +559,21 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
+            let enabled = state.enabled;
             let saved_state = state::SavedState {
-                enabled: state.enabled,
+                enabled,
                 vectors: {
                     state
                         .vectors
-                        .iter()
+                        .iter_mut()
                         .map(|vec| {
+                            let is_pending = vec.check_is_pending(enabled);
                             let EntryState {
                                 address,
                                 data,
                                 control,
-                                is_pending,
+                                ..
                             } = vec.state;
 
                             state::SavedMsixMessageTableEntryState {
@@ -591,8 +593,6 @@ mod save_restore {
             let state::SavedState { enabled, vectors } = state;
 
             let mut state = self.state.lock();
-            state.enabled = enabled;
-
             if vectors.len() != state.vectors.len() {
                 return Err(RestoreError::InvalidSavedState(
                     MsixRestoreError::MismatchedTableLengths(vectors.len(), state.vectors.len())
@@ -600,12 +600,21 @@ mod save_restore {
                 ));
             }
 
+            state.enabled = enabled;
             for (new_vec, vec) in vectors.into_iter().zip(state.vectors.iter_mut()) {
+                // Replace live delivery state, including anything pending after the snapshot.
+                vec.msi.disable();
+                vec.msi.drain_pending();
                 vec.state = EntryState {
                     address: new_vec.address,
                     data: new_vec.data,
                     control: new_vec.control,
                     is_pending: new_vec.is_pending,
+                };
+                if vec.is_enabled(enabled) {
+                    vec.msi
+                        .enable(vec.state.address, vec.state.data, vec.state.is_pending);
+                    vec.state.is_pending = false;
                 }
             }
 
@@ -621,6 +630,7 @@ mod tests {
     use crate::test_helpers::TestPciInterruptController;
     use crate::test_helpers::read_cap_u32;
     use crate::test_helpers::write_cap_u32;
+    use vmcore::save_restore::ProtobufSaveRestore;
 
     #[test]
     fn msix_check() {
@@ -677,6 +687,137 @@ mod tests {
         msix.clear_pending_bit(1);
         assert_eq!(msix.read_u32(0x400), 0x80000000);
         assert_eq!(msix.read_u32(0x404), 0x80000002);
+    }
+
+    #[test]
+    fn msix_save_restore_delivery() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 1, &msi_conn.target());
+        let controller = TestPciInterruptController::new();
+        msi_conn.connect(controller.signal_msi());
+        let interrupt = msix.interrupt(0).unwrap();
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        msix.write_u32(0, 0xfee00000);
+        msix.write_u32(4, 1);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0);
+
+        for _ in 0..2 {
+            let saved = cap.save().unwrap();
+            cap.reset();
+            cap.restore(saved).unwrap();
+
+            // A resumed guest does not reprogram the vector.
+            interrupt.deliver();
+            assert_eq!(controller.get_next_interrupt(), Some((0x1fee00000, 0x42)));
+            assert_eq!(controller.get_next_interrupt(), None);
+        }
+    }
+
+    #[test]
+    fn msix_save_restore_masked_pending() {
+        for global_enabled in [false, true] {
+            for use_irqfd in [false, true] {
+                let msi_conn = MsiConnection::new();
+                if use_irqfd {
+                    let (irqfd, _) = mock_irqfd(1);
+                    msi_conn.connect_irqfd(irqfd);
+                }
+                let (mut msix, mut cap) = MsixEmulator::new(2, 1, &msi_conn.target());
+                let controller = TestPciInterruptController::new();
+                msi_conn.connect(controller.signal_msi());
+                write_cap_u32(&mut cap, 0, u32::from(global_enabled) << 31);
+                msix.write_u32(0, 0xfee00000);
+                msix.write_u32(8, 0x42);
+                msix.write_u32(12, u32::from(global_enabled));
+
+                let interrupt = msix.interrupt(0).unwrap();
+                if use_irqfd {
+                    interrupt.event().unwrap().signal();
+                } else {
+                    interrupt.deliver();
+                }
+                // Save without a PBA read first, then restore into a fresh device.
+                let saved = cap.save().unwrap();
+                let (mut restored, mut restored_cap) = MsixEmulator::new(2, 1, &msi_conn.target());
+                restored_cap.restore(saved).unwrap();
+                assert_eq!(controller.get_next_interrupt(), None);
+                assert_eq!(restored.read_u32(16), 1);
+
+                if global_enabled {
+                    restored.write_u32(12, 0);
+                } else {
+                    write_cap_u32(&mut restored_cap, 0, 0x80000000);
+                }
+                assert_eq!(controller.get_next_interrupt(), Some((0xfee00000, 0x42)));
+                assert_eq!(controller.get_next_interrupt(), None);
+                assert_eq!(restored.read_u32(16), 0);
+
+                restored.write_u32(12, 1);
+                restored.write_u32(12, 0);
+                assert_eq!(controller.get_next_interrupt(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn msix_restore_replaces_pending_state() {
+        for saved_pending in [false, true] {
+            let msi_conn = MsiConnection::new();
+            let (irqfd, _) = mock_irqfd(1);
+            msi_conn.connect_irqfd(irqfd);
+            let (mut msix, mut cap) = MsixEmulator::new(2, 1, &msi_conn.target());
+            let controller = TestPciInterruptController::new();
+            msi_conn.connect(controller.signal_msi());
+            let interrupt = msix.interrupt(0).unwrap();
+            let event = interrupt.event().unwrap();
+            write_cap_u32(&mut cap, 0, 0x80000000);
+            msix.write_u32(0, 0xfee00000);
+            msix.write_u32(8, 0x42);
+            msix.write_u32(12, 0);
+            if saved_pending {
+                msix.set_pending_bit(0);
+            }
+            let saved = cap.save().unwrap();
+            cap.reset();
+
+            // Pending state created after the snapshot must not survive restore.
+            interrupt.deliver();
+            event.signal();
+            cap.restore(saved).unwrap();
+            assert_eq!(
+                controller.get_next_interrupt(),
+                saved_pending.then_some((0xfee00000, 0x42))
+            );
+            assert_eq!(controller.get_next_interrupt(), None);
+            assert!(!event.try_wait());
+            assert_eq!(msix.read_u32(16), 0);
+            msix.write_u32(12, 1);
+            msix.write_u32(12, 0);
+            assert_eq!(controller.get_next_interrupt(), None);
+        }
+    }
+
+    #[test]
+    fn msix_restore_rejects_wrong_vector_count_without_changes() {
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 1, &msi_conn.target());
+        let controller = TestPciInterruptController::new();
+        msi_conn.connect(controller.signal_msi());
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        msix.write_u32(0, 0xfee00000);
+        msix.write_u32(8, 0x42);
+        msix.write_u32(12, 0);
+        let (_, mut other_cap) = MsixEmulator::new(2, 2, &msi_conn.target());
+        let saved = other_cap.save().unwrap();
+
+        assert!(cap.restore(saved).is_err());
+        assert_eq!(read_cap_u32(&cap, 0), 0x80000011);
+        assert_eq!(msix.read_u32(0), 0xfee00000);
+        assert_eq!(msix.read_u32(8), 0x42);
+        assert_eq!(msix.read_u32(12), 0);
+        msix.interrupt(0).unwrap().deliver();
+        assert_eq!(controller.get_next_interrupt(), Some((0xfee00000, 0x42)));
     }
 
     use pal_event::Event;
@@ -743,6 +884,52 @@ mod tests {
             }),
             call_logs,
         )
+    }
+
+    #[test]
+    fn msix_restore_routes() {
+        for reset in [false, true] {
+            for global_enabled in [false, true] {
+                let (irqfd, calls) = mock_irqfd(2);
+                let msi_conn = MsiConnection::new();
+                msi_conn.connect_irqfd(irqfd);
+                let (mut msix, mut cap) = MsixEmulator::new(2, 2, &msi_conn.target());
+                write_cap_u32(&mut cap, 0, u32::from(global_enabled) << 31);
+                for v in 0..2 {
+                    msix.interrupt(v).unwrap().event().unwrap();
+                    msix.write_u32(u64::from(v) * 16, 0xfee00000);
+                    msix.write_u32(u64::from(v) * 16 + 8, 0x42 + u32::from(v));
+                }
+                msix.write_u32(12, 0);
+                let saved = cap.save().unwrap();
+                if reset {
+                    cap.reset();
+                } else {
+                    write_cap_u32(&mut cap, 0, 0x80000000);
+                    msix.write_u32(0, 0xfee01000);
+                    msix.write_u32(8, 0x99);
+                    msix.write_u32(28, 0);
+                }
+                for log in &calls {
+                    log.lock().clear();
+                }
+
+                cap.restore(saved).unwrap();
+                let log = calls[0].lock();
+                if global_enabled {
+                    assert_eq!(
+                        log.last(),
+                        Some(&RouteCall::SetMsi {
+                            address: 0xfee00000,
+                            data: 0x42,
+                        })
+                    );
+                } else {
+                    assert_eq!(&*log, &[RouteCall::ClearMsi]);
+                }
+                assert_eq!(&*calls[1].lock(), &[RouteCall::ClearMsi]);
+            }
+        }
     }
 
     #[test]
