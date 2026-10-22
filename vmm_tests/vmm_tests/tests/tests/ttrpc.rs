@@ -21,6 +21,7 @@ use pal_async::process::PolledChild;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use petri::ResolvedArtifact;
 use petri::TestChild;
 use petri::pipette::cmd;
@@ -424,6 +425,7 @@ async fn test_ttrpc_interface(
                         acs_capabilities_supported: Some(1),
                         devfn: None,
                         pasid: false,
+                        ..Default::default()
                     },
                     vmservice::PciePort {
                         name: "sw0-dp1".to_string(),
@@ -432,6 +434,7 @@ async fn test_ttrpc_interface(
                         devfn: None,
                         acs_capabilities_supported: None,
                         pasid: false,
+                        ..Default::default()
                     },
                 ],
             };
@@ -774,62 +777,52 @@ async fn test_ttrpc_interface(
             }
         }
 
-        // On iteration 0, exercise AddPcieDevice/RemovePcieDevice with
-        // both a simple virtio device and one with a host backend.
+        // Surprise removal works while paused. Rejected orderly removal preserves the device.
         if i == 0 {
-            client
-                .call()
-                .start(
-                    vmservice::Vm::AddPcieDevice,
-                    vmservice::AddPcieDeviceRequest {
-                        port_name: "rphp".to_string(),
-                        device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
-                            vmservice::VirtioRng {},
-                        ))),
-                    },
-                )
-                .await
-                .unwrap();
+            for orderly in [false, true] {
+                client
+                    .call()
+                    .start(
+                        vmservice::Vm::AddPcieDevice,
+                        vmservice::AddPcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                            device: Some(virtio_device(vmservice::virtio_device::Kind::Rng(
+                                vmservice::VirtioRng {},
+                            ))),
+                        },
+                    )
+                    .await
+                    .unwrap();
 
-            client
-                .call()
-                .start(
-                    vmservice::Vm::RemovePcieDevice,
-                    vmservice::RemovePcieDeviceRequest {
-                        port_name: "rphp".to_string(),
-                    },
-                )
-                .await
-                .unwrap();
-
-            client
-                .call()
-                .start(
-                    vmservice::Vm::AddPcieDevice,
-                    vmservice::AddPcieDeviceRequest {
-                        port_name: "rphp".to_string(),
-                        device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
-                            vmservice::VirtioFs {
-                                tag: "hotplugfs".to_string(),
-                                root_path: hotplug_virtiofs_root.to_string_lossy().into(),
-                                read_only: true,
-                            },
-                        ))),
-                    },
-                )
-                .await
-                .unwrap();
-
-            client
-                .call()
-                .start(
-                    vmservice::Vm::RemovePcieDevice,
-                    vmservice::RemovePcieDeviceRequest {
-                        port_name: "rphp".to_string(),
-                    },
-                )
-                .await
-                .unwrap();
+                let result = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RemovePcieDevice,
+                        vmservice::RemovePcieDeviceRequest {
+                            port_name: "rphp".to_string(),
+                            orderly,
+                        },
+                    )
+                    .await;
+                if orderly {
+                    let err = result.unwrap_err();
+                    anyhow::ensure!(
+                        err.message
+                            .contains("VM must be running for orderly PCIe removal"),
+                        "unexpected paused removal error: {}",
+                        err.message
+                    );
+                } else {
+                    result
+                        .map_err(|err| anyhow::anyhow!(err.message))
+                        .context("surprise removal must work while paused")?;
+                }
+            }
+            assert_eq!(
+                query_props().await.unwrap().state,
+                vmservice::VmState::Paused as i32,
+                "removal must leave the VM paused"
+            );
             #[cfg(windows)]
             {
                 let instance_id = Guid::new_random();
@@ -945,6 +938,8 @@ async fn test_ttrpc_interface(
                             .await?;
                     } else {
                         validate_pcie_config(&agent).await?;
+                        validate_pcie_hotplug(&driver, &client, &agent, &hotplug_virtiofs_root)
+                            .await?;
                         #[cfg(windows)]
                         {
                             mount_virtio_fs(&agent, "testfs", "/mnt/testfs").await?;
@@ -1328,6 +1323,7 @@ fn pcie_root_port(
     vmservice::PciePort {
         name: name.to_string(),
         hotplug,
+        attention_button: hotplug,
         attached,
         devfn: None,
         acs_capabilities_supported: None,
@@ -1379,6 +1375,94 @@ fn validate_console_file(path: &Path, marker: &str, preserved: Option<&str>) -> 
             !contents.contains("stale console contents"),
             "console file was not truncated: {contents:?}"
         ),
+    }
+    Ok(())
+}
+
+async fn validate_pcie_hotplug(
+    driver: &DefaultDriver,
+    client: &mesh_rpc::Client,
+    agent: &pipette_client::PipetteClient,
+    root: &Path,
+) -> anyhow::Result<()> {
+    let sh = agent.unix_shell();
+    let mut timer = PolledTimer::new(driver);
+    let mut ready = false;
+    for _ in 0..30 {
+        let slots = cmd!(sh, "ls /sys/bus/pci/slots").read().await?;
+        if !slots.trim().is_empty() {
+            ready = true;
+            break;
+        }
+        timer.sleep(Duration::from_millis(500)).await;
+    }
+    anyhow::ensure!(ready, "guest did not register the native PCIe hotplug slot");
+
+    client
+        .call()
+        .start(
+            vmservice::Vm::RemovePcieDevice,
+            vmservice::RemovePcieDeviceRequest {
+                port_name: "rphp".to_string(),
+                orderly: true,
+            },
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!(err.message))
+        .context("removing the device preserved after paused removal rejection")?;
+
+    // Exercise both a simple virtio device and one with a host backend after boot.
+    for device in [
+        virtio_device(vmservice::virtio_device::Kind::Rng(vmservice::VirtioRng {})),
+        virtio_device(vmservice::virtio_device::Kind::Fs(vmservice::VirtioFs {
+            tag: "hotplugfs".to_string(),
+            root_path: root.to_string_lossy().into(),
+            read_only: true,
+        })),
+    ] {
+        let before = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+        client
+            .call()
+            .start(
+                vmservice::Vm::AddPcieDevice,
+                vmservice::AddPcieDeviceRequest {
+                    port_name: "rphp".to_string(),
+                    device: Some(device),
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+
+        let mut pci_path = None;
+        for _ in 0..30 {
+            let devices = cmd!(sh, "ls /sys/bus/pci/devices").read().await?;
+            if let Some(device) = devices
+                .split_whitespace()
+                .find(|device| !before.split_whitespace().any(|old| old == *device))
+            {
+                let path = format!("/sys/bus/pci/devices/{device}");
+                let probe = format!("if test -L {path}/driver; then echo ready; fi");
+                if cmd!(sh, "sh -c {probe}").read().await?.trim() == "ready" {
+                    pci_path = Some(path);
+                    break;
+                }
+            }
+            timer.sleep(Duration::from_millis(500)).await;
+        }
+        let pci_path = pci_path.context("hot-added PCIe device did not bind to a guest driver")?;
+
+        client
+            .call()
+            .start(
+                vmservice::Vm::RemovePcieDevice,
+                vmservice::RemovePcieDeviceRequest {
+                    port_name: "rphp".to_string(),
+                    orderly: true,
+                },
+            )
+            .await
+            .map_err(|err| anyhow::anyhow!(err.message))?;
+        cmd!(sh, "test ! -e {pci_path}").run().await?;
     }
     Ok(())
 }

@@ -537,6 +537,28 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enables attention button ejection on an existing hotplug port.
+    pub fn with_pcie_attention_button(mut self, port_name: &str) -> Self {
+        let port = self
+            .config
+            .pcie_root_complexes
+            .iter_mut()
+            .flat_map(|rc| &mut rc.ports)
+            .chain(
+                self.config
+                    .pcie_switches
+                    .iter_mut()
+                    .flat_map(|switch| &mut switch.ports),
+            )
+            .find(|port| port.name == port_name)
+            .expect("PCIe port must exist before enabling attention button support");
+        port.hotplug
+            .as_mut()
+            .expect("attention button support requires hotplug")
+            .attention_button = true;
+        self
+    }
+
     /// Add a PCIe switch to the VM.
     pub fn with_pcie_switch(
         mut self,

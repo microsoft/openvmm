@@ -396,11 +396,19 @@ async fn pcie_hotplug(
     timer.sleep(Duration::from_secs(5)).await;
 
     // Hot-remove the device
-    vm.remove_pcie_device("s0rc0rp0".into()).await?;
+    let error = vm
+        .remove_pcie_device("s0rc0rp0".into(), true)
+        .await
+        .expect_err("orderly removal requires attention button support");
+    anyhow::ensure!(
+        error
+            .to_string()
+            .contains("port does not support attention button ejection"),
+        "unexpected removal error: {error:#}"
+    );
+    vm.remove_pcie_device("s0rc0rp0".into(), false).await?;
 
-    // Verify the device is gone. Both Linux (pciehp) and Windows (pci.sys)
-    // process native PCIe hotplug surprise-removal through their respective
-    // hotplug state machines within a few seconds.
+    // Verify the guest has removed the endpoint after surprise removal.
     let mut removed = false;
     for attempt in 0..30 {
         let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
@@ -419,7 +427,7 @@ async fn pcie_hotplug(
     Ok(())
 }
 
-/// Verify virtio block teardown and port reuse after PCIe removal through RPC.
+/// Verifies virtio block teardown, timeout recovery and port reuse through RPC.
 #[vmm_test_with(openvmm, configs(linux_direct_x64))]
 async fn pcie_hotplug_virtio_blk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -434,7 +442,10 @@ async fn pcie_hotplug_virtio_blk(
     use vm_resource::IntoResource;
 
     let (mut vm, agent) = config
-        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_pcie_attention_button("s0rc0rp0")
+        })
         .run()
         .await?;
     let sh = agent.unix_shell();
@@ -442,9 +453,8 @@ async fn pcie_hotplug_virtio_blk(
     let kernel = cmd!(sh, "uname -r").read().await?;
     tracing::info!(%kernel, "guest kernel for virtio removal");
 
-    // First let the guest tear down the live device as a control. Then repeat
-    // with RPC removal alone to exercise surprise removal.
-    for guest_remove_first in [true, false, false] {
+    // Guest sysfs removal is the control for the two RPC ejection cycles.
+    for (cycle, guest_remove_first) in [true, false, false].into_iter().enumerate() {
         tracing::info!(guest_remove_first, "testing virtio block removal");
         let resource = VirtioPciDeviceHandle(
             VirtioBlkHandle {
@@ -496,7 +506,70 @@ async fn pcie_hotplug_virtio_blk(
                 .context("guest sysfs removal timed out")??;
         }
 
-        vm.remove_pcie_device("s0rc0rp0".into()).await?;
+        if cycle == 1 {
+            // Disable MSI delivery but leave hotplug events enabled to exercise the timeout.
+            let bridge_path = pci_path
+                .rsplit_once('/')
+                .context("missing parent bridge")?
+                .0;
+            let config_path = format!("{bridge_path}/config");
+            let bytes = cmd!(sh, "od -An -v -t u1 -N 256 {config_path}")
+                .read()
+                .await?;
+            let bytes = bytes
+                .split_whitespace()
+                .map(str::parse::<u8>)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut offset = usize::from(*bytes.get(0x34).context("missing capability pointer")?);
+            let mut msi_control = None;
+            for _ in 0..48 {
+                if offset == 0 {
+                    break;
+                }
+                let cap = bytes
+                    .get(offset..offset + 4)
+                    .context("invalid capability offset")?;
+                if cap[0] == 0x05 {
+                    anyhow::ensure!(cap[2] & 1 != 0, "port MSI is not enabled");
+                    msi_control = Some(offset + 2);
+                    break;
+                }
+                offset = usize::from(cap[1]);
+            }
+            let msi_control = msi_control
+                .context("missing port MSI capability")?
+                .to_string();
+            cmd!(
+                sh,
+                "dd if=/dev/zero of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            )
+            .run()
+            .await?;
+            let started = std::time::Instant::now();
+            let error = vm
+                .remove_pcie_device("s0rc0rp0".into(), true)
+                .await
+                .expect_err("removal must not succeed without guest acknowledgement");
+            anyhow::ensure!(
+                error.to_string().contains("PCIe ejection timed out"),
+                "unexpected removal error: {error:#}"
+            );
+            assert!(started.elapsed() >= Duration::from_secs(30));
+            cmd!(
+                sh,
+                "dd if=/dev/vda of=/dev/null bs=4096 count=1 iflag=direct"
+            )
+            .run()
+            .await
+            .context("device must remain usable after ejection timeout")?;
+            let enable_msi = format!(
+                "printf '\\001' | dd of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            );
+            cmd!(sh, "sh -c {enable_msi}").run().await?;
+        }
+
+        vm.remove_pcie_device("s0rc0rp0".into(), !guest_remove_first)
+            .await?;
 
         let mut removed = false;
         for _ in 0..30 {
