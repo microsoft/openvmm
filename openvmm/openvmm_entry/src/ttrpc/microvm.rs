@@ -69,6 +69,9 @@ pub(super) struct CreateVm {
     active: bool,
     machine_profile: MachineProfile,
     processor_count: u32,
+    /// The requested CPU profile, `auto` unless `VMConfig.cpu_profile` names
+    /// another, as for `--cpu-profile`.
+    cpu_profile: String,
     authoritative_restore: Option<AuthoritativeRestore>,
     restore_console_config: Option<vmservice::VirtioConsoleConfig>,
     restore_filesystem_config: Option<vmservice::VirtioFs>,
@@ -247,6 +250,10 @@ impl CreateVm {
 
         let mut restore_console_config = None;
         let mut restore_filesystem_config = None;
+        let cpu_profile = requested_config
+            .as_ref()
+            .map(|config| config.cpu_profile.clone())
+            .unwrap_or_default();
         let req_config = if let Some(restore) = &authoritative_restore {
             let restore_profile =
                 ttrpc_machine_profile(restore.machine_contract.microvm_abi_version)?;
@@ -321,12 +328,17 @@ impl CreateVm {
             active || (snapshot_destination.is_none() && authoritative_restore.is_none()),
             "microVM snapshot options require the microVM machine profile"
         );
+        anyhow::ensure!(
+            active || cpu_profile.is_empty(),
+            "cpu_profile requires the microVM machine profile"
+        );
 
         Ok((
             Self {
                 active,
                 machine_profile,
                 processor_count,
+                cpu_profile: requested_cpu_profile(cpu_profile),
                 authoritative_restore,
                 restore_console_config,
                 restore_filesystem_config,
@@ -481,7 +493,9 @@ impl CreateVm {
                 "ttrpc restore does not yet expose microVM network attachments"
             );
             // The management endpoint restores with the snapshot's CPU
-            // profile and no time ABI test hooks.
+            // profile and no time ABI test hooks. The preflight checks the
+            // requested profile against the snapshot's, as for
+            // `--cpu-profile`.
             let hooks = virt::time_abi::TimeAbiTestHooks::default();
             let prepared = crate::snapshot_restore::prepare_snapshot_restore_for_config(
                 restore
@@ -513,7 +527,7 @@ impl CreateVm {
                         restore.machine_contract.microvm_sandbox_blocks.clone(),
                     ),
                     crate::microvm::TimeAbiRestoreOptions {
-                        cpu_profile: "auto",
+                        cpu_profile: &self.cpu_profile,
                         hooks: &hooks,
                     },
                 )),
@@ -809,6 +823,24 @@ impl CreateVm {
         })
     }
 
+    /// Returns the time ABI parameters of the microVM: a restore uses the
+    /// snapshot's CPU profile and the next generation counter, and a cold
+    /// boot the requested profile.
+    fn time_abi_parameters(&self) -> openvmm_defs::time_abi::TimeAbiParameters {
+        let (cpu_profile, generation) = match &self.restore_time {
+            Some(restore_time) => (
+                restore_time.cpu_profile().id.clone(),
+                restore_time.contract().capture_generation.saturating_add(1),
+            ),
+            None => (self.cpu_profile.clone(), 0),
+        };
+        openvmm_defs::time_abi::TimeAbiParameters {
+            cpu_profile,
+            generation,
+            hooks: Default::default(),
+        }
+    }
+
     /// Applies machine-profile-specific values to an otherwise standard VM
     /// configuration.
     pub(super) fn apply_config(&self, config: &mut Config) {
@@ -822,20 +854,7 @@ impl CreateVm {
             }));
             config.hypervisor.with_hv = false;
             config.vmbus = None;
-            // A restore uses the snapshot's CPU profile and the next
-            // generation counter; a cold boot selects the host's profile.
-            let (cpu_profile, generation) = match &self.restore_time {
-                Some(restore_time) => (
-                    restore_time.cpu_profile().id.clone(),
-                    restore_time.contract().capture_generation.saturating_add(1),
-                ),
-                None => ("auto".to_owned(), 0),
-            };
-            config.microvm.time_abi = Some(openvmm_defs::time_abi::TimeAbiParameters {
-                cpu_profile,
-                generation,
-                hooks: Default::default(),
-            });
+            config.microvm.time_abi = Some(self.time_abi_parameters());
         }
         config.microvm.filesystem_bootstrap = self
             .authoritative_restore
@@ -1426,6 +1445,18 @@ fn ttrpc_machine_profile(abi_version: u32) -> anyhow::Result<vmservice::vm_confi
     Ok(vmservice::vm_config::MachineProfile::Microvm)
 }
 
+/// Returns the CPU profile that `VMConfig.cpu_profile` requests: `auto` for
+/// an empty value, as for an absent `--cpu-profile`, and the value
+/// otherwise, which the worker or the restore preflight validates as it
+/// validates `--cpu-profile`.
+fn requested_cpu_profile(requested: String) -> String {
+    if requested.is_empty() {
+        cpu_profile::AUTO.to_owned()
+    } else {
+        requested
+    }
+}
+
 fn validate_restore_console_attachments(
     attachments: &[openvmm_helpers::snapshot::microvm::SnapshotAttachment],
 ) -> anyhow::Result<()> {
@@ -1580,6 +1611,79 @@ mod tests {
             vmservice::vm_config::MachineProfile::Standard as i32
         );
         assert!(mesh::payload::decode::<vmservice::VmConfig>(b"\x80\x01\x01").is_err());
+    }
+
+    #[test]
+    fn ttrpc_cpu_profile_uses_a_new_wire_field() {
+        let config = vmservice::VmConfig {
+            cpu_profile: "host".to_owned(),
+            ..Default::default()
+        };
+        // Field 22, length-delimited.
+        let encoded = b"\xb2\x01\x04host";
+        assert_eq!(mesh::payload::encode(config), encoded);
+        let decoded: vmservice::VmConfig = mesh::payload::decode(encoded).unwrap();
+        assert_eq!(decoded.cpu_profile, "host");
+        assert!(decoded.crash_dump_path.is_none());
+        assert_eq!(
+            decoded.machine_profile,
+            vmservice::vm_config::MachineProfile::Standard as i32
+        );
+        // An unset selector adds nothing to the encoding, so requests that
+        // predate the field are unchanged.
+        let decoded: vmservice::VmConfig = mesh::payload::decode(b"\x88\x01\x02").unwrap();
+        assert!(decoded.cpu_profile.is_empty());
+        assert!(mesh::payload::encode(vmservice::VmConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn ttrpc_microvm_cold_boot_uses_the_requested_cpu_profile() {
+        for (requested, selected) in [
+            ("", "auto"),
+            ("auto", "auto"),
+            ("host", "host"),
+            ("intel.skylake-sp.v1", "intel.skylake-sp.v1"),
+        ] {
+            let Ok((create, _)) = CreateVm::new(vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                    cpu_profile: requested.to_owned(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }) else {
+                panic!("the microVM request with cpu_profile {requested:?} must parse");
+            };
+            let parameters = create.time_abi_parameters();
+            assert_eq!(parameters.cpu_profile, selected);
+            assert_eq!(parameters.generation, 0);
+            assert!(!parameters.hooks.active());
+        }
+    }
+
+    #[test]
+    fn ttrpc_cpu_profile_requires_the_microvm_profile() {
+        let Err(error) = CreateVm::new(vmservice::CreateVmRequest {
+            config: Some(vmservice::VmConfig {
+                cpu_profile: "host".to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }) else {
+            panic!("a standard VM must reject cpu_profile");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("cpu_profile requires the microVM machine profile")
+        );
+        assert!(
+            CreateVm::new(vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig::default()),
+                ..Default::default()
+            })
+            .is_ok()
+        );
     }
 
     #[test]
