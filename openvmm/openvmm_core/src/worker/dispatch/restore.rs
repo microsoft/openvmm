@@ -122,6 +122,7 @@ fn select_instantiated_vps<T>(
 #[derive(Default)]
 pub(super) struct SnapshotRestore {
     /// The time ABI inputs of a restore, validated by the controller.
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub(super) time_abi: Option<openvmm_defs::time_abi::RestoreTimeInput>,
     /// VP prefix instantiated for an explicit MSHV restore-time activation
     /// target.

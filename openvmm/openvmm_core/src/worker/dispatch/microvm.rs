@@ -5,6 +5,7 @@
 
 use super::InitializedVm;
 use super::LoadedVm;
+#[cfg(guest_arch = "x86_64")]
 use super::LoadedVmInner;
 use super::Manifest;
 use super::RestartState;
@@ -36,6 +37,7 @@ use std::time::Duration;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioMmioInterruptMode;
 use virtio::resolve::ResolvedVirtioDevice;
+#[cfg(guest_arch = "x86_64")]
 use vm_loader::InitialLoad;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmm_core::partition_unit::StopGuard;
@@ -341,7 +343,7 @@ impl LoadedVm {
 
         // The time ABI's capture checks and records: the LAPIC timers, then
         // the capture anchor and records. The PIT checks itself when saved.
-        #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
+        #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut time = self.capture_time_abi().await.map_err(|error| {
             openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
         })?;
@@ -708,6 +710,7 @@ pub(super) fn virtio_mmio_count(
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 pub(super) fn level_triggered_irqs(machine_profile: MachineProfile) -> &'static [u32] {
     match machine_profile {
         MachineProfile::Microvm => &openvmm_defs::microvm::MICROVM_LEVEL_TRIGGERED_IRQS,
