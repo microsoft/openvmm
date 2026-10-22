@@ -188,6 +188,7 @@ pub struct ZonedDisk {
     metadata_slot_sectors: u64,
     metadata_start_lba: u64,
     zones: Vec<Zone>,
+    mutation_lock: AsyncMutex<()>,
     metadata: AsyncMutex<MetadataState>,
     open_zone_count: Mutex<u32>,
     telemetry: ZonedTelemetry,
@@ -198,6 +199,12 @@ struct MetadataState {
     loaded: bool,
     generation: u64,
     active_slot: usize,
+}
+
+#[derive(Copy, Clone)]
+struct ZoneMutation {
+    index: usize,
+    old_state: ZoneState,
 }
 
 enum DecodedMetadata {
@@ -489,6 +496,7 @@ impl ZonedDisk {
             metadata_slot_sectors,
             metadata_start_lba,
             zones,
+            mutation_lock: AsyncMutex::new(()),
             metadata: AsyncMutex::new(MetadataState {
                 loaded: false,
                 generation: 0,
@@ -781,14 +789,33 @@ impl ZonedDisk {
     }
 
     fn apply_metadata_states(&self, states: &[ZoneState]) {
-        let mut open_zone_count = 0;
         for (zone, state) in self.zones.iter().zip(states) {
             *zone.state.lock() = *state;
-            if state.condition.is_open() {
-                open_zone_count += 1;
-            }
         }
+        self.refresh_open_zone_count();
+    }
+
+    fn refresh_open_zone_count(&self) {
+        let open_zone_count = self
+            .zones
+            .iter()
+            .filter(|zone| zone.state.lock().condition.is_open())
+            .count() as u32;
         *self.open_zone_count.lock() = open_zone_count;
+    }
+
+    fn rollback_mutations(&self, mutations: &[ZoneMutation]) {
+        for mutation in mutations.iter().rev() {
+            *self.zones[mutation.index].state.lock() = mutation.old_state;
+        }
+        self.refresh_open_zone_count();
+    }
+
+    async fn make_data_durable(&self, disk: &Disk, fua: bool) -> Result<(), ScsiError> {
+        if fua && disk.is_fua_respected() {
+            return Ok(());
+        }
+        disk.sync_cache().await.map_err(ScsiError::Disk)
     }
 
     async fn ensure_metadata_loaded(&self, disk: &Disk) -> Result<(), ScsiError> {
@@ -1000,15 +1027,19 @@ impl ZonedDisk {
         )
     }
 
-    fn reserve_open_zone(&self, target_zone: &Zone) -> Result<bool, ScsiError> {
+    fn reserve_open_zone(
+        &self,
+        target_index: usize,
+        mutations: &mut Vec<ZoneMutation>,
+    ) -> Result<(), ScsiError> {
         let mut count = self.open_zone_count.lock();
         if *count < self.parameters.max_open_zones {
             *count += 1;
-            return Ok(false);
+            return Ok(());
         }
 
-        for zone in &self.zones {
-            if std::ptr::eq(zone, target_zone) || zone.outstanding_io.load(Ordering::Acquire) != 0 {
+        for (index, zone) in self.zones.iter().enumerate() {
+            if index == target_index || zone.outstanding_io.load(Ordering::Acquire) != 0 {
                 continue;
             }
 
@@ -1020,11 +1051,15 @@ impl ZonedDisk {
             if zone.outstanding_io.load(Ordering::Acquire) == 0
                 && state.condition == ZoneCondition::ImplicitlyOpened
             {
+                mutations.push(ZoneMutation {
+                    index,
+                    old_state: *state,
+                });
                 state.condition = ZoneCondition::Closed;
                 self.telemetry
                     .implicit_zone_auto_closes
                     .fetch_add(1, Ordering::Relaxed);
-                return Ok(true);
+                return Ok(());
             }
         }
 
@@ -1067,18 +1102,28 @@ impl ZonedDisk {
 
     fn begin_write(
         &self,
-        zone: &Zone,
+        zone_index: usize,
         start_lba: u64,
         sector_count: u64,
-    ) -> Result<(ZoneState, bool), ScsiError> {
+        mutations: &mut Vec<ZoneMutation>,
+    ) -> Result<ZoneState, ScsiError> {
+        let zone = &self.zones[zone_index];
         let mut state = zone.state.lock();
         let old_state = *state;
-        let mut auto_closed_zone = false;
         if self.validate_sequential_write(zone, old_state, start_lba, sector_count)? {
-            auto_closed_zone = self.reserve_open_zone(zone)?;
+            self.reserve_open_zone(zone_index, mutations)?;
+            mutations.push(ZoneMutation {
+                index: zone_index,
+                old_state,
+            });
             state.condition = ZoneCondition::ImplicitlyOpened;
+        } else {
+            mutations.push(ZoneMutation {
+                index: zone_index,
+                old_state,
+            });
         }
-        Ok((old_state, auto_closed_zone))
+        Ok(old_state)
     }
 
     fn complete_write(&self, zone: &Zone, old_state: ZoneState, sector_count: u64) {
@@ -1093,14 +1138,6 @@ impl ZonedDisk {
         self.telemetry
             .successful_sequential_writes
             .fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn abort_write(&self, zone: &Zone, old_state: ZoneState) {
-        let mut state = zone.state.lock();
-        if !old_state.condition.is_open() && state.condition.is_open() {
-            self.release_open_zone();
-        }
-        *state = old_state;
     }
 
     pub async fn write(
@@ -1167,19 +1204,27 @@ impl ZonedDisk {
                 .map_err(ScsiError::Disk);
         }
 
+        // Keep the data write, zone transition, and journal commit in one
+        // transaction so a metadata snapshot cannot mix concurrent states.
+        let _mutation_guard = self.mutation_lock.lock().await;
         let _guard = zone.lock_io().await;
-        let (old_state, auto_closed_zone) = self.begin_write(zone, start_lba, sector_count)?;
+        let mut mutations = Vec::with_capacity(2);
+        let old_state = self.begin_write(index, start_lba, sector_count, &mut mutations)?;
         match disk.write_vectored(buffers, start_lba, fua).await {
             Ok(()) => {
+                if let Err(err) = self.make_data_durable(disk, fua).await {
+                    self.rollback_mutations(&mutations);
+                    return Err(err);
+                }
                 self.complete_write(zone, old_state, sector_count);
-                self.persist_metadata(disk).await?;
+                if let Err(err) = self.persist_metadata(disk).await {
+                    self.rollback_mutations(&mutations);
+                    return Err(err);
+                }
                 Ok(())
             }
             Err(err) => {
-                self.abort_write(zone, old_state);
-                if auto_closed_zone {
-                    self.persist_metadata(disk).await?;
-                }
+                self.rollback_mutations(&mutations);
                 Err(ScsiError::Disk(err))
             }
         }
@@ -1242,20 +1287,26 @@ impl ZonedDisk {
             return Ok(());
         }
 
+        let _mutation_guard = self.mutation_lock.lock().await;
         let _guard = zone.lock_io().await;
-        let (old_state, auto_closed_zone) = self.begin_write(zone, start_lba, sector_count)?;
+        let mut mutations = Vec::with_capacity(2);
+        let old_state = self.begin_write(index, start_lba, sector_count, &mut mutations)?;
         let end_lba = start_lba + sector_count;
         for lba in start_lba..end_lba {
             if let Err(err) = disk.write_vectored(buffer, lba, fua).await {
-                self.abort_write(zone, old_state);
-                if auto_closed_zone {
-                    self.persist_metadata(disk).await?;
-                }
+                self.rollback_mutations(&mutations);
                 return Err(ScsiError::Disk(err));
             }
         }
+        if let Err(err) = self.make_data_durable(disk, fua).await {
+            self.rollback_mutations(&mutations);
+            return Err(err);
+        }
         self.complete_write(zone, old_state, sector_count);
-        self.persist_metadata(disk).await?;
+        if let Err(err) = self.persist_metadata(disk).await {
+            self.rollback_mutations(&mutations);
+            return Err(err);
+        }
         Ok(())
     }
 
@@ -1423,6 +1474,7 @@ impl ZonedDisk {
         request: &scsi_core::Request,
     ) -> Result<usize, ScsiError> {
         self.ensure_metadata_loaded(disk).await?;
+        let _mutation_guard = self.mutation_lock.lock().await;
         let cdb = scsi::ReportZones::read_from_prefix(&request.cdb)
             .map_err(|_| ScsiError::IllegalRequest(scsi::AdditionalSenseCode::INVALID_CDB))?
             .0;
@@ -1583,11 +1635,20 @@ impl ZonedDisk {
             ));
         }
 
+        let _mutation_guard = self.mutation_lock.lock().await;
+        let mut mutations = Vec::new();
         let mut changed = false;
         if cdb.flags & scsi::ZBC_OUT_ALL != 0 {
-            for zone in &self.zones {
+            for index in 0..self.zones.len() {
+                let zone = &self.zones[index];
                 if zone.zone_type == ZoneType::SequentialWriteRequired {
-                    changed |= self.apply_action(zone, action, true).await?;
+                    match self.apply_action(index, action, true, &mut mutations).await {
+                        Ok(zone_changed) => changed |= zone_changed,
+                        Err(err) => {
+                            self.rollback_mutations(&mutations);
+                            return Err(err);
+                        }
+                    }
                 }
             }
         } else {
@@ -1600,10 +1661,22 @@ impl ZonedDisk {
                     scsi::AdditionalSenseCode::INVALID_CDB,
                 ));
             }
-            changed = self.apply_action(zone, action, false).await?;
+            changed = match self
+                .apply_action(index, action, false, &mut mutations)
+                .await
+            {
+                Ok(changed) => changed,
+                Err(err) => {
+                    self.rollback_mutations(&mutations);
+                    return Err(err);
+                }
+            };
         }
         if changed {
-            self.persist_metadata(disk).await?;
+            if let Err(err) = self.persist_metadata(disk).await {
+                self.rollback_mutations(&mutations);
+                return Err(err);
+            }
         }
 
         Ok(0)
@@ -1611,10 +1684,12 @@ impl ZonedDisk {
 
     async fn apply_action(
         &self,
-        zone: &Zone,
+        zone_index: usize,
         action: ZoneAction,
         all: bool,
+        mutations: &mut Vec<ZoneMutation>,
     ) -> Result<bool, ScsiError> {
+        let zone = &self.zones[zone_index];
         let _guard = zone.lock_io().await;
         let mut state = zone.state.lock();
 
@@ -1629,6 +1704,10 @@ impl ZonedDisk {
         match action {
             ZoneAction::Close => {
                 if state.condition.is_open() {
+                    mutations.push(ZoneMutation {
+                        index: zone_index,
+                        old_state: *state,
+                    });
                     self.release_open_zone();
                     state.condition = ZoneCondition::Closed;
                     return Ok(true);
@@ -1646,6 +1725,10 @@ impl ZonedDisk {
                     return Ok(false);
                 }
                 if state.condition != ZoneCondition::Full {
+                    mutations.push(ZoneMutation {
+                        index: zone_index,
+                        old_state: *state,
+                    });
                     if state.condition.is_open() {
                         self.release_open_zone();
                     }
@@ -1659,11 +1742,19 @@ impl ZonedDisk {
                 }
                 match state.condition {
                     ZoneCondition::Empty | ZoneCondition::Closed => {
-                        self.reserve_open_zone(zone)?;
+                        self.reserve_open_zone(zone_index, mutations)?;
+                        mutations.push(ZoneMutation {
+                            index: zone_index,
+                            old_state: *state,
+                        });
                         state.condition = ZoneCondition::ExplicitlyOpened;
                         return Ok(true);
                     }
                     ZoneCondition::ImplicitlyOpened => {
+                        mutations.push(ZoneMutation {
+                            index: zone_index,
+                            old_state: *state,
+                        });
                         state.condition = ZoneCondition::ExplicitlyOpened;
                         return Ok(true);
                     }
@@ -1685,12 +1776,19 @@ impl ZonedDisk {
                 }
                 let changed = state.condition != ZoneCondition::Empty
                     || state.write_pointer != zone.start_lba;
+                if !changed {
+                    return Ok(false);
+                }
+                mutations.push(ZoneMutation {
+                    index: zone_index,
+                    old_state: *state,
+                });
                 if state.condition.is_open() {
                     self.release_open_zone();
                 }
                 state.condition = ZoneCondition::Empty;
                 state.write_pointer = zone.start_lba;
-                return Ok(changed);
+                return Ok(true);
             }
         }
 

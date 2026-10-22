@@ -2,7 +2,9 @@
 // Licensed under the MIT License.
 
 use super::test_helpers::TestDisk;
+use super::test_helpers::TestDiskOperation;
 use super::test_helpers::TestDiskStorageState;
+use super::test_helpers::TestDiskWriteBlocker;
 use crate::SimpleScsiDisk;
 use crate::scsi;
 use disk_backend::Disk;
@@ -214,6 +216,7 @@ fn reopen_zoned_disk(
         physical_sector_size: PHYSICAL_SECTOR_SIZE,
         read_only: false,
         state,
+        write_blocker: None,
     };
     SimpleScsiDisk::new(
         Disk::new(disk).unwrap(),
@@ -388,6 +391,7 @@ async fn zoned_disk_reports_host_managed_identity_and_geometry() {
 #[async_test]
 async fn zoned_disk_enforces_write_pointer_and_reset_masks_old_data() {
     let disk = new_zoned_disk();
+    assert!(!disk.scsi_parameters.support_unmap);
     let memory = GuestMemory::allocate(4096);
     let range = OwnedRequestBuffers::linear(0, 4096, true);
     memory.write_at(0, &vec![0xa5; 4096]).unwrap();
@@ -721,7 +725,7 @@ async fn zoned_disk_recovers_zone_state_and_data_after_reopen() {
         .execute_scsi(&range.buffer(&memory), &write16_request(8, 8))
         .await;
     assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD, "{result:?}");
-    assert_eq!(state.lock().sync_count, 1);
+    assert_eq!(state.lock().sync_count, 2);
     drop(disk);
 
     let reopened = reopen_zoned_disk(state, ZONE_SIZE, 2);
@@ -740,6 +744,133 @@ async fn zoned_disk_recovers_zone_state_and_data_after_reopen() {
     let mut bytes = vec![0; 4096];
     memory.read_at(0, &mut bytes).unwrap();
     assert!(bytes.iter().all(|value| *value == 0xa5));
+}
+
+#[async_test]
+async fn zoned_disk_flushes_data_before_committing_metadata() {
+    let (disk, state) = new_zoned_disk_with_state(ZONE_SIZE, 2);
+    let memory = GuestMemory::allocate(4096);
+    let range = OwnedRequestBuffers::linear(0, 4096, true);
+    memory.write_at(0, &vec![0xa5; 4096]).unwrap();
+
+    let result = disk
+        .execute_scsi(&range.buffer(&memory), &write16_request(8, 8))
+        .await;
+    assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD, "{result:?}");
+
+    assert_eq!(
+        state.lock().operations,
+        vec![
+            TestDiskOperation::Write {
+                sector: 8,
+                fua: false,
+            },
+            TestDiskOperation::Sync,
+            TestDiskOperation::Write {
+                sector: VISIBLE_SECTOR_COUNT,
+                fua: false,
+            },
+            TestDiskOperation::Sync,
+        ]
+    );
+}
+
+#[async_test]
+async fn zoned_disk_retries_management_action_after_metadata_write_failure() {
+    let (disk, state) = new_zoned_disk_with_state(ZONE_SIZE, 2);
+    let memory = GuestMemory::allocate(4096);
+    let range = OwnedRequestBuffers::linear(0, 4096, true);
+    memory.write_at(0, &vec![0xa5; 4096]).unwrap();
+
+    let result = disk
+        .execute_scsi(&range.buffer(&memory), &write16_request(8, 8))
+        .await;
+    assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD, "{result:?}");
+
+    state.lock().fail_next_write_once = true;
+
+    let reset = zbc_out_request(scsi::SERVICE_ACTION_RESET_WRITE_POINTER, 8);
+    let result = disk.execute_scsi(&range.buffer(&memory), &reset).await;
+    let failure_state = state.lock();
+    assert_eq!(
+        result.scsi_status,
+        scsi::ScsiStatus::CHECK_CONDITION,
+        "fail_next_write_once={}, operations={:?}",
+        failure_state.fail_next_write_once,
+        failure_state.operations
+    );
+    drop(failure_state);
+    assert_eq!(
+        zone_descriptor(&disk, 1).await.condition >> scsi::ZONE_CONDITION_SHIFT,
+        scsi::ZONE_CONDITION_FULL
+    );
+
+    let result = disk.execute_scsi(&range.buffer(&memory), &reset).await;
+    assert_eq!(result.scsi_status, scsi::ScsiStatus::GOOD, "{result:?}");
+    drop(disk);
+
+    let reopened = reopen_zoned_disk(state, ZONE_SIZE, 2);
+    let zone = zone_descriptor(&reopened, 1).await;
+    assert_eq!(
+        zone.condition >> scsi::ZONE_CONDITION_SHIFT,
+        scsi::ZONE_CONDITION_EMPTY
+    );
+    assert_eq!(zone.write_pointer_lba.get(), 8);
+}
+
+#[async_test]
+async fn zoned_disk_serializes_zone_transitions_with_metadata_snapshot() {
+    let (mut backing, state) =
+        TestDisk::new(SECTOR_SIZE, PHYSICAL_SECTOR_SIZE, SECTOR_COUNT, false, true);
+    let (entered_send, entered_recv) = mesh::oneshot();
+    let (release_send, release_recv) = mesh::oneshot();
+    backing.write_blocker = Some(Arc::new(TestDiskWriteBlocker {
+        sector: VISIBLE_SECTOR_COUNT,
+        entered: Mutex::new(Some(entered_send)),
+        release: Mutex::new(Some(release_recv)),
+    }));
+    let disk = SimpleScsiDisk::new(Disk::new(backing).unwrap(), zoned_parameters(8192, 1)).unwrap();
+
+    let memory = GuestMemory::allocate(4096);
+    memory.write_at(0, &vec![0xa5; 4096]).unwrap();
+    let first_range = OwnedRequestBuffers::linear(0, 4096, true);
+    let second_range = OwnedRequestBuffers::linear(0, 4096, true);
+    let first_buffer = first_range.buffer(&memory);
+    let second_buffer = second_range.buffer(&memory);
+    let first_request = write16_request(16, 8);
+    let second_request = write16_request(32, 8);
+    let mut first = std::pin::pin!(disk.execute_scsi(&first_buffer, &first_request));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    entered_recv.await.unwrap();
+
+    let operations_before_second = state.lock().operations.clone();
+    let mut second = std::pin::pin!(disk.execute_scsi(&second_buffer, &second_request));
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    assert_eq!(state.lock().operations, operations_before_second);
+
+    release_send.send(());
+    let first_result = first.await;
+    assert_eq!(
+        first_result.scsi_status,
+        scsi::ScsiStatus::GOOD,
+        "{first_result:?}"
+    );
+    let second_result = second.await;
+    assert_eq!(
+        second_result.scsi_status,
+        scsi::ScsiStatus::GOOD,
+        "{second_result:?}"
+    );
+
+    let reopened = reopen_zoned_disk(state, 8192, 1);
+    assert_eq!(
+        zone_descriptor(&reopened, 1).await.condition >> scsi::ZONE_CONDITION_SHIFT,
+        scsi::ZONE_CONDITION_CLOSED
+    );
+    assert_eq!(
+        zone_descriptor(&reopened, 2).await.condition >> scsi::ZONE_CONDITION_SHIFT,
+        scsi::ZONE_CONDITION_IMPLICITLY_OPENED
+    );
 }
 
 #[async_test]

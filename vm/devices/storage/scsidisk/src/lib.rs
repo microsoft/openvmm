@@ -215,7 +215,8 @@ impl SimpleScsiDisk {
                     write_cache_enabled: write_cache.unwrap_or(true),
                     support_odx: odx.unwrap_or(false),
                     support_get_lba_status: get_lba_status,
-                    support_unmap: unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
+                    support_unmap: !is_zoned
+                        && unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
                     maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
                     identity: identity.unwrap_or_else(DiskIdentity::msft),
                     serial_number,
