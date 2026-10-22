@@ -15,10 +15,9 @@
             },
             "image": {
                 "snp_linux_direct": {
-                    "processor_count": 2,
                     "linux": {
                         "use_initrd": true,
-                        "command_line": "console=ttyS0 earlyprintk=serial earlycon panic=-1"
+                        "command_line": "console=ttyS0 earlyprintk=serial earlycon panic=-1 rdinit=/pipette initcall_blacklist=hv_sock_init"
                     },
                     "memory_page_count": 40960,
                     "c_bit_position": 51

@@ -32,6 +32,7 @@ use loader::importer::TableRegister;
 use loader::importer::X86Register;
 use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use range_map_vec::RangeMap;
 use serial_uart_resources::UartId;
@@ -459,6 +460,8 @@ pub struct LoadIgvmParams<'a, T: ArchTopology> {
     pub chipset_mmio: ChipsetMmioRanges,
     /// Resolved host bridges to describe for images requesting a device tree.
     pub pcie_host_bridges: &'a [PcieHostBridge],
+    /// The firmware that the IGVM file contains.
+    pub personality: IgvmPersonality,
 }
 
 pub fn load_igvm(
@@ -499,6 +502,7 @@ fn load_igvm_x86(
         entropy,
         chipset_mmio,
         pcie_host_bridges,
+        personality,
     } = params;
 
     let ChipsetMmioRanges {
@@ -928,6 +932,7 @@ fn load_igvm_x86(
                         protectable_ram: &vtl2_protectable_ram,
                         vmbus_redirect: with_vmbus_redirect,
                         entropy,
+                        personality,
                     }),
                 )
                 .with_command_line(&cmdline)

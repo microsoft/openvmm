@@ -2108,7 +2108,7 @@ impl InitializedVm {
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
-                is_restoring: false,
+                is_restoring: saved_state.is_some(),
                 untrusted_dma_memory: gm.clone(),
                 // There is no access to encrypted memory on the host, so this
                 // may be misleading. Presumably in any confidential VM
@@ -3589,6 +3589,7 @@ impl LoadedVmInner {
                 ref cmdline,
                 vtl2_base_address,
                 com_serial,
+                personality,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -3624,6 +3625,7 @@ impl LoadedVmInner {
                     entropy: Some(&entropy),
                     chipset_mmio: self.chipset_mmio,
                     pcie_host_bridges: &self.pcie_host_bridges,
+                    personality,
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }

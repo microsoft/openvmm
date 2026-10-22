@@ -437,7 +437,9 @@ impl X509CertificateInner {
             .context("encoding the X.500 name")?;
 
         // 2. Build the SubjectPublicKeyInfo DER.
-        let components = key.to_components();
+        let components = key
+            .to_components()
+            .context("exporting the RSA public key components")?;
         let pkcs1_pub = encode_pkcs1_rsa_pubkey(&components.modulus, &components.public_exponent)
             .context("encoding the RSA public key")?;
 

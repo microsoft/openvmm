@@ -1,251 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::scalable_fixture::Fixture;
+use super::scalable_fixture::GPA;
+use super::scalable_fixture::IOVA;
+use super::scalable_fixture::LOWER;
+use super::scalable_fixture::ROOT;
+use super::scalable_fixture::SL_ROOT;
+use super::scalable_fixture::UNMAPPED;
+use super::scalable_fixture::final_ecap;
+use super::scalable_fixture::put;
+use super::scalable_fixture::walk;
 use super::*;
 use iommu_common::IommuTranslator;
 use test_with_tracing::test;
-
-#[path = "accessed_dirty.rs"]
-mod accessed_dirty;
-
-const ROOT: u64 = 0x1000;
-const LOWER: u64 = 0x2000;
-const UPPER: u64 = 0x3000;
-const DIRECTORY: u64 = 0x10000;
-const PASID_TABLE: u64 = 0x40000;
-const SL_ROOT: u64 = 0x50000;
-const GPA: u64 = 0x70000;
-const UNMAPPED: u64 = 0x100000;
-const IOVA: u64 = 0x1234_5678_9abc;
-
-fn final_ecap() -> EcapReg {
-    EcapReg::from(ECAP_VALUE)
-        .with_smts(true)
-        .with_ssts(true)
-        .with_ssads(true)
-        .with_smpwcs(true)
-        .with_rps(true)
-}
-
-fn put(gm: &GuestMemory, address: u64, words: &[u64]) {
-    for (index, word) in words.iter().enumerate() {
-        gm.write_at(address + index as u64 * 8, &word.to_le_bytes())
-            .unwrap();
-    }
-}
-
-fn walk(gm: &GuestMemory, levels: u8, leaf: u8, iova: u64, gpa: u64) -> Vec<u64> {
-    walk_at(gm, SL_ROOT, levels, leaf, iova, gpa)
-}
-
-fn walk_at(gm: &GuestMemory, root: u64, levels: u8, leaf: u8, iova: u64, gpa: u64) -> Vec<u64> {
-    let mut entries = Vec::new();
-    for level in (leaf..=levels).rev() {
-        let table = root + u64::from(levels - level) * 4096;
-        // Deliberately independent of SlPte's index/address helpers.
-        let index = (iova >> (12 + 9 * (level - 1))) & 511;
-        let address = table + index * 8;
-        let value = if level == leaf {
-            gpa | 3 | if leaf > 1 { 1 << 7 } else { 0 }
-        } else {
-            (table + 4096) | 3
-        };
-        put(gm, address, &[value]);
-        entries.push(address);
-    }
-    entries
-}
-
-struct Fixture {
-    dev: IntelVtdDevice,
-    gm: GuestMemory,
-    rid: u16,
-    entries: [u64; 4],
-}
-
-impl Fixture {
-    fn new(rid: u16, pasid: u32, pdts: u8) -> Self {
-        let gm = GuestMemory::allocate(UNMAPPED as usize);
-        let root = ROOT + u64::from(rid >> 8) * 16 + if rid & 128 == 0 { 0 } else { 8 };
-        let table = if rid & 128 == 0 { LOWER } else { UPPER };
-        let context = table + u64::from(rid & 127) * 32;
-        let directory = DIRECTORY + u64::from(pasid >> 6) * 8;
-        let pasid_entry = PASID_TABLE + u64::from(pasid & 63) * 64;
-        put(&gm, root, &[table | 1]);
-        put(
-            &gm,
-            context,
-            &[
-                DIRECTORY | 1 | (u64::from(pdts) << 9),
-                u64::from(pasid),
-                0,
-                0,
-            ],
-        );
-        put(&gm, directory, &[PASID_TABLE | 1]);
-        put(
-            &gm,
-            pasid_entry,
-            &[SL_ROOT | 1 | (2 << 2) | (2 << 6), 0xbeef, 0, 0, 0, 0, 0, 0],
-        );
-        walk(&gm, 4, 1, IOVA, GPA);
-        let (mut dev, _) = IntelVtdDevice::new(
-            gm.clone(),
-            IntelVtdConfig {
-                mmio_base: TEST_MMIO_BASE,
-            },
-            Arc::new(TestSignalMsi),
-        );
-        write64(&mut dev, 0x020, ROOT | (1 << 10));
-        write32(&mut dev, 0x018, (1 << 30) | (1 << 31));
-        Self {
-            dev,
-            gm,
-            rid,
-            entries: [root, context, directory, pasid_entry],
-        }
-    }
-
-    fn word(&self, address: u64) -> u64 {
-        u64::from_le(self.gm.read_plain(address).unwrap())
-    }
-
-    fn fpd(&self, mask: u8) {
-        for stage in 1..4 {
-            let address = self.entries[stage];
-            let value = (self.word(address) & !2) | (u64::from((mask >> (stage - 1)) & 1) << 1);
-            put(&self.gm, address, &[value]);
-        }
-    }
-
-    fn translation_context(&self, iova: u64) -> TranslationContext {
-        TranslationContext {
-            source_id: self.rid,
-            iova,
-            mode: TranslationTableMode::SCALABLE,
-            fpd: false,
-        }
-    }
-
-    fn resolve(&self) -> TranslationDescriptor {
-        self.dev
-            .shared
-            .resolve_scalable(ROOT, self.translation_context(IOVA), final_ecap())
-            .unwrap()
-    }
-
-    fn translate(
-        &self,
-        iova: u64,
-        write: bool,
-    ) -> Result<u64, iommu_common::TranslationFault<VtdFault>> {
-        self.dev.shared.translator().translate_with_capabilities(
-            self.rid,
-            iova,
-            write,
-            final_ecap(),
-            |gpa| {
-                // Invalidation's write lock must also drain the DMA operation.
-                assert!(self.dev.shared.state.try_write().is_none());
-                gpa
-            },
-        )
-    }
-
-    fn assert_fault(&mut self, iova: u64, write: bool, reason: u8, suppressed: bool) {
-        self.assert_fault_with_capabilities(iova, write, reason, suppressed, final_ecap());
-    }
-
-    fn translate_legacy(&self, iova: u64, write: bool) -> u64 {
-        self.dev
-            .shared
-            .translator()
-            .translate(self.rid, iova, write, |gpa| {
-                assert!(self.dev.shared.state.try_write().is_none());
-                gpa
-            })
-            .unwrap()
-    }
-
-    fn assert_legacy_fault(&mut self, iova: u64, write: bool, reason: u8, suppressed: bool) {
-        self.assert_fault_with_capabilities(
-            iova,
-            write,
-            reason,
-            suppressed,
-            EcapReg::from(ECAP_VALUE),
-        );
-    }
-
-    fn assert_fault_with_capabilities(
-        &mut self,
-        iova: u64,
-        write: bool,
-        reason: u8,
-        suppressed: bool,
-        ecap: EcapReg,
-    ) {
-        write32(&mut self.dev, 0x12c, 1 << 31);
-        write32(&mut self.dev, 0x034, u32::MAX);
-        let previous = (read64(&mut self.dev, 0x120), read64(&mut self.dev, 0x128));
-        let fault = self
-            .dev
-            .shared
-            .translator()
-            .translate_with_capabilities(self.rid, iova, write, ecap, |_| {
-                panic!("DMA operation ran on a fault")
-            })
-            .unwrap_err();
-        assert_eq!(fault.iova, iova);
-        assert_eq!(fault.error.source_id(), self.rid);
-        assert_eq!(fault.error.fault_address(), iova);
-        assert_eq!(fault.error.fault_reason().0, reason, "{fault:?}");
-        assert_eq!(fault.error.fpd(), suppressed, "{fault:?}");
-        let raw = (read64(&mut self.dev, 0x120), read64(&mut self.dev, 0x128));
-        if suppressed {
-            assert_eq!(raw, previous);
-            assert_eq!(read32(&mut self.dev, 0x034) & 3, 0);
-        } else {
-            // FI retains the original request at 4KB granularity, with bits
-            // above the largest advertised AGAW reserved (§11.4.7.6).
-            // PP/PASID/PRIV/EXE stay zero: RID_PASID is not an explicit tag.
-            assert_eq!(raw.0, iova & 0x0000_ffff_ffff_f000);
-            assert_eq!(
-                raw.1,
-                (1 << 63)
-                    | (u64::from(!write) << 62)
-                    | (u64::from(reason) << 32)
-                    | u64::from(self.rid)
-            );
-            assert_eq!(read32(&mut self.dev, 0x034) & 3, 2);
-        }
-    }
-
-    fn legacy(&mut self, levels: u8) {
-        let context = LOWER + u64::from(self.rid & 255) * 16;
-        put(
-            &self.gm,
-            ROOT + u64::from(self.rid >> 8) * 16,
-            &[LOWER | 1, 0],
-        );
-        put(
-            &self.gm,
-            context,
-            &[SL_ROOT | 1, u64::from(levels - 2) | (0xbeef << 8)],
-        );
-        write64(&mut self.dev, 0x020, ROOT);
-        write32(&mut self.dev, 0x018, (1 << 30) | (1 << 31));
-    }
-
-    fn set_levels(&self, levels: u8) {
-        let address = self.entries[3];
-        put(
-            &self.gm,
-            address,
-            &[(self.word(address) & !(7 << 2)) | (u64::from(levels - 2) << 2)],
-        );
-    }
-}
 
 #[test]
 fn lookup_bus_devfn_and_rid_pasid_boundaries() {
@@ -969,27 +737,22 @@ fn raw_mode_and_root_do_not_take_effect_before_srtp() {
     );
     write32(&mut f.dev, 0x018, 0);
     write32(&mut f.dev, 0x018, (1 << 30) | (1 << 31));
-    f.assert_fault_with_capabilities(IOVA, true, 0x30, false, EcapReg::from(ECAP_VALUE));
+    f.assert_fault(IOVA, true, 0x38, false);
 }
 
 #[test]
-fn production_capabilities_gate_scalable_and_reserved_modes_without_dma() {
+fn prior_profile_gates_scalable_but_production_only_rejects_reserved_modes() {
     for mode in [1, 2, 3] {
         let mut f = Fixture::new(0xff80, 0, 0);
         f.fpd(7);
         write64(&mut f.dev, 0x020, ROOT | (mode << 10));
         write32(&mut f.dev, 0x018, (1 << 30) | (1 << 31));
-        f.assert_fault_with_capabilities(IOVA, false, 0x30, false, EcapReg::from(ECAP_VALUE));
-        let fault = f
-            .dev
-            .shared
-            .translator()
-            .translate(f.rid, IOVA, true, |_| {
-                panic!("production DMA in unsupported mode")
-            })
-            .unwrap_err();
-        assert_eq!(fault.error.fault_reason().0, 0x30);
-        if mode != 1 {
+        // Keep the predecessor's negative-profile regression independent of
+        // the current advertisement.
+        f.assert_fault_with_capabilities(IOVA, false, 0x30, false, EcapReg::from(0x00f0_10db));
+        if mode == 1 {
+            assert_eq!(f.translate(IOVA, true).unwrap(), GPA | 0xabc);
+        } else {
             f.assert_fault(IOVA, true, 0x30, false);
         }
         write32(&mut f.dev, 0x018, 0);
@@ -1001,7 +764,7 @@ fn production_capabilities_gate_scalable_and_reserved_modes_without_dma() {
                 .unwrap(),
             u64::MAX
         );
-        assert_eq!(read64(&mut f.dev, 0x010), 0x00f0_10db);
+        assert_eq!(read64(&mut f.dev, 0x010), 0x0003_6800_00f0_10db);
     }
 }
 
@@ -1484,7 +1247,7 @@ fn all_lookup_bytes_must_be_readable_before_using_entry_fields() {
         write32(&mut dev, 0x018, (1 << 30) | (1 << 31));
         let fault = shared
             .translator()
-            .translate_with_capabilities(0, IOVA, false, final_ecap(), |_| {
+            .translate(0, IOVA, false, |_| {
                 panic!("DMA after a partial lookup read")
             })
             .unwrap_err();

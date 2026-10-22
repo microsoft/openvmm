@@ -226,6 +226,7 @@ impl FlowNode for Node {
                 extra_env: Some(extra_env),
                 config,
                 pre_build_deps,
+                non_json_output: None,
                 output: v,
             });
 

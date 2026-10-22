@@ -5,7 +5,7 @@
 
 #![expect(deprecated)]
 
-/// Hash algorithm for RSA operations.
+/// Hash algorithm for cryptographic operations.
 #[derive(Debug, Clone, Copy)]
 pub enum HashAlgorithm {
     /// SHA-1
@@ -254,6 +254,18 @@ impl From<HashAlgorithm> for symcrypt::hash::HashAlgorithm {
             HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
             HashAlgorithm::Sha384 => symcrypt::hash::HashAlgorithm::Sha384,
             HashAlgorithm::Sha512 => symcrypt::hash::HashAlgorithm::Sha512,
+        }
+    }
+}
+
+#[cfg(symcrypt)]
+impl From<HashAlgorithm> for symcrypt::hmac::HmacAlgorithm {
+    fn from(hash_algorithm: HashAlgorithm) -> Self {
+        match hash_algorithm {
+            HashAlgorithm::Sha1 => symcrypt::hmac::HmacAlgorithm::HmacSha1,
+            HashAlgorithm::Sha256 => symcrypt::hmac::HmacAlgorithm::HmacSha256,
+            HashAlgorithm::Sha384 => symcrypt::hmac::HmacAlgorithm::HmacSha384,
+            HashAlgorithm::Sha512 => symcrypt::hmac::HmacAlgorithm::HmacSha512,
         }
     }
 }

@@ -15,13 +15,16 @@ get_protocol.workspace = true
 guid = { workspace = true, features = ["getrandom"] }
 mesh.workspace = true
 tee_call.workspace = true
+x86defs.workspace = true
 pal_async.workspace = true
 tracing.workspace = true
+tracelimit.workspace = true
 cvm_tracing.workspace = true
 
 base64.workspace = true
 base64-serde.workspace = true
 constant_time_eq.workspace = true
+der = { workspace = true, features = ["alloc", "oid"] }
 getrandom.workspace = true
 hex.workspace = true
 serde = { workspace = true, features = ["std"] }
@@ -31,6 +34,9 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+parking_lot.workspace = true
+inspect.workspace = true
+scsi_buffers.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
 disklayer_ram.workspace = true
 disk_backend.workspace = true
@@ -38,6 +44,7 @@ vmgs = { workspace = true, features = ["encryption", "test_helpers"] }
 vmgs_format.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 guest_emulation_device = { workspace = true, features = ["test_utilities"] }
+test_igvm_agent_lib.workspace = true
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true
 

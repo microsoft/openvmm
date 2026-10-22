@@ -107,7 +107,12 @@ impl RsaKeyPairInner {
         Ok(super::RsaPrivateKeyComponents {
             modulus: blob.modulus,
             public_exponent: blob.pub_exp,
-            private_exponent: blob.private_exp,
+            // The private exponent is exported at modulus width.
+            private_exponent: crate::helpers::unpad_component(&blob.private_exp).ok_or(
+                RsaError(crate::BackendError::Invalid(
+                    "exported RSA private key has an empty or zero private exponent",
+                )),
+            )?,
             prime1: blob.p,
             prime2: blob.q,
         })
@@ -237,11 +242,14 @@ impl RsaPublicKeyInner {
         self.0.get_size_of_modulus() as usize
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        let blob = self.0.export_public_key_blob().unwrap();
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        let blob = self
+            .0
+            .export_public_key_blob()
+            .map_err(|e| err(e, "exporting the RSA public key blob"))?;
+        Ok(RsaPublicKeyComponents {
             modulus: blob.modulus,
             public_exponent: blob.pub_exp,
-        }
+        })
     }
 }

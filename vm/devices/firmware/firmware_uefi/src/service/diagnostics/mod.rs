@@ -29,6 +29,7 @@ mod gpa;
 mod header;
 mod log;
 mod processor;
+mod suppressor;
 
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;

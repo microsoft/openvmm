@@ -14,6 +14,7 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
+use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmOutputs;
 use flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::artifact_name_openhcl_baseline;
 use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
 use flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode;
@@ -32,7 +33,6 @@ use flowey_lib_hvlite::init_vmm_tests_env::PetriParams;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsLinux;
 use flowey_lib_hvlite::install_vmm_tests_external_deps::VmmTestsExternalDepsWindows;
-use petri_artifacts_core::ArtifactId;
 use petri_artifacts_vmm_test::ErasedVmmTestImage;
 use petri_artifacts_vmm_test::artifacts::test_iso;
 use petri_artifacts_vmm_test::artifacts::test_vhd;
@@ -161,15 +161,18 @@ impl IntoPipeline for CheckinGatesCli {
         };
 
         if let RepoSource::GithubSelf = &openvmm_repo_source {
-            pipeline.gh_set_flowey_bootstrap_template(
-                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template(),
+            pipeline.gh_set_flowey_bootstrap_template_fn(
+                crate::pipelines_shared::gh_flowey_bootstrap_template::get_template_for_platform,
             );
         }
 
         if let RepoSource::AdoResource(source) = &openvmm_repo_source {
-            pipeline.ado_set_flowey_bootstrap_template(
-                crate::pipelines_shared::ado_flowey_bootstrap_template::get_template_ado(source),
-            );
+            let source = source.clone();
+            pipeline.ado_set_flowey_bootstrap_template_fn(move |platform, arch| {
+                crate::pipelines_shared::ado_flowey_bootstrap_template::get_template_for_platform(
+                    platform, arch, &source,
+                )
+            });
         }
 
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(
@@ -216,6 +219,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         let (pub_vmfirmwareigvm_cvm_x64, use_vmfirmwareigvm_cvm_x64) =
             pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm");
+        let (pub_vmfirmwareigvm_cvm_mi_secure_x64, use_vmfirmwareigvm_cvm_mi_secure_x64) =
+            pipeline.new_typed_artifact("x64-vmfirmwareigvm-cvm-mi-secure");
 
         // initialize the various "VmmTestsArtifactsBuilder" containers, which
         // are used to "skim off" various artifacts that the VMM test jobs
@@ -860,6 +865,8 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmm-perf-runner"));
             let (pub_vmm_perf_musl, use_vmm_perf_musl) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-vmm-perf-runner"));
+            let snp_igvm_artifact = matches!(arch, CommonArch::X86_64)
+                .then(|| pipeline.new_typed_artifact("x64-linux-snp-linux-direct-igvm"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -884,6 +891,11 @@ impl IntoPipeline for CheckinGatesCli {
                     vmm_tests_artifacts_linux_musl_x86
                         .use_nextest_vmm_tests_archive_linux_musl_x64 =
                         Some(use_vmm_tests_archive_musl.clone());
+                    let (_, use_snp_igvm) = snp_igvm_artifact.as_ref().unwrap();
+                    vmm_tests_artifacts_linux_x86.use_snp_linux_direct_igvm_x64 =
+                        Some(use_snp_igvm.clone());
+                    vmm_tests_artifacts_linux_musl_x86.use_snp_linux_direct_igvm_x64 =
+                        Some(use_snp_igvm.clone());
                     use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
                     use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
                     use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
@@ -1080,11 +1092,21 @@ impl IntoPipeline for CheckinGatesCli {
                     }
                 });
 
+            let job = if let Some((pub_snp_igvm, _)) = snp_igvm_artifact {
+                job.publish(pub_snp_igvm, |snp_linux_direct_igvm| {
+                    flowey_lib_hvlite::build_snp_linux_direct_igvm::Request {
+                        snp_linux_direct_igvm,
+                    }
+                })
+            } else {
+                job
+            };
             all_jobs.push(job.finish());
         }
 
         let mut use_openhcl_igvm_files_mi_secure_x86 = BTreeMap::new();
-        let mut use_openhcl_cvm_for_vmfirmwareigvm_dll = None;
+        let mut pub_vmfirmwareigvm_cvm_x64 = Some(pub_vmfirmwareigvm_cvm_x64);
+        let mut pub_vmfirmwareigvm_cvm_mi_secure_x64 = Some(pub_vmfirmwareigvm_cvm_mi_secure_x64);
 
         // emit openhcl build job
         for (arch, mi_secure) in [
@@ -1142,11 +1164,6 @@ impl IntoPipeline for CheckinGatesCli {
                 (matches!(config, PipelineConfig::Ci) && !mi_secure)
                     .then(|| pipeline.new_typed_artifact(artifact_name_openhcl_baseline(arch)))
                     .unzip();
-            if arch == CommonArch::X86_64 && !mi_secure {
-                use_openhcl_cvm_for_vmfirmwareigvm_dll =
-                    use_openhcl_igvms.get(&OpenhclIgvmRecipe::X64Cvm).cloned();
-            }
-
             // skim off interesting artifacts required by the VMM tests job
             match (arch, mi_secure) {
                 (CommonArch::X86_64, false) => {
@@ -1186,8 +1203,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(gh_pools::default_linux())
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
-                    let publish_baseline_artifact = pub_openhcl_baseline
-                        .map(|baseline_artifact| ctx.publish_typed_artifact(baseline_artifact));
+                    let mut pub_openhcl_baseline = pub_openhcl_baseline;
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
@@ -1196,6 +1212,24 @@ impl IntoPipeline for CheckinGatesCli {
                                 let pub_openhcl_igvm = pub_openhcl_igvms.remove(&recipe).unwrap();
                                 let pub_openhcl_igvm_extras =
                                     pub_openhcl_igvms_extras.remove(&recipe).unwrap();
+                                let vmfirmwareigvm_dll = if recipe == OpenhclIgvmRecipe::X64Cvm
+                                    && arch == CommonArch::X86_64
+                                {
+                                    if mi_secure {
+                                        pub_vmfirmwareigvm_cvm_mi_secure_x64.take()
+                                    } else {
+                                        pub_vmfirmwareigvm_cvm_x64.take()
+                                    }
+                                } else {
+                                    None
+                                };
+                                // The size baseline always uses the standard recipe,
+                                let baseline_artifact = match recipe {
+                                    OpenhclIgvmRecipe::X64 | OpenhclIgvmRecipe::Aarch64 => {
+                                        pub_openhcl_baseline.take()
+                                    }
+                                    _ => None,
+                                };
                                 (
                                     OpenhclIgvmBuildParams {
                                         profile: openvmm_hcl_profile,
@@ -1218,12 +1252,18 @@ impl IntoPipeline for CheckinGatesCli {
                                         // consumed by the VMM tests.
                                         confidential_debug: true,
                                     },
-                                    ctx.publish_typed_artifact(pub_openhcl_igvm),
-                                    ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
+                                    OpenhclIgvmOutputs {
+                                        openhcl_igvm: ctx.publish_typed_artifact(pub_openhcl_igvm),
+                                        openhcl_igvm_extras: ctx
+                                            .publish_typed_artifact(pub_openhcl_igvm_extras),
+                                        vmfirmwareigvm_dll: vmfirmwareigvm_dll
+                                            .map(|artifact| ctx.publish_typed_artifact(artifact)),
+                                        artifact_openhcl_verify_size_baseline: baseline_artifact
+                                            .map(|artifact| ctx.publish_typed_artifact(artifact)),
+                                    },
                                 )
                             })
                             .collect(),
-                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                     }
                 });
 
@@ -1443,33 +1483,6 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(clippy_unit_test_job.finish());
         }
 
-        let use_openhcl_cvm = use_openhcl_cvm_for_vmfirmwareigvm_dll.unwrap();
-        let job = pipeline
-            .new_job(
-                FlowPlatform::Windows,
-                FlowArch::X86_64,
-                "build vmfirmwareigvm cvm [x64-windows]",
-            )
-            .gh_set_pool(gh_pools::default_windows())
-            .ado_set_pool(ado_pools::default_windows())
-            .dep_on(
-                move |ctx| flowey_lib_hvlite::build_vmfirmwareigvm_dll::Request {
-                    arch: CommonArch::X86_64,
-                    openhcl_igvm: ctx.use_typed_artifact(&use_openhcl_cvm),
-                    resource_id: flowey_lib_hvlite::build_vmfirmwareigvm_dll::SNP_RESOURCE_ID,
-                    dll_version: ReadVar::from_static(
-                        flowey_lib_hvlite::build_vmfirmwareigvm_dll::UNUSED_DLL_VERSION,
-                    ),
-                    internal_dll_name:
-                        petri_artifacts_vmm_test::artifacts::vmfw_dll::LATEST_CVM_X64::FILENAME
-                            .into(),
-                    vmfirmwareigvm_dll: ctx.publish_typed_artifact(pub_vmfirmwareigvm_cvm_x64),
-                },
-            )
-            .finish();
-
-        all_jobs.push(job);
-
         let vmm_tests_artifacts_windows_intel_x86 = vmm_tests_artifacts_windows_x86
             .clone()
             .finish()
@@ -1478,6 +1491,7 @@ impl IntoPipeline for CheckinGatesCli {
             })?;
         let vmm_tests_artifacts_windows_intel_mi_secure_x86 = {
             let mut builder = vmm_tests_artifacts_windows_x86.clone();
+            builder.use_vmfirmwareigvm_cvm_x64 = Some(use_vmfirmwareigvm_cvm_mi_secure_x64);
             builder.use_openhcl_standard_x64 = use_openhcl_igvm_files_mi_secure_x86
                 .get(&OpenhclIgvmRecipe::X64)
                 .cloned();
@@ -1511,6 +1525,14 @@ impl IntoPipeline for CheckinGatesCli {
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
+            })?;
+        let vmm_tests_artifacts_linux_snp_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
+            .clone()
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!(
+                    "missing required linux-snp-mshv (musl) vmm_tests artifact: {missing}"
+                )
             })?;
         let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_musl_x86
             .finish()
@@ -1795,6 +1817,22 @@ impl IntoPipeline for CheckinGatesCli {
                 }),
             },
             VmmTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
+                arch: FlowArch::X86_64,
+                gh_pool: gh_pools::linux_snp_mshv_self_hosted(),
+                ado_pool: None,
+                label: "x64-linux-amd-snp-mshv",
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_snp_mshv_x86,
+                nextest_filter_expr: "test(linux_x64_snp)".to_string(),
+                downloaded_artifacts: Vec::new(),
+                prep_steps_variants: Vec::new(),
+                external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
+                    hugetlb_2mb_overcommit_pages: None,
+                    prepare_vhost_vsock: false,
+                }),
+            },
+            VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
                 gh_pool: gh_pools::windows_arm_self_hosted_baremetal(),
@@ -1895,7 +1933,7 @@ impl IntoPipeline for CheckinGatesCli {
             });
 
             let vmm_tests_run_job = vmm_tests_run_job.finish();
-            if !label.contains("snp") {
+            if label != "x64-windows-amd-snp" {
                 all_jobs.push(vmm_tests_run_job);
             }
         }
@@ -1980,7 +2018,7 @@ impl IntoPipeline for CheckinGatesCli {
                             target: target.clone(),
                             runner: ctx.use_typed_artifact(&runner),
                             openvmm: ctx.use_typed_artifact(&openvmm),
-                            profiles: flowey_lib_hvlite::run_vmm_perf::VmmPerfProfile::all(),
+                            profiles: flowey_lib_hvlite::run_vmm_perf::all_profiles(),
                             vm_sizes_json: None,
                             parameters_json: None,
                             runtime_archive: None,

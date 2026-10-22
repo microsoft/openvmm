@@ -23,7 +23,7 @@ use vmgs::Vmgs;
 
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
-    #[error("failed to generate an RSA transfer key")]
+    #[error("failed to generate or export an RSA transfer key")]
     GenerateTransferKey(#[source] crypto::rsa::RsaError),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
@@ -139,12 +139,13 @@ pub struct VmgsEncryptionKeys {
 }
 
 /// Request the VMGS encryption keys via host call-outs with optional retry logic.
-pub async fn request_vmgs_encryption_keys(
+pub(crate) async fn request_vmgs_encryption_keys(
     get: &GuestEmulationTransportClient,
     tee_call: &dyn TeeCall,
     vmgs: &Vmgs,
     attestation_vm_config: &AttestationVmConfig,
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
+    boot_tcb_floor: &mut crate::runtime_sealing::BootTcbFloor,
 ) -> Result<VmgsEncryptionKeys, (RequestVmgsEncryptionKeysError, bool)> {
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
@@ -156,7 +157,12 @@ pub async fn request_vmgs_encryption_keys(
         )
     })?;
 
-    let components = transfer_key.to_components();
+    let components = transfer_key.to_components().map_err(|e| {
+        (
+            RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
+            false,
+        )
+    })?;
     let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(
@@ -180,6 +186,10 @@ pub async fn request_vmgs_encryption_keys(
                 false,
             )
         })?;
+
+    // Capture trusted local metadata before any host response or RSA unwrap
+    // failure. Keep the original claims-bound report and boot SVN behavior.
+    boot_tcb_floor.observe(tee_call, &result);
 
     // Get tenant keys based on attestation results, this might fail.
     match make_igvm_attest_requests(

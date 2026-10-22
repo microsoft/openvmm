@@ -107,6 +107,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
@@ -269,6 +270,11 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+        let snp_linux_direct_igvm_x64 = build.snp_linux_direct_igvm_x64.then(|| {
+            ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
+                snp_linux_direct_igvm: v,
+            })
+        });
 
         let mut build_vmfirmwareigvm = |openhcl_igvm| {
             ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
@@ -692,6 +698,7 @@ impl SimpleFlowNode for Node {
             openhcl_cvm_x64,
             vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
+            snp_linux_direct_igvm_x64,
             tmks_x64,
             tmks_aarch64,
             tmk_vmm_windows_x64,
