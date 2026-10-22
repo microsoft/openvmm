@@ -31,6 +31,50 @@ use std::time::UNIX_EPOCH;
 
 const MAX_STRING_LEN: usize = 16 * 1024;
 const TRACE_BUFFER_CAPACITY: usize = 256 * 1024;
+const PTRACE_REQUEST_GET_SYSCALL_INFO: libc::c_int = 0x420e;
+const PTRACE_SYSCALL_INFO_OP_EXIT: u8 = 2;
+const PTRACE_SYSCALL_INFO_OP_SECCOMP: u8 = 3;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PtraceSyscallInfo {
+    op: u8,
+    pad: [u8; 3],
+    arch: u32,
+    instruction_pointer: u64,
+    stack_pointer: u64,
+    u: PtraceSyscallInfoData,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union PtraceSyscallInfoData {
+    entry: PtraceSyscallInfoEntry,
+    exit: PtraceSyscallInfoExit,
+    seccomp: PtraceSyscallInfoSeccomp,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PtraceSyscallInfoEntry {
+    nr: u64,
+    args: [u64; 6],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PtraceSyscallInfoExit {
+    sval: i64,
+    is_error: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct PtraceSyscallInfoSeccomp {
+    nr: u64,
+    args: [u64; 6],
+    ret_data: u32,
+}
 
 /// Build the seccomp filter that stops profile-relevant syscalls under ptrace.
 pub fn build_seccomp_filter(config: &TraceConfig) -> io::Result<SeccompFilter> {
@@ -280,10 +324,10 @@ fn handle_seccomp_stop(
     pending: &mut Option<PendingSyscall>,
     traced_syscall_map: &BTreeMap<libc::c_long, String>,
 ) -> io::Result<()> {
-    let mut info = MaybeUninit::<libc::ptrace_syscall_info>::zeroed();
-    let size = size_of::<libc::ptrace_syscall_info>();
+    let mut info = MaybeUninit::<PtraceSyscallInfo>::zeroed();
+    let size = size_of::<PtraceSyscallInfo>();
     ptrace(
-        libc::PTRACE_GET_SYSCALL_INFO,
+        PTRACE_REQUEST_GET_SYSCALL_INFO,
         tid,
         size,
         info.as_mut_ptr() as usize,
@@ -291,7 +335,7 @@ fn handle_seccomp_stop(
     // SAFETY: the kernel initialized the structure after a successful ptrace.
     let info = unsafe { info.assume_init() };
 
-    if info.op != libc::PTRACE_SYSCALL_INFO_SECCOMP {
+    if info.op != PTRACE_SYSCALL_INFO_OP_SECCOMP {
         return Err(io::Error::other(format!(
             "unexpected syscall info operation {} at seccomp stop",
             info.op
@@ -328,17 +372,17 @@ fn handle_syscall_exit(
     tid: i32,
     pending: &mut Option<PendingSyscall>,
 ) -> io::Result<()> {
-    let mut info = MaybeUninit::<libc::ptrace_syscall_info>::zeroed();
-    let size = size_of::<libc::ptrace_syscall_info>();
+    let mut info = MaybeUninit::<PtraceSyscallInfo>::zeroed();
+    let size = size_of::<PtraceSyscallInfo>();
     ptrace(
-        libc::PTRACE_GET_SYSCALL_INFO,
+        PTRACE_REQUEST_GET_SYSCALL_INFO,
         tid,
         size,
         info.as_mut_ptr() as usize,
     )?;
     // SAFETY: the kernel initialized the structure after a successful ptrace.
     let info = unsafe { info.assume_init() };
-    if info.op != libc::PTRACE_SYSCALL_INFO_EXIT {
+    if info.op != PTRACE_SYSCALL_INFO_OP_EXIT {
         return Err(io::Error::other(format!(
             "unexpected syscall info operation {} at syscall exit stop",
             info.op
@@ -529,7 +573,7 @@ fn resume_syscall(tid: i32, signal: i32) -> io::Result<()> {
     resume_ptrace(libc::PTRACE_SYSCALL, tid, signal)
 }
 
-fn resume_ptrace(request: libc::c_uint, tid: i32, signal: i32) -> io::Result<()> {
+fn resume_ptrace(request: libc::c_int, tid: i32, signal: i32) -> io::Result<()> {
     // A task may exit between waitpid reporting its stop and this resume.
     // Treat that race as normal completion; all other ptrace errors are fatal.
     match ptrace(request, tid, 0, signal as usize) {
@@ -538,10 +582,17 @@ fn resume_ptrace(request: libc::c_uint, tid: i32, signal: i32) -> io::Result<()>
     }
 }
 
-fn ptrace(request: libc::c_uint, pid: i32, address: usize, data: usize) -> io::Result<()> {
+fn ptrace(request: libc::c_int, pid: i32, address: usize, data: usize) -> io::Result<()> {
     // SAFETY: each caller supplies the address and data layout required by the
     // specific ptrace request; kernel errors are returned through errno.
-    let result = unsafe { libc::ptrace(request, pid, address as *mut c_void, data as *mut c_void) };
+    let result = unsafe {
+        libc::ptrace(
+            request as _,
+            pid,
+            address as *mut c_void,
+            data as *mut c_void,
+        )
+    };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
