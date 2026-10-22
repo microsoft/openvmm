@@ -178,7 +178,12 @@ fn trace_process(
     let mut output = BufWriter::with_capacity(TRACE_BUFFER_CAPACITY, File::create(&trace_path)?);
 
     wait_for_initial_stop(root_pid)?;
-    ptrace(libc::PTRACE_SEIZE as _, root_pid, 0, trace_options() as usize)?;
+    ptrace(
+        libc::PTRACE_SEIZE as _,
+        root_pid,
+        0,
+        trace_options() as usize,
+    )?;
     // Release the pre-exec group stop. PTRACE_O_TRACEEXEC guarantees another
     // stop before the child's new image executes user code.
     // SAFETY: kill accepts any PID and signal value; errors are reported via errno.
