@@ -87,6 +87,12 @@ pub enum UhVmRpc {
     MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
+enum SaveReason {
+    Diagnostic,
+    Servicing,
+    WorkerRestart,
+}
+
 #[async_trait]
 pub trait LoadedVmNetworkSettings: Inspect {
     /// Callback to prepare for guest hibernation. This should remove any
@@ -315,7 +321,12 @@ impl LoadedVm {
                         let state = async {
                             let running = self.stop().await;
                             match self
-                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .save(
+                                    SaveReason::WorkerRestart,
+                                    None,
+                                    KeepAliveConfig::Disabled,
+                                    KeepAliveConfig::Disabled,
+                                )
                                 .await
                             {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
@@ -402,7 +413,12 @@ impl LoadedVm {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self
-                                .save(None, KeepAliveConfig::Disabled, KeepAliveConfig::Disabled)
+                                .save(
+                                    SaveReason::Diagnostic,
+                                    None,
+                                    KeepAliveConfig::Disabled,
+                                    KeepAliveConfig::Disabled,
+                                )
                                 .await;
                             if running {
                                 self.start(None).await;
@@ -687,6 +703,8 @@ impl LoadedVm {
             self.nvme_keep_alive = KeepAliveConfig::Disabled
         };
 
+        // The servicing flag can disable MANA keepalive even when the environment
+        // enables it. Both settings must enable keepalive for it to proceed.
         if !capabilities_flags.enable_mana_keepalive() {
             self.mana_keep_alive = KeepAliveConfig::Disabled
         };
@@ -704,8 +722,40 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
+            async fn shutdown_nvme_manager(
+                nvme_manager: &mut Option<NvmeManager>,
+                nvme_keepalive_enabled: bool,
+                correlation_id: Guid,
+            ) {
+                if let Some(nvme_manager) = nvme_manager.take() {
+                    nvme_manager
+                        .shutdown(nvme_keepalive_enabled)
+                        .instrument(tracing::info_span!(
+                            "shutdown_nvme_manager",
+                            CVM_ALLOWED,
+                            correlation_id = %correlation_id,
+                            nvme_keep_alive_enabled = nvme_keepalive_enabled
+                        ))
+                        .await;
+                }
+            }
+
+            let nvme_keepalive_enabled = self.nvme_keep_alive.is_enabled();
+
+            // If keepalive is disabled, reset all user-mode NVMe devices before
+            // save to free all resources, including DMA allocations.
+            if !nvme_keepalive_enabled {
+                shutdown_nvme_manager(
+                    &mut self.nvme_manager,
+                    nvme_keepalive_enabled,
+                    correlation_id,
+                )
+                .await;
+            }
+
             let mut state = self
                 .save(
+                    SaveReason::Servicing,
                     Some(deadline),
                     self.nvme_keep_alive.clone(),
                     self.mana_keep_alive.clone(),
@@ -713,30 +763,15 @@ impl LoadedVm {
                 .await?;
             state.init_state.correlation_id = Some(correlation_id);
 
-            // Unload any network devices.
-            let shutdown_mana = async {
-                if let Some(network_settings) = self.network_settings.as_mut() {
-                    network_settings
-                        .unload_for_servicing()
-                        .instrument(
-                            tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id),
-                        )
-                        .await;
-                }
-            };
-
-            // Reset all user-mode NVMe devices.
+            // If keepalive is enabled, partially reset all user-mode NVMe devices after save.
             let shutdown_nvme = async {
-                if let Some(nvme_manager) = self.nvme_manager.take() {
-                    nvme_manager
-                        .shutdown(self.nvme_keep_alive.is_enabled())
-                        .instrument(tracing::info_span!(
-                            "shutdown_nvme_vfio",
-                            CVM_ALLOWED,
-                            correlation_id = %correlation_id,
-                            nvme_keep_alive_enabled = self.nvme_keep_alive.is_enabled()
-                        ))
-                        .await;
+                if nvme_keepalive_enabled {
+                    shutdown_nvme_manager(
+                        &mut self.nvme_manager,
+                        nvme_keepalive_enabled,
+                        correlation_id,
+                    )
+                    .await;
                 }
             };
 
@@ -763,7 +798,7 @@ impl LoadedVm {
             )
             .context("failed to write persisted info")?;
 
-            let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            let (r, ()) = (shutdown_pci, shutdown_nvme).join().await;
             r?;
 
             Ok(state)
@@ -893,6 +928,7 @@ impl LoadedVm {
 
     async fn save(
         &mut self,
+        reason: SaveReason,
         _deadline: Option<std::time::Instant>,
         nvme_keepalive_mode: KeepAliveConfig,
         mana_keepalive_mode: KeepAliveConfig,
@@ -903,6 +939,27 @@ impl LoadedVm {
         // it can capture any relevant state from the network devices that may be
         // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
+
+        // For servicing without MANA keepalive, preserve the synthetic NIC state
+        // units and unload MANA to exclude its allocations from the DMA snapshot.
+        let units = if matches!(reason, SaveReason::Servicing) && !mana_keepalive_mode.is_enabled()
+        {
+            let units = self.save_units().await.context("state unit save failed")?;
+            if let Some(network_settings) = self.network_settings.as_mut() {
+                // DEVNOTE: Unloading the network devices is destructive. If a later
+                // servicing step fails, resume_drivers() cannot reconstruct them.
+                network_settings
+                    .unload_for_servicing()
+                    .instrument(tracing::info_span!(
+                        "shutdown_mana prior to dma manager save",
+                        CVM_ALLOWED
+                    ))
+                    .await;
+            }
+            Some(units)
+        } else {
+            None
+        };
 
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
@@ -936,7 +993,10 @@ impl LoadedVm {
             None
         };
 
-        let units = self.save_units().await.context("state unit save failed")?;
+        let units = match units {
+            Some(units) => units,
+            None => self.save_units().await.context("state unit save failed")?,
+        };
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {
