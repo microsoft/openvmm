@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use virtio_resources::fs::microvm::MicrovmPathAccessRule;
 
 /// Stable device-private attachment identifier of the microVM share.
 pub const MICROVM_ATTACHMENT_ID: &str = "fs:microvm0";
@@ -124,6 +125,9 @@ pub enum MicroVmProfileError {
     /// belonged to a read-only share.
     #[error("microVM virtio-fs writable paths are invalid")]
     InvalidWritablePaths,
+    /// Explicit subtree access rules are malformed, contradictory, or hidden.
+    #[error("microVM virtio-fs path access rules are invalid")]
+    InvalidAccessRules,
     /// Caller ownership needs per-thread filesystem credentials, which only
     /// Linux provides.
     #[error("microVM virtio-fs caller ownership requires a Linux host")]
@@ -238,6 +242,18 @@ impl MicroVmAggregateChild {
         &self.policy
     }
 
+    /// Applies explicit subtree access, with an empty path naming this child.
+    pub fn with_access_rules(
+        mut self,
+        rules: Vec<MicrovmPathAccessRule>,
+    ) -> Result<Self, MicroVmProfileError> {
+        if self.file && rules.iter().any(|rule| !rule.path.is_empty()) {
+            return Err(MicroVmProfileError::InvalidAccessRules);
+        }
+        self.policy = access_policy(self.policy.clone(), rules, self.is_readonly())?;
+        Ok(self)
+    }
+
     /// Validates that `root_path` is the host root identified by this child.
     pub fn validate_root_path(
         &self,
@@ -294,6 +310,33 @@ fn subtree_policy(
             MicroVmProfileError::InvalidWritablePaths,
             false,
         )?,
+        read_only,
+    )
+}
+
+fn access_policy(
+    policy: SubtreePolicy,
+    rules: Vec<MicrovmPathAccessRule>,
+    read_only: bool,
+) -> Result<SubtreePolicy, MicroVmProfileError> {
+    if rules.len() > 128
+        || rules
+            .iter()
+            .try_fold(0usize, |total, rule| total.checked_add(rule.path.len()))
+            .is_none_or(|total| total > 16 * 1024)
+    {
+        return Err(MicroVmProfileError::InvalidAccessRules);
+    }
+    let paths = parse_policy_paths(
+        rules.iter().map(|rule| rule.path.clone()).collect(),
+        MicroVmProfileError::InvalidAccessRules,
+        true,
+    )?;
+    policy.with_access_rules(
+        paths
+            .into_iter()
+            .zip(rules.into_iter().map(|rule| rule.access))
+            .collect(),
         read_only,
     )
 }
@@ -442,6 +485,17 @@ pub struct MicroVmVirtioFsProfile {
 }
 
 impl MicroVmVirtioFsProfile {
+    /// Applies explicit subtree access to a non-aggregate attachment.
+    pub fn with_access_rules(
+        mut self,
+        rules: Vec<MicrovmPathAccessRule>,
+    ) -> Result<Self, MicroVmProfileError> {
+        if self.is_aggregate() {
+            return Err(MicroVmProfileError::InvalidAccessRules);
+        }
+        self.policy = access_policy(self.policy.clone(), rules, self.is_readonly())?;
+        Ok(self)
+    }
     /// Builds the constrained microVM profile from the resource attachment
     /// fields. `stable_id`, `root_identity`, and `read_only` correspond
     /// exactly to `VirtioFsProfile::Microvm`; `stable_id` selects the fixed

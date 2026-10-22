@@ -260,7 +260,11 @@ fn canonical_microvm_filesystem_policy_paths(
         // A denied root hides everything but the allowed paths inside it.
         anyhow::ensure!(
             !relative.as_os_str().is_empty()
-                || kind == openvmm_defs::microvm::MicrovmFilesystemPathKind::Denied,
+                || matches!(
+                    kind,
+                    openvmm_defs::microvm::MicrovmFilesystemPathKind::Denied
+                        | openvmm_defs::microvm::MicrovmFilesystemPathKind::Access
+                ),
             "microVM {kind} path cannot be the complete filesystem export"
         );
         anyhow::ensure!(
@@ -301,7 +305,8 @@ fn canonical_microvm_filesystem_policy_paths(
             pair[0] != pair[1],
             "microVM {kind} paths must be unique{}",
             match kind {
-                openvmm_defs::microvm::MicrovmFilesystemPathKind::Allowed => "",
+                openvmm_defs::microvm::MicrovmFilesystemPathKind::Allowed
+                | openvmm_defs::microvm::MicrovmFilesystemPathKind::Access => "",
                 _ => " and non-overlapping",
             }
         );
@@ -367,6 +372,31 @@ pub(crate) struct MicrovmFilesystemPolicyPaths<'a> {
     pub(crate) allowed: &'a [PathBuf],
     /// The only paths of a read-write export that the guest can modify.
     pub(crate) writable: &'a [PathBuf],
+    pub(crate) access: &'a [cli_args::microvm::MicrovmMountAccessCli],
+}
+
+fn canonical_access_rules(
+    root: &Path,
+    requested: &[cli_args::microvm::MicrovmMountAccessCli],
+) -> anyhow::Result<Vec<openvmm_defs::microvm::MicrovmPathAccessRule>> {
+    let mut rules = requested
+        .iter()
+        .map(|rule| {
+            let path = canonical_microvm_filesystem_policy_paths(
+                root,
+                std::slice::from_ref(&rule.host_path),
+                openvmm_defs::microvm::MicrovmFilesystemPathKind::Access,
+            )?
+            .pop()
+            .context("missing canonical mount access path")?;
+            Ok(openvmm_defs::microvm::MicrovmPathAccessRule {
+                path,
+                access: rule.access,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    rules.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(rules)
 }
 
 /// Builds the filesystem of `requested` in its canonical host root, with the
@@ -408,6 +438,7 @@ fn microvm_filesystem_from_root(
             MicrovmFilesystemPathKind::Writable,
         )?,
     )?
+    .with_access_rules(canonical_access_rules(root, policy.access)?)?
     .with_owner(owner);
     Ok(EffectiveMicrovmFilesystem {
         config,
@@ -443,10 +474,12 @@ fn microvm_filesystem_child_from_root(
             openvmm_defs::microvm::MicrovmFilesystemChildConfig::new_file(
                 requested.name.clone(),
                 requested.access,
-            )?,
+            )?
+            .with_access_rules(canonical_access_rules(Path::new(root_path), policy.access)?)?,
         );
     }
     let root = Path::new(root_path);
+    let access_rules = canonical_access_rules(root, policy.access)?;
     openvmm_defs::microvm::MicrovmFilesystemChildConfig::new(
         requested.name.clone(),
         requested.access,
@@ -467,7 +500,8 @@ fn microvm_filesystem_child_from_root(
             policy.writable,
             MicrovmFilesystemPathKind::Writable,
         )?,
-    )
+    )?
+    .with_access_rules(access_rules)
     .with_context(|| format!("invalid policy of --mount-child {}", requested.name))
 }
 
@@ -791,10 +825,24 @@ fn microvm_filesystem_from_request(
         "--mount-write",
         MicrovmFilesystemPathKind::Writable,
     )?;
+    let mut access = vec![Vec::new(); roots.len()];
+    for rule in policy.access {
+        let attributed = attribute(
+            std::slice::from_ref(&rule.host_path),
+            "--mount-access",
+            MicrovmFilesystemPathKind::Access,
+        )?;
+        for (index, paths) in attributed.iter().enumerate() {
+            if !paths.is_empty() {
+                access[index].push(rule.clone());
+            }
+        }
+    }
     let policy = |index: usize| MicrovmFilesystemPolicyPaths {
         denied: &denied[index],
         allowed: &allowed[index],
         writable: &writable[index],
+        access: &access[index],
     };
 
     match request {
@@ -1616,6 +1664,7 @@ mod tests {
                 denied: &options.microvm.microvm_mount_deny,
                 allowed: &options.microvm.microvm_mount_allow,
                 writable: &options.microvm.microvm_mount_write,
+                access: &options.microvm.microvm_mount_access,
             },
             VMM,
             restore,
@@ -1652,6 +1701,75 @@ mod tests {
                 "{arguments:?}"
             );
         }
+    }
+
+    #[test]
+    fn mount_access_builds_a_bounded_canonical_access_map() {
+        use openvmm_defs::microvm::MicrovmPathAccess::{Enumerate, ReadOnly};
+        let root = tempfile::tempdir().unwrap();
+        fs_err::create_dir(root.path().join("private")).unwrap();
+        fs_err::write(root.path().join("selected"), b"readable").unwrap();
+        let mount = format!("/mnt/catalog,{},ro", root.path().display());
+        let enumerate = format!("enum,{}", root.path().display());
+        let readable = format!("ro,{}", root.path().join("selected").display());
+        let denied = root.path().join("private").to_string_lossy().into_owned();
+        let options = mount_options(
+            std::slice::from_ref(&mount),
+            &[
+                "--mount-access",
+                &readable,
+                "--mount-access",
+                &enumerate,
+                "--mount-deny",
+                &denied,
+            ],
+        );
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert_eq!(filesystem.config.denied_paths, ["private"]);
+        assert_eq!(
+            filesystem.config.access_rules,
+            [
+                openvmm_defs::microvm::MicrovmPathAccessRule {
+                    path: String::new(),
+                    access: Enumerate
+                },
+                openvmm_defs::microvm::MicrovmPathAccessRule {
+                    path: "selected".to_owned(),
+                    access: ReadOnly
+                },
+            ]
+        );
+        for extra in [
+            vec!["--mount-access", readable.as_str()],
+            vec![
+                "--mount-access",
+                enumerate.as_str(),
+                "--mount-access",
+                enumerate.as_str(),
+            ],
+        ] {
+            let options = mount_options(std::slice::from_ref(&mount), &extra);
+            assert!(options_filesystem(&options, None).is_err());
+        }
+        let write = format!("rw,{}", root.path().display());
+        let options = mount_options(&[mount], &["--mount-access", &write]);
+        assert!(options_filesystem(&options, None).is_err());
+    }
+
+    #[test]
+    fn aggregate_file_children_accept_only_their_own_access_rule() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file,with-comma");
+        fs_err::write(&file, b"metadata").unwrap();
+        let child = format!("0,{},ro,file", file.display());
+        let access = format!("enum,{}", file.display());
+        let options = aggregate_options(&[child], &["--mount-access", &access]);
+        let filesystem = options_filesystem(&options, None).unwrap();
+        assert_eq!(filesystem.config.children[0].access_rules[0].path, "");
+        assert_eq!(
+            filesystem.config.children[0].access_rules[0].access,
+            openvmm_defs::microvm::MicrovmPathAccess::Enumerate
+        );
     }
 
     #[test]

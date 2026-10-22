@@ -295,6 +295,11 @@ impl VirtioFsInode {
     /// Opens the inode, creating a file object.
     pub fn open(self: Arc<VirtioFsInode>, flags: u32) -> lx::Result<VirtioFsFile> {
         self.validate_confined_object()?;
+        if !self.volume.policy.access_rules().is_empty()
+            && self.object_stat()?.mode & lx::S_IFMT != lx::S_IFDIR
+        {
+            self.ensure_content_readable()?;
+        }
         let flags = (flags as i32) | lx::O_NOFOLLOW;
         let file = self.volume.open(&*self.get_path(), flags, None)?;
         crate::microvm::inode::reject_opened_symlink(&self.volume, &file)?;
@@ -400,6 +405,7 @@ impl VirtioFsInode {
 
     /// Reads the target of the symbolic link, if this inode is a symbolic link.
     pub fn read_link(&self) -> lx::Result<LxString> {
+        self.ensure_content_readable()?;
         self.validate_confined_object()?;
         self.volume.read_link(&*self.get_path())
     }
@@ -444,6 +450,7 @@ impl VirtioFsInode {
 
     /// Gets the value or the size of an extended attribute on this inode.
     pub fn get_xattr(&self, name: &LxStr, value: Option<&mut [u8]>) -> lx::Result<usize> {
+        self.ensure_content_readable()?;
         self.validate_confined_object()?;
         self.volume.get_xattr(&*self.get_path(), name, value)
     }
@@ -457,6 +464,7 @@ impl VirtioFsInode {
 
     /// Lists the extended attributes on this inode.
     pub fn list_xattr(&self, list: Option<&mut [u8]>) -> lx::Result<usize> {
+        self.ensure_content_readable()?;
         self.validate_confined_object()?;
         self.volume.list_xattr(&*self.get_path(), list)
     }

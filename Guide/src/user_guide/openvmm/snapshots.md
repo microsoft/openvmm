@@ -388,12 +388,17 @@ Restoring an active slot requires a fresh
 `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment, or `--mount-aggregate`
 and its `--mount-child` options in the same order, with the same canonical
 host paths, kinds, target, and modes, the same
-`--mount-deny`, `--mount-allow`, and `--mount-write` paths, and the same
+`--mount-deny`, `--mount-allow`, and `--mount-write` paths, any explicit
+`--mount-access` rules, and the same
 `--mount-owner` mode. OpenVMM independently validates the roots and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
 restore without an attachment or bind one new `--mount` to the slot.
 For a new attachment, the resumed guest explicitly mounts tag `microvm`; the
 cold-boot mount hook does not run again.
+
+Attachments with explicit path-access rules use device-state schema 10.
+Older OpenVMM readers reject this state rather than restore it without the
+content restrictions.
 
 ```admonish warning
 Shared host directories and files are external live state, not snapshot

@@ -326,6 +326,17 @@ describes the source definitions.
   attribution rules as `--mount-deny`.
   See [virtio-fs](../../devices/virtio/virtio-fs.md#access-policy).
 
+  `--mount-access <enum|ro|rw>,<HOST_PATH>` is repeatable and supplies explicit
+  nearest-subtree access. An affected share needs a rule for its root. `enum`
+  permits recursive listing and ordinary metadata, but not content reads,
+  execution, extended-attribute contents, or modifications. A more specific
+  `ro` or `rw` rule grants selected content, subject to the share's mode and
+  existing write restrictions; an `enum` child narrows a broader grant.
+  Rules cannot expose a hidden path. Paths must be unique, existing, canonical
+  objects and follow the same attribution and bounds as the other policy
+  paths. A file child accepts only its own root rule. See
+  [enumeration-only access](../../devices/virtio/virtio-fs.md#enumeration-only-access).
+
   `--mount-owner <vmm|caller>` selects the host identity of the guest's
   operations. `vmm`, the default, runs them all as OpenVMM. `caller` runs
   each one as its guest caller's UID and GID, without supplementary groups or

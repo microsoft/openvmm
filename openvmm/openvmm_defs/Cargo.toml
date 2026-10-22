@@ -30,6 +30,7 @@ smbios_defs.workspace = true
 tpm_resources.workspace = true
 virt.workspace = true
 vmm_core_defs.workspace = true
+virtio_resources.workspace = true
 
 guid.workspace = true
 mesh_worker.workspace = true

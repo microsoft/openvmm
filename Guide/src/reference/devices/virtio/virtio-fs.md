@@ -55,6 +55,27 @@ fixes the remaining guest-visible configuration:
 | Symbolic links | `rw`: created with the exact target; `ro`: `EROFS` |
 | Rename flags | Linux host: passed to `renameat2`, so `RENAME_EXCHANGE` swaps two names; Windows host: `EINVAL` |
 
+### Enumeration-only access
+
+The repeatable `--mount-access MODE,HOST_PATH` option adds an explicit access
+map to a share. `MODE` is `enum`, `ro`, or `rw`. Each affected share needs a
+rule for its root; a rule for a deeper path overrides its ancestor. Paths must
+be unique, canonical, existing objects, and follow the same bounded path and
+link restrictions as the other policy options. An aggregate requires absolute
+host paths. A file child permits only a rule for the file itself.
+
+`enum` permits recursive directory listing and ordinary attributes but rejects
+file-content opens, reads, execution, extended-attribute contents, and
+modifications. `ro` allows content without modifications, and `rw` permits
+both, subject to the share's access mode and its existing write restrictions.
+Explicit rules never expose a hidden entry. Requests without explicit rules
+retain the existing policy.
+
+For example, use an `enum` root and `ro` or `rw` child rules to expose only
+selected content. Conversely, an `enum` child restricts a broader `rw` root.
+Open handles recheck content access after alias lookups, and snapshots preserve
+the rules with a device-state version that older readers reject.
+
 ### Several host directories
 
 To share several host directories, or single host files, attach them to the

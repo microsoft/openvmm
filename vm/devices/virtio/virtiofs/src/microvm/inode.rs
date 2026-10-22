@@ -118,6 +118,23 @@ impl VirtioFsVolume {
 }
 
 impl VirtioFsInode {
+    /// Recheck all known names, including on existing handles, so a hard-link
+    /// lookup cannot turn an enumeration-only inode into a readable one.
+    pub(crate) fn ensure_content_readable(&self) -> lx::Result<()> {
+        if self.volume.policy.access_rules().is_empty() {
+            return Ok(());
+        }
+        if !self.volume.policy.is_readable(&self.clone_path())
+            || self
+                .aliases()
+                .iter()
+                .any(|alias| !self.volume.policy.is_readable(alias))
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
+    }
+
     /// Rebuilds an inode after a saved attachment identity has been
     /// independently revalidated.
     pub(crate) fn from_saved(

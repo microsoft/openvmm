@@ -111,6 +111,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     denied: &opt.microvm.microvm_mount_deny,
                     allowed: &opt.microvm.microvm_mount_allow,
                     writable: &opt.microvm.microvm_mount_write,
+                    access: &opt.microvm.microvm_mount_access,
                 },
                 opt.microvm.microvm_mount_owner.map_or(
                     openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm,
@@ -600,6 +601,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                                     denied_paths: child.denied_paths.clone(),
                                     allowed_paths: child.allowed_paths.clone(),
                                     writable_paths: child.writable_paths.clone(),
+                                    access_rules: child.access_rules.clone(),
                                 }
                             })
                             .collect(),
@@ -618,6 +620,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         denied_paths: filesystem.config.denied_paths.clone(),
                         allowed_paths: filesystem.config.allowed_paths.clone(),
                         writable_paths: filesystem.config.writable_paths.clone(),
+                        access_rules: filesystem.config.access_rules.clone(),
                         caller_identity: filesystem.config.owner.is_caller(),
                     },
                 ),

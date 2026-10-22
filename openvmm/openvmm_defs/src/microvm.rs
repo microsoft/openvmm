@@ -19,6 +19,8 @@ use memory_range::MemoryRange;
 use mesh::MeshPayload;
 use net_backend_resources::mac_address::MacAddress;
 use std::fmt::Write as _;
+pub use virtio_resources::fs::microvm::MicrovmPathAccess;
+pub use virtio_resources::fs::microvm::MicrovmPathAccessRule;
 use vmotherboard::options::BaseChipsetManifest;
 
 /// The persisted microVM ABI version.
@@ -445,6 +447,8 @@ pub struct MicrovmFilesystemConfig {
     pub owner: MicrovmFilesystemOwner,
     /// The children of an aggregate, in order; empty for a single directory.
     pub children: Vec<MicrovmFilesystemChildConfig>,
+    /// Explicit nearest-subtree access; empty preserves the legacy policy.
+    pub access_rules: Vec<MicrovmPathAccessRule>,
 }
 
 /// The largest number of children of a microVM aggregate filesystem.
@@ -494,9 +498,28 @@ pub struct MicrovmFilesystemChildConfig {
     /// Canonical child-relative paths that are the only parts of a read-write
     /// child that the guest can modify; none makes all of it writable.
     pub writable_paths: Vec<String>,
+    pub access_rules: Vec<MicrovmPathAccessRule>,
 }
 
 impl MicrovmFilesystemChildConfig {
+    /// Adds a complete explicit access map, rooted at the empty path.
+    pub fn with_access_rules(
+        mut self,
+        rules: Vec<MicrovmPathAccessRule>,
+    ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        validate_microvm_path_access_rules(
+            &rules,
+            self.access,
+            &self.denied_paths,
+            &self.allowed_paths,
+        )?;
+        if self.is_file() && rules.iter().any(|rule| !rule.path.is_empty()) {
+            return Err(InvalidMicrovmFilesystemConfig::InvalidAccessRules);
+        }
+        self.access_rules = rules;
+        Ok(self)
+    }
+
     /// Validates and constructs a child named `name`, which must be 1 to
     /// [`MICROVM_FILESYSTEM_MAX_CHILD_NAME`] ASCII letters, digits, `.`, `_`,
     /// or `-`, other than `.` and `..`.
@@ -520,6 +543,7 @@ impl MicrovmFilesystemChildConfig {
             denied_paths: Vec::new(),
             allowed_paths: Vec::new(),
             writable_paths: Vec::new(),
+            access_rules: Vec::new(),
         })
     }
 
@@ -573,6 +597,8 @@ impl MicrovmFilesystemChildConfig {
 /// A kind of path in the access policy of a microVM filesystem.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MicrovmFilesystemPathKind {
+    /// An explicit subtree access rule.
+    Access,
     /// A path hidden from the guest.
     Denied,
     /// A path inside a denied path that the guest can reach again.
@@ -584,6 +610,7 @@ pub enum MicrovmFilesystemPathKind {
 impl std::fmt::Display for MicrovmFilesystemPathKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Access => "access",
             Self::Denied => "denied",
             Self::Allowed => "allowed",
             Self::Writable => "writable",
@@ -637,7 +664,12 @@ pub fn validate_microvm_filesystem_policy_paths(
         return Err(InvalidMicrovmFilesystemConfig::PolicyPathsTooLarge(kind));
     }
     for path in paths {
-        if path.is_empty() && kind == MicrovmFilesystemPathKind::Denied {
+        if path.is_empty()
+            && matches!(
+                kind,
+                MicrovmFilesystemPathKind::Denied | MicrovmFilesystemPathKind::Access
+            )
+        {
             continue;
         }
         // A name may contain spaces, but not begin or end with one.
@@ -666,6 +698,29 @@ pub fn validate_microvm_filesystem_policy_paths(
         return Err(InvalidMicrovmFilesystemConfig::NonCanonicalPolicyPaths(
             kind,
         ));
+    }
+    Ok(())
+}
+
+fn validate_microvm_path_access_rules(
+    rules: &[MicrovmPathAccessRule],
+    access: MicrovmFilesystemAccess,
+    denied: &[String],
+    allowed: &[String],
+) -> Result<(), InvalidMicrovmFilesystemConfig> {
+    let paths = rules
+        .iter()
+        .map(|rule| rule.path.clone())
+        .collect::<Vec<_>>();
+    validate_microvm_filesystem_policy_paths(MicrovmFilesystemPathKind::Access, &paths)?;
+    if !rules.is_empty()
+        && (!rules[0].path.is_empty()
+            || rules.iter().any(|rule| {
+                (access.is_read_only() && rule.access == MicrovmPathAccess::ReadWrite)
+                    || nearest_policy_rule(&rule.path, denied, allowed, true) == Some(true)
+            }))
+    {
+        return Err(InvalidMicrovmFilesystemConfig::InvalidAccessRules);
     }
     Ok(())
 }
@@ -743,6 +798,24 @@ fn validate_microvm_guest_mount_target(
 }
 
 impl MicrovmFilesystemConfig {
+    /// Adds explicit access to a single-directory attachment.
+    pub fn with_access_rules(
+        mut self,
+        rules: Vec<MicrovmPathAccessRule>,
+    ) -> Result<Self, InvalidMicrovmFilesystemConfig> {
+        if self.is_aggregate() && !rules.is_empty() {
+            return Err(InvalidMicrovmFilesystemConfig::InvalidAccessRules);
+        }
+        validate_microvm_path_access_rules(
+            &rules,
+            self.access,
+            &self.denied_paths,
+            &self.allowed_paths,
+        )?;
+        self.access_rules = rules;
+        Ok(self)
+    }
+
     /// Validates and constructs the microVM filesystem configuration.
     pub fn new(
         guest_mount_target: String,
@@ -757,6 +830,7 @@ impl MicrovmFilesystemConfig {
             writable_paths: Vec::new(),
             owner: MicrovmFilesystemOwner::Vmm,
             children: Vec::new(),
+            access_rules: Vec::new(),
         })
     }
 
@@ -787,6 +861,7 @@ impl MicrovmFilesystemConfig {
                 .iter()
                 .chain(&child.allowed_paths)
                 .chain(&child.writable_paths)
+                .chain(child.access_rules.iter().map(|rule| &rule.path))
                 .try_fold(policy_bytes, |total, path| total.checked_add(path.len()))
                 .filter(|total| *total <= MICROVM_FILESYSTEM_MAX_AGGREGATE_POLICY_BYTES)
                 .ok_or(InvalidMicrovmFilesystemConfig::AggregatePolicyPathsTooLarge)?;
@@ -803,6 +878,7 @@ impl MicrovmFilesystemConfig {
             writable_paths: Vec::new(),
             owner: MicrovmFilesystemOwner::Vmm,
             children,
+            access_rules: Vec::new(),
         })
     }
 
@@ -891,6 +967,8 @@ pub fn validate_microvm_filesystems(
 /// Error returned for an invalid microVM filesystem specification.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvalidMicrovmFilesystemConfig {
+    #[error("microVM filesystem explicit access rules are invalid")]
+    InvalidAccessRules,
     /// The guest mount target is not a canonical absolute Linux path.
     #[error(
         "invalid guest mount target '{0}': expected an absolute non-root Linux path without empty, dot, parent, whitespace, backslash, or '=' components"

@@ -12,6 +12,10 @@
 //!   the share that the guest can modify, and the rest of the share is
 //!   read-only.
 //!
+//! An optional explicit access map further narrows visible paths to enumeration,
+//! read-only, or read-write access. Its nearest enclosing rule wins; it never
+//! exposes a hidden path or broadens the share's write policy.
+//!
 //! The nearest denied or allowed path that contains a path decides whether the
 //! guest can see it. The nearest one that contains a denied path must be an
 //! allowed path, if any, and the nearest one that contains an allowed path
@@ -29,6 +33,7 @@
 use super::profile::MicroVmProfileError;
 use std::path::Path;
 use std::path::PathBuf;
+use virtio_resources::fs::microvm::MicrovmPathAccess;
 
 /// How the guest can reach a share-relative path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,6 +59,7 @@ pub(crate) struct SubtreePolicy {
     denied: Vec<PathBuf>,
     allowed: Vec<PathBuf>,
     writable: Vec<PathBuf>,
+    access: Vec<(PathBuf, MicrovmPathAccess)>,
 }
 
 impl SubtreePolicy {
@@ -70,6 +76,7 @@ impl SubtreePolicy {
             denied,
             allowed,
             writable,
+            access: Vec::new(),
         };
         for denied in &policy.denied {
             // Hiding the root makes sense only to expose allowed paths in it.
@@ -101,6 +108,48 @@ impl SubtreePolicy {
             }
         }
         Ok(policy)
+    }
+
+    /// Adds explicit access rules after their paths have been canonicalized.
+    pub(crate) fn with_access_rules(
+        mut self,
+        rules: Vec<(PathBuf, MicrovmPathAccess)>,
+        read_only: bool,
+    ) -> Result<Self, MicroVmProfileError> {
+        if !rules.is_empty()
+            && (!rules.iter().any(|(path, _)| path.as_os_str().is_empty())
+                || rules.iter().enumerate().any(|(index, (path, access))| {
+                    self.visibility(path) != PathVisibility::Visible
+                        || (read_only && *access == MicrovmPathAccess::ReadWrite)
+                        || rules[..index].iter().any(|(other, _)| other == path)
+                }))
+        {
+            return Err(MicroVmProfileError::InvalidAccessRules);
+        }
+        self.access = rules;
+        Ok(self)
+    }
+
+    pub(crate) fn access_rules(&self) -> &[(PathBuf, MicrovmPathAccess)] {
+        &self.access
+    }
+
+    /// Rebase an already validated file child's root rule to its backing filename.
+    pub(crate) fn set_file_access_rules(&mut self, rules: Vec<(PathBuf, MicrovmPathAccess)>) {
+        self.access = rules;
+    }
+
+    fn access(&self, path: &Path) -> Option<MicrovmPathAccess> {
+        self.access
+            .iter()
+            .filter(|(rule, _)| path.starts_with(rule))
+            .max_by_key(|(rule, _)| rule.components().count())
+            .map(|(_, access)| *access)
+    }
+
+    pub(crate) fn is_readable(&self, path: &Path) -> bool {
+        self.visibility(path) == PathVisibility::Visible
+            && self.access(path) != Some(MicrovmPathAccess::Enumerate)
     }
 
     /// Returns the denied paths.
@@ -156,6 +205,9 @@ impl SubtreePolicy {
     /// Returns whether the guest may modify `path` in a read-write share.
     pub(crate) fn is_writable(&self, path: &Path) -> bool {
         self.visibility(path) == PathVisibility::Visible
+            && self
+                .access(path)
+                .is_none_or(|access| access == MicrovmPathAccess::ReadWrite)
             && (self.writable.is_empty()
                 || self
                     .writable
@@ -166,15 +218,14 @@ impl SubtreePolicy {
     /// Returns whether some path that the guest can reach is not writable in a
     /// read-write share, so that each modification must check its paths.
     pub(crate) fn restricts_writes(&self) -> bool {
-        !self.allowed.is_empty() || !self.writable.is_empty()
+        !self.allowed.is_empty() || !self.writable.is_empty() || !self.access.is_empty()
     }
 
-    /// Returns the hidden paths whose host objects are pinned when the share is
-    /// attached, each with the only path at which the guest may reach the
-    /// object: none for a denied path that leads to no allowed path, and its
-    /// own path for a traverse-only directory. Pinning the objects keeps them
-    /// hidden when the host makes them reachable through another path, such
-    /// as a bind mount, a hard link, or a renamed ancestor.
+    /// Returns protected policy roots whose host objects are pinned when the
+    /// share is attached, each with the only path at which it may be reached:
+    /// none for a hidden object, and its own path for a traverse-only or
+    /// access-restricted root. Aliases cannot escape these boundaries through
+    /// a bind mount, hard link, case variant, or renamed ancestor.
     pub(crate) fn pinned_paths(&self) -> Vec<(PathBuf, Option<PathBuf>)> {
         let mut pinned = Vec::new();
         for denied in &self.denied {
@@ -194,6 +245,13 @@ impl SubtreePolicy {
                 {
                     pinned.push((prefix.clone(), Some(prefix.clone())));
                 }
+            }
+        }
+        for (path, access) in &self.access {
+            if *access != MicrovmPathAccess::ReadWrite
+                && !pinned.iter().any(|(other, _)| other == path)
+            {
+                pinned.push((path.clone(), Some(path.clone())));
             }
         }
         pinned
@@ -443,5 +501,59 @@ mod tests {
         // writable path.
         assert!(SubtreePolicy::new(vec![PathBuf::new()], Vec::new(), Vec::new(), false).is_err());
         assert!(SubtreePolicy::new(Vec::new(), Vec::new(), vec![PathBuf::new()], false).is_err());
+    }
+
+    #[test]
+    fn enumeration_preserves_visibility_but_restricts_content_and_writes() {
+        let policy = policy(&["secret"], &[], &[])
+            .with_access_rules(
+                vec![
+                    (path(""), MicrovmPathAccess::Enumerate),
+                    (path("tools"), MicrovmPathAccess::ReadOnly),
+                    (path("out"), MicrovmPathAccess::ReadWrite),
+                    (path("out/catalog"), MicrovmPathAccess::Enumerate),
+                ],
+                false,
+            )
+            .unwrap();
+        assert_eq!(visibility(&policy, "nested/file"), PathVisibility::Visible);
+        assert!(!policy.is_readable(&path("nested/file")));
+        assert!(!writable(&policy, "nested/file"));
+        assert!(policy.is_readable(&path("tools/bin")));
+        assert!(!writable(&policy, "tools/bin"));
+        assert!(policy.is_readable(&path("out/result")));
+        assert!(writable(&policy, "out/result"));
+        assert!(!policy.is_readable(&path("out/catalog/file")));
+        assert!(!writable(&policy, "out/catalog/file"));
+        assert_eq!(visibility(&policy, "secret"), PathVisibility::Hidden);
+        assert!(!policy.is_readable(&path("secret")));
+    }
+
+    #[test]
+    fn explicit_access_rules_require_a_unique_visible_root_and_valid_modes() {
+        for (rules, read_only) in [
+            (vec![(path("child"), MicrovmPathAccess::Enumerate)], false),
+            (
+                vec![
+                    (path(""), MicrovmPathAccess::Enumerate),
+                    (path(""), MicrovmPathAccess::ReadOnly),
+                ],
+                false,
+            ),
+            (vec![(path(""), MicrovmPathAccess::ReadWrite)], true),
+            (
+                vec![
+                    (path(""), MicrovmPathAccess::Enumerate),
+                    (path("secret"), MicrovmPathAccess::ReadOnly),
+                ],
+                false,
+            ),
+        ] {
+            assert!(
+                policy(&["secret"], &[], &[])
+                    .with_access_rules(rules, read_only)
+                    .is_err()
+            );
+        }
     }
 }

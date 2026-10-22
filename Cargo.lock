@@ -6048,6 +6048,7 @@ dependencies = [
  "unix_socket",
  "virt",
  "virt_whp",
+ "virtio_resources",
  "vm_resource",
  "vmbus_proxy",
  "vmcore",

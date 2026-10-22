@@ -525,6 +525,11 @@ pub struct MicrovmCli {
     #[clap(long = "mount-write", value_name = "HOST_PATH")]
     pub microvm_mount_write: Vec<PathBuf>,
 
+    /// Apply explicit nearest-subtree access: enum, ro, or rw. Paths must
+    /// exist; the empty relative path of every affected share needs a rule.
+    #[clap(long = "mount-access", value_name = "MODE,HOST_PATH")]
+    pub microvm_mount_access: Vec<MicrovmMountAccessCli>,
+
     /// Select the host identity of the guest's `--mount` operations
     ///
     /// `vmm` (the default) performs every operation as OpenVMM. `caller`
@@ -639,6 +644,34 @@ pub struct MicrovmMountChildCli {
     /// What `host_path` must be: a directory, or with the `file` flag a
     /// regular file.
     pub kind: openvmm_defs::microvm::MicrovmFilesystemChildKind,
+}
+
+/// An explicit content and mutation grant for one host path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicrovmMountAccessCli {
+    pub access: openvmm_defs::microvm::MicrovmPathAccess,
+    pub host_path: PathBuf,
+}
+
+impl FromStr for MicrovmMountAccessCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (mode, path) = value
+            .split_once(',')
+            .context("expected <enum|ro|rw>,<host-path>")?;
+        anyhow::ensure!(!path.is_empty(), "mount access path is empty");
+        let access = match mode {
+            "enum" => openvmm_defs::microvm::MicrovmPathAccess::Enumerate,
+            "ro" => openvmm_defs::microvm::MicrovmPathAccess::ReadOnly,
+            "rw" => openvmm_defs::microvm::MicrovmPathAccess::ReadWrite,
+            _ => anyhow::bail!("mount access mode must be enum, ro, or rw"),
+        };
+        Ok(Self {
+            access,
+            host_path: path.into(),
+        })
+    }
 }
 
 impl FromStr for MicrovmMountChildCli {
@@ -759,6 +792,7 @@ impl Options {
                     && self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_mount_allow.is_empty()
                     && self.microvm.microvm_mount_write.is_empty()
+                    && self.microvm.microvm_mount_access.is_empty()
                     && self.microvm.microvm_mount_owner.is_none()
                     && self.microvm.microvm_sandbox_block.is_empty()
                     && self.microvm.microvm_workload_identity.is_none()
@@ -1066,6 +1100,7 @@ impl Options {
                 || (self.microvm.microvm_mount_deny.is_empty()
                     && self.microvm.microvm_mount_allow.is_empty()
                     && self.microvm.microvm_mount_write.is_empty()
+                    && self.microvm.microvm_mount_access.is_empty()
                     && self.microvm.microvm_mount_owner.is_none()),
             "--mount-deny, --mount-allow, --mount-write, and --mount-owner require --mount or --mount-aggregate"
         );
@@ -1083,6 +1118,10 @@ impl Options {
             anyhow::ensure!(
                 self.microvm.microvm_mount_write.len() <= 128,
                 "microVM filesystem permits at most 128 writable paths"
+            );
+            anyhow::ensure!(
+                self.microvm.microvm_mount_access.len() <= 128,
+                "microVM filesystem permits at most 128 explicit access rules"
             );
         }
         if let Some(mount) = &self.microvm.microvm_mount {

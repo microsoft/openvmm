@@ -163,6 +163,161 @@ pub(super) fn list(fs: &VirtioFs, node_id: u64) -> Vec<String> {
     names
 }
 
+fn access_rules(
+    values: &[(&str, virtio_resources::fs::microvm::MicrovmPathAccess)],
+) -> Vec<virtio_resources::fs::microvm::MicrovmPathAccessRule> {
+    values
+        .iter()
+        .map(
+            |(path, access)| virtio_resources::fs::microvm::MicrovmPathAccessRule {
+                path: (*path).to_owned(),
+                access: *access,
+            },
+        )
+        .collect()
+}
+
+#[test]
+fn enumeration_lists_metadata_without_exposing_contents_or_denied_names() {
+    use virtio_resources::fs::microvm::MicrovmPathAccess::{Enumerate, ReadOnly, ReadWrite};
+    let share = Share::new();
+    let profile = share
+        .profile(&["logs/secret"], &[], &[])
+        .with_access_rules(access_rules(&[
+            ("", Enumerate),
+            ("logs/payloads", ReadOnly),
+            ("out", ReadWrite),
+        ]))
+        .unwrap();
+    let fs = VirtioFs::new_microvm(&share.root, profile).unwrap();
+    assert!(list(&fs, FUSE_ROOT_ID).contains(&"marker".to_owned()));
+    let logs = lookup(&fs, "logs").unwrap();
+    assert!(!list(&fs, logs).contains(&"secret".to_owned()));
+    let marker = lookup(&fs, "marker").unwrap();
+    assert_eq!(fs.get_attr(&request(marker), 0, 0).unwrap().attr.size, 4);
+    assert_eq!(error(open(&fs, marker, lx::O_RDONLY)), lx::Error::EACCES);
+    assert_eq!(
+        error(create(&fs, FUSE_ROOT_ID, "blocked")),
+        lx::Error::EROFS
+    );
+    assert_eq!(
+        error(fs.get_xattr(&request(marker), name("user.data"), 64)),
+        lx::Error::EACCES
+    );
+    assert_eq!(
+        read_node(&fs, lookup(&fs, "logs/payloads/payload").unwrap()),
+        b"payload"
+    );
+    let out = lookup(&fs, "out").unwrap();
+    let (node, handle) = create(&fs, out, "created").unwrap();
+    assert_eq!(write(&fs, node, handle, b"written").unwrap(), 7);
+    release(&fs, node, handle);
+}
+
+#[test]
+fn enumeration_alias_revokes_content_access_on_an_existing_handle() {
+    use virtio_resources::fs::microvm::MicrovmPathAccess::{Enumerate, ReadOnly};
+    let share = Share::new();
+    std::fs::remove_file(share.path("marker")).unwrap();
+    std::fs::hard_link(share.path("logs/payloads/payload"), share.path("marker")).unwrap();
+    let profile = share
+        .profile(&[], &[], &[])
+        .with_access_rules(access_rules(&[
+            ("", Enumerate),
+            ("logs/payloads", ReadOnly),
+        ]))
+        .unwrap();
+    let fs = VirtioFs::new_microvm(&share.root, profile).unwrap();
+    let node = lookup(&fs, "logs/payloads/payload").unwrap();
+    let handle = open(&fs, node, lx::O_RDONLY).unwrap();
+    assert_eq!(lookup(&fs, "marker").unwrap(), node);
+    let mut arg = fuse_read_in::new_zeroed();
+    arg.fh = handle;
+    arg.size = 64;
+    assert_eq!(error(fs.read(&request(node), &arg)), lx::Error::EACCES);
+    release(&fs, node, handle);
+}
+
+#[test]
+fn enumeration_saved_state_cannot_be_restored_without_its_rules() {
+    use virtio_resources::fs::microvm::MicrovmPathAccess::Enumerate;
+    let share = Share::new();
+    let profile = share
+        .profile(&[], &[], &[])
+        .with_access_rules(access_rules(&[("", Enumerate)]))
+        .unwrap();
+    let fs = VirtioFs::new_microvm(&share.root, profile.clone()).unwrap();
+    let state = fs
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    assert_eq!(
+        state.schema_version,
+        super::saved_state::PATH_ACCESS_SCHEMA_VERSION
+    );
+    validate_microvm_state(&state, &profile).unwrap();
+    assert!(validate_microvm_state(&state, &share.profile(&[], &[], &[])).is_err());
+}
+
+#[test]
+fn enumeration_rejects_a_saved_content_handle_even_with_matching_policy_fields() {
+    use virtio_resources::fs::microvm::MicrovmPathAccess::Enumerate;
+    let share = Share::new();
+    let readable = share.profile(&[], &[], &[]);
+    let fs = VirtioFs::new_microvm(&share.root, readable.clone()).unwrap();
+    let node = lookup(&fs, "marker").unwrap();
+    let handle = open(&fs, node, lx::O_RDONLY).unwrap();
+    let mut state = fs
+        .save_microvm_state(&readable, SessionState::default())
+        .unwrap();
+    let rules = access_rules(&[("", Enumerate)]);
+    let restricted = readable.with_access_rules(rules.clone()).unwrap();
+    state.schema_version = super::saved_state::PATH_ACCESS_SCHEMA_VERSION;
+    state.access_rules = rules;
+    assert!(validate_microvm_state(&state, &restricted).is_err());
+    release(&fs, node, handle);
+}
+
+#[test]
+fn enumeration_only_file_child_preserves_metadata_and_policy_across_restore() {
+    use super::profile::MicroVmAggregateChild;
+    use super::profile::microvm_file_identity;
+    use virtio_resources::fs::microvm::MicrovmPathAccess::Enumerate;
+    let share = Share::new();
+    let file = share.path("marker");
+    let child = MicroVmAggregateChild::new_file(
+        "0".to_owned(),
+        microvm_file_identity(&file).unwrap(),
+        true,
+    )
+    .unwrap()
+    .with_access_rules(access_rules(&[("", Enumerate)]))
+    .unwrap();
+    let profile =
+        MicroVmVirtioFsProfile::from_aggregate(MICROVM_ATTACHMENT_ID.to_owned(), vec![child])
+            .unwrap();
+    let fs = VirtioFs::new_microvm_aggregate(&[&file], profile.clone()).unwrap();
+    let node = lookup(&fs, "0").unwrap();
+    assert_eq!(fs.get_attr(&request(node), 0, 0).unwrap().attr.size, 4);
+    assert_eq!(error(open(&fs, node, lx::O_RDONLY)), lx::Error::EACCES);
+    let state = fs
+        .save_microvm_state(&profile, SessionState::default())
+        .unwrap();
+    validate_microvm_state(&state, &profile).unwrap();
+    let restored = VirtioFs::new_microvm_aggregate(&[&file], profile.clone()).unwrap();
+    let session = Session::new(restored.clone());
+    restored
+        .restore_microvm_state(&profile, state, &session)
+        .unwrap();
+    assert_eq!(
+        error(open(
+            &restored,
+            lookup(&restored, "0").unwrap(),
+            lx::O_RDONLY
+        )),
+        lx::Error::EACCES
+    );
+}
+
 /// A share laid out like the directories that a sandbox policy protects.
 ///
 /// - `marker` and `build.log` are files, and `out` is a directory with the

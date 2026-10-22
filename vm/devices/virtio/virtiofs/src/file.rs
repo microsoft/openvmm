@@ -102,6 +102,7 @@ impl VirtioFsFile {
 
     /// Read data from the file.
     pub fn read(&self, buffer: &mut [u8], offset: u64) -> lx::Result<usize> {
+        self.inode.ensure_content_readable()?;
         self.file.read().pread(buffer, offset as lx::off_t)
     }
 

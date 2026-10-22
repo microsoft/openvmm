@@ -9,6 +9,35 @@
 //! by [`super::VirtioFsBackend::Dormant`].
 
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
+
+/// Access to an explicitly mapped subtree. Ordering keeps the most restrictive
+/// grant when several rules name the same path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Protobuf)]
+#[mesh(package = "virtio.fs")]
+pub enum MicrovmPathAccess {
+    /// Directory names and ordinary attributes, without file-content access.
+    #[mesh(1)]
+    Enumerate,
+    /// Content access without modification.
+    #[mesh(2)]
+    ReadOnly,
+    /// Content access and modification.
+    #[mesh(3)]
+    ReadWrite,
+}
+
+/// A canonical share-relative path and the access granted to its subtree.
+#[derive(Debug, Clone, PartialEq, Eq, Protobuf)]
+#[mesh(package = "virtio.fs")]
+pub struct MicrovmPathAccessRule {
+    /// Canonical share-relative path; empty names the root.
+    #[mesh(1)]
+    pub path: String,
+    /// Access to this path and descendants without a more specific rule.
+    #[mesh(2)]
+    pub access: MicrovmPathAccess,
+}
 
 #[derive(MeshPayload)]
 pub enum VirtioFsProfile {
@@ -30,6 +59,8 @@ pub enum VirtioFsProfile {
         /// with root squashed to the owner of the export root, instead of as
         /// the VMM. Linux only.
         caller_identity: bool,
+        /// Explicit subtree access. Empty preserves the legacy write policy.
+        access_rules: Vec<MicrovmPathAccessRule>,
     },
     /// An aggregate whose synthetic, read-only root lists one directory or
     /// regular file per child. The children of the `Aggregate` backend must
@@ -61,6 +92,7 @@ pub struct MicrovmAggregateChild {
     pub denied_paths: Vec<String>,
     pub allowed_paths: Vec<String>,
     pub writable_paths: Vec<String>,
+    pub access_rules: Vec<MicrovmPathAccessRule>,
 }
 
 /// The kind of host object that a [`MicrovmAggregateChild`] exposes.

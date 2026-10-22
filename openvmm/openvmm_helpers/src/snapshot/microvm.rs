@@ -286,6 +286,9 @@ pub struct SnapshotMicrovmFilesystem {
     /// root lists them, which own its policy; none for a single directory.
     #[mesh(16)]
     pub children: Vec<SnapshotMicrovmFilesystemChild>,
+    #[mesh(17)]
+    /// Explicit nearest-subtree access, enforced by device state schema 10.
+    pub access_rules: Vec<openvmm_defs::microvm::MicrovmPathAccessRule>,
 }
 
 /// Canonical policy and host root of one child of an aggregate microVM
@@ -324,6 +327,9 @@ pub struct SnapshotMicrovmFilesystemChild {
     /// predate this field record, or `file` for a regular host file.
     #[mesh(9)]
     pub kind: String,
+    #[mesh(10)]
+    /// Explicit nearest-subtree access for this child.
+    pub access_rules: Vec<openvmm_defs::microvm::MicrovmPathAccessRule>,
 }
 
 /// Authoritative identity and snapshot policy for a microVM sandbox block.
@@ -393,6 +399,7 @@ impl SnapshotMicrovmFilesystem {
             },
             allowed_paths: config.allowed_paths.clone(),
             writable_paths: config.writable_paths.clone(),
+            access_rules: config.access_rules.clone(),
             children: config
                 .children
                 .iter()
@@ -407,6 +414,7 @@ impl SnapshotMicrovmFilesystem {
                         denied_paths: child.denied_paths.clone(),
                         allowed_paths: child.allowed_paths.clone(),
                         writable_paths: child.writable_paths.clone(),
+                        access_rules: child.access_rules.clone(),
                         kind: snapshot_microvm_filesystem_child_kind_str(child.kind).to_owned(),
                     }
                 })
@@ -455,6 +463,7 @@ pub fn snapshot_microvm_filesystem_config(
                 filesystem.writable_paths.clone(),
             )
         })
+        .and_then(|config| config.with_access_rules(filesystem.access_rules.clone()))
     } else {
         let children = filesystem
             .children
@@ -472,11 +481,15 @@ pub fn snapshot_microvm_filesystem_config(
                         child.name
                     ),
                 };
-                anyhow::Ok(config.with_access_policy(
-                    child.denied_paths.clone(),
-                    child.allowed_paths.clone(),
-                    child.writable_paths.clone(),
-                )?)
+                anyhow::Ok(
+                    config
+                        .with_access_policy(
+                            child.denied_paths.clone(),
+                            child.allowed_paths.clone(),
+                            child.writable_paths.clone(),
+                        )?
+                        .with_access_rules(child.access_rules.clone())?,
+                )
             })
             .collect::<anyhow::Result<Vec<_>>>()
             .context("snapshot filesystem policy is invalid")?;
@@ -486,6 +499,10 @@ pub fn snapshot_microvm_filesystem_config(
         )
     }
     .context("snapshot filesystem policy is invalid")?;
+    anyhow::ensure!(
+        !config.is_aggregate() || filesystem.access_rules.is_empty(),
+        "an aggregate snapshot cannot carry root access rules"
+    );
     Ok(config.with_owner(snapshot_microvm_filesystem_owner(&filesystem.owner_mode)?))
 }
 
@@ -3663,6 +3680,39 @@ mod tests {
                 "{error:#}"
             );
         }
+    }
+
+    #[test]
+    fn microvm_filesystem_enumeration_rules_round_trip_and_reject_missing_roots() {
+        use openvmm_defs::microvm::MicrovmPathAccess::{Enumerate, ReadOnly};
+        use openvmm_defs::microvm::MicrovmPathAccessRule;
+        let filesystem = openvmm_defs::microvm::MicrovmFilesystemConfig::new(
+            "/mnt/share".to_owned(),
+            openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly,
+        )
+        .unwrap()
+        .with_access_rules(vec![
+            MicrovmPathAccessRule {
+                path: String::new(),
+                access: Enumerate,
+            },
+            MicrovmPathAccessRule {
+                path: "selected".to_owned(),
+                access: ReadOnly,
+            },
+        ])
+        .unwrap();
+        let contract = generated_filesystem_contract_with_config("whp", &filesystem);
+        let saved = contract.microvm_filesystem.as_ref().unwrap();
+        assert_eq!(saved.access_rules, filesystem.access_rules);
+        assert_eq!(
+            snapshot_microvm_filesystem_config(saved).unwrap(),
+            filesystem
+        );
+        validate_machine_contract_shape(&contract, 1024, 1).unwrap();
+        let mut malformed = saved.clone();
+        malformed.access_rules.remove(0);
+        assert!(snapshot_microvm_filesystem_config(&malformed).is_err());
     }
 
     #[test]

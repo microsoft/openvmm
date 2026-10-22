@@ -54,6 +54,7 @@ pub(crate) fn resolve(
             denied_paths,
             allowed_paths,
             writable_paths,
+            access_rules,
             caller_identity,
         } => {
             validate_tag(resource, stable_id)?;
@@ -68,18 +69,18 @@ pub(crate) fn resolve(
                 mount_options.is_empty(),
                 "microVM virtio-fs does not accept HostFs mount options"
             );
-            VirtioFsDevice::new_microvm_hostfs(
-                driver_source,
+            let profile = super::profile::MicroVmVirtioFsProfile::from_attachment_with_policy(
                 stable_id.clone(),
                 root_identity.clone(),
                 *read_only,
                 denied_paths.clone(),
                 allowed_paths.clone(),
                 writable_paths.clone(),
-                owner_mode(*caller_identity),
-                root_path,
-                None,
             )?
+            .with_access_rules(access_rules.clone())?
+            .with_owner_mode(owner_mode(*caller_identity))?;
+            let fs = crate::VirtioFs::new_microvm(root_path, profile.clone())?;
+            VirtioFsDevice::new_microvm(driver_source, profile, fs, None)?
         }
         VirtioFsProfile::MicrovmAggregate {
             stable_id,
@@ -112,7 +113,7 @@ pub(crate) fn resolve(
                         child.denied_paths.clone(),
                         child.allowed_paths.clone(),
                         child.writable_paths.clone(),
-                    )?),
+                    )?.with_access_rules(child.access_rules.clone())?),
                     MicrovmAggregateChildKind::File => {
                         anyhow::ensure!(
                             child.denied_paths.is_empty()
@@ -125,7 +126,7 @@ pub(crate) fn resolve(
                             child.name.clone(),
                             child.root_identity.clone(),
                             child.read_only,
-                        )?)
+                        )?.with_access_rules(child.access_rules.clone())?)
                     }
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -196,6 +197,7 @@ mod tests {
                     denied_paths: Vec::new(),
                     allowed_paths: Vec::new(),
                     writable_paths: Vec::new(),
+                    access_rules: Vec::new(),
                     caller_identity: false,
                 },
             },
@@ -274,6 +276,7 @@ mod tests {
                                 denied_paths: Vec::new(),
                                 allowed_paths: Vec::new(),
                                 writable_paths: Vec::new(),
+                                access_rules: Vec::new(),
                             },
                         )
                         .collect(),
@@ -361,6 +364,7 @@ mod tests {
                             denied_paths,
                             allowed_paths: Vec::new(),
                             writable_paths: Vec::new(),
+                            access_rules: Vec::new(),
                         }],
                         caller_identity: false,
                     },

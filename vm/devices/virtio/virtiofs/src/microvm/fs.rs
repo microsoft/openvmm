@@ -153,7 +153,9 @@ fn open_microvm_volume(
 ) -> anyhow::Result<(Arc<VirtioFsVolume>, VirtioFsInode, lx::Stat)> {
     let (directory, exposed_file, policy) = if file {
         anyhow::ensure!(
-            *policy == SubtreePolicy::default(),
+            policy.denied_paths().is_empty()
+                && policy.allowed_paths().is_empty()
+                && policy.writable_paths().is_empty(),
             "a microVM virtio-fs file child takes no denied, allowed, or writable paths"
         );
         let (Some(directory), Some(name)) = (root_path.parent(), root_path.file_name()) else {
@@ -163,12 +165,20 @@ fn open_microvm_volume(
             );
         };
         let exposed_file = PathBuf::from(name);
-        let policy = SubtreePolicy::new(
+        let file_access = policy
+            .access_rules()
+            .iter()
+            .map(|(_, access)| (exposed_file.clone(), *access))
+            .collect();
+        let mut policy = SubtreePolicy::new(
             vec![PathBuf::new()],
             vec![exposed_file.clone()],
             Vec::new(),
             read_only,
         )?;
+        // The file child's root becomes its filename inside the private
+        // backing volume; its directory is never exposed.
+        policy.set_file_access_rules(file_access);
         (directory, Some(exposed_file), policy)
     } else {
         (root_path, None, policy.clone())
@@ -182,7 +192,9 @@ fn open_microvm_volume(
     let mut pinned_identities = HashMap::new();
     for (path, reachable_at) in policy.pinned_paths() {
         let stat = volume.lstat(&path)?;
-        if reachable_at.is_some() && stat.mode & lx::S_IFMT != lx::S_IFDIR {
+        if policy.visibility(&path) == super::policy::PathVisibility::TraverseOnly
+            && stat.mode & lx::S_IFMT != lx::S_IFDIR
+        {
             anyhow::bail!(
                 "microVM virtio-fs path {} leads to an allowed path but is not a directory",
                 path.display()
@@ -540,16 +552,18 @@ impl VirtioFs {
         );
         let schema_version = schema_version(profile);
         let policy = profile.subtree_policy();
-        let (denied_paths, allowed_paths, writable_paths) =
-            if schema_version == SUBTREE_POLICY_SCHEMA_VERSION {
-                (
-                    saved_policy_paths(policy.denied_paths()),
-                    saved_policy_paths(policy.allowed_paths()),
-                    saved_policy_paths(policy.writable_paths()),
-                )
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
+        let (denied_paths, allowed_paths, writable_paths) = if matches!(
+            schema_version,
+            SUBTREE_POLICY_SCHEMA_VERSION | super::saved_state::PATH_ACCESS_SCHEMA_VERSION
+        ) {
+            (
+                saved_policy_paths(policy.denied_paths()),
+                saved_policy_paths(policy.allowed_paths()),
+                saved_policy_paths(policy.writable_paths()),
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
         Ok(SavedState {
             schema_version,
             attachment_id: profile.attachment_id().to_owned(),
@@ -576,6 +590,7 @@ impl VirtioFs {
             allowed_paths,
             writable_paths,
             aggregate_children: saved_aggregate_children(profile),
+            access_rules: super::state::saved_access_rules(profile.subtree_policy()),
         })
     }
 
