@@ -34,6 +34,59 @@ operating systems, firmwares, and VMMs (including Hyper-V, which is useful
 for testing certain OpenHCL features that aren't supported when using
 OpenVMM as the host VMM).
 
+### Backend contract tests (no guest)
+
+The `virt_backend_tests` executable in the `vmm_tests` package tests the public
+`virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
+are hardware-dependent integration tests, not ordinary unit tests. They use
+Petri for registration, host eligibility, logs, and results, but do not use its
+VM builders, launch OpenVMM, load guest artifacts, or execute a VP.
+
+Each backend has independently reported cases for initially frozen clocks,
+freeze/thaw transitions, reset values, and serialized restoration of clocks,
+countdown timers, and TSC deadlines. Reference time is checked when the backend
+advertises access to it. Initial clock values need not be zero; zero is expected
+only after an explicit reset.
+Countdown readback while paused describes the captured snapshot, not whether
+the native timer is still running.
+
+The contract functions operate on the public `virt` interfaces. Each function
+has an adjacent `backend_test!` declaration that registers it with Petri for
+each native backend and lists the capabilities it requires. For example:
+
+```rust,ignore
+backend_test!(clock_restore, requires: [time_control, reset]);
+backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
+```
+
+Add the function and its declaration in the relevant test module; there is no
+central case enum or registration table to update. Shared helpers construct
+the partition and bind its single VP before invoking the function. Cases have
+names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
+Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
+enlightenment offload on WHP.
+The clock contracts also have separately named Hv1-enabled cases:
+`initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
+`clock_restore_hv1`. These reuse the unenlightened contracts to check reference
+time as well as TSC, and require Hv1 in addition to each contract's other
+capabilities.
+Host requirements select the matching backend. Execution-host discovery probes
+the selected fixture's capabilities so unsupported time control, reset, Hv1,
+or TSC-deadline cases are reported as ignored, not passed. Probe errors fail the
+selected tests rather than hiding them. Artifact-only discovery does not create
+partitions.
+
+CI packages this executable in the existing `vmm_tests` nextest archive and runs
+it on the eligible hypervisor hosts, rather than in the ordinary unit-test jobs.
+
+Use the existing VMM-test runner to select the executable:
+
+```bash
+cargo xflowey vmm-tests-run --filter 'binary(virt_backend_tests)'
+```
+
+Add `--build-only` to build without running the tests.
+
 ### "heavy" tests
 
 The global [nextest.toml](https://github.com/microsoft/openvmm/blob/main/.config/nextest.toml)
