@@ -159,6 +159,7 @@ impl<'a> MshvProtoPartition<'a> {
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
                 message_queues_pending: AtomicBool::new(false),
+                #[cfg(guest_arch = "x86_64")]
                 extint_pending: AtomicBool::new(false),
                 #[cfg(guest_arch = "x86_64")]
                 created: AtomicBool::new(false),
