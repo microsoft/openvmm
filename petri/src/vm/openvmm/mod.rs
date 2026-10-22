@@ -12,7 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
-pub mod mshv;
+mod mshv;
 mod runtime;
 mod start;
 
