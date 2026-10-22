@@ -380,6 +380,21 @@ enum Vtl2DeviceState {
     Reconfiguring,
 }
 
+impl Vtl2DeviceState {
+    fn device_enumerated(&mut self, shutdown_active: bool) -> bool {
+        if !shutdown_active && matches!(self, Self::Missing) {
+            *self = Self::DeviceEnumerated;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn device_started(&mut self) {
+        *self = Self::Present;
+    }
+}
+
 enum WorkerControlFlow {
     Continue,
     ExitWorker,
@@ -1505,11 +1520,7 @@ impl HclNetworkVFManagerWorker {
             match next_work_item {
                 NextWorkItem::Continue => continue,
                 NextWorkItem::ManaDeviceEnumerated => {
-                    if !self.is_shutdown_active
-                        && matches!(vtl2_device_state, Vtl2DeviceState::Missing)
-                    {
-                        vtl2_device_state = Vtl2DeviceState::DeviceEnumerated;
-                    } else {
+                    if !vtl2_device_state.device_enumerated(self.is_shutdown_active) {
                         tracing::warn!(
                             vtl2_vfid,
                             vtl2_device_state = ?vtl2_device_state,
@@ -1595,7 +1606,7 @@ impl HclNetworkVFManagerWorker {
                         .instrument(tracing::info_span!("VTL2 VF arrived", vtl2_vfid))
                         .await
                     {
-                        vtl2_device_state = Vtl2DeviceState::Present;
+                        vtl2_device_state.device_started();
                     }
                 }
                 NextWorkItem::ManaDeviceRemoved { surprise_remove } => {
