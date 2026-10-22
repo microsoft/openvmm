@@ -110,27 +110,6 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         enforcement: MANDATORY,
         reason: Some("Loads a kernel module, enabling arbitrary kernel-code execution."),
     },
-    DeniedSyscall {
-        name: "io_uring_enter",
-        enforcement: MANDATORY,
-        reason: Some(
-            "Executes io_uring operations that can bypass syscall-level file and network filtering.",
-        ),
-    },
-    DeniedSyscall {
-        name: "io_uring_register",
-        enforcement: MANDATORY,
-        reason: Some(
-            "Registers io_uring resources through a young, historically CVE-rich kernel subsystem.",
-        ),
-    },
-    DeniedSyscall {
-        name: "io_uring_setup",
-        enforcement: MANDATORY,
-        reason: Some(
-            "Creates io_uring instances that expose a young, historically CVE-rich kernel subsystem.",
-        ),
-    },
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     DeniedSyscall {
         name: "ioperm",
@@ -359,6 +338,27 @@ pub(crate) const SYSCALL_DENYLIST_OPTIONAL: &[DeniedSyscall] = &[
         name: "add_key",
         enforcement: OPTIONAL,
         reason: Some("Accepts attacker-controlled variable-size payloads."),
+    },
+    DeniedSyscall {
+        name: "io_uring_enter",
+        enforcement: OPTIONAL,
+        reason: Some(
+            "Executes io_uring operations that can bypass syscall-level file and network filtering.",
+        ),
+    },
+    DeniedSyscall {
+        name: "io_uring_register",
+        enforcement: OPTIONAL,
+        reason: Some(
+            "Registers io_uring resources through a young, historically CVE-rich kernel subsystem.",
+        ),
+    },
+    DeniedSyscall {
+        name: "io_uring_setup",
+        enforcement: OPTIONAL,
+        reason: Some(
+            "Creates io_uring instances that expose a young, historically CVE-rich kernel subsystem.",
+        ),
     },
     DeniedSyscall {
         name: "kcmp",
