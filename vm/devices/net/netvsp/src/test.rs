@@ -2274,6 +2274,105 @@ async fn send_initial_handshake(driver: DefaultDriver) {
     channel.send_initialize_message().await;
 }
 
+async fn reject_completion_during_initialization(
+    driver: DefaultDriver,
+    transaction_id: u64,
+    payload: &[&[u8]],
+) {
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
+        Guid::new_random(),
+        Box::new(NullEndpoint::new()),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    for negotiate_version in [false, true] {
+        let (host_queue, mut guest_queue) = queue::connected_queues(PAGE_SIZE);
+        let mut channel = NetChannel {
+            adapter: nic.adapter.clone(),
+            queue: host_queue,
+            gpadl_map: GpadlMap::new().view(),
+            packet_size: PacketSize::V1,
+            pending_send_size: 0,
+            restart: None,
+            can_use_ring_size_opt: false,
+            packet_filter: 0,
+        };
+        if negotiate_version {
+            let message = NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE_TYPE_INIT,
+                },
+                data: protocol::MessageInit {
+                    protocol_version: Version::V5 as u32,
+                    protocol_version2: Version::V5 as u32,
+                },
+                padding: &[],
+            };
+            guest_queue
+                .split()
+                .1
+                .try_write(&OutgoingPacket {
+                    transaction_id: 1,
+                    packet_type: OutgoingPacketType::InBandWithCompletion,
+                    payload: &message.payload(),
+                })
+                .unwrap();
+        }
+        guest_queue
+            .split()
+            .1
+            .try_write(&OutgoingPacket {
+                transaction_id,
+                packet_type: OutgoingPacketType::Completion,
+                payload,
+            })
+            .unwrap();
+
+        let mut initializing = None;
+        let result = channel
+            .initialize(&mut initializing, GuestMemory::allocate(PAGE_SIZE))
+            .now_or_never()
+            .expect("queued completion must be rejected without waiting")
+            .map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(WorkerError::UnexpectedPacketOrder(
+                    PacketOrderError::InvalidPacketData
+                ))
+            ),
+            "expected InvalidPacketData, got {result:?}"
+        );
+        assert_eq!(initializing.is_some(), negotiate_version);
+    }
+}
+
+#[async_test]
+async fn reject_vf_association_completion_during_initialization(driver: DefaultDriver) {
+    reject_completion_during_initialization(driver, VF_ASSOCIATION_TRANSACTION_ID, &[]).await;
+}
+
+#[async_test]
+async fn reject_switch_data_path_completion_during_initialization(driver: DefaultDriver) {
+    reject_completion_during_initialization(driver, SWITCH_DATA_PATH_TRANSACTION_ID, &[]).await;
+}
+
+#[async_test]
+async fn reject_rndis_completion_during_initialization(driver: DefaultDriver) {
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+        },
+        data: protocol::Message1SendRndisPacketComplete {
+            status: protocol::Status::SUCCESS,
+        },
+        padding: &[],
+    };
+    reject_completion_during_initialization(driver, 2, &message.payload()).await;
+}
+
 /// Starts up a VMBus channel, mimics negotiating a protocol version, then creates
 /// a subchannel.
 async fn test_new_subchannel_packet_size(

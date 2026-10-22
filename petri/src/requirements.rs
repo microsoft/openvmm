@@ -86,7 +86,8 @@ pub enum OpenVmmHypervisor {
     Hvf,
 }
 
-/// Information about the VM host, retrieved via PowerShell on Windows.
+/// Information about the VM host. On Windows, petri reads it with the
+/// `Get-VMHost` PowerShell cmdlet. On Linux, petri probes MSHV for SNP support.
 #[derive(Debug, Clone)]
 pub struct VmHostInfo {
     /// VBS support status
@@ -100,7 +101,7 @@ pub struct VmHostInfo {
 /// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
-    /// VmHost information retrieved via PowerShell
+    /// VM host information, if petri can get it on this host
     pub vm_host_info: Option<VmHostInfo>,
     /// CPU vendor
     pub vendor: Vendor,
@@ -140,26 +141,6 @@ impl HostContext {
 
         let vendor = Vendor::host();
 
-        let vm_host_info = {
-            #[cfg(windows)]
-            {
-                crate::vm::hyperv::powershell::run_get_vm_host()
-                    .await
-                    .ok()
-                    .map(|info| VmHostInfo {
-                        vbs_supported: info.guest_isolation_types.contains(
-                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
-                        ),
-                        snp_status: info.snp_status,
-                        tdx_status: info.tdx_status,
-                    })
-            }
-            #[cfg(not(windows))]
-            {
-                None
-            }
-        };
-
         // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
         let vpci_supported = cfg!(windows);
 
@@ -182,6 +163,34 @@ impl HostContext {
             Some(OpenVmmHypervisor::Hvf)
         } else {
             None
+        };
+
+        let vm_host_info = {
+            #[cfg(windows)]
+            {
+                crate::vm::hyperv::powershell::run_get_vm_host()
+                    .await
+                    .ok()
+                    .map(|info| VmHostInfo {
+                        vbs_supported: info.guest_isolation_types.contains(
+                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
+                        ),
+                        snp_status: info.snp_status,
+                        tdx_status: info.tdx_status,
+                    })
+            }
+            #[cfg(not(windows))]
+            {
+                // MSHV has no SNP capability query, so probe by creating a
+                // temporary SNP partition. Only AMD hosts can support SNP.
+                (vendor == Vendor::Amd && openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)).then(
+                    || VmHostInfo {
+                        vbs_supported: false,
+                        snp_status: openvmm_hypervisors::mshv_snp_available(),
+                        tdx_status: false,
+                    },
+                )
+            }
         };
 
         Self {

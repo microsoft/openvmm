@@ -1824,7 +1824,7 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-linux-amd-snp-mshv",
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_snp_mshv_x86,
-                nextest_filter_expr: "test(snp_linux_direct)".to_string(),
+                nextest_filter_expr: "test(linux_x64_snp)".to_string(),
                 downloaded_artifacts: Vec::new(),
                 prep_steps_variants: Vec::new(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {

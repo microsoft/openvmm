@@ -85,8 +85,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
     type VmRuntime = HyperVPetriRuntime;
     const SUPPORTS_VMBUS: bool = true;
 
-    fn check_compat(firmware: &Firmware, _arch: MachineArch) -> bool {
-        !firmware.is_isolated_without_paravisor()
+    fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
+        true
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -182,6 +182,10 @@ impl PetriVmmBackend for HyperVPetriBackend {
         resources: &PetriVmResources,
         properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        anyhow::ensure!(
+            !matches!(config.firmware, Firmware::IgvmLinuxDirect { .. }),
+            "Linux-direct IGVM boot is not supported by the Hyper-V backend"
+        );
         let PetriVmResources {
             driver,
             log_source,

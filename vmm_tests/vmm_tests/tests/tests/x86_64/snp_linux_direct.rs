@@ -10,12 +10,12 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use vmm_test_macros::vmm_test_with;
 
-#[vmm_test_with(openvmm, configs(snp_linux_direct_x64))]
+#[vmm_test_with(openvmm, configs(linux_direct_x64[snp]))]
 async fn boot_1vp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     boot_with_vps(config, 1).await
 }
 
-#[vmm_test_with(openvmm, configs(snp_linux_direct_x64))]
+#[vmm_test_with(openvmm, configs(linux_direct_x64[snp]))]
 async fn boot_2vp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     boot_with_vps(config, 2).await
 }

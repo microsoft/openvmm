@@ -3251,18 +3251,31 @@ impl BootDeviceType {
 }
 
 impl Firmware {
-    /// Constructs a standard [`Firmware::LinuxDirect`] configuration.
-    pub fn linux_direct(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+    /// Constructs a standard [`Firmware::LinuxDirect`] configuration, or a
+    /// [`Firmware::IgvmLinuxDirect`] configuration if `isolation` is set.
+    pub fn linux_direct(
+        resolver: &ArtifactResolver<'_>,
+        arch: MachineArch,
+        isolation: Option<IsolationType>,
+    ) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
-        match arch {
-            MachineArch::X86_64 => Firmware::LinuxDirect {
+        use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
+        match (arch, isolation) {
+            (MachineArch::X86_64, None) => Firmware::LinuxDirect {
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_X64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
             },
-            MachineArch::Aarch64 => Firmware::LinuxDirect {
+            (MachineArch::Aarch64, None) => Firmware::LinuxDirect {
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
             },
+            (MachineArch::X86_64, Some(IsolationType::Snp)) => Firmware::IgvmLinuxDirect {
+                igvm_path: resolver.require(SNP_LINUX_DIRECT_IGVM_X64).erase(),
+                isolation: IsolationType::Snp,
+            },
+            (arch, Some(isolation)) => {
+                panic!("Linux direct does not support {isolation:?} isolation on {arch:?}")
+            }
         }
     }
 
@@ -3275,15 +3288,6 @@ impl Firmware {
         Firmware::LinuxDirect {
             kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
             initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
-        }
-    }
-
-    /// Constructs the x86_64 SEV-SNP Linux-direct IGVM configuration.
-    pub fn snp_linux_direct(resolver: &ArtifactResolver<'_>) -> Self {
-        use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
-        Firmware::IgvmLinuxDirect {
-            igvm_path: resolver.require(SNP_LINUX_DIRECT_IGVM_X64).erase(),
-            isolation: IsolationType::Snp,
         }
     }
 

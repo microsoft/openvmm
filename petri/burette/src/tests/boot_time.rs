@@ -127,7 +127,7 @@ pub struct BootTimeTest {
 
 /// Build the firmware configuration for Linux direct boot.
 pub fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
+    petri::Firmware::linux_direct(resolver, MachineArch::host(), None)
 }
 
 /// Build artifacts for the OpenVMM backend.
