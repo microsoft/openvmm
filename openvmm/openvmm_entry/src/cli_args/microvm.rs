@@ -11,6 +11,7 @@ use super::SmtConfigCli;
 use anyhow::Context;
 use clap::ValueEnum;
 use openvmm_defs::config::DeviceVtl;
+#[cfg(guest_arch = "x86_64")]
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::MicrovmNetworkProfile;
@@ -799,10 +800,12 @@ impl Options {
             "microVM does not support custom NUMA topology"
         );
         anyhow::ensure!(
-            self.vps_per_socket.is_none()
-                && self.smt == SmtConfigCli::Auto
-                && self.apic_id_offset == 0
-                && matches!(self.x2apic, X2ApicConfig::Auto),
+            self.vps_per_socket.is_none() && self.smt == SmtConfigCli::Auto,
+            "microVM owns CPU topology and APIC configuration"
+        );
+        #[cfg(guest_arch = "x86_64")]
+        anyhow::ensure!(
+            self.apic_id_offset == 0 && matches!(self.x2apic, X2ApicConfig::Auto),
             "microVM owns CPU topology and APIC configuration"
         );
         if self.microvm.snapshot_destination.is_some() {
@@ -1303,9 +1306,12 @@ impl Options {
                 && self.pcie_root_port.is_empty()
                 && self.pcie_switch.is_empty()
                 && self.pcie_generic_initiator.is_empty()
-                && self.pcie_remote.is_empty()
-                && self.amd_iommu.is_empty()
-                && self.intel_vtd.is_empty(),
+                && self.pcie_remote.is_empty(),
+            "microVM does not support PCIe or IOMMU devices"
+        );
+        #[cfg(guest_arch = "x86_64")]
+        anyhow::ensure!(
+            self.amd_iommu.is_empty() && self.intel_vtd.is_empty(),
             "microVM does not support PCIe or IOMMU devices"
         );
         #[cfg(windows)]
