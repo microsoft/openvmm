@@ -104,7 +104,7 @@ mod tests {
             mesh::rpc::Rpc::detached(())
         )));
         assert!(!can_run_during_device_removal(&VmRpc::RemovePcieDevice(
-            mesh::rpc::Rpc::detached("test".into())
+            mesh::rpc::Rpc::detached(("test".into(), false))
         )));
         assert_eq!(driver.spawn("control-request", async { 42 }).await, 42);
         assert!(removal.is_pending());
