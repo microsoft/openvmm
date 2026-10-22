@@ -1480,11 +1480,11 @@ mod tests {
             MmFeatures0El1::from(host.mmfr0).with_pa_range(IntermPhysAddrSize::IPA_40_BITS_1_TB);
         let expected_mmfr2 = MmFeatures2El1::from(host.mmfr2).with_cnp(0).with_nv(0);
 
-        assert_eq!(guest.pfr0, expected_pfr0.into());
-        assert_eq!(guest.pfr1, expected_pfr1.into());
-        assert_eq!(guest.dfr0, expected_dfr0.into());
-        assert_eq!(guest.mmfr0, expected_mmfr0.into());
-        assert_eq!(guest.mmfr2, expected_mmfr2.into());
+        assert_eq!(guest.pfr0, u64::from(expected_pfr0));
+        assert_eq!(guest.pfr1, u64::from(expected_pfr1));
+        assert_eq!(guest.dfr0, u64::from(expected_dfr0));
+        assert_eq!(guest.mmfr0, u64::from(expected_mmfr0));
+        assert_eq!(guest.mmfr2, u64::from(expected_mmfr2));
 
         assert_eq!(expected_pfr0.gic(), GicCpuInterface::GICV3_OR_GICV4);
         assert_eq!(expected_pfr0.el2(), 0);
