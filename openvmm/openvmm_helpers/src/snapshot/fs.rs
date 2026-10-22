@@ -300,10 +300,10 @@ pub(super) fn verify_hard_link_identity(
             "automatic snapshot RAM hard link has the wrong file identity or EOF"
         );
     }
+    #[cfg(any(target_os = "linux", windows))]
+    return Ok(());
     #[cfg(not(any(target_os = "linux", windows)))]
     anyhow::bail!("exact-file hard-link identity checks are unsupported on this platform");
-
-    Ok(())
 }
 
 /// Sizes a newly created snapshot RAM backing.

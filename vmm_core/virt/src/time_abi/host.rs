@@ -96,6 +96,7 @@ fn host_error(message: impl Into<String>) -> TimeAbiError {
 
 /// Parses 32 hexadecimal digits, ignoring dashes and a trailing newline, as
 /// in `/etc/machine-id`, the Linux boot ID, and the Windows machine GUID.
+#[cfg(any(target_os = "linux", windows, test))]
 fn parse_hex_id(text: &str) -> Option<[u8; 16]> {
     let digits: Vec<u8> = text
         .trim()

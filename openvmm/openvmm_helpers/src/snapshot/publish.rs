@@ -544,14 +544,18 @@ fn publish_owned_memory_file(
 mod tests {
     use super::super::format::SHA256_SIZE;
     use super::super::fs::file_sha256;
+    #[cfg(any(target_os = "linux", windows))]
     use super::super::fs::initialize_snapshot_memory_backing_file;
     use super::super::microvm::paired_scratch_manifest;
     use super::super::restore::open_paired_scratch_file;
     use super::super::restore::read_snapshot_manifest;
     use super::super::tests::test_manifest;
     use super::*;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::Seek;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::SeekFrom;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::Write;
 
     #[test]

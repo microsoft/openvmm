@@ -3,6 +3,7 @@
 
 //! Hypervisor selection for the microVM machine profile.
 
+#[cfg(any(target_os = "linux", windows))]
 use super::choose_hypervisor;
 use hypervisor_resources::HypervisorKind;
 use vm_resource::Resource;
