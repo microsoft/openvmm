@@ -28,9 +28,7 @@ use crate::queue_setup::QueueSetup;
 use crate::socket::SocketError;
 use crate::socket::VhostUserSocket;
 use anyhow::Context as _;
-use futures::FutureExt;
 use guestmem::GuestMemory;
-use pal_async::driver::Driver;
 use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
 use pal_event::Event;
@@ -92,7 +90,7 @@ impl VhostUserDeviceServer {
 
         tracing::info!("vhost-user client connected");
 
-        match self.handle_connection(&socket, driver).await {
+        match self.handle_connection(&socket).await {
             Ok(()) => {
                 tracing::info!("vhost-user client disconnected");
             }
@@ -111,55 +109,24 @@ impl VhostUserDeviceServer {
     }
 
     /// Serve a single connection (used for testing with socketpairs).
-    pub async fn serve_connection(
-        mut self,
-        socket: VhostUserSocket,
-        driver: &(impl Driver + ?Sized),
-    ) -> anyhow::Result<()> {
-        let result = self.handle_connection(&socket, driver).await;
+    pub async fn serve_connection(mut self, socket: VhostUserSocket) -> anyhow::Result<()> {
+        let result = self.handle_connection(&socket).await;
         self.stop_all_queues().await;
         self.device.reset().await;
         result
     }
 
     /// Handle a single client connection's message loop.
-    async fn handle_connection(
-        &mut self,
-        socket: &VhostUserSocket,
-        driver: &(impl Driver + ?Sized),
-    ) -> anyhow::Result<()> {
+    async fn handle_connection(&mut self, socket: &VhostUserSocket) -> anyhow::Result<()> {
         let traits = self.device.traits();
         let mut state = ConnectionState::new(&traits);
-        let process_disabled = self.device.supports_queue_enable();
 
         // Reused across the connection so each recv doesn't allocate a control
         // buffer for fd passing.
         let mut receiver = ScmReceiver::new(VHOST_USER_MAX_FDS);
 
         loop {
-            // A message receive is not cancellation safe after reading a
-            // partial header. Keep it alive while servicing first kicks.
-            let mut receive = std::pin::pin!(socket.recv_message(&mut receiver).fuse());
-            let message = loop {
-                let mut kick = std::pin::pin!(
-                    std::future::poll_fn(|cx| {
-                        for (idx, queue) in state.queues.iter_mut().enumerate() {
-                            if let std::task::Poll::Ready(result) =
-                                queue.poll_start(cx, process_disabled)
-                            {
-                                return std::task::Poll::Ready(result.map(|()| idx));
-                            }
-                        }
-                        std::task::Poll::Pending
-                    })
-                    .fuse()
-                );
-                futures::select_biased! {
-                    idx = kick => self.start_queue(&mut state, idx?).await?,
-                    message = receive => break message,
-                }
-            };
-            let (hdr, payload, fds) = match message {
+            let (hdr, payload, fds) = match socket.recv_message(&mut receiver).await {
                 Ok(msg) => msg,
                 Err(SocketError::Closed) => return Ok(()),
                 Err(e) => return Err(e.into()),
@@ -171,7 +138,7 @@ impl VhostUserDeviceServer {
             }
 
             if let Err(e) = self
-                .dispatch_message(socket, &mut state, &traits, &hdr, &payload, fds, driver)
+                .dispatch_message(socket, &mut state, &traits, &hdr, &payload, fds)
                 .await
             {
                 tracelimit::warn_ratelimited!(
@@ -198,7 +165,6 @@ impl VhostUserDeviceServer {
         hdr: &VhostUserMsgHeader,
         payload: &[u8],
         fds: Vec<OwnedFd>,
-        driver: &(impl Driver + ?Sized),
     ) -> anyhow::Result<()> {
         let code = hdr.code();
 
@@ -228,6 +194,9 @@ impl VhostUserDeviceServer {
                     for (idx, queue) in state.queues.iter_mut().enumerate() {
                         self.device.set_queue_enabled(idx as u16, true).await?;
                         queue.enabled = true;
+                    }
+                    for idx in 0..state.queues.len() {
+                        self.maybe_start_queue(state, idx).await?;
                     }
                 }
                 maybe_ack(socket, hdr, state).await?
@@ -350,6 +319,7 @@ impl VhostUserDeviceServer {
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_NUM: invalid queue index");
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -374,6 +344,7 @@ impl VhostUserDeviceServer {
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_ADDR: invalid queue index");
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -434,17 +405,14 @@ impl VhostUserDeviceServer {
                 tracing::trace!(idx, nofd, fd_count = fds.len(), "SET_VRING_KICK");
                 anyhow::ensure!(!nofd, "queue polling without a kick fd is not supported");
                 anyhow::ensure!(fds.len() == 1, "SET_VRING_KICK requires one fd");
-                let restart = self.stop_active_queue(state, idx).await?;
+                self.stop_active_queue(state, idx).await?;
                 if !nofd
                     && let Some(fd) = fds.into_iter().next()
                     && let Some(q) = state.queues.get_mut(idx)
                 {
                     q.set_kick(event_from_fd(fd));
-                    q.watch_kick(driver)?;
                 }
-                if restart {
-                    self.start_queue(state, idx).await?;
-                }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -478,11 +446,8 @@ impl VhostUserDeviceServer {
                 let idx = msg.index as usize;
                 let enable = msg.num != 0;
                 tracing::trace!(idx, enable, "SET_VRING_ENABLE");
-                if !enable
-                    && !self.device.supports_queue_enable()
-                    && self.stop_active_queue(state, idx).await?
-                {
-                    state.queues[idx].request_start();
+                if !enable && !self.device.supports_queue_enable() {
+                    self.stop_active_queue(state, idx).await?;
                 }
                 if let Some(q) = state.queues.get_mut(idx) {
                     self.device.set_queue_enabled(idx as u16, enable).await?;
@@ -490,6 +455,7 @@ impl VhostUserDeviceServer {
                 } else {
                     anyhow::bail!("invalid queue index {idx}");
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -516,7 +482,7 @@ impl VhostUserDeviceServer {
         let q = &mut state.queues[idx];
         let (resources, base) = q
             .try_activate(self.guest_memory.clone())
-            .context("queue kicked before configuration completed")?;
+            .context("queue configuration is incomplete")?;
         let used_index = if state.negotiated_features.ring_packed() {
             (base >> 16) as u16
         } else {
@@ -544,6 +510,18 @@ impl VhostUserDeviceServer {
             )
             .await?;
         q.set_active();
+        Ok(())
+    }
+
+    async fn maybe_start_queue(
+        &mut self,
+        state: &mut ConnectionState,
+        idx: usize,
+    ) -> anyhow::Result<()> {
+        let q = state.queues.get(idx).context("invalid queue index")?;
+        if q.ready_to_start(self.device.supports_queue_enable()) {
+            self.start_queue(state, idx).await?;
+        }
         Ok(())
     }
 
@@ -979,10 +957,8 @@ mod tests {
             drop(frontend);
         };
 
-        let (server_result, ()) = futures::join!(
-            server.serve_connection(backend_socket, &driver),
-            frontend_task,
-        );
+        let (server_result, ()) =
+            futures::join!(server.serve_connection(backend_socket), frontend_task,);
         server_result.expect("server should exit cleanly");
     }
 
@@ -1075,8 +1051,8 @@ mod tests {
         .await;
     }
 
-    /// Helper: set up and enable queue 0 with dummy addresses and eventfds.
-    async fn setup_and_enable_queue(frontend: &VhostUserSocket) {
+    /// Configure queue 0 without signaling its kick eventfd.
+    async fn setup_queue(frontend: &VhostUserSocket, enable: bool) {
         // SET_VRING_NUM
         let vring_num = VhostUserVringState { index: 0, num: 256 };
         send_msg(
@@ -1138,16 +1114,16 @@ mod tests {
         )
         .await;
 
-        // SET_VRING_ENABLE
-        let enable_msg = VhostUserVringState { index: 0, num: 1 };
-        send_msg(
-            frontend,
-            VhostUserRequestCode::SET_VRING_ENABLE,
-            enable_msg.as_bytes(),
-            &[] as &[OwnedFd],
-        )
-        .await;
-        kick_event.signal();
+        if enable {
+            let enable_msg = VhostUserVringState { index: 0, num: 1 };
+            send_msg(
+                frontend,
+                VhostUserRequestCode::SET_VRING_ENABLE,
+                enable_msg.as_bytes(),
+                &[] as &[OwnedFd],
+            )
+            .await;
+        }
     }
 
     /// Verify that sending SET_MEM_TABLE while a queue is active causes
@@ -1233,8 +1209,10 @@ mod tests {
             send_mem_table(&frontend, 0x10_0000).await;
 
             // 2. Set up and enable queue 0.
-            setup_and_enable_queue(&frontend).await;
+            setup_queue(&frontend, true).await;
             started_wait.wait().await.unwrap();
+            send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+            log.lock().clear();
 
             // 3. Send another SET_MEM_TABLE while queue 0 is active.
             //    This simulates a runtime memory update (e.g., hotplug/balloon).
@@ -1248,15 +1226,12 @@ mod tests {
             drop(frontend);
         };
 
-        let (server_result, ()) = futures::join!(
-            server.serve_connection(backend_socket, &driver),
-            frontend_task
-        );
+        let (server_result, ()) =
+            futures::join!(server.serve_connection(backend_socket), frontend_task);
         server_result.expect("server should exit cleanly");
 
         let log = log.lock();
         // Expected sequence:
-        //   start  — SET_VRING_ENABLE (initial queue start)
         //   stop   — SET_MEM_TABLE stops the active queue
         //   start  — SET_MEM_TABLE restarts it with new memory
         //   stop   — serve_connection cleanup (stop_all_queues)
@@ -1265,22 +1240,17 @@ mod tests {
         //
         // The critical assertion: after the first start, a stop is
         // followed by another start (the restart), not just a stop.
-        let start_count = log.iter().filter(|&&s| s == "start").count();
-        assert!(
-            start_count >= 2,
-            "queue should be started at least twice (initial + restart after SET_MEM_TABLE), \
-             got {start_count}. log: {log:?}"
-        );
-        // The first three entries should be: start, stop, start
         assert_eq!(
-            &log[..3],
-            &["start", "stop", "start"],
-            "expected start→stop→start sequence for queue restart. log: {log:?}"
+            &log[..2],
+            &["stop", "start"],
+            "expected stop followed by restart after SET_MEM_TABLE. log: {log:?}"
         );
     }
 
     #[async_test]
-    async fn enable_is_not_start_or_stop_and_get_base_is_repeatable(driver: DefaultDriver) {
+    async fn kick_fd_starts_disabled_ring_without_signal_and_enable_does_not_restart(
+        driver: DefaultDriver,
+    ) {
         use parking_lot::Mutex;
         use std::sync::Arc;
 
@@ -1342,7 +1312,12 @@ mod tests {
         let client = async {
             do_handshake(&frontend).await;
             send_mem_table(&frontend, 0x10_0000).await;
-            setup_and_enable_queue(&frontend).await;
+            setup_queue(&frontend, false).await;
+            send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+            assert!(
+                log.lock().contains(&"start"),
+                "installing kick fd must start the disabled ring"
+            );
             wait.wait().await.unwrap();
             log.lock().clear();
             for enable in [0, 1] {
@@ -1373,7 +1348,7 @@ mod tests {
             assert_eq!(*log.lock(), ["disable", "enable", "stop"]);
             drop(frontend);
         };
-        let (result, ()) = futures::join!(server.serve_connection(backend, &driver), client);
+        let (result, ()) = futures::join!(server.serve_connection(backend), client);
         result.unwrap();
     }
 
@@ -1511,10 +1486,6 @@ mod tests {
                     &[fd],
                 )
                 .await;
-                for i in 0..2 {
-                    setup(&frontend, i as u32, 0, &kicks[i], &calls[i]).await;
-                }
-                send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
                 let mut rx_avail = 0;
                 for (id, addr) in [(4, 0x8000), (7, 0x8100)] {
                     write_descriptor(
@@ -1528,7 +1499,11 @@ mod tests {
                     );
                     make_available(&mem, 0x2000, 16, id, &mut rx_avail);
                 }
-                kicks[0].signal();
+                // Posted RX buffers must be usable without any RX kick.
+                for i in 0..2 {
+                    setup(&frontend, i as u32, 0, &kicks[i], &calls[i]).await;
+                }
+                send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
                 let mut tx_avail = 0;
                 let mut tx_used = 0;
                 let mut rx_used = 0;
@@ -1580,12 +1555,11 @@ mod tests {
                             setup(&frontend, i as u32, bases[i], &kicks[i], &calls[i]).await;
                         }
                         send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
-                        kicks[0].signal();
                     }
                 }
                 drop(frontend);
             };
-            let (result, ()) = futures::join!(server.serve_connection(backend, &driver), client);
+            let (result, ()) = futures::join!(server.serve_connection(backend), client);
             result.unwrap();
         }
     }

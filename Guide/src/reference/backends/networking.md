@@ -127,8 +127,10 @@ pending TX is completed without retransmission. This stronger stop is also
 used when replacing memory mappings. Vhost-user suspension forbids
 guest-memory writes once all rings have stopped.
 
-Vhost-user ring enable state is independent of start/stop. A first kick starts
-a configured ring, and `GET_VRING_BASE` stops it. For virtio-net, disabling a
+Vhost-user ring enable state is independent of start/stop. Installing the kick
+eventfd with `SET_VRING_KICK` starts a configured ring, matching QEMU's
+libvhost-user; no initial eventfd signal is required. `GET_VRING_BASE` stops it.
+For virtio-net, disabling a
 started TX ring consumes and discards packets; disabling RX prevents packet
 delivery. The RX and TX rings can start and stop independently.
 

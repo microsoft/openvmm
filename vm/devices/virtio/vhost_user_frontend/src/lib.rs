@@ -511,8 +511,6 @@ impl VirtioDevice for VhostUserFrontend {
             q.params = Some(resources.params);
             q._event_proxy = event_proxy;
         }
-        // Starting is independent of enabling in vhost-user.
-        resources.event.signal();
         Ok(())
     }
 
@@ -1229,12 +1227,8 @@ mod tests {
 
         let server = VhostUserDeviceServer::new(Box::new(MockBackendDevice::new()));
 
-        let backend_driver = driver.clone();
         let backend_task = driver.spawn("backend", async move {
-            server
-                .serve_connection(backend_socket, &backend_driver)
-                .await
-                .unwrap();
+            server.serve_connection(backend_socket).await.unwrap();
         });
 
         let frontend_polled = PolledSocket::new(driver, frontend_stream).unwrap();
@@ -1793,12 +1787,8 @@ mod tests {
 
         let server = VhostUserDeviceServer::new(Box::new(device));
 
-        let backend_driver = driver.clone();
         let backend_task = driver.spawn("backend", async move {
-            server
-                .serve_connection(backend_socket, &backend_driver)
-                .await
-                .unwrap();
+            server.serve_connection(backend_socket).await.unwrap();
         });
 
         let frontend_polled = PolledSocket::new(driver, frontend_stream).unwrap();
@@ -1974,12 +1964,8 @@ mod tests {
         let backend_socket = VhostUserSocket::new(backend_polled);
 
         let server = VhostUserDeviceServer::new(Box::new(MockBackendDevice::new()));
-        let backend_driver = driver.clone();
         let backend_task = driver.spawn("backend", async move {
-            server
-                .serve_connection(backend_socket, &backend_driver)
-                .await
-                .unwrap();
+            server.serve_connection(backend_socket).await.unwrap();
         });
 
         let frontend_polled = PolledSocket::new(&driver, frontend_stream).unwrap();
@@ -2169,13 +2155,10 @@ mod tests {
         let backend_socket = VhostUserSocket::new(backend_polled);
 
         let server = VhostUserDeviceServer::new(Box::new(MockBackendDevice::new()));
-        let backend_driver = driver.clone();
         let backend_task = driver.spawn("backend", async move {
             // The backend will see the connection drop when the frontend
             // rejects the queue count. Ignore the serve error.
-            let _ = server
-                .serve_connection(backend_socket, &backend_driver)
-                .await;
+            let _ = server.serve_connection(backend_socket).await;
         });
 
         let frontend_polled = PolledSocket::new(&driver, frontend_stream).unwrap();
