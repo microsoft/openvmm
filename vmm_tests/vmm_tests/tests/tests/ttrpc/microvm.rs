@@ -16,11 +16,13 @@ use pal_async::DefaultDriver;
 #[cfg(windows)]
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
+use pal_async::task::Task;
 #[cfg(windows)]
 use pal_async::windows::pipe::ListeningPipe;
 #[cfg(windows)]
 use pal_async::windows::pipe::NamedPipeServer;
 use petri::ResolvedArtifact;
+use petri::TestChild;
 use petri_artifacts_vmm_test::artifacts;
 use std::path::Path;
 use std::path::PathBuf;
@@ -224,6 +226,9 @@ pub(super) async fn test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot(
 
     let base_initrd = std::fs::read(initrd_path)
         .with_context(|| format!("failed to read initrd {}", initrd_path.display()))?;
+    // The CPU profile of the cold boots, `auto` unless one falls back to
+    // `host`; restores use the snapshot's profile.
+    let mut cpu_profile = "";
     for &processor_count in processor_counts {
         let ready_marker = format!("OPENVMM-LINUX-MPTABLE-READY-{processor_count}");
         let cpu_failure_marker = format!("OPENVMM-LINUX-MPTABLE-CPU-FAILED-{processor_count}");
@@ -279,47 +284,47 @@ pub(super) async fn test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot(
         let probe_initrd_path = probe_dir.path().join("microvm-initrd.cpio.gz");
         std::fs::write(&probe_initrd_path, probe_initrd)
             .context("failed to write the microVM lifecycle initrd")?;
-        let rpc_path = probe_dir.path().join("rpc.sock");
-        let pidfile_path = probe_dir.path().join("openvmm.pid");
-        let portb_path = probe_dir.path().join("portb.sock");
-        let (mut child, client, _stderr_task) =
-            launch_openvmm(&driver, &params, &openvmm, &rpc_path, &pidfile_path).await?;
-        client
-            .call()
-            .start(
-                vmservice::Vm::CreateVm,
-                vmservice::CreateVmRequest {
-                    config: Some(vmservice::VmConfig {
-                        memory_config: Some(vmservice::MemoryConfig {
-                            memory_mb: MEMORY_MB,
-                            ..Default::default()
-                        }),
-                        processor_config: Some(vmservice::ProcessorConfig {
-                            processor_count,
-                            ..Default::default()
-                        }),
-                        serial_config: Some(microvm_portb_config(&portb_path)),
-                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
-                            vmservice::DirectBoot {
-                                kernel_path: kernel_path.to_string_lossy().into_owned(),
-                                initrd_path: probe_initrd_path.to_string_lossy().into_owned(),
-                                kernel_cmdline: "rdinit=/microvm-test".to_owned(),
-                            },
-                        )),
-                        machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+        let CreatedMicrovm {
+            mut child,
+            client,
+            stderr_task: _stderr_task,
+            portb_path,
+            ..
+        } = create_cold_boot(
+            &driver,
+            &params,
+            &openvmm,
+            probe_dir.path(),
+            "probe",
+            &format!("Linux direct {processor_count}-vCPU"),
+            &mut cpu_profile,
+            |portb_path, cpu_profile| vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: MEMORY_MB,
                         ..Default::default()
                     }),
-                    log_id: String::new(),
-                    microvm_snapshot: None,
-                },
-            )
-            .await
-            .map_err(|status| {
-                anyhow::anyhow!(
-                    "Linux direct {processor_count}-vCPU CreateVM failed: {}",
-                    status.message
-                )
-            })?;
+                    processor_config: Some(vmservice::ProcessorConfig {
+                        processor_count,
+                        ..Default::default()
+                    }),
+                    serial_config: Some(microvm_portb_config(portb_path)),
+                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                        vmservice::DirectBoot {
+                            kernel_path: kernel_path.to_string_lossy().into_owned(),
+                            initrd_path: probe_initrd_path.to_string_lossy().into_owned(),
+                            kernel_cmdline: "rdinit=/microvm-test".to_owned(),
+                        },
+                    )),
+                    machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                    cpu_profile: cpu_profile.to_owned(),
+                    ..Default::default()
+                }),
+                log_id: String::new(),
+                microvm_snapshot: None,
+            },
+        )
+        .await?;
         let portb = PolledSocket::new(&driver, UnixStream::connect(&portb_path)?)?;
         let (mut portb_read, _portb_write) = portb.split();
         client
@@ -475,49 +480,52 @@ done
     let initrd = tempdir.path().join("microvm-initrd.cpio.gz");
     std::fs::write(&initrd, initrd_data).context("failed to write the microVM test initrd")?;
 
-    let rpc_path = tempdir.path().join("capture-rpc.sock");
-    let pidfile_path = tempdir.path().join("capture.pid");
-    let portb_path = tempdir.path().join("capture-portb.sock");
-    let (mut child, client, _stderr_task) =
-        launch_openvmm(&driver, &params, &openvmm, &rpc_path, &pidfile_path).await?;
-    client
-        .call()
-        .start(
-            vmservice::Vm::CreateVm,
-            vmservice::CreateVmRequest {
-                config: Some(vmservice::VmConfig {
-                    memory_config: Some(vmservice::MemoryConfig {
-                        memory_mb: MEMORY_MB,
-                        ..Default::default()
-                    }),
-                    processor_config: Some(vmservice::ProcessorConfig {
-                        processor_count: 2,
-                        ..Default::default()
-                    }),
-                    serial_config: Some(microvm_portb_config(&portb_path)),
-                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
-                        vmservice::DirectBoot {
-                            kernel_path: kernel_path.to_string_lossy().into_owned(),
-                            initrd_path: initrd.to_string_lossy().into_owned(),
-                            kernel_cmdline: "maxcpus=1 rdinit=/microvm-test".to_owned(),
-                        },
-                    )),
-                    machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+    let CreatedMicrovm {
+        mut child,
+        client,
+        stderr_task: _stderr_task,
+        portb_path,
+        pidfile_path,
+    } = create_cold_boot(
+        &driver,
+        &params,
+        &openvmm,
+        tempdir.path(),
+        "capture",
+        "Linux direct capture",
+        &mut cpu_profile,
+        |portb_path, cpu_profile| vmservice::CreateVmRequest {
+            config: Some(vmservice::VmConfig {
+                memory_config: Some(vmservice::MemoryConfig {
+                    memory_mb: MEMORY_MB,
                     ..Default::default()
                 }),
-                log_id: String::new(),
-                microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
-                    destination_path: snapshot_path.to_string_lossy().into_owned(),
-                    quiesce_timeout_ms: 5_000,
-                    memory_capacity_bytes: 512 * 1024 * 1024,
+                processor_config: Some(vmservice::ProcessorConfig {
+                    processor_count: 2,
                     ..Default::default()
                 }),
-            },
-        )
-        .await
-        .map_err(|status| {
-            anyhow::anyhow!("Linux direct capture CreateVM failed: {}", status.message)
-        })?;
+                serial_config: Some(microvm_portb_config(portb_path)),
+                boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                    vmservice::DirectBoot {
+                        kernel_path: kernel_path.to_string_lossy().into_owned(),
+                        initrd_path: initrd.to_string_lossy().into_owned(),
+                        kernel_cmdline: "maxcpus=1 rdinit=/microvm-test".to_owned(),
+                    },
+                )),
+                machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                cpu_profile: cpu_profile.to_owned(),
+                ..Default::default()
+            }),
+            log_id: String::new(),
+            microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
+                destination_path: snapshot_path.to_string_lossy().into_owned(),
+                quiesce_timeout_ms: 5_000,
+                memory_capacity_bytes: 512 * 1024 * 1024,
+                ..Default::default()
+            }),
+        },
+    )
+    .await?;
     let portb = PolledSocket::new(&driver, UnixStream::connect(&portb_path)?)?;
     let (mut portb_read, _portb_write) = portb.split();
     client
@@ -681,6 +689,82 @@ done
         );
     }
     Ok(())
+}
+
+/// An OpenVMM process serving a created microVM over ttrpc.
+struct CreatedMicrovm {
+    child: TestChild,
+    client: mesh_rpc::Client,
+    /// Pumps OpenVMM's stderr, for the process's lifetime.
+    stderr_task: Task<anyhow::Result<()>>,
+    /// The VM's portb endpoint.
+    portb_path: PathBuf,
+    pidfile_path: PathBuf,
+}
+
+/// Launches OpenVMM with its files in `dir`, named after `name`, and cold
+/// boots the microVM that `request` describes for a portb endpoint and a CPU
+/// profile, with `*cpu_profile`.
+///
+/// Where the empty `*cpu_profile`, `auto`, fails because the backend cannot
+/// present the built-in CPU profile that it selected
+/// ([`petri::openvmm::auto_cpu_profile_needs_host_fallback`]), retries once
+/// with `host`, which then serves the test's later cold boots. Any other
+/// failure, including that of the retry, fails the cold boot of
+/// `description`.
+async fn create_cold_boot(
+    driver: &DefaultDriver,
+    params: &petri::PetriTestParams<'_>,
+    openvmm: &ResolvedArtifact,
+    dir: &Path,
+    name: &str,
+    description: &str,
+    cpu_profile: &mut &'static str,
+    request: impl Fn(&Path, &str) -> vmservice::CreateVmRequest,
+) -> anyhow::Result<CreatedMicrovm> {
+    let rpc_path = dir.join(format!("{name}-rpc.sock"));
+    let pidfile_path = dir.join(format!("{name}.pid"));
+    let (child, client, stderr_task) =
+        launch_openvmm(driver, params, openvmm, &rpc_path, &pidfile_path).await?;
+    let mut portb_path = dir.join(format!("{name}-portb.sock"));
+    if let Err(status) = client
+        .call()
+        .start(vmservice::Vm::CreateVm, request(&portb_path, cpu_profile))
+        .await
+    {
+        anyhow::ensure!(
+            cpu_profile.is_empty()
+                && petri::openvmm::auto_cpu_profile_needs_host_fallback(&status.message),
+            "{description} CreateVM failed: {}",
+            status.message
+        );
+        tracing::warn!(
+            error = %status.message,
+            "{description} CreateVM with the auto CPU profile failed because the backend \
+             cannot present the built-in profile that auto selected; retrying the test's \
+             cold boots with the host CPU profile"
+        );
+        *cpu_profile = "host";
+        // The failed request's portb endpoint may remain bound.
+        portb_path = dir.join(format!("{name}-host-portb.sock"));
+        client
+            .call()
+            .start(vmservice::Vm::CreateVm, request(&portb_path, cpu_profile))
+            .await
+            .map_err(|status| {
+                anyhow::anyhow!(
+                    "{description} CreateVM with the host CPU profile failed: {}",
+                    status.message
+                )
+            })?;
+    }
+    Ok(CreatedMicrovm {
+        child,
+        client,
+        stderr_task,
+        portb_path,
+        pidfile_path,
+    })
 }
 
 async fn wait_for_bytes(
