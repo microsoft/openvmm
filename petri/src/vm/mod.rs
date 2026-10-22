@@ -1820,6 +1820,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.inspect_openhcl("", None, None).await.map(|_| ())
     }
 
+    /// Dump OpenHCL's saved state through the diagnostic interface.
+    ///
+    /// A running VM is briefly paused to capture its state, then resumed.
+    pub async fn dump_openhcl_saved_state(&self) -> anyhow::Result<Vec<u8>> {
+        self.openhcl_diag()?.dump_saved_state().await
+    }
+
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
