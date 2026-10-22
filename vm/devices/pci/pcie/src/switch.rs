@@ -352,7 +352,7 @@ impl GenericPcieSwitch {
             .downstream_ports
             .iter_mut()
             .find(|(devfn, _, _)| *devfn == addr.devfn)?;
-        Some(downstream_port.port.cfg_space.write(addr, value))
+        Some(downstream_port.port.cfg_write(addr, value))
     }
 
     /// Attach the provided `GenericPciBusDevice` to the port identified.

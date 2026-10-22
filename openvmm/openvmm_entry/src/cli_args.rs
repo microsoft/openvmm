@@ -27,6 +27,7 @@ use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
+use openvmm_defs::config::PcieHotplugConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::X2ApicConfig;
 use std::ffi::OsString;
@@ -1290,6 +1291,7 @@ Options:
     `addr=<dev>[.<fn>]`            device/function to place this port at (default:
                                    lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
+    `attention_button`             enable attention button ejection, requires hotplug, off by default
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
     `pasid`                        configure this port to support PASID for downstream devices
@@ -1327,6 +1329,7 @@ Syntax: <port_name>:<name>[,opt,opt=arg,...]
 
 Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
+    `attention_button`              enable attention button ejection, requires hotplug, off by default
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
     `pasid`                         configure this port to support PASID for downstream devices
@@ -3490,7 +3493,7 @@ pub struct PcieRootPortCli {
     pub root_complex_name: String,
     pub name: String,
     pub devfn: Option<u8>,
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     pub acs_capabilities_supported: Option<u16>,
     pub cxl: bool,
     pub pasid: bool,
@@ -3554,6 +3557,8 @@ struct RootPortArgs {
     addr: Option<PcieAddr>,
     #[kv(flag)]
     hotplug: bool,
+    #[kv(flag)]
+    attention_button: bool,
     acs: Option<AcsMask>,
     #[kv(flag)]
     cxl: bool,
@@ -3570,7 +3575,7 @@ impl FromStr for PcieRootPortCli {
             root_complex_name: args.names.parent,
             name: args.names.child,
             devfn: args.addr.map(|a| a.0),
-            hotplug: args.hotplug,
+            hotplug: parse_pcie_hotplug(args.hotplug, args.attention_button)?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             cxl: args.cxl,
             pasid: args.pasid,
@@ -3613,7 +3618,7 @@ pub struct GenericPcieSwitchCli {
     pub port_name: String,
     pub name: String,
     pub num_downstream_ports: u8,
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     pub acs_capabilities_supported: Option<u16>,
     pub pasid: bool,
 }
@@ -3627,6 +3632,8 @@ struct SwitchArgs {
     num_downstream_ports: u8,
     #[kv(flag)]
     hotplug: bool,
+    #[kv(flag)]
+    attention_button: bool,
     acs: Option<AcsMask>,
     #[kv(flag)]
     pasid: bool,
@@ -3641,11 +3648,23 @@ impl FromStr for GenericPcieSwitchCli {
             port_name: args.names.parent,
             name: args.names.child,
             num_downstream_ports: args.num_downstream_ports,
-            hotplug: args.hotplug,
+            hotplug: parse_pcie_hotplug(args.hotplug, args.attention_button)?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             pasid: args.pasid,
         })
     }
+}
+
+/// Validates PCIe hotplug flags from CLI or management requests.
+pub(crate) fn parse_pcie_hotplug(
+    hotplug: bool,
+    attention_button: bool,
+) -> anyhow::Result<Option<PcieHotplugConfig>> {
+    anyhow::ensure!(
+        !attention_button || hotplug,
+        "attention_button requires hotplug"
+    );
+    Ok(hotplug.then_some(PcieHotplugConfig { attention_button }))
 }
 
 /// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
@@ -4989,6 +5008,25 @@ mod tests {
     }
 
     #[test]
+    fn test_pcie_attention_button_options() {
+        for enabled in [false, true] {
+            let option = if enabled { ",attention_button" } else { "" };
+            let root = PcieRootPortCli::from_str(&format!("rc0:rp0,hotplug{option}")).unwrap();
+            assert_eq!(
+                root.hotplug,
+                Some(PcieHotplugConfig {
+                    attention_button: enabled,
+                })
+            );
+            let switch =
+                GenericPcieSwitchCli::from_str(&format!("rp0:sw0,hotplug{option}")).unwrap();
+            assert_eq!(switch.hotplug, root.hotplug);
+        }
+        assert!(PcieRootPortCli::from_str("rc0:rp0,attention_button").is_err());
+        assert!(GenericPcieSwitchCli::from_str("rp0:sw0,attention_button").is_err());
+    }
+
+    #[test]
     fn test_pcie_root_port_from_str() {
         assert_eq!(
             PcieRootPortCli::from_str("rc0:rc0rp0").unwrap(),
@@ -4996,7 +5034,7 @@ mod tests {
                 root_complex_name: "rc0".to_string(),
                 name: "rc0rp0".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5009,7 +5047,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5023,7 +5061,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port2".to_string(),
                 devfn: None,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5036,7 +5074,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0),
                 cxl: false,
                 pasid: false,
@@ -5049,7 +5087,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port3".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0x005f),
                 cxl: false,
                 pasid: false,
@@ -5062,7 +5100,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port4".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: true,
                 pasid: false,
@@ -5076,7 +5114,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port5".to_string(),
                 devfn: Some(5 << 3),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5088,7 +5126,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port6".to_string(),
                 devfn: Some((5 << 3) | 1),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5100,7 +5138,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port7".to_string(),
                 devfn: Some(0xff),
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: false,
@@ -5113,7 +5151,7 @@ mod tests {
                 root_complex_name: "my_rc".to_string(),
                 name: "port8".to_string(),
                 devfn: None,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 cxl: false,
                 pasid: true,
@@ -5171,7 +5209,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5183,7 +5221,7 @@ mod tests {
                 port_name: "port1".to_string(),
                 name: "my_switch".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5195,7 +5233,7 @@ mod tests {
                 port_name: "rp2".to_string(),
                 name: "sw".to_string(),
                 num_downstream_ports: 8,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5208,7 +5246,7 @@ mod tests {
                 port_name: "switch0-downstream-1".to_string(),
                 name: "child_switch".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5221,7 +5259,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5234,7 +5272,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 8,
-                hotplug: true,
+                hotplug: Some(PcieHotplugConfig::default()),
                 acs_capabilities_supported: None,
                 pasid: false,
             }
@@ -5246,7 +5284,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(0),
                 pasid: false,
             }
@@ -5258,7 +5296,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: Some(95),
                 pasid: false,
             }
@@ -5270,7 +5308,7 @@ mod tests {
                 port_name: "rp0".to_string(),
                 name: "switch0".to_string(),
                 num_downstream_ports: 4,
-                hotplug: false,
+                hotplug: None,
                 acs_capabilities_supported: None,
                 pasid: true,
             }

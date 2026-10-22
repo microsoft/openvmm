@@ -22,6 +22,7 @@ struct FdRegistry {}
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
 use crate::cli_args::ProvisionCondition;
+use crate::cli_args::parse_pcie_hotplug;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -1711,7 +1712,10 @@ impl VmService {
             .as_ref()
             .context("VM not created yet")?
             .worker_rpc
-            .call_failable(VmRpc::RemovePcieDevice, request.port_name);
+            .call_failable(
+                VmRpc::RemovePcieDevice,
+                (request.port_name, request.orderly),
+            );
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
@@ -2373,6 +2377,7 @@ async fn build_pcie_topology(
             let vmservice::PciePort {
                 name: port_name,
                 hotplug,
+                attention_button,
                 attached,
                 devfn,
                 acs_capabilities_supported,
@@ -2383,7 +2388,8 @@ async fn build_pcie_topology(
                 devfn: devfn
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
-                hotplug,
+                hotplug: parse_pcie_hotplug(hotplug, attention_button)
+                    .with_context(|| format!("invalid PCIe port '{port_name}'"))?,
                 acs_capabilities_supported: acs_capabilities_supported
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                     .transpose()?,
@@ -2492,6 +2498,7 @@ fn walk_pcie_attachment(
                 let vmservice::PciePort {
                     name: downstream_name,
                     hotplug,
+                    attention_button,
                     attached,
                     devfn,
                     acs_capabilities_supported,
@@ -2502,7 +2509,8 @@ fn walk_pcie_attachment(
                     devfn: devfn
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
-                    hotplug,
+                    hotplug: parse_pcie_hotplug(hotplug, attention_button)
+                        .with_context(|| format!("invalid PCIe port '{downstream_name}'"))?,
                     acs_capabilities_supported: acs_capabilities_supported
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
                         .transpose()?,
@@ -4333,6 +4341,98 @@ mod tests {
                     )),
                 });
             }
+        }
+    }
+
+    #[test]
+    fn pcie_attention_button_topology() {
+        for attention_button in [false, true] {
+            let topology = futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        name: "rc0".into(),
+                        root_ports: vec![vmservice::PciePort {
+                            name: "rp0".into(),
+                            hotplug: true,
+                            attention_button,
+                            attached: Some(vmservice::PcieAttachment {
+                                kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                                    vmservice::PcieSwitch {
+                                        name: "sw0".into(),
+                                        downstream_ports: vec![vmservice::PciePort {
+                                            name: "dp0".into(),
+                                            hotplug: true,
+                                            attention_button,
+                                            ..Default::default()
+                                        }],
+                                    },
+                                )),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+                false,
+            ))
+            .unwrap();
+            assert_eq!(
+                topology.root_complexes[0].ports[0].hotplug,
+                Some(openvmm_defs::config::PcieHotplugConfig { attention_button })
+            );
+            assert_eq!(
+                topology.switches[0].ports[0].hotplug,
+                Some(openvmm_defs::config::PcieHotplugConfig { attention_button })
+            );
+        }
+    }
+
+    #[test]
+    fn pcie_attention_button_requires_hotplug() {
+        for downstream in [false, true] {
+            let invalid_port = vmservice::PciePort {
+                name: "invalid".into(),
+                attention_button: true,
+                ..Default::default()
+            };
+            let root_port = if downstream {
+                vmservice::PciePort {
+                    name: "rp0".into(),
+                    attached: Some(vmservice::PcieAttachment {
+                        kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                            vmservice::PcieSwitch {
+                                name: "sw0".into(),
+                                downstream_ports: vec![invalid_port],
+                            },
+                        )),
+                    }),
+                    ..Default::default()
+                }
+            } else {
+                invalid_port
+            };
+            let error = futures::executor::block_on(build_pcie_topology(
+                vmservice::PcieTopologyConfig {
+                    root_complexes: vec![vmservice::PcieRootComplex {
+                        name: "rc0".into(),
+                        root_ports: vec![root_port],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                &FdRegistry::default(),
+                &IommufdContexts::default(),
+                false,
+            ))
+            .err()
+            .expect("attention button without hotplug must be rejected");
+            assert_eq!(
+                format!("{error:#}"),
+                "invalid PCIe port 'invalid': attention_button requires hotplug"
+            );
         }
     }
 
