@@ -5,13 +5,15 @@
 
 #[cfg(target_os = "linux")]
 use serial_socket::net::OpenSocketSerialConfig;
+#[cfg(any(target_os = "linux", windows))]
 use std::fs::File;
 use std::io;
-#[cfg(any(unix, windows))]
+#[cfg(any(target_os = "linux", windows))]
 use std::io::Read;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use unix_socket::UnixListener;
+#[cfg(any(target_os = "linux", windows))]
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
@@ -116,7 +118,7 @@ pub fn bind_control_serial(_path: &Path) -> io::Result<Resource<SerialBackendHan
 }
 
 /// Consumes a one-way pipe containing exactly one nonzero 32-byte control capability.
-#[cfg(any(unix, windows))]
+#[cfg(any(target_os = "linux", windows))]
 pub fn read_control_capability(mut file: File) -> io::Result<[u8; 32]> {
     const CONTROL_CAPABILITY_LEN: usize = 32;
 
@@ -204,6 +206,7 @@ pub fn read_control_capability(mut file: File) -> io::Result<[u8; 32]> {
     Ok(capability)
 }
 
+#[cfg(any(target_os = "linux", windows))]
 fn control_pipe_would_block(error: &io::Error) -> bool {
     if error.kind() == io::ErrorKind::WouldBlock {
         return true;
@@ -218,6 +221,7 @@ fn control_pipe_would_block(error: &io::Error) -> bool {
     }
 }
 
+#[cfg(any(target_os = "linux", windows))]
 fn control_pipe_is_closed(error: &io::Error) -> bool {
     #[cfg(windows)]
     {
