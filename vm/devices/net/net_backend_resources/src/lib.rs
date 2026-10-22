@@ -90,13 +90,44 @@ pub mod consomme {
         pub guest_port: u16,
     }
 
-    /// A runtime request to bind or unbind a port on a running Consomme endpoint.
+    /// A static DNS `A` record answered directly by Consomme.
+    #[derive(Debug, MeshPayload)]
+    pub struct DnsRecordConfig {
+        /// The query name in presentation form (e.g. `"example.com"`).
+        pub name: String,
+        /// The IPv4 address returned for the name.
+        pub address: std::net::Ipv4Addr,
+    }
+
+    /// A runtime request to modify a running Consomme endpoint.
     #[derive(MeshPayload)]
     pub enum ConsommeRequest {
         /// Bind a host port to forward traffic to the guest.
         Bind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
         /// Unbind a previously forwarded port.
         Unbind(mesh::rpc::FailableRpc<HostPortConfig, ()>),
+        /// Add a static DNS record.
+        AddDnsRecord(mesh::rpc::FailableRpc<DnsRecordConfig, ()>),
+        /// Allocate a virtual address in the guest subnet that routes to the
+        /// given host address, and return it.
+        CreateVirtualAddress(mesh::rpc::FailableRpc<HostIpAddress, HostIpAddress>),
+    }
+
+    /// Optional Consomme endpoint settings supplied by the VM creator.
+    #[derive(Debug, Default, MeshPayload)]
+    pub struct ConsommeParams {
+        /// The guest's IPv4 address. Overrides the address derived from the CIDR.
+        pub client_ip: Option<std::net::Ipv4Addr>,
+        /// The gateway's IPv4 address. Overrides the address derived from the CIDR.
+        pub gateway_ip: Option<std::net::Ipv4Addr>,
+        /// The IPv4 network mask. Overrides the mask derived from the CIDR.
+        pub net_mask: Option<std::net::Ipv4Addr>,
+        /// The guest's IPv6 address (link-local or routable), if known before
+        /// the guest configures it.
+        pub client_ip_ipv6: Option<std::net::Ipv6Addr>,
+        /// If true, allow guest traffic to host-local addresses (loopback,
+        /// unspecified, link-local).
+        pub allow_host_local_access: bool,
     }
 
     /// Handle to a Consomme network endpoint.
@@ -104,8 +135,13 @@ pub mod consomme {
     pub struct ConsommeHandle {
         /// The CIDR of the network to use.
         pub cidr: Option<String>,
+        /// Optional network parameters applied after the CIDR.
+        pub params: ConsommeParams,
         /// Ports to forward from the host into the guest at creation time.
         pub ports: Vec<HostPortConfig>,
+        /// If true, the guest uses the built-in DNS resolver. If false, the
+        /// guest uses the host's DNS servers instead.
+        pub internal_dns: bool,
         /// Optional channel for runtime port bind/unbind after the endpoint starts.
         pub recv: Option<mesh::Receiver<ConsommeRequest>>,
     }
