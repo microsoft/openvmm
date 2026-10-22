@@ -1440,6 +1440,10 @@ impl WhpPartitionInner {
             if vtl0.hypervisor_enlightened {
                 Hv1State::Offloaded
             } else {
+                // x86_64 already queried the TSC frequency for its CPUID
+                // leaves.
+                #[cfg(guest_arch = "aarch64")]
+                let tsc_frequency = vtl0.whp.tsc_frequency().for_op("get tsc frequency")?;
                 let ref_time = ReferenceTimeSource::new(VmTimeReferenceTimeSource::new(
                     proto_config.vmtime.clone(),
                 ));
