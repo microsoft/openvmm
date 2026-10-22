@@ -6905,6 +6905,7 @@ dependencies = [
  "chipset_device_worker_defs",
  "chipset_resources",
  "clap",
+ "cpu_profile",
  "diag_client",
  "disk_backend",
  "disk_backend_resources",
