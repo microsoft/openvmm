@@ -1439,6 +1439,19 @@ mod tests {
         assert!(Options::try_parse_from(["openvmm", "--machine", "unknown"]).is_err());
     }
 
+    /// The microVM profile requires an x86-64 guest, so the tests that
+    /// validate microVM options run only for x86-64 guests.
+    #[cfg(not(guest_arch = "x86_64"))]
+    #[test]
+    fn test_microvm_requires_an_x86_64_guest() {
+        let options = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
+        assert_eq!(
+            options.validate_microvm_options().unwrap_err().to_string(),
+            "microVM requires an x86-64 guest"
+        );
+    }
+
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_processor_validation() {
         for processors in [1, 2, 4, 8] {
@@ -1502,6 +1515,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_memory_capacity_and_restore_target_parsing() {
         let capture = Options::try_parse_from([
@@ -1561,6 +1575,7 @@ mod tests {
         assert!(unaligned.validate_microvm_options().is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_sandbox_block_parser_and_validation() {
         let valid = Options::try_parse_from([
@@ -1614,6 +1629,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_ramfs_overlay_requires_one_distro_and_no_snapshot() {
         let valid = Options::try_parse_from([
@@ -1695,6 +1711,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_snapshot_tier_is_explicit() {
         for tier in ["platform", "workload-start", "instance-checkpoint"] {
@@ -1766,6 +1783,7 @@ mod tests {
         assert!(zero_timeout.validate_microvm_options().is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_snapshot_identity_and_scratch_restore_modes_are_explicit() {
         let generation = Options::try_parse_from([
@@ -2028,6 +2046,7 @@ mod tests {
         assert_eq!(error.to_string(), expected.to_string());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_preflight_rejects_unsupported_combinations() {
         let valid = Options::try_parse_from(["openvmm", "--machine", "microvm"]).unwrap();
@@ -2235,6 +2254,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn control_auth_stdin_is_explicit_and_exclusive() {
         let endpoint = if cfg!(windows) {
@@ -2296,6 +2316,7 @@ mod tests {
         );
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_host_loopback_allow_publishes_guest_listeners() {
         use net_backend_resources::egress::EgressAction;
@@ -2385,6 +2406,7 @@ mod tests {
         forwarded.validate_microvm_options().unwrap();
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_egress_policy_is_typed_and_canonical() {
         let options = Options::try_parse_from([
@@ -2469,6 +2491,7 @@ mod tests {
         assert!(standard.validate_microvm_options().is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_l3_l4_rules_are_explicit_and_composable() {
         let options = Options::try_parse_from([
@@ -2539,6 +2562,7 @@ mod tests {
         assert!(mixed_legacy.validate_microvm_options().is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_protocol_wide_egress_rules_parse_before_resources() {
         use net_backend_resources::egress::EgressRule;
@@ -2613,6 +2637,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_egress_port_ranges_parse_before_resources() {
         use net_backend_resources::egress::EgressRule;
@@ -2684,6 +2709,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_ipv6_egress_rules_bind_to_the_dual_stack_identity() {
         use net_backend_resources::egress::EgressDestination;
@@ -2772,6 +2798,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_workload_identity_is_non_root_and_not_restorable() {
         for identity in ["0:1", "1:0", "root:1", "1:root", "1", "1:2:3"] {
@@ -2941,6 +2968,7 @@ mod tests {
         assert!(disconnected_control.validate_microvm_options().is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_directional_network_policy_is_independent_and_fail_closed() {
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
@@ -3007,6 +3035,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_private_network_ingress_publishes_guest_listeners() {
         use net_backend_resources::egress::EgressAction;
@@ -3212,6 +3241,7 @@ mod tests {
         );
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn test_microvm_mount_appears_once_and_aggregates_children() {
         let parse = |args: &[&str]| {

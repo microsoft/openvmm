@@ -414,6 +414,7 @@ pub(crate) mod tests {
         assert!(effective_microvm_network(&options, Some(&contract)).is_err());
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn microvm_ingress_follows_the_ingress_and_host_loopback_actions() {
         use openvmm_defs::microvm::MicrovmIngress;
