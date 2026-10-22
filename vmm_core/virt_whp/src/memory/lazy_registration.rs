@@ -11,6 +11,7 @@ use super::EmulatedOverlayState;
 use super::Mapping;
 use super::SimpleMemoryMap;
 use super::WhpMemoryMapper;
+#[cfg(guest_arch = "x86_64")]
 use crate::VtlPartition;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
@@ -29,6 +30,7 @@ impl WhpMemoryMapper {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 impl VtlPartition {
     pub(crate) fn map_deferred_on_fault(&self, gpa: u64) -> anyhow::Result<bool> {
         self.mapper.map_deferred_on_fault(&self.whp, gpa)

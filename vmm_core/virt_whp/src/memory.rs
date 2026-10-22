@@ -134,6 +134,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
     fn in_deferred_range(&self, gpa: u64) -> bool;
 
     /// Registers the deferred range containing `gpa`, if any.
+    #[cfg_attr(all(guest_arch = "aarch64", not(test)), expect(dead_code))]
     fn map_deferred_on_fault(
         &self,
         _partition: &dyn SimpleMemoryMap,
