@@ -20,6 +20,7 @@ mod start;
 pub use hugetlb::HUGETLB_2MB_PAGE_SIZE;
 #[cfg(target_os = "linux")]
 pub use hugetlb::ensure_2mb_hugetlb_pages;
+pub use microvm::auto_cpu_profile_needs_host_fallback;
 pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;

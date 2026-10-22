@@ -136,6 +136,8 @@ impl PetriVmConfigOpenVmm {
         } = petri_vm_config;
 
         super::microvm::validate_profile(machine_profile, arch, &firmware)?;
+        let microvm_config =
+            super::microvm::microvm_config(machine_profile, openvmm_path.get(), &firmware).await;
 
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
@@ -681,7 +683,7 @@ impl PetriVmConfigOpenVmm {
         let config = Config {
             // Firmware
             machine_profile,
-            microvm: super::microvm::microvm_config(machine_profile),
+            microvm: microvm_config,
             load_mode,
             firmware_event_send: super::microvm::firmware_event_send(
                 machine_profile,
