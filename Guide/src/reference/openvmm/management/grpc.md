@@ -174,7 +174,8 @@ restore flow over both transports:
   `memory.bin` payload and initial Linux direct e820 map.
 * `restore_path` selects manifest-authoritative restore. `config` may be
   absent, or may contain only the matching microVM profile, an optional exact
-  processor-count assertion, serial port 0 host
+  processor-count assertion, a `cpu_profile` that the restore accepts (see
+  below), serial port 0 host
   attachment, matching `DevicesConfig.virtio_console` and
   `DevicesConfig.virtiofs_config` attachments, and guest power actions.
   Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
@@ -257,11 +258,24 @@ currently blockless; role-bearing sandbox blocks remain CLI-only. Snapshot ABI
 and boot layout remain value 2, which identifies the Linux-direct MP-table
 layout. Value 1 snapshots are unsupported.
 
+`VMConfig.cpu_profile` selects the microVM's CPU profile as
+[`--cpu-profile`](cli.md) does, with the same values and checks: `auto`, the
+default, which an empty value also selects, for the built-in profile of the
+host CPU's generation; `host` for a development profile derived from this
+host; or a built-in profile ID. A cold boot fails as the command line's does
+for a profile that the host cannot boot, such as with
+`E_PROFILE_UNSUPPORTED` where the backend cannot present the profile that
+`auto` selected. A restore uses the snapshot's profile and accepts only
+`auto`, the snapshot's profile ID, or, for a snapshot of a host profile,
+`host`; any other value fails with `E_PROFILE_UNKNOWN`. A standard VM rejects
+a nonempty `cpu_profile`.
+
 `VMConfig.pvh_boot` and protobuf field 14 are reserved, upstream `iommufds`
 retains field 15, `crash_dump_path` uses field 16, and `machine_profile` uses
 field 17. Upstream's `disable_vmbus` and `disable_hv` use fields 20 and 21
 instead of upstream's fields 16 and 17, while the `igvm` boot configuration and
-`isolation_config` keep upstream's fields 18 and 19. Generate bindings from this
+`isolation_config` keep upstream's fields 18 and 19. The fork's `cpu_profile`
+uses field 22. Generate bindings from this
 fork for the combined schema.
 
 The API has the same KVM/MSHV/WHP backend, no-block device, artifact integrity,
