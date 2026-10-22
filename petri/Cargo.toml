@@ -19,6 +19,7 @@ petri_artifact_resolver_openvmm_known_paths.workspace = true
 initrd_cpio.workspace = true
 chipset_device_worker_defs.workspace = true
 chipset_resources.workspace = true
+cpu_profile.workspace = true
 diag_client.workspace = true
 firmware_uefi_resources.workspace = true
 disk_vhd1.workspace = true
