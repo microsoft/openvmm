@@ -13,7 +13,6 @@ mod kvp;
 mod meshworker;
 mod pidfile;
 mod repl;
-mod sandbox_profiles;
 mod serial_io;
 mod storage_builder;
 mod tracing_init;
@@ -103,7 +102,7 @@ use pal_async::DefaultPool;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use sandbox_profiles::SandboxRole;
+use sandbox::profiles::SandboxRole;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_core::resources::NullSerialBackendHandle;
@@ -3257,7 +3256,13 @@ mod tests {
             let igvm_path = temp_dir.path().join("guest.igvm");
             File::create(&igvm_path).unwrap();
             let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             for (extra, expected_alias, expected_policy) in [
                 (vec![], true, Some(LateMapVtl0MemoryPolicy::Halt)),

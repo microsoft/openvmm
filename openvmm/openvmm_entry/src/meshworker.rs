@@ -16,9 +16,8 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 #[cfg(target_os = "linux")]
 use pal_tracer::TraceConfig;
+use sandbox::profiles::SandboxRole;
 use std::path::PathBuf;
-
-use crate::sandbox_profiles::SandboxRole;
 
 const SANDBOX_ROLE_ARG: &str = "--openvmm-sandbox-role=";
 

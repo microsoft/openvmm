@@ -3,7 +3,7 @@
 Default-deny worker-process sandboxing for OpenVMM and OpenHCL.
 
 A worker starts from `Profile::deny_all()` and is widened only by the explicit
-grants its own crate declares, so confinement is default-deny by construction
+grants its policy declares, so confinement is default-deny by construction
 rather than by remembering to lock things down. Linux is fully implemented; the
 Windows LPAC launch data is produced but the worker-side half is not yet
 implemented (it fails loud rather than running unconfined).
@@ -30,6 +30,22 @@ Sandboxing happens in three named, ordered stages:
    `Restrictions`, a type that can only ever *narrow*.
 
 ## Authoring a policy
+
+OpenVMM's default worker profiles live in dedicated modules under
+`src/profiles`. Each exports a function returning `Builder`.
+`SandboxRole` in `src/profiles/sandbox_profiles.rs` selects the matching builder
+and calls `.build()` to return a finished `Profile`:
+
+```rust
+use sandbox::profiles::SandboxRole;
+
+let profile = SandboxRole::Tpm.profile();
+assert_eq!(profile.name(), "tpm_worker");
+```
+
+These policies are compiled into the binary. Rebuild OpenVMM after changing
+them. The worker filesystem grants, network scope, and syscall denials are
+defined by these linked policies.
 
 Policies are Rust values built with a widening-only builder. Start from a
 shipped base (see `sandbox::profiles`) or from `Profile::deny_all()`, then add

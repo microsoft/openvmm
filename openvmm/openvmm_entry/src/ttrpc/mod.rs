@@ -21,7 +21,6 @@ struct FdRegistry {}
 
 use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
-use crate::sandbox_profiles::SandboxRole;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
 use crate::serial_io::file_serial;
@@ -90,6 +89,7 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use sandbox::profiles::SandboxRole;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;

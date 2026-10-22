@@ -7,7 +7,6 @@
 use crate::DiagInspector;
 use crate::cli_args::GuestPowerAction;
 use crate::meshworker::VmmMesh;
-use crate::sandbox_profiles::SandboxRole;
 use anyhow::Context;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -20,6 +19,7 @@ use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use openvmm_defs::rpc::VmRpc;
+use sandbox::profiles::SandboxRole;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::pin;
