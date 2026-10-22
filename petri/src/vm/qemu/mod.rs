@@ -167,7 +167,7 @@ impl PetriVmmBackend for QemuPetriBackend {
 
         let mut qemu_config = QemuPetriConfig::default();
         if let Some(f) = modify_vmm_config {
-            qemu_config = f.0(qemu_config)?;
+            qemu_config = f.0(qemu_config);
         }
 
         let host_pipette_port = pick_free_port().context("failed to find a free port")?;

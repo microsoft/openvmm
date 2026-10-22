@@ -17,31 +17,28 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
     /// This does not build or replace guest media. It appends a root complex
     /// rather than changing existing ones, and composes with backend modifiers
     /// registered before or after this call. Segment 1 must be available.
-    pub fn with_mshv_platform(self) -> anyhow::Result<Self> {
-        anyhow::ensure!(
+    pub fn with_mshv_platform(self) -> Self {
+        assert!(
             self.arch() == MachineArch::X86_64
                 && MachineArch::host() == MachineArch::X86_64
                 && cfg!(target_os = "linux"),
             "mshv platform requires x86-64 Linux"
         );
-        anyhow::ensure!(
+        assert!(
             matches!(self.config.firmware, Firmware::Uefi { .. }),
             "mshv platform requires UEFI firmware"
         );
-        Ok(self
-            .with_no_vmbus()
-            .without_virtio_vsock()
+        self.with_no_vmbus()
+            .with_virtio_vsock(false)
             .with_nested_virt()
             .with_serial_output()
             .with_boot_device_type(BootDeviceType::PcieVirtioBlk)
             .with_pcie_boot_port("s1rc0rp0")
-            .try_modify_backend(|backend| {
-                let share_count = backend.guest_shares.len();
+            .modify_backend(|backend| {
                 backend
-                    .with_pcie_root_topology_at(1, 1, 1, 2 + share_count as u64)?
+                    .with_pcie_root_topology_at(1, 1, 1, 2)
                     .with_tcp_pipette_nic("s1rc0rp1", NIC_MAC_ADDRESS)
-                    .with_pcie_guest_shares((0..share_count).map(|i| format!("s1rc0rp{}", i + 2)))
-            }))
+            })
     }
 }
 
@@ -58,6 +55,7 @@ mod tests {
     use crate::mshv_boot::MshvBoot;
     use petri_artifacts_common::tags::OsFlavor;
     use test_with_tracing::test;
+    use vm_resource::IntoResource;
 
     fn builder_with_guest(
         driver: &pal_async::DefaultDriver,
@@ -227,10 +225,11 @@ mod tests {
             &properties,
         )
         .await?;
-        match modify {
+        let config = match modify {
             Some(modify) => modify.0(config),
-            None => Ok(config),
-        }
+            None => config,
+        };
+        Ok(config.with_guest_shares())
     }
 
     #[test]
@@ -285,6 +284,107 @@ mod tests {
     }
 
     #[test]
+    fn shares_get_private_ports_after_all_backend_modifiers() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let logs = PetriLogSource::file_only(temp.path())?;
+        let input = temp.path().join("boot-input");
+        fs_err::write(&input, b"unused boot input")?;
+        pal_async::DefaultPool::run_with(async |driver| {
+            for custom_topology in [false, true] {
+                let mut builder = PetriVmBuilder::minimal(
+                    "shares",
+                    &logs,
+                    PetriVmArtifacts {
+                        backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                        firmware: Firmware::LinuxDirect {
+                            kernel: ResolvedArtifact::from_local_path(input.clone()),
+                            initrd: ResolvedArtifact::from_local_path(input.clone()),
+                        },
+                        arch: MachineArch::host(),
+                        agent_image: None,
+                        openhcl_agent_image: None,
+                        pipette_binary: None,
+                        nested_test: None,
+                    },
+                    &driver,
+                )?
+                .with_shared_directory("z-data", temp.path(), "/data")
+                .with_shared_directory("a-cache", temp.path(), "/cache");
+                if custom_topology {
+                    builder = builder.modify_backend(|b| {
+                        b.with_pcie_root_topology_at(1, 1, 1, 1)
+                            .with_custom_config(|c| {
+                                c.pcie_root_complexes[0].ports[0].name = "petri-share-0".into();
+                                c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                                    port_name: "petri-share-0".into(),
+                                    resource: virtio_resources::VirtioPciDeviceHandle(
+                                        virtio_resources::rng::VirtioRngHandle.into_resource(),
+                                    )
+                                    .into_resource(),
+                                });
+                            })
+                    });
+                }
+                let backend = configure(builder).await?;
+                let [root] = backend.config.pcie_root_complexes.as_slice() else {
+                    panic!("expected one root complex")
+                };
+                assert_eq!(root.segment, u16::from(custom_topology));
+                let first_share = usize::from(custom_topology);
+                for i in 0..2 {
+                    let device = &backend.config.pcie_devices[first_share + i];
+                    assert_eq!(device.port_name, format!("petri-share-{}", first_share + i));
+                    assert!(root.ports.iter().any(|p| p.name == device.port_name));
+                }
+                assert_eq!(root.ports.len(), first_share + 2);
+                assert!(backend.guest_shares.is_empty());
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn isolated_agent_is_external_only_when_requested() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let logs = PetriLogSource::file_only(temp.path())?;
+        let igvm = temp.path().join("guest.igvm");
+        fs_err::write(&igvm, b"unused measured image")?;
+        pal_async::DefaultPool::run_with(async |driver| {
+            for requested in [false, true] {
+                let builder = PetriVmBuilder::minimal(
+                    "isolated",
+                    &logs,
+                    PetriVmArtifacts {
+                        backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                        firmware: Firmware::IgvmLinuxDirect {
+                            igvm_path: ResolvedArtifact::from_local_path(igvm.clone()),
+                            isolation: crate::IsolationType::Snp,
+                        },
+                        arch: MachineArch::X86_64,
+                        agent_image: None,
+                        openhcl_agent_image: None,
+                        pipette_binary: requested
+                            .then(|| ResolvedArtifact::from_local_path("unused-pipette".into())),
+                        nested_test: None,
+                    },
+                    &driver,
+                )?
+                .with_serial_output();
+                assert_eq!(builder.using_vtl0_pipette(), requested);
+                assert!(!builder.properties().uses_pipette_as_init);
+                assert!(builder.pipette_binary.is_none());
+                let backend = configure(builder).await?;
+                assert!(backend.resources.linux_direct_serial_agent.is_none());
+                assert!(matches!(
+                    backend.config.load_mode,
+                    openvmm_defs::config::LoadMode::Igvm { .. }
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
     fn platform_composes_without_replacing_uefi_or_other_roots() -> anyhow::Result<()> {
         if MachineArch::host() != MachineArch::X86_64 || !cfg!(target_os = "linux") {
             return Ok(());
@@ -301,8 +401,8 @@ mod tests {
                 MachineArch::X86_64,
             )?
             .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
-            .with_mshv_platform()?
-            .with_shared_directory("data", temp.path(), "/mounted elsewhere")?
+            .with_mshv_platform()
+            .with_shared_directory("data", temp.path(), "/mounted elsewhere")
             .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1));
             assert!(matches!(
                 builder.config.firmware,
@@ -334,7 +434,7 @@ mod tests {
             );
             assert_eq!(backend.config.pcie_root_complexes[1].name, "s1rc0");
             assert_eq!(backend.config.pcie_root_complexes[1].ports.len(), 3);
-            for port in ["s1rc0rp0", "s1rc0rp1", "s1rc0rp2"] {
+            for port in ["s1rc0rp0", "s1rc0rp1", "petri-share-0"] {
                 assert!(
                     backend
                         .config
@@ -349,36 +449,25 @@ mod tests {
     }
 
     #[test]
-    fn segment_conflicts_stop_later_modifiers() -> anyhow::Result<()> {
-        if MachineArch::host() != MachineArch::X86_64 || !cfg!(target_os = "linux") {
-            return Ok(());
-        }
-        let temp = tempfile::tempdir()?;
-        let firmware = tempfile::NamedTempFile::new()?;
-        let logs = PetriLogSource::file_only(temp.path())?;
-        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[should_panic(expected = "PCI segment range overlaps an existing root complex")]
+    fn segment_conflicts_stop_later_modifiers() {
+        let temp = tempfile::tempdir().unwrap();
+        let firmware = tempfile::NamedTempFile::new().unwrap();
+        let logs = PetriLogSource::file_only(temp.path()).unwrap();
         pal_async::DefaultPool::run_with(async |driver| {
             let builder = builder_with_guest(
                 &driver,
                 &logs,
                 firmware.path(),
-                mshv_guest(temp.path())?,
-                MachineArch::X86_64,
+                UefiGuest::None,
+                MachineArch::host(),
             )?
-            .try_modify_backend(|b| b.with_pcie_root_topology_at(1, 1, 1, 1))
-            .with_mshv_platform()?
-            .modify_backend({
-                let called = called.clone();
-                move |b| {
-                    called.store(true, std::sync::atomic::Ordering::Relaxed);
-                    b
-                }
-            });
-            let error = configure(builder).await.err().expect("segment conflict");
-            assert!(error.to_string().contains("overlaps"), "{error:#}");
+            .modify_backend(|b| b.with_pcie_root_topology_at(1, 1, 1, 1))
+            .modify_backend(|b| b.with_pcie_root_topology_at(1, 1, 1, 1))
+            .modify_backend(|_| panic!("segment conflict should stop later modifiers"));
+            configure(builder).await?;
             Ok::<_, anyhow::Error>(())
-        })?;
-        assert!(!called.load(std::sync::atomic::Ordering::Relaxed));
-        Ok(())
+        })
+        .unwrap();
     }
 }

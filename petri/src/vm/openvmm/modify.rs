@@ -10,7 +10,6 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
-use anyhow::Context;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use disk_backend_resources::LayeredDiskHandle;
@@ -494,7 +493,6 @@ impl PetriVmConfigOpenVmm {
             root_complex_per_segment,
             root_ports_per_root_complex,
         )
-        .expect("invalid PCIe topology")
     }
 
     /// Append a topology starting at an explicit PCI segment, without
@@ -505,12 +503,12 @@ impl PetriVmConfigOpenVmm {
         segment_count: u64,
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
-    ) -> anyhow::Result<Self> {
+    ) -> Self {
         let segment_end = segment_base
             .checked_add(segment_count)
             .filter(|end| *end <= u16::MAX as u64 + 1)
-            .context("PCI segment range exceeds u16")?;
-        anyhow::ensure!(
+            .expect("PCI segment range exceeds u16");
+        assert!(
             !self
                 .config
                 .pcie_root_complexes
@@ -518,7 +516,7 @@ impl PetriVmConfigOpenVmm {
                 .any(|rc| (segment_base..segment_end).contains(&u64::from(rc.segment))),
             "PCI segment range overlaps an existing root complex"
         );
-        anyhow::ensure!(
+        assert!(
             (1..=256).contains(&root_complex_per_segment),
             "PCI topology requires between 1 and 256 root complexes per segment"
         );
@@ -570,59 +568,56 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        Ok(self)
+        self
     }
 
-    /// Attach configured guest shares to distinct PCIe ports, in tag order.
-    ///
-    /// The caller supplies one port per share. Petri mounts each share at its
-    /// configured guest path after Pipette connects.
-    pub fn with_pcie_guest_shares(
-        mut self,
-        ports: impl IntoIterator<Item = String>,
-    ) -> anyhow::Result<Self> {
-        let ports = ports.into_iter().collect::<Vec<_>>();
-        anyhow::ensure!(
-            ports.len() == self.guest_shares.len(),
-            "expected one PCIe port per guest share"
-        );
-        let mut unique = std::collections::HashSet::new();
-        for port in &ports {
-            anyhow::ensure!(
-                unique.insert(port),
-                "duplicate guest-share PCIe port: {port}"
-            );
-            anyhow::ensure!(
-                self.config
-                    .pcie_root_complexes
-                    .iter()
-                    .any(|rc| rc.ports.iter().any(|p| &p.name == port))
-                    || self
-                        .config
-                        .pcie_switches
-                        .iter()
-                        .any(|s| s.ports.iter().any(|p| &p.name == port)),
-                "unknown guest-share PCIe port: {port}"
-            );
-            anyhow::ensure!(
-                !self
-                    .config
-                    .pcie_devices
-                    .iter()
-                    .any(|d| &d.port_name == port),
-                "guest-share PCIe port is occupied: {port}"
-            );
+    pub(super) fn with_guest_shares(mut self) -> Self {
+        if self.guest_shares.is_empty() {
+            return self;
         }
+        if self.config.pcie_root_complexes.is_empty() {
+            self = self.with_pcie_root_topology(1, 1, 0);
+        }
+        // Prefer an existing nonzero segment for guests that cannot use segment zero.
+        let root_index = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .position(|rc| rc.segment != 0)
+            .unwrap_or(0);
+        let mut port_names = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .flat_map(|rc| &rc.ports)
+            .chain(self.config.pcie_switches.iter().flat_map(|s| &s.ports))
+            .map(|p| p.name.clone())
+            .chain(self.config.pcie_devices.iter().map(|d| d.port_name.clone()))
+            .collect::<std::collections::HashSet<_>>();
         let mut shares = std::mem::take(&mut self.guest_shares)
             .into_iter()
             .collect::<Vec<_>>();
         shares.sort_by(|a, b| a.0.cmp(&b.0));
-        for ((tag, share), port_name) in shares.into_iter().zip(ports) {
+        for (tag, share) in shares {
+            let port_name = (0..)
+                .map(|i| format!("petri-share-{i}"))
+                .find(|name| port_names.insert(name.clone()))
+                .unwrap();
             let root_path = share
                 .host_path
                 .into_os_string()
                 .into_string()
-                .map_err(|_| anyhow::anyhow!("guest share path must be UTF-8"))?;
+                .expect("guest share path must be UTF-8");
+            self.config.pcie_root_complexes[root_index]
+                .ports
+                .push(PciePortConfig {
+                    name: port_name.clone(),
+                    devfn: None,
+                    hotplug: false,
+                    acs_capabilities_supported: Some(0),
+                    cxl: false,
+                    pasid: false,
+                });
             self.config.pcie_devices.push(PcieDeviceConfig {
                 port_name,
                 resource: virtio_resources::VirtioPciDeviceHandle(
@@ -636,7 +631,7 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             });
         }
-        Ok(self)
+        self
     }
 
     /// Add a PCIe switch to the VM.

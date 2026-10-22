@@ -133,6 +133,12 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 
 ### Nested Tests
 
+OpenVMM and QEMU Linux hosts automatically share nested test artifacts and
+results over 9p. Other hosts continue staging artifacts on the agent disk and
+copying results back through Pipette. Tests do not need to allocate PCIe ports
+for the shares. OpenVMM skips its automatic startup save/restore verification
+when shares are attached because 9p does not support saving device state.
+
 Petri supports writing nested tests by defining a function to create the L1 VM host using Petri and annotating the L2 test definition as follows:
 
 ```rust,ignore

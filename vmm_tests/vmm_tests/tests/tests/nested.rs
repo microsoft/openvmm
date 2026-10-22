@@ -16,10 +16,12 @@ pub(crate) async fn vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> an
 }
 
 #[cfg(target_os = "linux")]
-#[vmm_test_macros::vmm_test(qemu_linux_direct_aarch64)]
-async fn shared_directory(
-    config: PetriVmBuilder<petri::qemu::QemuPetriBackend>,
-) -> anyhow::Result<()> {
+#[vmm_test_macros::vmm_test(
+    qemu_linux_direct_aarch64,
+    openvmm_linux_direct_x64,
+    openvmm_linux_direct_aarch64
+)]
+async fn shared_directory<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     fs_err::write(
         directory.path().join("marker"),
@@ -28,8 +30,8 @@ async fn shared_directory(
     let cache = tempfile::tempdir()?;
     fs_err::write(cache.path().join("marker"), b"child share")?;
     let (vm, agent) = config
-        .with_shared_directory("a-cache", cache.path(), "/shared directory/cache")?
-        .with_shared_directory("z-data", directory.path(), "/shared directory/././")?
+        .with_shared_directory("a-cache", cache.path(), "/shared directory/cache")
+        .with_shared_directory("z-data", directory.path(), "/shared directory/././")
         .run()
         .await?;
     assert_eq!(

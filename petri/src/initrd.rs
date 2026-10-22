@@ -26,13 +26,14 @@ impl PetriInitrd {
     ///
     /// The base is a gzip-compressed newc CPIO archive and is never modified.
     /// The caller supplies all files (agent, script, certificates, etc.) and
-    /// the absolute `rdinit` path. The scratch directory must already exist.
+    /// the absolute `rdinit` path. An explicit scratch directory must already
+    /// exist; otherwise the system temporary directory is used.
     /// The output is removed when its last owner is dropped.
     pub fn prepare(
         base: &Path,
         files: &[InitrdFile<'_>],
         rdinit: &str,
-        scratch_dir: &Path,
+        scratch_dir: Option<&Path>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             rdinit.starts_with('/') && !rdinit.chars().any(|c| c.is_control() || c.is_whitespace()),
@@ -63,11 +64,13 @@ impl PetriInitrd {
             )
             .with_context(|| format!("injecting {} into initrd", file.name))?;
         }
-        let mut output = tempfile::Builder::new()
-            .prefix(".petri-initrd-")
-            .suffix(".gz")
-            .tempfile_in(scratch_dir)
-            .context("creating prepared initrd")?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".petri-initrd-").suffix(".gz");
+        let mut output = match scratch_dir {
+            Some(dir) => builder.tempfile_in(dir),
+            None => builder.tempfile(),
+        }
+        .context("creating prepared initrd")?;
         output.write_all(&data).context("writing prepared initrd")?;
         Ok(Self {
             path: TempOrPersistentPath::Temp(Arc::new(output.into_temp_path())),
@@ -113,8 +116,13 @@ mod tests {
                 permissions: 0o644,
             },
         ];
-        let first = PetriInitrd::prepare(&base, &files, "/init.sh", temp.path())?;
-        let second = PetriInitrd::prepare(&base, &files, "/init.sh", temp.path())?;
+        let first = PetriInitrd::prepare(&base, &files, "/init.sh", Some(temp.path()))?;
+        let second = PetriInitrd::prepare(&base, &files, "/init.sh", None)?;
+        assert_eq!(first.path.as_ref().parent(), Some(temp.path()));
+        assert_eq!(
+            second.path.as_ref().parent(),
+            Some(std::env::temp_dir().as_path())
+        );
         assert_ne!(first.path.as_ref(), second.path.as_ref());
         assert_eq!(first.rdinit_param, "/init.sh");
         assert_eq!(fs_err::read(&base)?, original);
@@ -161,7 +169,7 @@ mod tests {
                         permissions: 0o644
                     }],
                     "/init.sh",
-                    temp.path(),
+                    Some(temp.path()),
                 )
                 .is_err()
             );

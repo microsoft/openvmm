@@ -122,22 +122,21 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                     ..Default::default()
                 })
                 .with_external_pipette()
-                .with_shared_directory("hostshare", &config.share_dir, crate::GUEST_SHARE_ROOT)?;
+                .with_shared_directory("hostshare", &config.share_dir, crate::GUEST_SHARE_ROOT);
             if profile.nested_virt {
                 builder = builder.with_nested_virt();
             }
             builder = match config.profile.boot {
-                IncubatorBoot::Mshv(_) => builder.with_mshv_platform()?,
+                IncubatorBoot::Mshv(_) => builder.with_mshv_platform(),
                 IncubatorBoot::LinuxDirect => builder
                     .with_prebuilt_initrd(initrd)
                     .with_no_vmbus()
-                    .without_virtio_vsock()
+                    .with_virtio_vsock(false)
                     .with_serial_output()
-                    .try_modify_backend(|backend| {
+                    .modify_backend(|backend| {
                         backend
-                            .with_pcie_root_topology_at(0, 1, 1, 2)?
+                            .with_pcie_root_topology_at(0, 1, 1, 1)
                             .with_tcp_pipette_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
-                            .with_pcie_guest_shares(["s0rc0rp1".into()])
                     }),
             };
             execute(builder, &driver, &config, &signals, bound_command).await

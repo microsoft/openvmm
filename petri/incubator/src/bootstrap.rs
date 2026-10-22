@@ -87,7 +87,7 @@ pub(crate) fn prepare_initrd(config: &IncubatorConfig) -> anyhow::Result<PetriIn
         &config.initrd,
         &files,
         &format!("/{INIT_SCRIPT_NAME}"),
-        &config.output_dir,
+        Some(&config.output_dir),
     )
 }
 

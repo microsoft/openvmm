@@ -101,6 +101,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
     const SUPPORTS_VMBUS: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = true;
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
@@ -159,7 +160,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
 
         if let Some(f) = modify_vmm_config {
-            config = f.0(config)?;
+            config = f.0(config);
         }
 
         config.run().await

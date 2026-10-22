@@ -127,7 +127,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
 
         if !(T::SUPPORTS_CPU_EMULATION || arch == MachineArch::host())
             || !T::check_compat(&firmware, arch)
-            || !T::SUPPORTS_FILE_SHARING && different_nested_target
+            || !T::supports_file_sharing(&firmware) && different_nested_target
         {
             return None;
         }
@@ -372,7 +372,7 @@ pub struct PetriVmProperties {
     pub os_flavor: OsFlavor,
     /// Minimal mode: skip default devices, serial, save/restore
     pub minimal_mode: bool,
-    /// Pipette embeds in initrd as PID 1 (non-OpenHCL Linux direct boot)
+    /// Petri injects Pipette into the initrd as PID 1.
     pub uses_pipette_as_init: bool,
     /// Enable serial output even in minimal mode
     pub enable_serial: bool,
@@ -428,8 +428,13 @@ pub trait PetriVmmBackend: Debug {
     /// architecture does not match the guest architecture.
     const SUPPORTS_CPU_EMULATION: bool = false;
 
-    /// Whether this backend is setup to share files on the host with the guest.
+    /// Whether this backend supports sharing host directories with Linux guests.
     const SUPPORTS_FILE_SHARING: bool = false;
+
+    /// Whether this guest can use the backend's Linux 9p shares.
+    fn supports_file_sharing(firmware: &Firmware) -> bool {
+        Self::SUPPORTS_FILE_SHARING && firmware.os_flavor() == OsFlavor::Linux
+    }
 
     /// Check whether the combination of guest firmware, guest architecture, and
     /// internally determined host properties is supported by the backend.
@@ -693,7 +698,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => BootDeviceType::Scsi,
         };
 
-        Ok(Self {
+        let supports_file_sharing = T::supports_file_sharing(&artifacts.firmware);
+        let external_pipette = isolated_without_paravisor && artifacts.pipette_binary.is_some();
+        let builder = Self {
             backend: artifacts.backend,
             config: PetriVmConfig {
                 name: test_name.to_string(),
@@ -746,8 +753,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
             nested_test: artifacts
                 .nested_test
-                .map(|t| t.resolve(!T::SUPPORTS_FILE_SHARING))
+                .map(|t| t.resolve(!supports_file_sharing))
                 .transpose()?,
+        };
+        Ok(if external_pipette {
+            builder.with_external_pipette()
+        } else {
+            builder
         })
     }
 
@@ -758,18 +770,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Share a directory over 9p and mount it after Pipette connects.
     ///
-    /// The backend must attach a filesystem device for the supplied tag.
+    /// The backend attaches the filesystem device automatically.
     pub fn with_shared_directory(
         mut self,
         tag: &str,
         host_path: impl AsRef<Path>,
         guest_path: &str,
-    ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            self.os_flavor() == OsFlavor::Linux,
-            "directory sharing requires a Linux guest"
+    ) -> Self {
+        assert!(
+            T::supports_file_sharing(&self.config.firmware),
+            "directory sharing requires a backend with Linux file-sharing support"
         );
-        anyhow::ensure!(
+        assert!(
             !tag.is_empty()
                 && !tag.starts_with('-')
                 && tag
@@ -777,13 +789,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c)),
             "invalid filesystem share tag"
         );
-        anyhow::ensure!(
+        assert!(
             guest_path.starts_with('/')
                 && !guest_path.contains('\0')
                 && !guest_path.split('/').any(|c| c == ".."),
             "guest mount point must be an absolute path without parent traversal"
         );
-        anyhow::ensure!(
+        assert!(
             !self.config.guest_shares.contains_key(tag),
             "duplicate filesystem share tag: {tag}"
         );
@@ -794,22 +806,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 guest_path: guest_path.into(),
             },
         );
-        Ok(self)
+        self
     }
 
     fn with_capture_inspect_on_failure(mut self) -> Self {
         self.capture_inspect_on_failure = true;
-        self
-    }
-
-    /// Omit the virtio-vsock device when using another Pipette transport.
-    /// Call after [`Self::with_no_vmbus`] to override its Linux default.
-    pub fn without_virtio_vsock(mut self) -> Self {
-        self.use_virtio_vsock = false;
-        #[cfg(target_os = "linux")]
-        {
-            self.vhost_vsock_guest_cid = None;
-        }
         self
     }
 
@@ -900,7 +901,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         } else {
             format!("/{PIPETTE_PATH}")
         };
-        PetriInitrd::prepare(initrd_path, &files, &rdinit, &std::env::temp_dir())
+        PetriInitrd::prepare(initrd_path, &files, &rdinit, None)
     }
 
     /// Enable serial port output even in minimal mode.
@@ -944,8 +945,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ///
     /// For Linux direct boot, this also adjusts the kernel command line to
     /// blacklist hv_sock instead of virtio_vsock.
-    pub fn with_virtio_vsock(mut self) -> Self {
-        self.use_virtio_vsock = true;
+    ///
+    /// Disable it after [`Self::with_no_vmbus`] when selecting another transport.
+    pub fn with_virtio_vsock(mut self, enable: bool) -> Self {
+        self.use_virtio_vsock = enable;
         #[cfg(target_os = "linux")]
         {
             self.vhost_vsock_guest_cid = None;
@@ -1327,7 +1330,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
     }
 
-    /// Whether pipette will run as PID 1 init in the initrd.
+    /// Whether Petri will inject Pipette as PID 1 init in the initrd.
     ///
     /// True for non-OpenHCL Linux direct boot when a pipette binary is
     /// available. Pipette is injected into the initrd via CPIO and set
@@ -1335,8 +1338,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     fn uses_pipette_as_init(&self) -> bool {
         self.config.firmware.is_linux_direct()
             && !self.config.firmware.is_openhcl()
-            // The initrd already contains pipette.
-            && !self.config.firmware.is_isolated_without_paravisor()
             && self.pipette_binary.is_some()
     }
 
@@ -1344,8 +1345,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     pub fn using_vtl0_pipette(&self) -> bool {
         self.external_pipette
             || self.uses_pipette_as_init()
-            || (self.config.firmware.is_isolated_without_paravisor()
-                && self.pipette_binary.is_some())
             || self
                 .agent_image
                 .as_ref()
@@ -2099,21 +2098,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Apply a backend-specific modification in registration order.
     /// May be called multiple times, including around platform presets.
     pub fn modify_backend(
-        self,
-        f: impl FnOnce(T::VmmConfig) -> T::VmmConfig + 'static + Send,
-    ) -> Self {
-        self.try_modify_backend(move |config| Ok(f(config)))
-    }
-
-    /// Apply a fallible backend modification after previously registered ones.
-    pub fn try_modify_backend(
         mut self,
-        f: impl FnOnce(T::VmmConfig) -> anyhow::Result<T::VmmConfig> + 'static + Send,
+        f: impl FnOnce(T::VmmConfig) -> T::VmmConfig + 'static + Send,
     ) -> Self {
         let previous = self.modify_vmm_config.take();
         self.modify_vmm_config = Some(ModifyFn(Box::new(move |config| {
             let config = match previous {
-                Some(previous) => previous.0(config)?,
+                Some(previous) => previous.0(config),
                 None => config,
             };
             f(config)
@@ -2128,7 +2119,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
         // if we can just the files directly, make sure the nested test is under
         // the test content dir.
-        if T::SUPPORTS_FILE_SHARING {
+        if T::supports_file_sharing(&self.config.firmware) {
             self.config.guest_shares.insert(
                 NESTED_CONTENT_TAG.into(),
                 GuestShare {
@@ -2392,6 +2383,11 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // no VMBus or minimal mode).
         self.runtime.wait_for_enlightened_shutdown_ready().await?;
         let client = self.runtime.wait_for_agent(false).await?;
+        self.mount_guest_shares(&client).await?;
+        Ok(client)
+    }
+
+    async fn mount_guest_shares(&self, client: &PipetteClient) -> anyhow::Result<()> {
         if !self.guest_shares.is_empty() {
             anyhow::ensure!(
                 self.properties.os_flavor == OsFlavor::Linux,
@@ -2431,7 +2427,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                     .with_context(|| format!("mounting guest share {tag}"))?;
             }
         }
-        Ok(client)
+        Ok(())
     }
 
     /// Wait for a connection from a pipette agent running in VTL 2.
@@ -3584,9 +3580,7 @@ impl Firmware {
                 guest: UefiGuest::Mshv(_),
                 ..
             }
-            | Firmware::LinuxDirect { .. }
-            | Firmware::IgvmLinuxDirect { .. }
-            | Firmware::OpenhclLinuxDirect { .. } => OsFlavor::Linux,
+            | Firmware::IgvmLinuxDirect { .. } => OsFlavor::Linux,
             Firmware::Uefi {
                 guest: UefiGuest::GuestTestUefi { .. } | UefiGuest::None,
                 ..
@@ -4204,7 +4198,7 @@ async fn collect_inspect(
 }
 
 /// Wrapper for modification functions with stubbed out debug impl
-pub struct ModifyFn<T>(pub Box<dyn FnOnce(T) -> anyhow::Result<T> + Send>);
+pub struct ModifyFn<T>(pub Box<dyn FnOnce(T) -> T + Send>);
 
 impl<T> Debug for ModifyFn<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4612,7 +4606,7 @@ mod tests {
         }
     }
 
-    struct TestRuntime(TestInspectBehavior, Arc<std::sync::atomic::AtomicUsize>);
+    struct TestRuntime(TestInspectBehavior);
 
     #[async_trait::async_trait]
     impl PetriVmRuntime for TestRuntime {
@@ -4620,7 +4614,6 @@ mod tests {
         type VmFramebufferAccess = TestFramebuffer;
 
         async fn teardown(self) -> anyhow::Result<()> {
-            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
 
@@ -4706,7 +4699,7 @@ mod tests {
         behavior: TestInspectBehavior,
     ) -> PetriVmRuntimeGuard<TestRuntime> {
         PetriVmRuntimeGuard {
-            runtime: Some(TestRuntime(behavior, Default::default())),
+            runtime: Some(TestRuntime(behavior)),
             driver,
             log_source: log_source.clone(),
             capture_inspect_on_drop: true,
@@ -4766,23 +4759,6 @@ mod tests {
             let error = run_failed_test(&log_source, behavior).unwrap_err();
             assert_eq!(error.to_string(), "original test failure");
             assert_eq!(inspect_attachment_count(&log_source), 1);
-        }
-    }
-
-    #[test]
-    fn implicit_cleanup_does_not_invoke_explicit_teardown() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let logs = PetriLogSource::file_only(temp_dir.path()).unwrap();
-        for capture in [false, true] {
-            let pool = pal_async::DefaultPool::new();
-            let driver = pool.driver();
-            let mut guard = test_runtime_guard(driver.clone(), &logs, TestInspectBehavior::Success);
-            guard.capture_inspect_on_drop = capture;
-            let count = guard.runtime.as_ref().unwrap().1.clone();
-            drop(guard);
-            drop(driver);
-            pool.run();
-            assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
         }
     }
 
