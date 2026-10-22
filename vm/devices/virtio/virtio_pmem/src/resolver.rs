@@ -28,7 +28,12 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPmemHandle> for VirtioPmemResolve
         resource: VirtioPmemHandle,
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let file = fs_err::File::open(resource.path)?.into();
-        Ok(Device::new(input.driver_source, file, false)?.into())
+        let mut options = fs_err::OpenOptions::new();
+        options.read(true);
+        if !resource.read_only {
+            options.write(true);
+        }
+        let file = options.open(resource.path)?.into();
+        Ok(Device::new(input.driver_source, file, !resource.read_only)?.into())
     }
 }

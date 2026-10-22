@@ -4104,6 +4104,7 @@ impl LoadedVm {
                                 .vmbus_server
                                 .as_ref()
                                 .context("VTL0 VMBus is not available")?;
+                            let mapper = self.inner.memory_manager.device_memory_mapper();
                             let device = vmm_core::device_builder::build_dynamic_vpci_device(
                                 vmm_core::device_builder::PciDeviceResolveContext {
                                     driver_source: &self.inner.driver_source,
@@ -4114,7 +4115,7 @@ impl LoadedVm {
                                         .partition
                                         .clone()
                                         .into_doorbell_registration(Vtl::Vtl0),
-                                    shared_mem_mapper: None,
+                                    shared_mem_mapper: Some(&mapper),
                                 },
                                 vmbus.control(),
                                 &self.inner.chipset_devices,
@@ -4202,6 +4203,9 @@ impl LoadedVm {
             }
         }
 
+        // Dynamic VPCI removal closes chipset devices and unregisters their
+        // MMIO ranges. Stop the VPs first so they cannot race that teardown.
+        let _stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
         while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
             entry.device.remove().await;
         }

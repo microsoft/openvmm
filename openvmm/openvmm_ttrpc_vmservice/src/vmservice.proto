@@ -246,7 +246,17 @@ message VirtioDevice {
         VhostUser     vhost_user = 6;
         // Built-in virtio-fs filesystem device.
         VirtioFs       fs        = 7;
+        // File-backed virtio-pmem device.
+        VirtioPmem     pmem      = 8;
     }
+}
+
+// File-backed virtio-pmem device configuration.
+message VirtioPmem {
+    // Backing file.
+    string host_path = 1;
+    // Expose the device read-only to the guest.
+    bool read_only = 2;
 }
 
 // virtio-console serial device configuration.
