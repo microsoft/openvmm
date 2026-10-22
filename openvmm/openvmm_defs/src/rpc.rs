@@ -32,6 +32,8 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
+    /// Updates processor limit/weight/reserve on the running VM.
+    SetProcessorQos(FailableRpc<virt::ProcessorQos, ()>),
     /// Updates the command line parameters that will be passed to the boot shim
     /// on the *next* VM load. This will replace the existing command line parameters.
     UpdateCliParams(FailableRpc<String, ()>),
@@ -83,6 +85,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::CompleteReloadIgvm(_) => "CompleteReloadIgvm",
             VmRpc::ReadMemory(_) => "ReadMemory",
             VmRpc::WriteMemory(_) => "WriteMemory",
+            VmRpc::SetProcessorQos(_) => "SetProcessorQos",
             VmRpc::UpdateCliParams(_) => "UpdateCliParams",
             VmRpc::AddPcieDevice(_) => "AddPcieDevice",
             VmRpc::RemovePcieDevice(_) => "RemovePcieDevice",

@@ -1957,4 +1957,35 @@ mod tests {
         }
         capabilities::scheduler_features().unwrap();
     }
+
+    #[test]
+    fn cpu_scheduler_properties_round_trip() {
+        use super::Partition;
+        use super::PartitionConfig;
+        use super::PartitionProperty as P;
+        use super::abi::WHV_SCHEDULER_FEATURES as F;
+        use super::partition_prop as pp;
+
+        // Only the hypervisor core scheduler supports these properties.
+        let bits = F::CpuCap | F::CpuWeight | F::CpuReserve;
+        if !capabilities::hypervisor_present().unwrap_or(false)
+            || !capabilities::scheduler_features().is_ok_and(|f| f.is_set(bits))
+        {
+            return;
+        }
+        let check = |p: &Partition, cap, weight, reserve| {
+            p.set_property(P::CpuCap(cap)).unwrap();
+            p.set_property(P::CpuWeight(weight)).unwrap();
+            p.set_property(P::CpuReserve(reserve)).unwrap();
+            assert_eq!(p.get_property(pp::CpuCap).unwrap(), cap);
+            assert_eq!(p.get_property(pp::CpuWeight).unwrap(), weight);
+            assert_eq!(p.get_property(pp::CpuReserve).unwrap(), reserve);
+        };
+        let mut config = PartitionConfig::new().unwrap();
+        config.set_property(P::ProcessorCount(1)).unwrap();
+        check(&config.partition, 32768, 200, 16384);
+        // Also settable after setup while no VP is running, which runtime updates rely on.
+        let partition = config.create().unwrap();
+        check(&partition, 16384, 100, 8192);
+    }
 }
