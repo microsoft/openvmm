@@ -1073,6 +1073,7 @@ mod tests {
 
     const VMM: openvmm_defs::microvm::MicrovmFilesystemOwner =
         openvmm_defs::microvm::MicrovmFilesystemOwner::Vmm;
+    #[cfg(guest_arch = "x86_64")]
     const DENIED: openvmm_defs::microvm::MicrovmFilesystemPathKind =
         openvmm_defs::microvm::MicrovmFilesystemPathKind::Denied;
 
@@ -1217,6 +1218,7 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn filesystem_denied_paths_are_canonical_and_root_scoped() {
         let root = tempfile::tempdir().unwrap();
@@ -1401,6 +1403,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn mount_owner_defaults_to_the_vmm_and_requires_a_mount() {
         let root = tempfile::tempdir().unwrap();
@@ -1701,6 +1704,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn aggregate_children_share_the_fixed_slot() {
         use openvmm_defs::microvm::MicrovmFilesystemAccess;
@@ -1758,6 +1762,7 @@ mod tests {
         assert_ne!(changed.attachment, filesystem.attachment);
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn aggregate_requires_unique_valid_children() {
         let first = tempfile::tempdir().unwrap();
@@ -1843,6 +1848,7 @@ mod tests {
         }
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn aggregate_children_may_expose_files() {
         use openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly;
@@ -2097,6 +2103,7 @@ mod tests {
         mount_options(&[format!("/workspace,{},{mode}", root.display())], policy)
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn mount_allow_and_mount_write_build_the_access_policy() {
         let root = policy_share();
@@ -2203,6 +2210,7 @@ mod tests {
         assert!(error.contains("invalid denied path"), "{error}");
     }
 
+    #[cfg(guest_arch = "x86_64")]
     #[test]
     fn host_paths_may_contain_commas() {
         use openvmm_defs::microvm::MicrovmFilesystemAccess;
