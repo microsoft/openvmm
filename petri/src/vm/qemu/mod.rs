@@ -267,20 +267,13 @@ impl PetriVmRuntime for QemuPetriRuntime {
     type VmInspector = NoPetriVmInspector;
     type VmFramebufferAccess = NoPetriVmFramebufferAccess;
 
-    async fn teardown(self) -> anyhow::Result<()> {
-        {
-            let mut child = self.qemu_process.lock().await;
-            if child.get_mut().try_wait()?.is_none() {
-                child
-                    .get_mut()
-                    .kill()
-                    .context("unable to kill qemu process")?;
-            }
-            child.wait().await.context("unable to reap qemu process")?;
-        }
-        for task in self.log_tasks {
-            task.await?;
-        }
+    async fn teardown(mut self) -> anyhow::Result<()> {
+        futures::future::join_all(self.log_tasks.into_iter().map(|t| t.cancel())).await;
+        let mut qemu_process = self.qemu_process.lock().await;
+        qemu_process
+            .get_mut()
+            .kill()
+            .context("unable to kill qemu process")?;
         Ok(())
     }
 
