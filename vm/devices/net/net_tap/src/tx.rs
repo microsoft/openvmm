@@ -3,11 +3,14 @@
 
 //! Transmit path of a TAP queue.
 //!
-//! Each `tx_avail` call writes at most one guest packet. When the TAP
-//! interface applies backpressure, the queue keeps the packet, and with it
-//! the ownership of its descriptors, until `poll_ready` writes it; `tx_poll`
-//! then completes it. Packets that the run-scoped egress policy denies are
-//! completed without being written.
+//! Each `tx_avail` call writes the guest packets that it is given until the
+//! TAP interface applies backpressure, because the frontends submit the rest
+//! of a batch only when `poll_ready` reports that the queue can accept it.
+//! The queue keeps the packet that meets backpressure, and with it the
+//! ownership of its descriptors, until `poll_ready` writes it; the call then
+//! completes asynchronously, and `tx_poll` returns the packets that it wrote
+//! before that packet and then that packet. Packets that the run-scoped egress
+//! policy denies are completed without being written.
 
 use crate::TapQueue;
 use crate::VirtioNetHdr;
@@ -103,7 +106,8 @@ impl TapQueue {
         }
     }
 
-    /// Implements `tx_avail`: writes the next packet of `segments`.
+    /// Implements `tx_avail`: writes the packets of `segments` until the TAP
+    /// interface applies backpressure.
     pub(crate) fn transmit(
         &mut self,
         pool: &mut dyn BufferAccess,
@@ -113,51 +117,67 @@ impl TapQueue {
             return Ok((false, 0));
         }
 
-        let (metadata, packet_segments, _) = next_packet(segments);
-        let segment_count = packet_segments.len();
-        let id = metadata.id;
-        let header = build_vnet_hdr(metadata);
-        let mut packet = linearize(pool, segments)?;
-        if metadata.flags.offload_ip_header_checksum() && metadata.flags.is_ipv4() {
-            fixup_ipv4_header_checksum(&mut packet, metadata.l2_len as usize);
-        }
-        if (metadata.flags.offload_tcp_segmentation() || metadata.flags.offload_udp_segmentation())
-            && metadata.flags.is_ipv6()
-        {
-            fixup_ipv6_payload_length(&mut packet, metadata.l2_len as usize);
-        }
-        // Convert the LSO length-less pseudo-header seed to the convention the
-        // kernel's GSO path expects (pseudo-header with the full L4 length) so
-        // segmentation produces correct per-segment checksums.
-        if metadata.flags.offload_tcp_segmentation() || metadata.flags.offload_udp_segmentation() {
-            fixup_gso_pseudo_header(&mut packet, metadata.l2_len as usize);
-        }
-        if let Some(policy) = &self.tx.egress_policy
-            && policy.authorize_frame(&packet, packet.len()).is_err()
-        {
-            return Ok((true, segment_count));
-        }
+        let submitted = *segments;
+        let mut consumed = 0;
+        while !segments.is_empty() {
+            let (metadata, packet_segments, _) = next_packet(segments);
+            let segment_count = packet_segments.len();
+            let id = metadata.id;
+            let header = build_vnet_hdr(metadata);
+            let mut packet = linearize(pool, segments)?;
+            if metadata.flags.offload_ip_header_checksum() && metadata.flags.is_ipv4() {
+                fixup_ipv4_header_checksum(&mut packet, metadata.l2_len as usize);
+            }
+            if (metadata.flags.offload_tcp_segmentation()
+                || metadata.flags.offload_udp_segmentation())
+                && metadata.flags.is_ipv6()
+            {
+                fixup_ipv6_payload_length(&mut packet, metadata.l2_len as usize);
+            }
+            // Convert the LSO length-less pseudo-header seed to the convention the
+            // kernel's GSO path expects (pseudo-header with the full L4 length) so
+            // segmentation produces correct per-segment checksums.
+            if metadata.flags.offload_tcp_segmentation()
+                || metadata.flags.offload_udp_segmentation()
+            {
+                fixup_gso_pseudo_header(&mut packet, metadata.l2_len as usize);
+            }
+            consumed += segment_count;
+            if let Some(policy) = &self.tx.egress_policy
+                && policy.authorize_frame(&packet, packet.len()).is_err()
+            {
+                continue;
+            }
 
-        let tap = self.tap.as_mut().context("TAP queue is unavailable")?;
-        let header_bytes = header.as_bytes();
-        let bufs = [
-            std::io::IoSlice::new(header_bytes),
-            std::io::IoSlice::new(&packet),
-        ];
-        match tap.write_vectored(&bufs) {
-            Ok(bytes_written) if bytes_written == header_bytes.len() + packet.len() => {
-                Ok((true, segment_count))
+            let tap = self.tap.as_mut().context("TAP queue is unavailable")?;
+            let header_bytes = header.as_bytes();
+            let bufs = [
+                std::io::IoSlice::new(header_bytes),
+                std::io::IoSlice::new(&packet),
+            ];
+            match tap.write_vectored(&bufs) {
+                Ok(bytes_written) if bytes_written == header_bytes.len() + packet.len() => {}
+                Ok(bytes_written) => anyhow::bail!(
+                    "partial TAP packet write: wrote {bytes_written} of {} bytes",
+                    header_bytes.len() + packet.len()
+                ),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    // The call now completes asynchronously, so the packets
+                    // that it already wrote or denied complete through
+                    // `tx_poll`, ahead of the pending packet.
+                    let mut earlier = &submitted[..consumed - segment_count];
+                    while !earlier.is_empty() {
+                        let (metadata, _, rest) = next_packet(earlier);
+                        self.tx.ready.push_back(metadata.id);
+                        earlier = rest;
+                    }
+                    self.tx.pending = Some(PendingTx { id, header, packet });
+                    return Ok((false, consumed));
+                }
+                Err(error) => return Err(error).context("failed to write TAP packet"),
             }
-            Ok(bytes_written) => anyhow::bail!(
-                "partial TAP packet write: wrote {bytes_written} of {} bytes",
-                header_bytes.len() + packet.len()
-            ),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                self.tx.pending = Some(PendingTx { id, header, packet });
-                Ok((false, segment_count))
-            }
-            Err(error) => Err(error).context("failed to write TAP packet"),
         }
+        Ok((true, consumed))
     }
 
     /// Implements `tx_poll`.
