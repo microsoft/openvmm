@@ -348,10 +348,25 @@ write_port() {{
     octal=$(printf '%03o' "$2")
     printf "\\$octal" | dd of=/dev/port bs=1 seek="$1" count=1 conv=notrunc 2>/dev/null
 }}
-stty -F /dev/hvc0 raw -echo
-next_byte() {{
-    dd if=/dev/hvc0 bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' '
-}}
+# Only kernels with the portb hvc driver expose /dev/hvc0, which then owns the
+# portb input. Other kernels, such as the packaged test kernel, poll portb.
+if [ -c /dev/hvc0 ]; then
+    stty -F /dev/hvc0 raw -echo
+    next_byte() {{
+        dd if=/dev/hvc0 bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' '
+    }}
+else
+    next_byte() {{
+        while :; do
+            input_status=$(read_port 234)
+            [ -n "$input_status" ] || input_status=0
+            if [ $((input_status & 1)) -ne 0 ]; then
+                read_port 233
+                return
+            fi
+        done
+    }}
+fi
 generation=0
 {}
 write_port 1541 0
