@@ -618,6 +618,51 @@ impl virt::AcceptInitialPages for WhpPartition {
     }
 }
 
+/// Converts HCS units (100000 = one LP) to the hypervisor's (65536 = one LP), as vmwp does.
+fn hv_cpu_fraction(v: u32) -> u32 {
+    (u64::from(v) * 65536 / 100000) as u32
+}
+
+/// CPU scheduler properties of one partition, in hypervisor units.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct CpuProps {
+    cap: u32,
+    reserve: u32,
+    weight: u32,
+}
+
+impl CpuProps {
+    fn read(whp: &whp::Partition) -> Result<Self, whp::WHvError> {
+        Ok(Self {
+            cap: whp.cpu_cap()?,
+            reserve: whp.cpu_reserve()?,
+            weight: whp.cpu_weight()?,
+        })
+    }
+
+    /// Returns the changed properties in an order that keeps reserve <= cap
+    /// after every write, since WHP rejects any write that breaks it.
+    fn writes_to(self, to: Self) -> Vec<whp::PartitionProperty<'static>> {
+        use whp::PartitionProperty as P;
+        let cap = (self.cap != to.cap).then_some(P::CpuCap(to.cap));
+        let reserve = (self.reserve != to.reserve).then_some(P::CpuReserve(to.reserve));
+        let weight = (self.weight != to.weight).then_some(P::CpuWeight(to.weight));
+        let (first, second) = if to.cap < self.reserve {
+            (reserve, cap)
+        } else {
+            (cap, reserve)
+        };
+        [first, second, weight].into_iter().flatten().collect()
+    }
+
+    fn write(whp: &whp::Partition, from: Self, to: Self) -> Result<(), whp::WHvError> {
+        for prop in from.writes_to(to) {
+            whp.set_property(prop)?;
+        }
+        Ok(())
+    }
+}
+
 impl virt::Partition for WhpPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         virt::InitialVpStateSource::Registers
@@ -639,6 +684,64 @@ impl virt::Partition for WhpPartition {
         &self,
     ) -> Option<&dyn virt::ScrubVtl<Error = <Self as virt::Hv1>::Error>> {
         (!self.inner.isolation.is_isolated()).then_some(self)
+    }
+
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+        use whp::abi::WHV_SCHEDULER_FEATURES as F;
+
+        qos.validate()?;
+        // Only the hypervisor core scheduler reports these; the root scheduler rejects them.
+        let features = whp::capabilities::scheduler_features().unwrap_or(F(0));
+        for (set, bit, name) in [
+            (qos.limit.is_some(), F::CpuCap, "limit"),
+            (qos.weight.is_some(), F::CpuWeight, "weight"),
+            (qos.reserve.is_some(), F::CpuReserve, "reserve"),
+        ] {
+            anyhow::ensure!(
+                !set || features.is_set(bit),
+                "processor {name} requires the hypervisor core scheduler"
+            );
+        }
+        let partitions: Vec<&whp::Partition> = std::iter::once(&self.inner.vtl0)
+            .chain(&self.inner.vtl2)
+            .map(|vtlp| &vtlp.whp)
+            .collect();
+        let old = partitions
+            .iter()
+            .map(|whp| CpuProps::read(whp))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new = old
+            .iter()
+            .map(|old| {
+                let new = CpuProps {
+                    cap: qos.limit.map_or(old.cap, hv_cpu_fraction),
+                    reserve: qos.reserve.map_or(old.reserve, hv_cpu_fraction),
+                    weight: qos.weight.unwrap_or(old.weight),
+                };
+                anyhow::ensure!(
+                    new.reserve <= new.cap,
+                    "processor reserve would exceed the processor limit"
+                );
+                Ok(new)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for (i, whp) in partitions.iter().enumerate() {
+            if let Err(err) = CpuProps::write(whp, old[i], new[i]) {
+                let err = anyhow::Error::from(err).context("failed to set processor settings");
+                // Put back what was written so every partition keeps its old settings.
+                for (whp, &old) in partitions[..=i].iter().zip(&old) {
+                    if let Err(restore) =
+                        CpuProps::read(whp).and_then(|cur| CpuProps::write(whp, cur, old))
+                    {
+                        return Err(err.context(format!(
+                            "processor settings are inconsistent, restore failed: {restore}"
+                        )));
+                    }
+                }
+                return Err(err);
+            }
+        }
+        Ok(())
     }
 
     fn supports_initial_page_acceptance(
@@ -2168,5 +2271,49 @@ mod aarch64 {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hv_cpu_fraction_scales_hcs_units() {
+        assert_eq!(super::hv_cpu_fraction(100000), 65536);
+        assert_eq!(super::hv_cpu_fraction(50000), 32768);
+        assert_eq!(super::hv_cpu_fraction(1), 0);
+        assert_eq!(super::hv_cpu_fraction(0), 0);
+    }
+
+    #[test]
+    fn cpu_props_writes_keep_reserve_within_cap() {
+        use super::CpuProps;
+        use whp::PartitionProperty as P;
+
+        let props = |cap, reserve| CpuProps {
+            cap,
+            reserve,
+            weight: 100,
+        };
+        let cases = [
+            (props(65536, 0), props(16384, 8192)),
+            (props(65536, 32768), props(16384, 8192)),
+            (props(16384, 8192), props(65536, 32768)),
+            (props(32768, 16384), props(65536, 0)),
+            (props(65536, 32768), props(32768, 32768)),
+        ];
+        for (from, to) in cases {
+            let mut cur = from;
+            for prop in from.writes_to(to) {
+                match prop {
+                    P::CpuCap(v) => cur.cap = v,
+                    P::CpuReserve(v) => cur.reserve = v,
+                    P::CpuWeight(v) => cur.weight = v,
+                    _ => unreachable!(),
+                }
+                assert!(cur.reserve <= cur.cap, "{from:?} -> {to:?} passed {cur:?}");
+            }
+            assert_eq!(cur, to);
+        }
+        assert!(props(65536, 0).writes_to(props(65536, 0)).is_empty());
     }
 }

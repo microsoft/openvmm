@@ -1547,6 +1547,12 @@ impl InitializedVm {
             })
             .context("failed to create the partition")?;
 
+        if !cfg.hypervisor.processor_qos.is_empty() {
+            partition
+                .set_processor_qos(&cfg.hypervisor.processor_qos)
+                .context("failed to set processor limit/weight/reserve")?;
+        }
+
         let vps = vps.into_iter().map(|vp| Box::new(vp) as _).collect();
 
         let partition = Arc::new(partition);
@@ -3948,6 +3954,18 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::SetProcessorQos(rpc) => {
+                        rpc.handle_failable(async |qos| {
+                            // WHP rejects this while a VP is running, so pause around it.
+                            let was_running = self.pause().await;
+                            let result = self.inner.partition.set_processor_qos(&qos);
+                            if was_running {
+                                self.resume().await;
+                            }
+                            result
+                        })
+                        .await
+                    }
                     VmRpc::UpdateCliParams(rpc) => {
                         rpc.handle_failable_sync(|params| match &mut self.inner.load_mode {
                             LoadMode::Igvm { cmdline, .. } => {

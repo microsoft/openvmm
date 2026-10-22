@@ -338,6 +338,44 @@ impl ProtoPartitionIsolation {
     }
 }
 
+/// Partition-wide hypervisor CPU scheduling settings, in the same units as
+/// Hyper-V/HCS.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, mesh_protobuf::Protobuf)]
+pub struct ProcessorQos {
+    /// Maximum CPU time each VP may use, `0..=100000` (100000 = one full LP).
+    pub limit: Option<u32>,
+    /// Relative scheduling weight, `1..=10000` (hypervisor default is 100).
+    pub weight: Option<u32>,
+    /// CPU time reserved for each VP, `0..=100000`; must not exceed `limit`.
+    pub reserve: Option<u32>,
+}
+
+impl ProcessorQos {
+    /// Returns true if no setting is specified.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Checks the ranges documented on each field.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let max = |name, v: Option<u32>| match v {
+            Some(v) if v > 100000 => {
+                anyhow::bail!("processor {name} {v} is out of range 0..=100000")
+            }
+            _ => Ok(()),
+        };
+        max("limit", self.limit)?;
+        max("reserve", self.reserve)?;
+        if let Some(w) = self.weight.filter(|w| !(1..=10000).contains(w)) {
+            anyhow::bail!("processor weight {w} is out of range 1..=10000");
+        }
+        if let (Some(l), Some(r)) = (self.limit, self.reserve) {
+            anyhow::ensure!(r <= l, "processor reserve {r} exceeds limit {l}");
+        }
+        Ok(())
+    }
+}
+
 /// Prototype partition creation configuration.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
@@ -549,6 +587,13 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Returns a trait object to reset VTL state, if supported.
     fn supports_vtl_scrub(&self) -> Option<&dyn ScrubVtl<Error = <Self as Hv1>::Error>> {
         None
+    }
+
+    /// Applies CPU scheduling settings. The VPs must not be running.
+    ///
+    /// Backends that can't enforce them fail rather than ignore them.
+    fn set_processor_qos(&self, _qos: &ProcessorQos) -> anyhow::Result<()> {
+        anyhow::bail!("processor limit/weight/reserve are not supported by this hypervisor")
     }
 
     /// Returns an interface for registering MMIO doorbells for this partition.
@@ -1000,4 +1045,30 @@ pub trait EmulatorMonitorSupport {
     /// if it is.
     #[must_use]
     fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProcessorQos;
+
+    #[test]
+    fn processor_qos_validate() {
+        let q = |limit, weight, reserve| ProcessorQos {
+            limit,
+            weight,
+            reserve,
+        };
+        assert!(q(None, None, None).validate().is_ok());
+        assert!(
+            q(Some(100000), Some(10000), Some(100000))
+                .validate()
+                .is_ok()
+        );
+        assert!(q(Some(0), Some(1), Some(0)).validate().is_ok());
+        assert!(q(Some(100001), None, None).validate().is_err());
+        assert!(q(None, Some(0), None).validate().is_err());
+        assert!(q(None, Some(10001), None).validate().is_err());
+        assert!(q(None, None, Some(100001)).validate().is_err());
+        assert!(q(Some(1000), None, Some(1001)).validate().is_err());
+    }
 }
