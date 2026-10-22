@@ -508,8 +508,11 @@ mod tests {
     use openvmm_defs::microvm::MICROVM_COMMAND_LINE_MAX_SIZE;
     use openvmm_defs::microvm::check_microvm_command_line;
     use std::io::Read;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::Seek;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::SeekFrom;
+    #[cfg(any(target_os = "linux", windows))]
     use std::io::Write;
 
     #[cfg(target_os = "linux")]

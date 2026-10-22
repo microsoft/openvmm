@@ -5,6 +5,7 @@
 
 use crate::Options;
 use crate::cli_args::SerialConfigCli;
+#[cfg(any(target_os = "linux", windows, test))]
 use crate::serial_io;
 use anyhow::Context;
 #[cfg(unix)]
