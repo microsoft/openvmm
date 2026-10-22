@@ -5,6 +5,7 @@
 
 use super::ArchPartition;
 use super::BasicPartitionStateAccess;
+#[cfg(guest_arch = "x86_64")]
 use virt::Partition;
 use virt::PartitionAccessState;
 use virt::PartitionMemoryMapper;
