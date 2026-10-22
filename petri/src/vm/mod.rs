@@ -3118,6 +3118,8 @@ pub enum IgvmFirmwareSource {
 pub enum Firmware {
     /// Boot Linux directly, without any firmware.
     LinuxDirect {
+        /// The isolation type of the VM.
+        isolation: Option<IsolationType>,
         /// The kernel to boot.
         kernel: ResolvedArtifact,
         /// The initrd to use.
@@ -3165,6 +3167,8 @@ pub enum Firmware {
     Uefi {
         /// The guest OS the VM will boot into.
         guest: UefiGuest,
+        /// The isolation type of the VM.
+        isolation: Option<IsolationType>,
         /// The firmware to use.
         uefi_firmware: ResolvedArtifact,
         /// UEFI configuration
@@ -3269,10 +3273,12 @@ impl Firmware {
         use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
         match (arch, isolation) {
             (MachineArch::X86_64, None) => Firmware::LinuxDirect {
+                isolation,
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_X64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
             },
             (MachineArch::Aarch64, None) => Firmware::LinuxDirect {
+                isolation,
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
             },
@@ -3293,6 +3299,7 @@ impl Firmware {
     pub fn linux_direct_bzimage(resolver: &ArtifactResolver<'_>) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
         Firmware::LinuxDirect {
+            isolation: None,
             kernel: resolver.require(LINUX_DIRECT_TEST_BZIMAGE_X64).erase(),
             initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
         }
@@ -3341,7 +3348,12 @@ impl Firmware {
     }
 
     /// Constructs a standard [`Firmware::Uefi`] configuration.
-    pub fn uefi(resolver: &ArtifactResolver<'_>, arch: MachineArch, guest: UefiGuest) -> Self {
+    pub fn uefi(
+        resolver: &ArtifactResolver<'_>,
+        arch: MachineArch,
+        guest: UefiGuest,
+        isolation: Option<IsolationType>,
+    ) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
         let uefi_firmware = match arch {
             MachineArch::X86_64 => resolver.require(UEFI_FIRMWARE_X64).erase(),
@@ -3349,6 +3361,7 @@ impl Firmware {
         };
         Firmware::Uefi {
             guest,
+            isolation,
             uefi_firmware,
             uefi_config: Default::default(),
         }
@@ -3391,10 +3404,10 @@ impl Firmware {
     fn isolation(&self) -> Option<IsolationType> {
         match self {
             Firmware::IgvmLinuxDirect { isolation, .. } => Some(*isolation),
-            Firmware::OpenhclUefi { isolation, .. } => *isolation,
-            Firmware::LinuxDirect { .. }
-            | Firmware::Pcat { .. }
-            | Firmware::Uefi { .. }
+            Firmware::OpenhclUefi { isolation, .. }
+            | Firmware::LinuxDirect { isolation, .. }
+            | Firmware::Uefi { isolation, .. } => *isolation,
+            Firmware::Pcat { .. }
             | Firmware::OpenhclLinuxDirect { .. }
             | Firmware::OpenhclPcat { .. } => None,
         }
@@ -3806,6 +3819,8 @@ pub enum IsolationType {
     Snp,
     /// TDX
     Tdx,
+    /// CCA
+    Cca,
 }
 
 /// Flags controlling servicing behavior.

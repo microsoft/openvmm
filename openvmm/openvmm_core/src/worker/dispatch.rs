@@ -467,6 +467,7 @@ pub(crate) struct InitializedVm {
     vmtime_source: VmTimeSource,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
+    device_gm: GuestMemory,
     cfg: Manifest,
     mem_layout: MemoryLayout,
     resolved_pcie_root_complex_ranges: Vec<ResolvedPcieRootComplexRanges>,
@@ -668,9 +669,12 @@ fn build_aarch64_topology(
 
     // Resolve ITS vs v2m and determine v2m SPI count.
     let is_gicv2 = matches!(gic_version, GicVersion::V2 { .. });
-    let v2m_spi_count = match &arch.gic_msi {
-        GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => None,
-        GicMsiConfig::Auto => Some(DEFAULT_GIC_V2M_SPI_COUNT),
+    let resolved_gic_msi_config = match &arch.gic_msi {
+        GicMsiConfig::Disabled => GicMsiConfig::Disabled,
+        GicMsiConfig::Auto if platform_info.supports_its && !is_gicv2 => GicMsiConfig::Its,
+        GicMsiConfig::Auto => GicMsiConfig::V2m {
+            spi_count: Some(DEFAULT_GIC_V2M_SPI_COUNT),
+        },
         GicMsiConfig::Its => {
             if is_gicv2 {
                 anyhow::bail!("ITS is incompatible with GICv2");
@@ -678,9 +682,16 @@ fn build_aarch64_topology(
             if !platform_info.supports_its {
                 anyhow::bail!("ITS requested but the hypervisor does not support it");
             }
-            None
+            GicMsiConfig::Its
         }
-        GicMsiConfig::V2m { spi_count } => Some(spi_count.unwrap_or(DEFAULT_GIC_V2M_SPI_COUNT)),
+        GicMsiConfig::V2m { spi_count } => GicMsiConfig::V2m {
+            spi_count: Some(spi_count.unwrap_or(DEFAULT_GIC_V2M_SPI_COUNT)),
+        },
+    };
+
+    let v2m_spi_count = match resolved_gic_msi_config {
+        GicMsiConfig::V2m { spi_count } => Some(spi_count.unwrap()),
+        _ => None,
     };
 
     // Resolve SPI layout — all SPI allocations in one deterministic pass.
@@ -692,18 +703,19 @@ fn build_aarch64_topology(
     })?;
 
     // Build the GIC MSI controller from resolved SPIs.
-    let gic_msi = if let Some(count) = v2m_spi_count {
-        GicMsiController::V2m(GicV2mInfo {
+    let gic_msi = match resolved_gic_msi_config {
+        GicMsiConfig::Disabled => GicMsiController::None,
+        GicMsiConfig::V2m { spi_count } => GicMsiController::V2m(GicV2mInfo {
             frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
             spi_base: spi_layout
                 .v2m_spi_base
                 .expect("v2m base must be allocated when v2m_spi_count is Some"),
-            spi_count: count,
-        })
-    } else {
-        GicMsiController::Its(GicItsInfo {
+            spi_count: spi_count.unwrap(),
+        }),
+        GicMsiConfig::Its => GicMsiController::Its(GicItsInfo {
             its_base: openvmm_defs::config::DEFAULT_GIC_ITS_BASE,
-        })
+        }),
+        _ => unreachable!(),
     };
 
     let platform = Aarch64PlatformConfig {
@@ -897,6 +909,7 @@ struct LoadedVmInner {
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     memory_manager: GuestMemoryManager,
     gm: GuestMemory,
+    _device_gm: GuestMemory,
     vtl0_hvsock_relay: Option<HvsockRelay>,
     vtl2_hvsock_relay: Option<HvsockRelay>,
     vmbus_server: Option<VmbusServerHandle>,
@@ -1523,6 +1536,17 @@ impl InitializedVm {
             .guest_memory()
             .await
             .context("failed to get guest memory")?;
+
+        let device_gm = if let Some(shared_gpa_bit) = proto.shared_gpa_bit() {
+            memory_manager
+                .client()
+                .aliased_guest_memory("shared-ram", shared_gpa_bit)
+                .await
+                .context("failed to get shared device guest memory")?
+        } else {
+            gm.clone()
+        };
+
         let mut cpuid = Vec::new();
 
         // Add in Hyper-V VMM CPUID leaves.
@@ -1580,6 +1604,7 @@ impl InitializedVm {
             vmtime_source,
             memory_manager,
             gm,
+            device_gm,
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
@@ -1611,6 +1636,7 @@ impl InitializedVm {
             vmtime_source,
             memory_manager,
             gm,
+            device_gm,
             cfg,
             mem_layout,
             resolved_pcie_root_complex_ranges,
@@ -2697,7 +2723,7 @@ impl InitializedVm {
             let chipset_builder = &chipset_builder;
             let driver_source = &driver_source;
             let resolver = &resolver;
-            let gm = &gm;
+            let gm = &device_gm;
             let partition = &partition;
             let mapper = &mapper;
             let port_info = &port_info;
@@ -2811,16 +2837,17 @@ impl InitializedVm {
                 .vmbus_max_version
                 .map(vmbus_core::MaxVersionInfo::new);
             let vmbus_driver = driver_source.simple();
-            let vmbus = VmbusServer::builder(vmbus_driver.clone(), synic.clone(), gm.clone())
-                .hvsock_notify(Some(hvsock_channel.server_half))
-                .external_server(vtl2_request_send)
-                .use_message_redirect(vmbus_cfg.vtl2_redirect)
-                .max_version(vmbus_max_version)
-                .max_restore_version(vmbus_max_version)
-                .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
-                .enable_mnf(true)
-                .build()
-                .context("failed to create vmbus server")?;
+            let vmbus =
+                VmbusServer::builder(vmbus_driver.clone(), synic.clone(), device_gm.clone())
+                    .hvsock_notify(Some(hvsock_channel.server_half))
+                    .external_server(vtl2_request_send)
+                    .use_message_redirect(vmbus_cfg.vtl2_redirect)
+                    .max_version(vmbus_max_version)
+                    .max_restore_version(vmbus_max_version)
+                    .delay_max_version(matches!(cfg.load_mode, LoadMode::Uefi { .. }))
+                    .enable_mnf(true)
+                    .build()
+                    .context("failed to create vmbus server")?;
 
             // Start the vmbus kernel proxy if it's in use.
             #[cfg(windows)]
@@ -2835,7 +2862,7 @@ impl InitializedVm {
                         .vtl2_server(vtl2_vmbus.as_ref().map(|server| {
                             vmbus_server::ProxyServerInfo::new(server.control().clone())
                         }))
-                        .memory(Some(&gm))
+                        .memory(Some(&device_gm))
                         .build()
                         .await
                         .context("failed to start the vmbus proxy")?,
@@ -2936,7 +2963,7 @@ impl InitializedVm {
                                 .transpose()
                                 .context("vpci device vnode exceeds 65535")?,
                         },
-                        gm.clone(),
+                        device_gm.clone(),
                         |device_id| {
                             let hv_device = partition.new_virtual_device(
                                 match dev_cfg.vtl {
@@ -3067,7 +3094,7 @@ impl InitializedVm {
                     let mmio_start = virtio_mmio_region.start() + virtio_mmio_index as u64 * 0x1000;
                     virtio_mmio_index += 1;
                     let id = format!("{id}-{mmio_start}");
-                    let gm = gm.clone();
+                    let gm = device_gm.clone();
                     chipset_builder.arc_mutex_device(id).try_add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
@@ -3193,6 +3220,7 @@ impl InitializedVm {
                 _vmtime: vmtime,
                 memory_manager,
                 gm,
+                _device_gm: device_gm,
                 vtl0_hvsock_relay,
                 vtl2_hvsock_relay,
                 vmbus_server,
@@ -3455,15 +3483,27 @@ impl LoadedVmInner {
             } => {
                 use openvmm_defs::config::LinuxDirectBootMode;
 
-                if isolation != openvmm_defs::config::LinuxIsolationConfig::None {
-                    anyhow::bail!("SNP Linux loader configuration is not supported on aarch64");
-                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
-                    isolation: super::vm_loaders::linux::KernelIsolationConfig::None,
+                    isolation: match (isolation, self.hypervisor_cfg.with_isolation) {
+                        (openvmm_defs::config::LinuxIsolationConfig::None, None) => {
+                            super::vm_loaders::linux::KernelIsolationConfig::None
+                        }
+                        (
+                            openvmm_defs::config::LinuxIsolationConfig::None,
+                            Some(openvmm_defs::config::IsolationType::Cca),
+                        ) => super::vm_loaders::linux::KernelIsolationConfig::Cca(
+                            super::vm_loaders::linux::CcaKernelConfig {
+                                shared_gpa_bit: self.partition.caps().shared_gpa_bit,
+                            },
+                        ),
+                        (linux, hypervisor) => anyhow::bail!(
+                            "invalid isolation config: linux: {linux:?}, hypervisor: {hypervisor:?}"
+                        ),
+                    },
                     smbios,
                 };
 

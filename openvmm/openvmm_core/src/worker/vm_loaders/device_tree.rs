@@ -5,6 +5,8 @@
 //! boot.
 
 use super::super::memory_layout::ChipsetMmioRanges;
+use super::linux::KernelIsolationConfig;
+use crate::worker::vm_loaders::linux::CcaKernelConfig;
 use fdt::builder::Builder;
 use fdt::builder::Nest;
 use fdt::builder::StringId;
@@ -105,6 +107,7 @@ pub(crate) struct LinuxDirectBoot<'a> {
     pub high_mmio: MemoryRange,
     pub initrd: Option<(u64, u64)>,
     pub smmus: &'a [AcpiSmmuConfig],
+    pub isolation: &'a KernelIsolationConfig,
 }
 
 impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
@@ -236,8 +239,15 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
         }
 
         let smmus = self.smmus();
-        root = T::emit_platform(self.topology, root, &p, smmus)?;
-        root = emit_pcie(root, &p, self.topology, self.pcie, smmus)?;
+        let (cca, shared_gpa_bit) = match &self.boot {
+            DeviceTreeBootType::LinuxDirect(LinuxDirectBoot {
+                isolation: KernelIsolationConfig::Cca(CcaKernelConfig { shared_gpa_bit }),
+                ..
+            }) => (true, *shared_gpa_bit),
+            _ => (false, None),
+        };
+        root = T::emit_platform(self.topology, root, &p, smmus, cca)?;
+        root = emit_pcie(root, &p, self.topology, self.pcie, smmus, shared_gpa_bit)?;
 
         match &self.boot {
             DeviceTreeBootType::Igvm(igvm) => {
@@ -248,14 +258,28 @@ impl<'a, T: DeviceTreeArch> DeviceTreeBuilder<'a, T> {
                     igvm.vmbus_redirect,
                     self.dt_uarts,
                 )?;
-                root = emit_chosen(root, &p, self.command_line, self.console, None)?;
+                root = emit_chosen(root, &p, self.command_line, self.console, None, None)?;
                 if igvm.personality == IgvmPersonality::Openhcl {
                     root = emit_openhcl(root, &p, igvm.vtl2_base_address, igvm.entropy)?;
                 }
             }
             DeviceTreeBootType::LinuxDirect(linux) => {
-                root = emit_linux_bus(root, &p, linux.low_mmio, linux.high_mmio, self.dt_uarts)?;
-                root = emit_chosen(root, &p, self.command_line, self.console, linux.initrd)?;
+                root = emit_linux_bus(
+                    root,
+                    &p,
+                    linux.low_mmio,
+                    linux.high_mmio,
+                    self.dt_uarts,
+                    shared_gpa_bit,
+                )?;
+                root = emit_chosen(
+                    root,
+                    &p,
+                    self.command_line,
+                    self.console,
+                    linux.initrd,
+                    shared_gpa_bit,
+                )?;
             }
         }
 
@@ -362,6 +386,7 @@ pub(crate) trait DeviceTreeArch: ArchTopology + inspect::Inspect {
         root: Builder<'a, N>,
         p: &Properties,
         smmus: &[AcpiSmmuConfig],
+        cca: bool,
     ) -> Result<Builder<'a, N>, fdt::builder::Error>;
 
     /// Adds architecture-specific interrupt and NUMA properties to a PCIe host
@@ -421,6 +446,7 @@ impl DeviceTreeArch for X86Topology {
         root: Builder<'a, N>,
         _p: &Properties,
         _smmus: &[AcpiSmmuConfig],
+        _cca: bool,
     ) -> Result<Builder<'a, N>, fdt::builder::Error> {
         Ok(root)
     }
@@ -484,8 +510,9 @@ impl DeviceTreeArch for Aarch64Topology {
         root: Builder<'a, N>,
         p: &Properties,
         smmus: &[AcpiSmmuConfig],
+        cca: bool,
     ) -> Result<Builder<'a, N>, fdt::builder::Error> {
-        emit_arm_platform(root, p, topology, smmus)
+        emit_arm_platform(root, p, topology, smmus, cca)
     }
 
     fn emit_pcie_properties<'a, N>(
@@ -586,13 +613,15 @@ fn emit_pcie<'a, N, T: DeviceTreeArch>(
     topology: &ProcessorTopology<T>,
     bridges: &[PcieHostBridge],
     smmus: &[AcpiSmmuConfig],
+    shared_gpa_bit: Option<u64>,
 ) -> Result<Builder<'a, N>, fdt::builder::Error> {
     for bridge in bridges {
+        let ecam_start = shared_mmio_address(bridge.ecam_range.start(), shared_gpa_bit);
         let mut node = root
-            .start_node(&format!("pcie@{:x}", bridge.ecam_range.start()))?
+            .start_node(&format!("pcie@{ecam_start:x}"))?
             .add_str(p.compatible, "pci-host-ecam-generic")?
             .add_str(p.device_type, "pci")?
-            .add_u64_array(p.reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
+            .add_u64_array(p.reg, &[ecam_start, bridge.ecam_range.len()])?
             .add_u32_array(
                 p.bus_range,
                 &[bridge.start_bus.into(), bridge.end_bus.into()],
@@ -600,19 +629,19 @@ fn emit_pcie<'a, N, T: DeviceTreeArch>(
             .add_u32(p.linux_pci_domain, bridge.segment.into())?
             .add_u32(p.address_cells, 3)?
             .add_u32(p.size_cells, 2)?
-            .add_u32_array(p.ranges, &pcie_ranges(bridge))?;
+            .add_u32_array(p.ranges, &pcie_ranges(bridge, shared_gpa_bit))?;
         node = T::emit_pcie_properties(topology, node, p, bridge, smmus)?;
         root = node.end_node()?;
     }
     Ok(root)
 }
 
-/// Encodes the identity-mapped MMIO windows of a PCIe host bridge as a
+/// Encodes the MMIO windows of a PCIe host bridge as a
 /// device-tree `ranges` property.
 ///
 /// Each entry is 7 cells: [pci-phys.hi, pci-phys.mid, pci-phys.lo,
 /// cpu-phys.hi, cpu-phys.lo, size.hi, size.lo].
-fn pcie_ranges(bridge: &PcieHostBridge) -> Vec<u32> {
+fn pcie_ranges(bridge: &PcieHostBridge, shared_gpa_bit: Option<u64>) -> Vec<u32> {
     // PCI address space type bits (phys.hi bits 25:24).
     const PCI_SPACE_MEM32: u32 = 0x02000000; // 32-bit non-prefetchable MMIO
     const PCI_SPACE_MEM64: u32 = 0x03000000; // 64-bit prefetchable MMIO
@@ -624,13 +653,14 @@ fn pcie_ranges(bridge: &PcieHostBridge) -> Vec<u32> {
     ] {
         if !window.is_empty() {
             let start = window.start();
+            let cpu_start = shared_mmio_address(start, shared_gpa_bit);
             let len = window.len();
             ranges.extend_from_slice(&[
                 space,
                 (start >> 32) as u32,
                 start as u32,
-                (start >> 32) as u32,
-                start as u32,
+                (cpu_start >> 32) as u32,
+                cpu_start as u32,
                 (len >> 32) as u32,
                 len as u32,
             ]);
@@ -645,6 +675,7 @@ fn emit_chosen<'a, N>(
     command_line: &str,
     console: Option<UartId>,
     initrd: Option<(u64, u64)>,
+    shared_gpa_bit: Option<u64>,
 ) -> Result<Builder<'a, N>, fdt::builder::Error> {
     let mut chosen = root
         .start_node("chosen")?
@@ -662,7 +693,7 @@ fn emit_chosen<'a, N>(
         };
         chosen = chosen.add_str(
             p.stdout_path,
-            &format!("/{parent}/{}", uart_node_name(console)),
+            &format!("/{parent}/{}", uart_node_name(console, shared_gpa_bit)),
         )?;
     }
     chosen.end_node()
@@ -767,11 +798,12 @@ fn emit_arm_platform<'a, N>(
     p: &Properties,
     topology: &ProcessorTopology<Aarch64Topology>,
     smmus: &[AcpiSmmuConfig],
+    cca: bool,
 ) -> Result<Builder<'a, N>, fdt::builder::Error> {
     root = root
         .start_node("psci")?
         .add_str(p.compatible, "arm,psci-0.2")?
-        .add_str(p.method, "hvc")?
+        .add_str(p.method, if cca { "smc" } else { "hvc" })?
         .end_node()?;
     root = root
         .start_node("apb-pclk")?
@@ -908,7 +940,7 @@ fn emit_igvm_buses<'a, N>(
             .add_u32(p.size_cells, 1)?
             .add_null(p.ranges)?;
         for &uart in dt_uarts {
-            pio = emit_uart(pio, p, uart)?;
+            pio = emit_uart(pio, p, uart, None)?;
         }
         root = pio.end_node()?;
     }
@@ -921,6 +953,7 @@ fn emit_linux_bus<'a, N>(
     low: MemoryRange,
     high: MemoryRange,
     dt_uarts: &[UartId],
+    shared_gpa_bit: Option<u64>,
 ) -> Result<Builder<'a, N>, fdt::builder::Error> {
     let mut bus = root
         .start_node("openvmm")?
@@ -930,7 +963,7 @@ fn emit_linux_bus<'a, N>(
         .add_null(p.ranges)?
         .add_u32(p.interrupt_parent, PHANDLE_GIC)?;
     for &uart in dt_uarts {
-        bus = emit_uart(bus, p, uart)?;
+        bus = emit_uart(bus, p, uart, shared_gpa_bit)?;
     }
     bus.start_node("vmbus")?
         .add_u32(p.address_cells, 2)?
@@ -938,7 +971,12 @@ fn emit_linux_bus<'a, N>(
         .add_null(p.dma_coherent)?
         .add_u64_array(
             p.ranges,
-            &[low.start(), low.len(), high.start(), high.len()],
+            &[
+                shared_mmio_address(low.start(), shared_gpa_bit),
+                low.len(),
+                shared_mmio_address(high.start(), shared_gpa_bit),
+                high.len(),
+            ],
         )?
         .add_str(p.compatible, "microsoft,vmbus")?
         .add_u32(p.interrupt_parent, PHANDLE_GIC)?
@@ -973,8 +1011,22 @@ fn uart_resources(uart: UartId) -> (u64, u64, u32) {
     )
 }
 
-fn uart_node_name(uart: UartId) -> String {
+fn shared_mmio_address(address: u64, shared_gpa_bit: Option<u64>) -> u64 {
+    // TODO: Linux arm64_rsi_is_protected() queries RIPAS for addresses that
+    // already contain the Realm shared IPA bit, causing RSI_ERROR_INPUT and a
+    // WARN_ON during device probing. Keep the shared address because earlycon
+    // maps the DT address directly. Revisit once Linux handles shared IPAs
+    // without issuing an RSI_IPA_STATE_GET request.
+    shared_gpa_bit.map_or(address, |bit| address | bit)
+}
+
+fn uart_node_name(uart: UartId, shared_gpa_bit: Option<u64>) -> String {
     let (base, _, _) = uart_resources(uart);
+    let base = if uart_is_mmio(uart) {
+        shared_mmio_address(base, shared_gpa_bit)
+    } else {
+        base
+    };
     let prefix = if uart_is_mmio(uart) { "uart" } else { "serial" };
     format!("{prefix}@{base:x}")
 }
@@ -983,10 +1035,16 @@ fn emit_uart<'a, N>(
     parent: Builder<'a, N>,
     p: &Properties,
     uart: UartId,
+    shared_gpa_bit: Option<u64>,
 ) -> Result<Builder<'a, N>, fdt::builder::Error> {
     let (base, length, interrupt) = uart_resources(uart);
+    let base = if uart_is_mmio(uart) {
+        shared_mmio_address(base, shared_gpa_bit)
+    } else {
+        base
+    };
     let mut node = parent
-        .start_node(&uart_node_name(uart))?
+        .start_node(&uart_node_name(uart, shared_gpa_bit))?
         // The partition PIO binding deliberately retains 64-bit reg cells.
         .add_u64_array(p.reg, &[base, length])?
         .add_u32(p.current_speed, 115200)?;
@@ -1099,6 +1157,7 @@ mod tests {
             high_mmio: mmio().high,
             initrd: None,
             smmus: &[],
+            isolation: &KernelIsolationConfig::None,
         }
     }
 

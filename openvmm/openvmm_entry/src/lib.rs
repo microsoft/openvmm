@@ -1776,6 +1776,12 @@ async fn vm_config_from_command_line(
             gic_config: None,
             pmu_gsiv: openvmm_defs::config::PmuGsivConfig::Platform,
             gic_msi: match opt.gic_msi {
+                cli_args::GicMsiCli::Disabled => openvmm_defs::config::GicMsiConfig::Disabled,
+                cli_args::GicMsiCli::Auto
+                    if matches!(opt.isolation, Some(cli_args::IsolationCli::Cca)) =>
+                {
+                    openvmm_defs::config::GicMsiConfig::Disabled
+                }
                 cli_args::GicMsiCli::Auto => openvmm_defs::config::GicMsiConfig::Auto,
                 cli_args::GicMsiCli::Its => openvmm_defs::config::GicMsiConfig::Its,
                 cli_args::GicMsiCli::V2m => {
@@ -1810,6 +1816,7 @@ async fn vm_config_from_command_line(
                 // SNP host data is currently only configurable via TTRPC.
                 host_data: None,
             }),
+            cli_args::IsolationCli::Cca => Some(openvmm_defs::config::IsolationType::Cca),
         }
     } else {
         None

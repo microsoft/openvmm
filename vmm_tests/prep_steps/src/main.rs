@@ -32,6 +32,7 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_vmm_test::artifacts::test_vhd;
 use pipette_protocol::PIPETTE_PORT;
 use vm_resource::IntoResource;
 
@@ -77,17 +78,17 @@ fn build(
             Firmware::uefi(
                 &resolver,
                 MachineArch::X86_64,
-                UefiGuest::Vhd(BootImageConfig::from_vhd(
-                    resolver.require_source(petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64, petri::RemoteAccess::Allow),
-                )),
+                UefiGuest::Vhd(BootImageConfig::from_vhd(resolver.require_source(
+                    test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
+                    petri::RemoteAccess::Allow,
+                ))),
+                None,
             ),
             MachineArch::X86_64,
             true,
         )
         .unwrap();
-        let source_disk = resolver.require(
-            petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64,
-        );
+        let source_disk = resolver.require(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64);
         let output_dir = resolver.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         (artifacts, source_disk, output_dir)
     })?;
@@ -157,11 +158,10 @@ fn build_no_vmbus(
     ResolvedArtifact,
 )> {
     // Use WS2022 as both the boot VM and the source disk to prep.
-    let (artifacts, source_disk, output_dir, virtio_win) = build_with_artifacts(
-        name,
-        |resolver| {
+    let (artifacts, source_disk, output_dir, virtio_win) =
+        build_with_artifacts(name, |resolver| {
             let boot_disk = resolver.require_source(
-                petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
+                test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
                 petri::RemoteAccess::Allow,
             );
             let artifacts = PetriVmArtifacts::<OpenVmmPetriBackend>::new(
@@ -170,21 +170,19 @@ fn build_no_vmbus(
                     &resolver,
                     MachineArch::X86_64,
                     UefiGuest::Vhd(BootImageConfig::from_vhd(boot_disk)),
+                    None,
                 ),
                 MachineArch::X86_64,
                 true,
             )
             .unwrap();
-            let source_disk = resolver.require(
-                petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
-            );
+            let source_disk = resolver.require(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64);
             let output_dir =
                 resolver.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
             let virtio_win = resolver
                 .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS);
             (artifacts, source_disk, output_dir, virtio_win)
-        },
-    )?;
+        })?;
 
     let output_dir = output_dir.get();
     let logger =

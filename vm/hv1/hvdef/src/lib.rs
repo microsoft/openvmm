@@ -1180,6 +1180,7 @@ open_enum! {
 
         HvMessageTypeUnmappedGpa = 0x80000000,
         HvMessageTypeGpaIntercept = 0x80000001,
+        HvMessageTypeMmioIntercept = 0x80000002,
         HvMessageTypeUnacceptedGpa = 0x80000003,
         HvMessageTypeGpaAttributeIntercept = 0x80000004,
         HvMessageTypeEnablePartitionVtlIntercept = 0x80000005,

@@ -186,8 +186,12 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 #[cfg(target_os = "linux")]
 #[openvmm_test(
     nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", linux_direct_aarch64),
+    ),
+    nested(
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", linux_direct_aarch64[cca]),
     ),
 )]
 async fn boot_no_hv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -212,11 +216,11 @@ async fn boot_no_hv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
 #[cfg(target_os = "linux")]
 #[openvmm_test(
     nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
     ),
     nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", uefi_aarch64(vhd(alpine_3_23_aarch64))),
     ),
 )]
@@ -1257,8 +1261,8 @@ async fn secure_boot_pk_kek_unauthenticated_delete_rejected<T: PetriVmmBackend>(
 /// virtio-blk device → disk file.
 #[cfg(target_os = "linux")]
 #[openvmm_test(
-    linux_direct_x64[OPENVMM_VHOST_NATIVE],
-    linux_direct_aarch64[OPENVMM_VHOST_NATIVE],
+    linux_direct_x64[none][OPENVMM_VHOST_NATIVE],
+    linux_direct_aarch64[none][OPENVMM_VHOST_NATIVE],
 )]
 async fn vhost_user_blk_device<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

@@ -60,6 +60,8 @@ pub enum IsolationType {
     Snp,
     /// Trusted Domain Extensions (TDX)
     Tdx,
+    /// CCA
+    Cca,
 }
 
 /// VMM implementation types.
@@ -274,6 +276,7 @@ impl TestRequirement {
                         IsolationType::Vbs => vm_host_info.vbs_supported,
                         IsolationType::Snp => vm_host_info.snp_status,
                         IsolationType::Tdx => vm_host_info.tdx_status,
+                        IsolationType::Cca => false,
                     }
                 } else {
                     false

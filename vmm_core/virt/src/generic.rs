@@ -429,6 +429,11 @@ pub trait ProtoPartition {
     /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
 
+    /// Get the shared GPA bit for the partition if one exists
+    fn shared_gpa_bit(&self) -> Option<u64> {
+        None
+    }
+
     /// Whether the partition delivers guest-memory-access faults back to the
     /// VMM and resolves them through a [`ResolveMemoryFault`] supplied in
     /// [`PartitionConfig::fault_resolver`].
