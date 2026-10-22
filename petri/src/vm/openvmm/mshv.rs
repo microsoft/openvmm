@@ -242,8 +242,16 @@ mod tests {
         fs_err::write(&base, b"base initrd")?;
         fs_err::write(&prepared, b"prepared initrd")?;
         pal_async::DefaultPool::run_with(async |driver| {
-            for (external, prebuilt) in [(false, false), (false, true), (true, false), (true, true)]
-            {
+            // Legacy serial bootstrap requires 16550 wait-for-RTS, unavailable on PL011.
+            for (arch, external, prebuilt) in [
+                (MachineArch::X86_64, false, false),
+                (MachineArch::X86_64, false, true),
+                (MachineArch::X86_64, true, false),
+                (MachineArch::X86_64, true, true),
+                (MachineArch::Aarch64, false, true),
+                (MachineArch::Aarch64, true, false),
+                (MachineArch::Aarch64, true, true),
+            ] {
                 let mut builder = PetriVmBuilder::minimal(
                     "direct",
                     &logs,
@@ -253,7 +261,7 @@ mod tests {
                             kernel: ResolvedArtifact::from_local_path(base.clone()),
                             initrd: ResolvedArtifact::from_local_path(base.clone()),
                         },
-                        arch: MachineArch::host(),
+                        arch,
                         agent_image: None,
                         openhcl_agent_image: None,
                         pipette_binary: None,
