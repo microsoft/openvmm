@@ -32,9 +32,18 @@ use unix_socket::UnixStream;
 /// Resolves the artifacts of
 /// [`test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot`], which is
 /// registered by the parent module to keep its `ttrpc::` test name.
+///
+/// Returns `None` on hosts other than x86_64: the native OpenVMM runs guests
+/// of the host's architecture, and the microVM profile supports only x86_64
+/// guests.
 pub(super) fn lifecycle_and_snapshot_artifacts(
     resolver: &petri::ArtifactResolver<'_>,
 ) -> Option<[ResolvedArtifact; 3]> {
+    if petri_artifacts_common::tags::MachineArch::host()
+        != petri_artifacts_common::tags::MachineArch::X86_64
+    {
+        return None;
+    }
     Some([
         resolver.require(artifacts::OPENVMM_NATIVE).erase(),
         resolver
