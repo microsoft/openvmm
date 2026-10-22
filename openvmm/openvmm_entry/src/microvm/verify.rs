@@ -195,20 +195,33 @@ mod tests {
 
     #[test]
     fn fatal_error_message_leads_with_the_time_abi_code() {
+        // `{err:?}` appends a backtrace when RUST_BACKTRACE or
+        // RUST_LIB_BACKTRACE enables capture, so compare whole messages with
+        // the same rendering and leading lines with literals.
         let err = anyhow::anyhow!("[E_TSC_SYNC_UNSUPPORTED] no synchronized set")
             .context("failed to create the partition")
             .context("failed to launch vm worker");
         let message = fatal_error_message(&err);
-        assert!(
-            message.starts_with("fatal error: [E_TSC_SYNC_UNSUPPORTED] failed to launch vm worker"),
-            "{message}"
+        assert_eq!(
+            message,
+            format!("fatal error: [E_TSC_SYNC_UNSUPPORTED] {err:?}")
+        );
+        assert_eq!(
+            message.lines().next(),
+            Some("fatal error: [E_TSC_SYNC_UNSUPPORTED] failed to launch vm worker")
         );
 
         let err = anyhow::anyhow!("[E_TEST_HOOK] unknown hook");
         let message = fatal_error_message(&err);
-        assert_eq!(message, "fatal error: [E_TEST_HOOK] unknown hook");
+        assert_eq!(message, format!("fatal error: {err:?}"));
+        assert_eq!(
+            message.lines().next(),
+            Some("fatal error: [E_TEST_HOOK] unknown hook")
+        );
 
         let err = anyhow::anyhow!("no code here");
-        assert_eq!(fatal_error_message(&err), "fatal error: no code here");
+        let message = fatal_error_message(&err);
+        assert_eq!(message, format!("fatal error: {err:?}"));
+        assert_eq!(message.lines().next(), Some("fatal error: no code here"));
     }
 }
