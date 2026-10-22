@@ -535,6 +535,7 @@ impl VirtioTestGuest {
         dev: &mut VirtioMmioDevice,
         driver_features: VirtioDeviceFeatures,
     ) {
+        ChangeDeviceState::start(dev);
         dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
         dev.write_u32(112, VIRTIO_DRIVER);
         dev.write_u32(36, 0);
@@ -573,6 +574,7 @@ impl VirtioTestGuest {
         dev: &mut VirtioPciTestDevice,
         driver_features: VirtioDeviceFeatures,
     ) {
+        ChangeDeviceState::start(&mut dev.pci_device);
         let bar_address1: u64 = 0x10000000000;
         dev.pci_device
             .pci_cfg_write(
@@ -1422,6 +1424,21 @@ impl VirtioDevice for TestDevice {
         self.workers.clear();
     }
 
+    async fn pause(&mut self) -> Option<Vec<Option<QueueState>>> {
+        let mut states = vec![None; self.traits.max_queues as usize];
+        for (idx, worker) in self.workers.iter_mut().enumerate() {
+            worker.stop().await;
+            states[idx] = worker.state_mut().map(|state| state.queue.queue_state());
+        }
+        Some(states)
+    }
+
+    async fn resume(&mut self) {
+        for worker in &mut self.workers {
+            worker.start();
+        }
+    }
+
     fn supports_save_restore(&self) -> bool {
         true
     }
@@ -1485,7 +1502,7 @@ impl VirtioPciTestDevice {
         let msi_conn = MsiConnection::new();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
-        let dev = VirtioPciDevice::new(
+        let mut dev = VirtioPciDevice::new(
             Box::new(TestDevice::new(
                 &driver_source,
                 DeviceTraits {
@@ -1510,6 +1527,7 @@ impl VirtioPciTestDevice {
 
         let test_intc = Arc::new(TestPciInterruptController::new());
         msi_conn.connect(test_intc.signal_msi());
+        ChangeDeviceState::start(&mut dev);
 
         Self {
             pci_device: dev,
@@ -3411,6 +3429,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
     .unwrap();
 
     // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK -> DRIVER_OK
+    ChangeDeviceState::start(&mut dev);
     dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
     dev.write_u32(112, VIRTIO_DRIVER);
     dev.write_u32(36, 0);
@@ -3547,6 +3566,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     .unwrap();
 
     // Attempt DRIVER_OK — enable() will fail (use write_u32 to bypass deferred IO)
+    ChangeDeviceState::start(&mut dev);
     let current = dev.read_u32(20);
     dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
     yield_and_poll_device(&mut dev).await;
@@ -4262,6 +4282,7 @@ impl MmioTestTransport {
             dev.write_u32(68, 1); // queue enable
         }
 
+        ChangeDeviceState::start(&mut dev);
         Self { dev }
     }
 }
@@ -4397,6 +4418,7 @@ impl PciTestTransport {
         )
         .unwrap();
 
+        ChangeDeviceState::start(&mut dev);
         Self { dev }
     }
 }
@@ -4659,6 +4681,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         .unwrap();
 
     // DRIVER_OK — starts the queue worker (use write_u32 to bypass deferred IO)
+    ChangeDeviceState::start(&mut dev);
     let current = dev.read_u32(20);
     dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
 
@@ -4733,6 +4756,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
 
     // Create a new device and restore into it.
     let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    dev2.pci_device.stop().await;
     dev2.pci_device
         .restore(saved)
         .expect("restore should succeed");
@@ -4992,6 +5016,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     // point, so the assertion held while every restored VM ran without a single
     // doorbell.
     let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
+    dev2.pci_device.stop().await;
     dev2.pci_device
         .restore(saved)
         .expect("restore should succeed");
@@ -5688,6 +5713,125 @@ fn make_split_bound_test_work(mem: &GuestMemory, count: u16, initial_avail: u16)
             &mut avail,
         );
     }
+}
+
+#[async_test]
+async fn recover_split_outstanding_across_cursor_wrap(driver: DefaultDriver) {
+    for complete in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(
+            &driver,
+            false,
+            Some(QueueState {
+                avail_index: 1,
+                used_index: u16::MAX,
+            }),
+        );
+        make_split_bound_test_work(&mem, 3, u16::MAX);
+        if complete {
+            queue.complete_uncompleted().unwrap();
+            assert_eq!(
+                queue.queue_state(),
+                QueueState {
+                    avail_index: 1,
+                    used_index: 1
+                }
+            );
+            assert_eq!(
+                mem.read_plain::<u16_le>(BOUND_TEST_USED_ADDR + USED_OFFSET_IDX)
+                    .unwrap()
+                    .get(),
+                1
+            );
+            assert_eq!(queue.try_next().unwrap().unwrap().descriptor_index(), 2);
+        } else {
+            queue.rewind_uncompleted();
+            for expected in 0..3 {
+                let work = queue.try_next().unwrap().unwrap();
+                assert_eq!(work.descriptor_index(), expected);
+                queue.complete(work, 0);
+            }
+        }
+        assert!(queue.try_next().unwrap().is_none());
+    }
+}
+
+#[async_test]
+async fn recover_packed_outstanding_chain_across_wrap(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(
+        &driver,
+        true,
+        Some(QueueState {
+            avail_index: 1,
+            used_index: 0x8003,
+        }),
+    );
+    write_packed_descriptor(
+        &mem,
+        3,
+        BOUND_TEST_DATA_ADDR,
+        3,
+        DescriptorFlags::new().with_available(true).with_next(true),
+    );
+    write_packed_descriptor(
+        &mem,
+        0,
+        BOUND_TEST_DATA_ADDR + 0x100,
+        3,
+        DescriptorFlags::new().with_used(true),
+    );
+    write_packed_descriptor(
+        &mem,
+        1,
+        BOUND_TEST_DATA_ADDR + 0x200,
+        1,
+        DescriptorFlags::new().with_used(true),
+    );
+    queue.complete_uncompleted().unwrap();
+    assert_eq!(
+        queue.queue_state(),
+        QueueState {
+            avail_index: 1,
+            used_index: 1
+        }
+    );
+    let work = queue.try_next().unwrap().unwrap();
+    assert_eq!(work.descriptor_index(), 1);
+    queue.complete(work, 0);
+    assert!(queue.try_next().unwrap().is_none());
+}
+
+#[async_test]
+async fn recovery_rejects_cursor_inside_packed_chain(driver: DefaultDriver) {
+    let (mem, mut queue) = new_bound_test_queue(
+        &driver,
+        true,
+        Some(QueueState {
+            avail_index: 0,
+            used_index: 0x8003,
+        }),
+    );
+    write_packed_descriptor(
+        &mem,
+        3,
+        BOUND_TEST_DATA_ADDR,
+        3,
+        DescriptorFlags::new().with_available(true).with_next(true),
+    );
+    write_packed_descriptor(
+        &mem,
+        0,
+        BOUND_TEST_DATA_ADDR + 0x100,
+        3,
+        DescriptorFlags::new().with_used(true),
+    );
+    assert!(
+        queue
+            .complete_uncompleted()
+            .unwrap_err()
+            .to_string()
+            .contains("inside a descriptor chain")
+    );
+    assert_eq!(queue.queue_state().used_index, 0x8003);
 }
 
 fn write_packed_descriptor(

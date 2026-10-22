@@ -30,10 +30,10 @@ futures.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
+task_control.workspace = true
 [dev-dependencies]
 mesh.workspace = true
 pal_async.workspace = true
-task_control.workspace = true
 test_with_tracing.workspace = true
 
 futures.workspace = true

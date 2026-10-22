@@ -91,6 +91,12 @@ impl PackedQueueGetWork {
         self.next_avail_index | (u16::from(self.wrapped_bit) << 15)
     }
 
+    pub fn rewind(&mut self, state: u16) {
+        self.next_avail_index = state & 0x7fff;
+        self.wrapped_bit = state & 0x8000 != 0;
+        self.next_is_available = false;
+    }
+
     /// Checks whether a descriptor is available, returning its index.
     ///
     /// This is a lightweight check that does not arm kick notification. When

@@ -28,6 +28,9 @@ pub mod state {
         pub used_addr: u64,
         #[mesh(6)]
         pub queue_state: Option<QueueState>,
+        /// Completion generated during restore, delivered only on VM start.
+        #[mesh(7)]
+        pub pending_interrupt: bool,
     }
 
     /// Transport-agnostic saved state for the virtio common configuration.
@@ -70,6 +73,8 @@ pub(crate) enum VirtioRestoreError {
     QueueCountMismatch { saved: usize, device: usize },
     #[error("queue {index}: saved size {size} exceeds max {max}")]
     QueueSizeTooLarge { index: usize, size: u16, max: u16 },
+    #[error("active queue {index} has no saved progress; this snapshot cannot be restored")]
+    MissingQueueState { index: usize },
 }
 
 /// Validate that saved driver features are a subset of the current device
@@ -78,10 +83,10 @@ pub(crate) enum VirtioRestoreError {
 ///
 /// Also validates that the queue count matches and all queue sizes are
 /// within bounds.
-pub(crate) fn validate_restore(
+pub(crate) fn validate_restore<'a>(
     common: &state::CommonSavedState,
     device_features: &VirtioDeviceFeatures,
-    queue_sizes: impl Iterator<Item = (usize, u16)>,
+    queues: impl Iterator<Item = (usize, &'a state::CommonQueueState)>,
     device_queue_count: usize,
     saved_queue_count: usize,
     max_queue_size: u16,
@@ -123,7 +128,8 @@ pub(crate) fn validate_restore(
     }
 
     // Validate queue sizes.
-    for (i, size) in queue_sizes {
+    for (i, queue) in queues {
+        let size = queue.size;
         if size > max_queue_size {
             return Err(RestoreError::InvalidSavedState(
                 VirtioRestoreError::QueueSizeTooLarge {
@@ -132,6 +138,14 @@ pub(crate) fn validate_restore(
                     max: max_queue_size,
                 }
                 .into(),
+            ));
+        }
+        if crate::spec::VirtioDeviceStatus::from(common.device_status).driver_ok()
+            && queue.enable
+            && queue.queue_state.is_none()
+        {
+            return Err(RestoreError::InvalidSavedState(
+                VirtioRestoreError::MissingQueueState { index: i }.into(),
             ));
         }
     }

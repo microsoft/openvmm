@@ -93,7 +93,7 @@ impl TransportOps for MmioTransport {
 /// Run a virtio device over MMIO
 #[derive(InspectMut)]
 pub struct VirtioMmioDevice {
-    #[inspect(flatten)]
+    #[inspect(flatten, mut)]
     core: VirtioTransportCore,
     #[inspect(flatten)]
     mmio: MmioTransport,

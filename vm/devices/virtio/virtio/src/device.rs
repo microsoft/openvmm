@@ -90,6 +90,9 @@ pub trait VirtioDevice: InspectMut + Send {
     ///
     /// Returns the queue's `QueueState` on completion, or `None` if the
     /// queue was not active.
+    /// The device must release backend ownership of the queue's buffers
+    /// before returning. Retained internal execution belongs to `pause`,
+    /// not this path.
     ///
     /// This must be idempotent: calling it on a queue that was never
     /// started (or has already been stopped) must return `None`
@@ -97,9 +100,57 @@ pub trait VirtioDevice: InspectMut + Send {
     /// iterating all queue indices, not just active ones.
     fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
 
+    /// Optionally parks the device without releasing its queues. Only internal
+    /// VM pause uses this path; vhost-user queue stops must release ownership.
+    /// Returning `None` requests the ordinary stop/start fallback.
+    /// On success, return one entry per queue and freeze guest-visible
+    /// completion publication until `resume` or `reset`.
+    fn pause(&mut self) -> impl Future<Output = Option<Vec<Option<QueueState>>>> + Send {
+        async { None }
+    }
+
+    /// Resumes the same execution after a successful `pause`, without changing
+    /// guest memory, queue resources, or negotiated features.
+    fn resume(&mut self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
+    /// Validates and reconstructs one saved queue while execution is parked.
+    ///
+    /// This must not create backend queues or resume workers. `resources.notify`
+    /// records a pending notification for delivery after the VM is restored.
+    /// Returns the queue progress to use on start.
+    fn restore_queue(
+        &mut self,
+        _idx: u16,
+        _resources: QueueResources,
+        _features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, vmcore::save_restore::RestoreError> {
+        Ok(state)
+    }
+
+    /// Whether disabled queues can still run without external effects.
+    /// Otherwise the vhost-user server stops them until they are enabled.
+    fn supports_queue_enable(&self) -> bool {
+        false
+    }
+
+    /// Changes whether a queue may have external effects. Network devices must
+    /// consume and discard disabled TX and stop delivering disabled RX.
+    fn set_queue_enabled(
+        &mut self,
+        _idx: u16,
+        _enabled: bool,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
+
     /// Reset device-internal state to initial values.
     ///
-    /// Called after all queues have been stopped on guest-initiated reset.
+    /// Called after all queues have been stopped on guest-initiated reset, or
+    /// while paused to abandon execution for restore. In the latter case it
+    /// must release retained queues without accessing guest memory.
     /// Default: no-op.
     fn reset(&mut self) -> impl Future<Output = ()> + Send {
         async {}
@@ -161,6 +212,33 @@ pub trait DynVirtioDevice: InspectMut + Send {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
 
+    /// Optionally parks internal execution without releasing queues.
+    fn pause(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Option<Vec<Option<QueueState>>>> + Send + '_>>;
+
+    /// Resumes a parked execution.
+    fn resume(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Reconstructs a saved queue without starting execution.
+    fn restore_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, vmcore::save_restore::RestoreError>;
+
+    /// Whether disabled queues can run without external effects.
+    fn supports_queue_enable(&self) -> bool;
+
+    /// Changes queue enable state independently of start/stop.
+    fn set_queue_enabled(
+        &mut self,
+        idx: u16,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
@@ -220,6 +298,38 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>> {
         Box::pin(VirtioDevice::stop_queue(self, idx))
+    }
+
+    fn pause(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Option<Vec<Option<QueueState>>>> + Send + '_>> {
+        Box::pin(VirtioDevice::pause(self))
+    }
+
+    fn resume(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::resume(self))
+    }
+
+    fn restore_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: QueueState,
+    ) -> Result<QueueState, vmcore::save_restore::RestoreError> {
+        VirtioDevice::restore_queue(self, idx, resources, features, state)
+    }
+
+    fn set_queue_enabled(
+        &mut self,
+        idx: u16,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::set_queue_enabled(self, idx, enabled))
+    }
+
+    fn supports_queue_enable(&self) -> bool {
+        VirtioDevice::supports_queue_enable(self)
     }
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
