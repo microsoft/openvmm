@@ -708,6 +708,14 @@ message VMConfig {
     IsolationConfig isolation_config = 19;
     // Machine selection is independent from hypervisor selection.
     MachineProfile machine_profile = 17;
+    // microVM CPU profile, as the command line's --cpu-profile selects it:
+    // "auto", which an empty value also selects, for the built-in profile of
+    // the host CPU's generation; "host" for a development profile derived
+    // from this host; or a built-in profile ID. A restore uses the snapshot's
+    // profile and accepts only "auto", the snapshot's profile ID, or, for a
+    // snapshot of a host profile, "host". Requires the microVM machine
+    // profile.
+    string cpu_profile = 22;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
