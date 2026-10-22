@@ -31,9 +31,13 @@ use std::time::UNIX_EPOCH;
 
 const MAX_STRING_LEN: usize = 16 * 1024;
 const TRACE_BUFFER_CAPACITY: usize = 256 * 1024;
-const PTRACE_REQUEST_GET_SYSCALL_INFO: libc::c_uint = 0x420e;
-const PTRACE_SYSCALL_INFO_OP_EXIT: u8 = 2;
-const PTRACE_SYSCALL_INFO_OP_SECCOMP: u8 = 3;
+
+// Linux UAPI bindings from include/uapi/linux/ptrace.h:
+// https://github.com/torvalds/linux/blob/v6.12/include/uapi/linux/ptrace.h
+// libc 0.2.184 exposes these on GNU but not musl; the kernel ABI is the same.
+const PTRACE_GET_SYSCALL_INFO: libc::c_uint = 0x420e;
+const PTRACE_SYSCALL_INFO_EXIT: u8 = 2;
+const PTRACE_SYSCALL_INFO_SECCOMP: u8 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -332,7 +336,7 @@ fn handle_seccomp_stop(
     let mut info = MaybeUninit::<PtraceSyscallInfo>::zeroed();
     let size = size_of::<PtraceSyscallInfo>();
     ptrace(
-        PTRACE_REQUEST_GET_SYSCALL_INFO,
+        PTRACE_GET_SYSCALL_INFO,
         tid,
         size,
         info.as_mut_ptr() as usize,
@@ -340,7 +344,7 @@ fn handle_seccomp_stop(
     // SAFETY: the kernel initialized the structure after a successful ptrace.
     let info = unsafe { info.assume_init() };
 
-    if info.op != PTRACE_SYSCALL_INFO_OP_SECCOMP {
+    if info.op != PTRACE_SYSCALL_INFO_SECCOMP {
         return Err(io::Error::other(format!(
             "unexpected syscall info operation {} at seccomp stop",
             info.op
@@ -380,14 +384,14 @@ fn handle_syscall_exit(
     let mut info = MaybeUninit::<PtraceSyscallInfo>::zeroed();
     let size = size_of::<PtraceSyscallInfo>();
     ptrace(
-        PTRACE_REQUEST_GET_SYSCALL_INFO,
+        PTRACE_GET_SYSCALL_INFO,
         tid,
         size,
         info.as_mut_ptr() as usize,
     )?;
     // SAFETY: the kernel initialized the structure after a successful ptrace.
     let info = unsafe { info.assume_init() };
-    if info.op != PTRACE_SYSCALL_INFO_OP_EXIT {
+    if info.op != PTRACE_SYSCALL_INFO_EXIT {
         return Err(io::Error::other(format!(
             "unexpected syscall info operation {} at syscall exit stop",
             info.op
@@ -588,6 +592,8 @@ fn resume_ptrace(request: libc::c_uint, tid: i32, signal: i32) -> io::Result<()>
 }
 
 fn ptrace(request: libc::c_uint, pid: i32, address: usize, data: usize) -> io::Result<()> {
+    // GNU takes c_uint requests, musl takes c_int. All requests used here fit
+    // both types; normalize to c_uint internally and cast at the libc boundary.
     // SAFETY: each caller supplies the address and data layout required by the
     // specific ptrace request; kernel errors are returned through errno.
     let result = unsafe {
@@ -644,11 +650,68 @@ fn sanitize_name(name: &str) -> String {
 mod tests {
     use super::*;
     use std::io::BufRead;
+    use std::mem::align_of;
+    use std::mem::offset_of;
+    use test_with_tracing::test;
 
     #[test]
     fn ptrace_syscall_info_matches_linux_abi() {
         assert_eq!(size_of::<PtraceSyscallInfo>(), 88);
-        assert_eq!(std::mem::offset_of!(PtraceSyscallInfo, u), 24);
+        assert_eq!(align_of::<PtraceSyscallInfo>(), 8);
+        assert_eq!(offset_of!(PtraceSyscallInfo, op), 0);
+        assert_eq!(offset_of!(PtraceSyscallInfo, arch), 4);
+        assert_eq!(offset_of!(PtraceSyscallInfo, instruction_pointer), 8);
+        assert_eq!(offset_of!(PtraceSyscallInfo, stack_pointer), 16);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u), 24);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.entry.nr), 24);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.entry.args), 32);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.exit.sval), 24);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.exit.is_error), 32);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.seccomp.nr), 24);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.seccomp.args), 32);
+        assert_eq!(offset_of!(PtraceSyscallInfo, u.seccomp.ret_data), 80);
+    }
+
+    #[cfg(target_env = "gnu")]
+    #[test]
+    fn ptrace_syscall_info_matches_libc() {
+        assert_eq!(PTRACE_GET_SYSCALL_INFO, libc::PTRACE_GET_SYSCALL_INFO);
+        assert_eq!(PTRACE_SYSCALL_INFO_EXIT, libc::PTRACE_SYSCALL_INFO_EXIT);
+        assert_eq!(
+            PTRACE_SYSCALL_INFO_SECCOMP,
+            libc::PTRACE_SYSCALL_INFO_SECCOMP
+        );
+        assert_eq!(
+            size_of::<PtraceSyscallInfo>(),
+            size_of::<libc::ptrace_syscall_info>()
+        );
+        assert_eq!(
+            align_of::<PtraceSyscallInfo>(),
+            align_of::<libc::ptrace_syscall_info>()
+        );
+
+        macro_rules! assert_field_offset {
+            ($($field:ident).+) => {
+                assert_eq!(
+                    offset_of!(PtraceSyscallInfo, $($field).+),
+                    offset_of!(libc::ptrace_syscall_info, $($field).+),
+                    stringify!($($field).+),
+                );
+            };
+        }
+
+        assert_field_offset!(op);
+        assert_field_offset!(arch);
+        assert_field_offset!(instruction_pointer);
+        assert_field_offset!(stack_pointer);
+        assert_field_offset!(u);
+        assert_field_offset!(u.entry.nr);
+        assert_field_offset!(u.entry.args);
+        assert_field_offset!(u.exit.sval);
+        assert_field_offset!(u.exit.is_error);
+        assert_field_offset!(u.seccomp.nr);
+        assert_field_offset!(u.seccomp.args);
+        assert_field_offset!(u.seccomp.ret_data);
     }
 
     #[test]
