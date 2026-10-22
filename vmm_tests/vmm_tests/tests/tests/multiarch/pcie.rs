@@ -45,6 +45,23 @@ impl fmt::Debug for ParsedPciDevice {
     }
 }
 
+fn pci_capability_offset(config: &[u8], id: u8) -> anyhow::Result<usize> {
+    let mut offset = usize::from(*config.get(0x34).context("missing capability pointer")?);
+    for _ in 0..48 {
+        if offset == 0 {
+            break;
+        }
+        let cap = config
+            .get(offset..offset + 4)
+            .context("invalid capability offset")?;
+        if cap[0] == id {
+            return Ok(offset);
+        }
+        offset = usize::from(cap[1]);
+    }
+    anyhow::bail!("missing PCI capability {id:#x}")
+}
+
 async fn parse_guest_pci_devices(
     os_flavor: OsFlavor,
     agent: &PipetteClient,
@@ -396,11 +413,19 @@ async fn pcie_hotplug(
     timer.sleep(Duration::from_secs(5)).await;
 
     // Hot-remove the device
-    vm.remove_pcie_device("s0rc0rp0".into()).await?;
+    let error = vm
+        .remove_pcie_device("s0rc0rp0".into(), true)
+        .await
+        .expect_err("orderly removal requires attention button support");
+    anyhow::ensure!(
+        error
+            .to_string()
+            .contains("port does not support attention button ejection"),
+        "unexpected removal error: {error:#}"
+    );
+    vm.remove_pcie_device("s0rc0rp0".into(), false).await?;
 
-    // Verify the device is gone. Both Linux (pciehp) and Windows (pci.sys)
-    // process native PCIe hotplug surprise-removal through their respective
-    // hotplug state machines within a few seconds.
+    // Verify the guest has removed the endpoint after surprise removal.
     let mut removed = false;
     for attempt in 0..30 {
         let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
@@ -419,7 +444,7 @@ async fn pcie_hotplug(
     Ok(())
 }
 
-/// Verify virtio block teardown and port reuse after PCIe removal through RPC.
+/// Verifies virtio block teardown, timeout recovery and port reuse through RPC.
 #[vmm_test_with(openvmm, configs(linux_direct_x64))]
 async fn pcie_hotplug_virtio_blk(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -434,7 +459,10 @@ async fn pcie_hotplug_virtio_blk(
     use vm_resource::IntoResource;
 
     let (mut vm, agent) = config
-        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_pcie_attention_button("s0rc0rp0")
+        })
         .run()
         .await?;
     let sh = agent.unix_shell();
@@ -442,9 +470,8 @@ async fn pcie_hotplug_virtio_blk(
     let kernel = cmd!(sh, "uname -r").read().await?;
     tracing::info!(%kernel, "guest kernel for virtio removal");
 
-    // First let the guest tear down the live device as a control. Then repeat
-    // with RPC removal alone to exercise surprise removal.
-    for guest_remove_first in [true, false, false] {
+    // Guest sysfs removal is the control for the two RPC ejection cycles.
+    for (cycle, guest_remove_first) in [true, false, false].into_iter().enumerate() {
         tracing::info!(guest_remove_first, "testing virtio block removal");
         let resource = VirtioPciDeviceHandle(
             VirtioBlkHandle {
@@ -486,6 +513,18 @@ async fn pcie_hotplug_virtio_blk(
             .read()
             .await?;
         let pci_path = pci_path.trim();
+        let bridge_path = pci_path
+            .rsplit_once('/')
+            .context("missing parent bridge")?
+            .0;
+        let config_path = format!("{bridge_path}/config");
+        let bytes = cmd!(sh, "od -An -v -t u1 -N 256 {config_path}")
+            .read()
+            .await?;
+        let bytes = bytes
+            .split_whitespace()
+            .map(str::parse::<u8>)
+            .collect::<Result<Vec<_>, _>>()?;
 
         if guest_remove_first {
             let remove = format!("echo 1 > {pci_path}/remove");
@@ -496,7 +535,45 @@ async fn pcie_hotplug_virtio_blk(
                 .context("guest sysfs removal timed out")??;
         }
 
-        vm.remove_pcie_device("s0rc0rp0".into()).await?;
+        if cycle == 1 {
+            // Disable MSI delivery but leave hotplug events enabled to exercise the timeout.
+            let msi_control = pci_capability_offset(&bytes, 0x05)? + 2;
+            anyhow::ensure!(
+                bytes.get(msi_control).context("missing MSI control")? & 1 != 0,
+                "port MSI is not enabled"
+            );
+            let msi_control = msi_control.to_string();
+            cmd!(
+                sh,
+                "dd if=/dev/zero of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            )
+            .run()
+            .await?;
+            let started = std::time::Instant::now();
+            let error = vm
+                .remove_pcie_device("s0rc0rp0".into(), true)
+                .await
+                .expect_err("removal must not succeed without guest acknowledgement");
+            anyhow::ensure!(
+                error.to_string().contains("PCIe ejection timed out"),
+                "unexpected removal error: {error:#}"
+            );
+            assert!(started.elapsed() >= Duration::from_secs(30));
+            cmd!(
+                sh,
+                "dd if=/dev/vda of=/dev/null bs=4096 count=1 iflag=direct"
+            )
+            .run()
+            .await
+            .context("device must remain usable after ejection timeout")?;
+            let enable_msi = format!(
+                "printf '\\001' | dd of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            );
+            cmd!(sh, "sh -c {enable_msi}").run().await?;
+        }
+
+        vm.remove_pcie_device("s0rc0rp0".into(), !guest_remove_first)
+            .await?;
 
         let mut removed = false;
         for _ in 0..30 {
@@ -512,6 +589,29 @@ async fn pcie_hotplug_virtio_blk(
             removed,
             "PCI device teardown did not finish after removal, guest_remove_first={guest_remove_first}"
         );
+        if guest_remove_first {
+            let slot_control = (pci_capability_offset(&bytes, 0x10)? + 0x18).to_string();
+            let mut powered_off = false;
+            for _ in 0..30 {
+                let control = cmd!(sh, "od -An -t u2 -j {slot_control} -N 2 {config_path}")
+                    .read()
+                    .await?;
+                let control = control
+                    .trim()
+                    .parse::<u16>()
+                    .context("invalid slot control")?;
+                const POWER_AND_INDICATOR_OFF: u16 = (1 << 10) | (0b11 << 8);
+                if control & POWER_AND_INDICATOR_OFF == POWER_AND_INDICATOR_OFF {
+                    powered_off = true;
+                    break;
+                }
+                timer.sleep(Duration::from_millis(500)).await;
+            }
+            anyhow::ensure!(
+                powered_off,
+                "guest did not finish slot shutdown before port reuse"
+            );
+        }
     }
 
     agent.power_off().await?;

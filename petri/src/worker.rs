@@ -134,9 +134,13 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+    pub(crate) async fn remove_pcie_device(
+        &self,
+        port_name: String,
+        orderly: bool,
+    ) -> anyhow::Result<()> {
         self.rpc
-            .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .call_failable(VmRpc::RemovePcieDevice, (port_name, orderly))
             .await?;
         Ok(())
     }
