@@ -366,6 +366,8 @@ pub struct PetriVmProperties {
     pub is_linux_direct: bool,
     /// Whether this VM is using pipette in VTL0
     pub using_vtl0_pipette: bool,
+    /// Pipette is supplied and started by the guest rather than Petri.
+    pub external_pipette: bool,
     /// Whether this VM is using VPCI
     pub using_vpci: bool,
     /// The OS flavor of the guest in the VM
@@ -828,6 +830,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Use Pipette supplied and started by the guest image, without adding an
     /// agent disk or injecting Pipette into a Linux-direct initrd.
+    ///
+    /// OpenVMM Linux-direct boot leaves the initrd's default entry point intact
+    /// unless [`Self::with_prebuilt_initrd`] supplies an explicit `rdinit`.
     pub fn with_external_pipette(mut self) -> Self {
         self.external_pipette = true;
         self.agent_image = None;
@@ -1316,6 +1321,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             is_pcat: self.config.firmware.is_pcat(),
             is_linux_direct: self.config.firmware.is_linux_direct(),
             using_vtl0_pipette: self.using_vtl0_pipette(),
+            external_pipette: self.external_pipette,
             using_vpci: self.boot_device_type.requires_vpci_boot(),
             os_flavor: self.config.firmware.os_flavor(),
             minimal_mode: self.minimal_mode,

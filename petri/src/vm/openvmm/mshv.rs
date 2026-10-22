@@ -55,6 +55,7 @@ mod tests {
     use crate::mshv_boot::MshvBoot;
     use petri_artifacts_common::tags::OsFlavor;
     use test_with_tracing::test;
+    #[cfg(any(windows, target_os = "linux"))]
     use vm_resource::IntoResource;
 
     fn builder_with_guest(
@@ -233,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn external_agent_uses_prepared_linux_initrd() -> anyhow::Result<()> {
+    fn linux_direct_boot_respects_agent_ownership() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
         let logs = PetriLogSource::file_only(temp.path())?;
         let base = temp.path().join("base");
@@ -241,48 +242,75 @@ mod tests {
         fs_err::write(&base, b"base initrd")?;
         fs_err::write(&prepared, b"prepared initrd")?;
         pal_async::DefaultPool::run_with(async |driver| {
-            let builder = PetriVmBuilder::minimal(
-                "direct",
-                &logs,
-                PetriVmArtifacts {
-                    backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
-                    firmware: Firmware::LinuxDirect {
-                        kernel: ResolvedArtifact::from_local_path(base.clone()),
-                        initrd: ResolvedArtifact::from_local_path(base.clone()),
+            for (external, prebuilt) in [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let mut builder = PetriVmBuilder::minimal(
+                    "direct",
+                    &logs,
+                    PetriVmArtifacts {
+                        backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                        firmware: Firmware::LinuxDirect {
+                            kernel: ResolvedArtifact::from_local_path(base.clone()),
+                            initrd: ResolvedArtifact::from_local_path(base.clone()),
+                        },
+                        arch: MachineArch::host(),
+                        agent_image: None,
+                        openhcl_agent_image: None,
+                        pipette_binary: None,
+                        nested_test: None,
                     },
-                    arch: MachineArch::host(),
-                    agent_image: None,
-                    openhcl_agent_image: None,
-                    pipette_binary: None,
-                    nested_test: None,
-                },
-                &driver,
-            )?
-            .with_external_pipette()
-            .with_prebuilt_initrd(crate::PetriInitrd {
-                path: crate::TempOrPersistentPath::Persistent(prepared),
-                rdinit_param: "/external-init".into(),
-            })
-            .with_serial_output();
-            assert!(!builder.properties().uses_pipette_as_init);
-            let backend = configure(builder).await?;
-            assert!(backend.resources.linux_direct_serial_agent.is_none());
-            let openvmm_defs::config::LoadMode::Linux {
-                initrd: Some(mut file),
-                cmdline,
-                ..
-            } = backend.config.load_mode
-            else {
-                panic!("expected Linux direct")
-            };
-            assert!(cmdline.contains("rdinit=/external-init"));
-            let mut contents = String::new();
-            std::io::Read::read_to_string(&mut file, &mut contents)?;
-            assert_eq!(contents, "prepared initrd");
+                    &driver,
+                )?
+                .with_serial_output();
+                if external {
+                    builder = builder.with_external_pipette();
+                }
+                if prebuilt {
+                    builder = builder.with_prebuilt_initrd(crate::PetriInitrd {
+                        path: crate::TempOrPersistentPath::Persistent(prepared.clone()),
+                        rdinit_param: "/external-init".into(),
+                    });
+                }
+                let backend = configure(builder).await?;
+                assert_eq!(
+                    backend.resources.linux_direct_serial_agent.is_some(),
+                    !external && !prebuilt
+                );
+                let openvmm_defs::config::LoadMode::Linux {
+                    initrd: Some(mut file),
+                    cmdline,
+                    ..
+                } = backend.config.load_mode
+                else {
+                    panic!("expected Linux direct")
+                };
+                if prebuilt {
+                    assert!(cmdline.contains("rdinit=/external-init"));
+                } else if external {
+                    assert!(
+                        !cmdline
+                            .split_whitespace()
+                            .any(|arg| arg.starts_with("rdinit="))
+                    );
+                } else {
+                    assert!(cmdline.contains("rdinit=/bin/sh"));
+                }
+                let mut contents = String::new();
+                std::io::Read::read_to_string(&mut file, &mut contents)?;
+                assert_eq!(
+                    contents,
+                    if prebuilt {
+                        "prepared initrd"
+                    } else {
+                        "base initrd"
+                    }
+                );
+            }
             Ok(())
         })
     }
 
+    #[cfg(any(windows, target_os = "linux"))]
     #[test]
     fn shares_get_private_ports_after_all_backend_modifiers() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;

@@ -407,6 +407,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Once this is done, the files can safely be deleted.
 
         let imc_hiv = if properties.using_vtl0_pipette
+            && !properties.external_pipette
             && matches!(properties.os_flavor, OsFlavor::Windows)
             && !properties.is_isolated
         {

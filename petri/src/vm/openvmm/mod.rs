@@ -101,7 +101,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
     const SUPPORTS_VMBUS: bool = true;
-    const SUPPORTS_FILE_SHARING: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))

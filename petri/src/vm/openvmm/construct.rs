@@ -172,6 +172,7 @@ impl PetriVmConfigOpenVmm {
             mesh: &mesh,
             openvmm_path,
             pipette_rdinit_param: prebuilt_initrd.as_ref().map(|x| x.rdinit_param.clone()),
+            external_pipette: properties.external_pipette,
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
@@ -371,7 +372,10 @@ impl PetriVmConfigOpenVmm {
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
             // on the floor during boot.
-            if matches!(firmware, Firmware::LinuxDirect { .. }) && prebuilt_initrd.is_none() {
+            if matches!(firmware, Firmware::LinuxDirect { .. })
+                && prebuilt_initrd.is_none()
+                && !properties.external_pipette
+            {
                 chipset = chipset.with_serial_wait_for_rts();
             }
         }
@@ -808,6 +812,7 @@ struct PetriVmConfigSetupCore<'a> {
     mesh: &'a Mesh,
     openvmm_path: &'a ResolvedArtifact,
     pipette_rdinit_param: Option<String>,
+    external_pipette: bool,
     enable_serial: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
@@ -863,6 +868,7 @@ impl PetriVmConfigSetupCore<'_> {
 
         if self.firmware.is_linux_direct()
             && !self.firmware.is_isolated_without_paravisor()
+            && !self.external_pipette
             && self.pipette_rdinit_param.is_none()
         {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
@@ -934,10 +940,11 @@ impl PetriVmConfigSetupCore<'_> {
                     .context("Failed to open initrd")?
                     .into();
 
-                let init = self
-                    .pipette_rdinit_param
-                    .as_ref()
-                    .map_or("/bin/sh", |s| s.as_str());
+                let rdinit = match self.pipette_rdinit_param.as_deref() {
+                    Some(path) => format!(" rdinit={path}"),
+                    None if self.external_pipette => String::new(),
+                    None => " rdinit=/bin/sh".into(),
+                };
 
                 let serial_args = if self.enable_serial {
                     format!("{console} debug ")
@@ -945,7 +952,7 @@ impl PetriVmConfigSetupCore<'_> {
                     String::new()
                 };
 
-                let cmdline = format!("{serial_args}panic=-1 rdinit={init} {vsock_blacklist}");
+                let cmdline = format!("{serial_args}panic=-1{rdinit} {vsock_blacklist}");
 
                 LoadMode::Linux {
                     kernel,

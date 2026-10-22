@@ -204,6 +204,7 @@ impl PetriVmConfigOpenVmm {
         // Skip when VMBus is disabled — the no-vmbus prepped image has
         // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
+            && !self.resources.properties.external_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
             && !self.resources.properties.no_vmbus
