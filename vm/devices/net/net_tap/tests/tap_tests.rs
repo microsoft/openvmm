@@ -373,6 +373,102 @@ mod tap_tests {
         }
     }
 
+    /// Builds an Ethernet frame that carries a UDP datagram from 10.0.0.2 to
+    /// 10.0.0.1:`dst_port`.
+    fn udp_datagram_frame(dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        let udp_len = 8 + payload.len() as u16;
+        let mut ip_header = [
+            0x45, 0x00, 0x00, 0x00, // IHL=5, total length (set below)
+            0x00, 0x00, 0x40, 0x00, // id=0, DF
+            0x40, 0x11, 0x00, 0x00, // TTL=64, proto=UDP, checksum (set below)
+            0x0a, 0x00, 0x00, 0x02, // src: 10.0.0.2
+            0x0a, 0x00, 0x00, 0x01, // dst: 10.0.0.1 (our TAP IP)
+        ];
+        ip_header[2..4].copy_from_slice(&(20 + udp_len).to_be_bytes());
+        let mut sum = ip_header
+            .chunks_exact(2)
+            .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .sum::<u32>();
+        while sum >> 16 != 0 {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        ip_header[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // dst: broadcast
+        frame.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x01]); // src
+        frame.extend_from_slice(&[0x08, 0x00]); // ethertype: IPv4
+        frame.extend_from_slice(&ip_header);
+        frame.extend_from_slice(&0xabcdu16.to_be_bytes()); // src port
+        frame.extend_from_slice(&dst_port.to_be_bytes());
+        frame.extend_from_slice(&udp_len.to_be_bytes());
+        frame.extend_from_slice(&[0x00, 0x00]); // checksum: none
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Validates that one tx_avail call writes every packet that it is given.
+    ///
+    /// The frontends submit the rest of a batch only after `poll_ready`
+    /// reports that the queue can accept it, so a queue that consumed part of
+    /// a batch without backpressure would hold the rest of the guest's
+    /// transmits until unrelated traffic woke it.
+    async fn test_tap_tx_writes_whole_batch(driver: DefaultDriver) {
+        const PACKETS: u32 = 16;
+
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        configure_tap("tap0", "10.0.0.1/24");
+
+        let (mut pool, mem) = make_pool();
+        let config = vec![QueueConfig {
+            driver: Box::new(driver.clone()),
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        let queue = &mut queues[0];
+
+        let sock = std::net::UdpSocket::bind("10.0.0.1:0").unwrap();
+        sock.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let port = sock.local_addr().unwrap().port();
+
+        let segments = (0..PACKETS)
+            .map(|i| {
+                let frame = udp_datagram_frame(port, &i.to_be_bytes());
+                let gpa = u64::from(i) * 2048;
+                mem.write_at(gpa, &frame).unwrap();
+                TxSegment {
+                    ty: TxSegmentType::Head(TxMetadata {
+                        id: TxId(i),
+                        segment_count: 1,
+                        len: frame.len() as u32,
+                        ..Default::default()
+                    }),
+                    gpa,
+                    len: frame.len() as u32,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
+        assert!(completed, "tx should complete synchronously");
+        assert_eq!(count, segments.len(), "tx should write the whole batch");
+
+        let mut received = (0..PACKETS)
+            .map(|_| {
+                let mut payload = [0; 4];
+                let n = sock.recv(&mut payload).unwrap();
+                assert_eq!(n, payload.len());
+                u32::from_be_bytes(payload)
+            })
+            .collect::<Vec<_>>();
+        received.sort_unstable();
+        assert_eq!(received, (0..PACKETS).collect::<Vec<_>>());
+    }
+
     /// Validates that transmitting with offloads succeeds through to the kernel.
     async fn test_tap_tx_with_offloads(driver: DefaultDriver) {
         let mut endpoint = new_endpoint("tap0").unwrap();
@@ -649,6 +745,7 @@ mod tap_tests {
                 "tap_tx_backpressure_preserves_ownership",
                 test_tap_tx_backpressure_preserves_ownership,
             ),
+            async_trial("tap_tx_writes_whole_batch", test_tap_tx_writes_whole_batch),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
             async_trial("tap_tso_ipv4_checksum", test_tap_tso_ipv4_checksum),
         ]
