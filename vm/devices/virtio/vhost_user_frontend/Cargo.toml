@@ -24,10 +24,14 @@ vmcore.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+mesh.workspace = true
+net_backend.workspace = true
+net_backend_resources.workspace = true
 pal_async = { workspace = true, features = ["tests"] }
 socket2 = { workspace = true, features = ["all"] }
 test_with_tracing.workspace = true
 vhost_user_backend.workspace = true
+virtio_net.workspace = true
 sparse_mmap.workspace = true
 
 [target.'cfg(unix)'.dependencies]

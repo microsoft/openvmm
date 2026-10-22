@@ -90,12 +90,30 @@ pub trait VirtioDevice: InspectMut + Send {
     ///
     /// Returns the queue's `QueueState` on completion, or `None` if the
     /// queue was not active.
+    /// The device must release backend ownership of the queue's buffers
+    /// before returning.
     ///
     /// This must be idempotent: calling it on a queue that was never
     /// started (or has already been stopped) must return `None`
     /// immediately. Transports rely on this during reset/disable by
     /// iterating all queue indices, not just active ones.
     fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
+
+    /// Whether disabled queues can still run without external effects.
+    /// Otherwise the vhost-user server stops them until they are enabled.
+    fn supports_queue_enable(&self) -> bool {
+        false
+    }
+
+    /// Changes whether a queue may have external effects. Network devices must
+    /// consume and discard disabled TX and stop delivering disabled RX.
+    fn set_queue_enabled(
+        &mut self,
+        _idx: u16,
+        _enabled: bool,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async { Ok(()) }
+    }
 
     /// Reset device-internal state to initial values.
     ///
@@ -161,6 +179,16 @@ pub trait DynVirtioDevice: InspectMut + Send {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
 
+    /// Whether disabled queues can run without external effects.
+    fn supports_queue_enable(&self) -> bool;
+
+    /// Changes queue enable state independently of start/stop.
+    fn set_queue_enabled(
+        &mut self,
+        idx: u16,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>>;
+
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
@@ -224,6 +252,18 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(VirtioDevice::reset(self))
+    }
+
+    fn set_queue_enabled(
+        &mut self,
+        idx: u16,
+        enabled: bool,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + '_>> {
+        Box::pin(VirtioDevice::set_queue_enabled(self, idx, enabled))
+    }
+
+    fn supports_queue_enable(&self) -> bool {
+        VirtioDevice::supports_queue_enable(self)
     }
 
     fn supports_save_restore(&self) -> bool {

@@ -24,12 +24,15 @@ vmcore.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+net_backend.workspace = true
+net_backend_resources.workspace = true
 inspect.workspace = true
 pal_async = { workspace = true, features = ["tests"] }
 parking_lot.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tempfile.workspace = true
 test_with_tracing.workspace = true
+virtio_net.workspace = true
 
 [lints]
 workspace = true
