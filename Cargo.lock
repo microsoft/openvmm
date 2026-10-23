@@ -3967,6 +3967,7 @@ dependencies = [
  "crossterm",
  "fs-err",
  "futures-concurrency",
+ "mshv_host_boot",
  "pal_async",
  "petri",
  "petri_artifacts_common",
@@ -4995,6 +4996,13 @@ dependencies = [
  "mshv-bindings",
  "thiserror 2.0.16",
  "vmm-sys-util",
+]
+
+[[package]]
+name = "mshv_host_boot"
+version = "0.0.0"
+dependencies = [
+ "uefi",
 ]
 
 [[package]]
@@ -6701,6 +6709,7 @@ dependencies = [
  "mesh",
  "mesh_process",
  "mesh_worker",
+ "mshv_host_boot",
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",

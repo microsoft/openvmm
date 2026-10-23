@@ -79,6 +79,7 @@ edition = "2024"
 version = "0.3.0"
 
 [workspace.dependencies]
+mshv_host_boot = { path = "petri/mshv_host_boot" }
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
 
 # opentmk

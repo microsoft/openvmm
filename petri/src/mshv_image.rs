@@ -3,11 +3,13 @@
 
 //! Compose an experimental x86-64 mshv boot disk from prebuilt artifacts.
 //!
-//! The caller supplies compatible shim, GRUB, and hypervisor payloads. This
+//! The caller supplies the development UEFI host boot application and hypervisor payloads. This
 //! module neither downloads artifacts nor invokes host image-building tools.
 
 use anyhow::Context;
 use guid::Guid;
+use mshv_host_boot::HYPERVISOR_CMDLINE_FILE;
+use mshv_host_boot::KERNEL_CMDLINE_FILE;
 use std::collections::BTreeMap;
 use std::io::Seek;
 use std::io::Write;
@@ -46,11 +48,8 @@ impl fatfs::TimeProvider for ImageTimeProvider {
 /// Inputs for a disposable boot disk. No installed Linux root filesystem is
 /// required; the initramfs must supply `/init`.
 pub struct MshvImage<'a> {
-    /// x64 shim, configured to load `grubx64.efi` beside itself.
-    pub shim: &'a Path,
-    /// x64 GRUB with embedded FAT/GPT, chain, Linux, and normal-mode modules,
-    /// and an embedded prefix of `/boot/grub2`.
-    pub grub: &'a Path,
+    /// x64 `mshv_host_boot.efi`, built for `x86_64-unknown-uefi`.
+    pub host_boot: &'a Path,
     /// Boot payload root containing `HvLoader.efi`, `lxhvloader.dll`, and
     /// `Windows/System32`. All files under `Windows` are preserved.
     pub payload: &'a Path,
@@ -60,6 +59,8 @@ pub struct MshvImage<'a> {
     pub initrd: &'a Path,
     /// Literal Linux command line.
     pub kernel_cmdline: &'a str,
+    /// Literal hypervisor options, passed to HvLoader after the DLL path.
+    pub hypervisor_cmdline: &'a str,
 }
 
 impl MshvImage<'_> {
@@ -70,8 +71,7 @@ impl MshvImage<'_> {
     pub fn build(&self, output: &Path) -> anyhow::Result<()> {
         let mut files = BTreeMap::new();
         for (destination, source) in [
-            ("EFI/BOOT/BOOTX64.EFI", self.shim.to_path_buf()),
-            ("EFI/BOOT/grubx64.efi", self.grub.to_path_buf()),
+            ("EFI/BOOT/BOOTX64.EFI", self.host_boot.to_path_buf()),
             ("HvLoader.efi", self.payload.join("HvLoader.efi")),
             ("lxhvloader.dll", self.payload.join("lxhvloader.dll")),
             ("bzImage", self.kernel.to_path_buf()),
@@ -86,8 +86,25 @@ impl MshvImage<'_> {
                 "missing hypervisor payload file {required}"
             );
         }
-        let config = grub_config(self.kernel_cmdline)?;
-        let payload_size = files.values().try_fold(config.len() as u64, |size, path| {
+        let kernel_cmdline =
+            mshv_host_boot::command_line(self.kernel_cmdline).map_err(anyhow::Error::msg)?;
+        let hypervisor_cmdline =
+            mshv_host_boot::command_line(self.hypervisor_cmdline).map_err(anyhow::Error::msg)?;
+        let configs = [
+            (
+                KERNEL_CMDLINE_FILE,
+                format!("initrd=\\initramfs.cpio {kernel_cmdline}\n"),
+            ),
+            (
+                HYPERVISOR_CMDLINE_FILE,
+                format!("\\lxhvloader.dll {hypervisor_cmdline}\n"),
+            ),
+        ];
+        for (_, content) in &configs {
+            mshv_host_boot::command_line(content).map_err(anyhow::Error::msg)?;
+        }
+        let config_size: u64 = configs.iter().map(|(_, value)| value.len() as u64).sum();
+        let payload_size = files.values().try_fold(config_size, |size, path| {
             size.checked_add(fs_err::metadata(path)?.len())
                 .context("image size overflow")
         })?;
@@ -146,9 +163,11 @@ impl MshvImage<'_> {
                     .with_context(|| format!("copying {} to {destination}", source.display()))?;
                 dest.flush()?;
             }
-            let mut dest = create_file(&root, "boot/grub2/grub.cfg")?;
-            dest.write_all(config.as_bytes())?;
-            dest.flush()?;
+            for (path, content) in &configs {
+                let mut dest = create_file(&root, path)?;
+                dest.write_all(content.as_bytes())?;
+                dest.flush()?;
+            }
         }
         fs.unmount()?;
         image.as_file().sync_all()?;
@@ -242,41 +261,6 @@ fn create_file<'a, T: fatfs::ReadWriteSeek>(
         .with_context(|| format!("creating {path}"))
 }
 
-fn grub_config(cmdline: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        !cmdline
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '\'' | '"')),
-        "kernel command line must not contain control characters or quotes"
-    );
-    // GRUB re-quotes arguments containing spaces when building the Linux
-    // command line. Pass each option separately, not the entire line as one.
-    let cmdline = cmdline
-        .split(' ')
-        .filter(|arg| !arg.is_empty())
-        .map(|arg| format!("'{arg}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok(format!(
-        "set timeout=0\n\
-         set default=0\n\
-         menuentry 'mshv' {{\n\
-         search --no-floppy --set=root --file /HvLoader.efi\n\
-         if chainloader /HvLoader.efi lxhvloader.dll 'MSHV_ROOT=\\Windows' MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=ROOT MSHV_X2APIC_POLICY=ENABLE MSHV_FORCE_NESTED=TRUE; then\n\
-           if boot; then\n\
-             if linux /bzImage {cmdline}; then\n\
-               if initrd /initramfs.cpio; then\n\
-                 boot\n\
-               fi\n\
-             fi\n\
-           fi\n\
-         fi\n\
-         echo 'mshv boot failed'\n\
-         halt\n\
-         }}\n"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,12 +284,12 @@ mod tests {
         let artifact = dir.path().join("artifact");
         fs_err::write(&artifact, b"artifact")?;
         let inputs = MshvImage {
-            shim: &artifact,
-            grub: &artifact,
+            host_boot: &artifact,
             payload: &payload,
             kernel: &artifact,
             initrd: &artifact,
-            kernel_cmdline: "rdinit=/init console=ttyS0",
+            kernel_cmdline: "rdinit=/init console=ttyS0 key=\"two words\" x=$root;halt",
+            hypervisor_cmdline: "MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=CORE",
         };
         let output = dir.path().join("boot.img");
         inputs.build(&output)?;
@@ -321,27 +305,47 @@ mod tests {
         let fs = fatfs::FileSystem::new(partition, fatfs::FsOptions::new())?;
         assert_eq!(fs.fat_type(), fatfs::FatType::Fat32);
         assert_valid_timestamps(&fs.root_dir())?;
-        for path in [
-            "EFI/BOOT/BOOTX64.EFI",
-            "EFI/BOOT/grubx64.efi",
-            "bzImage",
-            "initramfs.cpio",
-        ] {
+        for path in ["EFI/BOOT/BOOTX64.EFI", "bzImage", "initramfs.cpio"] {
             let mut bytes = Vec::new();
             fs.root_dir().open_file(path)?.read_to_end(&mut bytes)?;
             assert_eq!(bytes, b"artifact");
         }
-        let mut config = String::new();
-        fs.root_dir()
-            .open_file("boot/grub2/grub.cfg")?
-            .read_to_string(&mut config)?;
-        assert_eq!(config, grub_config(inputs.kernel_cmdline)?);
+        for (path, expected) in [
+            (
+                KERNEL_CMDLINE_FILE,
+                format!("initrd=\\initramfs.cpio {}\n", inputs.kernel_cmdline),
+            ),
+            (
+                HYPERVISOR_CMDLINE_FILE,
+                format!("\\lxhvloader.dll {}\n", inputs.hypervisor_cmdline),
+            ),
+        ] {
+            let mut content = String::new();
+            fs.root_dir()
+                .open_file(path)?
+                .read_to_string(&mut content)?;
+            assert_eq!(content, expected);
+        }
+        assert!(fs.root_dir().open_file("EFI/BOOT/grubx64.efi").is_err());
+        assert!(fs.root_dir().open_dir("boot/grub2").is_err());
         let mut extra = String::new();
         fs.root_dir()
             .open_file("Windows/System32/kdstub.dll")?
             .read_to_string(&mut extra)?;
         assert_eq!(extra, "Windows/System32/kdstub.dll");
         fs.unmount()?;
+        for (kernel_cmdline, hypervisor_cmdline) in [
+            ("x\nhalt", inputs.hypervisor_cmdline),
+            (inputs.kernel_cmdline, "MSHV_ENABLE=TRUE\0"),
+        ] {
+            let invalid = MshvImage {
+                kernel_cmdline,
+                hypervisor_cmdline,
+                ..inputs
+            };
+            assert!(invalid.build(&dir.path().join("invalid.img")).is_err());
+            assert!(!dir.path().join("invalid.img").exists());
+        }
         fs_err::write(&output, b"do not overwrite")?;
         assert!(inputs.build(&output).is_err());
         assert_eq!(fs_err::read(&output)?, b"do not overwrite");
@@ -365,16 +369,6 @@ mod tests {
             if entry.is_dir() && !matches!(entry.file_name().as_str(), "." | "..") {
                 assert_valid_timestamps(&entry.to_dir())?;
             }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn command_line_is_literal() -> anyhow::Result<()> {
-        let config = grub_config("rdinit=/init x=$root;halt")?;
-        assert!(config.contains("linux /bzImage 'rdinit=/init' 'x=$root;halt'"));
-        for invalid in ["x\nhalt", "x\rhalt", "x\0halt", "x'", "x=\"a b\""] {
-            assert!(grub_config(invalid).is_err());
         }
         Ok(())
     }
