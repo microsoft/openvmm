@@ -4,6 +4,10 @@
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![expect(unsafe_code)]
 
+mod limits;
+#[cfg(test)]
+mod tests;
+
 use super::Access;
 use super::Client;
 use super::ConsommeState;
@@ -44,17 +48,23 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
+use std::time::Instant;
 
 const ICMPV4_HEADER_LEN: usize = 8;
 
 pub(crate) struct Icmp {
     connections: HashMap<SocketAddrV4, IcmpConnection>,
+    timeout: Duration,
+    max_connections: Option<usize>,
 }
 
 impl Icmp {
-    pub fn new() -> Self {
+    pub fn new(timeout: Duration, max_connections: Option<usize>) -> Self {
         Self {
             connections: HashMap::new(),
+            timeout,
+            max_connections,
         }
     }
 }
@@ -62,6 +72,8 @@ impl Icmp {
 impl Inspect for Icmp {
     fn inspect(&self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
+        resp.field("max_connections", self.max_connections)
+            .field("active_connections", self.connections.len());
         for (addr, conn) in &self.connections {
             resp.field(&format!("{}:{}", addr.ip(), addr.port()), conn);
         }
@@ -75,6 +87,8 @@ struct IcmpConnection {
     #[inspect(display)]
     guest_mac: EthernetAddress,
     stats: Stats,
+    #[inspect(debug)]
+    last_activity: Instant,
 }
 
 #[derive(Inspect, Default)]
@@ -92,7 +106,7 @@ impl IcmpConnection {
         dst_addr: &SocketAddrV4,
         state: &mut ConsommeState,
         client: &mut impl Client,
-    ) {
+    ) -> bool {
         let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
         loop {
             match self
@@ -120,6 +134,7 @@ impl IcmpConnection {
                     let len = ETHERNET_HEADER_LEN + n;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
                     self.stats.rx_packets.increment();
+                    self.last_activity = Instant::now();
                 }
                 Poll::Ready(Err(err)) => {
                     tracelimit::error_ratelimited!(
@@ -127,9 +142,9 @@ impl IcmpConnection {
                         guest_ip = %dst_addr.ip(),
                         "icmp recv error"
                     );
-                    break;
+                    break false;
                 }
-                Poll::Pending => break,
+                Poll::Pending => break true,
             }
         }
     }
@@ -159,9 +174,19 @@ impl IcmpConnection {
 
 impl<T: Client> Access<'_, T> {
     pub(crate) fn poll_icmp(&mut self, cx: &mut Context<'_>) {
-        for (dst_addr, conn) in &mut self.inner.icmp.connections {
-            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client);
-        }
+        let timeout = self.inner.icmp.timeout;
+        let now = Instant::now();
+        self.inner.icmp.connections.retain(|dst_addr, conn| {
+            if now.duration_since(conn.last_activity) > timeout {
+                tracing::debug!(
+                    guest = %dst_addr,
+                    "ICMP connection timed out"
+                );
+                return false;
+            }
+
+            conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client)
+        });
     }
 
     /// Handle an ICMP echo request destined for the gateway IP by
@@ -242,6 +267,8 @@ impl<T: Client> Access<'_, T> {
         let icmp_packet = Icmpv4Packet::new_unchecked(payload);
         let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
+        self.inner.icmp.check_flow_limit(&guest_addr)?;
+
         let entry = self.inner.icmp.connections.entry(guest_addr);
         let conn = match entry {
             hash_map::Entry::Occupied(conn) => conn.into_mut(),
@@ -275,6 +302,7 @@ impl<T: Client> Access<'_, T> {
                     socket,
                     guest_mac: frame.src_addr,
                     stats: Default::default(),
+                    last_activity: Instant::now(),
                 };
                 e.insert(conn)
             }
@@ -284,6 +312,7 @@ impl<T: Client> Access<'_, T> {
         match conn.send_to(addresses.dst_addr, send_buffer, hop_limit) {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
+                conn.last_activity = Instant::now();
                 Ok(())
             }
             Err(err) if err.kind() == ErrorKind::WouldBlock => {

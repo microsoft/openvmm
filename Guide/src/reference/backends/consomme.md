@@ -148,8 +148,15 @@ backend can still produce data; its timeout starts when the backend closes and
 the connection enters `LastAck`. ACKs and newly accepted data restart the
 timeout. Embedders can override it with the `tcp_close_timeout` field on
 `ConsommeParams`. The same duration is used for `TimeWait`, where it
-represents the 2*MSL wait required by RFC 9293. A separate fixed 60-second
+represents the 2*MSL wait required by RFC 9293, unless the TCP flow limit
+reclaims the connection earlier (see below). A separate fixed 60-second
 timeout bounds initial handshakes that receive no close request.
+
+Consomme closes a connection's host socket as soon as both directions of the
+host connection are closed, that is, once the host has sent its FIN and
+Consomme has passed the guest's data and FIN on to the host. The connection
+itself can outlive its socket, for example in `TimeWait`, while it completes
+the close with the guest.
 
 Inbound connections require explicit port forwarding — OpenVMM can
 programmatically bind host ports and forward them into the guest.
@@ -160,6 +167,22 @@ Each unique guest source socket (guest IP + source port) gets a
 host-side UDP socket bound to an ephemeral port. Datagrams are
 forwarded in both directions. Idle bindings are cleaned up after a
 configurable timeout (5 minutes by default, per RFC 4787).
+
+Consomme admits at most 256 active guest UDP flows, 128 active guest TCP flows,
+and 16 guest ICMP source flows by default. It rejects an excess flow before
+creating its host socket; it never evicts an active flow to make room.
+Only a guest SYN that would open a TCP connection is checked against the TCP
+limit, so other segments of an unknown connection, such as a stale ACK, still
+get a reset while the limit is reached. A connection lingering in `TimeWait`
+after both sides closed it holds no data or host socket and counts toward the
+TCP limit only until a new flow needs its slot: when the limit is reached,
+Consomme reclaims the `TimeWait` connection closest to expiry instead of
+rejecting the new flow.
+Embedders can change these limits through the `flow_limits` field on
+`ConsommeParams`, a `FlowLimits { tcp, udp, icmp }` of `Option<usize>`
+values. `None` leaves a protocol unbounded, and `FlowLimits::UNBOUNDED`
+lifts all three limits for a guest that is trusted not to exhaust host
+sockets and memory.
 
 UDP packets to the gateway on well-known ports are intercepted:
 
@@ -189,7 +212,8 @@ DNS over TCP is also supported for large responses.
 Echo requests (ping) are forwarded through a host-side ICMP socket.
 The guest's TTL is preserved, so ping works and traceroute partially
 works (the echo reply comes back, but intermediate TTL Exceeded hops
-are not relayed — see limitations).
+are not relayed — see limitations). Idle ICMP source flows use the same
+configurable timeout as UDP bindings (5 minutes by default).
 
 ### ARP and NDP
 
