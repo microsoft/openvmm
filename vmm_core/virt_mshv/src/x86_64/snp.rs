@@ -533,7 +533,41 @@ pub(super) fn add_snp_hyperv_cpuid_leaves(
     Ok(())
 }
 
-pub(super) fn snp_hv_cpuid_overrides(native_max_leaf: u32) -> [virt::CpuidLeaf; 3] {
+pub(super) fn is_hv_max_leaf(leaf: &virt::CpuidLeaf) -> bool {
+    leaf.function == hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION
+        && leaf.index.unwrap_or(0) == 0
+}
+
+pub(super) fn snp_hv_cpuid_max_leaf(
+    configured_cpuid: &virt::CpuidLeafSet,
+    native_max_leaf: Option<u32>,
+) -> u32 {
+    let minimum = hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION;
+    let native_max_leaf = native_max_leaf.unwrap_or(minimum);
+    let configured_max_leaf = configured_cpuid.result(
+        hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+        0,
+        &[native_max_leaf, 0, 0, 0],
+    )[0];
+
+    native_max_leaf.max(configured_max_leaf).max(minimum)
+}
+
+pub(super) fn snp_hv_max_leaf_override(native_max_leaf: u32) -> virt::CpuidLeaf {
+    // Make the isolation configuration leaf discoverable.
+    virt::CpuidLeaf::new(
+        hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+        [
+            native_max_leaf.max(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION),
+            0,
+            0,
+            0,
+        ],
+    )
+    .masked([u32::MAX, 0, 0, 0])
+}
+
+pub(super) fn snp_hv_cpuid_overrides() -> [virt::CpuidLeaf; 2] {
     const HV_ISOLATION_TYPE_SNP: u32 = 2;
     let privileges = hvdef::HvPartitionPrivilege::new()
         .with_start_virtual_processor(true)
@@ -551,17 +585,6 @@ pub(super) fn snp_hv_cpuid_overrides(native_max_leaf: u32) -> [virt::CpuidLeaf; 
     // also keeps the restricted-injection doorbell EOI path active, making
     // the previous APIC-access recommendation mask unnecessary.
     [
-        // Make the isolation configuration leaf discoverable.
-        virt::CpuidLeaf::new(
-            hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
-            [
-                native_max_leaf.max(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION),
-                0,
-                0,
-                0,
-            ],
-        )
-        .masked([u32::MAX, 0, 0, 0]),
         // Tell the guest that this is an isolated Hyper-V partition.
         virt::CpuidLeaf::new(
             hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
@@ -625,6 +648,7 @@ impl MshvPartitionInner {
         self.memory.lock().ranges.push(Some(crate::MshvMemoryRange {
             region,
             mapped: false,
+            guest_memory: false,
         }));
         Ok(())
     }
@@ -690,8 +714,7 @@ impl MshvPartitionInner {
             let mut memory = self.memory.lock();
             for range in memory.ranges.iter_mut().flatten() {
                 if !range.mapped {
-                    self.vmfd
-                        .map_user_memory(range.region)
+                    crate::timing::map_user_memory(&self.vmfd, range.region)
                         .map_err(|e| SnpError::MapGuestMemory(e.into()))?;
                     range.mapped = true;
                 }
@@ -726,7 +749,8 @@ impl MshvPartitionInner {
 
         let sev_control =
             mshv_bindings::snp::get_sev_control_register(vmsa_gpa / hvdef::HV_PAGE_SIZE);
-        self.bsp_vcpufd
+        self.finalized()?
+            .bsp_vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((
                 HvX64RegisterName::SevControl,
                 sev_control,
@@ -744,7 +768,8 @@ impl MshvPartitionInner {
         if count > x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX {
             return Err(SnpError::TooManyCpuidEntries(count).into());
         }
-        if self.caps.hv1 {
+        let finalized = self.finalized()?;
+        if finalized.caps.hv1 {
             // TODO: Determine the correct long-term strategy for exposing
             // synthetic Hyper-V CPUID leaves to direct-boot SNP guests: include
             // them in the measured CPUID page, rely on GHCB CPUID fallback, or
@@ -779,12 +804,12 @@ impl MshvPartitionInner {
 
         for leaf in &mut page.cpuid_leaf_info[..count] {
             let values = get_snp_cpuid_values(
-                &self.bsp_vcpufd,
+                &finalized.bsp_vcpufd,
                 leaf.eax_in,
                 leaf.ecx_in,
                 leaf.xfem_in,
                 leaf.xss_in,
-                self.caps.hv1,
+                finalized.caps.hv1,
             )
             .map_err(|e| SnpError::Cpuid(e.into()))?;
             leaf.eax_out = values[0];
@@ -1312,7 +1337,7 @@ impl MshvProcessor<'_> {
                     0,
                     0,
                     0,
-                    self.partition.caps.hv1,
+                    self.partition.caps().hv1,
                 )
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(
@@ -1491,7 +1516,7 @@ impl MshvProcessor<'_> {
                     index,
                     xfem,
                     xss,
-                    self.partition.caps.hv1,
+                    self.partition.caps().hv1,
                 )
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(
@@ -2153,14 +2178,43 @@ mod tests {
 
     #[test]
     fn snp_hv_cpuid_exposes_isolation() {
-        let leaves = snp_hv_cpuid_overrides(0x40000010);
-        assert_eq!(leaves[0].result[0], 0x40000010);
+        let max_leaf = snp_hv_max_leaf_override(0x40000010);
+        let leaves = snp_hv_cpuid_overrides();
+        assert_eq!(max_leaf.result[0], 0x40000010);
         let privileges = hvdef::HvPartitionPrivilege::from(
-            u64::from(leaves[1].result[0]) | (u64::from(leaves[1].result[1]) << 32),
+            u64::from(leaves[0].result[0]) | (u64::from(leaves[0].result[1]) << 32),
         );
         assert!(privileges.start_virtual_processor());
         assert!(privileges.isolation());
-        assert_eq!(leaves[2].result, [0, 2, 0, 0]);
+        assert_eq!(leaves[1].result, [0, 2, 0, 0]);
+    }
+
+    #[test]
+    fn snp_hv_cpuid_preserves_native_max_without_configured_override() {
+        let configured_cpuid = virt::CpuidLeafSet::default();
+
+        assert_eq!(
+            snp_hv_cpuid_max_leaf(&configured_cpuid, Some(0x40000010)),
+            0x40000010
+        );
+        assert_eq!(
+            snp_hv_cpuid_max_leaf(&configured_cpuid, None),
+            hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION
+        );
+    }
+
+    #[test]
+    fn snp_hv_cpuid_max_honors_configured_override() {
+        let configured_cpuid = virt::CpuidLeafSet::new(vec![virt::CpuidLeaf::new(
+            hvdef::HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION,
+            [0x40000020, 0, 0, 0],
+        )]);
+
+        assert_eq!(
+            snp_hv_cpuid_max_leaf(&configured_cpuid, Some(0x40000010)),
+            0x40000020
+        );
+        assert_eq!(snp_hv_cpuid_max_leaf(&configured_cpuid, None), 0x40000020);
     }
 
     #[test]
