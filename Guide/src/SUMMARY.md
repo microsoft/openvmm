@@ -165,6 +165,7 @@
     - [Attestation and VMGS Protection](./reference/architecture/openhcl/attestation.md)
       - [IGVM Attestation Protocol](./reference/architecture/openhcl/attestation_protocol.md)
       - [AK Certificate Renewal](./reference/architecture/openhcl/ak_cert.md)
+      - [Runtime Hardware Resealing](./reference/architecture/openhcl/runtime_sealing.md)
     - [VMBus Relay and Device Interception](./reference/architecture/openhcl/vmbus.md)
     - [Storage Translation](./reference/architecture/openhcl/storage_translation.md)
     - [Storage Configuration Model](./reference/architecture/openhcl/storage_configuration.md)

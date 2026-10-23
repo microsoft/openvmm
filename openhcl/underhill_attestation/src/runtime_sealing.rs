@@ -36,7 +36,6 @@ use tee_call::TeeCall;
 use tee_call::TeeCallGetDerivedKey;
 use tee_call::TeeType;
 use thiserror::Error;
-use zerocopy::IntoBytes;
 
 /// A local runtime sealing failure, as distinct from a stale or invalid
 /// protector. No error contains the DEK, hardware secret, or derived keys.
@@ -133,6 +132,11 @@ fn validated_policy(protector: &HwKeyProtector) -> Option<KeyDerivationPolicy> {
                 return None;
             }
         }
+        HwKeyProtector::V4(_) => {
+            if !protector.has_valid_header() {
+                return None;
+            }
+        }
     }
     protector.key_derivation_policy()
 }
@@ -176,8 +180,8 @@ pub fn protector_matches(
     Ok(constant_time_eq::constant_time_eq_32(&unsealed, dek))
 }
 
-/// Seal the unchanged active DEK into a new v3 protector using a fresh local
-/// report's SVN and the configured policy. This does not rotate the DEK.
+/// Seal the unchanged active DEK into a new v3 or context-bound v4 protector
+/// using a fresh local report's SVN and policy. This does not rotate the DEK.
 ///
 /// Disabled sealing, unsupported TEEs, TDX signer policy, missing or incompatible
 /// report SVN, and report/derivation/sealing failures return `Err`. No fallback
