@@ -15,6 +15,7 @@ pub enum SandboxRole {
 }
 
 impl SandboxRole {
+    /// Returns the worker's role name.
     pub fn name(self) -> &'static str {
         match self {
             Self::Vm => "vm",
@@ -22,6 +23,7 @@ impl SandboxRole {
         }
     }
 
+    /// Builds the worker's sandbox profile.
     pub fn profile(self) -> Profile {
         match self {
             Self::Vm => super::vm_worker().build(),
