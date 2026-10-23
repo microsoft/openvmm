@@ -70,9 +70,8 @@ impl Endpoint for DioEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
-        assert!(self.nic.lock().is_some(), "the queue has not been dropped");
-    }
+    // Dropping the queue cancels and waits for outstanding DirectIO operations.
+    async fn stop(&mut self) {}
 
     fn is_ordered(&self) -> bool {
         // RX buffers are filled and TX packets are completed in the order they
@@ -207,5 +206,36 @@ impl Queue for DioQueue {
         _done: &mut [TxId],
     ) -> Result<usize, TxError> {
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+
+    #[async_test]
+    async fn disconnected_queue_can_stop_and_restart(driver: DefaultDriver) {
+        // Model the disconnected NIC state left by a receive error.
+        let mut endpoint = DioEndpoint {
+            nic: Arc::new(Mutex::new(None)),
+        };
+        for _ in 0..2 {
+            let mut queues = Vec::new();
+            endpoint
+                .get_queues(
+                    vec![QueueConfig {
+                        driver: Box::new(driver.clone()),
+                    }],
+                    None,
+                    &mut queues,
+                )
+                .await
+                .unwrap();
+            drop(queues);
+            endpoint.stop().await;
+        }
     }
 }
