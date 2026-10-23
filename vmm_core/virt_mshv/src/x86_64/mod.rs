@@ -931,8 +931,8 @@ impl virt::BindProcessor for MshvProcessorBinder {
 
 impl MshvProcessor<'_> {
     fn reset_apic(&self) -> Result<(), Error> {
-        let apic_base =
-            virt::vp::Apic::at_reset(&self.partition.caps, &self.inner.vp_info).apic_base;
+        let caps = self.partition.caps();
+        let apic_base = virt::vp::Apic::at_reset(caps, &self.inner.vp_info).apic_base;
         let regs = &[
             HvRegisterAssoc::from((
                 HvX64RegisterName::InitialApicId,
@@ -944,7 +944,7 @@ impl MshvProcessor<'_> {
                 u64::from(self.inner.vp_info.apic_id),
             )),
         ];
-        let reg_count = if self.partition.caps.x2apic { 2 } else { 3 };
+        let reg_count = if caps.x2apic { 2 } else { 3 };
         self.runner
             .vcpufd
             .set_hvdef_regs(&regs[..reg_count])
@@ -954,8 +954,9 @@ impl MshvProcessor<'_> {
 
     pub(super) fn finish_reset(&self) -> Result<(), Error> {
         // Like WHP, fix up architectural CS and TSC at creation and after scrub.
-        let registers = virt::vp::Registers::at_reset(&self.partition.caps, &self.inner.vp_info);
-        let tsc = virt::vp::Tsc::at_reset(&self.partition.caps, &self.inner.vp_info);
+        let caps = self.partition.caps();
+        let registers = virt::vp::Registers::at_reset(caps, &self.inner.vp_info);
+        let tsc = virt::vp::Tsc::at_reset(caps, &self.inner.vp_info);
         self.runner
             .vcpufd
             .set_hvdef_regs(&[

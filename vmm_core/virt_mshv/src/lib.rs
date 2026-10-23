@@ -412,11 +412,22 @@ impl MshvVpInner {
             needs_yield: _,
             message_queues,
             message_queues_pending,
+            #[cfg(guest_arch = "x86_64")]
+            extint_pending,
+            // The VP still exists in the hypervisor after a reset.
+            #[cfg(guest_arch = "x86_64")]
+                created: _,
+            // Reset rewrites the LAPIC, and the next run consumes this flag.
+            #[cfg(guest_arch = "x86_64")]
+                lapic_written: _,
             waker: _,
         } = self;
 
         message_queues.clear();
         message_queues_pending.store(false, Ordering::Relaxed);
+        // The PIC is reset too, so an ExtINT that it signaled is stale.
+        #[cfg(guest_arch = "x86_64")]
+        extint_pending.store(false, Ordering::Release);
     }
 }
 
@@ -469,7 +480,10 @@ impl virt::ResetPartition for MshvPartition {
         } = self;
         let MshvPartitionInner {
             vmfd,
-            bsp_vcpufd: _,
+            #[cfg(guest_arch = "aarch64")]
+                bsp_vcpufd: _,
+            #[cfg(guest_arch = "x86_64")]
+                finalized: _,
             memory: _,
             gm: _,
             mem_layout: _,
@@ -477,13 +491,18 @@ impl virt::ResetPartition for MshvPartition {
             #[cfg(guest_arch = "x86_64")]
             irq_routes,
             gsi_states: _,
-            caps: _,
+            #[cfg(guest_arch = "aarch64")]
+                caps: _,
             synic_ports: _,
+            #[cfg(guest_arch = "x86_64")]
+                config: _,
             #[cfg(guest_arch = "x86_64")]
                 software_devices: _,
             isolation: _,
             time_frozen,
             reset_with_scrub,
+            #[cfg(guest_arch = "x86_64")]
+                time_abi: _,
             #[cfg(guest_arch = "aarch64")]
                 gic_msi: _,
         } = inner.as_ref();
