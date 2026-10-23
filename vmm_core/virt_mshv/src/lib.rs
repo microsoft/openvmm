@@ -9,6 +9,7 @@
 
 #[cfg(guest_arch = "aarch64")]
 mod aarch64;
+mod run_vp;
 #[cfg(guest_arch = "x86_64")]
 mod x86_64;
 
@@ -55,7 +56,6 @@ use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
 use std::os::fd::IntoRawFd as _;
 use std::sync::Arc;
-use std::sync::Once;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -157,6 +157,8 @@ impl<'a> MshvProtoPartition<'a> {
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
                 message_queues_pending: AtomicBool::new(false),
+                #[cfg(guest_arch = "x86_64")]
+                extint: arch::ExtintState::default(),
                 waker: RwLock::new(None),
             })
             .collect();
@@ -189,18 +191,7 @@ impl<'a> MshvProtoPartition<'a> {
         })
         .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
 
-        // Set up a signal for forcing vcpufd.run() to exit with EINTR.
-        static SIGNAL_HANDLER_INIT: Once = Once::new();
-        // SAFETY: The signal handler does not perform any actions that are
-        // forbidden for signal handlers to perform, as it performs nothing.
-        SIGNAL_HANDLER_INIT.call_once(|| unsafe {
-            signal_hook::low_level::register(libc::SIGRTMIN(), || {
-                // Signal handler does nothing other than enabling run_fd()
-                // ioctl to return with EINTR, when the associated signal is
-                // sent to run_fd() thread.
-            })
-            .unwrap();
-        });
+        run_vp::init().map_err(ErrorInner::RunVpSignal)?;
 
         if let Some(hv_config) = &config.hv_config {
             if hv_config.vtl2.is_some() {
@@ -368,6 +359,9 @@ struct MshvVpInner {
     /// Set by device threads after enqueuing a message to signal the VP
     /// thread to flush its message queues.
     message_queues_pending: AtomicBool,
+    /// State for userspace PIC ExtINT delivery through LINT0.
+    #[cfg(guest_arch = "x86_64")]
+    extint: arch::ExtintState,
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,
@@ -381,11 +375,15 @@ impl MshvVpInner {
             needs_yield: _,
             message_queues,
             message_queues_pending,
+            #[cfg(guest_arch = "x86_64")]
+            extint,
             waker: _,
         } = self;
 
         message_queues.clear();
         message_queues_pending.store(false, Ordering::Relaxed);
+        #[cfg(guest_arch = "x86_64")]
+        extint.reset();
     }
 }
 
@@ -603,13 +601,8 @@ struct MshvVpRunner<'a> {
 }
 
 impl MshvVpRunner<'_> {
-    fn run(&mut self) -> Result<HvMessage, MshvError> {
-        self.vcpufd.run().map(|msg| {
-            // SAFETY: hv_message and HvMessage have the same size
-            // (256 bytes) and compatible layout (header + 240-byte
-            // payload).
-            unsafe { std::mem::transmute::<mshv_bindings::hv_message, HvMessage>(msg) }
-        })
+    fn run(&mut self) -> io::Result<HvMessage> {
+        run_vp::run(self.vcpufd)
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -741,6 +734,7 @@ impl virt::Processor for MshvProcessor<'_> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
         let vpinner = self.inner;
+        run_vp::prepare_thread();
         let _cleaner = MshvVpInnerCleaner { vpinner };
 
         assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
@@ -780,12 +774,15 @@ impl virt::Processor for MshvProcessor<'_> {
                 }
             }
 
+            #[cfg(guest_arch = "x86_64")]
+            self.request_extint_notification();
+
             match self.runner.run() {
                 Ok(exit) => {
                     self.handle_exit(&exit, dev).await?;
                 }
-                Err(e) => match e.errno() {
-                    libc::EAGAIN | libc::EINTR => {}
+                Err(e) => match e.raw_os_error() {
+                    Some(libc::EAGAIN) | Some(libc::EINTR) => {}
                     _ => tracing::error!(
                         error = &e as &dyn std::error::Error,
                         "vcpufd.run returned error"
@@ -855,6 +852,8 @@ impl<T: Into<ErrorInner>> From<T> for Error {
 // TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
 enum ErrorInner {
+    #[error("failed to initialize MSHV VP cancellation signal")]
+    RunVpSignal(#[source] io::Error),
     #[error("operation not supported")]
     NotSupported,
     #[error("create_vm failed")]
