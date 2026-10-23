@@ -1,22 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! VP state for snapshot restore: the IA32_TSC_DEADLINE state element and
-//! LAPIC timer advancement across snapshot downtime.
+//! VP state for snapshot restore: LAPIC timer checks and advancement across
+//! snapshot downtime under the NVX time ABI.
 
 use super::Apic;
 use super::ApicRegisters;
-use crate::state::HvRegisterState;
-use crate::state::StateElement;
 use crate::time_abi::TimeAbiCode;
 use crate::time_abi::TimeAbiError;
 use crate::time_abi::rate;
-use crate::x86::X86PartitionCapabilities;
-use hvdef::HvRegisterValue;
-use hvdef::HvX64RegisterName;
-use inspect::Inspect;
-use mesh_protobuf::Protobuf;
-use vm_topology::processor::x86::X86VpInfo;
 
 impl Apic {
     fn queue_timer_interrupt(&mut self, registers: &mut ApicRegisters) {
@@ -91,49 +83,6 @@ impl Apic {
         }
         self.registers = *registers.as_array();
         Ok(())
-    }
-}
-
-/// IA32_TSC_DEADLINE state.
-#[repr(C)]
-#[derive(Default, Debug, PartialEq, Eq, Protobuf, Inspect)]
-#[mesh(package = "virt.x86")]
-pub struct TscDeadline {
-    #[mesh(1)]
-    #[inspect(hex)]
-    pub value: u64,
-}
-
-impl HvRegisterState<HvX64RegisterName, 1> for TscDeadline {
-    fn names(&self) -> &'static [HvX64RegisterName; 1] {
-        &[HvX64RegisterName::TscDeadline]
-    }
-
-    fn get_values<'a>(&self, it: impl Iterator<Item = &'a mut HvRegisterValue>) {
-        for (dest, src) in it.zip([self.value]) {
-            *dest = src.into();
-        }
-    }
-
-    fn set_values(&mut self, it: impl Iterator<Item = HvRegisterValue>) {
-        for (src, dest) in it.zip([&mut self.value]) {
-            *dest = src.as_u64();
-        }
-    }
-}
-
-impl StateElement<X86PartitionCapabilities, X86VpInfo> for TscDeadline {
-    fn is_present(caps: &X86PartitionCapabilities) -> bool {
-        caps.tsc_deadline
-    }
-
-    fn at_reset(_caps: &X86PartitionCapabilities, _vp_info: &X86VpInfo) -> Self {
-        Self { value: 0 }
-    }
-
-    fn can_compare(_caps: &X86PartitionCapabilities) -> bool {
-        // A deadline can expire between restoring it and reading it back.
-        false
     }
 }
 

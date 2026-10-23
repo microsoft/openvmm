@@ -35,4 +35,11 @@ impl WhpVpStateAccess<'_, '_> {
             self.run.vp.get_register_state(self.vtl)
         }
     }
+
+    /// Writes IA32_TSC_DEADLINE and drops any value read before the APIC
+    /// state, so that reading the deadline back returns the written value.
+    pub(super) fn write_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Error> {
+        self.tsc_deadline.before_apic = None;
+        self.run.vp.set_register_state(self.vtl, value)
+    }
 }
