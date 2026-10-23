@@ -712,7 +712,7 @@ pub struct VhdmpDisk {
     #[inspect(skip)]
     io_lock: Arc<futures::lock::Mutex<()>>,
     disk_id: Guid,
-    unmap: scsi::UnmapCapabilities,
+    unmap_cap: scsi::UnmapCapabilities,
 }
 
 #[derive(Debug, Error)]
@@ -747,7 +747,7 @@ impl VhdmpDisk {
     pub fn new(vhd: Vhd, read_only: bool) -> Result<Self, Error> {
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
-        let unmap = scsi::unmap_capabilities(vhd.0.as_handle()).map_err(Error::Query)?;
+        let unmap_cap = scsi::unmap_capabilities(vhd.0.as_handle()).map_err(Error::Query)?;
         let metadata = disk_file::Metadata {
             disk_size: size.VirtualSize,
             sector_size: size.SectorSize,
@@ -760,7 +760,7 @@ impl VhdmpDisk {
             vhd: Arc::new(vhd),
             io_lock: Default::default(),
             disk_id,
-            unmap,
+            unmap_cap,
         })
     }
 }
@@ -833,13 +833,13 @@ impl DiskIo for VhdmpDisk {
         if self.is_read_only() {
             return Err(DiskError::ReadOnly);
         }
-        if count == 0 || self.unmap.behavior == disk_backend::UnmapBehavior::Ignored {
+        if count == 0 || self.unmap_cap.behavior == disk_backend::UnmapBehavior::Ignored {
             return Ok(());
         }
 
         let locked = self.io_lock.clone().lock_owned().await;
         let vhd = self.vhd.clone();
-        let max_sectors = self.unmap.max_sectors;
+        let max_sectors = self.unmap_cap.max_sectors;
         blocking::unblock(move || {
             // Keep serialization and the handle alive even if the future is dropped.
             let _locked = locked;
@@ -856,11 +856,11 @@ impl DiskIo for VhdmpDisk {
     }
 
     fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        self.unmap.behavior
+        self.unmap_cap.behavior
     }
 
     fn optimal_unmap_sectors(&self) -> u32 {
-        self.unmap.optimal_sectors
+        self.unmap_cap.optimal_sectors
     }
 }
 
@@ -978,8 +978,8 @@ mod tests {
     async fn unmap_without_driver_support_is_ignored() {
         let path = make_test_vhd();
         let mut disk = open_disk(&path, false, true);
-        disk.unmap.behavior = disk_backend::UnmapBehavior::Ignored;
-        disk.unmap.max_sectors = 0;
+        disk.unmap_cap.behavior = disk_backend::UnmapBehavior::Ignored;
+        disk.unmap_cap.max_sectors = 0;
         write_bytes(&disk, 0, &[0x5a; 512]).await;
         disk.unmap(0, 1, false).await.unwrap();
         assert_eq!(read_bytes(&disk, 0, 512).await, vec![0x5a; 512]);
@@ -1031,9 +1031,9 @@ mod tests {
                 let mut disk = open_disk(&path, false, cached);
                 assert_ne!(disk.unmap_behavior(), disk_backend::UnmapBehavior::Ignored);
                 assert!(disk.optimal_unmap_sectors() > 0);
-                assert!(disk.unmap.max_sectors >= BLOCK_SECTORS as u32);
+                assert!(disk.unmap_cap.max_sectors >= BLOCK_SECTORS as u32);
                 // Exercise splitting at the backend's advertised command limit.
-                disk.unmap.max_sectors = BLOCK_SECTORS as u32;
+                disk.unmap_cap.max_sectors = BLOCK_SECTORS as u32;
                 write_bytes(&disk, 0, &vec![0x5a; 4 * BLOCK_SIZE]).await;
                 disk.sync_cache().await.unwrap();
                 disk.unmap(BLOCK_SECTORS, 2 * BLOCK_SECTORS, block_level_only)
