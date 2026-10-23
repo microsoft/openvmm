@@ -557,7 +557,8 @@ pub struct MicrovmCli {
     )]
     pub microvm_control_auth_stdin: bool,
 
-    /// maximum time for a control-console client to authenticate
+    /// maximum time for a control-console client to authenticate, counted
+    /// while host input is read
     #[clap(
         long = "microvm-control-auth-timeout-ms",
         value_name = "MILLISECONDS",

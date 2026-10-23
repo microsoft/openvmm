@@ -63,7 +63,14 @@ impl VirtioConsoleDevice {
     /// state.
     pub(crate) async fn set_input_gated(&mut self, input_gated: bool) -> anyhow::Result<()> {
         self.worker.stop().await;
-        let state = self.worker.state_mut().unwrap();
+        let (worker, state) = self.worker.get_mut();
+        let state = state.unwrap();
+        if state.input_gated
+            && !input_gated
+            && let ConsoleWorkerMode::Broker(mode) = &mut worker.mode
+        {
+            mode.restart_auth_deadline();
+        }
         state.input_gated = input_gated;
         if state.receiveq.is_some() || state.transmitq.is_some() {
             self.worker.start();

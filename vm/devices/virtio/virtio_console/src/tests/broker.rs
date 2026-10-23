@@ -209,6 +209,65 @@ async fn broker_auth_timeout_frees_slot_without_epoch_advance(driver: DefaultDri
     assert_eq!((wait.record_type, wait.epoch), (RecordType::Wait, 1));
 }
 
+/// A tiered restore gates host input until the guest finishes its repair. A
+/// host that connects and authenticates at launch must still be attached when
+/// the gate opens after more than its authentication timeout.
+#[async_test]
+async fn broker_auth_timeout_waits_for_gated_host_input(driver: DefaultDriver) {
+    const AUTH_TIMEOUT_MS: u64 = 100;
+    let mut harness = TestHarness::new_broker_with_timeout(
+        &driver,
+        BROKER_INSTANCE,
+        BROKER_CAPABILITY,
+        AUTH_TIMEOUT_MS,
+    );
+    harness.device.quiesce_input().await.unwrap();
+    harness.enable().await;
+    let host_attach = encode(&Record::bootstrap(
+        RecordType::HostAttach,
+        BROKER_CAPABILITY.to_vec(),
+    ));
+    harness.handle.inject_rx_data(&host_attach);
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    timer
+        .sleep(Duration::from_millis(3 * AUTH_TIMEOUT_MS))
+        .await;
+    assert!(harness.handle.is_connected());
+    assert_eq!(harness.handle.pending_rx_len(), host_attach.len());
+
+    harness.device.resume_input().await.unwrap();
+    yield_until(|| harness.handle.tx_data().len() >= control_session_protocol::HEADER_LEN).await;
+    let wait = decode(&harness.handle.take_tx_data());
+    assert_eq!(wait.record_type, RecordType::Wait);
+    assert!(harness.handle.is_connected());
+}
+
+/// Releasing gated host input restarts, rather than cancels, the deadline of
+/// a host that has not authenticated.
+#[async_test]
+async fn broker_auth_timeout_restarts_when_host_input_is_released(driver: DefaultDriver) {
+    const AUTH_TIMEOUT_MS: u64 = 20;
+    let mut harness = TestHarness::new_broker_with_timeout(
+        &driver,
+        BROKER_INSTANCE,
+        BROKER_CAPABILITY,
+        AUTH_TIMEOUT_MS,
+    );
+    harness.device.quiesce_input().await.unwrap();
+    harness.enable().await;
+    let mut timer = pal_async::timer::PolledTimer::new(&driver);
+    timer
+        .sleep(Duration::from_millis(3 * AUTH_TIMEOUT_MS))
+        .await;
+    assert!(harness.handle.is_connected());
+
+    harness.device.resume_input().await.unwrap();
+    timer
+        .sleep(Duration::from_millis(3 * AUTH_TIMEOUT_MS))
+        .await;
+    yield_until(|| !harness.handle.is_connected()).await;
+}
+
 #[async_test]
 async fn broker_quiesce_stops_new_host_input(driver: DefaultDriver) {
     let mut harness = TestHarness::new_broker(&driver, BROKER_INSTANCE, BROKER_CAPABILITY);
