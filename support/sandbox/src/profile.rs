@@ -32,10 +32,10 @@ use std::path::PathBuf;
 
 /// An opaque, immutable sandbox policy.
 ///
-/// Built once from [`Profile::deny_all`] in the crate that owns the worker,
-/// and linked into whichever side applies it (the worker on Linux; the
-/// control process *and* the worker on Windows). A `Profile` is **not** a
-/// wire type — policy is linked, not sent.
+/// Sandbox policies, such as those in [`profiles`](crate::profiles), build
+/// a `Profile` from [`Profile::deny_all`] by adding additional permissions,
+/// and are compiled into the program (the worker on Linux; the control
+/// process *and* the worker on Windows).
 #[derive(Debug, Clone)]
 pub struct Profile {
     pub(crate) inner: ProfileInner,
@@ -273,6 +273,7 @@ pub(crate) enum CapabilityKind {
 /// ratchet is *unrepresentable*.
 #[derive(Debug, Clone)]
 pub struct Restrictions {
+    #[cfg_attr(windows, expect(dead_code))]
     pub(crate) inner: RestrictionsInner,
 }
 
@@ -342,6 +343,7 @@ impl Default for ProfileInner {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(windows, expect(dead_code))]
 pub(crate) struct FsGrant {
     pub(crate) path: PathBuf,
     pub(crate) access: Access,

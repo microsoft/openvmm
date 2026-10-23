@@ -48,7 +48,7 @@ worker that refuses to start, not a worker that runs unconfined.
 | **Control process** | The long-lived, multi-threaded process that spawns and supervises workers: `openvmm_entry` (OpenVMM host) or `underhill_core` (OpenHCL). Holds the ambient authority the workers must not inherit. |
 | **Mesh host** | A child OS process created by `mesh_process` and joined to the control process's Mesh node. It runs a `WorkerHostRunner` and may host one or more registered workers. |
 | **Worker** | A self-contained lifecycle component launched by `mesh_worker` to perform one role (a device emulator, diagnostics server, or VM tombstone holder). In the sandboxed deployment, it runs inside a dedicated Mesh host process; the host runtime and worker are confined together. |
-| **Profile** | An opaque, immutable policy value, built from `Profile::deny_all()` in the crate that owns the worker and linked into whoever applies it. **Not** a wire type — policy is linked, not sent (C5). |
+| **Profile** | An opaque, immutable sandbox policy, built from `Profile::deny_all()` by adding additional permissions. Sandbox policies are compiled into the program. |
 | **`prepare`** | Control-process setup done before the child exists, via `sandbox::prepare()`. On Linux: handle hygiene, grant serialization, identity. On Windows: additionally the entire LPAC construction, since there is no post-launch equivalent. |
 | **`apply`** | The worker confining itself, as the first statement of `main()`, via `sandbox::apply()`. On Linux: the *entire* sandbox. On Windows: the post-launch half. |
 | **`tighten`** | Optional progressive tightening, run by the worker after its own initialization completes, via an additive-only `Restrictions` spec. Runs `sandbox::tighten()`. |
@@ -414,10 +414,10 @@ create processes or enforce handle inheritance itself. PAL and the process
 builder realize the prepared configuration; the worker calls `apply` and
 optional `tighten`.
 
-Worker-specific profiles and handle meanings remain in consumer crates.
-Profiles are linked rather than sent, and platform backends are private
-implementation details selected with `cfg`. There is no build script or central
-worker catalog.
+OpenVMM's worker profiles and `SandboxRole` selector live under
+`support/sandbox/src/profiles`. Consumer crates choose the role and define the
+meaning of inherited handles. Profiles are linked into the binary, and platform
+backends are private implementation details selected with `cfg`.
 
 
 ---
@@ -445,9 +445,8 @@ crate boundary.
 | `SandboxProcessConfig` | Inert launch configuration returned by `prepare` for the process builder to realize. |
 | `WindowsPreparation` | The investigated Windows launch-policy shape. It is not a complete Windows backend. |
 
-Profiles are linked rather than sent, and worker-specific policies remain in
-the crates that own those workers. There is no central worker-profile catalog
-or platform-specific policy type in the public API.
+Profiles are linked into the binary. `profiles::SandboxRole` selects the
+OpenVMM worker policy from its dedicated module and returns a finished `Profile`.
 
 > **Current limitation:** Linux `tighten` currently supports stacked seccomp
 > denials only. `revoke_path` is reserved in the API but returns
@@ -492,15 +491,16 @@ spawn-preparation, `apply`, `tighten`, and debug-mode examples.
 
 ### 6.5 Cookbook — adding a new worker
 
-1. In the **worker's own crate** (or the `openvmm` crate), define a
-   `fn profile() -> sandbox::Profile` built from `Profile::deny_all()`,
-   granting only what the worker needs, and `const` `HandleTag`s for
-   any pre-Mesh handles it requires.
+1. For an OpenVMM worker, add a module under `support/sandbox/src/profiles`
+   exporting a `fn <worker>_worker() -> Builder` built from
+   `Profile::deny_all()` or a shared base, granting only what the worker needs.
+   Export it from `profiles/mod.rs` and add its role to `SandboxRole`.
+   Define `const` `HandleTag`s for any pre-Mesh handles in the consumer crate.
 2. If the worker uses `tighten`, add a `fn steady_state() ->
    sandbox::Restrictions` (built from `Restrictions::none()`) naming only
    the init-only surface to drop after startup.
-3. Call `sandbox::apply(&profile())` as the first statement of the
-   worker's `main()`.
+3. Select the role and call `sandbox::apply(&role.profile())` as the first
+   statement of the worker's `main()`.
 4. At the spawn site, build the `Identity` and the handle allowlist and
    call `sandbox::prepare(..)` before spawning.
 5. Add the positive-denial test from [§12](#12-testing--ci-strategy),
@@ -1290,7 +1290,8 @@ and platform-specific launch mechanics:
 | Clone namespace flags and self-ID mapping | `support/pal/src/unix/process.rs`, `support/pal/src/unix/process/linux.rs` |
 | Profile preparation and declaration of the Mesh bootstrap handle | `support/mesh/mesh_process/src/lib.rs` |
 | Platform-specific interpretation of prepared launch data and handle restriction | `support/pal/src/{unix,windows}/process.rs` |
-| OpenVMM role and linked-profile selection | `openvmm/openvmm_entry/src/sandbox_profiles.rs` |
+| OpenVMM role and linked-profile selection | `support/sandbox/src/profiles/sandbox_profiles.rs` |
+| OpenVMM worker policies | Dedicated worker modules under `support/sandbox/src/profiles` |
 
 `support/pal` carries only mechanism: it consumes the prepared configuration,
 extracts the platform-specific launch fields, and applies them during process

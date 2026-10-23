@@ -5,7 +5,7 @@
 //!
 //! This crate confines a worker process to the minimum authority it needs. A
 //! worker starts from [`Profile::deny_all`] and is widened only by the explicit
-//! grants its own crate declares, so the confinement is default-deny by
+//! grants its policy declares, so the confinement is default-deny by
 //! construction rather than by remembering to lock things down.
 //!
 //! # Three stages
