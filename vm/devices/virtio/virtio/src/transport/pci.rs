@@ -780,6 +780,10 @@ impl ChangeDeviceState for VirtioPciDevice {
         self.core.reset(&mut self.pci).await;
         self.pci.config_space.reset();
     }
+
+    async fn teardown(&mut self) {
+        self.core.teardown().await;
+    }
 }
 
 impl PollDevice for VirtioPciDevice {
