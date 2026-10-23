@@ -42,10 +42,13 @@ compatibility, and build a static guest agent:
 ```bash
 cargo build -p openvmm -p incubator
 cargo build -p pipette --target x86_64-unknown-linux-musl
+cargo build -p mshv_bootstrap --target x86_64-unknown-uefi
 ```
 
 Copy `petri/incubator/profiles/x86_64-mshv.toml` outside the checkout and set
-absolute paths for `binary`, `firmware`, and `boot-artifacts`. This environment
+absolute paths for `binary`, `bootstrap`, `firmware`, and `boot-artifacts`.
+Set `bootstrap` to the built
+`target/x86_64-unknown-uefi/debug/mshv_bootstrap.efi`. This environment
 requires `nested-virt = true`, a compatible mshv root kernel, and the
 [boot artifacts below](#mshv-boot-artifacts-and-kernel).
 
@@ -85,20 +88,14 @@ The artifact directory must contain:
 
 ```text
 boot/
-  EFI/BOOT/bootx64.efi    shim
-  EFI/BOOT/grubx64.efi    GRUB
   HvLoader.efi
   lxhvloader.dll
   Windows/System32/...   complete matching runtime
 ```
 
-Both `hvix64.exe` and `hvax64.exe` must be present. Use x64 shim configured to
-load the adjacent `grubx64.efi`, and a prebuilt GRUB with embedded FAT/GPT,
-Linux, chain, normal, and boot support and prefix `/boot/grub2`. Retain shim:
-HvLoader requires its verification protocol even with Secure Boot disabled.
-
-The validated Azure Linux 3 recipe uses shim 15.8-6, GRUB 2.06-27,
-edk2-hvloader 20240524git3e722403cd16-20, and matching `mshv` /
+Both `hvix64.exe` and `hvax64.exe` must be present. Shim and GRUB are not used.
+The validated Azure Linux 3 payload recipe uses
+edk2-hvloader 20240524git3e722403cd16-20 and matching `mshv` /
 `mshv-bootloader-lx` 26100.9444.2609032029.1-1 payloads. The composer does not
 verify provenance, signatures, architecture, or compatibility.
 
@@ -118,8 +115,7 @@ To compose an image without launching it:
 
 ```bash
 cargo run -p incubator --bin incubator-mshv-image -- \
-  --shim path/to/artifacts/boot/EFI/BOOT/bootx64.efi \
-  --grub path/to/artifacts/boot/EFI/BOOT/grubx64.efi \
+  --bootstrap target/x86_64-unknown-uefi/debug/mshv_bootstrap.efi \
   --payload path/to/artifacts/boot \
   --kernel path/to/bzImage --initrd path/to/initrd \
   --kernel-cmdline 'console=ttyS0 rdinit=/init' \
@@ -127,8 +123,31 @@ cargo run -p incubator --bin incubator-mshv-image -- \
 ```
 
 The output parent must exist; existing output is never overwritten. Payload
-files must be regular files with ASCII FAT-compatible names. Kernel arguments
-cannot contain quotes, control characters, or space-containing option values.
+files must be regular files with ASCII FAT-compatible names.
+
+### Boot command lines
+
+The bootstrap uses the EFI Simple File System protocol to read two UTF-8
+files at the ESP root. They contain literal load options, not shell or GRUB
+code:
+
+| File | Contents |
+|------|----------|
+| `linux.cmdline` | `initrd=\initramfs.cpio` followed by Linux options |
+| `hvloader.cmdline` | `\lxhvloader.dll` followed by hypervisor options |
+
+For Incubator, set `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`;
+Petri appends the prepared initrd's required `rdinit`. The standalone image
+composer exposes `--kernel-cmdline` and `--hypervisor-cmdline`. Both paths
+write these files when composing media. You can also edit the files on an
+existing ESP without rebuilding the bootstrap, kernel, or hypervisor.
+
+Each file is limited to 16 KiB and a single UCS-2-compatible line, with an
+optional final LF or CRLF. Quotes, spaces, backslashes, and shell
+metacharacters are passed literally. Missing or malformed configuration fails
+the boot rather than selecting hidden defaults. The bootstrap initializes
+HvLoader, then enters Linux's EFI stub; the modified kernel retains
+responsibility for launching the hypervisor.
 
 ## Sharing and guest trust
 
@@ -136,6 +155,10 @@ cannot contain quotes, control characters, or space-containing option values.
 The host share is writable. Incubator is a trusted development environment,
 not a sandbox for untrusted guest programs.
 ```
+
+The mshv bootstrap is development-only and refuses Secure Boot mode. Its
+`SHIM_LOCK` verification callback deliberately accepts every image; it does
+not authenticate signatures or implement shim's measurements.
 
 All environments copy the host CA bundle into the temporary initrd and export
 `SSL_CERT_FILE=/incubator-ca-certificates.crt` for guest TLS clients. A nonempty

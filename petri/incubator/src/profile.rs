@@ -46,10 +46,26 @@ pub enum IncubatorBoot {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct MshvBootConfig {
+    /// Development-only x64 UEFI bootstrap executable.
+    pub bootstrap: std::path::PathBuf,
     /// Compatible x64 UEFI firmware.
     pub firmware: std::path::PathBuf,
     /// Extracted artifact directory containing `boot/`.
     pub boot_artifacts: std::path::PathBuf,
+    /// Linux options, before Incubator's required initrd entry point.
+    #[serde(default = "default_kernel_cmdline")]
+    pub kernel_cmdline: String,
+    /// Hypervisor options, excluding the loader DLL path.
+    #[serde(default = "default_hypervisor_cmdline")]
+    pub hypervisor_cmdline: String,
+}
+
+fn default_kernel_cmdline() -> String {
+    mshv_bootstrap::DEFAULT_KERNEL_CMDLINE.into()
+}
+
+fn default_hypervisor_cmdline() -> String {
+    mshv_bootstrap::DEFAULT_HYPERVISOR_CMDLINE.into()
 }
 
 impl IncubatorBackend {
@@ -323,8 +339,9 @@ mod tests {
 
     #[test]
     fn unsupported_combinations_and_misplaced_fields_fail() -> anyhow::Result<()> {
-        let qemu_mshv =
-            format!("{QEMU}\n[boot]\ntype = 'mshv'\nfirmware = 'fw'\nboot-artifacts = 'boot'\n");
+        let qemu_mshv = format!(
+            "{QEMU}\n[boot]\ntype = 'mshv'\nbootstrap = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\n"
+        );
         let error = IncubatorProfile::from_toml(&qemu_mshv)?
             .validate()
             .unwrap_err();

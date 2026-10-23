@@ -16,12 +16,18 @@ use std::sync::Arc;
 /// configures nested virtualization, storage, networking, and file shares.
 #[derive(Debug)]
 pub struct MshvBoot {
+    /// Development-only x64 UEFI bootstrap executable.
+    pub bootstrap: ResolvedArtifact,
     /// Linux kernel with mshv EFI-launch support.
     pub kernel: ResolvedArtifact,
     /// Prepared initrd and its entry point.
     pub initrd: PetriInitrd,
     /// Extracted artifact directory containing `boot/`.
     pub boot_artifacts: ResolvedArtifact,
+    /// Linux options; Petri appends the prepared initrd's entry point.
+    pub kernel_cmdline: String,
+    /// Hypervisor options for HvLoader, without the loader DLL path.
+    pub hypervisor_cmdline: String,
 }
 
 impl MshvBoot {
@@ -34,12 +40,15 @@ impl MshvBoot {
         fs_err::remove_file(&image)?;
         let boot = self.boot_artifacts.get().join("boot");
         MshvImage {
-            shim: &boot.join("EFI/BOOT/bootx64.efi"),
-            grub: &boot.join("EFI/BOOT/grubx64.efi"),
+            bootstrap: self.bootstrap.get(),
             payload: &boot,
             kernel: self.kernel.get(),
             initrd: self.initrd.path.as_ref(),
-            kernel_cmdline: &format!("console=ttyS0 rdinit={} panic=-1", self.initrd.rdinit_param),
+            kernel_cmdline: &format!(
+                "{} rdinit={}",
+                self.kernel_cmdline, self.initrd.rdinit_param
+            ),
+            hypervisor_cmdline: &self.hypervisor_cmdline,
         }
         .build(&image)?;
         Ok(Disk::Temporary(Arc::new(image)))
@@ -57,14 +66,12 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let boot = temp.path().join("boot");
         fs_err::create_dir_all(boot.join("Windows/System32"))?;
-        fs_err::create_dir_all(boot.join("EFI/BOOT"))?;
         for name in [
             "HvLoader.efi",
             "lxhvloader.dll",
             "Windows/System32/hvix64.exe",
             "Windows/System32/hvax64.exe",
-            "EFI/BOOT/bootx64.efi",
-            "EFI/BOOT/grubx64.efi",
+            "bootstrap.efi",
         ] {
             fs_err::write(boot.join(name), name)?;
         }
@@ -78,9 +85,12 @@ mod tests {
             rdinit_param: "/caller-init".into(),
         };
         let disk = MshvBoot {
+            bootstrap: ResolvedArtifact::from_local_path(boot.join("bootstrap.efi")),
             kernel: ResolvedArtifact::from_local_path(kernel),
             initrd,
             boot_artifacts: ResolvedArtifact::from_local_path(temp.path().to_path_buf()),
+            kernel_cmdline: mshv_bootstrap::DEFAULT_KERNEL_CMDLINE.into(),
+            hypervisor_cmdline: mshv_bootstrap::DEFAULT_HYPERVISOR_CMDLINE.into(),
         }
         .build()?;
         let Disk::Temporary(path) = &disk else {
@@ -107,9 +117,9 @@ mod tests {
         assert_eq!(bytes, prepared);
         let mut config = String::new();
         fs.root_dir()
-            .open_file("boot/grub2/grub.cfg")?
+            .open_file(mshv_bootstrap::KERNEL_CMDLINE_FILE)?
             .read_to_string(&mut config)?;
-        assert!(config.contains("'rdinit=/caller-init'"));
+        assert!(config.contains("rdinit=/caller-init"));
         fs.unmount()?;
         assert_eq!(fs_err::read(&initrd_path)?, prepared);
         drop(disk);

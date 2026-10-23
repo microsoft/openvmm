@@ -8,6 +8,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mshv_bootstrap.workspace = true
 petri.workspace = true
 petri_artifacts_common.workspace = true
 anyhow.workspace = true

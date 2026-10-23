@@ -92,14 +92,12 @@ mod tests {
     fn mshv_guest(dir: &std::path::Path) -> anyhow::Result<UefiGuest> {
         let boot = dir.join("boot");
         fs_err::create_dir_all(boot.join("Windows/System32"))?;
-        fs_err::create_dir_all(boot.join("EFI/BOOT"))?;
         for name in [
             "HvLoader.efi",
             "lxhvloader.dll",
             "Windows/System32/hvix64.exe",
             "Windows/System32/hvax64.exe",
-            "EFI/BOOT/bootx64.efi",
-            "EFI/BOOT/grubx64.efi",
+            "bootstrap.efi",
         ] {
             fs_err::write(boot.join(name), name)?;
         }
@@ -108,6 +106,7 @@ mod tests {
         let initrd = tempfile::NamedTempFile::new_in(dir)?;
         fs_err::write(initrd.path(), b"prepared initrd")?;
         Ok(UefiGuest::Mshv(MshvBoot {
+            bootstrap: ResolvedArtifact::from_local_path(boot.join("bootstrap.efi")),
             kernel: ResolvedArtifact::from_local_path(kernel),
             initrd: crate::PetriInitrd {
                 path: crate::TempOrPersistentPath::Temp(std::sync::Arc::new(
@@ -116,6 +115,8 @@ mod tests {
                 rdinit_param: "/caller-init".into(),
             },
             boot_artifacts: ResolvedArtifact::from_local_path(dir.to_path_buf()),
+            kernel_cmdline: mshv_bootstrap::DEFAULT_KERNEL_CMDLINE.into(),
+            hypervisor_cmdline: mshv_bootstrap::DEFAULT_HYPERVISOR_CMDLINE.into(),
         }))
     }
 
