@@ -427,7 +427,12 @@ impl VhostUserDeviceServer {
                     if nofd {
                         q.set_call(Interrupt::null());
                     } else if let Some(fd) = fds.into_iter().next() {
-                        q.set_call(Interrupt::from_event(event_from_fd(fd)));
+                        let call = Interrupt::from_event(event_from_fd(fd));
+                        // Completions, including those published while stopping,
+                        // may have used a missing or replaced CALL fd. Match
+                        // QEMU's catch-up notification on the new fd.
+                        call.deliver();
+                        q.set_call(call);
                     }
                     if restart {
                         self.start_queue(state, idx).await?;
@@ -1350,6 +1355,147 @@ mod tests {
         };
         let (result, ()) = futures::join!(server.serve_connection(backend), client);
         result.unwrap();
+    }
+
+    #[async_test]
+    async fn call_fd_catches_up_completions_before_install_and_during_stop(driver: DefaultDriver) {
+        use pal_async::wait::PolledWait;
+        use virtio::VirtioQueue;
+        use virtio::spec::queue::DescriptorFlags;
+        use virtio::test_helpers::{make_available, read_used, write_descriptor};
+
+        struct CompletingDevice {
+            driver: DefaultDriver,
+            queue: Option<VirtioQueue>,
+        }
+        impl InspectMut for CompletingDevice {
+            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+                req.ignore();
+            }
+        }
+        impl VirtioDevice for CompletingDevice {
+            fn traits(&self) -> DeviceTraits {
+                MockDevice::new().traits
+            }
+            async fn read_registers_u32(&mut self, _: u16) -> u32 {
+                0
+            }
+            async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+            async fn start_queue(
+                &mut self,
+                _: u16,
+                resources: QueueResources,
+                features: &VirtioDeviceFeatures,
+                initial_state: Option<QueueState>,
+            ) -> anyhow::Result<()> {
+                let mut queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    PolledWait::new(&self.driver, resources.event)?,
+                    initial_state,
+                )?;
+                if let Some(work) = queue.try_next()? {
+                    queue.complete(work, 0);
+                }
+                self.queue = Some(queue);
+                Ok(())
+            }
+            async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+                let mut queue = self.queue.take()?;
+                if let Some(work) = queue.try_next().unwrap() {
+                    queue.complete(work, 0);
+                }
+                Some(queue.queue_state())
+            }
+        }
+
+        // Exercise an absent CALL, explicit NOFD, and replacement of a live fd.
+        for initial_call in [None, Some(false), Some(true)] {
+            let mem = GuestMemory::allocate(0x10000);
+            let device = CompletingDevice {
+                driver: driver.clone(),
+                queue: None,
+            };
+            let traits = VirtioDevice::traits(&device);
+            let mut server = VhostUserDeviceServer::new(Box::new(device));
+            server.guest_memory = mem.clone();
+            let mut state = ConnectionState::new(&traits);
+            state.queues[0].set_num(16);
+            state.queues[0].set_addr(0x1000, 0x2000, 0x3000);
+            state.queues[0].enabled = true;
+            let (a, _b) = socket_pair();
+            let socket = VhostUserSocket::new(PolledSocket::new(&driver, a).unwrap());
+            let header = |code: VhostUserRequestCode| VhostUserMsgHeader {
+                request: code.0,
+                flags: VHOST_USER_FLAG_VERSION,
+                size: size_of::<VhostUserU64Msg>() as u32,
+            };
+            let old_call = Event::new();
+            if let Some(with_fd) = initial_call {
+                server
+                    .dispatch_message(
+                        &socket,
+                        &mut state,
+                        &traits,
+                        &header(VhostUserRequestCode::SET_VRING_CALL),
+                        VhostUserU64Msg {
+                            value: if with_fd {
+                                0
+                            } else {
+                                VHOST_USER_VRING_NOFD_MASK
+                            },
+                        }
+                        .as_bytes(),
+                        if with_fd {
+                            vec![old_call.clone().into()]
+                        } else {
+                            vec![]
+                        },
+                    )
+                    .await
+                    .unwrap();
+                old_call.try_wait();
+            }
+            let mut avail = 0;
+            for id in 0..2 {
+                write_descriptor(&mem, 0x1000, id, 0x4000, 1, DescriptorFlags::new(), 0);
+                make_available(&mem, 0x2000, 16, id, &mut avail);
+            }
+            server
+                .dispatch_message(
+                    &socket,
+                    &mut state,
+                    &traits,
+                    &header(VhostUserRequestCode::SET_VRING_KICK),
+                    VhostUserU64Msg { value: 0 }.as_bytes(),
+                    vec![Event::new().into()],
+                )
+                .await
+                .unwrap();
+            let mut used = 0;
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), Some((0, 0)));
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), None);
+
+            let new_call = Event::new();
+            server
+                .dispatch_message(
+                    &socket,
+                    &mut state,
+                    &traits,
+                    &header(VhostUserRequestCode::SET_VRING_CALL),
+                    VhostUserU64Msg { value: 0 }.as_bytes(),
+                    vec![new_call.clone().into()],
+                )
+                .await
+                .unwrap();
+            assert!(new_call.try_wait(), "new CALL must cover old completions");
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), Some((1, 0)));
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), None);
+            assert!(!new_call.try_wait(), "no work was replayed on restart");
+            server.stop_all_queues().await;
+        }
     }
 
     #[async_test]

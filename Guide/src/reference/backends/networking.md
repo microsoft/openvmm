@@ -134,6 +134,11 @@ For virtio-net, disabling a
 started TX ring consumes and discards packets; disabling RX prevents packet
 delivery. The RX and TX rings can start and stop independently.
 
+Installing a CALL eventfd sends a catch-up notification for completions that
+may have used a missing or replaced fd, including completions during queue
+stop. The OpenVMM frontend configures CALL and enables the ring before
+installing KICK so preposted TX is not discarded during setup.
+
 ## Backends
 
 | Backend | Crate | Transport | Platform |

@@ -334,26 +334,8 @@ impl VirtioDevice for Device {
             self.insert_coordinator(self.adapter.max_queue_pairs);
         }
         let worker = &mut self.coordinator.state_mut().unwrap().workers[pair_idx];
-        if let Some(worker) = worker.state_mut() {
-            anyhow::ensure!(
-                if is_rx {
-                    worker.virtio_state.rx_queue.is_none()
-                } else {
-                    worker.virtio_state.tx_queue.is_none()
-                },
-                "queue {idx} already active"
-            );
-        }
         if !worker.has_state() {
             self.insert_worker(
-                VirtioState {
-                    rx_queue: None,
-                    rx_queue_size: 0,
-                    tx_queue: None,
-                    tx_queue_size: 0,
-                    rx_in_order: InOrderCompletion::new(0),
-                    tx_in_order: InOrderCompletion::new(0),
-                },
                 pair_idx,
                 &guest_memory,
                 negotiated_features,
@@ -364,17 +346,9 @@ impl VirtioDevice for Device {
             .state_mut()
             .unwrap();
         if is_rx {
-            worker.virtio_state.rx_queue = Some(queue);
-            worker.virtio_state.rx_queue_size = queue_size;
-            worker.virtio_state.rx_in_order = InOrderCompletion::new(queue_size);
-            worker.active_state.pending_rx_packets = VirtioWorkPool::new(guest_memory, queue_size);
-            worker.active_state.data.rx_ready = vec![RxId(0); queue_size as usize].into();
+            worker.start_rx(queue, queue_size, guest_memory)?;
         } else {
-            worker.virtio_state.tx_queue = Some(queue);
-            worker.virtio_state.tx_queue_size = queue_size;
-            worker.virtio_state.tx_in_order = InOrderCompletion::new(queue_size);
-            worker.active_state.pending_tx_packets = (0..queue_size).map(|_| None).collect();
-            worker.active_state.data.tx_done = vec![TxId(0); queue_size as usize].into();
+            worker.start_tx(queue, queue_size)?;
         }
         worker.rx_enabled = self.enabled[pair_idx * 2];
         worker.tx_enabled = self.enabled[pair_idx * 2 + 1];
@@ -681,7 +655,6 @@ impl Device {
     /// The coordinator must be stopped.
     fn insert_worker(
         &mut self,
-        virtio_state: VirtioState,
         idx: usize,
         guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
@@ -697,14 +670,15 @@ impl Device {
         builder.run_on_target(!self.adapter.tx_fast_completions);
         let driver = builder.build("virtio-net");
 
-        let active_state = ActiveState::new(
-            guest_memory.clone(),
-            virtio_state.rx_queue_size,
-            virtio_state.tx_queue_size,
-        );
         let worker = Worker {
-            virtio_state,
-            active_state,
+            virtio_state: VirtioState {
+                rx_queue: None,
+                rx_queue_size: 0,
+                tx_queue: None,
+                rx_in_order: InOrderCompletion::new(0),
+                tx_in_order: InOrderCompletion::new(0),
+            },
+            active_state: ActiveState::new(guest_memory.clone(), 0, 0),
             negotiated_features,
             negotiated_features_bank1,
             rx_enabled: true,
@@ -864,7 +838,6 @@ struct VirtioState {
     rx_queue: Option<VirtioQueue>,
     rx_queue_size: u16,
     tx_queue: Option<VirtioQueue>,
-    tx_queue_size: u16,
     /// In-order completion discipline for the RX queue. virtio-net requires
     /// the used ring to be published in avail order so the outstanding set is
     /// exactly the contiguous `[used_index, avail_index)` range.
@@ -916,6 +889,31 @@ struct Worker {
 }
 
 impl Worker {
+    fn start_rx(&mut self, queue: VirtioQueue, size: u16, mem: GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.virtio_state.rx_queue.is_none(),
+            "RX queue already active"
+        );
+        self.virtio_state.rx_queue = Some(queue);
+        self.virtio_state.rx_queue_size = size;
+        self.virtio_state.rx_in_order = InOrderCompletion::new(size);
+        self.active_state.pending_rx_packets = VirtioWorkPool::new(mem, size);
+        self.active_state.data.rx_ready = vec![RxId(0); size as usize].into();
+        Ok(())
+    }
+
+    fn start_tx(&mut self, queue: VirtioQueue, size: u16) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.virtio_state.tx_queue.is_none(),
+            "TX queue already active"
+        );
+        self.virtio_state.tx_queue = Some(queue);
+        self.virtio_state.tx_in_order = InOrderCompletion::new(size);
+        self.active_state.pending_tx_packets = (0..size).map(|_| None).collect();
+        self.active_state.data.tx_done = vec![TxId(0); size as usize].into();
+        Ok(())
+    }
+
     /// Called only after backend queues have released all buffer ownership.
     fn cancel_pending(&mut self) {
         if let Some(queue) = &mut self.virtio_state.tx_queue {

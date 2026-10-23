@@ -466,17 +466,6 @@ impl VirtioDevice for VhostUserFrontend {
         )
         .await?;
 
-        // SET_VRING_KICK — pass the kick eventfd to the backend
-        send_vring_fd(
-            &self.socket,
-            &mut self.receiver,
-            VhostUserRequestCode::SET_VRING_KICK,
-            idx,
-            Some(&resources.event),
-            self.protocol_features.reply_ack(),
-        )
-        .await?;
-
         // SET_VRING_CALL — pass an interrupt eventfd to the backend.
         //
         // If the transport's interrupt is already event-backed, pass it
@@ -502,6 +491,18 @@ impl VirtioDevice for VhostUserFrontend {
             VhostUserRequestCode::SET_VRING_ENABLE,
             idx,
             1,
+            self.protocol_features.reply_ack(),
+        )
+        .await?;
+
+        // Installing KICK can start processing preposted descriptors immediately.
+        // Configure notifications and enable the ring before exposing that work.
+        send_vring_fd(
+            &self.socket,
+            &mut self.receiver,
+            VhostUserRequestCode::SET_VRING_KICK,
+            idx,
+            Some(&resources.event),
             self.protocol_features.reply_ack(),
         )
         .await?;
@@ -1287,7 +1288,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn virtio_net_vhost_stop_restart_preserves_posted_rx(driver: DefaultDriver) {
+    async fn virtio_net_vhost_start_restart_with_preposted_rx_and_tx(driver: DefaultDriver) {
         use net_backend::loopback::LoopbackEndpoint;
         use net_backend_resources::mac_address::MacAddress;
         use virtio::spec::queue::DescriptorFlags;
@@ -1327,12 +1328,6 @@ mod tests {
             notify: Interrupt::from_event(calls[idx].clone()),
         };
         let features = VirtioDeviceFeatures::new();
-        for idx in 0..2 {
-            frontend
-                .start_queue(idx as u16, resources(idx), &features, None)
-                .await
-                .unwrap();
-        }
         let mut rx_avail = 0;
         for (idx, addr) in [(4, 0x8000), (7, 0x8100)] {
             write_descriptor(
@@ -1346,10 +1341,14 @@ mod tests {
             );
             make_available(&mem, 0x2000, 16, idx, &mut rx_avail);
         }
-        kicks[0].signal();
+        frontend
+            .start_queue(0, resources(0), &features, None)
+            .await
+            .unwrap();
         let mut tx_avail = 0;
         let mut tx_used = 0;
         let mut rx_used = 0;
+        let mut tx_state = None;
         for (tx_id, rx_id, rx_addr) in [(0, 4, 0x8000), (1, 7, 0x8100)] {
             // Twelve-byte virtio-net header followed by an Ethernet frame.
             let mut packet = [0xabu8; 44];
@@ -1357,7 +1356,12 @@ mod tests {
             mem.write_at(0x9000, &packet).unwrap();
             write_descriptor(&mem, 0x4000, tx_id, 0x9000, 44, DescriptorFlags::new(), 0);
             make_available(&mem, 0x5000, 16, tx_id, &mut tx_avail);
-            kicks[1].signal();
+            // Both first activation and restart must transmit preposted work,
+            // without requiring a signal or discarding TX while disabled.
+            frontend
+                .start_queue(1, resources(1), &features, tx_state)
+                .await
+                .unwrap();
             assert_eq!(
                 wait_for_used(&driver, &calls[1], &mem, 0x6000, 16, &mut tx_used)
                     .await
@@ -1392,10 +1396,7 @@ mod tests {
                     .start_queue(0, resources(0), &features, Some(rx))
                     .await
                     .unwrap();
-                frontend
-                    .start_queue(1, resources(1), &features, Some(tx))
-                    .await
-                    .unwrap();
+                tx_state = Some(tx);
             }
         }
         frontend.reset().await;

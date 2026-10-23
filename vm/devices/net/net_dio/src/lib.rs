@@ -115,7 +115,11 @@ impl DioQueue {
 
 impl Queue for DioQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
-        if let Some(nic) = &mut self.nic {
+        // TX completes synchronously. Without RX buffers, readable input cannot
+        // make progress and would leave a TX-only queue continuously ready.
+        if !self.free.is_empty()
+            && let Some(nic) = &mut self.nic
+        {
             nic.poll_read_ready(cx)
         } else {
             Poll::Pending
