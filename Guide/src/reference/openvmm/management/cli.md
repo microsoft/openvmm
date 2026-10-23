@@ -497,7 +497,8 @@ describes the source definitions.
   `--processors`. The target must be 1, 2, 4, or 8 and satisfy
   `boot-online <= target <= capacity`. This option sets the restore packet's
   online-VP target and implies the post-restore gate. Snapshots without
-  activation metadata reject it. An
+  activation metadata reject it; platform snapshots opt in as untiered
+  snapshots do, with a canonical `maxcpus=` at capture. An
   explicit MSHV restore instantiates and binds only the requested prefix while
   validating the full saved VP inventory; that reduced-prefix process cannot
   be saved again. MSHV restores without this option, and KVM and WHP restores,

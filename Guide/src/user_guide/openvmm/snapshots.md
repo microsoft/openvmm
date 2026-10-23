@@ -233,6 +233,10 @@ onlines and verifies that prefix before acknowledging the restore gate.
 On MSHV, an explicit target instantiates and binds only that VP prefix; saving
 such a reduced-prefix runtime is unsupported. MSHV restores without an explicit
 target, and all KVM and WHP restores, instantiate the full VP capacity.
+Platform snapshots support the same opt-in. Their command line may carry one
+`maxcpus=` token, which must be the canonical form of the recorded
+boot-online count, so each clone of one platform capture can bring its own
+prefix online, as each clone can expand its RAM with `--restore-memory`.
 A microVM restore sets the TSC of every instantiated VP in one synchronized
 operation before any VP runs: each TSC continues from the capture anchor,
 advanced by the host downtime at the declared rate. KVM sets one common TSC
