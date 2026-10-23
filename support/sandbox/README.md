@@ -57,7 +57,7 @@ use sandbox::{Network, Profile, Syscalls, profiles};
 fn vtpm_profile() -> Profile {
     profiles::minimal()
         .name("vtpm")
-        .read("/usr/lib")
+        .read_exec("/usr/lib")
         .read_write("/var/lib/vtpm")
         .network(Network::None)
         .syscalls(Syscalls::deny([
@@ -66,6 +66,12 @@ fn vtpm_profile() -> Profile {
         .build()
 }
 ```
+
+Filesystem grants distinguish data from executable code: `.read(...)` allows
+reads and directory traversal but not execution, `.read_exec(...)` also allows
+execution and executable mappings for shared libraries, and `.read_write(...)`
+allows reads and writes but not execution. On Linux, `.read(...)` mounts are
+read-only and `noexec`; they do not remove directory search permission bits.
 
 `Syscalls::deny` installs a curated **default-allow** seccomp filter: it always
 blocks the built-in dangerous-syscall baseline (namespace-escape and kernel-CVE

@@ -23,15 +23,15 @@ use crate::Syscalls;
 ///
 /// let profile = profiles::minimal()
 ///     .name("my_worker")
-///     .read("/usr/lib")
+///     .read_exec("/usr/lib")
 ///     .network(Network::Loopback)
 ///     .build();
 /// ```
 pub fn minimal() -> Builder {
     Profile::deny_all()
         .name("minimal")
-        .read("/bin")
-        .read("/lib")
+        .read_exec("/bin")
+        .read_exec("/lib")
         .network(Network::None)
         .syscalls(Syscalls::deny(std::iter::empty::<&str>()))
 }

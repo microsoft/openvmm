@@ -44,7 +44,7 @@ pub fn tpm_worker() -> Builder {
     let mut profile = Profile::deny_all()
         .name("tpm_worker")
         .read("/etc")
-        .read("/usr/lib");
+        .read_exec("/usr/lib");
 
     if std::path::Path::new("/usr/local/ssl").exists() {
         profile = profile.read("/usr/local/ssl");

@@ -48,7 +48,8 @@ pub fn vm_worker() -> Builder {
     Profile::deny_all()
         .name("vm_worker")
         .read("/etc")
-        .read("/usr/lib")
+        .read("/sys/devices/system/cpu")
+        .read_exec("/usr/lib")
         .syscalls(Syscalls::deny([
             "bpf",
             "chroot",
