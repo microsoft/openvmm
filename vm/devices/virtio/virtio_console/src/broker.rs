@@ -259,7 +259,10 @@ impl BrokerWorker {
             HostTransportState::Disabled => {}
         }
 
+        // The deadline bounds how long the host takes to authenticate, so it
+        // counts only while the broker reads host input.
         if self.transport_state == HostTransportState::Connected
+            && !state.input_gated
             && self.broker.host_is_connected()
             && !self.broker.host_is_authenticated()
             && let Some(deadline) = self.auth_deadline
@@ -523,6 +526,22 @@ impl BrokerWorker {
         broker_result
     }
 
+    fn new_auth_deadline(&self) -> Instant {
+        Instant::now().saturating_add(Duration::from_millis(self.config.auth_timeout_ms))
+    }
+
+    /// Restarts the authentication deadline of an attached host that has not
+    /// authenticated. Called when gated host input is released: the host
+    /// could not authenticate while its input was not read.
+    pub(crate) fn restart_auth_deadline(&mut self) {
+        if self.auth_deadline.is_some()
+            && self.broker.host_is_connected()
+            && !self.broker.host_is_authenticated()
+        {
+            self.auth_deadline = Some(self.new_auth_deadline());
+        }
+    }
+
     fn begin_verified_host_attachment(&mut self) -> Result<(), WorkerError> {
         let identity = self.host_io.local_peer_identity();
         let identity_status = match &identity {
@@ -548,10 +567,7 @@ impl BrokerWorker {
         }
         match self.broker.begin_host_attachment() {
             Ok(()) => {
-                self.auth_deadline = Some(
-                    Instant::now()
-                        .saturating_add(Duration::from_millis(self.config.auth_timeout_ms)),
-                );
+                self.auth_deadline = Some(self.new_auth_deadline());
             }
             Err(error) => {
                 tracelimit::warn_ratelimited!(

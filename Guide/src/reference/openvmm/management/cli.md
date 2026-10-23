@@ -977,6 +977,9 @@ Serial devices can be configured to appear as different devices inside the guest
   logs, snapshots, or attachment identities. The first host record must prove
   that capability. Peer identity is checked first. Authentication must complete
   within `--microvm-control-auth-timeout-ms` (default 5000, range 1 to 60000).
+  The timeout counts only while OpenVMM reads host input: while a snapshot
+  boundary or a gated microVM restore holds host input, it is suspended, and
+  it starts over when the input is released.
   A stalled or failed authentication attempt closes the connection without a
   protocol Error record and without changing the broker epoch.
 
