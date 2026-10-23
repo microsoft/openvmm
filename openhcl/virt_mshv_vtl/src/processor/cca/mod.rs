@@ -16,12 +16,19 @@ use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::processor::InterceptMessageState;
+use aarch64defs::CntvCtlEl0;
 use aarch64defs::EsrEl2;
 use aarch64defs::HpfarEl2;
 use aarch64defs::InstructionAbortReason;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssInstructionAbort;
+use aarch64defs::IssSystem;
 use aarch64defs::SystemReg;
+use aarch64defs::gic::IchHcrEl2;
+use aarch64defs::gic::IchLrEl2;
+use aarch64defs::gic::IchLrState;
+use aarch64defs::gic::IchVmcrEl2;
+use aarch64defs::gic::IchVtrEl2;
 use aarch64defs::rsi::cca_rsi_plane_exit;
 use hcl::GuestVtl;
 use hcl::ioctl::cca::Cca;
@@ -33,12 +40,15 @@ use hv1_structs::VtlArray;
 use hvdef::HvRegisterCrInterceptControl;
 use inspect::Inspect;
 use inspect::InspectMut;
+use std::collections::HashMap;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::vp;
 use virt::aarch64::vp::AccessVpState;
 use virt::io::CpuIo;
 use virt_support_aarch64emu::translate::TranslationRegisters;
+use virt_support_gic::ListRegisterInterrupt;
+use virt_support_gic::PendingInterrupt;
 use zerocopy::FromZeros;
 
 #[derive(Debug, Error)]
@@ -53,6 +63,8 @@ enum CcaUnsupportedExit {
     ExceptionClass { exception_class: u8, esr_el2: u64 },
     #[error("CCA data abort with invalid instruction syndrome in ESR_EL2 {0:#x}")]
     InvalidDataAbortIss(u64),
+    #[error("CCA data abort with invalid FAR_EL2 in ESR_EL2 {0:#x}")]
+    InvalidDataAbortFar(u64),
     #[error(
         "CCA instruction abort: ESR_EL2 {esr_el2:#x}, ELR_EL2 {elr_el2:#x}, FAR_EL2 {far_el2:#x},
         FIPA {fipa:#x}, FIPA RIPAS state {fipa_state:#x}, IFSC {ifsc:#x}, reason {reason:?}, FNV {far_not_valid}"
@@ -67,10 +79,17 @@ enum CcaUnsupportedExit {
         reason: InstructionAbortReason,
         far_not_valid: bool,
     },
+    #[allow(dead_code)]
+    #[error("CCA private GIC interrupt ID {0} is outside the SGI/PPI range")]
+    InvalidPrivateGicInterrupt(u32),
+    #[error("unsupported CCA system register trap for {system_reg:?} in ESR_EL2 {esr_el2:#x}")]
+    UnsupportedSystemRegister { system_reg: SystemReg, esr_el2: u64 },
+    #[allow(dead_code)]
+    #[error("CCA {system_reg:?} write in ESR_EL2 {esr_el2:#x} has no accessible source register")]
+    MissingSystemRegisterValue { system_reg: SystemReg, esr_el2: u64 },
 }
 
 const AARCH64_ZERO_REGISTER_INDEX: u8 = 31;
-
 // For use with Hyper-V synthetic interrupt controller allocated by paravisor.
 enum UhDirectOverlay {
     #[expect(unused)]
@@ -87,7 +106,7 @@ pub struct CcaBacked {
     cvm: UhCvmVpState,
 }
 
-#[derive(Clone, Copy, InspectMut, Inspect)]
+#[derive(Clone, InspectMut, Inspect)]
 struct CcaVtl {
     // TODO: CCA: potentially needed fields, based on TDX implementation:
     // * values of control registers
@@ -98,6 +117,16 @@ struct CcaVtl {
     sp_el0: u64,
     sp_el1: u64,
     cpsr: u64,
+    /// Virtual interrupts that did not fit in the implemented LRs.
+    ///
+    /// These are the tail of the logical active/pending list. They remain
+    /// durable here until EOIcount or a trapped ICC_DIR_EL1 deactivates them.
+    #[inspect(iter_by_index)]
+    gic_lr_overflow: Vec<u64>,
+    /// Most recently returned ICH_VMCR_EL2 value for this plane.
+    gic_vmcr: u64,
+    /// Whether the current LR cache has been folded into the software GIC.
+    gic_lrs_reconciled: bool,
 }
 
 impl CcaVtl {
@@ -106,6 +135,9 @@ impl CcaVtl {
             sp_el0: 0,
             sp_el1: 0,
             cpsr: 0,
+            gic_lr_overflow: Vec::new(),
+            gic_vmcr: 0,
+            gic_lrs_reconciled: false,
         }
     }
 }
@@ -113,12 +145,17 @@ impl CcaVtl {
 #[derive(Inspect)]
 pub struct CcaBackedShared {
     pub(crate) cvm: UhCvmPartitionState,
+    virt_timer_ppi: u32,
+    gic_num_lrs: usize,
 }
 
 impl CcaBackedShared {
-    pub(crate) fn new(params: BackingSharedParams<'_>) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams<'_>, virt_timer_ppi: u32) -> Result<Self, Error> {
+        let realm_config = params.hcl.get_realm_config().map_err(Error::Hcl)?;
         Ok(Self {
             cvm: params.cvm_state.unwrap(),
+            virt_timer_ppi,
+            gic_num_lrs: gic_num_lrs(realm_config.gicv3_vtr())?,
         })
     }
 }
@@ -132,6 +169,7 @@ enum ExceptionClass {
     InstructionAbort,
     SimdAccess,
     SmcError,
+    SystemRegister,
     Unknown(u8),
 }
 
@@ -142,6 +180,7 @@ impl From<u8> for ExceptionClass {
             0b0010_0000 => ExceptionClass::InstructionAbort,
             0b0000_0111 => ExceptionClass::SimdAccess,
             0b0001_0111 => ExceptionClass::SmcError,
+            0b0001_1000 => ExceptionClass::SystemRegister,
             _ => ExceptionClass::Unknown(value),
         }
     }
@@ -164,6 +203,12 @@ impl From<u64> for PlaneExitReason {
             _ => PlaneExitReason::Unknown(value),
         }
     }
+}
+
+struct CcaLocalInterruptExit {
+    system_register_trap: Option<(IssSystem, u64, u64)>,
+    virtual_timer_asserted: bool,
+    gic_maintenance_status: u64,
 }
 
 /// A wrapper around the CCA RSI plane exit structure, providing methods to
@@ -200,6 +245,206 @@ impl<'a> CcaExit<'a> {
             AARCH64_ZERO_REGISTER_INDEX => Some(0),
             index => self.0.gprs.get(usize::from(index)).copied(),
         }
+    }
+
+    /// Returns whether the virtual timer interrupt is enabled, unmasked, and
+    /// asserted in the returned CCA plane state.
+    fn virtual_timer_asserted(&self) -> bool {
+        let control = CntvCtlEl0::from(self.0.cntv_ctl_el0);
+        control.enable() && !control.imask() && control.istatus()
+    }
+
+    fn local_interrupt_exit(&self) -> CcaLocalInterruptExit {
+        let esr_el2 = self.esr_el2();
+        let exception_class = self.esr_el2_class();
+        let system_register_trap =
+            matches!(exception_class, ExceptionClass::SystemRegister).then(|| {
+                let iss = IssSystem::from(esr_el2.iss());
+                let value = self
+                    .gpr_or_zero_register(iss.rt())
+                    .expect("ISS Rt is a valid AArch64 register index");
+                (iss, value, self.0.esr_el2)
+            });
+
+        CcaLocalInterruptExit {
+            system_register_trap,
+            virtual_timer_asserted: self.virtual_timer_asserted(),
+            gic_maintenance_status: self.0.gicv3_misr,
+        }
+    }
+}
+
+/// Returns the number of architecturally implemented GIC list registers.
+///
+/// The RSI run page has room for 16 LRs, but that is only the ABI capacity.
+/// ICH_VTR_EL2.ListRegs contains the zero-based implemented count. The GIC
+/// architecture limits the usable count to 16. Reject configurations that
+/// exceed the RSI ABI rather than silently dropping the excess LRs.
+fn gic_num_lrs(gicv3_vtr: u64) -> Result<usize, Error> {
+    let reported = usize::from(IchVtrEl2::from(gicv3_vtr).list_regs()) + 1;
+    let maximum = aarch64defs::rsi::RSI_PLANE_GIC_NUM_LRS;
+
+    if reported > maximum {
+        return Err(Error::UnsupportedCcaGicListRegisterCount { reported, maximum });
+    }
+
+    Ok(reported)
+}
+
+fn lr_is_valid(lr: u64) -> bool {
+    IchLrEl2::from(lr).state() != IchLrState::INVALID
+}
+
+fn lr_is_pending(lr: u64) -> bool {
+    // NPIE concerns the pure-pending state, not active-and-pending.
+    IchLrEl2::from(lr).state() == IchLrState::PENDING
+}
+
+fn lr_is_active(lr: u64) -> bool {
+    matches!(
+        IchLrEl2::from(lr).state(),
+        IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE
+    )
+}
+
+/// Recomputes maintenance-interrupt controls after packing the LRs.
+///
+fn configure_gic_maintenance(
+    gicv3_hcr: &mut u64,
+    pending_outside_lrs: bool,
+    active_outside_lrs: bool,
+    any_outside_lrs: bool,
+) {
+    let hcr = IchHcrEl2::from(*gicv3_hcr)
+        .with_uie(any_outside_lrs)
+        .with_lrenpie(active_outside_lrs)
+        .with_npie(pending_outside_lrs)
+        .with_tdir(active_outside_lrs)
+        .with_eoi_count(0);
+    *gicv3_hcr = hcr.into();
+}
+
+fn gic_eoi_count(gicv3_hcr: u64) -> usize {
+    usize::from(IchHcrEl2::from(gicv3_hcr).eoi_count())
+}
+
+/// Applies ordered EOImode-0 deactivations to active entries outside the LRs.
+///
+/// For example, given:
+///
+/// ```text
+/// overflow before: [P40, A10, A11, A12]
+/// EOIcount: 2
+/// ```
+///
+/// The pure-pending P40 is skipped, and the first two active entries, A10 and
+/// A11, are deactivated. The resulting overflow list is:
+///
+/// ```text
+/// overflow after: [P40, A12]
+/// ```
+fn consume_eoi_count(lr_overflow: &mut Vec<u64>, mut eoi_count: usize) {
+    lr_overflow.retain_mut(|lr| {
+        if eoi_count == 0 || !lr_is_active(*lr) {
+            return true;
+        }
+
+        eoi_count -= 1;
+        let value = IchLrEl2::from(*lr);
+        if value.state() == IchLrState::PENDING_AND_ACTIVE {
+            *lr = value.with_state(IchLrState::PENDING).into();
+            true
+        } else {
+            false
+        }
+    });
+
+    if eoi_count != 0 {
+        tracelimit::warn_ratelimited!(
+            eoi_count,
+            "CCA GIC EOIcount exceeded the active LR overflow tail"
+        );
+    }
+}
+
+/// Orders the software active/pending list for LR overflow: pure-pending
+/// entries from enabled groups first, then disabled groups, followed by active
+/// entries.
+fn sort_gic_candidates(candidates: &mut [u64], vmcr: IchVmcrEl2) {
+    candidates.sort_by_key(|lr| {
+        let lr = IchLrEl2::from(*lr);
+        let pending = lr.state() == IchLrState::PENDING;
+        let group_enabled = if lr.group1() {
+            vmcr.veng1()
+        } else {
+            vmcr.veng0()
+        };
+        (
+            !pending,
+            pending && !group_enabled,
+            lr.priority(),
+            lr.vintid(),
+        )
+    });
+}
+
+fn deactivate_virtual_interrupt(lrs: &mut [u64], active_overflow: &mut Vec<u64>, intid: u32) {
+    let deactivate = |lr: &mut u64| {
+        let value = IchLrEl2::from(*lr);
+        if lr_is_active(*lr) && value.vintid() == intid {
+            let state = match value.state() {
+                IchLrState::ACTIVE => IchLrState::INVALID,
+                IchLrState::PENDING_AND_ACTIVE => IchLrState::PENDING,
+                state => state,
+            };
+            if state == IchLrState::INVALID {
+                *lr = 0;
+            } else {
+                *lr = value.with_state(state).into();
+            }
+        }
+    };
+
+    lrs.iter_mut().for_each(deactivate);
+    active_overflow.iter_mut().for_each(deactivate);
+    active_overflow.retain(|lr| lr_is_valid(*lr));
+}
+
+/// Adds an interrupt to an unbounded software active/pending list.
+fn queue_virtual_interrupts(
+    candidates: &mut Vec<u64>,
+    mut interrupts: HashMap<u64, PendingInterrupt>,
+) {
+    for lr in candidates.iter_mut() {
+        if !lr_is_valid(*lr) {
+            continue;
+        }
+
+        let value = IchLrEl2::from(*lr);
+        if let Some(interrupt) = interrupts.remove(&u64::from(value.vintid())) {
+            let state = match value.state() {
+                IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE => {
+                    IchLrState::PENDING_AND_ACTIVE
+                }
+                _ => IchLrState::PENDING,
+            };
+            *lr = value
+                .with_eoi(interrupt.level_triggered)
+                .with_state(state)
+                .into();
+        }
+    }
+
+    for interrupt in interrupts.values() {
+        candidates.push(
+            IchLrEl2::new()
+                .with_vintid(interrupt.intid)
+                .with_priority(interrupt.priority)
+                .with_group1(interrupt.group1)
+                .with_eoi(interrupt.level_triggered)
+                .with_state(IchLrState::PENDING)
+                .into(),
+        );
     }
 }
 
@@ -242,7 +487,7 @@ impl BackingPrivate for CcaBacked {
         // TODO: CCA: do we need a "flush_page" here (?)
         // TODO: CCA: initialize untrusted synic (?)
         Ok(Self {
-            vtls: VtlArray::new(CcaVtl::new()),
+            vtls: VtlArray::from_fn(|_| CcaVtl::new()),
             cvm: UhCvmVpState::new(
                 &shared.cvm,
                 params.partition,
@@ -290,31 +535,35 @@ impl BackingPrivate for CcaBacked {
 
         // TODO: CCA: NEXT: move this to `init`?
         this.set_plane_enter();
+        let vtl = this.backing.cvm.exit_vtl;
 
         // Run the CCA plane.
         // This will return when the plane exits.
-        let intercepted = this
+        let has_plane_exit = this
             .runner
-            .run()
+            .run_cca_plane()
             .map_err(|e| dev.fatal_error(CcaRunVpError(e).into()))?;
 
-        // Preserve the plane context, so we can restore it later.
-        this.preserve_plane_context();
+        if has_plane_exit {
+            // Preserve the plane context, so we can restore it later.
+            this.preserve_plane_context(vtl);
 
-        if intercepted {
             // CCA: note, this is a very simplified version of the exit handling,
             // just enough to get the TMK running.
             // TODO: CCA: NEXT: document how we integrate with the wider emulation
             // system.
             let cca_exit = CcaExit(this.runner.cca_rsi_plane_exit());
+            this.shared.cvm.gic.set_ppi_irq(
+                this.vp_index(),
+                this.shared.virt_timer_ppi,
+                cca_exit.virtual_timer_asserted(),
+            );
             let exit_reason = cca_exit.exit_reason();
             let esr_el2 = cca_exit.esr_el2();
             match exit_reason {
                 PlaneExitReason::Sync => {
                     match cca_exit.esr_el2_class() {
                         ExceptionClass::DataAbort => {
-                            // get the address that caused the data abort
-                            let address = cca_exit.far_el2();
                             let iss = IssDataAbort::from(esr_el2.iss());
                             if !iss.isv() {
                                 tracing::warn!(
@@ -327,6 +576,21 @@ impl BackingPrivate for CcaBacked {
                                 ));
                             }
 
+                            if iss.fnv() {
+                                tracing::warn!(
+                                    esr_el2 = cca_exit.0.esr_el2,
+                                    "CCA data abort has an invalid FAR_EL2"
+                                );
+                                return Err(dev.fatal_error(
+                                    CcaUnsupportedExit::InvalidDataAbortFar(cca_exit.0.esr_el2)
+                                        .into(),
+                                ));
+                            }
+
+                            // Construct the IPA from the valid FAR page offset.
+                            let far = cca_exit.far_el2();
+                            let hpfar = cca_exit.hpfar_el2();
+                            let address = (hpfar.fipa() << 12) | (far & 0xfff);
                             let len = 1usize << iss.sas();
                             let srt = iss.srt();
 
@@ -346,6 +610,10 @@ impl BackingPrivate for CcaBacked {
                                     );
                                 }
                             } else {
+                                // Reconcile the returned LR cache before a GIC
+                                // MMIO read observes pending or active state.
+                                this.reconcile_gic_lrs(vtl);
+
                                 // Handle MMIO read
                                 let mut value = [0u8; size_of::<u64>()];
                                 dev.read_mmio(this.vp_index(), address, &mut value[..len])
@@ -429,6 +697,14 @@ impl BackingPrivate for CcaBacked {
                         ExceptionClass::SmcError => {
                             tracing::warn!("SmcError exception triggered, but not handled");
                         }
+                        ExceptionClass::SystemRegister => {
+                            let iss = IssSystem::from(esr_el2.iss());
+                            let value = cca_exit
+                                .gpr_or_zero_register(iss.rt())
+                                .expect("ISS Rt is a valid AArch64 register index");
+                            this.handle_system_register_trap(vtl, iss, value, cca_exit.0.esr_el2)
+                                .map_err(|e| dev.fatal_error(e.into()))?;
+                        }
                         ExceptionClass::Unknown(exception_class) => {
                             tracing::warn!(
                                 exception_class,
@@ -446,8 +722,9 @@ impl BackingPrivate for CcaBacked {
                     }
                 }
                 PlaneExitReason::Irq => {
-                    // Handle IRQ exit
-                    tracing::warn!("IRQ triggered, but not handled");
+                    let irq_exit = cca_exit.local_interrupt_exit();
+                    this.request_asserted_local_interrupts(vtl, irq_exit)
+                        .map_err(|e| dev.fatal_error(e.into()))?;
                 }
                 PlaneExitReason::Unknown(exit_reason) => {
                     tracing::warn!(exit_reason, "unsupported CCA plane exit reason");
@@ -459,16 +736,23 @@ impl BackingPrivate for CcaBacked {
     }
 
     fn process_interrupts(
-        _this: &mut UhProcessor<'_, Self>,
-        _scan_irr: VtlArray<bool, 2>,
-        _first_scan_irr: &mut bool,
-        _dev: &impl CpuIo,
+        this: &mut UhProcessor<'_, Self>,
+        scan_irr: VtlArray<bool, 2>,
+        first_scan_irr: &mut bool,
+        dev: &impl CpuIo,
     ) -> bool {
+        let _ = dev;
+        // RSI exposes one LR bank for the plane that most recently exited.
+        // Fold and repack only that plane; polling both VTLs would fold the
+        // same returned cache twice and mix their software overflow tails.
+        let vtl = this.backing.cvm.exit_vtl;
+        Self::poll_interrupt_controller(this, vtl, scan_irr[vtl] || *first_scan_irr);
+        *first_scan_irr = false;
         false
     }
 
-    fn poll_apic(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _scan_irr: bool) {
-        // TODO: CCA: poll GIC?
+    fn poll_interrupt_controller(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, _scan_irr: bool) {
+        this.poll_gic(vtl);
     }
 
     fn request_extint_readiness(_this: &mut UhProcessor<'_, Self>) {
@@ -479,14 +763,6 @@ impl BackingPrivate for CcaBacked {
         // TODO: CCA: handle this for CCA untrusted synic
         unimplemented!();
     }
-
-    // fn handle_cross_vtl_interrupts(
-    //     _this: &mut UhProcessor<'_, Self>,
-    //     _dev: &impl CpuIo,
-    // ) -> Result<bool, UhRunVpError> {
-    //     // TODO: CCA: handle cross VTL interrupts when GIC support is added
-    //     Ok(false)
-    // }
 
     fn hv(&self, _vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
         None
@@ -530,23 +806,275 @@ impl UhProcessor<'_, CcaBacked> {
 
     fn set_plane_enter(&mut self) {
         self.runner.cca_set_plane_enter();
+        // Do not set TC: it traps every EL1 access to common ICC/ICV
+        // registers, while only SGI generation needs software handling. With
+        // the virtual CPU interface enabled, SGI writes trap independently and
+        // the virtual interface owns PMR, CTLR, RPR, and ICV accesses.
+        let hcr = IchHcrEl2::from(self.runner.cca_rsi_plane_entry().gicv3_hcr).with_en(true);
+        self.runner.cca_rsi_plane_entry().gicv3_hcr = hcr.into();
+    }
+
+    /// Handles interrupt-controller events reported by a CCA local IRQ exit.
+    ///
+    /// Trapped ICC SGI writes are emulated through the software GIC. Unsupported
+    /// system-register traps return an error; other sources are traced here.
+    fn request_asserted_local_interrupts(
+        &mut self,
+        vtl: GuestVtl,
+        irq_exit: CcaLocalInterruptExit,
+    ) -> Result<(), CcaUnsupportedExit> {
+        if irq_exit.gic_maintenance_status != 0 {
+            tracing::trace!(
+                misr = irq_exit.gic_maintenance_status,
+                "CCA virtual GIC maintenance exit"
+            );
+        }
+
+        if let Some((iss, value, esr_el2)) = irq_exit.system_register_trap {
+            self.handle_system_register_trap(vtl, iss, value, esr_el2)?;
+        } else if !irq_exit.virtual_timer_asserted && irq_exit.gic_maintenance_status == 0 {
+            tracing::trace!("CCA IRQ exit had an unrecognized local interrupt source");
+        }
+
+        Ok(())
+    }
+
+    /// Emulates a trapped write to a supported ICC register.
+    ///
+    /// With TC clear, SGI generation writes and DIR writes requested by TDIR
+    /// are the only common ICC accesses that should trap. Successful emulation
+    /// advances the plane-entry PC past the trapped instruction; it does not
+    /// modify the guest GPR state.
+    fn handle_system_register_trap(
+        &mut self,
+        vtl: GuestVtl,
+        iss: IssSystem,
+        value: u64,
+        esr_el2: u64,
+    ) -> Result<(), CcaUnsupportedExit> {
+        let system_reg = iss.system_reg();
+
+        if iss.direction() {
+            return Err(CcaUnsupportedExit::UnsupportedSystemRegister {
+                system_reg,
+                esr_el2,
+            });
+        }
+
+        let handled = match system_reg {
+            SystemReg::ICC_DIR_EL1 => {
+                // TDIR is set whenever active interrupts live outside LRs.
+                // DIR only performs deactivation in EOImode == 1; in mode 0,
+                // EOIR deactivation is represented by HCR.EOIcount instead.
+                if IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
+                    deactivate_virtual_interrupt(
+                        &mut self.runner.cca_rsi_plane_entry().gicv3_lrs[..self.shared.gic_num_lrs],
+                        &mut self.backing.vtls[vtl].gic_lr_overflow,
+                        value as u32,
+                    );
+                }
+                true
+            }
+            sgi_reg @ (SystemReg::ICC_SGI0R_EL1
+            | SystemReg::ICC_SGI1R_EL1
+            | SystemReg::ICC_ASGI1R_EL1) => {
+                self.shared
+                    .cvm
+                    .gic
+                    .write_sysreg(self.vp_index(), sgi_reg, value, |target_vp| {
+                        tracing::trace!(
+                            target_vp,
+                            ?system_reg,
+                            "GIC sysreg write raised an interrupt"
+                        );
+                    })
+            }
+            _ => false,
+        };
+
+        if !handled {
+            return Err(CcaUnsupportedExit::UnsupportedSystemRegister {
+                system_reg,
+                esr_el2,
+            });
+        }
+
+        // The trapped AArch64 instruction has been emulated. Resume at the
+        // following 4-byte instruction instead of trapping on this one again.
+        self.runner.cca_rsi_plane_entry().pc += 4;
+
+        Ok(())
+    }
+
+    /// Folds the returned LR cache into the durable software GIC state.
+    fn reconcile_gic_lrs(&mut self, vtl: GuestVtl) {
+        if self.backing.vtls[vtl].gic_lrs_reconciled {
+            return;
+        }
+
+        let gic_num_lrs = self.shared.gic_num_lrs;
+        let gicv3_hcr = self.runner.cca_rsi_plane_entry().gicv3_hcr;
+        if !IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr).veoim() {
+            consume_eoi_count(
+                &mut self.backing.vtls[vtl].gic_lr_overflow,
+                gic_eoi_count(gicv3_hcr),
+            );
+        }
+
+        let mut logical_lrs = self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs]
+            .iter()
+            .copied()
+            .filter(|lr| lr_is_valid(*lr))
+            .collect::<Vec<_>>();
+        logical_lrs.extend(self.backing.vtls[vtl].gic_lr_overflow.iter().copied());
+
+        let returned = logical_lrs
+            .iter()
+            .map(|lr| {
+                let lr = IchLrEl2::from(*lr);
+                ListRegisterInterrupt {
+                    intid: lr.vintid(),
+                    pending: matches!(
+                        lr.state(),
+                        IchLrState::PENDING | IchLrState::PENDING_AND_ACTIVE
+                    ),
+                    active: matches!(
+                        lr.state(),
+                        IchLrState::ACTIVE | IchLrState::PENDING_AND_ACTIVE
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.shared
+            .cvm
+            .gic
+            .fold_list_registers(self.vp_index(), &returned);
+        self.backing.vtls[vtl].gic_lrs_reconciled = true;
+    }
+
+    /// Repacks the reconciled LR cache and its software overflow tail.
+    ///
+    /// Pure-pending interrupts are placed before active entries. Active entries
+    /// that no longer fit remain in a software tail and are deactivated through
+    /// EOIcount (EOImode 0) or trapped DIR writes (EOImode 1).
+    fn poll_gic(&mut self, vtl: GuestVtl) {
+        self.reconcile_gic_lrs(vtl);
+
+        let gic_num_lrs = self.shared.gic_num_lrs;
+        let overflow = std::mem::take(&mut self.backing.vtls[vtl].gic_lr_overflow);
+        let mut logical_lrs = self.runner.cca_rsi_plane_entry().gicv3_lrs[..gic_num_lrs]
+            .iter()
+            .copied()
+            .filter(|lr| lr_is_valid(*lr))
+            .collect::<Vec<_>>();
+        logical_lrs.extend(overflow);
+
+        let vp = self.vp_index();
+
+        // Returned pending state is now durable in the software GIC. Seed the
+        // next active/pending list with active entries only; pending state will
+        // be selected again below according to priority and PMR.
+        let mut candidates = logical_lrs
+            .into_iter()
+            .filter(|lr| lr_is_active(*lr))
+            .map(|lr| IchLrEl2::from(lr).with_state(IchLrState::ACTIVE).into())
+            .collect::<Vec<_>>();
+
+        if let Some(interrupts) = self
+            .shared
+            .cvm
+            .gic
+            .next_pending_private_interrupts(vp, u8::MAX)
+        {
+            for (&intid, interrupt) in &interrupts {
+                self.shared.cvm.gic.mark_private_injected(vp, intid as u32);
+                tracing::debug!(
+                    intid = interrupt.intid,
+                    priority = interrupt.priority,
+                    group1 = interrupt.group1,
+                    ?vtl,
+                    "injected CCA GIC interrupt"
+                );
+            }
+
+            queue_virtual_interrupts(&mut candidates, interrupts);
+        }
+
+        // Device SPIs belong to VTL0.
+        if vtl == GuestVtl::Vtl0 {
+            if let Some(interrupts) = self
+                .shared
+                .cvm
+                .gic
+                .reserve_pending_spi_interrupts(vp, u8::MAX)
+            {
+                for (_, &interrupt) in &interrupts {
+                    tracing::debug!(
+                        intid = interrupt.intid,
+                        priority = interrupt.priority,
+                        group1 = interrupt.group1,
+                        ?vtl,
+                        "queued pending CCA shared GIC interrupt"
+                    );
+                }
+                queue_virtual_interrupts(&mut candidates, interrupts);
+            }
+        }
+
+        sort_gic_candidates(
+            &mut candidates,
+            IchVmcrEl2::from(self.backing.vtls[vtl].gic_vmcr),
+        );
+        let overflow = if candidates.len() > gic_num_lrs {
+            candidates.split_off(gic_num_lrs)
+        } else {
+            Vec::new()
+        };
+        let pending_outside_lrs = overflow.iter().any(|lr| lr_is_pending(*lr));
+        let active_outside_lrs = overflow.iter().any(|lr| lr_is_active(*lr));
+        let any_outside_lrs = !overflow.is_empty();
+
+        let entry = self.runner.cca_rsi_plane_entry();
+        entry.gicv3_lrs.fill(0);
+        entry.gicv3_lrs[..candidates.len()].copy_from_slice(&candidates);
+        configure_gic_maintenance(
+            &mut entry.gicv3_hcr,
+            pending_outside_lrs,
+            active_outside_lrs,
+            any_outside_lrs,
+        );
+        self.backing.vtls[vtl].gic_lr_overflow = overflow;
+        self.backing.vtls[vtl].gic_lrs_reconciled = false;
     }
 
     // Copy the exit context to the entry context.
-    fn preserve_plane_context(&mut self) {
-        let plane_run = self.runner.cca_rsi_plane_run_mut();
+    fn preserve_plane_context(&mut self, vtl: GuestVtl) {
+        let gic_vmcr = {
+            let plane_run = self.runner.cca_rsi_plane_run_mut();
 
-        // Copy GPRs across.
-        plane_run
-            .entry
-            .gprs
-            .copy_from_slice(&plane_run.exit.gprs[..]);
+            // Copy GPRs across.
+            plane_run
+                .entry
+                .gprs
+                .copy_from_slice(&plane_run.exit.gprs[..]);
 
-        // Set the PC to the ELR_EL2 value from the exit context.
-        plane_run.entry.pc = plane_run.exit.elr_el2;
+            // Set the PC to the ELR_EL2 value from the exit context.
+            plane_run.entry.pc = plane_run.exit.elr_el2;
 
-        // Set GICv3 HCR to the value from the exit context.
-        plane_run.entry.gicv3_hcr = plane_run.exit.gicv3_hcr;
+            // Restore the interrupted PSTATE, including the IRQ mask.
+            plane_run.entry.pstate = plane_run.exit.pstate;
+
+            // Preserve the virtual GIC state across plane exits. HCR.EOIcount
+            // is consumed when the returned LR cache is folded.
+            plane_run.entry.gicv3_hcr = plane_run.exit.gicv3_hcr;
+            plane_run
+                .entry
+                .gicv3_lrs
+                .copy_from_slice(&plane_run.exit.gicv3_lrs);
+            plane_run.exit.gicv3_vmcr
+        };
+        self.backing.vtls[vtl].gic_vmcr = gic_vmcr;
+        self.backing.vtls[vtl].gic_lrs_reconciled = false;
     }
 
     // TODO: CCA: lots of stuff might be needed based on the TDX implementation, something akin to:
@@ -865,6 +1393,261 @@ impl TlbFlushLockAccess for CcaTlbLockFlushAccess<'_> {
 
     fn set_wait_for_tlb_locks(&mut self, _vtl: GuestVtl) {
         unimplemented!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lr(vintid: u32, priority: u8, state: IchLrState) -> u64 {
+        IchLrEl2::new()
+            .with_vintid(vintid)
+            .with_priority(priority)
+            .with_state(state)
+            .into()
+    }
+    #[test]
+    fn virtual_timer_assertion_requires_enabled_unmasked_status() {
+        let mut exit = cca_rsi_plane_exit::new_zeroed();
+        let cases = [
+            (CntvCtlEl0::new(), false),
+            (CntvCtlEl0::new().with_enable(true).with_istatus(true), true),
+            (
+                CntvCtlEl0::new()
+                    .with_enable(true)
+                    .with_imask(true)
+                    .with_istatus(true),
+                false,
+            ),
+            (CntvCtlEl0::new().with_enable(true), false),
+        ];
+
+        for (control, asserted) in cases {
+            exit.cntv_ctl_el0 = control.into();
+            assert_eq!(CcaExit(&exit).virtual_timer_asserted(), asserted);
+        }
+    }
+
+    #[test]
+    fn lr_count_comes_from_vtr_and_is_validated_against_rsi_capacity() {
+        let vtr = |list_regs| u64::from(IchVtrEl2::new().with_list_regs(list_regs));
+        assert!(matches!(gic_num_lrs(vtr(0)), Ok(1)));
+        assert!(matches!(gic_num_lrs(vtr(3)), Ok(4)));
+        assert!(matches!(gic_num_lrs(vtr(15)), Ok(16)));
+        assert!(matches!(
+            gic_num_lrs(vtr(31)),
+            Err(Error::UnsupportedCcaGicListRegisterCount {
+                reported: 32,
+                maximum: 16
+            })
+        ));
+    }
+
+    #[test]
+    fn level_interrupts_request_eoi_maintenance() {
+        let level = PendingInterrupt {
+            intid: 27,
+            priority: 0x20,
+            group1: true,
+            level_triggered: true,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(level.intid), level)]));
+
+        let pending_lr = IchLrEl2::from(lrs[0]);
+        assert!(pending_lr.eoi());
+        assert_eq!(pending_lr.state(), IchLrState::PENDING);
+
+        let mut lrs = vec![lr(level.intid, level.priority, IchLrState::ACTIVE)];
+
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(level.intid), level)]));
+
+        let active_lr = IchLrEl2::from(lrs[0]);
+        assert!(active_lr.eoi());
+        assert_eq!(active_lr.state(), IchLrState::PENDING_AND_ACTIVE);
+
+        let edge = PendingInterrupt {
+            intid: 5,
+            priority: 0x40,
+            group1: true,
+            level_triggered: false,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(&mut lrs, HashMap::from([(u64::from(edge.intid), edge)]));
+
+        assert!(!IchLrEl2::from(lrs[0]).eoi());
+    }
+
+    #[test]
+    fn virtual_interrupt_lrs_preserve_interrupt_groups() {
+        let group0 = PendingInterrupt {
+            intid: 4,
+            priority: 0x20,
+            group1: false,
+            level_triggered: false,
+        };
+        let group1 = PendingInterrupt {
+            intid: 5,
+            priority: 0x20,
+            group1: true,
+            level_triggered: false,
+        };
+        let mut lrs = Vec::new();
+        queue_virtual_interrupts(
+            &mut lrs,
+            HashMap::from([
+                (u64::from(group0.intid), group0),
+                (u64::from(group1.intid), group1),
+            ]),
+        );
+
+        let groups = lrs
+            .into_iter()
+            .map(|lr| {
+                let lr = IchLrEl2::from(lr);
+                (lr.vintid(), lr.group1())
+            })
+            .collect::<HashMap<_, _>>();
+        assert_eq!(groups.get(&group0.intid), Some(&false));
+        assert_eq!(groups.get(&group1.intid), Some(&true));
+    }
+
+    #[test]
+    fn only_pure_pending_lrs_count_for_npie() {
+        assert!(lr_is_pending(lr(0, 0, IchLrState::PENDING)));
+        assert!(!lr_is_pending(lr(0, 0, IchLrState::ACTIVE)));
+        assert!(!lr_is_pending(lr(0, 0, IchLrState::PENDING_AND_ACTIVE)));
+    }
+
+    #[test]
+    fn overflow_recomputes_maintenance_controls() {
+        let mut hcr: u64 = IchHcrEl2::new()
+            .with_en(true)
+            .with_lrenpie(true)
+            .with_eoi_count(0x1f)
+            .into();
+
+        configure_gic_maintenance(&mut hcr, true, false, true);
+
+        let fields = IchHcrEl2::from(hcr);
+        assert!(fields.uie());
+        assert!(fields.npie());
+        assert!(!fields.lrenpie());
+        assert!(!fields.tdir());
+        assert_eq!(fields.eoi_count(), 0);
+        assert!(fields.en());
+
+        let mut active_only_hcr = 0;
+        configure_gic_maintenance(&mut active_only_hcr, false, true, true);
+        let fields = IchHcrEl2::from(active_only_hcr);
+        assert!(fields.uie());
+        assert!(!fields.npie());
+        assert!(fields.lrenpie());
+        assert!(fields.tdir());
+
+        configure_gic_maintenance(&mut hcr, false, false, false);
+        let fields = IchHcrEl2::from(hcr);
+        assert!(!fields.uie());
+        assert!(!fields.npie());
+        assert!(!fields.lrenpie());
+        assert!(!fields.tdir());
+        assert!(fields.en());
+    }
+
+    #[test]
+    fn pure_pending_candidates_sort_before_active_candidates() {
+        let mut lrs = [
+            lr(1, 0x20, IchLrState::ACTIVE),
+            lr(2, 0x80, IchLrState::PENDING),
+            lr(3, 0x40, IchLrState::PENDING),
+        ];
+
+        sort_gic_candidates(
+            &mut lrs,
+            IchVmcrEl2::new().with_veng0(true).with_veng1(true),
+        );
+
+        assert_eq!(lrs.map(|lr| IchLrEl2::from(lr).vintid()), [3, 2, 1]);
+    }
+
+    #[test]
+    fn pending_candidates_prefer_the_vmcr_enabled_group() {
+        let group0 = lr(1, 0x10, IchLrState::PENDING);
+        let group1: u64 = IchLrEl2::from(lr(2, 0x80, IchLrState::PENDING))
+            .with_group1(true)
+            .into();
+        let active = lr(3, 0, IchLrState::ACTIVE);
+        let mut lrs = [group0, active, group1];
+
+        sort_gic_candidates(&mut lrs, IchVmcrEl2::new().with_veng1(true));
+
+        assert_eq!(lrs.map(|lr| IchLrEl2::from(lr).vintid()), [2, 1, 3]);
+    }
+
+    #[test]
+    fn eoi_count_deactivates_ordered_active_overflow() {
+        let mut overflow = vec![
+            lr(1, 0, IchLrState::PENDING),
+            lr(2, 0, IchLrState::ACTIVE),
+            lr(3, 0, IchLrState::ACTIVE),
+        ];
+
+        consume_eoi_count(&mut overflow, 1);
+
+        assert_eq!(
+            overflow
+                .iter()
+                .map(|lr| IchLrEl2::from(*lr).vintid())
+                .collect::<Vec<_>>(),
+            [1, 3]
+        );
+    }
+
+    #[test]
+    fn eoi_count_preserves_repending_overflow_interrupt() {
+        let mut overflow = vec![
+            lr(40, 0x10, IchLrState::PENDING),
+            lr(10, 0x20, IchLrState::PENDING_AND_ACTIVE),
+            lr(11, 0x30, IchLrState::ACTIVE),
+            lr(12, 0x40, IchLrState::PENDING_AND_ACTIVE),
+        ];
+
+        consume_eoi_count(&mut overflow, 2);
+
+        assert_eq!(
+            overflow
+                .iter()
+                .map(|lr| {
+                    let lr = IchLrEl2::from(*lr);
+                    (lr.vintid(), lr.priority(), lr.state())
+                })
+                .collect::<Vec<_>>(),
+            [
+                (40, 0x10, IchLrState::PENDING),
+                (10, 0x20, IchLrState::PENDING),
+                (12, 0x40, IchLrState::PENDING_AND_ACTIVE),
+            ]
+        );
+    }
+
+    #[test]
+    fn trapped_dir_deactivates_resident_and_overflow_interrupts() {
+        let mut lrs = [
+            lr(1, 0, IchLrState::ACTIVE),
+            lr(2, 0, IchLrState::PENDING_AND_ACTIVE),
+        ];
+        let mut overflow = vec![lr(3, 0, IchLrState::ACTIVE)];
+
+        deactivate_virtual_interrupt(&mut lrs, &mut overflow, 1);
+        deactivate_virtual_interrupt(&mut lrs, &mut overflow, 3);
+
+        assert_eq!(lrs[0], 0);
+        assert_eq!(
+            IchLrEl2::from(lrs[1]).state(),
+            IchLrState::PENDING_AND_ACTIVE
+        );
+        assert!(overflow.is_empty());
     }
 }
 

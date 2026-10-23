@@ -19,6 +19,15 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
+#[bitfield(u64)]
+pub struct CntvCtlEl0 {
+    pub enable: bool,
+    pub imask: bool,
+    pub istatus: bool,
+    #[bits(61)]
+    _reserved: u64,
+}
+
 /// Aarch64 SPSR_EL2 register when in 64-bit mode. Usually called CPSR by
 /// hypervisors.
 #[bitfield(u64)]
