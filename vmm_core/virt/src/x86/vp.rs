@@ -26,7 +26,6 @@ use hvdef::HvX64SegmentRegister;
 use hvdef::HvX64TableRegister;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
-pub use snapshot::TscDeadline;
 use std::fmt::Debug;
 use vm_topology::processor::x86::X86VpInfo;
 use x86defs::RFlags;
