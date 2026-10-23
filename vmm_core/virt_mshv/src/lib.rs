@@ -375,11 +375,15 @@ impl MshvVpInner {
             needs_yield: _,
             message_queues,
             message_queues_pending,
+            #[cfg(guest_arch = "x86_64")]
+            extint,
             waker: _,
         } = self;
 
         message_queues.clear();
         message_queues_pending.store(false, Ordering::Relaxed);
+        #[cfg(guest_arch = "x86_64")]
+        extint.reset();
     }
 }
 

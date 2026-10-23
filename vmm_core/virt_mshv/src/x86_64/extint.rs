@@ -26,6 +26,10 @@ pub(crate) struct ExtintState {
 }
 
 impl ExtintState {
+    pub(crate) fn reset(&self) {
+        self.pending.store(false, Ordering::Relaxed);
+    }
+
     fn pulse(&self) {
         self.pending.store(true, Ordering::Release);
     }
@@ -173,6 +177,16 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    #[test]
+    fn reset_clears_pending_lint0() {
+        let extint = ExtintState::default();
+        extint.pulse();
+
+        extint.reset();
+
+        assert!(!extint.is_pending());
     }
 
     #[test]
