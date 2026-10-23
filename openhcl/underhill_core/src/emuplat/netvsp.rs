@@ -1459,7 +1459,7 @@ impl HclNetworkVFManagerWorker {
                 // VPCI bus events determine when the MANA device has been Removed.
                 let device_change = self.vtl2_bus_control.notifier().map(|device| match device {
                     VpciBusEvent::DeviceEnumerated => {
-                        tracing::info!(vtl2_vfid, "MANA device enumerated, waiting for uevent.");
+                        tracing::info!(vtl2_vfid, "MANA device enumerated");
                         NextWorkItem::ManaDeviceEnumerated
                     }
                     VpciBusEvent::PrepareForRemoval => {
