@@ -416,7 +416,38 @@ impl GenericPcieRootComplex {
         root_port.port.hotplug_add_device(device_name, device)
     }
 
-    /// Hot-remove the device from a named port.
+    /// Requests guest ejection from `port_name` without disconnecting the endpoint.
+    ///
+    /// # Returns
+    ///
+    /// A receiver signaled when slot power and the power indicator are off.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the port is not found or cannot start ejection.
+    pub fn request_hotplug_remove_device(
+        &mut self,
+        port_name: &str,
+    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+        let root_port = self
+            .devices
+            .iter_mut()
+            .find_map(|(_, d)| match d {
+                BusDevice::RootPort { name, port } if name.as_ref() == port_name => Some(port),
+                BusDevice::RootPort { .. } | BusDevice::Rciep { .. } => None,
+            })
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.request_hotplug_remove_device()
+    }
+
+    /// Disconnects the endpoint on `port_name` and signals physical removal.
+    ///
+    /// For orderly removal, first await the receiver returned by
+    /// [`Self::request_hotplug_remove_device`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the port is not found, is empty, or does not support hotplug.
     pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
         let root_port = self
             .devices

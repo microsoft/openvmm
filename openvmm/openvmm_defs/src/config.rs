@@ -274,6 +274,13 @@ pub struct PcieRootComplexConfig {
     pub preserve_bars: bool,
 }
 
+/// Hotplug capabilities for a PCIe port.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub struct PcieHotplugConfig {
+    /// Enables attention button ejection.
+    pub attention_button: bool,
+}
+
 /// Configuration for a single PCIe port — either a root-complex root port or a
 /// switch downstream port.
 #[derive(Debug, MeshPayload)]
@@ -290,7 +297,7 @@ pub struct PciePortConfig {
     /// ports.
     pub devfn: Option<u8>,
     /// Enables PCIe hotplug capabilities for this port.
-    pub hotplug: bool,
+    pub hotplug: Option<PcieHotplugConfig>,
     /// Optional ACS capability bitmask to expose on this port.
     pub acs_capabilities_supported: Option<u16>,
     /// Marks this port as CXL-capable.

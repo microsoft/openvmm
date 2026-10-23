@@ -345,7 +345,7 @@ async fn pcie_device_numa_affinity(
                     ports: vec![PciePortConfig {
                         name: "rp0".to_string(),
                         devfn: None,
-                        hotplug: false,
+                        hotplug: None,
                         acs_capabilities_supported: None,
                         cxl: false,
                         pasid: false,

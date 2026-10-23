@@ -24,6 +24,9 @@ use pcie::PciePortSettings;
 /// work for both switch and root ports.
 fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
+        attention_button: port_cfg
+            .hotplug
+            .is_some_and(|hotplug| hotplug.attention_button),
         acs_capabilities_supported: port_cfg
             .acs_capabilities_supported
             .unwrap_or(DEFAULT_ACS_CAP_MASK),
@@ -43,7 +46,7 @@ pub(super) fn build_port_definition(port_cfg: &PciePortConfig) -> GenericPciePor
     GenericPciePortDefinition {
         name: port_cfg.name.as_str().into(),
         devfn: port_cfg.devfn,
-        hotplug: port_cfg.hotplug,
+        hotplug: port_cfg.hotplug.is_some(),
         settings,
     }
 }
@@ -89,6 +92,7 @@ pub(super) fn validate_pcie_root_complexes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openvmm_defs::config::PcieHotplugConfig;
     use openvmm_defs::config::PcieMmioRangeConfig;
 
     fn rc(name: &str, segment: u16, start_bus: u8, end_bus: u8) -> PcieRootComplexConfig {
@@ -105,6 +109,32 @@ mod tests {
             iommu: None,
             vnode: None,
             preserve_bars: false,
+        }
+    }
+
+    #[test]
+    fn hotplug_capabilities() {
+        for hotplug in [
+            None,
+            Some(PcieHotplugConfig::default()),
+            Some(PcieHotplugConfig {
+                attention_button: true,
+            }),
+        ] {
+            let port = PciePortConfig {
+                name: "rp0".into(),
+                devfn: None,
+                hotplug,
+                acs_capabilities_supported: None,
+                cxl: false,
+                pasid: false,
+            };
+            let definition = build_port_definition(&port);
+            assert_eq!(
+                definition.settings.attention_button,
+                hotplug.is_some_and(|config| config.attention_button)
+            );
+            assert_eq!(definition.hotplug, hotplug.is_some());
         }
     }
 

@@ -606,6 +606,8 @@ message PciePort {
     // Advertise End-to-End TLP Prefix support for downstream PASID use.
     // Defaults to false. All downstream ports of a switch must agree.
     bool pasid = 6;
+    // Enable attention button ejection. Requires hotplug. Defaults to false.
+    bool attention_button = 7;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
@@ -975,6 +977,10 @@ message AddPcieDeviceRequest {
 message RemovePcieDeviceRequest {
     // Name of the PCIe port whose device should be removed.
     string port_name = 1;
+    // Wait for guest teardown using the port attention button. Requires a
+    // running VM and attention_button on the port. Timeout leaves the device
+    // attached. Defaults to false, which performs surprise removal.
+    bool orderly = 2;
 }
 
 // Request to hot-add a PCI device over VPCI.

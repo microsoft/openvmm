@@ -207,8 +207,8 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::add_pcie_device(self, port_name, resource).await
     }
 
-    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
-        Self::remove_pcie_device(self, port_name).await
+    async fn remove_pcie_device(&mut self, port_name: String, orderly: bool) -> anyhow::Result<()> {
+        Self::remove_pcie_device(self, port_name, orderly).await
     }
 }
 
@@ -325,10 +325,11 @@ impl PetriVmOpenVmm {
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Hot-remove a PCIe device from a named port at runtime.
+        /// Removes a PCIe device, waiting for guest teardown only when `orderly` is true.
         pub async fn remove_pcie_device(
             &mut self,
-            port_name: String
+            port_name: String,
+            orderly: bool
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -550,8 +551,8 @@ impl PetriVmInner {
         self.worker.add_pcie_device(port_name, resource).await
     }
 
-    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
-        self.worker.remove_pcie_device(port_name).await
+    async fn remove_pcie_device(&mut self, port_name: String, orderly: bool) -> anyhow::Result<()> {
+        self.worker.remove_pcie_device(port_name, orderly).await
     }
     async fn dump_state(&mut self, path: &Path) -> anyhow::Result<()> {
         self.worker.dump_state(path).await

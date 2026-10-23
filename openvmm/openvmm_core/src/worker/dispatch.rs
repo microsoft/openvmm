@@ -182,20 +182,21 @@ const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const PCIE_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(30);
 
-enum VpciEjectResult {
+enum PciEjectResult {
     Complete(anyhow::Result<()>),
     TimedOut,
 }
 
-async fn wait_for_vpci_eject(
+async fn wait_for_pci_eject(
     driver: &(impl pal_async::driver::Driver + ?Sized),
     eject: impl Future<Output = anyhow::Result<()>>,
     grace_period: Duration,
-) -> VpciEjectResult {
-    let eject = eject.map(VpciEjectResult::Complete);
+) -> PciEjectResult {
+    let eject = eject.map(PciEjectResult::Complete);
     let mut timer = PolledTimer::new(driver);
-    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
+    let timeout = timer.sleep(grace_period).map(|_| PciEjectResult::TimedOut);
     (eject, timeout).race().await
 }
 
@@ -783,6 +784,31 @@ fn resolve_proto_partition_isolation(
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn pci_eject_wait_times_out(driver: DefaultDriver) {
+        let result = wait_for_pci_eject(&driver, std::future::pending(), Duration::ZERO).await;
+        assert!(matches!(result, PciEjectResult::TimedOut));
+    }
+
+    #[pal_async::async_test]
+    async fn pci_eject_wait_reports_guest_completion(driver: DefaultDriver) {
+        let result = wait_for_pci_eject(&driver, async { Ok(()) }, Duration::from_secs(1)).await;
+        assert!(matches!(result, PciEjectResult::Complete(Ok(()))));
+    }
+
+    #[pal_async::async_test]
+    async fn pci_eject_wait_reports_interruption(driver: DefaultDriver) {
+        let (send, recv) = mesh::oneshot::<()>();
+        drop(send);
+        let result = wait_for_pci_eject(
+            &driver,
+            async { recv.await.context("ejection interrupted") },
+            Duration::from_secs(1),
+        )
+        .await;
+        assert!(matches!(result, PciEjectResult::Complete(Err(_))));
+    }
 
     fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
         LoadMode::Linux {
@@ -2314,15 +2340,15 @@ impl InitializedVm {
                 #[cfg(not(guest_arch = "x86_64"))]
                 let reserved_device_numbers: u32 = 0;
 
+                let root_port_definitions = rc
+                    .ports
+                    .iter()
+                    .map(pcie_topology::build_port_definition)
+                    .collect();
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
-                            let root_port_definitions = rc
-                                .ports
-                                .iter()
-                                .map(pcie_topology::build_port_definition)
-                                .collect();
                             GenericPcieRootComplex::builder(
                                 &mut services.register_mmio(),
                                 rc.start_bus..=rc.end_bus,
@@ -2445,15 +2471,15 @@ impl InitializedVm {
                 rc_idx: parent_rc_idx,
             });
 
+            let downstream_ports = switch
+                .ports
+                .iter()
+                .map(pcie_topology::build_port_definition)
+                .collect();
             let switch_device = chipset_builder
                 .arc_mutex_device(device_name)
                 .on_pcie_port(vmotherboard::BusId::new(&switch.parent_port))
                 .try_add(|_services| {
-                    let downstream_ports = switch
-                        .ports
-                        .iter()
-                        .map(pcie_topology::build_port_definition)
-                        .collect();
                     let definition = pcie::switch::GenericPcieSwitchDefinition {
                         name: switch.name.clone().into(),
                         downstream_ports,
@@ -4055,7 +4081,8 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemovePcieDevice(rpc) => {
-                        rpc.handle_failable(async |port_name: String| {
+                        rpc.handle_failable(async |(port_name, orderly): (String, bool)| {
+                            anyhow::ensure!(!orderly || self.running, "VM must be running for orderly PCIe removal");
                             // Only allow removing dynamically hot-added devices.
                             // Statically-attached devices don't have a tracked unit
                             // and removing them would leave their state unit/MMIO
@@ -4074,6 +4101,20 @@ impl LoadedVm {
                                 })
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
+                            if orderly {
+                                let completion = rc.lock().request_hotplug_remove_device(&port_name)?;
+                                let driver = self.inner.driver_source.simple();
+                                match wait_for_pci_eject(
+                                    &driver,
+                                    async { completion.await.context("PCIe ejection was interrupted") },
+                                    PCIE_EJECT_GRACE_PERIOD,
+                                ).await {
+                                    PciEjectResult::Complete(result) => result?,
+                                    PciEjectResult::TimedOut => anyhow::bail!(
+                                        "PCIe ejection timed out for port '{port_name}'; device remains attached"
+                                    ),
+                                }
+                            }
                             rc.lock().hotplug_remove_device(&port_name)?;
 
                             // Remove and stop the device unit
@@ -4162,22 +4203,22 @@ impl LoadedVm {
                                 })?;
                             if self.running {
                                 let driver = self.inner.driver_source.simple();
-                                let eject_result = wait_for_vpci_eject(
+                                let eject_result = wait_for_pci_eject(
                                     &driver,
                                     self.inner.dynamic_vpci_devices[index].device.eject(),
                                     VPCI_EJECT_GRACE_PERIOD,
                                 )
                                 .await;
                                 match eject_result {
-                                    VpciEjectResult::Complete(Ok(())) => {}
-                                    VpciEjectResult::Complete(Err(error)) => tracing::warn!(
+                                    PciEjectResult::Complete(Ok(())) => {}
+                                    PciEjectResult::Complete(Err(error)) => tracing::warn!(
                                         %instance_id,
                                         error = <anyhow::Error as AsRef<
                                             dyn std::error::Error + Send + Sync,
                                         >>::as_ref(&error),
                                         "VPCI eject failed; forcing removal"
                                     ),
-                                    VpciEjectResult::TimedOut => tracing::warn!(
+                                    PciEjectResult::TimedOut => tracing::warn!(
                                         %instance_id,
                                         timeout_ms = VPCI_EJECT_GRACE_PERIOD.as_millis() as u64,
                                         "VPCI eject timed out; forcing removal"
