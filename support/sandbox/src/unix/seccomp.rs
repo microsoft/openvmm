@@ -436,8 +436,13 @@ fn finalize_filter(
 fn ioctl_deny_rules() -> io::Result<Vec<SeccompRule>> {
     Ok(vec![
         SeccompRule::new(vec![
-            SeccompCondition::new(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, libc::TIOCSTI as _)
-                .map_err(|e| io::Error::other(format!("seccomp condition: {e}")))?,
+            SeccompCondition::new(
+                1,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                libc::TIOCSTI as _,
+            )
+            .map_err(|e| io::Error::other(format!("seccomp condition: {e}")))?,
         ])
         .map_err(|e| io::Error::other(format!("seccomp rule: {e}")))?,
         SeccompRule::new(vec![
