@@ -1322,6 +1322,17 @@ async fn vm_config_from_command_line(
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
 
+    // The VM worker sends a new generation ID on this channel when the VM is
+    // created from a snapshot. IGVM guests build their own platform
+    // description, so they are excluded.
+    let generation_id_send = if opt.igvm.is_none() {
+        let (send, recv) = mesh::channel();
+        chipset = chipset.with_generation_id(recv);
+        Some(send)
+    } else {
+        None
+    };
+
     let layout_config = chipset.layout_config();
     let VmChipsetResult {
         chipset,
@@ -2210,6 +2221,7 @@ async fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         rtc_delta_milliseconds: 0,
+        generation_id_send,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
