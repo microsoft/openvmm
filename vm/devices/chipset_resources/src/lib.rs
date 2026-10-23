@@ -405,6 +405,8 @@ pub mod hyperv_guest_watchdog {
     pub struct HyperVGuestWatchdogDeviceHandle {
         /// Base port IO address for the watchdog register window.
         pub port_base: u16,
+        /// Log timeouts without invoking platform actions or recording a boot failure.
+        pub log_only: bool,
     }
 
     impl ResourceId<ChipsetDeviceHandleKind> for HyperVGuestWatchdogDeviceHandle {

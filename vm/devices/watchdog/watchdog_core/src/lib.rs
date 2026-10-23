@@ -221,7 +221,7 @@ impl WatchdogServices {
 
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         while let Poll::Ready(_now) = self.vmtime.poll_timeout(cx) {
-            tracing::error!(name = self.debug_id, "Encountered a watchdog timeout");
+            tracelimit::error_ratelimited!(name = self.debug_id, "Encountered a watchdog timeout");
             self.state.config.set_configured(false);
             self.state.config.set_enabled(false);
             pal_async::local::block_on(self.platform.on_timeout());

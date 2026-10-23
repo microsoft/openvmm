@@ -1135,6 +1135,7 @@ async fn test_ttrpc_uefi_boot(
                                     secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
                                 }),
                                 secure_boot_enabled: false,
+                                disable_guest_watchdog: false,
                             },
                         )),
                         // The UEFI watchdog that ends `guest_test_uefi` reports
@@ -1142,7 +1143,6 @@ async fn test_ttrpc_uefi_boot(
                         // on both rather than rebooting forever.
                         guest_power_actions: Some(vmservice::vm_config::GuestPowerActions {
                             reset: vmservice::vm_config::GuestPowerAction::Halt as i32,
-                            watchdog: vmservice::vm_config::GuestPowerAction::Halt as i32,
                             ..Default::default()
                         }),
                         serial_config: Some(vmservice::SerialConfig {
@@ -1169,6 +1169,26 @@ async fn test_ttrpc_uefi_boot(
             )
             .await
             .unwrap();
+
+    let vm = client
+        .call()
+        .start(
+            inspect_proto::InspectService::Inspect,
+            inspect_proto::InspectRequest {
+                path: "vm".into(),
+                depth: 1,
+            },
+        )
+        .await
+        .unwrap()
+        .result;
+    let inspect::Node::Dir(entries) = &vm else {
+        anyhow::bail!("unexpected VM inspect node: {vm:?}");
+    };
+    assert!(
+        entries.iter().any(|entry| entry.name == "guest-watchdog"),
+        "UEFI should expose the guest watchdog by default"
+    );
 
     let com1 = PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?;
 
