@@ -8424,6 +8424,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdisp_lstoraccel"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "nvme_spec",
+ "tdisp",
+ "zerocopy",
+]
+
+[[package]]
 name = "tdisp_proto"
 version = "0.0.0"
 dependencies = [
