@@ -85,17 +85,25 @@ use an independent memory copy. Automatic microVM backing uses its exact RAM
 file when the filesystem supports hard links. The destination must not already
 exist. Publishing the completed directory is the commit point.
 
-On Windows, large mapped-RAM flushes use up to eight concurrent, disjoint,
-page-aligned ranges to reduce sensitivity to fragmented dirty-page writeback.
-Small ranges are flushed inline. Capture waits for every range, including
-when a flush fails; an error prevents publication. The subsequent file and
-directory durability barriers are unchanged.
-Worker startup has a cost on fast storage; this policy targets writeback
-stalls rather than guaranteeing lower capture latency on every host.
+On Windows, NTFS zero-fills a file below any write that starts past the file's
+valid data length, and a newly created RAM backing file has none. Capture
+therefore first marks every page of the writable guest RAM views modified,
+without changing its contents and on up to eight threads for large ranges, and
+then flushes the whole range with one ascending `FlushViewOfFile`. The flush
+writes each page once, in large sequential writes, whatever the guest's
+dirty-page layout, so a 128-MiB guest writes at most 128 MiB. Flushing disjoint
+ranges concurrently instead let NTFS zero ranges that another range then wrote
+again, and flushing scattered dirty pages serially issues one small,
+latency-bound write per run. Pages of read-only views, such as deferred-protect
+windows that the guest never wrote, are flushed as they are. Marking faults in
+the pages of writable views that the guest never touched, so the file cache
+holds the whole range after capture. An error prevents publication. The
+subsequent file and directory durability barriers are unchanged.
 
 The Windows-only `sparse_mmap` test `profile_fragmented_file_flush` reproduces
-the fragmented writeback workload with alternating dirty 4-KiB pages in a
-128-MiB file. It compares serial and bounded-parallel flushing, including the
+the fragmented writeback workload with alternating dirty 4-KiB pages in a new
+128-MiB file. It compares the former policy, which flushed bounded-parallel
+ranges without marking their pages, with the current flush, including the
 subsequent file sync, and verifies the persisted bytes. Run it on an otherwise
 idle host:
 
@@ -171,7 +179,10 @@ control input gated. The guest performs post-restore repair and writes the
 existing snapshot port (`0x605`) to acknowledge completion. OpenVMM stops at
 that exact post-write boundary, completes the deferred write while the vCPU is
 stopped, and then releases device input before resuming the vCPU. The acknowledgement is bounded by
-`--restore-gate-timeout-ms` (60000 milliseconds by default). Platform manifests
+`--restore-gate-timeout-ms` (60000 milliseconds by default). A control-console
+host can connect while input is gated, but OpenVMM reads its authentication
+only after the release, so its `--microvm-control-auth-timeout-ms` deadline
+starts over when the gate releases. Platform manifests
 leave read-only layer identities unbound, while later tiers require exact image
 identities. An instance-checkpoint restore attempt atomically creates
 `resume.claim`; subsequent restores are rejected. The claim is committed after
@@ -225,6 +236,10 @@ onlines and verifies that prefix before acknowledging the restore gate.
 On MSHV, an explicit target instantiates and binds only that VP prefix; saving
 such a reduced-prefix runtime is unsupported. MSHV restores without an explicit
 target, and all KVM and WHP restores, instantiate the full VP capacity.
+Platform snapshots support the same opt-in. Their command line may carry one
+`maxcpus=` token, which must be the canonical form of the recorded
+boot-online count, so each clone of one platform capture can bring its own
+prefix online, as each clone can expand its RAM with `--restore-memory`.
 A microVM restore sets the TSC of every instantiated VP in one synchronized
 operation before any VP runs: each TSC continues from the capture anchor,
 advanced by the host downtime at the declared rate. KVM sets one common TSC

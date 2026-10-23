@@ -497,7 +497,8 @@ describes the source definitions.
   `--processors`. The target must be 1, 2, 4, or 8 and satisfy
   `boot-online <= target <= capacity`. This option sets the restore packet's
   online-VP target and implies the post-restore gate. Snapshots without
-  activation metadata reject it. An
+  activation metadata reject it; platform snapshots opt in as untiered
+  snapshots do, with a canonical `maxcpus=` at capture. An
   explicit MSHV restore instantiates and binds only the requested prefix while
   validating the full saved VP inventory; that reduced-prefix process cannot
   be saved again. MSHV restores without this option, and KVM and WHP restores,
@@ -976,6 +977,9 @@ Serial devices can be configured to appear as different devices inside the guest
   logs, snapshots, or attachment identities. The first host record must prove
   that capability. Peer identity is checked first. Authentication must complete
   within `--microvm-control-auth-timeout-ms` (default 5000, range 1 to 60000).
+  The timeout counts only while OpenVMM reads host input: while a snapshot
+  boundary or a gated microVM restore holds host input, it is suspended, and
+  it starts over when the input is released.
   A stalled or failed authentication attempt closes the connection without a
   protocol Error record and without changing the broker epoch.
 

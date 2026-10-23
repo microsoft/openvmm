@@ -2312,6 +2312,32 @@ pub(super) fn validate_snapshot_tier(manifest: &SnapshotManifest) -> anyhow::Res
                 "platform snapshot command line processor capacity does not match its machine contract"
             );
         }
+        // Like the capacity, the boot-online count of the restore-time VP
+        // activation opt-in is the same for every clone. The shape check runs
+        // later, so accept only the canonical token of a valid recorded count.
+        let boot_online_tokens = contract
+            .effective_command_line
+            .split_ascii_whitespace()
+            .filter(|token| token.starts_with("maxcpus="))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            boot_online_tokens.len() <= 1,
+            "platform snapshot command line contains duplicate boot-online processor counts"
+        );
+        if contract.boot_online_vp_count == 0 {
+            anyhow::ensure!(
+                boot_online_tokens.is_empty(),
+                "platform snapshot command line boot-online processor count does not match its machine contract"
+            );
+        } else {
+            let expected = format!("maxcpus={}", contract.boot_online_vp_count);
+            anyhow::ensure!(
+                boot_online_tokens == [expected.as_str()],
+                "platform snapshot command line boot-online processor count does not match its machine contract"
+            );
+            microvm_boot_online_vp_count(manifest.vp_count, &contract.effective_command_line)
+                .context("platform snapshot boot-online processor count is invalid")?;
+        }
         anyhow::ensure!(
             contract
                 .effective_command_line
@@ -2335,6 +2361,7 @@ fn platform_command_line_token_is_invariant(token: &str) -> bool {
             | "nvx_config=0xd0010000,65536"
             | "nvx_snapshot_tier=platform"
     ) || token.starts_with("nr_cpus=")
+        || token.starts_with("maxcpus=")
         || token == openvmm_defs::microvm::MICROVM_CONTROL_TTY_COMMAND_LINE
         || [
             "virtio_mmio.device=",
@@ -4128,14 +4155,19 @@ mod tests {
     }
 
     fn canonical_worker_platform_command_line(processor_count: u32) -> String {
-        let mut command_line = openvmm_defs::microvm::build_microvm_control_command_line(
-            &[
-                "nvx_sandbox=1".to_owned(),
-                "nvx_config=0xd0010000,65536".to_owned(),
-            ],
-            true,
-        )
-        .unwrap();
+        worker_platform_command_line(processor_count, &[])
+    }
+
+    /// Returns the worker's effective platform command line with the caller's
+    /// `user_args`, such as `--cmdline maxcpus=1`, after the sandbox tokens.
+    fn worker_platform_command_line(processor_count: u32, user_args: &[&str]) -> String {
+        let mut args = vec![
+            "nvx_sandbox=1".to_owned(),
+            "nvx_config=0xd0010000,65536".to_owned(),
+        ];
+        args.extend(user_args.iter().map(|arg| (*arg).to_owned()));
+        let mut command_line =
+            openvmm_defs::microvm::build_microvm_control_command_line(&args, true).unwrap();
         openvmm_defs::microvm::append_microvm_processor_limit(&mut command_line, processor_count)
             .unwrap();
         command_line.push_str(" nvx_snapshot_tier=platform");
@@ -4357,6 +4389,104 @@ mod tests {
                 .to_string()
                 .contains("processor capacity")
         );
+    }
+
+    /// Returns a platform snapshot with `capacity` VPs whose capture booted
+    /// with `maxcpus={boot_online}`, as the capture records it.
+    fn platform_snapshot_with_boot_online(capacity: u32, boot_online: u32) -> SnapshotManifest {
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        manifest.vp_count = capacity;
+        manifest.machine_contract.as_mut().unwrap().topology =
+            microvm_snapshot_topology(capacity).unwrap();
+        make_platform_snapshot(&mut manifest);
+        let contract = manifest.machine_contract.as_mut().unwrap();
+        // A platform capture's fresh scratch carries no restore mode.
+        contract
+            .microvm_sandbox_blocks
+            .last_mut()
+            .unwrap()
+            .restore_mode
+            .clear();
+        contract.set_effective_command_line(worker_platform_command_line(
+            capacity,
+            &[&format!("maxcpus={boot_online}")],
+        ));
+        contract.boot_online_vp_count = boot_online;
+        manifest
+    }
+
+    #[test]
+    fn platform_snapshot_accepts_restore_time_vp_activation() {
+        assert!(platform_command_line_token_is_invariant("maxcpus=1"));
+        let manifest = platform_snapshot_with_boot_online(4, 1);
+        let contract = manifest.machine_contract.as_ref().unwrap();
+        assert!(
+            contract
+                .effective_command_line
+                .split_ascii_whitespace()
+                .any(|token| token == "nr_cpus=4")
+        );
+        validate_manifest_contents(&manifest).unwrap();
+        validate_machine_contract_shape(contract, manifest.memory_size_bytes, manifest.vp_count)
+            .unwrap();
+        assert_eq!(contract.boot_online_vp_count, 1);
+
+        for target in [1, 2, 4] {
+            validate_restore_online_vp_count(&manifest, target).unwrap();
+        }
+        for (target, expected) in [
+            (0, "is not supported"),
+            (3, "is not supported"),
+            (8, "exceeds VP capacity 4"),
+        ] {
+            let error = validate_restore_online_vp_count(&manifest, target).unwrap_err();
+            assert!(error.to_string().contains(expected), "{target}: {error:#}");
+        }
+
+        // A platform capture without the opt-in still refuses a target.
+        let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+        manifest.vp_count = 4;
+        manifest.machine_contract.as_mut().unwrap().topology =
+            microvm_snapshot_topology(4).unwrap();
+        make_platform_snapshot(&mut manifest);
+        validate_manifest_contents(&manifest).unwrap();
+        let error = validate_restore_online_vp_count(&manifest, 4).unwrap_err();
+        assert!(error.to_string().contains("does not declare"), "{error:#}");
+    }
+
+    #[test]
+    fn platform_snapshot_rejects_noncanonical_boot_online_count() {
+        const MISMATCH: &str = "boot-online processor count does not match its machine contract";
+        let cases: [(&[&str], u32, &str); 8] = [
+            (
+                &["maxcpus=1", "maxcpus=1"],
+                1,
+                "duplicate boot-online processor counts",
+            ),
+            (&["maxcpus=01"], 1, MISMATCH),
+            (&["maxcpus=+1"], 1, MISMATCH),
+            (&["maxcpus=2"], 1, MISMATCH),
+            (&["maxcpus=1"], 0, MISMATCH),
+            (&[], 1, MISMATCH),
+            (
+                &["maxcpus=3"],
+                3,
+                "does not support a boot-online count of 3",
+            ),
+            (
+                &["maxcpus=8"],
+                8,
+                "boot-online count 8 exceeds VP capacity 4",
+            ),
+        ];
+        for (user_args, boot_online, expected) in cases {
+            let mut manifest = platform_snapshot_with_boot_online(4, 1);
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            contract.set_effective_command_line(worker_platform_command_line(4, user_args));
+            contract.boot_online_vp_count = boot_online;
+            let error = format!("{:#}", validate_manifest_contents(&manifest).unwrap_err());
+            assert!(error.contains(expected), "{user_args:?}: {error}");
+        }
     }
 
     #[test]
