@@ -234,6 +234,9 @@ pub struct Device {
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
+    /// Desired per-ring traffic enable state, including rings not yet started.
+    /// Indexed RX, TX for each pair; copied into workers while they are parked.
+    /// Defaults to true for transports that do not use vhost-user enable control.
     enabled: Vec<bool>,
 }
 
@@ -377,6 +380,9 @@ impl VirtioDevice for Device {
             }
             return None;
         }
+        // Backend ownership is endpoint-wide, not per virtio ring. Release all
+        // queues before removing this ring; the coordinator will recreate the
+        // backend queues for any remaining rings when it resumes.
         self.release_backend().await;
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker = coordinator.workers[pair_idx].state_mut().unwrap();
@@ -413,6 +419,9 @@ impl VirtioDevice for Device {
     async fn set_queue_enabled(&mut self, idx: u16, enabled: bool) -> anyhow::Result<()> {
         self.park().await;
         if self.enabled[idx as usize] != enabled && !enabled {
+            // Changing the flag alone would leave buffers owned by the backend.
+            // Settle old TX and reclaim prefetched RX before disabling traffic.
+            // The virtio rings remain started; cleanup normalizes their cursors.
             self.release_backend().await;
         }
         self.enabled[idx as usize] = enabled;
@@ -450,6 +459,8 @@ struct EndpointQueueState {
 
 #[derive(InspectMut)]
 struct NetQueue {
+    /// Absent before backend creation and after ownership release. This is
+    /// independent of whether the worker still has started virtio rings.
     #[inspect(flatten, mut)]
     state: Option<EndpointQueueState>,
 }
@@ -493,6 +504,8 @@ struct QueueStats {
     rx_packets_per_wake: Histogram<10>,
 }
 
+/// Packet bookkeeping retained while workers are parked. "Active" refers to
+/// the queue instance's lifetime, not whether its task is currently running.
 #[derive(Inspect)]
 struct ActiveState {
     #[inspect(with = "|x| x.iter().flatten().count()")]
@@ -597,7 +610,23 @@ impl NicBuilder {
     }
 }
 
+// A worker serves an RX/TX ring pair through one backend queue, but either
+// virtio ring can be started or stopped independently.
+//
+// Ring lifecycle and task execution are separate:
+// - A started ring has a `VirtioQueue` in the worker; a stopped ring has none.
+// - Enable state controls traffic on a started ring, not whether its task runs.
+//   Disabled RX supplies no buffers; disabled TX consumes and discards packets.
+// - Parking stops the coordinator and workers so their state can be changed.
+//   It retains backend queues and outstanding buffer ownership.
+// - Stopping a ring also releases backend ownership and settles outstanding
+//   work before returning cursors. Parking alone does not provide that guarantee.
 impl Device {
+    /// Stop the coordinator first (so it cannot restart workers), then stop all
+    /// workers. On return their state is safe to mutate, but backend queues may
+    /// still own/access guest buffers. Parking is not an ownership-release or
+    /// pending-work cleanup operation.
+    /// The caller resumes execution with `coordinator.start()` after its changes.
     async fn park(&mut self) {
         self.coordinator.stop().await;
         if let Some(coordinator) = self.coordinator.state_mut() {
@@ -605,6 +634,11 @@ impl Device {
         }
     }
 
+    /// Requires the coordinator and workers to be parked. Drop backend queues
+    /// and await endpoint stop before touching any buffers they owned.
+    ///
+    /// Leaves virtio rings installed, with pending TX completed and RX rewound.
+    /// Resuming the coordinator recreates backend queues, not virtio rings.
     async fn release_backend(&mut self) {
         let (state, coordinator) = self.coordinator.get_mut();
         let Some(coordinator) = coordinator else {
@@ -693,6 +727,8 @@ impl Device {
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
+    /// Recreate backend queues before running workers. This does not change
+    /// which virtio rings are started or their traffic enable state.
     restart: bool,
 }
 
@@ -775,6 +811,8 @@ impl Coordinator {
         }
     }
 
+    /// Workers must be stopped. Backend-requested restarts use the same ownership
+    /// barrier as ring stop: queue drop, endpoint stop, then pending-work cleanup.
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
         // Drop all of the current queues.
         for worker in &mut self.workers {
@@ -835,6 +873,8 @@ impl AsyncRun<Worker> for NetQueue {
 
 #[derive(Inspect)]
 struct VirtioState {
+    // Presence means started, even while disabled or parked. Either half may
+    // be absent; the other continues to use the pair's shared backend queue.
     rx_queue: Option<VirtioQueue>,
     rx_queue_size: u16,
     tx_queue: Option<VirtioQueue>,
@@ -884,11 +924,16 @@ struct Worker {
     negotiated_features: NetworkFeaturesBank0,
     #[inspect(skip)]
     negotiated_features_bank1: NetworkFeaturesBank1,
+    /// Cached Device::enabled state. False prevents posting RX buffers; the
+    /// disable transition has already reclaimed previously posted buffers.
     rx_enabled: bool,
+    /// False completes newly consumed TX without submitting it to the backend.
     tx_enabled: bool,
 }
 
 impl Worker {
+    // Called while parked. Initialize only the newly started direction; the
+    // other ring may still have outstanding work in the shared backend queue.
     fn start_rx(&mut self, queue: VirtioQueue, size: u16, mem: GuestMemory) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.virtio_state.rx_queue.is_none(),
@@ -914,7 +959,10 @@ impl Worker {
         Ok(())
     }
 
-    /// Called only after backend queues have released all buffer ownership.
+    /// Requires stopped workers and backend ownership released by endpoint stop.
+    /// Complete all consumed TX (both submitted and not yet submitted) without
+    /// retransmission. RX is not completed: rewind it so a new backend can reuse
+    /// the guest's still-posted buffers. Both paths preserve in-order cursors.
     fn cancel_pending(&mut self) {
         if let Some(queue) = &mut self.virtio_state.tx_queue {
             for packet in &mut self.active_state.pending_tx_packets {
