@@ -188,12 +188,16 @@ describes the source definitions.
 * `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image
-  * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx
+  * A fixed VHD1 file with a `.vhd` extension on any supported host
+  * A dynamic or differencing VHD1 file with a `.vhd` extension on Windows
+  * A VHDX file with a `.vhdx` extension
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+  OpenVMM selects VHD handling from the file extension. Fixed VHD1 disks
+  require the default cached I/O mode on every host. VHDX disks also require
+  cached I/O on Linux.
 * `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
   node). Mutually exclusive with `--memory`. Each `--numa` specifies one
   guest NUMA node with its own memory backing and optional VP assignment.
