@@ -521,10 +521,7 @@ impl VirtioDevice for VhostUserFrontend {
             return None;
         }
 
-        // Disable the queue before stopping it. QEMU sends
-        // SET_VRING_ENABLE(0) before GET_VRING_BASE to ensure the
-        // backend's data plane stops processing kicks before the
-        // control plane tears down the queue.
+        // Disable traffic before stopping the ring and retrieving its cursors.
         if let Err(e) = send_vring_state(
             &self.socket,
             &mut self.receiver,

@@ -85,7 +85,7 @@ impl QueueSetup {
         self.kick = Some(event);
     }
 
-    /// Matches libvhost-user: installing the kick fd starts a ring; the
+    /// Installing the kick fd starts a configured ring; the
     /// eventfd need not have been signaled.
     pub fn ready_to_start(&self, process_disabled: bool) -> bool {
         !self.active

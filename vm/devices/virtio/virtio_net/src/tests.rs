@@ -834,6 +834,54 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
     assert_eq!(used_len, 0);
 }
 
+async fn check_duplicate_start_preserves_traffic(driver: &DefaultDriver, queue_idx: u16) {
+    let mut harness = TestHarness::new(driver);
+    let mut handle = harness.enable_and_get_handle().await;
+    handle.tx_avail_behavior.lock().sync = false;
+
+    for id in [0, 2] {
+        harness.post_rx_buffer_and_signal(id, 256);
+        harness.post_tx_and_signal(id, 64);
+        handle.wait_for_rx_pending().await;
+        handle.wait_for_tx_avail().await;
+
+        if id == 0 {
+            let result = harness
+                .device
+                .start_queue(
+                    queue_idx,
+                    harness.queue_resources(queue_idx),
+                    &VirtioDeviceFeatures::new(),
+                    None,
+                )
+                .await;
+            assert!(result.is_err(), "duplicate start must be rejected");
+            assert!(!handle.lifetime.lock().dropped, "backend must be retained");
+            assert_eq!(harness.try_read_tx_used(), None);
+            assert_eq!(harness.try_read_rx_used(), None);
+        }
+
+        // Both pre-existing work and subsequent traffic must still complete.
+        handle.complete_tx(vec![TxId(id.into())]);
+        handle.inject_rx_packet(&[0x5a; 64]);
+        assert_eq!(harness.wait_for_used().await, (id, 0));
+        assert_eq!(harness.wait_for_rx_used().await, (id, NET_HEADER_SIZE + 64));
+        assert_eq!(harness.try_read_tx_used(), None);
+        assert_eq!(harness.try_read_rx_used(), None);
+    }
+    harness.disable().await;
+}
+
+#[async_test]
+async fn duplicate_rx_start_preserves_traffic(driver: DefaultDriver) {
+    check_duplicate_start_preserves_traffic(&driver, 0).await;
+}
+
+#[async_test]
+async fn duplicate_tx_start_preserves_traffic(driver: DefaultDriver) {
+    check_duplicate_start_preserves_traffic(&driver, 1).await;
+}
+
 /// Submit a descriptor index that is already in-flight (async completion
 /// pending). A duplicate descriptor index cannot be tracked (the pending slot
 /// is already taken), so the device treats it as a fatal protocol violation:

@@ -235,7 +235,8 @@ pub struct Device {
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
     /// Desired per-ring traffic enable state, including rings not yet started.
-    /// Indexed RX, TX for each pair; copied into workers while they are parked.
+    /// Indexed RX, TX for each pair; copied into workers while their tasks
+    /// are stopped.
     /// Defaults to true for transports that do not use vhost-user enable control.
     enabled: Vec<bool>,
 }
@@ -348,15 +349,16 @@ impl VirtioDevice for Device {
         let worker = self.coordinator.state_mut().unwrap().workers[pair_idx]
             .state_mut()
             .unwrap();
-        if is_rx {
-            worker.start_rx(queue, queue_size, guest_memory)?;
+        let result = if is_rx {
+            worker.start_rx(queue, queue_size, guest_memory)
         } else {
-            worker.start_tx(queue, queue_size)?;
-        }
+            worker.start_tx(queue, queue_size)
+        };
         worker.rx_enabled = self.enabled[pair_idx * 2];
         worker.tx_enabled = self.enabled[pair_idx * 2 + 1];
+        // Resume the device even when the requested ring was already started.
         self.coordinator.start();
-        Ok(())
+        result
     }
 
     async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
@@ -504,8 +506,8 @@ struct QueueStats {
     rx_packets_per_wake: Histogram<10>,
 }
 
-/// Packet bookkeeping retained while workers are parked. "Active" refers to
-/// the queue instance's lifetime, not whether its task is currently running.
+/// Packet bookkeeping retained while the worker task is stopped. "Active" refers
+/// to the queue instance's lifetime, not whether its task is currently running.
 #[derive(Inspect)]
 struct ActiveState {
     #[inspect(with = "|x| x.iter().flatten().count()")]
@@ -617,15 +619,17 @@ impl NicBuilder {
 // - A started ring has a `VirtioQueue` in the worker; a stopped ring has none.
 // - Enable state controls traffic on a started ring, not whether its task runs.
 //   Disabled RX supplies no buffers; disabled TX consumes and discards packets.
-// - Parking stops the coordinator and workers so their state can be changed.
-//   It retains backend queues and outstanding buffer ownership.
+// - Device::park() stops the coordinator task and all worker tasks so their
+//   state can be changed. The parked device retains backend queues and
+//   outstanding buffer ownership.
 // - Stopping a ring also releases backend ownership and settles outstanding
-//   work before returning cursors. Parking alone does not provide that guarantee.
+//   work before returning cursors. Parking the device alone does not provide
+//   that guarantee.
 impl Device {
-    /// Stop the coordinator first (so it cannot restart workers), then stop all
-    /// workers. On return their state is safe to mutate, but backend queues may
-    /// still own/access guest buffers. Parking is not an ownership-release or
-    /// pending-work cleanup operation.
+    /// Park the device by stopping the coordinator task first (so it cannot
+    /// restart workers), then all worker tasks. On return their state is safe to
+    /// mutate, but backend queues may still own/access guest buffers. This does
+    /// not release backend ownership or clean up pending work.
     /// The caller resumes execution with `coordinator.start()` after its changes.
     async fn park(&mut self) {
         self.coordinator.stop().await;
@@ -634,8 +638,8 @@ impl Device {
         }
     }
 
-    /// Requires the coordinator and workers to be parked. Drop backend queues
-    /// and await endpoint stop before touching any buffers they owned.
+    /// Requires Device::park() to have completed. Drop backend queues and await
+    /// endpoint stop before touching any buffers they owned.
     ///
     /// Leaves virtio rings installed, with pending TX completed and RX rewound.
     /// Resuming the coordinator recreates backend queues, not virtio rings.
@@ -873,8 +877,9 @@ impl AsyncRun<Worker> for NetQueue {
 
 #[derive(Inspect)]
 struct VirtioState {
-    // Presence means started, even while disabled or parked. Either half may
-    // be absent; the other continues to use the pair's shared backend queue.
+    // Presence means the ring is started, even while disabled or its worker task
+    // is stopped. Either half may be absent; the other uses the shared backend
+    // queue.
     rx_queue: Option<VirtioQueue>,
     rx_queue_size: u16,
     tx_queue: Option<VirtioQueue>,
@@ -932,8 +937,9 @@ struct Worker {
 }
 
 impl Worker {
-    // Called while parked. Initialize only the newly started direction; the
-    // other ring may still have outstanding work in the shared backend queue.
+    // The worker task must be stopped. Initialize only the newly started
+    // direction; the other ring may still have outstanding work in the shared
+    // backend queue.
     fn start_rx(&mut self, queue: VirtioQueue, size: u16, mem: GuestMemory) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.virtio_state.rx_queue.is_none(),

@@ -429,8 +429,8 @@ impl VhostUserDeviceServer {
                     } else if let Some(fd) = fds.into_iter().next() {
                         let call = Interrupt::from_event(event_from_fd(fd));
                         // Completions, including those published while stopping,
-                        // may have used a missing or replaced CALL fd. Match
-                        // QEMU's catch-up notification on the new fd.
+                        // may have used a missing or replaced CALL fd. Notify
+                        // the frontend to check the used ring for those completions.
                         call.deliver();
                         q.set_call(call);
                     }
@@ -1499,7 +1499,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn qemu_net_enable_before_setup_and_stop_restart(driver: DefaultDriver) {
+    async fn net_enable_before_setup_and_stop_restart(driver: DefaultDriver) {
         use net_backend::loopback::LoopbackEndpoint;
         use net_backend_resources::mac_address::MacAddress;
         use virtio::spec::queue::DescriptorFlags;
@@ -1531,7 +1531,6 @@ mod tests {
         }
 
         async fn setup(socket: &VhostUserSocket, idx: u32, base: u32, kick: &Event, call: &Event) {
-            // QEMU vhost_virtqueue_start: NUM, BASE, ADDR, KICK, CALL.
             for (code, num) in [
                 (VhostUserRequestCode::SET_VRING_NUM, 16),
                 (VhostUserRequestCode::SET_VRING_BASE, base),
@@ -1560,6 +1559,7 @@ mod tests {
                 &[] as &[OwnedFd],
             )
             .await;
+            // Exercise activation before the notification fd is installed.
             for (code, event) in [
                 (VhostUserRequestCode::SET_VRING_KICK, kick),
                 (VhostUserRequestCode::SET_VRING_CALL, call),
@@ -1575,9 +1575,7 @@ mod tests {
             }
         }
 
-        // vhost_net_stop_one uses GET_VRING_BASE without disabling first.
-        // Also exercise do_vhost_dev_stop(vrings=true), which disables all
-        // rings before stopping them individually.
+        // GET_VRING_BASE must stop a ring with or without prior disablement.
         for disable_before_stop in [false, true] {
             let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
             let device = virtio_net::Device::builder()
@@ -1620,8 +1618,7 @@ mod tests {
                     &[] as &[OwnedFd],
                 )
                 .await;
-                // vhost_net_start restores enable state before vhost_dev_start
-                // sends the memory table and queue configuration.
+                // Enable state can be set before memory and ring configuration.
                 for i in 0..2 {
                     enable(&frontend, i, true).await;
                 }
