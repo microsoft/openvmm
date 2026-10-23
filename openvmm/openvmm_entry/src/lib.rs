@@ -1234,6 +1234,12 @@ async fn vm_config_from_command_line(
 
     let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
+    if arch == MachineArch::X86_64
+        && openvmm_defs::config::legacy_pci_config_io_enabled(&pcie_root_complexes)
+    {
+        chipset = chipset.with_legacy_pci_config_io();
+    }
+
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();
     }
