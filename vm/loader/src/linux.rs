@@ -3,6 +3,8 @@
 
 //! Linux specific loader definitions and implementation.
 
+pub mod mptable_boot;
+
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
@@ -14,6 +16,7 @@ use crate::importer::BootPageAcceptance;
 use crate::importer::GuestArch;
 use crate::importer::ImageLoad;
 use crate::importer::X86Register;
+use crate::mptable;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
 use aarch64defs::SctlrEl1;
@@ -223,6 +226,25 @@ pub enum Error {
     TooManyMemoryRanges(usize),
     #[error("acpi tables are empty")]
     EmptyAcpiTables,
+    #[error("MP-table Linux direct boot requires an uncompressed ELF kernel")]
+    MpTableRequiresElf,
+    #[error("failed to construct MP tables")]
+    MpTable(#[from] mptable::Error),
+    #[error("MP table ending at {table_end:#x} overlaps the GDT at {gdt_addr:#x}")]
+    MpTableOverlap { table_end: usize, gdt_addr: u64 },
+    #[error("invalid MP-table reserved memory range {start:#x}..{end:#x}")]
+    InvalidReservedMemoryRange { start: u64, end: u64 },
+    #[error(
+        "MP-table boot image range {image_start:#x}..{image_end:#x} overlaps reserved range {reserved_start:#x}..{reserved_end:#x}"
+    )]
+    MpTableImageOverlap {
+        image_start: u64,
+        image_end: u64,
+        reserved_start: u64,
+        reserved_end: u64,
+    },
+    #[error("the memory layout cannot represent the fixed MP-table platform ranges")]
+    InvalidMpTableMemoryLayout,
 }
 
 /// ACPI tables to place in guest memory: a one-page RSDP plus the tables it
@@ -1783,6 +1805,32 @@ mod tests {
         let mut kernel_image = test_elf(KERNEL_BASE, &[]);
         let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
             .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn mptable_loader_rejects_elf_without_load_segments() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE, &[]);
+        let config = mptable::MpTableConfig {
+            apic_ids: &[0],
+            level_triggered_irqs: &[],
+        };
+        let error = mptable_boot::load_x86_mptable(
+            &mut importer,
+            &mut kernel_image,
+            None,
+            &CString::new("").unwrap(),
+            &make_layout(256 * MB),
+            &config,
+            &[],
+        )
+        .unwrap_err();
+
         assert!(matches!(
             error,
             Error::ElfLoader(crate::elf::Error::NoLoadableSegments)

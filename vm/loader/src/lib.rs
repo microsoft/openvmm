@@ -11,6 +11,7 @@ pub mod cpuid;
 pub mod elf;
 pub mod importer;
 pub mod linux;
+pub mod mptable;
 pub mod paravisor;
 pub mod pcat;
 pub mod smbios;
