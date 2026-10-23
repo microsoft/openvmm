@@ -1300,10 +1300,10 @@ impl VmService {
         let (send, recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
-        // Create a VmmMesh for local/in-process workers.
+        // Keep the VM worker in a separate process so its sandbox is applied.
         let mesh = VmmMesh::new(
             &self.driver,
-            true,
+            false,
             #[cfg(target_os = "linux")]
             None,
         )?;
