@@ -234,24 +234,11 @@ pub struct Device {
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
-    /// Per-pair state tracking.
-    pairs: Vec<QueuePairState>,
-}
-
-/// Tracks the state of a queue pair through the start_queue lifecycle.
-#[expect(clippy::large_enum_variant)]
-enum QueuePairState {
-    /// No queues started for this pair.
-    Empty,
-    /// One queue started, waiting for its partner.
-    HalfOpen {
-        queue: VirtioQueue,
-        queue_size: u16,
-        /// true if this is the RX queue (even index), false if TX (odd).
-        is_rx: bool,
-    },
-    /// Both queues started, worker running.
-    Active,
+    /// Desired per-ring traffic enable state, including rings not yet started.
+    /// Indexed RX, TX for each pair; copied into workers while their tasks
+    /// are stopped.
+    /// Defaults to true for transports that do not use vhost-user enable control.
+    enabled: Vec<bool>,
 }
 
 impl VirtioDevice for Device {
@@ -346,112 +333,119 @@ impl VirtioDevice for Device {
         let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
+        self.park().await;
+        if !self.coordinator.has_state() {
+            self.insert_coordinator(self.adapter.max_queue_pairs);
+        }
+        let worker = &mut self.coordinator.state_mut().unwrap().workers[pair_idx];
+        if !worker.has_state() {
+            self.insert_worker(
+                pair_idx,
+                &guest_memory,
+                negotiated_features,
+                negotiated_features_bank1,
+            );
+        }
+        let worker = self.coordinator.state_mut().unwrap().workers[pair_idx]
+            .state_mut()
+            .unwrap();
+        let result = if is_rx {
+            worker.start_rx(queue, queue_size, guest_memory)
+        } else {
+            worker.start_tx(queue, queue_size)
+        };
+        worker.rx_enabled = self.enabled[pair_idx * 2];
+        worker.tx_enabled = self.enabled[pair_idx * 2 + 1];
+        // Resume the device even when the requested ring was already started.
+        self.coordinator.start();
+        result
+    }
 
-        match &self.pairs[pair_idx] {
-            QueuePairState::Empty => {
-                // First queue of the pair — buffer it.
-                self.pairs[pair_idx] = QueuePairState::HalfOpen {
-                    queue,
-                    queue_size,
-                    is_rx,
-                };
-            }
-            QueuePairState::HalfOpen {
-                is_rx: pending_is_rx,
-                ..
-            } => {
-                if *pending_is_rx == is_rx {
-                    anyhow::bail!(
-                        "duplicate {} queue for pair {pair_idx}",
-                        if is_rx { "RX" } else { "TX" }
-                    );
-                }
-
-                // Second queue — extract the first, form the pair.
-                let first_pair = !self
-                    .pairs
-                    .iter()
-                    .any(|p| matches!(p, QueuePairState::Active));
-
-                let prev = std::mem::replace(&mut self.pairs[pair_idx], QueuePairState::Active);
-                let QueuePairState::HalfOpen {
-                    queue: pending_queue,
-                    queue_size: pending_queue_size,
-                    is_rx: pending_is_rx,
-                } = prev
-                else {
-                    unreachable!()
-                };
-
-                let (rx_queue, rx_queue_size, tx_queue, tx_queue_size) = if pending_is_rx {
-                    (pending_queue, pending_queue_size, queue, queue_size)
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
+        self.park().await;
+        let pair_idx = (idx / 2) as usize;
+        let active = self
+            .coordinator
+            .state_mut()
+            .and_then(|c| c.workers.get_mut(pair_idx))
+            .and_then(|w| w.state_mut())
+            .is_some_and(|w| {
+                if idx.is_multiple_of(2) {
+                    w.virtio_state.rx_queue.is_some()
                 } else {
-                    (queue, queue_size, pending_queue, pending_queue_size)
-                };
-
-                if first_pair {
-                    self.insert_coordinator(self.pairs.len() as u16);
+                    w.virtio_state.tx_queue.is_some()
                 }
-
-                let virtio_state = VirtioState {
-                    rx_queue,
-                    rx_queue_size,
-                    tx_queue,
-                    tx_queue_size,
-                    rx_in_order: InOrderCompletion::new(rx_queue_size),
-                    tx_in_order: InOrderCompletion::new(tx_queue_size),
-                };
-                self.insert_worker(
-                    virtio_state,
-                    pair_idx,
-                    &guest_memory,
-                    negotiated_features,
-                    negotiated_features_bank1,
-                );
-
-                if first_pair {
-                    self.coordinator.start();
-                }
+            });
+        if !active {
+            if self.coordinator.has_state() {
+                self.coordinator.start();
             }
-            QueuePairState::Active => {
-                anyhow::bail!("queue pair {pair_idx} already active");
+            return None;
+        }
+        // Backend ownership is endpoint-wide, not per virtio ring. Release all
+        // queues before removing this ring; the coordinator will recreate the
+        // backend queues for any remaining rings when it resumes.
+        self.release_backend().await;
+        let coordinator = self.coordinator.state_mut().unwrap();
+        let worker = coordinator.workers[pair_idx].state_mut().unwrap();
+        let queue = if idx.is_multiple_of(2) {
+            worker.virtio_state.rx_queue.take()
+        } else {
+            worker.virtio_state.tx_queue.take()
+        }
+        .unwrap();
+        let state = queue.queue_state();
+        if worker.virtio_state.rx_queue.is_none() && worker.virtio_state.tx_queue.is_none() {
+            let _ = coordinator.workers[pair_idx].remove();
+        }
+        if coordinator.workers.iter().all(|w| !w.has_state()) {
+            let _ = self.coordinator.remove();
+        } else {
+            self.coordinator.start();
+        }
+        Some(state)
+    }
+
+    async fn reset(&mut self) {
+        self.park().await;
+        if let Some(coordinator) = self.coordinator.state_mut() {
+            for worker in &mut coordinator.workers {
+                worker.task_mut().state = None;
             }
+            self.coordinator.task_mut().endpoint.stop().await;
+            let _ = self.coordinator.remove();
+        }
+        self.enabled.fill(true);
+    }
+
+    async fn set_queue_enabled(&mut self, idx: u16, enabled: bool) -> anyhow::Result<()> {
+        self.park().await;
+        if self.enabled[idx as usize] != enabled && !enabled {
+            // Changing the flag alone would leave buffers owned by the backend.
+            // Settle old TX and reclaim prefetched RX before disabling traffic.
+            // The virtio rings remain started; cleanup normalizes their cursors.
+            self.release_backend().await;
+        }
+        self.enabled[idx as usize] = enabled;
+        if let Some(worker) = self
+            .coordinator
+            .state_mut()
+            .and_then(|c| c.workers[(idx / 2) as usize].state_mut())
+        {
+            if idx.is_multiple_of(2) {
+                worker.rx_enabled = enabled;
+            } else {
+                worker.tx_enabled = enabled;
+            }
+        }
+        if self.coordinator.has_state() {
+            self.coordinator.start();
         }
         Ok(())
     }
 
-    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
-        let pair_idx = (idx / 2) as usize;
-
-        if pair_idx < self.pairs.len() {
-            if let QueuePairState::HalfOpen { is_rx, .. } = self.pairs[pair_idx] {
-                let stopping_rx = idx.is_multiple_of(2);
-                if is_rx != stopping_rx {
-                    // The caller is stopping the queue that wasn't started;
-                    // leave the pending half intact.
-                    return None;
-                }
-                // Drop the pending half-open queue.
-                self.pairs[pair_idx] = QueuePairState::Empty;
-            } else if matches!(self.pairs[pair_idx], QueuePairState::Active) {
-                // Stop the coordinator (which stops all workers).
-                self.coordinator.stop().await;
-                if let Some(coordinator) = self.coordinator.state_mut() {
-                    for worker in &mut coordinator.workers {
-                        worker.stop().await;
-                    }
-                }
-                let _ = self.coordinator.remove();
-                self.pairs[pair_idx] = QueuePairState::Empty;
-            }
-        }
-
-        // We don't support save/restore of virtio-net queue state yet.
-        None
-    }
-
-    async fn reset(&mut self) {
-        self.pairs.fill_with(|| QueuePairState::Empty);
+    fn supports_queue_enable(&self) -> bool {
+        true
     }
 
     fn supports_save_restore(&self) -> bool {
@@ -467,6 +461,8 @@ struct EndpointQueueState {
 
 #[derive(InspectMut)]
 struct NetQueue {
+    /// Absent before backend creation and after ownership release. This is
+    /// independent of whether the worker still has started virtio rings.
     #[inspect(flatten, mut)]
     state: Option<EndpointQueueState>,
 }
@@ -510,6 +506,8 @@ struct QueueStats {
     rx_packets_per_wake: Histogram<10>,
 }
 
+/// Packet bookkeeping retained while the worker task is stopped. "Active" refers
+/// to the queue instance's lifetime, not whether its task is currently running.
 #[derive(Inspect)]
 struct ActiveState {
     #[inspect(with = "|x| x.iter().flatten().count()")]
@@ -609,14 +607,59 @@ impl NicBuilder {
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
-            pairs: (0..max_queue_pairs)
-                .map(|_| QueuePairState::Empty)
-                .collect(),
+            enabled: vec![true; 2 * max_queue_pairs as usize],
         })
     }
 }
 
+// A worker serves an RX/TX ring pair through one backend queue, but either
+// virtio ring can be started or stopped independently.
+//
+// Ring lifecycle and task execution are separate:
+// - A started ring has a `VirtioQueue` in the worker; a stopped ring has none.
+// - Enable state controls traffic on a started ring, not whether its task runs.
+//   Disabled RX supplies no buffers; disabled TX consumes and discards packets.
+// - Device::park() stops the coordinator task and all worker tasks so their
+//   state can be changed. The parked device retains backend queues and
+//   outstanding buffer ownership.
+// - Stopping a ring also releases backend ownership and settles outstanding
+//   work before returning cursors. Parking the device alone does not provide
+//   that guarantee.
 impl Device {
+    /// Park the device by stopping the coordinator task first (so it cannot
+    /// restart workers), then all worker tasks. On return their state is safe to
+    /// mutate, but backend queues may still own/access guest buffers. This does
+    /// not release backend ownership or clean up pending work.
+    /// The caller resumes execution with `coordinator.start()` after its changes.
+    async fn park(&mut self) {
+        self.coordinator.stop().await;
+        if let Some(coordinator) = self.coordinator.state_mut() {
+            coordinator.stop_workers().await;
+        }
+    }
+
+    /// Requires Device::park() to have completed. Drop backend queues and await
+    /// endpoint stop before touching any buffers they owned.
+    ///
+    /// Leaves virtio rings installed, with pending TX completed and RX rewound.
+    /// Resuming the coordinator recreates backend queues, not virtio rings.
+    async fn release_backend(&mut self) {
+        let (state, coordinator) = self.coordinator.get_mut();
+        let Some(coordinator) = coordinator else {
+            return;
+        };
+        for worker in &mut coordinator.workers {
+            worker.task_mut().state = None;
+        }
+        state.endpoint.stop().await;
+        for worker in &mut coordinator.workers {
+            if let Some(worker) = worker.state_mut() {
+                worker.cancel_pending();
+            }
+        }
+        coordinator.restart = true;
+    }
+
     pub fn builder() -> NicBuilder {
         NicBuilder {
             max_queue_pairs: !0,
@@ -650,7 +693,6 @@ impl Device {
     /// The coordinator must be stopped.
     fn insert_worker(
         &mut self,
-        virtio_state: VirtioState,
         idx: usize,
         guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
@@ -666,27 +708,31 @@ impl Device {
         builder.run_on_target(!self.adapter.tx_fast_completions);
         let driver = builder.build("virtio-net");
 
-        let active_state = ActiveState::new(
-            guest_memory.clone(),
-            virtio_state.rx_queue_size,
-            virtio_state.tx_queue_size,
-        );
         let worker = Worker {
-            virtio_state,
-            active_state,
+            virtio_state: VirtioState {
+                rx_queue: None,
+                rx_queue_size: 0,
+                tx_queue: None,
+                rx_in_order: InOrderCompletion::new(0),
+                tx_in_order: InOrderCompletion::new(0),
+            },
+            active_state: ActiveState::new(guest_memory.clone(), 0, 0),
             negotiated_features,
             negotiated_features_bank1,
+            rx_enabled: true,
+            tx_enabled: true,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
         worker_task.insert(&driver, "virtio-net".to_string(), worker);
-        worker_task.start();
     }
 }
 
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
+    /// Recreate backend queues before running workers. This does not change
+    /// which virtio rings are started or their traffic enable state.
     restart: bool,
 }
 
@@ -769,10 +815,18 @@ impl Coordinator {
         }
     }
 
+    /// Workers must be stopped. Backend-requested restarts use the same ownership
+    /// barrier as ring stop: queue drop, endpoint stop, then pending-work cleanup.
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
         // Drop all of the current queues.
         for worker in &mut self.workers {
             worker.task_mut().state = None;
+        }
+        c_state.endpoint.stop().await;
+        for worker in &mut self.workers {
+            if let Some(worker) = worker.state_mut() {
+                worker.cancel_pending();
+            }
         }
 
         let queue_config = (0..self.workers.len())
@@ -790,12 +844,7 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
-            let state = &mut worker.state_mut().unwrap().active_state;
-            let n = state
-                .pending_rx_packets
-                .fill_ready(&mut state.data.rx_ready);
-            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
+        for (worker, queue) in self.workers.iter_mut().zip(queues) {
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -828,10 +877,12 @@ impl AsyncRun<Worker> for NetQueue {
 
 #[derive(Inspect)]
 struct VirtioState {
-    rx_queue: VirtioQueue,
+    // Presence means the ring is started, even while disabled or its worker task
+    // is stopped. Either half may be absent; the other uses the shared backend
+    // queue.
+    rx_queue: Option<VirtioQueue>,
     rx_queue_size: u16,
-    tx_queue: VirtioQueue,
-    tx_queue_size: u16,
+    tx_queue: Option<VirtioQueue>,
     /// In-order completion discipline for the RX queue. virtio-net requires
     /// the used ring to be published in avail order so the outstanding set is
     /// exactly the contiguous `[used_index, avail_index)` range.
@@ -878,9 +929,67 @@ struct Worker {
     negotiated_features: NetworkFeaturesBank0,
     #[inspect(skip)]
     negotiated_features_bank1: NetworkFeaturesBank1,
+    /// Cached Device::enabled state. False prevents posting RX buffers; the
+    /// disable transition has already reclaimed previously posted buffers.
+    rx_enabled: bool,
+    /// False completes newly consumed TX without submitting it to the backend.
+    tx_enabled: bool,
 }
 
 impl Worker {
+    // The worker task must be stopped. Initialize only the newly started
+    // direction; the other ring may still have outstanding work in the shared
+    // backend queue.
+    fn start_rx(&mut self, queue: VirtioQueue, size: u16, mem: GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.virtio_state.rx_queue.is_none(),
+            "RX queue already active"
+        );
+        self.virtio_state.rx_queue = Some(queue);
+        self.virtio_state.rx_queue_size = size;
+        self.virtio_state.rx_in_order = InOrderCompletion::new(size);
+        self.active_state.pending_rx_packets = VirtioWorkPool::new(mem, size);
+        self.active_state.data.rx_ready = vec![RxId(0); size as usize].into();
+        Ok(())
+    }
+
+    fn start_tx(&mut self, queue: VirtioQueue, size: u16) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.virtio_state.tx_queue.is_none(),
+            "TX queue already active"
+        );
+        self.virtio_state.tx_queue = Some(queue);
+        self.virtio_state.tx_in_order = InOrderCompletion::new(size);
+        self.active_state.pending_tx_packets = (0..size).map(|_| None).collect();
+        self.active_state.data.tx_done = vec![TxId(0); size as usize].into();
+        Ok(())
+    }
+
+    /// Requires stopped workers and backend ownership released by endpoint stop.
+    /// Complete all consumed TX (both submitted and not yet submitted) without
+    /// retransmission. RX is not completed: rewind it so a new backend can reuse
+    /// the guest's still-posted buffers. Both paths preserve in-order cursors.
+    fn cancel_pending(&mut self) {
+        if let Some(queue) = &mut self.virtio_state.tx_queue {
+            for packet in &mut self.active_state.pending_tx_packets {
+                if let Some(packet) = packet.take() {
+                    self.virtio_state
+                        .tx_in_order
+                        .complete(queue, packet.completion, 0);
+                }
+            }
+        }
+        self.active_state.data.tx_segments.clear();
+        self.active_state.pending_rx_packets = VirtioWorkPool::new(
+            self.active_state.pending_rx_packets.mem().clone(),
+            self.virtio_state.rx_queue_size,
+        );
+        self.virtio_state.rx_in_order = InOrderCompletion::new(self.virtio_state.rx_queue_size);
+        if let Some(queue) = &mut self.virtio_state.rx_queue {
+            queue.rewind_uncompleted();
+        }
+    }
+
     async fn process(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -928,12 +1037,16 @@ impl Worker {
                 }
 
                 if tx_segments.is_empty()
+                    && let Some(tx_queue) = tx_queue
                     && let Poll::Ready(()) = tx_queue.poll_kick(cx)
                 {
                     return Poll::Ready(());
                 }
 
-                if let Poll::Ready(()) = rx_queue.poll_kick(cx) {
+                if self.rx_enabled
+                    && let Some(rx_queue) = rx_queue
+                    && let Poll::Ready(()) = rx_queue.poll_kick(cx)
+                {
                     return Poll::Ready(());
                 }
 
@@ -947,6 +1060,9 @@ impl Worker {
         &mut self,
         queue_state: &mut EndpointQueueState,
     ) -> Result<bool, WorkerError> {
+        if self.virtio_state.tx_queue.is_none() {
+            return Ok(false);
+        }
         let mut did_work = false;
         loop {
             did_work |= self.transmit_pending_segments(queue_state)?;
@@ -958,7 +1074,7 @@ impl Worker {
                 let Some(work) = self
                     .virtio_state
                     .tx_in_order
-                    .try_next(&mut self.virtio_state.tx_queue)
+                    .try_next(self.virtio_state.tx_queue.as_mut().unwrap())
                     .map_err(WorkerError::VirtioQueue)?
                 else {
                     break;
@@ -974,6 +1090,14 @@ impl Worker {
     }
 
     fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
+        if !self.tx_enabled {
+            self.virtio_state.tx_in_order.complete(
+                self.virtio_state.tx_queue.as_mut().unwrap(),
+                work.into_completion(),
+                0,
+            );
+            return Ok(());
+        }
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -997,7 +1121,7 @@ impl Worker {
                 // Complete (drop) the packet in avail order via the in-order
                 // completion discipline.
                 self.virtio_state.tx_in_order.complete(
-                    &mut self.virtio_state.tx_queue,
+                    self.virtio_state.tx_queue.as_mut().unwrap(),
                     work.into_completion(),
                     0,
                 );
@@ -1293,12 +1417,18 @@ impl Worker {
         &mut self,
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
+        if !self.rx_enabled {
+            return Ok(false);
+        }
+        let Some(rx_queue) = &mut self.virtio_state.rx_queue else {
+            return Ok(false);
+        };
         // Fill the receive queue with any available buffers.
         let mut rx_ids = Vec::new();
         while let Some(work) = self
             .virtio_state
             .rx_in_order
-            .try_next(&mut self.virtio_state.rx_queue)
+            .try_next(rx_queue)
             .map_err(WorkerError::VirtioQueue)?
         {
             tracing::trace!("rx packet");
@@ -1308,11 +1438,9 @@ impl Worker {
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
-                    self.virtio_state.rx_in_order.complete(
-                        &mut self.virtio_state.rx_queue,
-                        work.into_completion(),
-                        0,
-                    );
+                    self.virtio_state
+                        .rx_in_order
+                        .complete(rx_queue, work.into_completion(), 0);
                 }
                 Err(RxQueueError::DuplicateIndex(work)) => {
                     // A duplicate descriptor index cannot be tracked (the pool
@@ -1348,7 +1476,7 @@ impl Worker {
             state.stats.rx_packets.increment();
             let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
             self.virtio_state.rx_in_order.complete(
-                &mut self.virtio_state.rx_queue,
+                self.virtio_state.rx_queue.as_mut().unwrap(),
                 work.into_completion(),
                 bytes,
             );
@@ -1425,7 +1553,7 @@ impl Worker {
         let state = &mut self.active_state;
         let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
         self.virtio_state.tx_in_order.complete(
-            &mut self.virtio_state.tx_queue,
+            self.virtio_state.tx_queue.as_mut().unwrap(),
             tx_packet.completion,
             0,
         );

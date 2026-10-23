@@ -466,17 +466,6 @@ impl VirtioDevice for VhostUserFrontend {
         )
         .await?;
 
-        // SET_VRING_KICK — pass the kick eventfd to the backend
-        send_vring_fd(
-            &self.socket,
-            &mut self.receiver,
-            VhostUserRequestCode::SET_VRING_KICK,
-            idx,
-            Some(&resources.event),
-            self.protocol_features.reply_ack(),
-        )
-        .await?;
-
         // SET_VRING_CALL — pass an interrupt eventfd to the backend.
         //
         // If the transport's interrupt is already event-backed, pass it
@@ -506,6 +495,18 @@ impl VirtioDevice for VhostUserFrontend {
         )
         .await?;
 
+        // Installing KICK can start processing preposted descriptors immediately.
+        // Configure notifications and enable the ring before exposing that work.
+        send_vring_fd(
+            &self.socket,
+            &mut self.receiver,
+            VhostUserRequestCode::SET_VRING_KICK,
+            idx,
+            Some(&resources.event),
+            self.protocol_features.reply_ack(),
+        )
+        .await?;
+
         if let Some(q) = self.queues.get_mut(idx as usize) {
             q.active = true;
             q.params = Some(resources.params);
@@ -520,10 +521,7 @@ impl VirtioDevice for VhostUserFrontend {
             return None;
         }
 
-        // Disable the queue before stopping it. QEMU sends
-        // SET_VRING_ENABLE(0) before GET_VRING_BASE to ensure the
-        // backend's data plane stops processing kicks before the
-        // control plane tears down the queue.
+        // Disable traffic before stopping the ring and retrieving its cursors.
         if let Err(e) = send_vring_state(
             &self.socket,
             &mut self.receiver,
@@ -1284,6 +1282,334 @@ mod tests {
 
         drop(frontend);
         backend_task.await;
+    }
+
+    #[async_test]
+    async fn virtio_net_vhost_start_restart_with_preposted_rx_and_tx(driver: DefaultDriver) {
+        use net_backend::loopback::LoopbackEndpoint;
+        use net_backend_resources::mac_address::MacAddress;
+        use virtio::spec::queue::DescriptorFlags;
+        use virtio::test_helpers::{make_available, wait_for_used, write_descriptor};
+
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = virtio_net::Device::builder()
+            .build(
+                &source,
+                Box::new(LoopbackEndpoint::new()),
+                MacAddress::new([0x02, 0, 0, 0, 0, 1]),
+            )
+            .unwrap();
+        let (mut frontend, mem, task) = setup_frontend_backend_with_config(
+            &driver,
+            device,
+            VhostUserConfig {
+                device_id: VirtioDeviceType::NET,
+                use_backend_config: true,
+                queue_sizes: vec![16; 2],
+                config_patches: vec![],
+            },
+        )
+        .await;
+        let kicks = [Event::new(), Event::new()];
+        let calls = [Event::new(), Event::new()];
+        let resources = |idx: usize| QueueResources {
+            params: QueueParams {
+                size: 16,
+                enable: true,
+                desc_addr: 0x1000 + idx as u64 * 0x3000,
+                avail_addr: 0x2000 + idx as u64 * 0x3000,
+                used_addr: 0x3000 + idx as u64 * 0x3000,
+            },
+            guest_memory: mem.clone(),
+            event: kicks[idx].clone(),
+            notify: Interrupt::from_event(calls[idx].clone()),
+        };
+        let features = VirtioDeviceFeatures::new();
+        let mut rx_avail = 0;
+        for (idx, addr) in [(4, 0x8000), (7, 0x8100)] {
+            write_descriptor(
+                &mem,
+                0x1000,
+                idx,
+                addr,
+                256,
+                DescriptorFlags::new().with_write(true),
+                0,
+            );
+            make_available(&mem, 0x2000, 16, idx, &mut rx_avail);
+        }
+        frontend
+            .start_queue(0, resources(0), &features, None)
+            .await
+            .unwrap();
+        let mut tx_avail = 0;
+        let mut tx_used = 0;
+        let mut rx_used = 0;
+        let mut tx_state = None;
+        for (tx_id, rx_id, rx_addr) in [(0, 4, 0x8000), (1, 7, 0x8100)] {
+            // Twelve-byte virtio-net header followed by an Ethernet frame.
+            let mut packet = [0xabu8; 44];
+            packet[..12].fill(0);
+            mem.write_at(0x9000, &packet).unwrap();
+            write_descriptor(&mem, 0x4000, tx_id, 0x9000, 44, DescriptorFlags::new(), 0);
+            make_available(&mem, 0x5000, 16, tx_id, &mut tx_avail);
+            // Both first activation and restart must transmit preposted work,
+            // without requiring a signal or discarding TX while disabled.
+            frontend
+                .start_queue(1, resources(1), &features, tx_state)
+                .await
+                .unwrap();
+            assert_eq!(
+                wait_for_used(&driver, &calls[1], &mem, 0x6000, 16, &mut tx_used)
+                    .await
+                    .0,
+                tx_id
+            );
+            assert_eq!(
+                wait_for_used(&driver, &calls[0], &mem, 0x3000, 16, &mut rx_used).await,
+                (rx_id, 44)
+            );
+            let mut received = [0; 32];
+            mem.read_at(rx_addr + 12, &mut received).unwrap();
+            assert_eq!(received, [0xab; 32]);
+            if tx_id == 0 {
+                let rx = frontend.stop_queue(0).await.unwrap();
+                let tx = frontend.stop_queue(1).await.unwrap();
+                assert_eq!(
+                    rx,
+                    QueueState {
+                        avail_index: 1,
+                        used_index: 1
+                    }
+                );
+                assert_eq!(
+                    tx,
+                    QueueState {
+                        avail_index: 1,
+                        used_index: 1
+                    }
+                );
+                frontend
+                    .start_queue(0, resources(0), &features, Some(rx))
+                    .await
+                    .unwrap();
+                tx_state = Some(tx);
+            }
+        }
+        frontend.reset().await;
+        drop(frontend);
+        task.await;
+    }
+
+    #[async_test]
+    async fn packed_net_independent_stop_restart_across_wrap(driver: DefaultDriver) {
+        use net_backend::loopback::LoopbackEndpoint;
+        use net_backend_resources::mac_address::MacAddress;
+        use pal_async::wait::PolledWait;
+        use virtio::spec::queue::{DescriptorFlags, PackedDescriptor};
+
+        fn post(mem: &GuestMemory, table: u64, slot: u16, wrap: bool, rx: bool, addr: u64) {
+            mem.write_plain(
+                table + u64::from(slot) * 16,
+                &PackedDescriptor {
+                    address: addr.into(),
+                    length: (if rx { 256u32 } else { 44 }).into(),
+                    buffer_id: (slot + 20).into(),
+                    flags_raw: u16::from(
+                        DescriptorFlags::new()
+                            .with_write(rx)
+                            .with_available(wrap)
+                            .with_used(!wrap),
+                    )
+                    .into(),
+                },
+            )
+            .unwrap();
+        }
+        async fn completed(
+            driver: &DefaultDriver,
+            mem: &GuestMemory,
+            table: u64,
+            slot: u16,
+            wrap: bool,
+            event: &Event,
+        ) -> PackedDescriptor {
+            let mut wait = PolledWait::new(driver, event.clone()).unwrap();
+            mesh::CancelContext::new()
+                .with_timeout(std::time::Duration::from_secs(5))
+                .until_cancelled(async {
+                    loop {
+                        let desc: PackedDescriptor =
+                            mem.read_plain(table + u64::from(slot) * 16).unwrap();
+                        let flags = DescriptorFlags::from(desc.flags_raw.get());
+                        if flags.available() == wrap && flags.used() == wrap {
+                            assert_eq!(desc.buffer_id.get(), slot + 20);
+                            return desc;
+                        }
+                        wait.wait().await.unwrap();
+                    }
+                })
+                .await
+                .expect("packed queue completion timed out")
+        }
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = virtio_net::Device::builder()
+            .build(
+                &source,
+                Box::new(LoopbackEndpoint::new()),
+                MacAddress::new([2, 0, 0, 0, 0, 1]),
+            )
+            .unwrap();
+        let (mut frontend, mem, task) = setup_frontend_backend_with_config(
+            &driver,
+            device,
+            VhostUserConfig {
+                device_id: VirtioDeviceType::NET,
+                use_backend_config: true,
+                queue_sizes: vec![4; 2],
+                config_patches: vec![],
+            },
+        )
+        .await;
+        let kicks = [Event::new(), Event::new()];
+        let calls = [Event::new(), Event::new()];
+        let resources = |idx: usize| QueueResources {
+            params: QueueParams {
+                size: 4,
+                enable: true,
+                desc_addr: 0x1000 + idx as u64 * 0x3000,
+                avail_addr: 0x2000 + idx as u64 * 0x3000,
+                used_addr: 0x3000 + idx as u64 * 0x3000,
+            },
+            guest_memory: mem.clone(),
+            event: kicks[idx].clone(),
+            notify: Interrupt::from_event(calls[idx].clone()),
+        };
+        let features = VirtioDeviceFeatures::new().with_ring_packed(true);
+        let initial = QueueState {
+            avail_index: 0x8003,
+            used_index: 0x8003,
+        };
+        for i in 0..2 {
+            frontend
+                .start_queue(i as u16, resources(i), &features, Some(initial))
+                .await
+                .unwrap();
+        }
+        for (slot, wrap) in [(3, true), (0, false), (1, false), (2, false)] {
+            post(
+                &mem,
+                0x1000,
+                slot,
+                wrap,
+                true,
+                0x8000 + u64::from(slot) * 256,
+            );
+        }
+        kicks[0].signal();
+        let packet = |value: u8| {
+            let mut bytes = [value; 44];
+            bytes[..12].fill(0);
+            mem.write_at(0x9000, &bytes).unwrap();
+        };
+        packet(0xa0);
+        post(&mem, 0x4000, 3, true, false, 0x9000);
+        kicks[1].signal();
+        completed(&driver, &mem, 0x4000, 3, true, &calls[1]).await;
+        assert_eq!(
+            completed(&driver, &mem, 0x1000, 3, true, &calls[0])
+                .await
+                .length
+                .get(),
+            44
+        );
+
+        // Stop RX only. TX remains started and must consume disabled TX even
+        // without an RX partner (loopback cannot send without RX buffers).
+        let rx_state = frontend.stop_queue(0).await.unwrap();
+        assert_eq!(
+            rx_state,
+            QueueState {
+                avail_index: 0,
+                used_index: 0
+            }
+        );
+        send_vring_state(
+            &frontend.socket,
+            &mut frontend.receiver,
+            VhostUserRequestCode::SET_VRING_ENABLE,
+            1,
+            0,
+            frontend.protocol_features.reply_ack(),
+        )
+        .await
+        .unwrap();
+        packet(0xa1);
+        post(&mem, 0x4000, 0, false, false, 0x9000);
+        kicks[1].signal();
+        assert_eq!(
+            completed(&driver, &mem, 0x4000, 0, false, &calls[1])
+                .await
+                .length
+                .get(),
+            0
+        );
+        let untouched: PackedDescriptor = mem.read_plain(0x1000).unwrap();
+        assert!(DescriptorFlags::from(untouched.flags_raw.get()).used());
+
+        // Restart RX, then stop/restart TX alone. RX's original available
+        // buffers must still work without another RX start or guest repost.
+        frontend
+            .start_queue(0, resources(0), &features, Some(rx_state))
+            .await
+            .unwrap();
+        let tx_state = frontend.stop_queue(1).await.unwrap();
+        assert_eq!(
+            tx_state,
+            QueueState {
+                avail_index: 1,
+                used_index: 1
+            }
+        );
+        frontend
+            .start_queue(1, resources(1), &features, Some(tx_state))
+            .await
+            .unwrap();
+        for (tx_slot, rx_slot) in [(1, 0), (2, 1), (3, 2)] {
+            let value = 0xb0 + tx_slot as u8;
+            packet(value);
+            post(&mem, 0x4000, tx_slot, false, false, 0x9000);
+            kicks[1].signal();
+            completed(&driver, &mem, 0x4000, tx_slot, false, &calls[1]).await;
+            assert_eq!(
+                completed(&driver, &mem, 0x1000, rx_slot, false, &calls[0])
+                    .await
+                    .length
+                    .get(),
+                44
+            );
+            let mut received = [0; 32];
+            mem.read_at(0x8000 + u64::from(rx_slot) * 256 + 12, &mut received)
+                .unwrap();
+            assert_eq!(received, [value; 32]);
+        }
+        assert_eq!(
+            frontend.stop_queue(1).await.unwrap(),
+            QueueState {
+                avail_index: 0x8000,
+                used_index: 0x8000
+            }
+        );
+        assert_eq!(
+            frontend.stop_queue(0).await.unwrap(),
+            QueueState {
+                avail_index: 3,
+                used_index: 3
+            }
+        );
+        frontend.reset().await;
+        drop(frontend);
+        task.await;
     }
 
     /// Test start_queue + stop_queue with an event-backed interrupt.
