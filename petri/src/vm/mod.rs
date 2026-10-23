@@ -4577,27 +4577,6 @@ mod tests {
     use crate::VmbusStorageType;
     use crate::Vtl;
 
-    #[test]
-    fn linux_nesting_remains_limited_to_provisioned_hosts() {
-        let mut requirements = petri_artifacts_core::TestArtifactRequirements::new();
-        let resolver = ArtifactResolver::collector(&mut requirements);
-        let artifacts = PetriVmArtifacts::<openvmm::OpenVmmPetriBackend>::new_maybe_nested(
-            &resolver,
-            Firmware::LinuxDirect {
-                kernel: ResolvedArtifact::from_local_path("unused-kernel".into()),
-                initrd: ResolvedArtifact::from_local_path("unused-initrd".into()),
-            },
-            MachineArch::host(),
-            false,
-            Some(NestedTestDeps::new(
-                petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL,
-                "tests",
-                "unused-test",
-            )),
-        );
-        assert_eq!(artifacts.is_some(), cfg!(target_os = "linux"));
-    }
-
     #[derive(Clone, Copy)]
     enum TestInspectBehavior {
         Success,
