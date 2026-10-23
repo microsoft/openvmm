@@ -112,11 +112,9 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         with_vtl0_pipette: bool,
         nested_test: Option<NestedTestDeps>,
     ) -> Option<Self> {
-        // if the operating system of the l1 doesn't match the l0, then we can't
-        // query the test binary for test artifact to add to the vhd if the l1
-        // backend doesn't support file sharing.
-        // TODO: use file sharing for all backends, install the necessary tools
-        // to cross-execute the binary, or get the artifact in the guest on demand
+        // Cross-OS nesting needs shared artifacts because the host cannot query
+        // the nested binary. Windows CI does not yet provision those artifacts.
+        // TODO: enable cross-OS nesting on Windows once provisioning is available.
         let different_nested_target = nested_test
             .as_ref()
             .map(|t| t.archive.target_triple().unwrap())
@@ -127,7 +125,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
 
         if !(T::SUPPORTS_CPU_EMULATION || arch == MachineArch::host())
             || !T::check_compat(&firmware, arch)
-            || !T::supports_file_sharing(&firmware) && different_nested_target
+            || different_nested_target && (cfg!(windows) || !T::supports_file_sharing(&firmware))
         {
             return None;
         }
@@ -4578,6 +4576,27 @@ mod tests {
     use crate::VmbusStorageController;
     use crate::VmbusStorageType;
     use crate::Vtl;
+
+    #[test]
+    fn linux_nesting_remains_limited_to_provisioned_hosts() {
+        let mut requirements = petri_artifacts_core::TestArtifactRequirements::new();
+        let resolver = ArtifactResolver::collector(&mut requirements);
+        let artifacts = PetriVmArtifacts::<openvmm::OpenVmmPetriBackend>::new_maybe_nested(
+            &resolver,
+            Firmware::LinuxDirect {
+                kernel: ResolvedArtifact::from_local_path("unused-kernel".into()),
+                initrd: ResolvedArtifact::from_local_path("unused-initrd".into()),
+            },
+            MachineArch::host(),
+            false,
+            Some(NestedTestDeps::new(
+                petri_artifacts_vmm_test::artifacts::host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL,
+                "tests",
+                "unused-test",
+            )),
+        );
+        assert_eq!(artifacts.is_some(), cfg!(target_os = "linux"));
+    }
 
     #[derive(Clone, Copy)]
     enum TestInspectBehavior {

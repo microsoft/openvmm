@@ -133,9 +133,11 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 
 ### Nested Tests
 
-OpenVMM on Windows or Linux and QEMU on Linux automatically share nested test
-artifacts and results with Linux guests over 9p. Other host/guest combinations,
-including OpenVMM on macOS, continue staging artifacts on the agent disk and
+On Linux hosts, OpenVMM and QEMU automatically share nested test artifacts and
+results with Linux guests over 9p. OpenVMM also supports directory sharing with
+Linux guests on Windows, but cross-OS nesting there remains disabled until CI
+provisions the nested artifacts. Other supported nesting configurations
+continue staging artifacts on the agent disk and
 copying results back through Pipette. Tests do not need to allocate PCIe ports
 for the shares. OpenVMM skips its automatic startup save/restore verification
 when shares are attached because 9p does not support saving device state.
