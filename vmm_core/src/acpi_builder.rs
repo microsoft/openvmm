@@ -1559,6 +1559,7 @@ mod test {
                 with_psp: false,
                 pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
                 acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                level_triggered_irqs: &[],
                 iommu: None,
             };
             let cpus = topology

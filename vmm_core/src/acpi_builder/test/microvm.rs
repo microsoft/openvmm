@@ -5,6 +5,7 @@
 //! level-triggered legacy IRQs get interrupt source overrides.
 
 use super::*;
+use test_with_tracing::test;
 use vm_topology::processor::x86::X2ApicState;
 
 #[test]
