@@ -618,6 +618,11 @@ impl virt::AcceptInitialPages for WhpPartition {
     }
 }
 
+/// Converts HCS units (100000 = one LP) to the hypervisor's (65536 = one LP), as vmwp does.
+fn hv_cpu_fraction(v: u32) -> u32 {
+    (u64::from(v) * 65536 / 100000) as u32
+}
+
 impl virt::Partition for WhpPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         virt::InitialVpStateSource::Registers
@@ -639,6 +644,42 @@ impl virt::Partition for WhpPartition {
         &self,
     ) -> Option<&dyn virt::ScrubVtl<Error = <Self as virt::Hv1>::Error>> {
         (!self.inner.isolation.is_isolated()).then_some(self)
+    }
+
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+        use whp::PartitionProperty as P;
+        use whp::abi::WHV_SCHEDULER_FEATURES as F;
+
+        qos.validate()?;
+        // Only the hypervisor core scheduler reports these; the root scheduler rejects them.
+        let features = whp::capabilities::scheduler_features().unwrap_or(F(0));
+        for (set, bit, name) in [
+            (qos.limit.is_some(), F::CpuCap, "limit"),
+            (qos.weight.is_some(), F::CpuWeight, "weight"),
+            (qos.reserve.is_some(), F::CpuReserve, "reserve"),
+        ] {
+            anyhow::ensure!(
+                !set || features.is_set(bit),
+                "processor {name} requires the hypervisor core scheduler"
+            );
+        }
+        for vtlp in std::iter::once(&self.inner.vtl0).chain(&self.inner.vtl2) {
+            let whp = &vtlp.whp;
+            // WHP rejects cap < reserve, so clear the reserve before moving both.
+            if qos.limit.is_some() && qos.reserve.is_some() {
+                whp.set_property(P::CpuReserve(0))?;
+            }
+            if let Some(v) = qos.limit {
+                whp.set_property(P::CpuCap(hv_cpu_fraction(v)))?;
+            }
+            if let Some(v) = qos.reserve {
+                whp.set_property(P::CpuReserve(hv_cpu_fraction(v)))?;
+            }
+            if let Some(v) = qos.weight {
+                whp.set_property(P::CpuWeight(v))?;
+            }
+        }
+        Ok(())
     }
 
     fn supports_initial_page_acceptance(
@@ -2168,5 +2209,16 @@ mod aarch64 {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hv_cpu_fraction_scales_hcs_units() {
+        assert_eq!(super::hv_cpu_fraction(100000), 65536);
+        assert_eq!(super::hv_cpu_fraction(50000), 32768);
+        assert_eq!(super::hv_cpu_fraction(1), 0);
+        assert_eq!(super::hv_cpu_fraction(0), 0);
     }
 }

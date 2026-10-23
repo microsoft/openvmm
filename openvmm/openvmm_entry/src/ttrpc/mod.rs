@@ -72,6 +72,7 @@ use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::ProcessorQos;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
@@ -130,6 +131,39 @@ fn parse_aarch64_topology_overrides(
         }
     }
     Ok(ArchTopologyConfig::Aarch64(topology_config))
+}
+
+/// Maps vmservice processor limit/weight/reservation. Proto3 can't tell unset
+/// from 0, so 0 means unset, matching HCS defaults.
+fn processor_qos(limit: u32, weight: u32, reserve: u32) -> anyhow::Result<ProcessorQos> {
+    let set = |v| (v != 0).then_some(v);
+    let qos = ProcessorQos {
+        limit: set(limit),
+        weight: set(weight),
+        reserve: set(reserve),
+    };
+    qos.validate()?;
+    Ok(qos)
+}
+
+#[cfg(test)]
+mod processor_qos_tests {
+    use super::*;
+
+    #[test]
+    fn processor_qos_mapping() {
+        assert!(processor_qos(0, 0, 0).unwrap().is_empty());
+        assert_eq!(
+            processor_qos(50000, 200, 10000).unwrap(),
+            ProcessorQos {
+                limit: Some(50000),
+                weight: Some(200),
+                reserve: Some(10000),
+            }
+        );
+        assert!(processor_qos(100001, 0, 0).is_err());
+        assert!(processor_qos(1000, 0, 2000).is_err());
+    }
 }
 
 fn parse_arch_topology_overrides(
@@ -1121,6 +1155,17 @@ impl VmService {
             .map(|c| c.processor_count)
             .unwrap_or(1);
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
+        let processor_qos =
+            req_config
+                .processor_config
+                .as_ref()
+                .map_or(Ok(ProcessorQos::default()), |c| {
+                    processor_qos(
+                        c.processor_limit,
+                        c.processor_weight,
+                        c.processor_reservation,
+                    )
+                })?;
 
         // Build the PCIe topology (root complexes, switches, and the devices
         // attached behind their ports).
@@ -1152,6 +1197,7 @@ impl VmService {
             hypervisor: HypervisorConfig {
                 with_hv: !req_config.disable_hv,
                 with_isolation: isolation,
+                processor_qos,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -1674,7 +1720,20 @@ impl VmService {
             }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
             Resource::WindowsDevice(_) => anyhow::bail!("device assignment not supported"),
-            Resource::Processor(_) | Resource::ProcessorConfig(_) | Resource::Memory(_) => {
+            Resource::ProcessorConfig(cfg) => {
+                anyhow::ensure!(
+                    request.r#type == vmservice::ModifyType::Update as i32,
+                    "processor config only supports update"
+                );
+                let qos = processor_qos(
+                    cfg.processor_limit,
+                    cfg.processor_weight,
+                    cfg.processor_reservation,
+                )?;
+                let recv = vm.worker_rpc.call_failable(VmRpc::SetProcessorQos, qos);
+                Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+            }
+            Resource::Processor(_) | Resource::Memory(_) => {
                 anyhow::bail!("processor and memory resources not supported")
             }
         }

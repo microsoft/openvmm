@@ -27,6 +27,8 @@ use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::options::VmChipsetCapabilities;
 
+pub use virt::ProcessorQos;
+
 #[derive(MeshPayload, Debug)]
 pub struct Config {
     pub load_mode: LoadMode,
@@ -552,6 +554,8 @@ pub struct HypervisorConfig {
     /// rejects it rather than silently ignoring it (see
     /// `virt::Hypervisor::recognizes_nested_virt`).
     pub nested_virt: bool,
+    /// Processor limit/weight/reserve, applied when the partition is created.
+    pub processor_qos: ProcessorQos,
 }
 
 #[derive(Debug, MeshPayload)]

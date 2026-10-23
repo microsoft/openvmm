@@ -2177,6 +2177,7 @@ async fn vm_config_from_command_line(
             }),
             with_isolation,
             nested_virt: opt.nested_virt,
+            processor_qos: opt.processor_qos.unwrap_or_default(),
         },
         #[cfg(windows)]
         kernel_vmnics,
