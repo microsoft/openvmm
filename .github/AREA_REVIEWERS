@@ -1,0 +1,78 @@
+# Area reviewer assignment
+#
+# Used by .github/workflows/area-reviewers.yml. Unlike CODEOWNERS (which
+# requests review from a whole team, where it is easy for everyone to assume
+# someone else will look), this file maps paths to *groups*, and the workflow
+# picks ONE concrete person from each matching group, requests their review,
+# assigns them to the PR, and leaves a comment explaining why they were chosen.
+#
+# Syntax
+# ------
+#
+#   group <name> = @user1 @user2 ...
+#       Defines a group of individual GitHub users. A group may be defined
+#       across multiple lines; members accumulate. A group with no members
+#       is ignored (handy for areas that are not staffed yet).
+#
+#   strategy = least-loaded | round-robin | random
+#       How to pick a member (default: least-loaded).
+#         least-loaded - member with the fewest open PRs in this repo that are
+#                        currently awaiting their review (ties broken by
+#                        round-robin).
+#         round-robin  - rotate through members by PR number.
+#         random       - uniformly random member.
+#
+#   <pattern> <group> [<group> ...]
+#       Path rule using CODEOWNERS/gitignore-style patterns:
+#         - A leading "/" anchors the pattern at the repository root.
+#         - A pattern with no "/" (other than a trailing one) matches at any
+#           depth, e.g. "*.proto".
+#         - A trailing "/" (or a pattern naming a directory) matches
+#           everything beneath it.
+#         - "*" matches within a path segment, "**" matches across segments,
+#           "?" matches a single character.
+#
+#       NOTE: unlike CODEOWNERS, ALL matching rules apply (not just the last
+#       one), so a PR that touches both storage code and a .proto file gets
+#       one storage reviewer and one API reviewer.
+#
+# The PR author is never selected. If someone already assigned to, requested
+# on, or reviewing the PR is a member of a matching group, that group is
+# considered covered and nobody new is selected for it. Selections are
+# recorded in the bot comment and are not re-rolled on later pushes; delete
+# the comment to force a re-roll on the next push.
+#
+# Only list individual users (not teams) as group members.
+
+strategy = least-loaded
+
+# --- Groups -----------------------------------------------------------------
+# TODO: fill in members, e.g. `group api-reviewers = @alice @bob`.
+
+group api-reviewers = @jterry75
+group storage =
+group networking =
+group vmbus =
+group hypervisor =
+
+# --- Rules ------------------------------------------------------------------
+
+# Protobuf / ttrpc API surfaces
+*.proto                         api-reviewers
+/vm/devices/get/underhill_config/ api-reviewers
+
+# Storage
+/vm/devices/storage/            storage
+
+# Networking
+/vm/devices/net/                networking
+
+# VMBus
+/vm/devices/vmbus/              vmbus
+
+# Hypervisor / virtualization backends
+/vm/hv1/                        hypervisor
+/vm/kvm/                        hypervisor
+/vm/whp/                        hypervisor
+/vmm_core/virt*/                hypervisor
+/openhcl/virt_mshv_vtl/         hypervisor
