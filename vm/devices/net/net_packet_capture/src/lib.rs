@@ -23,6 +23,7 @@ use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
@@ -267,6 +268,10 @@ impl Endpoint for PacketCaptureEndpoint {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.current().tx_offload_support()
+    }
+
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        self.current().rx_offload_support()
     }
 
     fn multiqueue_support(&self) -> MultiQueueSupport {

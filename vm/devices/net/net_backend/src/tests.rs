@@ -11,7 +11,6 @@ use guestmem::GuestMemory;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use vm_topology::memory::MemoryLayout;
@@ -38,7 +37,6 @@ pub struct Bufs {
 struct BufsInner {
     rx_metadata: Vec<Mutex<Option<RxMetadata>>>,
     rx_capacity: Vec<AtomicU32>,
-    rx_dropped: Vec<AtomicBool>,
     guest_memory: GuestMemory,
 }
 
@@ -48,13 +46,10 @@ impl Bufs {
         rx_metadata.resize_with(128, Default::default);
         let mut rx_capacity = Vec::new();
         rx_capacity.resize_with(128, || AtomicU32::new(2048));
-        let mut rx_dropped = Vec::new();
-        rx_dropped.resize_with(128, Default::default);
         Self {
             inner: Arc::new(BufsInner {
                 rx_metadata,
                 rx_capacity,
-                rx_dropped,
                 guest_memory,
             }),
         }
@@ -85,10 +80,6 @@ impl BufferAccess for Bufs {
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
         *self.inner.rx_metadata[id.0 as usize].lock() = Some(*metadata);
     }
-
-    fn write_drop(&mut self, id: RxId, _packet_len: usize) {
-        self.inner.rx_dropped[id.0 as usize].store(true, Ordering::Relaxed);
-    }
 }
 
 impl Bufs {
@@ -100,10 +91,5 @@ impl Bufs {
     /// Overrides the capacity reported for a receive buffer.
     pub fn set_capacity(&self, id: RxId, capacity: u32) {
         self.inner.rx_capacity[id.0 as usize].store(capacity, Ordering::Relaxed);
-    }
-
-    /// Returns whether the receive buffer was completed as dropped.
-    pub fn rx_dropped(&self, id: RxId) -> bool {
-        self.inner.rx_dropped[id.0 as usize].load(Ordering::Relaxed)
     }
 }

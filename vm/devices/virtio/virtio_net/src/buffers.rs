@@ -7,8 +7,8 @@ use crate::header_size;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use net_backend::BufferAccess;
+use net_backend::ETHERNET_HEADER_LEN;
 use net_backend::RxBufferSegment;
-use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
 use virtio::VirtioQueueCallbackWork;
@@ -32,7 +32,6 @@ pub struct VirtioWorkPool {
     rx_capacity_drops: u64,
     rx_memory_write_drops: u64,
     rx_incomplete_drops: u64,
-    rx_unsupported_offload_drops: u64,
 }
 
 impl VirtioWorkPool {
@@ -43,11 +42,7 @@ impl VirtioWorkPool {
         )
         .field("rx_capacity_drops", self.rx_capacity_drops)
         .field("rx_memory_write_drops", self.rx_memory_write_drops)
-        .field("rx_incomplete_drops", self.rx_incomplete_drops)
-        .field(
-            "rx_unsupported_offload_drops",
-            self.rx_unsupported_offload_drops,
-        );
+        .field("rx_incomplete_drops", self.rx_incomplete_drops);
     }
 
     /// Create a new instance.
@@ -58,7 +53,6 @@ impl VirtioWorkPool {
             rx_capacity_drops: 0,
             rx_memory_write_drops: 0,
             rx_incomplete_drops: 0,
-            rx_unsupported_offload_drops: 0,
         }
     }
 
@@ -98,10 +92,13 @@ impl VirtioWorkPool {
         let packet = &mut self.rx_packets[idx as usize];
         assert!(packet.is_none(), "RX descriptor {idx} is already tracked");
         let payload_length = work.get_payload_length(true) as u32;
-        let Some(cap) = payload_length.checked_sub(header_size() as u32) else {
+        let Some(cap) = payload_length
+            .checked_sub(header_size() as u32)
+            .filter(|&cap| cap >= ETHERNET_HEADER_LEN)
+        else {
             tracelimit::warn_ratelimited!(
                 len = payload_length,
-                "dropping RX buffer: payload length smaller than virtio-net header size"
+                "dropping RX buffer: insufficient room for an Ethernet header"
             );
             return Err(work);
         };
@@ -154,17 +151,6 @@ impl VirtioWorkPool {
             .as_mut()
             .expect("invalid buffer index")
             .write_failed = true;
-    }
-
-    fn fail_unsupported_offload(&mut self, id: RxId) {
-        self.rx_unsupported_offload_drops += 1;
-        self.rx_packets[id.0 as usize]
-            .as_mut()
-            .expect("invalid buffer index")
-            .write_failed = true;
-        tracelimit::warn_ratelimited!(
-            "dropping RX packet with ECN metadata because VIRTIO_NET_F_GUEST_ECN is not supported"
-        );
     }
 }
 
@@ -285,10 +271,6 @@ impl BufferAccess for VirtioWorkPool {
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
-        if metadata.gso.is_some_and(|gso| gso.ecn) {
-            self.fail_unsupported_offload(id);
-            return;
-        }
         assert_eq!(metadata.offset, 0);
         assert!(metadata.len > 0);
 
@@ -308,16 +290,17 @@ impl BufferAccess for VirtioWorkPool {
         // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums have
         // been validated (Good or ValidatedButWrong, e.g. after RSC/LRO),
         // telling the guest it can skip re-verification.
-        let data_valid = metadata.checksum_offload.is_none()
-            && metadata.ip_checksum.is_valid()
-            && metadata.l4_checksum.is_valid();
+        let checksum = metadata.offload.checksum_metadata();
+        let needs_checksum = checksum.is_some();
+        let data_valid =
+            !needs_checksum && metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
         let flags = VirtioNetHeaderFlags::new()
-            .with_needs_csum(metadata.checksum_offload.is_some())
+            .with_needs_csum(needs_checksum)
             .with_data_valid(data_valid);
-        let (gso_type, hdr_len, gso_size) = if let Some(gso) = metadata.gso {
+        let (gso_type, hdr_len, gso_size) = if let Some(gso) = metadata.offload.gso() {
             let protocol = match gso.protocol {
-                RxGsoProtocol::TcpV4 => crate::VirtioNetHeaderGsoProtocol::TCPV4,
-                RxGsoProtocol::TcpV6 => crate::VirtioNetHeaderGsoProtocol::TCPV6,
+                net_backend::RxGsoProtocol::TcpV4 => crate::VirtioNetHeaderGsoProtocol::TCPV4,
+                net_backend::RxGsoProtocol::TcpV6 => crate::VirtioNetHeaderGsoProtocol::TCPV6,
             };
             (
                 crate::VirtioNetHeaderGso::new()
@@ -329,8 +312,7 @@ impl BufferAccess for VirtioWorkPool {
         } else {
             (0, 0, 0)
         };
-        let (csum_start, csum_offset) = metadata
-            .checksum_offload
+        let (csum_start, csum_offset) = checksum
             .map(|checksum| (checksum.start, checksum.offset))
             .unwrap_or_default();
 
@@ -362,13 +344,5 @@ impl BufferAccess for VirtioWorkPool {
             .as_mut()
             .expect("invalid buffer index")
             .len = metadata.len as u32;
-    }
-
-    fn write_drop(&mut self, id: RxId, packet_len: usize) {
-        let capacity = self.rx_packets[id.0 as usize]
-            .as_ref()
-            .expect("invalid buffer index")
-            .cap;
-        self.fail_capacity(id, packet_len, capacity);
     }
 }

@@ -110,6 +110,11 @@ pub trait Endpoint: Send + Sync + InspectMut {
         TxOffloadSupport::default()
     }
 
+    /// Specifies the receive offloads that this endpoint can produce.
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        RxOffloadSupport::default()
+    }
+
     /// Specifies parameters related to supporting multiple queues.
     fn multiqueue_support(&self) -> MultiQueueSupport {
         MultiQueueSupport {
@@ -252,13 +257,6 @@ pub trait BufferAccess {
     /// Sets the packet metadata for the receive.
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata);
 
-    /// Prepares a receive buffer to be completed as a dropped packet.
-    ///
-    /// Backends call this before returning an RX ID that did not receive packet
-    /// data, allowing each frontend to publish a safe, protocol-specific drop
-    /// completion instead of exposing stale buffer contents.
-    fn write_drop(&mut self, id: RxId, packet_len: usize);
-
     /// Writes the packet header and data in a single call.
     fn write_packet(&mut self, id: RxId, metadata: &RxMetadata, data: &[u8]) {
         self.write_data(id, data);
@@ -348,6 +346,7 @@ impl DisconnectableEndpointControl {
 pub struct DisconnectableEndpointCachedState {
     is_ordered: bool,
     tx_offload_support: TxOffloadSupport,
+    rx_offload_support: RxOffloadSupport,
     multiqueue_support: MultiQueueSupport,
     tx_fast_completions: bool,
     link_speed: u64,
@@ -437,6 +436,13 @@ impl Endpoint for DisconnectableEndpoint {
             .tx_offload_support
     }
 
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        self.cached_state
+            .as_ref()
+            .expect("Endpoint needs connected at least once before use")
+            .rx_offload_support
+    }
+
     fn multiqueue_support(&self) -> MultiQueueSupport {
         self.cached_state
             .as_ref()
@@ -506,6 +512,7 @@ impl Endpoint for DisconnectableEndpoint {
                 self.cached_state = Some(DisconnectableEndpointCachedState {
                     is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
+                    rx_offload_support: self.current().rx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
                     link_speed: self.current().link_speed(),

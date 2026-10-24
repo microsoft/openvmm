@@ -167,12 +167,68 @@ mod tap_tests {
         // `sock` is dropped here, closing the file descriptor.
     }
 
+    fn disable_ipv6(name: &str) {
+        std::fs::write(format!("/proc/sys/net/ipv6/conf/{name}/disable_ipv6"), b"1")
+            .expect("failed to disable IPv6 on TAP interface");
+    }
+
     /// Create a buffer pool and guest memory following the pattern from net_backend tests.
     fn make_pool() -> (net_backend::tests::Bufs, guestmem::GuestMemory) {
         let layout = net_backend::tests::test_layout();
         let mem = guestmem::GuestMemory::allocate(layout.end_of_ram() as usize);
         let pool = net_backend::tests::Bufs::new(mem.clone());
         (pool, mem)
+    }
+
+    fn send_ethernet_frame(name: &str, frame: &[u8]) {
+        const ETH_P_ALL: u16 = 0x0003;
+
+        // SAFETY: Creating an AF_PACKET socket; the test namespace grants
+        // CAP_NET_RAW.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_PACKET,
+                libc::SOCK_RAW,
+                i32::from(ETH_P_ALL.to_be()),
+            )
+        };
+        assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+        // SAFETY: fd is a valid, newly created file descriptor.
+        let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+
+        let name = std::ffi::CString::new(name).unwrap();
+        // SAFETY: name is a valid, nul-terminated interface name.
+        let ifindex = unsafe { libc::if_nametoindex(name.as_ptr()) };
+        assert_ne!(
+            ifindex,
+            0,
+            "if_nametoindex: {}",
+            std::io::Error::last_os_error()
+        );
+
+        // SAFETY: All-zero is a valid sockaddr_ll starting state.
+        let mut addr: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+        addr.sll_family = libc::AF_PACKET as u16;
+        addr.sll_protocol = ETH_P_ALL.to_be();
+        addr.sll_ifindex = ifindex as i32;
+
+        // SAFETY: socket, frame, and sockaddr_ll are valid for sendto().
+        let sent = unsafe {
+            libc::sendto(
+                socket.as_raw_fd(),
+                frame.as_ptr().cast(),
+                frame.len(),
+                0,
+                std::ptr::from_ref(&addr).cast(),
+                size_of_val(&addr) as libc::socklen_t,
+            )
+        };
+        assert_eq!(
+            sent,
+            frame.len() as isize,
+            "sendto: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     /// Wrap an async test function into a [`Trial`] that runs on a
@@ -321,16 +377,17 @@ mod tap_tests {
         );
     }
 
-    /// Validates that an undersized receive buffer is retired so a usable
-    /// buffer behind it can receive a later packet.
-    async fn test_tap_rx_retires_undersized_buffer(driver: DefaultDriver) {
+    /// Validates that an undersized receive buffer remains at the front until
+    /// a later frame fits, preserving receive completion order.
+    async fn test_tap_rx_reuses_undersized_buffer(driver: DefaultDriver) {
         let mut endpoint = new_endpoint("tap0").unwrap();
+        disable_ipv6("tap0");
         configure_tap("tap0", "10.0.0.1/24");
 
-        let (mut pool, _mem) = make_pool();
+        let (mut pool, mem) = make_pool();
         let undersized = RxId(1);
         let usable = RxId(2);
-        pool.set_capacity(undersized, 0);
+        pool.set_capacity(undersized, 64);
 
         let config = vec![QueueConfig {
             driver: Box::new(driver.clone()),
@@ -344,28 +401,39 @@ mod tap_tests {
         let queue = &mut queues[0];
         queue.rx_avail(&mut pool, &[undersized, usable]);
 
-        let sock = std::net::UdpSocket::bind("10.0.0.1:0").unwrap();
-        sock.send_to(b"first", "10.0.0.2:12345").unwrap();
+        let mut oversized_frame = vec![0xaa; 128];
+        oversized_frame[..14].copy_from_slice(&[
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x88, 0xb5,
+        ]);
+        let mut fitting_frame = vec![0xbb; 60];
+        fitting_frame[..14].copy_from_slice(&[
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x88, 0xb5,
+        ]);
+
+        send_ethernet_frame("tap0", &oversized_frame);
+        send_ethernet_frame("tap0", &fitting_frame);
         poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
 
         let mut packets = [RxId(0); 2];
-        let mut n = queue.rx_poll(&mut pool, &mut packets).unwrap();
-        assert!(n >= 1);
+        let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        assert_eq!(n, 1);
         assert_eq!(packets[0].0, undersized.0);
-        assert!(pool.rx_dropped(undersized));
-
-        if !packets[..n].iter().any(|packet| packet.0 == usable.0) {
-            sock.send_to(b"second", "10.0.0.3:12345").unwrap();
-            poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
-            n = queue.rx_poll(&mut pool, &mut packets).unwrap();
-        }
-
-        assert!(packets[..n].iter().any(|packet| packet.0 == usable.0));
-        assert!(
-            pool.rx_metadata(usable)
-                .is_some_and(|metadata| metadata.len > 0),
-            "usable buffer should receive a later packet"
+        assert_eq!(
+            pool.rx_metadata(undersized).map(|metadata| metadata.len),
+            Some(fitting_frame.len())
         );
+        assert!(pool.rx_metadata(usable).is_none());
+
+        let mut readback = vec![0; fitting_frame.len()];
+        mem.read_at(undersized.0 as u64 * 2048, &mut readback)
+            .unwrap();
+        assert_eq!(readback, fitting_frame);
+
+        send_ethernet_frame("tap0", &fitting_frame);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(packets[0].0, usable.0);
     }
 
     /// Validates that flooding tx_avail doesn't panic or error — packets are
@@ -687,8 +755,8 @@ mod tap_tests {
             async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
             async_trial(
-                "tap_rx_retires_undersized_buffer",
-                test_tap_rx_retires_undersized_buffer,
+                "tap_rx_reuses_undersized_buffer",
+                test_tap_rx_reuses_undersized_buffer,
             ),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
