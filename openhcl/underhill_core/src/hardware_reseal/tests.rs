@@ -707,6 +707,7 @@ async fn finish_attempt(
     if start {
         drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
             .await
+            .unwrap()
             .unwrap();
     }
     drive_until(run.as_mut(), milestone).await;
@@ -902,6 +903,7 @@ async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: D
     assert!(notification.pending.load(Ordering::SeqCst));
     drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
         .await
+        .unwrap()
         .unwrap();
     assert!(!notification.pending.load(Ordering::SeqCst));
     drive_until(run.as_mut(), send.call(StateRequest::Stop, ()))
@@ -939,6 +941,7 @@ async fn stop_drains_blocked_write_and_final_flush_and_retains_late_event(driver
         let mut run = pin!(fixture.worker.run(recv));
         drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
             .await
+            .unwrap()
             .unwrap();
         drive_until(run.as_mut(), fixture.io.blocked()).await;
         let mut stop = pin!(send.call(StateRequest::Stop, ()));
@@ -1005,6 +1008,7 @@ async fn blocked_hardware_keeps_executor_responsive_and_stop_drains_attempt(driv
         let mut run = pin!(fixture.worker.run(recv));
         drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
             .await
+            .unwrap()
             .unwrap();
         drive_until(run.as_mut(), gate.reached()).await;
         {
@@ -1143,7 +1147,7 @@ async fn failed_report_keeps_recovery_pending_and_retries_successfully(driver: D
 
     let deadline = fixture.worker.schedule.deadline;
     let not_before = fixture.worker.schedule.not_before;
-    fixture.worker.start().await;
+    fixture.worker.start().await.unwrap();
     fixture.worker.stop().await;
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
@@ -1365,6 +1369,7 @@ async fn changed_report_during_pre_or_post_verification_keeps_recovery_pending(
             let mut run = pin!(fixture.worker.run(recv));
             drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
                 .await
+                .unwrap()
                 .unwrap();
             if post_flush {
                 drive_until(run.as_mut(), fixture.io.blocked()).await;
@@ -1483,6 +1488,7 @@ async fn migration_during_event_flush_is_detected_without_another_event(driver: 
     let mut run = pin!(fixture.worker.run(recv));
     drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
         .await
+        .unwrap()
         .unwrap();
     drive_until(run.as_mut(), fixture.io.blocked()).await;
     fixture.hardware.identity.store(0x73, Ordering::SeqCst);
@@ -1565,7 +1571,7 @@ async fn restore_and_reset_preserve_upgrade_and_failed_flush_obligation(driver: 
     assert_eq!(fixture.worker.schedule.deadline, deadline);
     assert_eq!(fixture.worker.schedule.not_before, not_before);
     assert!(!fixture.worker.notification.pending.load(Ordering::SeqCst));
-    fixture.worker.start().await;
+    fixture.worker.start().await.unwrap();
     fixture.worker.stop().await;
     assert!(fixture.worker.schedule.force_reseal);
     assert_eq!(fixture.worker.schedule.failures, 1);
@@ -1617,6 +1623,7 @@ async fn failed_final_flush_retries_write_even_when_cached_protector_matches(
     let mut run = pin!(fixture.worker.run(recv));
     drive_until(run.as_mut(), send.call(StateRequest::Start, ()))
         .await
+        .unwrap()
         .unwrap();
     drive_until(run.as_mut(), fixture.io.blocked()).await;
     let stop = send.call(StateRequest::Stop, ());
@@ -1836,7 +1843,7 @@ async fn running_save_and_restore_fail_without_consuming_pending_work(driver: De
     let mut fixture = Fixture::new(&driver, true).await;
     fixture.worker.notification.notify();
     let saved = fixture.worker.save().await.unwrap().unwrap();
-    fixture.worker.start().await;
+    fixture.worker.start().await.unwrap();
     let before = worker_snapshot(&fixture.worker);
     assert!(fixture.worker.save().await.is_err());
     assert!(fixture.worker.restore(saved).await.is_err());
