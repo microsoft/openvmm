@@ -631,6 +631,9 @@ impl VirtioTestGuest {
             .unwrap();
         // setup config interrupt
         dev.pci_device
+            .mmio_write(bar_address1 + 16, &0u16.to_le_bytes())
+            .unwrap();
+        dev.pci_device
             .mmio_write(bar_address2, &0_u64.to_le_bytes())
             .unwrap(); // vector
         dev.pci_device
@@ -1283,6 +1286,7 @@ impl AsyncRun<TestQueueState> for TestQueueWorker {
 struct VirtioPciTestDevice {
     pci_device: VirtioPciDevice,
     test_intc: Arc<TestPciInterruptController>,
+    msi_conn: MsiConnection,
 }
 
 type TestDeviceQueueWorkFn =
@@ -1514,6 +1518,7 @@ impl VirtioPciTestDevice {
         Self {
             pci_device: dev,
             test_intc,
+            msi_conn,
         }
     }
 
@@ -2402,11 +2407,11 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 12), 0);
     // max queues and the msix vector for config changes
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 16), 1 << 16);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 16), 0x1ffff);
     // queue index, config generation and device status
     assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 0);
     // current queue size and msix vector
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x100);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0xffff0100);
     pci_test_device.write_u32(bar_address1 + 24, 0x20);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x20);
     // current queue enabled and notify offset
@@ -3373,6 +3378,429 @@ async fn verify_device_split_multi_queue_pci(driver: DefaultDriver) {
         .with_bank(1, VIRTIO_F_VERSION_1);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
+
+async fn complete_pci_msix_request(
+    guest: &mut VirtioTestGuest,
+    dev: &mut VirtioPciTestDevice,
+    completed: &mut mesh::Receiver<()>,
+) {
+    guest.add_to_avail_queue(0);
+    dev.write_u32(0x10000000000 + 0x38, 0);
+    must_recv_in_timeout(completed, Duration::from_secs(2)).await;
+    assert_eq!(guest.get_next_completed(0).unwrap().1, 123);
+    assert!(guest.get_next_completed(0).is_none());
+}
+
+#[async_test]
+async fn pci_msix_vectors_unmapped_on_reset(driver: DefaultDriver) {
+    fn assert_unmapped(dev: &mut VirtioPciDevice) {
+        let config = dev.read_u32(16);
+        assert_eq!(config as u16, 0xffff);
+        for idx in 0..config >> 16 {
+            dev.write_u32(20, idx << 16);
+            assert_eq!(dev.read_u32(24) >> 16, 0xffff);
+        }
+    }
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 3, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 3, &test_mem, None);
+    assert_unmapped(&mut dev.pci_device);
+
+    dev.pci_device.write_u32(16, 0);
+    for idx in 0..3 {
+        dev.pci_device
+            .write_u32(20, (idx << 16) | VIRTIO_ACKNOWLEDGE);
+        dev.pci_device.write_u32(24, (idx << 16) | 4);
+    }
+    dev.pci_device.write_u32(20, 0);
+    assert_unmapped(&mut dev.pci_device);
+
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.pci_device.write_u32(20, 0);
+    dev.pci_device.stop().await;
+    assert_unmapped(&mut dev.pci_device);
+
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.pci_device.reset().await;
+    assert_unmapped(&mut dev.pci_device);
+}
+
+#[async_test]
+async fn pci_live_queue_msix_mapping(driver: DefaultDriver) {
+    const COMMON: u64 = 0x10000000000;
+    const MSIX: u64 = 0x20000000000;
+    const PBA: u64 = MSIX + 64 * 16;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let (send, mut completed) = mesh::channel();
+    let mut dev = VirtioPciTestDevice::new(
+        &driver,
+        1,
+        &test_mem,
+        Some(Arc::new(move |_, queue, work| {
+            queue.complete(work, 123);
+            send.send(());
+        })),
+    );
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.test_intc.get_next_interrupt(), Some((1, 0)));
+
+    dev.write_u32(MSIX + 16 + 12, 1);
+    dev.write_u32(MSIX + 63 * 16, 63);
+    dev.write_u32(MSIX + 63 * 16 + 8, 63);
+    dev.write_u32(MSIX + 63 * 16 + 12, 1);
+
+    dev.pci_device
+        .mmio_write(COMMON + 26, &0xffffu16.to_le_bytes())
+        .unwrap();
+    assert_eq!(dev.read_u32(COMMON + 24), 0xffff0004);
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.read_u32(PBA), 0);
+    assert_eq!(dev.read_u32(PBA + 4), 0);
+
+    dev.write_u32(COMMON + 24, (63 << 16) | 1);
+    assert_eq!(dev.read_u32(COMMON + 24), (63 << 16) | 4);
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.read_u32(PBA), 0);
+    assert_eq!(dev.read_u32(PBA + 4), 1 << 31);
+    assert!(dev.test_intc.get_next_interrupt().is_none());
+    dev.write_u32(MSIX + 63 * 16 + 12, 0);
+    assert_eq!(dev.test_intc.get_next_interrupt(), Some((63, 63)));
+
+    for vector in [64u16, 0xfffe, 0xffff] {
+        dev.pci_device
+            .mmio_write(COMMON + 26, &vector.to_le_bytes())
+            .unwrap();
+        assert_eq!(dev.read_u32(COMMON + 24), 0xffff0004);
+        complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+        assert_eq!(dev.read_u32(PBA), 0);
+        assert_eq!(dev.read_u32(PBA + 4), 0);
+        assert!(dev.test_intc.get_next_interrupt().is_none());
+    }
+
+    dev.pci_device
+        .mmio_write(COMMON + 26, &0u16.to_le_bytes())
+        .unwrap();
+    assert_eq!(dev.read_u32(COMMON + 24), 4);
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.test_intc.get_next_interrupt(), Some((0, 0)));
+    dev.pci_device.stop().await;
+}
+
+async fn verify_pci_queue_msix_lifecycle(driver: DefaultDriver, vector: u16) {
+    use vmcore::save_restore::SaveRestore;
+
+    const COMMON: u64 = 0x10000000000;
+    const MSIX: u64 = 0x20000000000;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let (send, mut completed) = mesh::channel();
+    let work: TestDeviceQueueWorkFn = Arc::new(move |_, queue, work| {
+        queue.complete(work, 123);
+        send.send(());
+    });
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, Some(work.clone()));
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.write_u32(MSIX + 63 * 16, 63);
+    dev.write_u32(MSIX + 63 * 16 + 12, 0);
+    dev.pci_device
+        .mmio_write(COMMON + 26, &vector.to_le_bytes())
+        .unwrap();
+
+    dev.pci_device.stop().await;
+    dev.pci_device.start();
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    let expected = (vector != 0xffff).then_some((63, 0));
+    assert_eq!(dev.test_intc.get_next_interrupt(), expected);
+    dev.pci_device.stop().await;
+    let saved = dev.pci_device.save().unwrap();
+    assert_eq!(saved.queues[0].msix_vector, vector);
+    drop(dev);
+
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, Some(work));
+    dev.pci_device.restore(saved).unwrap();
+    assert_eq!(dev.read_u32(COMMON + 24), (u32::from(vector) << 16) | 4);
+    dev.write_u32(MSIX + 63 * 16, 63);
+    dev.write_u32(MSIX + 63 * 16 + 12, 0);
+    dev.pci_device.start();
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.test_intc.get_next_interrupt(), expected);
+
+    dev.pci_device.reset().await;
+    assert_eq!(dev.pci_device.read_u32(24) >> 16, 0xffff);
+    assert_eq!(dev.pci_device.read_u32(16) as u16, 0xffff);
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    complete_pci_msix_request(&mut guest, &mut dev, &mut completed).await;
+    assert_eq!(dev.test_intc.get_next_interrupt(), Some((1, 0)));
+    dev.pci_device.stop().await;
+}
+
+#[async_test]
+async fn pci_queue_msix_unmapped_lifecycle(driver: DefaultDriver) {
+    verify_pci_queue_msix_lifecycle(driver, 0xffff).await;
+}
+
+#[async_test]
+async fn pci_queue_msix_remapped_lifecycle(driver: DefaultDriver) {
+    verify_pci_queue_msix_lifecycle(driver, 63).await;
+}
+
+#[async_test]
+async fn pci_queue_msix_stable_event(driver: DefaultDriver) {
+    use vmcore::irqfd::IrqFd;
+    use vmcore::irqfd::IrqFdRoute;
+    use vmcore::save_restore::SaveRestore;
+
+    struct Route {
+        event: Event,
+        mapping: Arc<Mutex<Option<(u64, u32)>>>,
+    }
+
+    impl IrqFdRoute for Route {
+        fn event(&self) -> &Event {
+            &self.event
+        }
+
+        fn enable(&self, address: u64, data: u32, _devid: Option<u32>) {
+            *self.mapping.lock() = Some((address, data));
+        }
+
+        fn disable(&self) {
+            *self.mapping.lock() = None;
+        }
+    }
+
+    #[derive(Default)]
+    struct Backend {
+        mapping: Arc<Mutex<Option<(u64, u32)>>>,
+        allocations: AtomicUsize,
+    }
+
+    impl IrqFd for Backend {
+        fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+            self.allocations.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(Route {
+                event: Event::new(),
+                mapping: self.mapping.clone(),
+            }))
+        }
+    }
+
+    const COMMON: u64 = 0x10000000000;
+    const MSIX: u64 = 0x20000000000;
+    const PBA: u64 = MSIX + 64 * 16;
+
+    let backend = Arc::new(Backend::default());
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    dev.msi_conn.connect_irqfd(backend.clone());
+    let interrupt = dev.pci_device.queue_interrupt(0);
+    let (event, proxy) = interrupt.event_or_proxy(&driver).unwrap();
+    assert!(proxy.is_none());
+    assert_eq!(*backend.mapping.lock(), None);
+
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    assert_eq!(*backend.mapping.lock(), Some((1, 0)));
+    event.signal();
+    assert!(
+        dev.pci_device
+            .queue_interrupt(0)
+            .event()
+            .unwrap()
+            .try_wait()
+    );
+
+    dev.pci_device
+        .mmio_write(COMMON + 26, &0xffffu16.to_le_bytes())
+        .unwrap();
+    assert_eq!(*backend.mapping.lock(), None);
+    event.signal();
+    assert_eq!(dev.read_u32(PBA), 0);
+    assert_eq!(dev.read_u32(PBA + 4), 0);
+    dev.write_u32(MSIX + 63 * 16, 63);
+    dev.write_u32(MSIX + 63 * 16 + 8, 63);
+    dev.write_u32(MSIX + 63 * 16 + 12, 0);
+    dev.pci_device
+        .mmio_write(COMMON + 26, &63u16.to_le_bytes())
+        .unwrap();
+    assert_eq!(*backend.mapping.lock(), Some((63, 63)));
+    assert!(!event.try_wait());
+
+    dev.write_u32(MSIX + 63 * 16 + 12, 1);
+    assert_eq!(*backend.mapping.lock(), None);
+    event.signal();
+    assert_eq!(dev.read_u32(PBA + 4), 1 << 31);
+    dev.write_u32(MSIX + 63 * 16 + 12, 0);
+    assert_eq!(*backend.mapping.lock(), Some((63, 63)));
+    assert_eq!(dev.test_intc.get_next_interrupt(), Some((63, 63)));
+    dev.write_u32(MSIX + 63 * 16, 64);
+    dev.write_u32(MSIX + 63 * 16 + 8, 64);
+    assert_eq!(*backend.mapping.lock(), Some((64, 64)));
+
+    dev.pci_device
+        .pci_cfg_write(0x40, ByteEnabledDwordWrite::with_all_bytes_enabled(0))
+        .unwrap();
+    assert_eq!(*backend.mapping.lock(), None);
+    dev.pci_device
+        .pci_cfg_write(
+            0x40,
+            ByteEnabledDwordWrite::with_all_bytes_enabled(0x80000000),
+        )
+        .unwrap();
+    assert_eq!(*backend.mapping.lock(), Some((64, 64)));
+
+    dev.pci_device.stop().await;
+    let saved = dev.pci_device.save().unwrap();
+    dev.pci_device
+        .mmio_write(COMMON + 26, &1u16.to_le_bytes())
+        .unwrap();
+    assert_eq!(*backend.mapping.lock(), Some((1, 0)));
+    dev.pci_device.restore(saved).unwrap();
+    assert_eq!(*backend.mapping.lock(), Some((64, 64)));
+    dev.pci_device.start();
+    yield_now().await;
+    let resumed = dev.pci_device.queue_interrupt(0);
+    let (resumed_event, proxy) = resumed.event_or_proxy(&driver).unwrap();
+    assert!(proxy.is_none());
+    event.signal();
+    assert!(resumed_event.try_wait());
+    assert_eq!(backend.allocations.load(Ordering::Relaxed), 1);
+
+    dev.pci_device.reset().await;
+    assert_eq!(*backend.mapping.lock(), None);
+    event.signal();
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    assert_eq!(*backend.mapping.lock(), Some((1, 0)));
+    assert!(!event.try_wait());
+    assert!(dev.test_intc.get_next_interrupt().is_none());
+    dev.pci_device.stop().await;
+}
+
+#[async_test]
+async fn pci_queue_msix_proxy(driver: DefaultDriver) {
+    async fn finish(dev: &mut VirtioPciTestDevice, result: IoResult) {
+        match result {
+            IoResult::Defer(mut token) => poll_fn(|cx| {
+                dev.pci_device.poll_device(cx);
+                token.poll_write(cx)
+            })
+            .await
+            .unwrap(),
+            result => result.unwrap(),
+        }
+    }
+
+    const COMMON: u64 = 0x10000000000;
+    const MSIX: u64 = 0x20000000000;
+    const PBA: u64 = MSIX + 64 * 16;
+
+    for host_reset in [false, true] {
+        let mem = VirtioTestMemoryAccess::new();
+        let guest = VirtioTestGuest::new_split(&driver, &mem, 1, 4, true);
+        let mut dev = VirtioPciTestDevice::new(&driver, 1, &mem, None);
+        guest
+            .setup_pci_device(&mut dev, guest.queue_features())
+            .await;
+        let cap = find_pci_cfg_cap_offset(&mut dev.pci_device);
+        dev.pci_device
+            .pci_cfg_write(cap + 8, ByteEnabledDwordWrite::with_all_bytes_enabled(24))
+            .unwrap();
+        dev.pci_device
+            .pci_cfg_write(cap + 12, ByteEnabledDwordWrite::with_all_bytes_enabled(4))
+            .unwrap();
+        dev.write_u32(MSIX + 16 + 12, 1);
+        dev.write_u32(MSIX + 63 * 16, 63);
+        dev.write_u32(MSIX + 63 * 16 + 8, 63);
+        let interrupt = dev.pci_device.queue_interrupt(0);
+        let proxies = [0, 1].map(|_| interrupt.event_or_proxy(&driver).unwrap());
+        assert!(proxies.iter().all(|(_, proxy)| proxy.is_some()));
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(1))
+            .await;
+
+        for (event, _) in &proxies {
+            event.signal();
+        }
+        let result = dev
+            .pci_device
+            .mmio_write(COMMON + 24, &0xffff0001u32.to_le_bytes());
+        finish(&mut dev, result).await;
+        assert_eq!(dev.read_u32(COMMON + 24), 0xffff0004);
+        assert_eq!(dev.read_u32(PBA), 2);
+        assert!(proxies.iter().all(|(event, _)| !event.try_wait()));
+
+        yield_now().await;
+        for (event, _) in &proxies {
+            event.signal();
+        }
+        let result = dev.pci_device.pci_cfg_write(
+            cap + 16,
+            ByteEnabledDwordWrite::with_all_bytes_enabled((63 << 16) | 1),
+        );
+        finish(&mut dev, result).await;
+        assert_eq!(dev.read_u32(COMMON + 24), (63 << 16) | 4);
+        assert_eq!(dev.read_u32(PBA + 4), 0);
+        assert!(proxies.iter().all(|(event, _)| !event.try_wait()));
+
+        proxies[0].0.signal();
+        for _ in 0..100 {
+            if dev.read_u32(PBA + 4) != 0 {
+                break;
+            }
+            PolledTimer::new(&driver)
+                .sleep(Duration::from_millis(1))
+                .await;
+        }
+        assert_eq!(dev.read_u32(PBA + 4), 1 << 31);
+        dev.write_u32(MSIX + 63 * 16 + 12, 0);
+        assert_eq!(dev.test_intc.get_next_interrupt(), Some((63, 63)));
+
+        proxies[0].0.signal();
+        let mut data = [0; 8];
+        data[4..].copy_from_slice(&0xffff0001u32.to_le_bytes());
+        let mut result = if host_reset {
+            dev.pci_device.mmio_write(COMMON + 24, &data[4..])
+        } else {
+            dev.pci_device.mmio_write(COMMON + 20, &data)
+        };
+        if host_reset {
+            dev.pci_device.reset().await;
+        } else if let IoResult::Defer(token) = &mut result {
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            dev.pci_device.poll_device(&mut cx);
+            if dev.pci_device.read_u32(20) & VIRTIO_DRIVER_OK != 0 {
+                assert!(token.poll_write(&mut cx).is_pending());
+            }
+        }
+        finish(&mut dev, result).await;
+        assert_eq!(dev.pci_device.read_u32(24) >> 16, 0xffff);
+        assert_eq!(dev.pci_device.read_u32(20) & 0xff, 0);
+        assert_eq!(dev.test_intc.get_next_interrupt(), Some((63, 63)));
+        assert!(dev.test_intc.get_next_interrupt().is_none());
+    }
+}
+
 #[async_test]
 async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
     let num_queues = 5;

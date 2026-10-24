@@ -17,6 +17,11 @@ use pal_event::Event;
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::Weak;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
+use vmcore::interrupt::EventProxyWait;
 use vmcore::interrupt::Interrupt;
 use vmcore::interrupt::InterruptTarget;
 
@@ -89,18 +94,14 @@ impl PciCapability for MsixCapability {
                     if was_enabled && !new_enabled {
                         for entry in &mut state.vectors {
                             if entry.is_enabled(true) {
-                                entry.msi.disable();
+                                entry.update_interrupt(false);
                             }
                         }
                     } else if new_enabled && !was_enabled {
                         for entry in &mut state.vectors {
                             if entry.is_enabled(true) {
-                                entry.msi.enable(
-                                    entry.state.address,
-                                    entry.state.data,
-                                    entry.state.is_pending,
-                                );
-                                entry.state.is_pending = false;
+                                entry.state.is_pending |= entry.drain_pending();
+                                entry.update_interrupt(true);
                             }
                         }
                     }
@@ -120,7 +121,8 @@ impl PciCapability for MsixCapability {
         let mut state = self.state.lock();
         state.enabled = false;
         for vector in &mut state.vectors {
-            vector.msi.disable();
+            vector.update_interrupt(false);
+            vector.drain_pending();
             vector.state = EntryState::new();
         }
     }
@@ -159,6 +161,14 @@ impl Debug for MsiInterruptInner {
 }
 
 impl MsiInterruptInner {
+    fn deliver(&mut self) {
+        if self.enabled {
+            self.signal_msi();
+        } else {
+            self.pending = true;
+        }
+    }
+
     fn signal_msi(&self) {
         self.target.signal_msi(self.address, self.data);
     }
@@ -219,6 +229,10 @@ impl MsiInterrupt {
     pub fn interrupt(&self) -> Interrupt {
         Interrupt::from_target(MsiInterruptTarget(self.0.clone()))
     }
+
+    fn deliver(&self) {
+        self.0.lock().deliver();
+    }
 }
 
 /// [`InterruptTarget`] for MSI-X vectors that lazily allocates an irqfd
@@ -227,12 +241,7 @@ struct MsiInterruptTarget(Arc<Mutex<MsiInterruptInner>>);
 
 impl InterruptTarget for MsiInterruptTarget {
     fn deliver(&self) {
-        let mut state = self.0.lock();
-        if state.enabled {
-            state.signal_msi();
-        } else {
-            state.pending = true;
-        }
+        self.0.lock().deliver();
     }
 
     fn event(&self) -> Option<Arc<Event>> {
@@ -259,9 +268,165 @@ impl InterruptTarget for MsiInterruptTarget {
     }
 }
 
+/// An MSI-X interrupt source with a stable event and a changeable vector mapping.
+#[derive(Clone)]
+pub struct MsixInterrupt {
+    state: Arc<Mutex<MsixState>>,
+    source: Arc<Mutex<MsixInterruptSource>>,
+    target: MsiTarget,
+}
+
+struct MsixInterruptSource {
+    vector: Option<u16>,
+    route: Option<MsiRoute>,
+    proxies: Vec<Weak<EventProxyWait>>,
+    #[expect(clippy::option_option)] // Some(None) requests unmapping.
+    next_vector: Option<Option<u16>>,
+}
+
+impl MsixInterruptSource {
+    fn deliver(&self, state: &MsixState) {
+        if let Some(index) = self.vector {
+            state.vectors[usize::from(index)].msi.deliver();
+        }
+    }
+}
+
+impl MsixInterrupt {
+    /// Maps this source to a vector, or unmaps it with `None`.
+    ///
+    /// An invalid vector unmaps the source and returns `false`.
+    /// Finish any outstanding proxy cancellation with [`Self::poll_mapping`].
+    pub fn set_vector(&self, vector: Option<u16>) -> bool {
+        let state = self.state.lock();
+        let mut source = self.source.lock();
+        let valid = vector.is_none_or(|index| usize::from(index) < state.vectors.len());
+        let vector = vector.filter(|_| valid);
+        if source.vector == vector && source.next_vector.is_none() {
+            return valid;
+        }
+
+        let pending = source.next_vector.replace(vector).is_some();
+        drop(source);
+        drop(state);
+        // Do not replace the task waker of an existing cancellation.
+        if !pending {
+            let _ = self.poll_mapping(&mut Context::from_waker(Waker::noop()));
+        }
+        valid
+    }
+
+    /// Finishes cancelling proxy waits before changing the route.
+    pub fn poll_mapping(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut state = self.state.lock();
+        let mut source = self.source.lock();
+        let Some(vector) = source.next_vector else {
+            return Poll::Ready(());
+        };
+        let proxies: Vec<_> = source.proxies.iter().filter_map(Weak::upgrade).collect();
+        for proxy in &proxies {
+            if std::task::ready!(proxy.poll_cancel_wait(cx)) {
+                source.deliver(&state);
+            }
+        }
+        if let Some(route) = &source.route {
+            route.disable();
+            if route.consume_pending() {
+                source.deliver(&state);
+            }
+        }
+        if let Some(index) = source.vector {
+            let weak = Arc::downgrade(&self.source);
+            state.vectors[usize::from(index)]
+                .sources
+                .retain(|source| !source.ptr_eq(&weak) && source.strong_count() != 0);
+        }
+        source.vector = vector;
+        source.next_vector = None;
+        if let Some(index) = vector {
+            let enabled = state.enabled;
+            let entry = &mut state.vectors[usize::from(index)];
+            entry.sources.push(Arc::downgrade(&self.source));
+            if let Some(route) = &source.route {
+                if entry.is_enabled(enabled) {
+                    route.enable(entry.state.address, entry.state.data);
+                }
+            }
+        }
+        drop(source);
+        drop(state);
+        for proxy in proxies {
+            proxy.wake();
+        }
+        Poll::Ready(())
+    }
+
+    /// Returns whether mapping is waiting for proxy cancellation.
+    pub fn mapping_pending(&self) -> bool {
+        self.source.lock().next_vector.is_some()
+    }
+
+    /// Returns an interrupt that follows this source through mapping changes.
+    pub fn interrupt(&self) -> Interrupt {
+        Interrupt::from_target(self.clone())
+    }
+}
+
+impl InterruptTarget for MsixInterrupt {
+    fn deliver(&self) {
+        let state = self.state.lock();
+        let source = self.source.lock();
+        source.deliver(&state);
+    }
+
+    fn event(&self) -> Option<Arc<Event>> {
+        let state = self.state.lock();
+        let mut source = self.source.lock();
+        if let Some(route) = &source.route {
+            return Some(Arc::new(route.event().clone()));
+        }
+        let route = match self.target.new_route() {
+            Some(Ok(route)) => route,
+            Some(Err(error)) => {
+                tracelimit::warn_ratelimited!(?error, "failed to allocate MSI-X source route");
+                return None;
+            }
+            None => return None,
+        };
+        route.disable();
+        if let Some(index) = source.vector {
+            let entry = &state.vectors[usize::from(index)];
+            if entry.is_enabled(state.enabled) {
+                route.enable(entry.state.address, entry.state.data);
+            }
+        }
+        let event = Arc::new(route.event().clone());
+        source.route = Some(route);
+        Some(event)
+    }
+
+    fn register_event_proxy(&self, wait: Weak<EventProxyWait>) {
+        let mut source = self.source.lock();
+        source.proxies.retain(|p| p.strong_count() != 0);
+        source.proxies.push(wait);
+    }
+
+    fn poll_event_proxy(&self, cx: &mut Context<'_>, wait: &EventProxyWait) -> Poll<()> {
+        let state = self.state.lock();
+        let source = self.source.lock();
+        if source.next_vector.is_some() {
+            return Poll::Pending;
+        }
+        std::task::ready!(wait.poll_wait(cx));
+        source.deliver(&state);
+        Poll::Ready(())
+    }
+}
+
 struct MsixMessageTableEntry {
     msi: MsiInterrupt,
     state: EntryState,
+    sources: Vec<Weak<Mutex<MsixInterruptSource>>>,
 }
 
 impl InspectMut for MsixMessageTableEntry {
@@ -302,7 +467,46 @@ impl MsixMessageTableEntry {
         Self {
             msi,
             state: EntryState::new(),
+            sources: Vec::new(),
         }
+    }
+
+    fn update_interrupt(&mut self, global_enabled: bool) {
+        let enabled = self.is_enabled(global_enabled);
+        if enabled {
+            self.msi
+                .enable(self.state.address, self.state.data, self.state.is_pending);
+            self.state.is_pending = false;
+        } else {
+            self.msi.disable();
+        }
+        self.sources.retain(|source| {
+            let Some(source) = source.upgrade() else {
+                return false;
+            };
+            if let Some(route) = &source.lock().route {
+                if enabled {
+                    route.enable(self.state.address, self.state.data);
+                } else {
+                    route.disable();
+                }
+            }
+            true
+        });
+    }
+
+    fn drain_pending(&mut self) -> bool {
+        let mut pending = self.msi.drain_pending();
+        self.sources.retain(|source| {
+            let Some(source) = source.upgrade() else {
+                return false;
+            };
+            if let Some(route) = &source.lock().route {
+                pending |= route.consume_pending();
+            }
+            true
+        });
+        pending
     }
 
     fn read_u32(&self, offset: u64) -> u32 {
@@ -335,7 +539,7 @@ impl MsixMessageTableEntry {
 
     fn check_is_pending(&mut self, global_enabled: bool) -> bool {
         if !self.state.is_pending && !self.is_enabled(global_enabled) {
-            self.state.is_pending = self.msi.drain_pending();
+            self.state.is_pending = self.drain_pending();
         }
         self.state.is_pending
     }
@@ -362,6 +566,7 @@ fn inspect_entries(entries: &mut [MsixMessageTableEntry]) -> impl '_ + InspectMu
 #[derive(Clone)]
 pub struct MsixEmulator {
     state: Arc<Mutex<MsixState>>,
+    target: MsiTarget,
     // PBA offsets, per spec, are no larger than 32 bits.
     pending_bits_offset: u32,
     pending_bits_dword_count: u16,
@@ -393,6 +598,7 @@ impl MsixEmulator {
         (
             Self {
                 state: state.clone(),
+                target: msi_target.clone(),
                 pending_bits_offset,
                 pending_bits_dword_count: count.div_ceil(32),
             },
@@ -450,22 +656,10 @@ impl MsixEmulator {
                 entry.write_u32(offset & 0xf, val);
                 let is_enabled = entry.is_enabled(global);
                 if is_enabled && !was_enabled {
-                    // Vector just unmasked.
-                    entry.msi.enable(
-                        entry.state.address,
-                        entry.state.data,
-                        entry.state.is_pending,
-                    );
-                    entry.state.is_pending = false;
-                } else if was_enabled && !is_enabled {
-                    // Vector just masked.
-                    entry.msi.disable();
-                } else if is_enabled {
-                    // Still enabled. addr/data may have changed — enable()
-                    // will update the route if present.
-                    entry
-                        .msi
-                        .enable(entry.state.address, entry.state.data, false);
+                    entry.state.is_pending |= entry.drain_pending();
+                }
+                if was_enabled || is_enabled {
+                    entry.update_interrupt(global);
                 }
                 return;
             }
@@ -488,6 +682,20 @@ impl MsixEmulator {
                 .msi
                 .interrupt(),
         )
+    }
+
+    /// Creates an unmapped interrupt source with independently routed event delivery.
+    pub fn new_interrupt(&self) -> MsixInterrupt {
+        MsixInterrupt {
+            state: self.state.clone(),
+            source: Arc::new(Mutex::new(MsixInterruptSource {
+                vector: None,
+                route: None,
+                proxies: Vec::new(),
+                next_vector: None,
+            })),
+            target: self.target.clone(),
+        }
     }
 
     #[cfg(test)]
@@ -559,14 +767,16 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let state = self.state.lock();
+            let mut state = self.state.lock();
+            let enabled = state.enabled;
             let saved_state = state::SavedState {
                 enabled: state.enabled,
                 vectors: {
                     state
                         .vectors
-                        .iter()
+                        .iter_mut()
                         .map(|vec| {
+                            vec.check_is_pending(enabled);
                             let EntryState {
                                 address,
                                 data,
@@ -601,12 +811,15 @@ mod save_restore {
             }
 
             for (new_vec, vec) in vectors.into_iter().zip(state.vectors.iter_mut()) {
+                vec.update_interrupt(false);
+                vec.drain_pending();
                 vec.state = EntryState {
                     address: new_vec.address,
                     data: new_vec.data,
                     control: new_vec.control,
                     is_pending: new_vec.is_pending,
-                }
+                };
+                vec.update_interrupt(enabled);
             }
 
             Ok(())
@@ -621,6 +834,7 @@ mod tests {
     use crate::test_helpers::TestPciInterruptController;
     use crate::test_helpers::read_cap_u32;
     use crate::test_helpers::write_cap_u32;
+    use test_with_tracing::test;
 
     #[test]
     fn msix_check() {
@@ -902,5 +1116,202 @@ mod tests {
             address: 0xFEE00000,
             data: 0x99
         }));
+    }
+
+    #[test]
+    fn mapped_source_route_follows_vector() {
+        let (irqfd, calls) = mock_irqfd(1);
+        let conn = MsiConnection::new();
+        conn.connect_irqfd(irqfd);
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &conn.target());
+        let source = msix.new_interrupt();
+        let interrupt = source.interrupt();
+        let event = interrupt.event().unwrap().clone();
+        assert_eq!(*calls[0].lock(), [RouteCall::ClearMsi]);
+
+        for index in 0..2 {
+            msix.write_u32(index * 16, 0xfee00000);
+            msix.write_u32(index * 16 + 8, 0x40 + index as u32);
+            msix.write_u32(index * 16 + 12, 0);
+        }
+        write_cap_u32(&mut cap, 0, 0x80000000);
+
+        event.signal();
+        assert!(source.set_vector(Some(0)));
+        assert!(!event.try_wait());
+        assert_eq!(
+            calls[0].lock().last(),
+            Some(&RouteCall::SetMsi {
+                address: 0xfee00000,
+                data: 0x40,
+            })
+        );
+        assert!(source.set_vector(Some(1)));
+        assert_eq!(
+            calls[0].lock().last(),
+            Some(&RouteCall::SetMsi {
+                address: 0xfee00000,
+                data: 0x41,
+            })
+        );
+
+        calls[0].lock().clear();
+        msix.write_u32(8, 0x99);
+        assert!(calls[0].lock().is_empty());
+        msix.write_u32(24, 0x42);
+        assert_eq!(
+            calls[0].lock().last(),
+            Some(&RouteCall::SetMsi {
+                address: 0xfee00000,
+                data: 0x42,
+            })
+        );
+        msix.write_u32(28, 1);
+        assert_eq!(calls[0].lock().last(), Some(&RouteCall::ClearMsi));
+        msix.write_u32(28, 0);
+        assert!(matches!(
+            calls[0].lock().last(),
+            Some(RouteCall::SetMsi { data: 0x42, .. })
+        ));
+        write_cap_u32(&mut cap, 0, 0);
+        assert_eq!(calls[0].lock().last(), Some(&RouteCall::ClearMsi));
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        assert!(matches!(
+            calls[0].lock().last(),
+            Some(RouteCall::SetMsi { data: 0x42, .. })
+        ));
+
+        event.signal();
+        assert!(source.interrupt().event().unwrap().try_wait());
+        assert!(source.set_vector(None));
+        assert_eq!(calls[0].lock().last(), Some(&RouteCall::ClearMsi));
+    }
+
+    #[test]
+    fn mapped_source_pending_stays_with_old_vector() {
+        let (irqfd, _) = mock_irqfd(1);
+        let conn = MsiConnection::new();
+        conn.connect_irqfd(irqfd);
+        let (msix, mut cap) = MsixEmulator::new(2, 2, &conn.target());
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        let source = msix.new_interrupt();
+        let event = source.interrupt().event().unwrap().clone();
+
+        assert!(source.set_vector(Some(0)));
+        event.signal();
+        assert!(source.set_vector(Some(1)));
+        assert_eq!(msix.read_u32(32), 1);
+        event.signal();
+        assert!(source.set_vector(None));
+        assert_eq!(msix.read_u32(32), 3);
+
+        msix.clear_pending_bit(0);
+        msix.clear_pending_bit(1);
+        event.signal();
+        source.interrupt().deliver();
+        assert_eq!(msix.read_u32(32), 0);
+        assert!(source.set_vector(Some(0)));
+        assert!(!event.try_wait());
+        assert_eq!(msix.read_u32(32), 0);
+
+        assert!(!source.set_vector(Some(2)));
+        event.signal();
+        source.interrupt().deliver();
+        assert_eq!(msix.read_u32(32), 0);
+        assert!(source.set_vector(Some(1)));
+        assert!(!event.try_wait());
+    }
+
+    #[test]
+    fn mapped_sources_share_vector() {
+        for read_pba in [false, true] {
+            for global_unmask in [false, true] {
+                check_mapped_sources_share_vector(read_pba, global_unmask);
+            }
+        }
+    }
+
+    fn check_mapped_sources_share_vector(read_pba: bool, global_unmask: bool) {
+        let (irqfd, calls) = mock_irqfd(2);
+        let conn = MsiConnection::new();
+        conn.connect_irqfd(irqfd);
+        let intc = TestPciInterruptController::new();
+        conn.connect(intc.signal_msi());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &conn.target());
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        let sources = [msix.new_interrupt(), msix.new_interrupt()];
+        for source in &sources {
+            assert!(source.set_vector(Some(0)));
+            source.interrupt().event().unwrap().signal();
+        }
+        if read_pba {
+            assert_eq!(msix.read_u32(32), 1);
+            for source in &sources {
+                source.interrupt().event().unwrap().signal();
+            }
+        }
+        msix.write_u32(8, 0x40);
+        if global_unmask {
+            write_cap_u32(&mut cap, 0, 0);
+            msix.write_u32(12, 0);
+            write_cap_u32(&mut cap, 0, 0x80000000);
+        } else {
+            msix.write_u32(12, 0);
+        }
+        assert_eq!(intc.get_next_interrupt(), Some((0, 0x40)));
+        assert!(intc.get_next_interrupt().is_none());
+        for (source, log) in sources.iter().zip(&calls) {
+            assert!(!source.interrupt().event().unwrap().try_wait());
+            assert!(matches!(
+                log.lock().last(),
+                Some(RouteCall::SetMsi { data: 0x40, .. })
+            ));
+        }
+
+        sources[1].set_vector(Some(1));
+        calls[1].lock().clear();
+        msix.write_u32(8, 0x41);
+        assert!(matches!(
+            calls[0].lock().last(),
+            Some(RouteCall::SetMsi { data: 0x41, .. })
+        ));
+        assert!(calls[1].lock().is_empty());
+        sources[1].interrupt().event().unwrap().signal();
+        assert_eq!(msix.read_u32(32), 2);
+    }
+
+    #[test]
+    fn mapped_source_save_restore_pending() {
+        let (irqfd, calls) = mock_irqfd(1);
+        let conn = MsiConnection::new();
+        conn.connect_irqfd(irqfd);
+        let intc = TestPciInterruptController::new();
+        conn.connect(intc.signal_msi());
+        let (mut msix, mut cap) = MsixEmulator::new(2, 2, &conn.target());
+        write_cap_u32(&mut cap, 0, 0x80000000);
+        msix.write_u32(0, 0xfee00000);
+        msix.write_u32(8, 0x40);
+        let source = msix.new_interrupt();
+        source.set_vector(Some(0));
+        let event = source.interrupt().event().unwrap().clone();
+        event.signal();
+
+        let saved = vmcore::save_restore::ProtobufSaveRestore::save(&mut cap).unwrap();
+        cap.reset();
+        assert_eq!(msix.read_u32(32), 0);
+        assert!(!event.try_wait());
+        assert_eq!(calls[0].lock().last(), Some(&RouteCall::ClearMsi));
+        vmcore::save_restore::ProtobufSaveRestore::restore(&mut cap, saved).unwrap();
+        assert_eq!(msix.read_u32(32), 1);
+        msix.write_u32(12, 0);
+        assert_eq!(intc.get_next_interrupt(), Some((0xfee00000, 0x40)));
+        assert!(intc.get_next_interrupt().is_none());
+        assert_eq!(
+            calls[0].lock().last(),
+            Some(&RouteCall::SetMsi {
+                address: 0xfee00000,
+                data: 0x40,
+            })
+        );
     }
 }
