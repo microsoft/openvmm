@@ -13,6 +13,30 @@ use std::sync::Arc;
 // Common trait for fids (files and xattrs)
 // Default implementation is provided for most functions since not all are needed by all fid types.
 pub trait Fid: Send + Sync {
+    fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn fsync(&self, _data_only: bool) -> lx::Result<()> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn symlink(&self, _name: &lx::LxStr, _target: &lx::LxStr, _gid: u32) -> lx::Result<Qid> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn read_link(&self) -> lx::Result<lx::LxString> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn file_path(&self) -> lx::Result<(Arc<LxVolume>, PathBuf)> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn link(&self, _source: &dyn Fid, _name: &lx::LxStr) -> lx::Result<()> {
+        Err(lx::Error::EINVAL)
+    }
+
     fn get_attr(&self) -> lx::Result<(Qid, lx::Stat)> {
         Err(lx::Error::EINVAL)
     }
@@ -262,6 +286,51 @@ impl File {
 }
 
 impl Fid for File {
+    fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        let state = self.state.read();
+        state.root.stat_fs(&state.path)
+    }
+
+    fn fsync(&self, data_only: bool) -> lx::Result<()> {
+        let state = self.state.read();
+        state
+            .file
+            .as_ref()
+            .ok_or(lx::Error::EBADF)?
+            .fsync(data_only)
+    }
+
+    fn symlink(&self, name: &lx::LxStr, target: &lx::LxStr, gid: u32) -> lx::Result<Qid> {
+        let state = self.state.read();
+        let path = state.child_path(name)?;
+        let stat = state.root.symlink_stat(
+            path,
+            target,
+            LxCreateOptions::new(lx::S_IFLNK | 0o777, self.uid, gid),
+        )?;
+        Ok(FileState::stat_to_qid(&stat))
+    }
+
+    fn read_link(&self) -> lx::Result<lx::LxString> {
+        let state = self.state.read();
+        state.root.read_link(&state.path)
+    }
+
+    fn file_path(&self) -> lx::Result<(Arc<LxVolume>, PathBuf)> {
+        let state = self.state.read();
+        Ok((Arc::clone(&state.root), state.path.clone()))
+    }
+
+    fn link(&self, source: &dyn Fid, name: &lx::LxStr) -> lx::Result<()> {
+        // Snapshot before locking the destination, which may be the same fid.
+        let (root, path) = source.file_path()?;
+        let state = self.state.read();
+        if !Arc::ptr_eq(&root, &state.root) {
+            return Err(lx::Error::EXDEV);
+        }
+        state.root.link(path, state.child_path(name)?)
+    }
+
     // Get the file's attributes.
     fn get_attr(&self) -> lx::Result<(Qid, lx::Stat)> {
         self.state.read().get_attributes()
