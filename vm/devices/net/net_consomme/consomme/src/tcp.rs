@@ -61,6 +61,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -725,6 +726,8 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 struct TcpListener {
     #[inspect(skip)]
     socket: PolledSocket<Socket>,
+    #[inspect(skip)]
+    _driver: Option<Arc<dyn Driver>>,
     host_port: u16,
 }
 
@@ -1155,7 +1158,9 @@ impl<T: Client> Access<'_, T> {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
-                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
+                let driver_keepalive = self.client.driver_keepalive();
+                let listener =
+                    TcpListener::from_socket(self.client.driver(), driver_keepalive, socket)?;
                 e.insert(listener);
             }
         };
@@ -2983,7 +2988,11 @@ impl TcpListener {
     ///
     /// The socket must already be bound to an address. This method will call
     /// `listen` on it.
-    pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
+    pub fn from_socket(
+        driver: &dyn Driver,
+        driver_keepalive: Option<Arc<dyn Driver>>,
+        socket: Socket,
+    ) -> Result<Self, BindError> {
         let Some(host_port) = socket
             .local_addr()
             .map_err(BindError::Io)?
@@ -3003,7 +3012,11 @@ impl TcpListener {
             );
             return Err(BindError::Io(err));
         }
-        Ok(Self { socket, host_port })
+        Ok(Self {
+            socket,
+            _driver: driver_keepalive,
+            host_port,
+        })
     }
 
     fn poll_listener(

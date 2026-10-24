@@ -67,6 +67,7 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
+use std::sync::Arc;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -520,6 +521,14 @@ pub trait Client {
     /// TODO: generalize connection creation to allow pluggable model (not just
     /// OS sockets) and remove this.
     fn driver(&self) -> &dyn Driver;
+
+    /// Returns a strong reference that keeps the driver's executor alive.
+    ///
+    /// Long-lived IO registrations that cannot be safely moved between drivers
+    /// retain this reference for their lifetime.
+    fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
+        None
+    }
 
     /// Transmits a packet to the client.
     ///
