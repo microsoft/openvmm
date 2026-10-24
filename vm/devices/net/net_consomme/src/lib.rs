@@ -892,6 +892,7 @@ impl consomme::Client for Client<'_> {
                     } else {
                         L4Protocol::Unknown
                     },
+                    offload: net_backend::RxOffload::default(),
                     vlan: None,
                 },
                 segments,

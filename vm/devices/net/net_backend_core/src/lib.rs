@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 use bitfield_struct::bitfield;
+use core::mem::size_of;
 
 pub const ETHERNET_HEADER_LEN: u32 = 14;
 pub const ETHERNET_VLAN_HEADER_LEN: u32 = 18;
@@ -58,6 +59,8 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// Receive checksum or segmentation offload metadata.
+    pub offload: RxOffload,
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
     /// is populated. Only applies when traffic is being received over an L2 connection,
     /// so L3-only or above traffic will not use this option.
@@ -72,9 +75,132 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            offload: RxOffload::default(),
             vlan: None,
         }
     }
+}
+
+/// Receive checksum or segmentation offload metadata.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct RxOffload {
+    value0: u16,
+    value1: u16,
+    value2: u16,
+    kind: RxOffloadKind,
+}
+
+const _: () = assert!(size_of::<RxOffload>() == 8);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(u8)]
+enum RxOffloadKind {
+    #[default]
+    None,
+    Checksum,
+    TcpV4,
+    TcpV4Checksum,
+    TcpV6,
+    TcpV6Checksum,
+}
+
+impl RxOffload {
+    pub const fn checksum(start: u16, offset: u16) -> Self {
+        Self {
+            value0: start,
+            value1: offset,
+            value2: 0,
+            kind: RxOffloadKind::Checksum,
+        }
+    }
+
+    pub const fn tcp_gso(
+        protocol: RxGsoProtocol,
+        header_len: u16,
+        max_segment_size: u16,
+        checksum_start: Option<u16>,
+    ) -> Self {
+        let (kind, checksum_start) = match (protocol, checksum_start) {
+            (RxGsoProtocol::TcpV4, Some(start)) => (RxOffloadKind::TcpV4Checksum, start),
+            (RxGsoProtocol::TcpV4, None) => (RxOffloadKind::TcpV4, 0),
+            (RxGsoProtocol::TcpV6, Some(start)) => (RxOffloadKind::TcpV6Checksum, start),
+            (RxGsoProtocol::TcpV6, None) => (RxOffloadKind::TcpV6, 0),
+        };
+        Self {
+            value0: header_len,
+            value1: max_segment_size,
+            value2: checksum_start,
+            kind,
+        }
+    }
+
+    pub const fn checksum_metadata(self) -> Option<RxChecksumOffload> {
+        match self.kind {
+            RxOffloadKind::Checksum => Some(RxChecksumOffload {
+                start: self.value0,
+                offset: self.value1,
+            }),
+            RxOffloadKind::TcpV4Checksum | RxOffloadKind::TcpV6Checksum => {
+                Some(RxChecksumOffload {
+                    start: self.value2,
+                    offset: 16,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub const fn gso(self) -> Option<RxGso> {
+        let protocol = match self.kind {
+            RxOffloadKind::TcpV4 | RxOffloadKind::TcpV4Checksum => RxGsoProtocol::TcpV4,
+            RxOffloadKind::TcpV6 | RxOffloadKind::TcpV6Checksum => RxGsoProtocol::TcpV6,
+            _ => return None,
+        };
+        Some(RxGso {
+            protocol,
+            header_len: self.value0,
+            max_segment_size: self.value1,
+        })
+    }
+}
+
+/// Partial-checksum information for a received packet.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct RxChecksumOffload {
+    pub start: u16,
+    pub offset: u16,
+}
+
+/// Segmentation information for a coalesced receive packet.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct RxGso {
+    pub protocol: RxGsoProtocol,
+    pub header_len: u16,
+    pub max_segment_size: u16,
+}
+
+/// Receive segmentation protocol.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RxGsoProtocol {
+    TcpV4,
+    TcpV6,
+}
+
+/// Receive offloads that a frontend negotiated with the guest.
+///
+/// Backends must enable only these capabilities on their host transport.
+/// Enabling additional receive offloads can expose packet metadata or
+/// oversized aggregate frames that the frontend cannot safely represent.
+#[derive(Debug, Copy, Clone, Default)]
+pub struct RxOffloadSupport {
+    /// The guest can complete a partial transport checksum.
+    pub checksum: bool,
+    /// The guest can receive TCPv4 GSO packets.
+    pub tcpv4_gso: bool,
+    /// The guest can receive TCPv6 GSO packets.
+    pub tcpv6_gso: bool,
 }
 
 /// The "L4" protocol: the TCP/UDP layer.

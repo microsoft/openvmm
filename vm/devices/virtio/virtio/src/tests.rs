@@ -5490,14 +5490,12 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
     );
 }
 
-/// Completing the same descriptor twice while it is still outstanding is an
-/// internal invariant violation (the device rejects guest-induced duplicates
-/// upstream), so the in-order helper must fail fast rather than silently
-/// stalling the used ring.
+/// A descriptor head remains owned after its completion is ready but before an
+/// earlier descriptor allows that completion to be published.
 #[async_test]
-#[should_panic(expected = "completed more than once")]
-async fn in_order_double_complete_panics(driver: DefaultDriver) {
+async fn in_order_rejects_duplicate_completed_descriptor(driver: DefaultDriver) {
     use crate::in_order::InOrderCompletion;
+    use crate::in_order::InOrderError;
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
     use crate::test_helpers::make_available;
@@ -5553,12 +5551,15 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
 
     let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
     let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
-    let w1b = in_order.try_next(&mut queue).unwrap().unwrap();
 
-    // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
-    // behind it; completing index 1 twice while buffered must panic.
+    // Descriptor 1 is backend-complete but cannot be published behind
+    // descriptor 0. Reusing its head in this window must be rejected before a
+    // second completion can collide with the buffered one.
     in_order.complete(&mut queue, w1a.into_completion(), 1);
-    in_order.complete(&mut queue, w1b.into_completion(), 1);
+    assert!(matches!(
+        in_order.try_next(&mut queue),
+        Err(InOrderError::DuplicateDescriptor(1))
+    ));
 }
 
 const BOUND_TEST_QUEUE_SIZE: u16 = 4;

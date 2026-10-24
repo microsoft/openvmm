@@ -12,15 +12,20 @@ pub mod tap;
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use inspect::InspectMut;
+use linux_net_bindings::gen_if_tun;
 use net_backend::BufferAccess;
+use net_backend::ETHERNET_VLAN_HEADER_LEN;
 use net_backend::Endpoint;
 use net_backend::L4Protocol;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxChecksumState;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::RxOffload;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxMetadata;
@@ -39,6 +44,13 @@ use std::task::Context;
 use std::task::Poll;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+const MAX_TAP_FRAME_LEN: usize =
+    gen_if_tun::ETH_MAX_MTU as usize + ETHERNET_VLAN_HEADER_LEN as usize;
+// Linux TAP contractually returns a complete frame within this bound. Size the
+// read buffer to that contract rather than adding overflow detection.
+const TAP_READ_BUFFER_LEN: usize = size_of::<VirtioNetHdr>() + MAX_TAP_FRAME_LEN;
+const MAX_RX_PACKETS_PER_POLL: usize = 64;
 
 // TODO: These virtio net header types duplicate definitions in virtio_net.
 // Consider extracting a shared `virtio_net_header` crate if more consumers
@@ -112,32 +124,21 @@ pub use vnet_hdr::*;
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
+    enabled_rx_offloads: Option<RxOffloadSupport>,
+    stale_offload_recovery: Arc<Mutex<StaleOffloadRecovery>>,
 }
 
 impl TapEndpoint {
     pub fn new(tap: tap::Tap) -> Result<Self, tap::Error> {
-        // Do not enable any RX offloads (TUN_F_CSUM, TUN_F_TSO*, etc.).
-        //
-        // The TUN_F_* flags are the TAP equivalent of VIRTIO_NET_F_GUEST_*:
-        // they tell the kernel that our reader can handle partial checksums
-        // (NEEDS_CSUM) and unsegmented GSO packets. Since net_backend's
-        // RxMetadata has no way to represent "checksum needs to be completed"
-        // (only Good/Bad/Unknown), and no concept of receive-side GRO/RSC,
-        // accepting such packets would force us to either lie about checksum
-        // state or complete checksums in software.
-        //
-        // With offloads set to 0, the kernel completes all checksums and
-        // segments all GSO packets before delivering them to us. This is
-        // correct and simple. The TX path is unaffected — writes with
-        // NEEDS_CSUM and GSO types in the vnet header are processed by the
-        // kernel regardless of these flags.
-        //
-        // We explicitly set 0 rather than skipping the call, in case a
-        // previous user of this TAP fd set offloads to a non-zero value.
+        // Reset state inherited from an earlier user of this persistent TAP
+        // device. Packets already queued before this ioctl can still carry the
+        // previous offload metadata, so the first queue starts with recovery
+        // enabled until it observes the queue drain.
         tap.set_offloads(0)?;
-
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
+            enabled_rx_offloads: None,
+            stale_offload_recovery: Arc::new(Mutex::new(StaleOffloadRecovery::all())),
         })
     }
 }
@@ -162,10 +163,35 @@ impl Endpoint for TapEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.drain(..).next().unwrap();
+        let enabled_rx_offloads = config.enabled_rx_offloads;
+        let mut offloads = 0;
+        if enabled_rx_offloads.checksum {
+            offloads |= gen_if_tun::TUN_F_CSUM;
+        }
+        if enabled_rx_offloads.tcpv4_gso {
+            offloads |= gen_if_tun::TUN_F_TSO4;
+        }
+        if enabled_rx_offloads.tcpv6_gso {
+            offloads |= gen_if_tun::TUN_F_TSO6;
+        }
+        self.tap
+            .lock()
+            .as_ref()
+            .expect("queue is already in use")
+            .set_offloads(offloads)?;
 
+        self.stale_offload_recovery
+            .lock()
+            .merge(StaleOffloadRecovery::after_reconfiguration(
+                self.enabled_rx_offloads,
+                enabled_rx_offloads,
+            ));
+        self.enabled_rx_offloads = Some(enabled_rx_offloads);
         queues.push(Box::new(TapQueue::new(
             config.driver.as_ref(),
             self.tap.clone(),
+            self.stale_offload_recovery.clone(),
+            enabled_rx_offloads,
         )?));
         Ok(())
     }
@@ -190,18 +216,38 @@ impl Endpoint for TapEndpoint {
             uso: true,
         }
     }
+
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        RxOffloadSupport {
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
+        }
+    }
 }
 
 struct TapQueue {
     slot: Arc<Mutex<Option<tap::Tap>>>,
+    stale_offload_recovery_slot: Arc<Mutex<StaleOffloadRecovery>>,
     tap: Option<tap::PolledTap>,
     inner: Inner,
     buffer: Box<[u8]>,
+    enabled_rx_offloads: RxOffloadSupport,
+    stale_offload_recovery: StaleOffloadRecovery,
+    read_since_pending: bool,
 }
 
 struct Inner {
     rx_free: VecDeque<RxId>,
     rx_ready: VecDeque<RxId>,
+}
+
+impl Inner {
+    fn complete_rx(&mut self, rx: RxId) {
+        let oldest = self.rx_free.pop_front().expect("RX queue is empty");
+        assert_eq!(oldest.0, rx.0);
+        self.rx_ready.push_back(rx);
+    }
 }
 
 impl InspectMut for TapQueue {
@@ -212,6 +258,9 @@ impl InspectMut for TapQueue {
 
 impl Drop for TapQueue {
     fn drop(&mut self) {
+        self.stale_offload_recovery_slot
+            .lock()
+            .merge(self.stale_offload_recovery);
         if let Some(tap) = self.tap.take() {
             *self.slot.lock() = Some(tap.into_inner());
         }
@@ -219,17 +268,27 @@ impl Drop for TapQueue {
 }
 
 impl TapQueue {
-    fn new(driver: &dyn Driver, slot: Arc<Mutex<Option<tap::Tap>>>) -> anyhow::Result<Self> {
+    fn new(
+        driver: &dyn Driver,
+        slot: Arc<Mutex<Option<tap::Tap>>>,
+        stale_offload_recovery_slot: Arc<Mutex<StaleOffloadRecovery>>,
+        enabled_rx_offloads: RxOffloadSupport,
+    ) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
+        let stale_offload_recovery = std::mem::take(&mut *stale_offload_recovery_slot.lock());
         Ok(Self {
             slot,
+            stale_offload_recovery_slot,
             tap: Some(tap),
             inner: Inner {
                 rx_free: VecDeque::new(),
                 rx_ready: VecDeque::new(),
             },
-            buffer: vec![0; 65535 + size_of::<VirtioNetHdr>()].into_boxed_slice(),
+            buffer: vec![0; TAP_READ_BUFFER_LEN].into_boxed_slice(),
+            enabled_rx_offloads,
+            stale_offload_recovery,
+            read_since_pending: false,
         })
     }
 }
@@ -246,36 +305,58 @@ impl Queue for TapQueue {
             return Poll::Pending;
         };
 
+        let mut packets_processed = 0;
         while let Some(&rx) = self.inner.rx_free.front() {
+            if packets_processed == MAX_RX_PACKETS_PER_POLL {
+                cx.waker().wake_by_ref();
+                break;
+            }
+
             match Pin::new(&mut *tap).poll_read(cx, &mut self.buffer) {
                 Poll::Ready(Ok(read_len)) => {
-                    if read_len < size_of::<VirtioNetHdr>() {
-                        tracing::warn!(read_len, "tap read too short for vnet header");
-                        break;
-                    }
-                    let (hdr, _) =
-                        VirtioNetHdr::read_from_prefix(&self.buffer[..read_len]).unwrap();
-                    let rx_meta = parse_vnet_hdr(&hdr);
-                    let frame_start = size_of::<VirtioNetHdr>();
-                    let frame_len = read_len - size_of::<VirtioNetHdr>();
-                    pool.write_packet(
-                        rx,
-                        &RxMetadata {
-                            offset: 0,
-                            len: frame_len,
-                            ..rx_meta
-                        },
-                        &self.buffer[frame_start..read_len],
+                    self.read_since_pending = true;
+                    packets_processed += 1;
+                    let (hdr, frame) = VirtioNetHdr::read_from_prefix(&self.buffer[..read_len])
+                        .expect("TAP packet is missing the vnet header");
+                    assert!(
+                        !frame.is_empty(),
+                        "TAP packet is missing the Ethernet frame"
                     );
+                    let frame_len = frame.len();
+                    assert_vnet_hdr_contract(&hdr, frame_len);
+                    let Some(rx_meta) = parse_vnet_hdr_for_queue(
+                        &hdr,
+                        self.enabled_rx_offloads,
+                        &self.stale_offload_recovery,
+                    ) else {
+                        continue;
+                    };
+                    let capacity = pool.capacity(rx);
+                    if frame_len <= capacity as usize {
+                        pool.write_packet(
+                            rx,
+                            &RxMetadata {
+                                offset: 0,
+                                len: frame_len,
+                                ..rx_meta
+                            },
+                            frame,
+                        );
+                    } else {
+                        continue;
+                    }
 
-                    self.inner.rx_ready.push_back(rx);
-                    self.inner.rx_free.pop_front();
+                    self.inner.complete_rx(rx);
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::warn!(error = &err as &dyn std::error::Error, "tap rx error");
                     break;
                 }
-                Poll::Pending => break,
+                Poll::Pending => {
+                    self.stale_offload_recovery
+                        .queue_pending(&mut self.read_since_pending);
+                    break;
+                }
             }
         }
 
@@ -643,17 +724,177 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
     }
 }
 
-/// Parse a `VirtioNetHdr` from the TAP device into receive metadata.
-///
-/// Because we do not set any `TUN_F_*` RX offload flags (see
-/// [`TapEndpoint::new`]), the kernel will never send us `NEEDS_CSUM` or GSO
-/// packets. We only need to handle `DATA_VALID` (checksum verified by the
-/// kernel) and the default case (no information).
-///
-/// The `gso_type` field should always be `GSO_NONE` since we didn't enable
-/// receive-side GSO, but we still parse it defensively to extract L4 protocol
-/// information if present.
-fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
+#[derive(Debug, PartialEq, Eq)]
+enum InvalidRxMetadata {
+    UnsupportedGsoProtocol,
+    UnsupportedChecksumOffload,
+    UnsupportedGsoOffload(RxGsoProtocol),
+    UnexpectedEcn,
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+struct StaleOffloadRecovery {
+    inherited: bool,
+    checksum: bool,
+    tcpv4_gso: bool,
+    tcpv6_gso: bool,
+}
+
+impl StaleOffloadRecovery {
+    fn all() -> Self {
+        Self {
+            inherited: true,
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
+        }
+    }
+
+    fn after_reconfiguration(
+        previous: Option<RxOffloadSupport>,
+        current: RxOffloadSupport,
+    ) -> Self {
+        let Some(previous) = previous else {
+            return Self::default();
+        };
+        Self {
+            inherited: false,
+            checksum: previous.checksum && !current.checksum,
+            tcpv4_gso: previous.tcpv4_gso && !current.tcpv4_gso,
+            tcpv6_gso: previous.tcpv6_gso && !current.tcpv6_gso,
+        }
+    }
+
+    fn permits(&self, reason: &InvalidRxMetadata) -> bool {
+        match reason {
+            InvalidRxMetadata::UnsupportedChecksumOffload => self.checksum,
+            InvalidRxMetadata::UnsupportedGsoOffload(RxGsoProtocol::TcpV4) => self.tcpv4_gso,
+            InvalidRxMetadata::UnsupportedGsoOffload(RxGsoProtocol::TcpV6) => self.tcpv6_gso,
+            InvalidRxMetadata::UnsupportedGsoProtocol | InvalidRxMetadata::UnexpectedEcn => {
+                self.inherited
+            }
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.inherited |= other.inherited;
+        self.checksum |= other.checksum;
+        self.tcpv4_gso |= other.tcpv4_gso;
+        self.tcpv6_gso |= other.tcpv6_gso;
+    }
+
+    fn queue_pending(&mut self, read_since_pending: &mut bool) {
+        if *read_since_pending {
+            *self = Self::default();
+            *read_since_pending = false;
+        }
+    }
+}
+
+fn parse_vnet_hdr_for_queue(
+    hdr: &VirtioNetHdr,
+    support: RxOffloadSupport,
+    recovery: &StaleOffloadRecovery,
+) -> Option<RxMetadata> {
+    match parse_vnet_hdr(hdr, support) {
+        Ok(metadata) => Some(metadata),
+        Err(reason) if recovery.permits(&reason) => {
+            tracelimit::warn_ratelimited!(
+                ?reason,
+                "dropping TAP packet queued before RX offload reconfiguration"
+            );
+            None
+        }
+        Err(reason) => {
+            panic!("TAP returned invalid vnet metadata: {reason:?}");
+        }
+    }
+}
+
+fn assert_vnet_hdr_contract(hdr: &VirtioNetHdr, frame_len: usize) {
+    assert!(
+        !(hdr.flags.needs_csum() && hdr.flags.data_valid()),
+        "TAP returned conflicting checksum flags"
+    );
+
+    if hdr.flags.needs_csum() {
+        let checksum_end = usize::from(hdr.csum_start)
+            .checked_add(usize::from(hdr.csum_offset))
+            .and_then(|offset| offset.checked_add(size_of::<u16>()))
+            .expect("TAP checksum metadata overflowed");
+        assert!(
+            checksum_end <= frame_len,
+            "TAP checksum metadata exceeds the Ethernet frame"
+        );
+    }
+
+    match hdr.gso_type.protocol() {
+        VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => {
+            assert!(
+                hdr.flags.needs_csum() || hdr.flags.data_valid(),
+                "TAP returned TCP GSO without a checksum state"
+            );
+            assert_ne!(hdr.gso_size, 0, "TAP returned a zero GSO segment size");
+            assert!(
+                usize::from(hdr.hdr_len) <= frame_len,
+                "TAP GSO header exceeds the Ethernet frame"
+            );
+            if hdr.flags.needs_csum() {
+                assert_eq!(
+                    hdr.csum_offset, 16,
+                    "TAP returned an invalid TCP checksum offset"
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_vnet_hdr(
+    hdr: &VirtioNetHdr,
+    support: RxOffloadSupport,
+) -> Result<RxMetadata, InvalidRxMetadata> {
+    let protocol = hdr.gso_type.protocol();
+    let offload = match protocol {
+        VirtioNetHdrGsoProtocol::NONE => {
+            if hdr.gso_type.ecn() {
+                return Err(InvalidRxMetadata::UnexpectedEcn);
+            }
+            if hdr.flags.needs_csum() {
+                if !support.checksum {
+                    return Err(InvalidRxMetadata::UnsupportedChecksumOffload);
+                }
+                RxOffload::checksum(hdr.csum_start, hdr.csum_offset)
+            } else {
+                RxOffload::default()
+            }
+        }
+        VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => {
+            // VIRTIO_NET_F_GUEST_ECN is not advertised by this frontend.
+            if hdr.gso_type.ecn() {
+                return Err(InvalidRxMetadata::UnexpectedEcn);
+            }
+            let (supported, protocol) = if protocol == VirtioNetHdrGsoProtocol::TCPV4 {
+                (support.tcpv4_gso, RxGsoProtocol::TcpV4)
+            } else {
+                (support.tcpv6_gso, RxGsoProtocol::TcpV6)
+            };
+            if !supported {
+                return Err(InvalidRxMetadata::UnsupportedGsoOffload(protocol));
+            }
+            if hdr.flags.needs_csum() && !support.checksum {
+                return Err(InvalidRxMetadata::UnsupportedChecksumOffload);
+            }
+            RxOffload::tcp_gso(
+                protocol,
+                hdr.hdr_len,
+                hdr.gso_size,
+                hdr.flags.needs_csum().then_some(hdr.csum_start),
+            )
+        }
+        _ => return Err(InvalidRxMetadata::UnsupportedGsoProtocol),
+    };
+
     let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
         (RxChecksumState::Good, RxChecksumState::Good)
     } else {
@@ -665,21 +906,29 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         VirtioNetHdrGsoProtocol::UDP | VirtioNetHdrGsoProtocol::UDP_L4 => L4Protocol::Udp,
         _ => L4Protocol::Unknown,
     };
-
-    RxMetadata {
+    Ok(RxMetadata {
         offset: 0,
         len: 0,
         ip_checksum,
         l4_checksum,
         l4_protocol,
+        offload,
         vlan: None,
-    }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use net_backend::TxFlags;
+
+    fn all_rx_offloads() -> RxOffloadSupport {
+        RxOffloadSupport {
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
+        }
+    }
 
     #[test]
     fn vnet_hdr_from_tx_metadata_csum() {
@@ -757,50 +1006,355 @@ mod tests {
     fn rx_metadata_from_vnet_hdr_valid() {
         let hdr = VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_data_valid(true),
-            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
             ..Default::default()
         };
-        let meta = parse_vnet_hdr(&hdr);
+        let meta = parse_vnet_hdr(&hdr, all_rx_offloads()).unwrap();
         assert_eq!(meta.ip_checksum, RxChecksumState::Good);
         assert_eq!(meta.l4_checksum, RxChecksumState::Good);
-        assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
+        assert_eq!(meta.l4_protocol, L4Protocol::Unknown);
+        assert_eq!(meta.offload, RxOffload::default());
     }
 
     #[test]
-    fn rx_metadata_from_vnet_hdr_needs_csum_treated_as_unknown() {
-        // We don't set TUN_F_CSUM so the kernel should never send NEEDS_CSUM,
-        // but if it did, we conservatively treat it as Unknown (not Good).
+    fn rx_metadata_from_vnet_hdr_checksum() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let meta = parse_vnet_hdr(&hdr, all_rx_offloads()).unwrap();
+        assert_eq!(meta.offload, RxOffload::checksum(34, 16));
+    }
+
+    #[test]
+    fn rx_metadata_from_vnet_hdr_tcp_gso() {
         let hdr = VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            hdr_len: 74,
+            gso_size: 1440,
+            csum_start: 54,
+            csum_offset: 16,
             ..Default::default()
         };
-        let meta = parse_vnet_hdr(&hdr);
-        assert_eq!(meta.ip_checksum, RxChecksumState::Unknown);
-        assert_eq!(meta.l4_checksum, RxChecksumState::Unknown);
+        let meta = parse_vnet_hdr(&hdr, all_rx_offloads()).unwrap();
         assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
+        assert_eq!(
+            meta.offload,
+            RxOffload::tcp_gso(RxGsoProtocol::TcpV6, 74, 1440, Some(54))
+        );
     }
 
     #[test]
-    fn rx_metadata_from_vnet_hdr_none() {
-        let hdr = VirtioNetHdr::default();
-        let meta = parse_vnet_hdr(&hdr);
-        assert_eq!(meta.ip_checksum, RxChecksumState::Unknown);
-        assert_eq!(meta.l4_checksum, RxChecksumState::Unknown);
-        assert_eq!(meta.l4_protocol, L4Protocol::Unknown);
-    }
-
-    #[test]
-    fn rx_metadata_from_vnet_hdr_udp() {
+    fn vnet_hdr_contract_accepts_data_valid_tcp_gso() {
         let hdr = VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            ..Default::default()
+        };
+        assert_vnet_hdr_contract(&hdr, 1514);
+    }
+
+    #[test]
+    fn vnet_hdr_contract_accepts_needs_csum_tcp_gso() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            hdr_len: 74,
+            gso_size: 1440,
+            csum_start: 54,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert_vnet_hdr_contract(&hdr, 1514);
+    }
+
+    #[test]
+    #[should_panic(expected = "TAP returned conflicting checksum flags")]
+    fn vnet_hdr_contract_rejects_conflicting_tcp_gso_checksum_state() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new()
+                .with_needs_csum(true)
+                .with_data_valid(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert_vnet_hdr_contract(&hdr, 1514);
+    }
+
+    #[test]
+    #[should_panic(expected = "TAP returned TCP GSO without a checksum state")]
+    fn vnet_hdr_contract_rejects_missing_tcp_gso_checksum_state() {
+        let hdr = VirtioNetHdr {
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            ..Default::default()
+        };
+        assert_vnet_hdr_contract(&hdr, 1514);
+    }
+
+    #[test]
+    fn rx_metadata_rejects_unnegotiated_gso() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_vnet_hdr(
+                &hdr,
+                RxOffloadSupport {
+                    checksum: true,
+                    ..Default::default()
+                }
+            )
+            .unwrap_err(),
+            InvalidRxMetadata::UnsupportedGsoOffload(RxGsoProtocol::TcpV4)
+        );
+    }
+
+    #[test]
+    fn rx_metadata_rejects_unnegotiated_checksum() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_vnet_hdr(&hdr, Default::default()).unwrap_err(),
+            InvalidRxMetadata::UnsupportedChecksumOffload
+        );
+    }
+
+    #[test]
+    fn stale_offload_recovery_retains_oldest_buffer_until_current_packet() {
+        let rx = RxId(7);
+        let mut inner = Inner {
+            rx_free: VecDeque::from([rx]),
+            rx_ready: VecDeque::new(),
+        };
+        let mut recovery = StaleOffloadRecovery::after_reconfiguration(None, all_rx_offloads());
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+
+        recovery =
+            StaleOffloadRecovery::after_reconfiguration(Some(all_rx_offloads()), all_rx_offloads());
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+            RxGsoProtocol::TcpV4
+        )));
+
+        recovery = StaleOffloadRecovery::after_reconfiguration(
+            Some(all_rx_offloads()),
+            RxOffloadSupport {
+                checksum: true,
+                tcpv4_gso: false,
+                tcpv6_gso: true,
+            },
+        );
+        assert!(recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+            RxGsoProtocol::TcpV4
+        )));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+            RxGsoProtocol::TcpV6
+        )));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnexpectedEcn));
+
+        let stale_hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 54,
+            gso_size: 1460,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert!(
+            parse_vnet_hdr_for_queue(
+                &stale_hdr,
+                RxOffloadSupport {
+                    checksum: true,
+                    tcpv4_gso: false,
+                    tcpv6_gso: true,
+                },
+                &recovery,
+            )
+            .is_none()
+        );
+        assert_eq!(inner.rx_free.front().map(|id| id.0), Some(rx.0));
+        assert!(inner.rx_ready.is_empty());
+
+        let mut read_since_pending = true;
+        recovery.queue_pending(&mut read_since_pending);
+        assert!(!read_since_pending);
+        assert!(
+            parse_vnet_hdr_for_queue(
+                &VirtioNetHdr::default(),
+                RxOffloadSupport {
+                    checksum: true,
+                    tcpv4_gso: false,
+                    tcpv6_gso: true,
+                },
+                &recovery,
+            )
+            .is_some()
+        );
+        inner.complete_rx(rx);
+        assert!(inner.rx_free.is_empty());
+        assert_eq!(inner.rx_ready.front().map(|id| id.0), Some(rx.0));
+
+        recovery = StaleOffloadRecovery::after_reconfiguration(
+            Some(all_rx_offloads()),
+            RxOffloadSupport {
+                checksum: false,
+                tcpv4_gso: true,
+                tcpv6_gso: true,
+            },
+        );
+        assert!(recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+    }
+
+    #[test]
+    fn initial_pending_does_not_close_inherited_recovery() {
+        let mut recovery = StaleOffloadRecovery::all();
+        let mut read_since_pending = false;
+
+        recovery.queue_pending(&mut read_since_pending);
+        assert!(recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+        assert!(recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+            RxGsoProtocol::TcpV4
+        )));
+        assert!(recovery.permits(&InvalidRxMetadata::UnexpectedEcn));
+        assert!(recovery.permits(&InvalidRxMetadata::UnsupportedGsoProtocol));
+
+        read_since_pending = true;
+        recovery.queue_pending(&mut read_since_pending);
+        assert!(!read_since_pending);
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+            RxGsoProtocol::TcpV4
+        )));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnexpectedEcn));
+        assert!(!recovery.permits(&InvalidRxMetadata::UnsupportedGsoProtocol));
+    }
+
+    #[test]
+    fn inherited_recovery_drops_ecn_and_udp_gso() {
+        let recovery = StaleOffloadRecovery::all();
+        let support = all_rx_offloads();
+        let ecn = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new()
+                .with_protocol(VirtioNetHdrGsoProtocol::TCPV4)
+                .with_ecn(true),
+            hdr_len: 54,
+            gso_size: 1460,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let udp_gso = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP_L4),
+            hdr_len: 42,
+            gso_size: 1452,
+            csum_start: 34,
+            csum_offset: 6,
+            ..Default::default()
+        };
+
+        assert!(parse_vnet_hdr_for_queue(&ecn, support, &recovery).is_none());
+        assert!(parse_vnet_hdr_for_queue(&udp_gso, support, &recovery).is_none());
+    }
+
+    #[test]
+    fn unfinished_recovery_survives_queue_recreation() {
+        let all = all_rx_offloads();
+        let none = RxOffloadSupport::default();
+        let checksum_only = RxOffloadSupport {
+            checksum: true,
+            ..Default::default()
+        };
+
+        let mut recovery_slot = StaleOffloadRecovery::default();
+        recovery_slot.merge(StaleOffloadRecovery::after_reconfiguration(Some(all), none));
+        let first_queue_recovery = std::mem::take(&mut recovery_slot);
+
+        // Simulate dropping the first queue before it reaches EAGAIN.
+        recovery_slot.merge(first_queue_recovery);
+        recovery_slot.merge(StaleOffloadRecovery::after_reconfiguration(
+            Some(none),
+            checksum_only,
+        ));
+        let second_queue_recovery = std::mem::take(&mut recovery_slot);
+
+        assert!(
+            second_queue_recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+                RxGsoProtocol::TcpV4
+            ))
+        );
+        assert!(
+            second_queue_recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
+                RxGsoProtocol::TcpV6
+            ))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "TAP returned invalid vnet metadata")]
+    fn steady_state_offload_mismatch_fails_fast() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        parse_vnet_hdr_for_queue(&hdr, Default::default(), &StaleOffloadRecovery::default());
+    }
+
+    #[test]
+    fn rx_metadata_rejects_ecn_before_unnegotiated_gso() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new()
+                .with_protocol(VirtioNetHdrGsoProtocol::TCPV4)
+                .with_ecn(true),
+            hdr_len: 54,
+            gso_size: 1460,
+            csum_start: 34,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_vnet_hdr(&hdr, Default::default()).unwrap_err(),
+            InvalidRxMetadata::UnexpectedEcn
+        );
+    }
+
+    #[test]
+    fn rx_metadata_rejects_unsupported_udp_gso() {
+        let hdr = VirtioNetHdr {
             gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP),
             ..Default::default()
         };
-        let meta = parse_vnet_hdr(&hdr);
-        assert_eq!(meta.l4_protocol, L4Protocol::Udp);
+        assert_eq!(
+            parse_vnet_hdr(&hdr, all_rx_offloads()).unwrap_err(),
+            InvalidRxMetadata::UnsupportedGsoProtocol
+        );
     }
-
     #[test]
     fn vnet_hdr_from_tx_metadata_uso() {
         let meta = TxMetadata {

@@ -21,7 +21,8 @@
 //! ## Lifecycle
 //!
 //! 1. The frontend creates a [`BufferAccess`] implementation and one
-//!    [`QueueConfig`] per desired queue (containing just a driver).
+//!    [`QueueConfig`] per desired queue, containing a driver and the enabled
+//!    receive-offload policy.
 //! 2. It calls [`Endpoint::get_queues`], which returns boxed [`Queue`]
 //!    objects.
 //! 3. The frontend posts initial receive buffers by calling
@@ -64,10 +65,13 @@ pub use net_backend_core::*;
 
 /// Per-queue configuration passed to [`Endpoint::get_queues`].
 ///
-/// Contains only an async driver handle. Receive buffers are posted
-/// separately via [`Queue::rx_avail`] after queue creation.
+/// The enabled receive-offload policy is device-wide and must be identical for
+/// every queue in the same queue set. Receive buffers are posted separately via
+/// [`Queue::rx_avail`] after queue creation.
 pub struct QueueConfig {
     pub driver: Box<dyn Driver>,
+    /// Receive offloads enabled by the frontend after capability negotiation.
+    pub enabled_rx_offloads: RxOffloadSupport,
 }
 
 /// A network endpoint — the backend side of a NIC.
@@ -106,6 +110,11 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// Specifies the supported set of transmit offloads.
     fn tx_offload_support(&self) -> TxOffloadSupport {
         TxOffloadSupport::default()
+    }
+
+    /// Specifies the receive offloads that this endpoint can produce.
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        RxOffloadSupport::default()
     }
 
     /// Specifies parameters related to supporting multiple queues.
@@ -339,6 +348,7 @@ impl DisconnectableEndpointControl {
 pub struct DisconnectableEndpointCachedState {
     is_ordered: bool,
     tx_offload_support: TxOffloadSupport,
+    rx_offload_support: RxOffloadSupport,
     multiqueue_support: MultiQueueSupport,
     tx_fast_completions: bool,
     link_speed: u64,
@@ -428,6 +438,13 @@ impl Endpoint for DisconnectableEndpoint {
             .tx_offload_support
     }
 
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        self.cached_state
+            .as_ref()
+            .expect("Endpoint needs connected at least once before use")
+            .rx_offload_support
+    }
+
     fn multiqueue_support(&self) -> MultiQueueSupport {
         self.cached_state
             .as_ref()
@@ -497,6 +514,7 @@ impl Endpoint for DisconnectableEndpoint {
                 self.cached_state = Some(DisconnectableEndpointCachedState {
                     is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
+                    rx_offload_support: self.current().rx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
                     link_speed: self.current().link_speed(),

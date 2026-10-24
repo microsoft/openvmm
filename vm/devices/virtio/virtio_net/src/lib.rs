@@ -30,6 +30,7 @@ use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::RxOffloadSupport;
 use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
@@ -54,6 +55,7 @@ use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::in_order::InOrderCompletion;
+use virtio::in_order::InOrderError;
 use virtio::queue::QueueCompletion;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
@@ -227,6 +229,7 @@ struct Adapter {
     tx_fast_completions: bool,
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
+    rx_offload_support: RxOffloadSupport,
 }
 
 pub struct Device {
@@ -274,6 +277,8 @@ impl VirtioDevice for Device {
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
+            .with_guest_tso4(self.adapter.rx_offload_support.tcpv4_gso)
+            .with_guest_tso6(self.adapter.rx_offload_support.tcpv6_gso)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -390,7 +395,7 @@ impl VirtioDevice for Device {
                 };
 
                 if first_pair {
-                    self.insert_coordinator(self.pairs.len() as u16);
+                    self.insert_coordinator(self.pairs.len() as u16, negotiated_features);
                 }
 
                 let virtio_state = VirtioState {
@@ -575,6 +580,7 @@ impl NicBuilder {
 
         let driver = driver_source.simple();
         let tx_offload_support = endpoint.tx_offload_support();
+        let rx_offload_support = endpoint.rx_offload_support();
         let speed = u32::try_from(endpoint.link_speed() / BITS_PER_MEGABIT)
             .ok()
             .filter(|speed| *speed <= i32::MAX as u32)
@@ -585,6 +591,7 @@ impl NicBuilder {
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
             tx_offload_support,
+            rx_offload_support,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
@@ -616,6 +623,15 @@ impl NicBuilder {
     }
 }
 
+fn negotiated_rx_offload_support(features: NetworkFeaturesBank0) -> RxOffloadSupport {
+    let checksum = features.guest_csum();
+    RxOffloadSupport {
+        checksum,
+        tcpv4_gso: checksum && features.guest_tso4(),
+        tcpv6_gso: checksum && features.guest_tso6(),
+    }
+}
+
 impl Device {
     pub fn builder() -> NicBuilder {
         NicBuilder {
@@ -631,7 +647,7 @@ impl InspectMut for Device {
 }
 
 impl Device {
-    fn insert_coordinator(&mut self, num_queues: u16) {
+    fn insert_coordinator(&mut self, num_queues: u16, negotiated_features: NetworkFeaturesBank0) {
         self.coordinator.insert(
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
@@ -640,6 +656,7 @@ impl Device {
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
+                enabled_rx_offloads: negotiated_rx_offload_support(negotiated_features),
                 restart: true,
             },
         );
@@ -687,6 +704,7 @@ impl Device {
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
+    enabled_rx_offloads: RxOffloadSupport,
     restart: bool,
 }
 
@@ -778,6 +796,7 @@ impl Coordinator {
         let queue_config = (0..self.workers.len())
             .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
+                enabled_rx_offloads: self.enabled_rx_offloads,
             })
             .collect::<Vec<_>>();
 
@@ -870,6 +889,15 @@ impl From<task_control::Cancelled> for WorkerError {
     }
 }
 
+impl From<InOrderError> for WorkerError {
+    fn from(value: InOrderError) -> Self {
+        match value {
+            InOrderError::Queue(err) => Self::VirtioQueue(err),
+            InOrderError::DuplicateDescriptor(idx) => Self::DuplicateDescriptor(idx),
+        }
+    }
+}
+
 #[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
@@ -959,7 +987,7 @@ impl Worker {
                     .virtio_state
                     .tx_in_order
                     .try_next(&mut self.virtio_state.tx_queue)
-                    .map_err(WorkerError::VirtioQueue)?
+                    .map_err(WorkerError::from)?
                 else {
                     break;
                 };
@@ -1299,7 +1327,7 @@ impl Worker {
             .virtio_state
             .rx_in_order
             .try_next(&mut self.virtio_state.rx_queue)
-            .map_err(WorkerError::VirtioQueue)?
+            .map_err(WorkerError::from)?
         {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
@@ -1345,8 +1373,12 @@ impl Worker {
         }
 
         for ready_id in state.data.rx_ready[..n].iter() {
-            state.stats.rx_packets.increment();
-            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
+            if dropped {
+                state.stats.rx_dropped.increment();
+            } else {
+                state.stats.rx_packets.increment();
+            }
             self.virtio_state.rx_in_order.complete(
                 &mut self.virtio_state.rx_queue,
                 work.into_completion(),
