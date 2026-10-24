@@ -456,6 +456,190 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
+/// Create a Rust-VHDX file at `dir/name` with the given geometry and return a
+/// virtio-blk-capable disk resource backed by it. When `read_only` is set the
+/// disk is presented read-only to the guest.
+async fn vhdx_blk_disk_resource(
+    dir: &std::path::Path,
+    name: &str,
+    mut params: vhdx::CreateParams,
+    read_only: bool,
+) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::VhdxDiskLayerHandle;
+    use disklayer_vhdx::io::BlockingFile;
+
+    let path = dir.join(name);
+    {
+        let bf = BlockingFile::open(&path, false).context("create vhdx file")?;
+        vhdx::create(&bf, &mut params)
+            .await
+            .context("write vhdx format")?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .context("open vhdx file")?;
+    Ok(LayeredDiskHandle::single_layer(VhdxDiskLayerHandle { file, read_only }).into_resource())
+}
+
+/// Verify VHDX-backed virtio-blk production wiring, guest-visible metadata,
+/// direct I/O, and continued operation across VM save/restore.
+#[openvmm_test(unstable(
+    reason = "virtio-blk over virtio-mmio boot test fails frequently in CI; root cause unknown",
+    linux_direct_x64
+))]
+async fn virtio_blk_device_vhdx(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::blk::VirtioBlkHandle;
+
+    let disk_size: u64 = 8 * 1024 * 1024;
+    let page83: Guid = "d7e5f3a1-1234-5678-9abc-def012345678"
+        .parse()
+        .context("parse page83 guid")?;
+
+    // GET_ID exposes the first 20 hex characters of the backend disk ID.
+    let disk_id: [u8; 16] = page83.into();
+    let expected_serial: String = disk_id[..10]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    let dir = tempfile::tempdir().context("create VHDX fixture directory")?;
+    let disk = vhdx_blk_disk_resource(
+        dir.path(),
+        "disk.vhdx",
+        vhdx::CreateParams {
+            disk_size,
+            logical_sector_size: 512,
+            physical_sector_size: 512,
+            disk_type: vhdx::DiskType::Dynamic,
+            page_83_data: page83,
+            ..Default::default()
+        },
+        false,
+    )
+    .await?;
+
+    let (mut vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(move |c| {
+                c.virtio_devices.push((
+                    VirtioBus::Mmio,
+                    VirtioBlkHandle {
+                        disk,
+                        read_only: false,
+                        serial: None,
+                    }
+                    .into_resource(),
+                ));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    let sectors: u64 = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("discover VHDX-backed disk")?
+        .trim()
+        .parse()
+        .context("parse disk capacity")?;
+    assert_eq!(sectors, disk_size / 512, "unexpected disk capacity");
+
+    assert_eq!(
+        cmd!(sh, "blockdev --getss /dev/vda").read().await?.trim(),
+        "512",
+        "unexpected logical sector size"
+    );
+    assert_eq!(
+        cmd!(sh, "cat /sys/block/vda/queue/physical_block_size")
+            .read()
+            .await?
+            .trim(),
+        "512",
+        "unexpected physical sector size"
+    );
+
+    let serial = cmd!(sh, "cat /sys/block/vda/serial")
+        .read()
+        .await
+        .context("read VHDX-derived serial")?;
+    assert_eq!(
+        serial.trim(),
+        expected_serial,
+        "guest serial does not match the VHDX Page-83 identifier"
+    );
+
+    let pattern: Vec<u8> = (0u8..=250).cycle().take(4096).collect();
+    agent
+        .write_file("/tmp/vhdx_expected", pattern.as_slice())
+        .await
+        .context("copy expected data to guest")?;
+
+    let write_command = "dd if=/tmp/vhdx_expected of=/dev/vda bs=4096 count=1 \
+         oflag=direct conv=fsync,notrunc";
+    let verify_command = r#"set -eu
+dd if=/dev/vda of=/tmp/vhdx_actual bs=4096 count=1 iflag=direct,fullblock
+
+actual_bytes=$(wc -c < /tmp/vhdx_actual)
+if [ "$actual_bytes" -ne 4096 ]; then
+    printf 'Expected 4096 bytes, read %s\n' "$actual_bytes" >&2
+    exit 1
+fi
+
+cmp /tmp/vhdx_expected /tmp/vhdx_actual
+"#;
+
+    cmd!(sh, "sh -c {write_command}")
+        .run()
+        .await
+        .context("direct write and synchronization")?;
+    cmd!(sh, "sh -c {verify_command}")
+        .run()
+        .await
+        .context("compare complete direct-I/O readback")?;
+
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+
+    let agent = vm.backend().wait_for_agent(false).await?;
+    let sh = agent.unix_shell();
+
+    cmd!(sh, "sh -c {verify_command}")
+        .run()
+        .await
+        .context("verify original data after save/restore")?;
+
+    let new_pattern: Vec<u8> = pattern.iter().map(|byte| byte ^ 0xA5).collect();
+    agent
+        .write_file("/tmp/vhdx_expected", new_pattern.as_slice())
+        .await
+        .context("copy post-restore expected data to guest")?;
+
+    cmd!(sh, "sh -c {write_command}")
+        .run()
+        .await
+        .context("direct write and synchronization after save/restore")?;
+    cmd!(sh, "sh -c {verify_command}")
+        .run()
+        .await
+        .context("compare complete post-restore readback")?;
+
+    cmd!(sh, "rm /tmp/vhdx_expected /tmp/vhdx_actual")
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    dir.close().context("remove VHDX fixture directory")?;
+    Ok(())
+}
+
 /// Boot with a virtio-rng device on a PCIe root port and verify the guest can
 /// read entropy.
 #[openvmm_test(linux_direct_x64)]
