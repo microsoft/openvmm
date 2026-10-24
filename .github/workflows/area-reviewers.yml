@@ -1,0 +1,48 @@
+# Area Reviewers — resolves an actual responsible individual for each area a
+# PR touches, instead of only requesting review from a whole team.
+#
+# Changed files are matched against .github/AREA_REVIEWERS. For each matching
+# group, ONE member is selected (least-loaded / round-robin / random), their
+# review is requested, they are added as an assignee, and a comment explains
+# the choice, e.g. "@B was selected from `api-reviewers` due to `*.proto`
+# changes".
+#
+# SECURITY NOTE: This workflow uses pull_request_target so it can request
+# reviewers and comment on PRs from forks. To avoid executing untrusted code,
+# it checks out the BASE branch only (not the PR branch) and runs the script
+# and config from there. PR metadata is fetched via the GitHub API.
+
+name: "Area Reviewers"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: area-reviewers-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  area-reviewers:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base branch (safe — our own code)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: |
+            .github/scripts
+            .github/AREA_REVIEWERS
+          sparse-checkout-cone-mode: false
+
+      - name: Select area reviewers
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const { run } = require('./.github/scripts/area-reviewers.js');
+            await run(github, context, core);
