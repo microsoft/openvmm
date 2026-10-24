@@ -26,7 +26,19 @@ use crate::VirtioQueueCallbackWork;
 use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
-use std::io::Error;
+use std::io::Error as IoError;
+use thiserror::Error;
+
+/// An error while consuming work through [`InOrderCompletion`].
+#[derive(Debug, Error)]
+pub enum InOrderError {
+    /// The underlying virtio queue could not consume the descriptor.
+    #[error("virtio queue processing error")]
+    Queue(#[source] IoError),
+    /// The guest reused a descriptor head before its used entry was published.
+    #[error("descriptor index {0} is already outstanding")]
+    DuplicateDescriptor(u16),
+}
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
@@ -47,6 +59,10 @@ pub struct InOrderCompletion {
     /// device detects and treats as fatal.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
+    /// Descriptor heads owned by the device. Ownership begins when the head is
+    /// consumed and ends only when its used-ring entry is published.
+    #[inspect(skip)]
+    outstanding: Vec<bool>,
 }
 
 struct Completed {
@@ -60,6 +76,7 @@ impl InOrderCompletion {
         Self {
             order: VecDeque::with_capacity(queue_size as usize),
             completed: (0..queue_size).map(|_| None).collect(),
+            outstanding: vec![false; queue_size as usize],
         }
     }
 
@@ -70,8 +87,8 @@ impl InOrderCompletion {
     pub fn try_next(
         &mut self,
         queue: &mut VirtioQueue,
-    ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        let work = queue.try_next()?;
+    ) -> Result<Option<VirtioQueueCallbackWork>, InOrderError> {
+        let work = queue.try_next().map_err(InOrderError::Queue)?;
         if let Some(work) = &work {
             let idx = work.descriptor_index() as usize;
             // The queue validates the descriptor index against the ring size
@@ -83,6 +100,10 @@ impl InOrderCompletion {
                 "descriptor index {idx} exceeds queue size {}",
                 self.completed.len()
             );
+            if self.outstanding[idx] {
+                return Err(InOrderError::DuplicateDescriptor(work.descriptor_index()));
+            }
+            self.outstanding[idx] = true;
             self.order.push_back(work.descriptor_index());
         }
         Ok(work)
@@ -100,10 +121,9 @@ impl InOrderCompletion {
     /// Use this in place of [`VirtioQueue::complete_prepared`].
     ///
     /// Each `completion` must be for a descriptor still outstanding from
-    /// [`try_next`](Self::try_next), completed once. Some violations panic (an
-    /// out-of-range index, or a collision with a still-buffered slot); a
-    /// completion for a no-longer-outstanding descriptor is not caught and
-    /// would strand an entry in `completed`, eventually stalling publication.
+    /// [`try_next`](Self::try_next), completed once. Violations here are device
+    /// implementation bugs and fail fast; guest attempts to reuse an
+    /// outstanding descriptor are rejected by [`try_next`](Self::try_next).
     pub fn complete(
         &mut self,
         queue: &mut VirtioQueue,
@@ -122,6 +142,7 @@ impl InOrderCompletion {
         if self.order.front() == Some(&idx) {
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
+            self.release(idx);
             if !self.order.is_empty() {
                 self.drain_completed_prefix(queue);
             }
@@ -135,6 +156,10 @@ impl InOrderCompletion {
             .completed
             .get_mut(idx as usize)
             .expect("completed descriptor index must be within the queue size");
+        assert!(
+            self.outstanding[idx as usize],
+            "descriptor {idx} completed after its ownership was released"
+        );
         assert!(
             slot.is_none(),
             "descriptor {idx} completed more than once while outstanding"
@@ -158,7 +183,16 @@ impl InOrderCompletion {
             };
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
+            self.release(front);
         }
+    }
+
+    fn release(&mut self, idx: u16) {
+        let was_outstanding = std::mem::replace(&mut self.outstanding[idx as usize], false);
+        assert!(
+            was_outstanding,
+            "descriptor {idx} published after its ownership was released"
+        );
     }
 
     /// Returns the number of descriptors consumed but not yet published.

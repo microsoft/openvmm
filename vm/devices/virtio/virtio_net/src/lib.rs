@@ -55,6 +55,7 @@ use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::in_order::InOrderCompletion;
+use virtio::in_order::InOrderError;
 use virtio::queue::QueueCompletion;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
@@ -655,7 +656,7 @@ impl Device {
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
-                rx_offload_support: negotiated_rx_offload_support(negotiated_features),
+                enabled_rx_offloads: negotiated_rx_offload_support(negotiated_features),
                 restart: true,
             },
         );
@@ -703,7 +704,7 @@ impl Device {
 struct Coordinator {
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
-    rx_offload_support: RxOffloadSupport,
+    enabled_rx_offloads: RxOffloadSupport,
     restart: bool,
 }
 
@@ -795,7 +796,7 @@ impl Coordinator {
         let queue_config = (0..self.workers.len())
             .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
-                rx_offload_support: self.rx_offload_support,
+                enabled_rx_offloads: self.enabled_rx_offloads,
             })
             .collect::<Vec<_>>();
 
@@ -888,6 +889,15 @@ impl From<task_control::Cancelled> for WorkerError {
     }
 }
 
+impl From<InOrderError> for WorkerError {
+    fn from(value: InOrderError) -> Self {
+        match value {
+            InOrderError::Queue(err) => Self::VirtioQueue(err),
+            InOrderError::DuplicateDescriptor(idx) => Self::DuplicateDescriptor(idx),
+        }
+    }
+}
+
 #[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
@@ -977,7 +987,7 @@ impl Worker {
                     .virtio_state
                     .tx_in_order
                     .try_next(&mut self.virtio_state.tx_queue)
-                    .map_err(WorkerError::VirtioQueue)?
+                    .map_err(WorkerError::from)?
                 else {
                     break;
                 };
@@ -1317,7 +1327,7 @@ impl Worker {
             .virtio_state
             .rx_in_order
             .try_next(&mut self.virtio_state.rx_queue)
-            .map_err(WorkerError::VirtioQueue)?
+            .map_err(WorkerError::from)?
         {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {

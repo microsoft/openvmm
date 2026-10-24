@@ -124,7 +124,7 @@ pub use vnet_hdr::*;
 /// An endpoint based on a TAP interface.
 pub struct TapEndpoint {
     tap: Arc<Mutex<Option<tap::Tap>>>,
-    rx_offload_support: Option<RxOffloadSupport>,
+    enabled_rx_offloads: Option<RxOffloadSupport>,
     stale_offload_recovery: Arc<Mutex<StaleOffloadRecovery>>,
 }
 
@@ -137,7 +137,7 @@ impl TapEndpoint {
         tap.set_offloads(0)?;
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
-            rx_offload_support: None,
+            enabled_rx_offloads: None,
             stale_offload_recovery: Arc::new(Mutex::new(StaleOffloadRecovery::all())),
         })
     }
@@ -163,15 +163,15 @@ impl Endpoint for TapEndpoint {
     ) -> anyhow::Result<()> {
         assert_eq!(config.len(), 1);
         let config = config.drain(..).next().unwrap();
-        let rx_offload_support = config.rx_offload_support;
+        let enabled_rx_offloads = config.enabled_rx_offloads;
         let mut offloads = 0;
-        if rx_offload_support.checksum {
+        if enabled_rx_offloads.checksum {
             offloads |= gen_if_tun::TUN_F_CSUM;
         }
-        if rx_offload_support.tcpv4_gso {
+        if enabled_rx_offloads.tcpv4_gso {
             offloads |= gen_if_tun::TUN_F_TSO4;
         }
-        if rx_offload_support.tcpv6_gso {
+        if enabled_rx_offloads.tcpv6_gso {
             offloads |= gen_if_tun::TUN_F_TSO6;
         }
         self.tap
@@ -183,15 +183,15 @@ impl Endpoint for TapEndpoint {
         self.stale_offload_recovery
             .lock()
             .merge(StaleOffloadRecovery::after_reconfiguration(
-                self.rx_offload_support,
-                rx_offload_support,
+                self.enabled_rx_offloads,
+                enabled_rx_offloads,
             ));
-        self.rx_offload_support = Some(rx_offload_support);
+        self.enabled_rx_offloads = Some(enabled_rx_offloads);
         queues.push(Box::new(TapQueue::new(
             config.driver.as_ref(),
             self.tap.clone(),
             self.stale_offload_recovery.clone(),
-            rx_offload_support,
+            enabled_rx_offloads,
         )?));
         Ok(())
     }
@@ -232,7 +232,7 @@ struct TapQueue {
     tap: Option<tap::PolledTap>,
     inner: Inner,
     buffer: Box<[u8]>,
-    rx_offload_support: RxOffloadSupport,
+    enabled_rx_offloads: RxOffloadSupport,
     stale_offload_recovery: StaleOffloadRecovery,
     read_since_pending: bool,
 }
@@ -272,7 +272,7 @@ impl TapQueue {
         driver: &dyn Driver,
         slot: Arc<Mutex<Option<tap::Tap>>>,
         stale_offload_recovery_slot: Arc<Mutex<StaleOffloadRecovery>>,
-        rx_offload_support: RxOffloadSupport,
+        enabled_rx_offloads: RxOffloadSupport,
     ) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
@@ -286,7 +286,7 @@ impl TapQueue {
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; TAP_READ_BUFFER_LEN].into_boxed_slice(),
-            rx_offload_support,
+            enabled_rx_offloads,
             stale_offload_recovery,
             read_since_pending: false,
         })
@@ -326,7 +326,7 @@ impl Queue for TapQueue {
                     assert_vnet_hdr_contract(&hdr, frame_len);
                     let Some(rx_meta) = parse_vnet_hdr_for_queue(
                         &hdr,
-                        self.rx_offload_support,
+                        self.enabled_rx_offloads,
                         &self.stale_offload_recovery,
                     ) else {
                         continue;
