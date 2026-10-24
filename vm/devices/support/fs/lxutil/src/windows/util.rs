@@ -37,7 +37,7 @@ use zerocopy::KnownLayout;
 // N.B. This is the same base value used for ObGetObjectSecurity.
 static LX_UTIL_FS_SECURITY_DESCRIPTOR_SIZE: AtomicUsize = AtomicUsize::new(256);
 
-// Minimum permissions needed to access a file's metadata.
+// Permissions needed for handle-based metadata queries.
 pub const MINIMUM_PERMISSIONS: W32Fs::FILE_ACCESS_RIGHTS = W32Fs::FILE_ACCESS_RIGHTS(
     W32Fs::FILE_READ_ATTRIBUTES.0 | W32Fs::FILE_READ_EA.0 | W32Fs::READ_CONTROL.0,
 );
@@ -86,21 +86,25 @@ file_information_classes!(
     SystemServices::FILE_END_OF_FILE_INFORMATION = FileSystem::FileEndOfFileInformation;
 );
 
+#[derive(Default)]
+pub struct OpenOptions<'a> {
+    pub file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
+    pub create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
+    pub ea_buffer: Option<&'a [u8]>,
+    pub no_follow: bool,
+}
+
 // Open a file using NtCreateFile.
 // Returns the create result from the IO_STATUS_BLOCK along with the handle.
 // N.B. The handle will always be opened synchronously.
-#[expect(clippy::too_many_arguments)]
 pub fn open_relative_file(
     root: Option<&OwnedHandle>,
     path: &Path,
     desired_access: W32Fs::FILE_ACCESS_RIGHTS,
     creation_disposition: FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
-    file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
-    create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
-    ea_buffer: Option<&[u8]>,
-    no_follow: bool,
+    options: OpenOptions<'_>,
 ) -> lx::Result<(OwnedHandle, usize)> {
-    if no_follow
+    if options.no_follow
         && path
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))
@@ -110,7 +114,7 @@ pub fn open_relative_file(
     let path = dos_to_nt_path(root, path)?;
     let mut oa = windows::ObjectAttributes::new();
     let mut attributes = Foundation::OBJ_CASE_INSENSITIVE.0;
-    if no_follow {
+    if options.no_follow {
         // FILE_OPEN_REPARSE_POINT only protects the final component.
         attributes |= Foundation::OBJ_DONT_REPARSE.0;
     }
@@ -121,7 +125,7 @@ pub fn open_relative_file(
 
     let mut handle = Default::default();
     let mut iosb = Default::default();
-    let (ea_ptr, ea_len) = if let Some(ea) = ea_buffer {
+    let (ea_ptr, ea_len) = if let Some(ea) = options.ea_buffer {
         (Some(ea.as_ptr().cast()), ea.len() as u32)
     } else {
         (None, 0)
@@ -133,10 +137,10 @@ pub fn open_relative_file(
             oa.as_ptr().cast(),
             &mut iosb,
             None,
-            file_attributes,
+            options.file_attributes,
             W32Fs::FILE_SHARE_READ | W32Fs::FILE_SHARE_WRITE | W32Fs::FILE_SHARE_DELETE,
             creation_disposition,
-            create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            options.create_options | FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
             ea_ptr,
             ea_len,
         );
@@ -156,10 +160,10 @@ pub fn reopen_file(
         "".as_ref(),
         desired_access,
         FileSystem::FILE_OPEN,
-        Default::default(),
-        FileSystem::FILE_OPEN_REPARSE_POINT,
-        None,
-        false,
+        OpenOptions {
+            create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+            ..Default::default()
+        },
     )?;
 
     Ok(handle)
@@ -382,19 +386,36 @@ pub fn get_attributes(
         return get_attributes_by_handle(fs_context, state, existing_handle);
     }
 
-    if state.options.no_follow && root_handle.is_some() {
+    let no_follow_handle = if state.options.no_follow && root_handle.is_some() {
+        let desired_access = if fs_context.compatibility_flags.supports_query_by_name() {
+            W32Fs::FILE_READ_ATTRIBUTES
+        } else {
+            MINIMUM_PERMISSIONS
+        };
         let (handle, _) = open_relative_file(
             root_handle,
             path,
-            MINIMUM_PERMISSIONS,
+            desired_access,
             FileSystem::FILE_OPEN,
-            Default::default(),
-            FileSystem::FILE_OPEN_REPARSE_POINT,
-            None,
-            true,
+            OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                no_follow: true,
+                ..Default::default()
+            },
         )?;
-        return get_attributes_by_handle(fs_context, state, &handle);
-    }
+        if !fs_context.compatibility_flags.supports_query_by_name() {
+            return get_attributes_by_handle(fs_context, state, &handle);
+        }
+        Some(handle)
+    } else {
+        None
+    };
+    // Querying by name avoids requiring FILE_READ_EA. An empty name queries the
+    // captured file without traversing its path again.
+    let (root_handle, path) = match &no_follow_handle {
+        Some(handle) => (Some(handle), Path::new("")),
+        None => (root_handle, path),
+    };
 
     // If NtQueryInformationByName is supported, use it.
     if fs_context.compatibility_flags.supports_query_by_name() {
@@ -406,15 +427,17 @@ pub fn get_attributes(
         // determined based on the reparse data, which requires opening the file.
         let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
         {
-            let symlink_len = if let Ok((handle, _)) = open_relative_file(
+            let symlink_len = if let Some(handle) = &no_follow_handle {
+                fs::read_link_length(handle, state).unwrap_or(0)
+            } else if let Ok((handle, _)) = open_relative_file(
                 root_handle,
                 path,
                 MINIMUM_PERMISSIONS,
                 FileSystem::FILE_OPEN,
-                Default::default(),
-                FileSystem::FILE_OPEN_REPARSE_POINT,
-                None,
-                false,
+                OpenOptions {
+                    create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                    ..Default::default()
+                },
             ) {
                 // Return 0 here on failure to duplicate LxUtil behavior
                 fs::read_link_length(&handle, state).unwrap_or(0)
@@ -440,10 +463,10 @@ pub fn get_attributes(
             path,
             MINIMUM_PERMISSIONS,
             FileSystem::FILE_OPEN,
-            Default::default(),
-            FileSystem::FILE_OPEN_REPARSE_POINT,
-            None,
-            false,
+            OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                ..Default::default()
+            },
         )?;
 
         get_attributes_by_handle(fs_context, state, &handle)
