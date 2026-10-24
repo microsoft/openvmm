@@ -50,6 +50,212 @@ petri::test!(test_ttrpc_interface, |resolver| {
     Some([openvmm.erase(), kernel.erase(), initrd.erase(), pipette])
 });
 
+petri::test!(test_ttrpc_shutdown, |resolver| {
+    Some([
+        resolver.require(artifacts::OPENVMM_NATIVE).erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE)
+            .erase(),
+        resolver
+            .require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE)
+            .erase(),
+    ])
+});
+
+async fn test_ttrpc_shutdown(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
+) -> anyhow::Result<()> {
+    use vmservice::shutdown_vm_request::Mechanism;
+
+    let tempdir = tempfile::tempdir()?;
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &pidfile_path,
+    )
+    .await?;
+
+    // Supply the minimal initrd's OS shutdown helper so the kernel's IC handler
+    // powers off through userspace, rather than relying on its emergency fallback.
+    let initrd = std::fs::read(initrd_path.get())?;
+    let initrd = initrd_cpio::inject_into_initrd(
+        &initrd,
+        "shutdown-test-init",
+        br#"#!/bin/busybox sh
+set -eu
+/bin/busybox mount -t proc proc /proc
+echo /shutdown-test-poweroff > /proc/sys/kernel/poweroff_cmd
+echo shutdown-test-ready
+exec /bin/busybox sleep 3600
+"#,
+        0o100755,
+    )?;
+    let initrd = initrd_cpio::inject_into_initrd(
+        &initrd,
+        "shutdown-test-poweroff",
+        br#"#!/bin/busybox sh
+echo shutdown-test-poweroff > /dev/console
+exec /bin/busybox poweroff -f
+"#,
+        0o100755,
+    )?;
+    let mut initrd_file = tempfile::NamedTempFile::new_in(tempdir.path())?;
+    initrd_file.write_all(&initrd)?;
+    let console = match petri_artifacts_common::tags::MachineArch::host() {
+        petri_artifacts_common::tags::MachineArch::X86_64 => "ttyS0",
+        petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
+    };
+
+    for (name, request) in [
+        ("default", vmservice::ShutdownVmRequest::default()),
+        (
+            "force",
+            vmservice::ShutdownVmRequest {
+                mechanism: Mechanism::HypervIc as i32,
+                force: true,
+            },
+        ),
+    ] {
+        let com1_path = tempdir.path().join(format!("com1-{name}.sock"));
+        client
+            .call()
+            .start(
+                vmservice::Vm::CreateVm,
+                vmservice::CreateVmRequest {
+                    config: Some(vmservice::VmConfig {
+                        memory_config: Some(vmservice::MemoryConfig {
+                            memory_mb: 256,
+                            ..Default::default()
+                        }),
+                        boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                            vmservice::DirectBoot {
+                                kernel_path: kernel_path.get().to_string_lossy().into(),
+                                initrd_path: initrd_file.path().to_string_lossy().into(),
+                                kernel_cmdline: format!(
+                                    "console={console} rdinit=/shutdown-test-init panic=-1"
+                                ),
+                            },
+                        )),
+                        serial_config: Some(vmservice::SerialConfig {
+                            ports: vec![vmservice::serial_config::Config {
+                                port: 0,
+                                socket_path: com1_path.to_string_lossy().into(),
+                                connect: false,
+                            }],
+                        }),
+                        ..Default::default()
+                    }),
+                    log_id: String::new(),
+                },
+            )
+            .await
+            .unwrap();
+        let (ready_send, ready_recv) = mesh::oneshot();
+        let (poweroff_send, poweroff_recv) = mesh::oneshot();
+        let _com1_task = driver.spawn(
+            "com1",
+            log_serial(
+                params.log_source.log_file(&format!("shutdown-{name}"))?,
+                PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                [
+                    ("shutdown-test-ready", ready_send),
+                    ("shutdown-test-poweroff", poweroff_send),
+                ],
+            ),
+        );
+        client
+            .call()
+            .start(vmservice::Vm::ResumeVm, ())
+            .await
+            .unwrap();
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(60))
+            .until_cancelled(ready_recv)
+            .await
+            .context("timed out waiting for shutdown test guest to boot")?
+            .context("serial connection closed before shutdown test guest booted")?;
+
+        let waiter = client
+            .call()
+            .timeout(Some(Duration::from_secs(60)))
+            .start(vmservice::Vm::WaitVm, ());
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(10))
+            .until_cancelled(async {
+                let mut timer = pal_async::timer::PolledTimer::new(&driver);
+                loop {
+                    match client
+                        .call()
+                        .timeout(Some(Duration::from_secs(5)))
+                        .start(vmservice::Vm::ShutdownVm, request.clone())
+                        .await
+                    {
+                        Err(status)
+                            if status.code
+                                == mesh_rpc::service::Code::FailedPrecondition as i32
+                                && status.message.contains("shutdown IC not ready") =>
+                        {
+                            timer.sleep(Duration::from_millis(100)).await;
+                        }
+                        result => break result,
+                    }
+                }
+            })
+            .await
+            .context("timed out waiting for shutdown IC readiness")?
+            .unwrap();
+        waiter.await.unwrap();
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(poweroff_recv)
+            .await
+            .context("timed out waiting for the guest userspace shutdown helper")?
+            .context("serial connection closed before the guest userspace shutdown helper ran")?;
+
+        let props = client
+            .call()
+            .start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(props.state, vmservice::VmState::Halted as i32);
+        assert_eq!(props.halt_reason.as_deref(), Some("PowerOff"));
+
+        client
+            .call()
+            .timeout(Some(Duration::from_secs(10)))
+            .start(vmservice::Vm::TeardownVm, ())
+            .await
+            .unwrap();
+        let props = client
+            .call()
+            .start(
+                vmservice::Vm::PropertiesVm,
+                vmservice::PropertiesVmRequest { types: Vec::new() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(props.state, vmservice::VmState::Uninitialized as i32);
+        assert!(props.halt_reason.is_none());
+    }
+
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "OpenVMM exited with {status}");
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
+    Ok(())
+}
+
 petri::test!(test_ttrpc_no_vmbus, |resolver| {
     // Restrict this test to aarch64 for now: without Hyper-V enlightenments,
     // x64 guests rely on legacy timer calibration. PIT calibration is unreliable
@@ -1182,8 +1388,7 @@ async fn test_ttrpc_uefi_boot(
         log_serial(
             params.log_source.log_file("uefi")?,
             com1,
-            UEFI_BANNER,
-            marker_send,
+            [(UEFI_BANNER, marker_send)],
         ),
     );
 
@@ -1270,14 +1475,12 @@ const UEFI_BANNER: &str = "UEFI vendor =";
 /// This keeps running after the marker is seen: the guest stalls if its serial
 /// output is not drained, so the reader has to stay attached for the lifetime
 /// of the VM.
-async fn log_serial(
+async fn log_serial<const N: usize>(
     log_file: petri::PetriLogFile,
     reader: impl futures::AsyncRead + Unpin,
-    marker: &str,
-    marker_send: mesh::OneshotSender<()>,
+    markers: [(&str, mesh::OneshotSender<()>); N],
 ) {
-    let mut marker_send = Some(marker_send);
-    let marker = marker.as_bytes();
+    let mut markers = markers.map(|(marker, send)| (marker.as_bytes(), Some(send)));
     let mut reader = futures::io::BufReader::new(reader);
     let mut line = Vec::new();
     loop {
@@ -1293,9 +1496,11 @@ async fn log_serial(
             }
         }
 
-        if line.windows(marker.len()).any(|window| window == marker) {
-            if let Some(send) = marker_send.take() {
-                send.send(());
+        for (marker, send) in &mut markers {
+            if line.windows(marker.len()).any(|window| window == *marker) {
+                if let Some(send) = send.take() {
+                    send.send(());
+                }
             }
         }
 
