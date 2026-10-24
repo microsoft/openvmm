@@ -4,17 +4,18 @@
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
+use net_backend::ETHERNET_HEADER_LEN;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
-use net_backend::RxChecksumOffload;
 use net_backend::RxChecksumState;
-use net_backend::RxGso;
 use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::RxOffload;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
@@ -59,6 +60,7 @@ use crate::VirtioNetHeaderGso;
 use crate::VirtioNetHeaderGsoProtocol;
 use crate::Worker;
 use crate::header_size;
+use crate::negotiated_rx_offload_support;
 
 // --- Constants ---
 
@@ -427,6 +429,14 @@ impl Endpoint for MockEndpoint {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         TxOffloadSupport::default()
+    }
+
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        RxOffloadSupport {
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
+        }
     }
 
     fn multiqueue_support(&self) -> MultiQueueSupport {
@@ -973,26 +983,30 @@ async fn rx_out_of_order_completion_published_in_order(driver: DefaultDriver) {
     }
 }
 
-/// A malformed (too-small) RX buffer in the middle of the avail ring is dropped,
-/// but its completion is published in its avail-order position — never ahead of
+/// RX buffers without room for an Ethernet header are dropped, but their
+/// completions are published in their avail-order positions — never ahead of
 /// an earlier still-outstanding buffer.
 #[async_test]
 async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     let mut handle = harness.enable_and_get_handle().await;
 
-    // Descriptor 0: normal. Descriptor 1: too small (< virtio-net header) and
-    // will be dropped. Descriptor 2: normal.
+    // Descriptor 0: normal. Descriptors 1 through 3 have zero, one, and one
+    // less than the Ethernet header length, respectively, and will be dropped.
+    // Descriptor 4 has exactly the minimum valid capacity.
     harness.post_rx_buffer_and_signal(0, 512);
-    harness.post_rx_buffer_and_signal(1, 4); // smaller than header_size()
-    harness.post_rx_buffer_and_signal(2, 512);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE);
+    harness.post_rx_buffer_and_signal(2, NET_HEADER_SIZE + 1);
+    harness.post_rx_buffer_and_signal(3, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    harness.post_rx_buffer_and_signal(4, NET_HEADER_SIZE + ETHERNET_HEADER_LEN);
 
-    // Descriptors 0 and 2 are posted to the backend (descriptor 1 is dropped).
+    // Descriptors 0 and 4 are posted to the backend (descriptors 1 through 3
+    // are dropped).
     handle.wait_for_rx_pending().await;
     handle.wait_for_rx_pending().await;
     harness.settle().await;
 
-    // The malformed descriptor 1 has been completed internally but is held
+    // The malformed descriptors have been completed internally but are held
     // behind the still-outstanding descriptor 0, so nothing is published yet.
     assert_eq!(
         harness.try_read_rx_used(),
@@ -1000,16 +1014,18 @@ async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
         "malformed descriptor must not be published ahead of descriptor 0"
     );
 
-    // Complete descriptor 2 out of order — still nothing publishes.
-    handle.inject_rx_packet_for(RxId(2), b"pkt-two");
+    // Complete descriptor 4 out of order — still nothing publishes.
+    let minimum_frame = [0u8; ETHERNET_HEADER_LEN as usize];
+    handle.inject_rx_packet_for(RxId(4), &minimum_frame);
     harness.settle().await;
     assert_eq!(
         harness.try_read_rx_used(),
         None,
-        "descriptor 2 must not be published ahead of descriptors 0/1"
+        "descriptor 4 must not be published ahead of descriptors 0/1/2/3"
     );
 
-    // Complete descriptor 0: now 0, the dropped 1 (len 0), and 2 flush in order.
+    // Complete descriptor 0: now 0, the dropped 1 through 3 (len 0), and 4
+    // flush in order.
     handle.inject_rx_packet_for(RxId(0), b"packet-zero");
 
     let (id0, len0) = harness.wait_for_rx_used().await;
@@ -1024,8 +1040,22 @@ async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
     assert_eq!(len1, 0, "malformed descriptor is dropped with len 0");
 
     let (id2, len2) = harness.wait_for_rx_used().await;
-    assert_eq!(id2, 2);
-    assert_eq!(len2, NET_HEADER_SIZE + b"pkt-two".len() as u32);
+    assert_eq!(
+        id2, 2,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len2, 0, "malformed descriptor is dropped with len 0");
+
+    let (id3, len3) = harness.wait_for_rx_used().await;
+    assert_eq!(
+        id3, 3,
+        "malformed descriptor completes in avail-order position"
+    );
+    assert_eq!(len3, 0, "malformed descriptor is dropped with len 0");
+
+    let (id4, len4) = harness.wait_for_rx_used().await;
+    assert_eq!(id4, 4);
+    assert_eq!(len4, NET_HEADER_SIZE + ETHERNET_HEADER_LEN);
 }
 
 /// A backend packet larger than the posted receive buffer is dropped without
@@ -1862,10 +1892,7 @@ async fn rx_offload_checksum_header(driver: DefaultDriver) {
             len: payload.len(),
             ip_checksum: RxChecksumState::Good,
             l4_checksum: RxChecksumState::Good,
-            checksum_offload: Some(RxChecksumOffload {
-                start: 34,
-                offset: 16,
-            }),
+            offload: RxOffload::checksum(34, 16),
             ..Default::default()
         },
     );
@@ -1902,16 +1929,7 @@ async fn rx_offload_tcpv4_gso_header(driver: DefaultDriver) {
         &RxMetadata {
             offset: 0,
             len: payload.len(),
-            checksum_offload: Some(RxChecksumOffload {
-                start: 34,
-                offset: 16,
-            }),
-            gso: Some(RxGso {
-                protocol: RxGsoProtocol::TcpV4,
-                header_len: 54,
-                max_segment_size: 1460,
-                ecn: false,
-            }),
+            offload: RxOffload::tcp_gso(RxGsoProtocol::TcpV4, 54, 1460, Some(34)),
             ..Default::default()
         },
     );
@@ -1950,12 +1968,7 @@ async fn rx_offload_tcpv6_data_valid_gso_header(driver: DefaultDriver) {
             len: payload.len(),
             ip_checksum: RxChecksumState::Good,
             l4_checksum: RxChecksumState::Good,
-            gso: Some(RxGso {
-                protocol: RxGsoProtocol::TcpV6,
-                header_len: 74,
-                max_segment_size: 1440,
-                ecn: false,
-            }),
+            offload: RxOffload::tcp_gso(RxGsoProtocol::TcpV6, 74, 1440, None),
             ..Default::default()
         },
     );
@@ -2109,47 +2122,29 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
     );
 }
 
-/// RX ECN metadata is dropped when VIRTIO_NET_F_GUEST_ECN is not supported.
-#[async_test]
-async fn rx_offload_ecn_without_feature_is_dropped(driver: DefaultDriver) {
-    let mut harness = TestHarness::new(&driver);
-    let mut handle = harness.enable_and_get_handle().await;
-
-    let buffer_size: u32 = 65535;
-    let desc_index: u16 = 0;
-    let gpa = harness.post_rx_buffer_and_signal(desc_index, buffer_size);
-    handle.wait_for_rx_pending().await;
-
-    let payload = b"tcp-gso-packet";
-    let metadata = RxMetadata {
-        offset: 0,
-        len: payload.len(),
-        checksum_offload: Some(RxChecksumOffload {
-            start: 34,
-            offset: 16,
-        }),
-        gso: Some(RxGso {
-            protocol: RxGsoProtocol::TcpV4,
-            header_len: 54,
-            max_segment_size: 1460,
-            ecn: true,
-        }),
-        ..Default::default()
-    };
-    handle.inject_rx_packet_with_metadata(payload, &metadata);
-
-    let (used_id, used_len) = harness.wait_for_rx_used().await;
-    assert_eq!(used_id, desc_index);
-    assert_eq!(used_len, 0);
-    assert!(
-        read_virtio_header(&harness.mem, gpa)
-            .as_bytes()
-            .iter()
-            .all(|&byte| byte == 0)
-    );
-}
-
 // --- Feature Negotiation Tests ---
+
+#[test]
+fn guest_tso_requires_guest_csum() {
+    let without_checksum = negotiated_rx_offload_support(
+        NetworkFeaturesBank0::new()
+            .with_guest_tso4(true)
+            .with_guest_tso6(true),
+    );
+    assert!(!without_checksum.checksum);
+    assert!(!without_checksum.tcpv4_gso);
+    assert!(!without_checksum.tcpv6_gso);
+
+    let with_checksum = negotiated_rx_offload_support(
+        NetworkFeaturesBank0::new()
+            .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true),
+    );
+    assert!(with_checksum.checksum);
+    assert!(with_checksum.tcpv4_gso);
+    assert!(with_checksum.tcpv6_gso);
+}
 
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
 /// when the endpoint supports TCP/UDP/TSO/USO offloads.
@@ -2165,6 +2160,11 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             udp: true,
             tso: true,
             uso: true,
+        },
+        rx_offloads: RxOffloadSupport {
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
         },
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
@@ -2219,6 +2219,7 @@ async fn advertises_in_order(driver: DefaultDriver) {
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
     let endpoint = MockEndpointWithOffloads {
         offloads: TxOffloadSupport::default(),
+        rx_offloads: RxOffloadSupport::default(),
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
     let device = Device::builder()
@@ -2258,6 +2259,7 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
 
     let endpoint = MockEndpointWithOffloads {
         offloads: TxOffloadSupport::default(),
+        rx_offloads: RxOffloadSupport::default(),
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
@@ -2270,8 +2272,8 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     assert!(bank0.mac());
     assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
-    assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
-    assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 requires backend support");
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 requires backend support");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),
@@ -2307,6 +2309,7 @@ async fn link_speed_boundaries(driver: DefaultDriver) {
                 &driver_source,
                 Box::new(MockEndpointWithOffloads {
                     offloads: TxOffloadSupport::default(),
+                    rx_offloads: RxOffloadSupport::default(),
                     link_speed,
                 }),
                 mac,
@@ -2332,6 +2335,7 @@ async fn link_speed_boundaries(driver: DefaultDriver) {
 // Mock endpoint that reports specific offload support.
 struct MockEndpointWithOffloads {
     offloads: TxOffloadSupport,
+    rx_offloads: RxOffloadSupport,
     link_speed: u64,
 }
 
@@ -2364,6 +2368,10 @@ impl Endpoint for MockEndpointWithOffloads {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.offloads
+    }
+
+    fn rx_offload_support(&self) -> RxOffloadSupport {
+        self.rx_offloads
     }
 
     fn link_speed(&self) -> u64 {
