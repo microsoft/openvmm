@@ -65,6 +65,9 @@ members = [
   "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  # TDISP
+  # Temporary: remove once a workspace member depends on this crate.
+  "vm/devices/tdisp_lstoraccel",
 ]
 exclude = [
   "xsync",
