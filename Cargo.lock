@@ -5090,6 +5090,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "test_with_tracing",
  "tracing",
  "vm_resource",
  "vmswitch",
