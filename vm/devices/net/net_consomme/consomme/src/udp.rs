@@ -22,6 +22,7 @@ use crate::dns_resolver::DnsResponse;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use pal_async::driver::Driver;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
@@ -53,6 +54,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::net::UdpSocket;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -98,6 +100,8 @@ impl InspectMut for Udp {
 struct UdpListener {
     #[inspect(skip)]
     socket: Option<PolledSocket<UdpSocket>>,
+    #[inspect(skip)]
+    _driver: Option<Arc<dyn Driver>>,
     // The host address listening for UDP packets.
     #[inspect(display)]
     host_addr: SocketAddr,
@@ -346,24 +350,6 @@ impl<T: Client> Access<'_, T> {
                 }
             }
         });
-        self.inner.udp.listeners.retain(|key, listener| {
-            let socket = listener.socket.take().unwrap().into_inner();
-            match PolledSocket::new(self.client.driver(), socket) {
-                Ok(socket) => {
-                    listener.socket = Some(socket);
-                    true
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        guest_port = key.guest_port,
-                        family = %key.family,
-                        error = &err as &dyn std::error::Error,
-                        "failed to update driver for udp listener"
-                    );
-                    false
-                }
-            }
-        });
     }
 
     pub(crate) fn handle_udp(
@@ -574,6 +560,7 @@ impl<T: Client> Access<'_, T> {
     /// packets to the guest.
     pub fn bind_udp_port(&mut self, socket: Socket, guest_port: u16) -> Result<(), BindError> {
         let socket: UdpSocket = socket.into();
+        let driver_keepalive = self.client.driver_keepalive();
         let socket = PolledSocket::new(self.client.driver(), socket).map_err(BindError::Io)?;
         let host_addr = socket.get().local_addr().map_err(BindError::Io)?;
         let key = PortForwardKey::from_socket_addr(host_addr, guest_port);
@@ -584,6 +571,7 @@ impl<T: Client> Access<'_, T> {
             key,
             UdpListener {
                 socket: Some(socket),
+                _driver: driver_keepalive,
                 host_addr,
                 guest_port,
                 stats: Default::default(),

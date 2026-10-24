@@ -377,7 +377,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
                 tx_scratch: Vec::new(),
             },
             stats: Default::default(),
-            driver: config.driver,
+            driver: Arc::from(config.driver),
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -442,7 +442,7 @@ pub struct ConsommeQueue {
     endpoint_state: Option<EndpointState>,
     state: QueueState,
     stats: Stats,
-    driver: Box<dyn Driver>,
+    driver: Arc<dyn Driver>,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -828,19 +828,23 @@ struct Stats {
 struct Client<'a> {
     state: &'a mut QueueState,
     stats: &'a mut Stats,
-    driver: &'a dyn Driver,
+    driver: &'a Arc<dyn Driver>,
     pool: &'a mut dyn BufferAccess,
 }
 
 /// Minimal client for consomme operations that don't need BufferAccess
 /// (e.g., refresh_driver, timer/socket management).
 struct ClientNoPool<'a> {
-    driver: &'a dyn Driver,
+    driver: &'a Arc<dyn Driver>,
 }
 
 impl consomme::Client for ClientNoPool<'_> {
     fn driver(&self) -> &dyn Driver {
-        self.driver
+        self.driver.as_ref()
+    }
+
+    fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
+        Some(self.driver.clone())
     }
 
     fn recv(&mut self, _data: &[u8], _checksum: &ChecksumState) {}
@@ -852,7 +856,11 @@ impl consomme::Client for ClientNoPool<'_> {
 
 impl consomme::Client for Client<'_> {
     fn driver(&self) -> &dyn Driver {
-        self.driver
+        self.driver.as_ref()
+    }
+
+    fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
+        Some(self.driver.clone())
     }
 
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
