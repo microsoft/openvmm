@@ -394,6 +394,8 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
+    queue_config_tx: mesh::Sender<RxOffloadSupport>,
+    endpoint_action_rx: mesh::Receiver<EndpointAction>,
     is_ordered: bool,
 }
 
@@ -411,10 +413,12 @@ impl Endpoint for MockEndpoint {
 
     async fn get_queues(
         &mut self,
-        _config: Vec<QueueConfig>,
+        config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
+        assert_eq!(config.len(), 1);
+        self.queue_config_tx.send(config[0].enabled_rx_offloads);
         let (queue, handle) = new_mock_queue();
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
@@ -451,7 +455,10 @@ impl Endpoint for MockEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
-        pending().await
+        self.endpoint_action_rx
+            .next()
+            .await
+            .expect("endpoint action channel closed")
     }
 }
 
@@ -499,6 +506,8 @@ struct TestHarness {
     mem: GuestMemory,
     driver: DefaultDriver,
     queue_handle_rx: mesh::Receiver<MockQueueHandle>,
+    queue_config_rx: mesh::Receiver<RxOffloadSupport>,
+    endpoint_action_tx: mesh::Sender<EndpointAction>,
     rx_event: Event,
     rx_interrupt_event: Event,
     tx_event: Event,
@@ -524,8 +533,12 @@ impl TestHarness {
 
         // Create mock endpoint with channel
         let (queue_tx, queue_handle_rx) = mesh::channel();
+        let (queue_config_tx, queue_config_rx) = mesh::channel();
+        let (endpoint_action_tx, endpoint_action_rx) = mesh::channel();
         let endpoint = MockEndpoint {
             queue_tx,
+            queue_config_tx,
+            endpoint_action_rx,
             is_ordered: true,
         };
 
@@ -545,6 +558,8 @@ impl TestHarness {
             mem,
             driver: driver.clone(),
             queue_handle_rx,
+            queue_config_rx,
+            endpoint_action_tx,
             rx_event,
             rx_interrupt_event,
             tx_event,
@@ -621,6 +636,29 @@ impl TestHarness {
             .until_cancelled(self.queue_handle_rx.next())
             .await
             .expect("timed out waiting for mock queue handle")
+            .expect("channel closed")
+    }
+
+    async fn wait_for_queue_config(&mut self) -> RxOffloadSupport {
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.queue_config_rx.next())
+            .await
+            .expect("timed out waiting for queue config")
+            .expect("channel closed")
+    }
+
+    fn request_endpoint_restart(&self) {
+        self.endpoint_action_tx
+            .send(EndpointAction::RestartRequired);
+    }
+
+    async fn wait_for_recreated_queue(&mut self) -> MockQueueHandle {
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(self.queue_handle_rx.next())
+            .await
+            .expect("timed out waiting for recreated mock queue handle")
             .expect("channel closed")
     }
 
@@ -908,8 +946,12 @@ async fn unordered_backend_rejected(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
     let (queue_tx, _queue_handle_rx) = mesh::channel();
+    let (queue_config_tx, _queue_config_rx) = mesh::channel();
+    let (_endpoint_action_tx, endpoint_action_rx) = mesh::channel();
     let endpoint = MockEndpoint {
         queue_tx,
+        queue_config_tx,
+        endpoint_action_rx,
         is_ordered: false,
     };
 
@@ -1056,6 +1098,121 @@ async fn rx_malformed_completed_in_order(driver: DefaultDriver) {
     let (id4, len4) = harness.wait_for_rx_used().await;
     assert_eq!(id4, 4);
     assert_eq!(len4, NET_HEADER_SIZE + ETHERNET_HEADER_LEN);
+}
+
+/// A malformed descriptor completed behind earlier work remains owned until
+/// its used entry is published, so reusing its head stops the queue without
+/// reaching a duplicate-completion assertion.
+#[async_test]
+async fn duplicate_malformed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "duplicate malformed descriptor must not produce a used entry"
+    );
+
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "queue worker must stop after the duplicate descriptor"
+    );
+}
+
+/// Backend completion does not release a descriptor head while its used entry
+/// is still waiting behind earlier work.
+#[async_test]
+async fn duplicate_backend_completed_rx_descriptor_is_fatal(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.wait_for_rx_pending().await;
+
+    handle.inject_rx_packet_for(RxId(1), b"packet-one");
+    harness.settle().await;
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    harness.post_rx_buffer_and_signal(1, 1500);
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "backend-completed duplicate must not produce a used entry"
+    );
+
+    handle.inject_rx_packet_for(RxId(0), b"packet-zero");
+    harness.settle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "queue worker must stop after the duplicate descriptor"
+    );
+}
+
+/// Publishing the used entry releases ownership and permits normal descriptor
+/// head reuse.
+#[async_test]
+async fn rx_descriptor_can_be_reused_after_publication(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    for payload in [b"first".as_slice(), b"second".as_slice()] {
+        harness.post_rx_buffer_and_signal(0, 1500);
+        handle.wait_for_rx_pending().await;
+        handle.inject_rx_packet(payload);
+
+        let (used_id, used_len) = harness.wait_for_rx_used().await;
+        assert_eq!(used_id, 0);
+        assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
+    }
+}
+
+/// Queue teardown discards buffered completions and outstanding ownership; a
+/// recreated queue accepts the same head without publishing stale work.
+#[async_test]
+async fn rx_reset_discards_buffered_completion_ownership(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness.enable_and_get_handle().await;
+
+    harness.post_rx_buffer_and_signal(0, 1500);
+    harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + ETHERNET_HEADER_LEN - 1);
+    handle.wait_for_rx_pending().await;
+    harness.settle().await;
+    assert_eq!(harness.try_read_rx_used(), None);
+
+    drop(handle);
+    harness.disable().await;
+    harness.reset_rings();
+    handle = harness.enable_and_get_handle().await;
+    assert_eq!(
+        harness.try_read_rx_used(),
+        None,
+        "recreated queue must not publish the old buffered completion"
+    );
+
+    harness.post_rx_buffer_and_signal(1, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet(b"after-reset");
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 1);
+    assert_eq!(used_len, NET_HEADER_SIZE + b"after-reset".len() as u32);
 }
 
 /// A backend packet larger than the posted receive buffer is dropped without
@@ -1381,6 +1538,34 @@ async fn disable_and_reenable(driver: DefaultDriver) {
     let (used_id, _) = harness.wait_for_used().await;
     assert_eq!(used_id, 0);
     drop(handle);
+}
+
+/// Queue recreation must reuse the receive-offload policy negotiated when the
+/// virtio queues were activated rather than falling back to the default.
+#[async_test]
+async fn rx_offload_policy_survives_queue_recreation(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features = VirtioDeviceFeatures::new().with_bank(
+        0,
+        NetworkFeaturesBank0::new()
+            .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .into_bits(),
+    );
+
+    let _initial_queue = harness.enable_and_get_handle_with_features(features).await;
+    let initial = harness.wait_for_queue_config().await;
+    assert!(initial.checksum);
+    assert!(initial.tcpv4_gso);
+    assert!(!initial.tcpv6_gso);
+
+    harness.request_endpoint_restart();
+
+    let recreated = harness.wait_for_queue_config().await;
+    let _recreated_queue = harness.wait_for_recreated_queue().await;
+    assert!(recreated.checksum);
+    assert!(recreated.tcpv4_gso);
+    assert!(!recreated.tcpv6_gso);
 }
 
 // --- TX Offload Parsing Tests ---

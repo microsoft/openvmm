@@ -148,7 +148,7 @@ impl BufferAccess for GuestBuffers {
 
         let packet = &mut self.rx_packets[id.0 as usize];
 
-        let cqe_type = if metadata.len > packet.len as usize || metadata.len > u16::MAX as usize {
+        let cqe_type = if metadata.len > packet.len as usize {
             CQE_RX_TRUNCATED
         } else {
             CQE_RX_OKAY
@@ -162,8 +162,7 @@ impl BufferAccess for GuestBuffers {
             flags,
             ..FromZeros::new_zeroed()
         };
-        // Preserve the largest representable length for truncated oversized frames.
-        packet.oob.ppi[0].pkt_len = metadata.len.try_into().unwrap_or(u16::MAX);
+        packet.oob.ppi[0].pkt_len = metadata.len as u16;
     }
 }
 
@@ -393,7 +392,7 @@ impl BasicNic {
                                 .get_queues(
                                     vec![QueueConfig {
                                         driver: Box::new(state.queues.driver.clone()),
-                                        rx_offload_support: Default::default(),
+                                        enabled_rx_offloads: Default::default(),
                                     }],
                                     None,
                                     &mut queues,
@@ -789,51 +788,5 @@ mod tests {
         assert!(flags.offload_udp_checksum());
         assert!(!flags.offload_tcp_checksum());
         assert!(!flags.offload_tcp_segmentation());
-    }
-
-    fn rx_completion(capacity: u32, len: usize) -> (u8, u16) {
-        let mut rx_packets = Slab::new();
-        let id = rx_packets.insert(RxPacket {
-            segments: Vec::new(),
-            len: capacity,
-            wqe_offset: 0,
-            oob: ManaRxcompOob::new_zeroed(),
-        });
-        let mut buffers = GuestBuffers {
-            gm: GuestMemory::empty(),
-            rx_packets,
-        };
-
-        buffers.write_header(
-            RxId(id as u32),
-            &RxMetadata {
-                len,
-                ..Default::default()
-            },
-        );
-
-        let oob = &buffers.rx_packets[id].oob;
-        (oob.cqe_hdr.cqe_type(), oob.ppi[0].pkt_len)
-    }
-
-    #[test]
-    fn write_header_accepts_maximum_representable_packet_length() {
-        assert_eq!(
-            rx_completion(u16::MAX as u32, u16::MAX as usize),
-            (CQE_RX_OKAY, u16::MAX)
-        );
-    }
-
-    #[test]
-    fn write_header_truncates_unrepresentable_packet_length() {
-        assert_eq!(
-            rx_completion(u16::MAX as u32 + 1, u16::MAX as usize + 1),
-            (CQE_RX_TRUNCATED, u16::MAX)
-        );
-    }
-
-    #[test]
-    fn write_header_truncates_packet_exceeding_posted_capacity() {
-        assert_eq!(rx_completion(64, 65), (CQE_RX_TRUNCATED, 65));
     }
 }

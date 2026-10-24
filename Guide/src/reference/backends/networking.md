@@ -113,7 +113,7 @@ guest RAM directly.
 
 Receive checksum and segmentation offloads must be enabled end to end.
 The frontend reports only capabilities negotiated with the guest in
-`QueueConfig::rx_offload_support`; the backend must not enable additional
+`QueueConfig::enabled_rx_offloads`; the backend must not enable additional
 host transport offloads.
 
 This is especially important for Linux TAP. Enabling `TUN_F_CSUM`,
