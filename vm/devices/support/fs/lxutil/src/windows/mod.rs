@@ -96,10 +96,11 @@ impl LxVolume {
             root_path,
             util::MINIMUM_PERMISSIONS,
             FileSystem::FILE_OPEN,
-            W32Fs::FILE_ATTRIBUTE_DIRECTORY,
-            FileSystem::FILE_DIRECTORY_FILE,
-            None,
-            false,
+            util::OpenOptions {
+                file_attributes: W32Fs::FILE_ATTRIBUTE_DIRECTORY,
+                create_options: FileSystem::FILE_DIRECTORY_FILE,
+                ..Default::default()
+            },
         )?;
 
         // Determine the capabilities of the file system.
@@ -448,10 +449,11 @@ impl LxVolume {
                 target_path,
                 desired_access,
                 FileSystem::FILE_OPEN,
-                Default::default(),
-                FileSystem::FILE_OPEN_REPARSE_POINT,
-                None,
-                self.state.options.no_follow,
+                util::OpenOptions {
+                    create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                    no_follow: self.state.options.no_follow,
+                    ..Default::default()
+                },
             )?;
             if self.state.options.sandbox || source_is_dir.is_some() {
                 let info: FileSystem::FILE_BASIC_INFORMATION =
@@ -1039,10 +1041,12 @@ impl LxVolume {
             path,
             desired_access,
             disposition,
-            file_attributes,
-            create_options,
-            ea,
-            self.state.options.no_follow,
+            util::OpenOptions {
+                file_attributes,
+                create_options,
+                ea_buffer: ea,
+                no_follow: self.state.options.no_follow,
+            },
         )
     }
 
@@ -1064,10 +1068,11 @@ impl LxVolume {
             parent_path,
             W32Fs::FILE_READ_ATTRIBUTES,
             FileSystem::FILE_OPEN,
-            Default::default(),
-            FileSystem::FILE_DIRECTORY_FILE,
-            None,
-            true,
+            util::OpenOptions {
+                create_options: FileSystem::FILE_DIRECTORY_FILE,
+                no_follow: true,
+                ..Default::default()
+            },
         )
         .map_err(|err| {
             if err == lx::Error::ELOOP {
@@ -1518,6 +1523,125 @@ mod tests {
     use crate::LxVolumeOptions;
     use test_with_tracing::test;
 
+    fn deny_read_ea(handle: &impl AsRawHandle) {
+        let descriptor: pal::windows::security::LocalSecurityDescriptor =
+            "D:P(D;;0x8;;;WD)(A;;FA;;;WD)".parse().unwrap();
+        // SAFETY: The handle and security descriptor remain valid throughout the call.
+        unsafe {
+            windows::Win32::Security::SetKernelObjectSecurity(
+                Foundation::HANDLE(handle.as_raw_handle()),
+                windows::Win32::Security::DACL_SECURITY_INFORMATION,
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_ptr()),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn no_follow_stat_without_read_ea() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        let relative_path = Path::new(r"dir\file");
+        let mut options = LxVolumeOptions::new();
+        options.metadata(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        volume
+            .open(
+                relative_path,
+                lx::O_CREAT | lx::O_WRONLY,
+                Some(LxCreateOptions::new(0o640, 123, 456)),
+            )
+            .unwrap()
+            .pwrite(b"data", 0, 0)
+            .unwrap();
+        let path = root.path().join(relative_path);
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(W32Fs::WRITE_DAC.0)
+            .open(&path)
+            .unwrap();
+        deny_read_ea(&handle);
+
+        for metadata in [false, true] {
+            let mut options = LxVolumeOptions::new();
+            options.no_follow(true).metadata(metadata);
+            let volume = LxVolume::new(root.path(), &options).unwrap();
+            assert_eq!(
+                volume
+                    .open_file(relative_path, W32Fs::FILE_READ_EA, Default::default())
+                    .err()
+                    .unwrap(),
+                lx::Error::EACCES
+            );
+            let stat = volume.lstat(relative_path).unwrap();
+            assert_eq!(stat.file_size, 4);
+            assert!(lx::s_isreg(stat.mode.into()));
+            if metadata {
+                assert_eq!(stat.mode, (lx::S_IFREG | 0o640) as u16);
+                assert_eq!(stat.uid, 123);
+                assert_eq!(stat.gid, 456);
+            }
+        }
+    }
+
+    #[test]
+    fn no_follow_symlink_stat_without_read_ea() {
+        let root = tempfile::tempdir().unwrap();
+        let mut options = LxVolumeOptions::new();
+        options.no_follow(true).metadata(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let path = Path::new("link");
+        let target = "missing";
+        volume
+            .symlink(path, target.as_ref(), LxCreateOptions::new(0o777, 0, 0))
+            .unwrap();
+        let handle = volume
+            .open_file(path, W32Fs::WRITE_DAC, Default::default())
+            .unwrap();
+        deny_read_ea(&handle);
+        assert_eq!(
+            volume
+                .open_file(path, W32Fs::FILE_READ_EA, Default::default())
+                .err()
+                .unwrap(),
+            lx::Error::EACCES
+        );
+
+        let stat = volume.lstat(path).unwrap();
+        assert!(lx::s_islnk(stat.mode.into()));
+        assert_eq!(stat.file_size, target.len() as u64);
+        assert_eq!(volume.read_link(path).unwrap(), target);
+    }
+
+    #[test]
+    fn no_follow_stat_fallbacks() {
+        for (query_by_name, stat_info) in [(true, true), (false, true), (false, false)] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("dir")).unwrap();
+            std::fs::write(root.path().join(r"dir\file"), b"data").unwrap();
+            let mut options = LxVolumeOptions::new();
+            options.no_follow(true);
+            let mut volume = LxVolume::new(root.path(), &options).unwrap();
+            let flags = &mut Arc::get_mut(&mut volume.state)
+                .unwrap()
+                .fs_context
+                .compatibility_flags;
+            if !query_by_name {
+                flags.set_supports_query_by_name(false);
+            }
+            if !stat_info {
+                flags.set_supports_stat_info(false);
+                flags.set_supports_stat_lx_info(false);
+            }
+
+            let stat = volume.lstat(Path::new(r"dir\file")).unwrap();
+            assert_eq!(stat.file_size, 4);
+            assert!(lx::s_isreg(stat.mode.into()));
+            assert!(lx::s_isdir(
+                volume.lstat(Path::new("dir")).unwrap().mode.into()
+            ));
+        }
+    }
+
     #[test]
     fn no_follow_normal_operations() {
         let root = tempfile::tempdir().unwrap();
@@ -1670,10 +1794,11 @@ mod tests {
             name,
             W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_WRITE_ATTRIBUTES,
             FileSystem::FILE_OPEN,
-            Default::default(),
-            FileSystem::FILE_OPEN_REPARSE_POINT,
-            None,
-            true,
+            util::OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                no_follow: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         let mut info: FileSystem::FILE_BASIC_INFORMATION =
