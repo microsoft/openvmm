@@ -2615,7 +2615,10 @@ impl<T: PetriVmmBackend> PetriVm<T> {
                 let data = client
                     .read_file(self.build_guest_path(&[test_results_dir.clone(), file.clone()]))
                     .await?;
-                let mut output = self.resources.log_source.create_attachment(&file)?;
+                let mut output = self
+                    .resources
+                    .log_source
+                    .create_attachment_no_prefix(&file)?;
                 output.write_all(&data)?;
             }
         }
