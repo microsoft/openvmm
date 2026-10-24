@@ -36,6 +36,7 @@ mod reservation;
 pub mod resolver;
 pub mod scsidvd;
 mod unmap;
+mod zoned;
 
 #[cfg(test)]
 mod tests;
@@ -138,6 +139,7 @@ pub struct SimpleScsiDisk {
     sector_size: u32,
     sense_data: SenseDataSlot,
     scsi_parameters: ScsiParameters,
+    zoned: Option<zoned::ZonedDisk>,
     support_pr: bool,
     last_sector_count: AtomicU64,
 }
@@ -159,7 +161,10 @@ struct ScsiParameters {
 }
 
 impl SimpleScsiDisk {
-    pub fn new(disk: Disk, disk_parameters: DiskParameters) -> Self {
+    pub fn new(
+        disk: Disk,
+        disk_parameters: DiskParameters,
+    ) -> Result<Self, zoned::InvalidZonedConfiguration> {
         let sector_size = disk.sector_size();
         let sector_shift = sector_size.trailing_zeros() as u8;
         let mut sector_count = disk.sector_count();
@@ -171,7 +176,7 @@ impl SimpleScsiDisk {
 
         // Determine the SCSI parameters from the passed-in disk parameters and
         // the information from the underlying disk.
-        let scsi_parameters = {
+        let (scsi_parameters, host_managed_zoned) = {
             let DiskParameters {
                 disk_id,
                 identity,
@@ -186,7 +191,9 @@ impl SimpleScsiDisk {
                 max_transfer_length,
                 optimal_unmap_sectors,
                 get_lba_status,
+                host_managed_zoned,
             } = disk_parameters;
+            let is_zoned = host_managed_zoned.is_some();
 
             fn nonzero_id(id: [u8; 16]) -> Option<[u8; 16]> {
                 if id == [0; 16] { None } else { Some(id) }
@@ -199,37 +206,59 @@ impl SimpleScsiDisk {
                 .or_else(|| disk.disk_id().and_then(nonzero_id))
                 .unwrap_or_else(|| Guid::new_random().into());
 
-            ScsiParameters {
-                disk_id,
-                physical_sector_size: physical_sector_size
-                    .unwrap_or_else(|| disk.physical_sector_size()),
-                support_fua: fua.unwrap_or_else(|| disk.is_fua_respected()),
-                write_cache_enabled: write_cache.unwrap_or(true),
-                support_odx: odx.unwrap_or(false),
-                support_get_lba_status: get_lba_status,
-                support_unmap: unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
-                maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
-                identity: identity.unwrap_or_else(DiskIdentity::msft),
-                serial_number,
-                medium_rotation_rate: medium_rotation_rate.unwrap_or(1), // non-rotating media (SSD)
-                optimal_unmap_sectors: optimal_unmap_sectors.unwrap_or(1),
-            }
+            (
+                ScsiParameters {
+                    disk_id,
+                    physical_sector_size: physical_sector_size
+                        .unwrap_or_else(|| disk.physical_sector_size()),
+                    support_fua: fua.unwrap_or_else(|| disk.is_fua_respected()),
+                    write_cache_enabled: write_cache.unwrap_or(true),
+                    support_odx: odx.unwrap_or(false),
+                    support_get_lba_status: get_lba_status,
+                    support_unmap: !is_zoned
+                        && unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
+                    maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
+                    identity: identity.unwrap_or_else(DiskIdentity::msft),
+                    serial_number,
+                    medium_rotation_rate: medium_rotation_rate.unwrap_or(if is_zoned {
+                        7200
+                    } else {
+                        1
+                    }),
+                    optimal_unmap_sectors: optimal_unmap_sectors.unwrap_or(1),
+                },
+                host_managed_zoned,
+            )
         };
 
         let physical_extra_shift =
             scsi_parameters.physical_sector_size.trailing_zeros() as u8 - sector_shift;
         let support_pr = disk.pr().is_some();
+        let zoned = host_managed_zoned
+            .map(|parameters| {
+                zoned::ZonedDisk::new(
+                    sector_count,
+                    sector_size,
+                    scsi_parameters.physical_sector_size,
+                    parameters,
+                )
+            })
+            .transpose()?;
+        if let Some(zoned) = &zoned {
+            sector_count = zoned.sector_count();
+        }
 
-        SimpleScsiDisk {
+        Ok(SimpleScsiDisk {
             disk,
             sector_shift,
             physical_extra_shift,
             sector_size,
             sense_data: Default::default(),
             scsi_parameters,
+            zoned,
             support_pr,
             last_sector_count: AtomicU64::new(sector_count),
-        }
+        })
     }
 }
 
@@ -239,6 +268,8 @@ enum ScsiError {
     MemoryAccess(#[source] AccessError),
     #[error("illegal request, asc: {0:?}")]
     IllegalRequest(AdditionalSenseCode),
+    #[error("check condition, key: {0:?}, asc: {1:?}, ascq: {2:#x}")]
+    CheckCondition(SenseKey, AdditionalSenseCode, u8),
     #[error("data overrun")]
     DataOverrun,
     #[error("srb generic error")]
@@ -601,6 +632,9 @@ impl SimpleScsiDisk {
                     //  - trim is supported
                     //  - read zero after trim is not supported
                     data.lowest_aligned_block_msb |= scsi::READ_CAPACITY16_LBPME;
+                }
+                if self.zoned.is_some() {
+                    data.flags |= scsi::READ_CAPACITY16_RC_BASIS_LAST_LBA;
                 }
 
                 let tx = std::cmp::min(external_data.len(), size_of::<scsi::ReadCapacity16Data>());
@@ -969,7 +1003,8 @@ impl SimpleScsiDisk {
                 ScsiError::UnsupportedModePageCode(..)
                 | ScsiError::UnsupportedServiceAction(_)
                 | ScsiError::UnsupportedVpdPageCode(_) => tracing::debug!(disk = ?self.scsi_parameters.disk_id, error = err.as_error(), ?op, "scsi_error"),
-                | ScsiError::IllegalRequest(_) => tracing::debug!(disk = ?self.scsi_parameters.disk_id, error = err.as_error(), ?op, "scsi_error"),
+                | ScsiError::IllegalRequest(_)
+                | ScsiError::CheckCondition(..) => tracing::debug!(disk = ?self.scsi_parameters.disk_id, error = err.as_error(), ?op, "scsi_error"),
                 _ => tracelimit::warn_ratelimited!(disk = ?self.scsi_parameters.disk_id, error = err.as_error(), ?op, "scsi_error"),
             }
             err
@@ -1001,6 +1036,12 @@ impl SimpleScsiDisk {
                         srb_status: SrbStatus::INVALID_REQUEST,
                         tx: 0,
                         sense_data: Some(illegal_request_sense(sense_code)),
+                    },
+                    ScsiError::CheckCondition(sense_key, sense_code, qualifier) => ScsiResult {
+                        scsi_status: ScsiStatus::CHECK_CONDITION,
+                        srb_status: SrbStatus::ERROR,
+                        tx: 0,
+                        sense_data: Some(scsi::SenseData::new(sense_key, sense_code, qualifier)),
                     },
                     ScsiError::DataOverrun => ScsiResult {
                         scsi_status: ScsiStatus::CHECK_CONDITION,
@@ -1138,7 +1179,10 @@ impl SimpleScsiDisk {
     /// update the last observed one.
     fn get_and_update_sector_count(&self, op: ScsiOp) -> Result<u64, u64> {
         let current = self.last_sector_count.load(Ordering::Relaxed);
-        let sector_count = self.disk.sector_count();
+        let sector_count = self
+            .zoned
+            .as_ref()
+            .map_or_else(|| self.disk.sector_count(), zoned::ZonedDisk::sector_count);
         // Don't process sector count updates during inquiry (but do report the new sector size).
         if sector_count == current || op == ScsiOp::INQUIRY {
             return Ok(sector_count);
@@ -1193,10 +1237,21 @@ impl SimpleScsiDisk {
         let external_data = external_data.subrange(0, p.tx);
 
         Ok(if is_read {
-            self.disk
-                .read_vectored(&external_data, p.offset)
-                .await
-                .map_err(ScsiError::Disk)?;
+            if let Some(zoned) = &self.zoned {
+                zoned
+                    .read(
+                        &self.disk,
+                        &external_data,
+                        p.offset,
+                        p.tx as u64 >> self.sector_shift,
+                    )
+                    .await?;
+            } else {
+                self.disk
+                    .read_vectored(&external_data, p.offset)
+                    .await
+                    .map_err(ScsiError::Disk)?;
+            }
 
             p.tx
         } else {
@@ -1204,10 +1259,22 @@ impl SimpleScsiDisk {
                 return Err(ScsiError::WriteProtected);
             }
 
-            self.disk
-                .write_vectored(&external_data, p.offset, p.fua)
-                .await
-                .map_err(ScsiError::Disk)?;
+            if let Some(zoned) = &self.zoned {
+                zoned
+                    .write(
+                        &self.disk,
+                        &external_data,
+                        p.offset,
+                        p.tx as u64 >> self.sector_shift,
+                        p.fua,
+                    )
+                    .await?;
+            } else {
+                self.disk
+                    .write_vectored(&external_data, p.offset, p.fua)
+                    .await
+                    .map_err(ScsiError::Disk)?;
+            }
 
             p.tx
         })
@@ -1228,12 +1295,24 @@ impl SimpleScsiDisk {
         if p.tx > 0 {
             // Note that `p.sector_size` is validated above to be in range.
             let external_data = external_data.subrange(0, p.sector_size);
-            // TODO: pass this request through to the disk rather than looping like this.
-            for offset in p.start_lba..p.start_lba + (p.lba_count as u64) {
-                self.disk
-                    .write_vectored(&external_data, offset, p.fua)
-                    .await
-                    .map_err(ScsiError::Disk)?;
+            if let Some(zoned) = &self.zoned {
+                zoned
+                    .write_same(
+                        &self.disk,
+                        &external_data,
+                        p.start_lba,
+                        p.lba_count as u64,
+                        p.fua,
+                    )
+                    .await?;
+            } else {
+                // TODO: pass this request through to the disk rather than looping like this.
+                for offset in p.start_lba..p.start_lba + (p.lba_count as u64) {
+                    self.disk
+                        .write_vectored(&external_data, offset, p.fua)
+                        .await
+                        .map_err(ScsiError::Disk)?;
+                }
             }
         }
 
@@ -1271,9 +1350,8 @@ impl AsyncScsiDisk for SimpleScsiDisk {
         external_data: &'a RequestBuffers<'a>,
         request: &'a Request,
     ) -> StackFuture<'a, ScsiResult, { ASYNC_SCSI_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let op = request.scsiop();
-
+        let op = request.scsiop();
+        StackFuture::from_or_box(async move {
             let sector_count = match self.get_and_update_sector_count(op) {
                 Ok(c) => c,
                 Err(_) => {
@@ -1284,7 +1362,11 @@ impl AsyncScsiDisk for SimpleScsiDisk {
                         }
                         _ => Err(ScsiError::UnitAttention),
                     };
-                    return self.process_result(result, op);
+                    let result = self.process_result(result, op);
+                    if let Some(zoned) = &self.zoned {
+                        zoned.record_scsi_completion(op, &result);
+                    }
+                    return result;
                 }
             };
 
@@ -1326,13 +1408,29 @@ impl AsyncScsiDisk for SimpleScsiDisk {
                         .instrument(tracing::trace_span!("handle_persistent_reserve_async", ?op,))
                         .await
                 }
+                ScsiOp::ZBC_IN => match &self.zoned {
+                    Some(zoned) => zoned.report_zones(&self.disk, external_data, request).await,
+                    None => Err(ScsiError::IllegalRequest(
+                        AdditionalSenseCode::ILLEGAL_COMMAND,
+                    )),
+                },
+                ScsiOp::ZBC_OUT => match &self.zoned {
+                    Some(zoned) => zoned.zbc_out(&self.disk, request).await,
+                    None => Err(ScsiError::IllegalRequest(
+                        AdditionalSenseCode::ILLEGAL_COMMAND,
+                    )),
+                },
                 _ => {
                     let _span = tracing::trace_span!("handle_control_cdb", ?op,).entered();
                     self.handle_control_cdb(external_data, request, sector_count)
                 }
             };
 
-            self.process_result(result, op)
+            let result = self.process_result(result, op);
+            if let Some(zoned) = &self.zoned {
+                zoned.record_scsi_completion(op, &result);
+            }
+            result
         })
     }
 }
@@ -1352,6 +1450,7 @@ impl Inspect for SimpleScsiDisk {
             )
             .field("scsi_parameters", &self.scsi_parameters)
             .field("pr", self.support_pr)
+            .field("zoned", &self.zoned)
             .field("backend", &self.disk);
     }
 }

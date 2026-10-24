@@ -851,6 +851,18 @@ message SCSIDisk {
     string host_path = 3;
     DiskType type = 4;
     bool read_only = 5;
+    // Present this disk as a host-managed zoned block device.
+    bool zoned = 6;
+    // Zone size in bytes. Zero selects the server default.
+    uint64 zone_size_bytes = 7;
+    // Number of conventional zones at the beginning of the disk. Zero selects
+    // the server default.
+    uint32 conventional_zones = 8;
+    // Maximum number of open sequential-write-required zones. Zero selects the
+    // server default.
+    uint32 max_open_zones = 9;
+    // Disallow reads of unwritten blocks and reads spanning sequential zones.
+    bool restricted_read = 10;
 }
 
 message VPMEMDisk {

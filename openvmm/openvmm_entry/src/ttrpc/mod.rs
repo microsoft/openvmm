@@ -89,6 +89,8 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use scsidisk_resources::DiskParameters;
+use scsidisk_resources::HostManagedZonedParameters;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
@@ -1854,6 +1856,45 @@ fn parse_nic_config(
 }
 
 async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
+    let parameters = if disk.zoned {
+        if disk.read_only {
+            anyhow::bail!("zoned SCSI disks cannot be read-only");
+        }
+
+        let mut zoned = HostManagedZonedParameters::default();
+        if disk.zone_size_bytes != 0 {
+            zoned.zone_size_bytes = disk.zone_size_bytes;
+        }
+        if disk.conventional_zones != 0 {
+            zoned.conventional_zone_count = disk.conventional_zones;
+        }
+        if disk.max_open_zones != 0 {
+            zoned.max_open_zones = disk.max_open_zones;
+        }
+        zoned.unrestricted_read = !disk.restricted_read;
+
+        if zoned.zone_size_bytes == 0 || zoned.zone_size_bytes % 512 != 0 {
+            anyhow::bail!("zone size must be a nonzero multiple of 512 bytes");
+        }
+        if zoned.max_open_zones == 0 {
+            anyhow::bail!("max open zones must be nonzero");
+        }
+
+        DiskParameters {
+            host_managed_zoned: Some(zoned),
+            ..Default::default()
+        }
+    } else {
+        if disk.zone_size_bytes != 0
+            || disk.conventional_zones != 0
+            || disk.max_open_zones != 0
+            || disk.restricted_read
+        {
+            anyhow::bail!("zoned disk parameters require zoned=true");
+        }
+        Default::default()
+    };
+
     Ok(ScsiDeviceAndPath {
         path: storvsp_resources::ScsiPath {
             path: 0,
@@ -1871,7 +1912,7 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
             .await
             .with_context(|| format!("failed to open {}", disk.host_path))?,
             read_only: disk.read_only,
-            parameters: Default::default(),
+            parameters,
         }
         .into_resource(),
     })

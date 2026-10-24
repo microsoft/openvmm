@@ -30,7 +30,16 @@ use zerocopy::IntoBytes;
 pub struct TestDiskStorageState {
     pub storage: Vec<u8>,
     pub is_fua_set: bool,
+    pub sync_count: u64,
     pub sector_count: u64,
+    pub operations: Vec<TestDiskOperation>,
+    pub fail_next_write_once: bool,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TestDiskOperation {
+    Write { sector: u64, fua: bool },
+    Sync,
 }
 
 #[derive(Debug)]
@@ -39,6 +48,14 @@ pub struct TestDisk {
     pub physical_sector_size: u32,
     pub read_only: bool,
     pub state: Arc<Mutex<TestDiskStorageState>>,
+    pub write_blocker: Option<Arc<TestDiskWriteBlocker>>,
+}
+
+#[derive(Debug)]
+pub struct TestDiskWriteBlocker {
+    pub sector: u64,
+    pub entered: Mutex<Option<mesh::OneshotSender<()>>>,
+    pub release: Mutex<Option<mesh::OneshotReceiver<()>>>,
 }
 
 impl Inspect for TestDisk {
@@ -62,7 +79,10 @@ impl TestDisk {
         let state = Arc::new(Mutex::new(TestDiskStorageState {
             storage: buffer,
             is_fua_set: false,
+            sync_count: 0,
             sector_count,
+            operations: Vec::new(),
+            fail_next_write_once: false,
         }));
         (
             TestDisk {
@@ -70,6 +90,7 @@ impl TestDisk {
                 read_only,
                 state: state.clone(),
                 physical_sector_size,
+                write_blocker: None,
             },
             state,
         )
@@ -127,9 +148,27 @@ impl DiskIo for TestDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
+        if let Some(blocker) = &self.write_blocker {
+            if blocker.sector == sector {
+                if let Some(entered) = blocker.entered.lock().take() {
+                    entered.send(());
+                }
+                let release = blocker.release.lock().take();
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+            }
+        }
+
         let offset = sector as usize * self.sector_size() as usize;
         let end_point = offset + buffers.len();
         let mut state = self.state.lock();
+        if state.fail_next_write_once {
+            state.fail_next_write_once = false;
+            return Err(DiskError::Io(std::io::Error::other(
+                "injected write failure",
+            )));
+        }
         if state.storage.len() < end_point {
             return Err(DiskError::IllegalBlock);
         }
@@ -137,10 +176,16 @@ impl DiskIo for TestDisk {
             .reader()
             .read(&mut state.storage[offset..end_point])?;
         state.is_fua_set = fua;
+        state
+            .operations
+            .push(TestDiskOperation::Write { sector, fua });
         Ok(())
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
+        let mut state = self.state.lock();
+        state.sync_count += 1;
+        state.operations.push(TestDiskOperation::Sync);
         Ok(())
     }
 
@@ -180,7 +225,7 @@ pub fn new_scsi_disk(
         Disk::new(disk).unwrap()
     };
 
-    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default());
+    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default()).unwrap();
     let sector_shift = logical_sector_size.trailing_zeros() as u8;
     let physical_extra_shift = physical_sector_size.trailing_zeros() as u8 - sector_shift;
     assert_eq!(scsi_disk.sector_size, logical_sector_size);

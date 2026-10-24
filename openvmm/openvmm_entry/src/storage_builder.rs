@@ -20,6 +20,7 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::VpciDeviceConfig;
+use scsidisk_resources::DiskParameters;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use std::collections::BTreeMap;
@@ -320,7 +321,12 @@ impl StorageBuilder {
         kind: &DiskCliKind,
         is_dvd: bool,
         read_only: bool,
+        disk_parameters: DiskParameters,
     ) -> anyhow::Result<()> {
+        if disk_parameters.host_managed_zoned.is_some() && (underhill.is_some() || relay.is_some())
+        {
+            anyhow::bail!("zoned SCSI disks cannot be relayed through OpenHCL");
+        }
         if let Some(source) = underhill {
             if vtl != DeviceVtl::Vtl0 {
                 anyhow::bail!("OpenHCL relay can only offer devices to VTL0");
@@ -331,7 +337,8 @@ impl StorageBuilder {
             self.add_relay(relay, target, kind, is_dvd, read_only)
                 .await?;
         } else {
-            self.add_inner(vtl, target, kind, is_dvd, read_only).await?;
+            self.add_inner(vtl, target, kind, is_dvd, read_only, disk_parameters)
+                .await?;
         }
         Ok(())
     }
@@ -345,10 +352,14 @@ impl StorageBuilder {
         kind: &DiskCliKind,
         is_dvd: bool,
         read_only: bool,
+        disk_parameters: DiskParameters,
     ) -> anyhow::Result<Option<u32>> {
         let disk = disk_open(kind, read_only || is_dvd).await?;
         let location = match target {
             DiskLocation::Ide(channel, device) => {
+                if disk_parameters.host_managed_zoned.is_some() {
+                    anyhow::bail!("zoned disks require a SCSI controller");
+                }
                 let guest_media = if is_dvd {
                     GuestMedia::Dvd(
                         SimpleScsiDvdHandle {
@@ -414,6 +425,9 @@ impl StorageBuilder {
                 None
             }
             DiskLocation::Scsi(lun) => {
+                if is_dvd && disk_parameters.host_managed_zoned.is_some() {
+                    anyhow::bail!("zoned disks cannot be DVDs");
+                }
                 let device = if is_dvd {
                     SimpleScsiDvdHandle {
                         media: Some(disk),
@@ -424,7 +438,7 @@ impl StorageBuilder {
                     SimpleScsiDiskHandle {
                         disk,
                         read_only,
-                        parameters: Default::default(),
+                        parameters: disk_parameters,
                     }
                     .into_resource()
                 };
@@ -445,6 +459,9 @@ impl StorageBuilder {
                 Some(lun.into())
             }
             DiskLocation::Nvme(nsid) => {
+                if disk_parameters.host_managed_zoned.is_some() {
+                    anyhow::bail!("zoned disks require a SCSI controller");
+                }
                 let namespaces = match vtl {
                     DeviceVtl::Vtl0 => &mut self.vtl0_nvme_namespaces,
                     DeviceVtl::Vtl1 => anyhow::bail!("vtl1 vpci unsupported"),
@@ -467,6 +484,9 @@ impl StorageBuilder {
                 lun,
             } => match self.controllers.get_mut(&controller) {
                 Some(ControllerEntry::Nvme(nvme)) => {
+                    if disk_parameters.host_managed_zoned.is_some() {
+                        anyhow::bail!("zoned disks require a SCSI controller");
+                    }
                     if lun.is_some() {
                         anyhow::bail!("`lun` is not valid for NVMe controller '{controller}'");
                     }
@@ -491,6 +511,9 @@ impl StorageBuilder {
                         anyhow::bail!("`nsid` is not valid for SCSI controller '{controller}'");
                     }
                     let device = if is_dvd {
+                        if disk_parameters.host_managed_zoned.is_some() {
+                            anyhow::bail!("zoned disks cannot be DVDs");
+                        }
                         SimpleScsiDvdHandle {
                             media: Some(disk),
                             requests: None,
@@ -500,7 +523,7 @@ impl StorageBuilder {
                         SimpleScsiDiskHandle {
                             disk,
                             read_only,
-                            parameters: Default::default(),
+                            parameters: disk_parameters,
                         }
                         .into_resource()
                     };
@@ -523,6 +546,9 @@ impl StorageBuilder {
                 }
             },
             DiskLocation::VirtioBlk { pcie_port, serial } => {
+                if disk_parameters.host_managed_zoned.is_some() {
+                    anyhow::bail!("zoned disks require a SCSI controller");
+                }
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
                 }
@@ -598,7 +624,14 @@ impl StorageBuilder {
         }
 
         let sub_device_path = self
-            .add_inner(source_vtl, target, kind, is_dvd, read_only)
+            .add_inner(
+                source_vtl,
+                target,
+                kind,
+                is_dvd,
+                read_only,
+                Default::default(),
+            )
             .await?
             .context("source device not supported by relay")?;
 
@@ -652,7 +685,14 @@ impl StorageBuilder {
     ) -> anyhow::Result<()> {
         let vtl = self.openhcl_vtl.context("OpenHCL not configured")?;
         let sub_device_path = self
-            .add_inner(vtl, source.clone(), kind, is_dvd, read_only)
+            .add_inner(
+                vtl,
+                source.clone(),
+                kind,
+                is_dvd,
+                read_only,
+                Default::default(),
+            )
             .await?
             .context("source device not supported by OpenHCL")?;
 

@@ -23,6 +23,7 @@ mesh.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+crc32fast.workspace = true
 inspect.workspace = true
 futures.workspace = true
 tracing_helpers.workspace = true
