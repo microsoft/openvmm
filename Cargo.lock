@@ -3966,14 +3966,16 @@ dependencies = [
  "clap",
  "crossterm",
  "fs-err",
- "futures",
  "futures-concurrency",
- "initrd_cpio",
- "mesh",
+ "mshv_bootstrap",
  "pal_async",
+ "petri",
+ "petri_artifacts_common",
  "pipette_client",
  "serde",
+ "signal-hook",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -4992,6 +4994,13 @@ dependencies = [
  "mshv-bindings",
  "thiserror 2.0.16",
  "vmm-sys-util",
+]
+
+[[package]]
+name = "mshv_bootstrap"
+version = "0.0.0"
+dependencies = [
+ "uefi",
 ]
 
 [[package]]
@@ -6671,6 +6680,7 @@ dependencies = [
  "disk_vhdmp",
  "fatfs",
  "firmware_uefi_resources",
+ "flate2",
  "framebuffer",
  "fs-err",
  "fscommon",
@@ -6693,6 +6703,7 @@ dependencies = [
  "mesh",
  "mesh_process",
  "mesh_worker",
+ "mshv_bootstrap",
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
@@ -6722,6 +6733,7 @@ dependencies = [
  "storvsp_resources",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
  "tpm_vmgs",

@@ -36,6 +36,7 @@ struct LogSourceInner {
     log_files: Mutex<HashMap<String, PetriLogFile>>,
     attachments: Mutex<HashMap<String, u64>>,
     prefix: Option<String>,
+    echo: bool,
 }
 
 impl PetriLogSource {
@@ -50,11 +51,27 @@ impl PetriLogSource {
             log_files: Default::default(),
             attachments: Default::default(),
             prefix,
+            echo: true,
         })))
     }
 }
 
 impl PetriLogSource {
+    /// Create file-only logs without installing a tracing subscriber or writing
+    /// attachment markers to stdout. Suitable for standalone command runners.
+    pub fn file_only(root_path: &Path) -> anyhow::Result<Self> {
+        let root_path = root_path.fs_err_canonicalize()?;
+        let jsonl = File::create(root_path.join("petri.jsonl"))?;
+        Ok(Self(Arc::new(LogSourceInner {
+            root_path,
+            json_log: JsonLog(Arc::new(jsonl)),
+            log_files: Default::default(),
+            attachments: Default::default(),
+            prefix: None,
+            echo: false,
+        })))
+    }
+
     /// Returns a log file for the given name.
     ///
     /// The name should not have an extension; `.log` will be appended
@@ -80,12 +97,15 @@ impl PetriLogSource {
                 let file = File::create(&path)?;
                 // Write the path to the file in junit attachment syntax to
                 // stdout to ensure the file is attached to the test result.
-                println!("[[ATTACHMENT|{}]]", path.display());
+                if self.0.echo {
+                    println!("[[ATTACHMENT|{}]]", path.display());
+                }
                 vacant_entry
                     .insert(PetriLogFile(Arc::new(LogFileInner {
                         file,
                         json_log: self.0.json_log.clone(),
                         source: name.clone(),
+                        echo: self.0.echo,
                     })))
                     .clone()
             }
@@ -169,7 +189,9 @@ impl PetriLogSource {
         self.0
             .json_log
             .write_attachment(path.file_name().unwrap().as_ref());
-        println!("[[ATTACHMENT|{}]]", path.display());
+        if self.0.echo {
+            println!("[[ATTACHMENT|{}]]", path.display());
+        }
     }
 
     /// Records that a test with the given name is running in this directory.
@@ -265,10 +287,14 @@ struct LogFileInner {
     file: File,
     json_log: JsonLog,
     source: String,
+    echo: bool,
 }
 
 impl LogFileInner {
     fn write_stdout(&self, buf: &[u8]) {
+        if !self.echo {
+            return;
+        }
         let mut stdout = std::io::stdout().lock();
         write!(stdout, "[{:>10}] ", self.source).unwrap();
         stdout.write_all(buf).unwrap();
