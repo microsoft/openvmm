@@ -1672,6 +1672,32 @@ impl VmService {
                     anyhow::bail!("unsupported NIC modify type {}", request.r#type);
                 }
             }
+            Resource::HvsocketListener(listener) => {
+                let service_id = listener
+                    .service_id
+                    .parse()
+                    .context("invalid hvsocket service ID")?;
+                if request.r#type == vmservice::ModifyType::Add as i32 {
+                    let socket = UnixListener::bind(&listener.path).with_context(|| {
+                        format!("failed to bind hvsocket listener path: {}", listener.path)
+                    })?;
+                    let recv = vm.worker_rpc.call_failable(
+                        VmRpc::AddHvsockListener,
+                        (DeviceVtl::Vtl0, service_id, socket),
+                    );
+                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
+                    let recv = vm
+                        .worker_rpc
+                        .call_failable(VmRpc::RemoveHvsockListener, (DeviceVtl::Vtl0, service_id));
+                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                } else {
+                    anyhow::bail!(
+                        "unsupported hvsocket listener modify type {}",
+                        request.r#type
+                    );
+                }
+            }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
             Resource::WindowsDevice(_) => anyhow::bail!("device assignment not supported"),
             Resource::Processor(_) | Resource::ProcessorConfig(_) | Resource::Memory(_) => {
