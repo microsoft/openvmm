@@ -243,9 +243,7 @@ impl MappingManagerClient {
         Ok(())
     }
 
-    /// Removes all mappings in `range`.
-    ///
-    /// TODO: allow this to split existing mappings.
+    /// Removes mappings in `range`, splitting partially covered mappings.
     pub async fn remove_mappings(&self, range: MemoryRange) {
         self.req_send
             .call(MappingRequest::RemoveMappings, range)
@@ -313,6 +311,28 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
 struct Mapping {
     params: MappingParams,
     active_mappers: Vec<MapperId>,
+}
+
+impl Mapping {
+    fn fragment(&self, range: MemoryRange) -> Self {
+        let backing = match &self.params.backing {
+            MappingBacking::File {
+                mappable,
+                file_offset,
+            } => MappingBacking::File {
+                mappable: mappable.clone(),
+                file_offset: file_offset + (range.start() - self.params.range.start()),
+            },
+            MappingBacking::Private => MappingBacking::Private,
+        };
+        let mut params = self.params.clone();
+        params.range = range;
+        params.backing = backing;
+        Self {
+            params,
+            active_mappers: self.active_mappers.clone(),
+        }
+    }
 }
 
 /// How a guest memory mapping is backed by host memory.
@@ -784,18 +804,29 @@ impl MappingManagerTask {
 
     async fn remove_mappings(&mut self, range: MemoryRange) {
         let mut mappers = Vec::new();
-        self.mappings.retain_mut(|mapping| {
-            if !range.contains(&mapping.params.range) {
-                assert!(
-                    !range.overlaps(&mapping.params.range),
-                    "no partial unmappings allowed"
-                );
-                return true;
+        let mut kept = Vec::new();
+        for mapping in std::mem::take(&mut self.mappings) {
+            let removed = range.intersection(&mapping.params.range);
+            if removed.is_empty() {
+                kept.push(mapping);
+                continue;
             }
-            tracing::debug!(range = %mapping.params.range, "removing mapping");
-            mappers.append(&mut mapping.active_mappers);
-            false
-        });
+
+            tracing::debug!(range = %removed, "removing mapping");
+            mappers.extend(mapping.active_mappers.iter().copied());
+
+            if mapping.params.range.start() < removed.start() {
+                kept.push(mapping.fragment(MemoryRange::new(
+                    mapping.params.range.start()..removed.start(),
+                )));
+            }
+            if mapping.params.range.end() > removed.end() {
+                kept.push(
+                    mapping.fragment(MemoryRange::new(removed.end()..mapping.params.range.end())),
+                );
+            }
+        }
+        self.mappings = kept;
         mappers.sort();
         mappers.dedup();
         self.mappers.invalidate(&mappers, range).await;
@@ -1248,6 +1279,67 @@ mod tests {
                 }
             }
         );
+    }
+
+    #[pal_async::async_test]
+    async fn test_remove_partial_mapping_preserves_backing_offsets(_spawn: impl Spawn) {
+        let (mut task, _) = task_with_mapping().await;
+
+        task.remove_mappings(MemoryRange::new(0x4000..0x8000)).await;
+
+        assert_eq!(task.mappings.len(), 2);
+        assert_eq!(task.mappings[0].params.range, MemoryRange::new(0..0x4000));
+        assert_eq!(task.mappings[0].params.backing.file_offset(), 0);
+        assert_eq!(
+            task.mappings[1].params.range,
+            MemoryRange::new(0x8000..0x10000)
+        );
+        assert_eq!(task.mappings[1].params.backing.file_offset(), 0x8000);
+    }
+
+    #[pal_async::async_test]
+    async fn test_remove_range_spanning_mappings_preserves_fragments(_spawn: impl Spawn) {
+        let mut task = task_with_two_mappings().await;
+
+        task.remove_mappings(MemoryRange::new(0x8000..0x18000))
+            .await;
+
+        assert_eq!(task.mappings.len(), 2);
+        assert_eq!(task.mappings[0].params.range, MemoryRange::new(0..0x8000));
+        assert_eq!(task.mappings[0].params.backing.file_offset(), 0);
+        assert_eq!(
+            task.mappings[1].params.range,
+            MemoryRange::new(0x18000..0x20000)
+        );
+        assert_eq!(task.mappings[1].params.backing.file_offset(), 0x8000);
+    }
+
+    #[pal_async::async_test]
+    async fn test_partial_remove_keeps_active_mappers_on_fragments(_spawn: impl Spawn) {
+        let (mut task, _) = task_with_mapping().await;
+        let (send, mut recv) = mesh::channel();
+        let id = task.add_mapper(send, false).await.unwrap();
+        task.send_mappings(id, MemoryRange::new(0..0x10000));
+        assert!(matches!(
+            recv.recv().await.unwrap(),
+            MapperRequest::MapLazy(_)
+        ));
+
+        let remove = task.remove_mappings(MemoryRange::new(0x4000..0x8000));
+        let ((), ()) = futures::join!(remove, async {
+            match recv.recv().await.unwrap() {
+                MapperRequest::Unmap(rpc) => {
+                    let (range, rpc) = rpc.split();
+                    assert_eq!(range, MemoryRange::new(0x4000..0x8000));
+                    rpc.complete(());
+                }
+                other => panic!("expected partial Unmap, got {other:?}"),
+            }
+        });
+
+        assert_eq!(task.mappings.len(), 2);
+        assert_eq!(task.mappings[0].active_mappers, vec![id]);
+        assert_eq!(task.mappings[1].active_mappers, vec![id]);
     }
 
     /// Helper: create a task with two mappings for rollback tests.
