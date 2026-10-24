@@ -2355,6 +2355,9 @@ async fn build_virtio_device(
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
         }
+        Kind::Rtc(vmservice::VirtioRtc {}) => {
+            virtio_resources::rtc::VirtioRtcHandle.into_resource()
+        }
         Kind::Vsock(vmservice::VirtioVsock {
             socket_path,
             guest_cid,
