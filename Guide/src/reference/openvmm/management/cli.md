@@ -450,7 +450,12 @@ describes the source definitions.
 
   For sandbox-block snapshots, restore repeats each read-only
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
-  must match the manifest. A paired snapshot supplies scratch internally from
+  must match the manifest, with two exceptions for a platform snapshot: its
+  read-only layers are unbound, and its `distro` block keeps the captured
+  capacity over an image that may be shorter. Such an image must have the
+  captured logical and physical block sizes, reads past its end return zeros,
+  and OpenVMM never resizes, pads, or writes it; a longer image is rejected.
+  A paired snapshot supplies scratch internally from
   a verified process-private copy of `scratch.img`; passing another scratch is
   rejected. A fresh-scratch snapshot instead requires a writable scratch
   argument with matching geometry.
