@@ -2418,9 +2418,13 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.add_pcie_device(port_name, resource).await
     }
 
-    /// Hot-remove a PCIe device from a named port at runtime.
-    pub async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
-        self.runtime.remove_pcie_device(port_name).await
+    /// Removes a PCIe device, waiting for guest teardown only when `orderly` is true.
+    pub async fn remove_pcie_device(
+        &mut self,
+        port_name: String,
+        orderly: bool,
+    ) -> anyhow::Result<()> {
+        self.runtime.remove_pcie_device(port_name, orderly).await
     }
 
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
@@ -2717,9 +2721,9 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         let _ = (port_name, resource);
         anyhow::bail!("PCIe hotplug not supported by this backend")
     }
-    /// Hot-remove a PCIe device from a named port at runtime.
-    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
-        let _ = port_name;
+    /// Removes a PCIe device, waiting for guest teardown only when `orderly` is true.
+    async fn remove_pcie_device(&mut self, port_name: String, orderly: bool) -> anyhow::Result<()> {
+        let _ = (port_name, orderly);
         anyhow::bail!("PCIe hotplug not supported by this backend")
     }
 }

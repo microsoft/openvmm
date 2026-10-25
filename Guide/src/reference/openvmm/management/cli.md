@@ -447,6 +447,8 @@ name:
   available devfn. Ports are assigned in order, so an explicit `addr` that
   collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
+- `attention_button`: enables attention button ejection. Requires `hotplug`
+  and is disabled by default. Enables `orderly=true` in removal requests.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
@@ -462,6 +464,8 @@ name:
 
 - `num_downstream_ports=<N>`: number of downstream ports for the switch.
 - `hotplug`: enables hotplug support on all downstream switch ports.
+- `attention_button`: enables attention button ejection on all downstream
+  switch ports. Requires `hotplug` and is disabled by default.
 - `acs=<mask>`: ACS capability mask requested for downstream switch ports.
   The upstream switch port does not expose ACS. Default is `0x005f`.
   Use `acs=0` to disable ACS for switch downstream ports.

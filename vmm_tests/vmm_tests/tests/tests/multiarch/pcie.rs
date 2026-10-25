@@ -396,11 +396,19 @@ async fn pcie_hotplug(
     timer.sleep(Duration::from_secs(5)).await;
 
     // Hot-remove the device
-    vm.remove_pcie_device("s0rc0rp0".into()).await?;
+    let error = vm
+        .remove_pcie_device("s0rc0rp0".into(), true)
+        .await
+        .expect_err("orderly removal requires attention button support");
+    anyhow::ensure!(
+        error
+            .to_string()
+            .contains("port does not support attention button ejection"),
+        "unexpected removal error: {error:#}"
+    );
+    vm.remove_pcie_device("s0rc0rp0".into(), false).await?;
 
-    // Verify the device is gone. Both Linux (pciehp) and Windows (pci.sys)
-    // process native PCIe hotplug surprise-removal through their respective
-    // hotplug state machines within a few seconds.
+    // Verify the guest has removed the endpoint after surprise removal.
     let mut removed = false;
     for attempt in 0..30 {
         let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
@@ -413,6 +421,171 @@ async fn pcie_hotplug(
         timer.sleep(Duration::from_millis(500)).await;
     }
     assert!(removed, "expected endpoint to disappear after hot-remove");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Verifies virtio block teardown, timeout recovery and port reuse through RPC.
+#[vmm_test_with(openvmm, configs(linux_direct_x64))]
+async fn pcie_hotplug_virtio_blk(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use mesh::CancelContext;
+    use virtio_resources::VirtioPciDeviceHandle;
+    use virtio_resources::blk::VirtioBlkHandle;
+    use vm_resource::IntoResource;
+
+    let (mut vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 1)
+                .with_pcie_attention_button("s0rc0rp0")
+        })
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+    let mut timer = PolledTimer::new(&driver);
+    let kernel = cmd!(sh, "uname -r").read().await?;
+    tracing::info!(%kernel, "guest kernel for virtio removal");
+
+    // Guest sysfs removal is the control for the two RPC ejection cycles.
+    for (cycle, guest_remove_first) in [true, false, false].into_iter().enumerate() {
+        tracing::info!(guest_remove_first, "testing virtio block removal");
+        let resource = VirtioPciDeviceHandle(
+            VirtioBlkHandle {
+                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(8 * 1024 * 1024),
+                    sector_size: None,
+                })
+                .into_resource(),
+                read_only: false,
+                serial: Some("hotplug-test".into()),
+            }
+            .into_resource(),
+        )
+        .into_resource();
+        vm.add_pcie_device("s0rc0rp0".into(), resource).await?;
+
+        let mut ready = false;
+        for _ in 0..30 {
+            let serial = cmd!(
+                sh,
+                "sh -c 'if test -e /sys/block/vda/serial; then cat /sys/block/vda/serial; else echo pending; fi'"
+            )
+            .read()
+            .await?;
+            if serial.trim() == "hotplug-test" {
+                ready = true;
+                break;
+            }
+            timer.sleep(Duration::from_millis(500)).await;
+        }
+        anyhow::ensure!(ready, "virtio block device did not become ready");
+        cmd!(
+            sh,
+            "dd if=/dev/vda of=/dev/null bs=4096 count=1 iflag=direct"
+        )
+        .run()
+        .await?;
+        let pci_path = cmd!(sh, "readlink -f /sys/block/vda/device/..")
+            .read()
+            .await?;
+        let pci_path = pci_path.trim();
+
+        if guest_remove_first {
+            let remove = format!("echo 1 > {pci_path}/remove");
+            CancelContext::new()
+                .with_timeout(Duration::from_secs(15))
+                .until_cancelled(cmd!(sh, "sh -c {remove}").run())
+                .await
+                .context("guest sysfs removal timed out")??;
+        }
+
+        if cycle == 1 {
+            // Disable MSI delivery but leave hotplug events enabled to exercise the timeout.
+            let bridge_path = pci_path
+                .rsplit_once('/')
+                .context("missing parent bridge")?
+                .0;
+            let config_path = format!("{bridge_path}/config");
+            let bytes = cmd!(sh, "od -An -v -t u1 -N 256 {config_path}")
+                .read()
+                .await?;
+            let bytes = bytes
+                .split_whitespace()
+                .map(str::parse::<u8>)
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut offset = usize::from(*bytes.get(0x34).context("missing capability pointer")?);
+            let mut msi_control = None;
+            for _ in 0..48 {
+                if offset == 0 {
+                    break;
+                }
+                let cap = bytes
+                    .get(offset..offset + 4)
+                    .context("invalid capability offset")?;
+                if cap[0] == 0x05 {
+                    anyhow::ensure!(cap[2] & 1 != 0, "port MSI is not enabled");
+                    msi_control = Some(offset + 2);
+                    break;
+                }
+                offset = usize::from(cap[1]);
+            }
+            let msi_control = msi_control
+                .context("missing port MSI capability")?
+                .to_string();
+            cmd!(
+                sh,
+                "dd if=/dev/zero of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            )
+            .run()
+            .await?;
+            let started = std::time::Instant::now();
+            let error = vm
+                .remove_pcie_device("s0rc0rp0".into(), true)
+                .await
+                .expect_err("removal must not succeed without guest acknowledgement");
+            anyhow::ensure!(
+                error.to_string().contains("PCIe ejection timed out"),
+                "unexpected removal error: {error:#}"
+            );
+            assert!(started.elapsed() >= Duration::from_secs(30));
+            cmd!(
+                sh,
+                "dd if=/dev/vda of=/dev/null bs=4096 count=1 iflag=direct"
+            )
+            .run()
+            .await
+            .context("device must remain usable after ejection timeout")?;
+            let enable_msi = format!(
+                "printf '\\001' | dd of={config_path} bs=1 seek={msi_control} count=1 conv=notrunc"
+            );
+            cmd!(sh, "sh -c {enable_msi}").run().await?;
+        }
+
+        vm.remove_pcie_device("s0rc0rp0".into(), !guest_remove_first)
+            .await?;
+
+        let mut removed = false;
+        for _ in 0..30 {
+            let probe = format!("if test -e {pci_path}; then echo present; else echo removed; fi");
+            let state = cmd!(sh, "sh -c {probe}").read().await?;
+            if state.trim() == "removed" {
+                removed = true;
+                break;
+            }
+            timer.sleep(Duration::from_millis(500)).await;
+        }
+        anyhow::ensure!(
+            removed,
+            "PCI device teardown did not finish after removal, guest_remove_first={guest_remove_first}"
+        );
+    }
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
