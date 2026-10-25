@@ -1814,7 +1814,6 @@ dependencies = [
  "blocking",
  "disk_backend",
  "disk_backend_resources",
- "fs-err",
  "futures",
  "guestmem",
  "inspect",

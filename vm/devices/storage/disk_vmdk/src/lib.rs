@@ -8,8 +8,7 @@
 mod errors;
 mod flat;
 #[cfg(target_os = "linux")]
-mod native;
-mod path;
+mod io_uring;
 
 pub use errors::OpenError;
 pub use errors::ParseError;

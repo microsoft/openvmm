@@ -393,177 +393,6 @@ exit "$status"
 }
 
 // Petri host tests reject invalid VMDKs before VM construction.
-petri::test!(flat_vmdk_rejects_unsafe_descriptor_paths, |_| Some(()));
-
-/// Verifies that VMDK descriptor paths containing `.` or `..` are rejected.
-async fn flat_vmdk_rejects_unsafe_descriptor_paths(
-    _params: PetriTestParams<'_>,
-    _driver: DefaultDriver,
-    (): (),
-) -> anyhow::Result<()> {
-    // Write a one-sector data file and a VMDK descriptor that references it.
-    let directory = tempfile::tempdir().context("failed to create VMDK directory")?;
-    let source_file_name = "source.bin";
-    let nested_directory_name = "nested";
-    std::fs::write(
-        directory.path().join(source_file_name),
-        [0; VMDK_SECTOR_SIZE],
-    )?;
-
-    let descriptor_path = write_flat_descriptor(&directory, source_file_name, 1)?;
-    let descriptor_file_name = descriptor_path
-        .file_name()
-        .context("test descriptor has no file name")?;
-    std::fs::create_dir(directory.path().join(nested_directory_name))?;
-
-    // Open the same descriptor through paths containing "." and ".." components.
-    for path in [
-        directory.path().join(".").join(descriptor_file_name),
-        directory
-            .path()
-            .join(nested_directory_name)
-            .join("..")
-            .join(descriptor_file_name),
-    ] {
-        let error = open_disk_type(
-            &path,
-            OpenDiskOptions {
-                read_only: true,
-                direct: false,
-            },
-        )
-        .await
-        .expect_err("invalid VMDK descriptor was accepted");
-        // Require rejection specifically for unsafe path components.
-        anyhow::ensure!(
-            format!("{error:#}").contains("'.' and '..' path components are not supported"),
-            "unexpected error for VMDK descriptor path {}: {error:#}",
-            path.display()
-        );
-    }
-
-    Ok(())
-}
-
-petri::test!(flat_vmdk_rejects_unsafe_extent_paths, |_| Some(()));
-
-/// Verifies that unsafe source paths in VMDK extent entries are rejected.
-async fn flat_vmdk_rejects_unsafe_extent_paths(
-    _params: PetriTestParams<'_>,
-    _driver: DefaultDriver,
-    (): (),
-) -> anyhow::Result<()> {
-    let directory = tempfile::tempdir().context("failed to create VMDK directory")?;
-
-    // Cover parent traversal everywhere and additional unsafe path forms on Windows.
-    for (path, expected_error) in [
-        (
-            "../source.bin",
-            "'.' and '..' path components are not supported",
-        ),
-        #[cfg(windows)]
-        (
-            r"\\server\share\source.bin",
-            "network paths are not supported",
-        ),
-        #[cfg(windows)]
-        (
-            r"\\?\C:\source.bin",
-            "device and verbatim paths are not supported",
-        ),
-        #[cfg(windows)]
-        (
-            r"\\.\PhysicalDrive0",
-            "'.' and '..' path components are not supported",
-        ),
-        #[cfg(windows)]
-        (r"C:source.bin", "drive-relative paths are not supported"),
-        #[cfg(windows)]
-        (r"\source.bin", "root-relative paths are not supported"),
-        #[cfg(windows)]
-        (
-            r"source.bin:stream",
-            "alternate data streams are not supported",
-        ),
-    ] {
-        // Embed each source path in a valid descriptor and open it through format routing.
-        let descriptor = write_flat_descriptor(&directory, path, 1)?;
-        let error = open_disk_type(
-            &descriptor,
-            OpenDiskOptions {
-                read_only: true,
-                direct: false,
-            },
-        )
-        .await
-        .expect_err("invalid VMDK descriptor was accepted");
-        // Check that this path form produces its expected validation error.
-        anyhow::ensure!(
-            format!("{error:#}").contains(expected_error),
-            "unexpected error for VMDK extent path {path} (expected {expected_error:?}): {error:#}"
-        );
-    }
-
-    Ok(())
-}
-
-#[cfg(unix)]
-petri::test!(flat_vmdk_rejects_symlink_sources, |_| Some(()));
-
-/// Verifies that VMDK sources cannot use file or directory symbolic links.
-#[cfg(unix)]
-async fn flat_vmdk_rejects_symlink_sources(
-    _params: PetriTestParams<'_>,
-    _driver: DefaultDriver,
-    (): (),
-) -> anyhow::Result<()> {
-    use std::os::unix::fs::symlink;
-
-    // Create real file and directory targets for the symbolic links.
-    let directory = tempfile::tempdir().context("failed to create VMDK directory")?;
-    let source_file_name = "source.bin";
-    let source_link_name = "source-link.bin";
-    let source_directory_name = "sources";
-    let source_directory_link_name = "source-dir-link";
-
-    std::fs::write(
-        directory.path().join(source_file_name),
-        [0; VMDK_SECTOR_SIZE],
-    )?;
-    std::fs::create_dir(directory.path().join(source_directory_name))?;
-
-    // Cover a symlink at the source file and a symlink in its parent path.
-    symlink(
-        directory.path().join(source_file_name),
-        directory.path().join(source_link_name),
-    )?;
-    symlink(
-        directory.path().join(source_directory_name),
-        directory.path().join(source_directory_link_name),
-    )?;
-
-    // Require both link forms to be rejected rather than followed.
-    let linked_source_path = format!("{source_directory_link_name}/{source_file_name}");
-    for path in [source_link_name, linked_source_path.as_str()] {
-        let descriptor = write_flat_descriptor(&directory, path, 1)?;
-        let error = open_disk_type(
-            &descriptor,
-            OpenDiskOptions {
-                read_only: true,
-                direct: false,
-            },
-        )
-        .await
-        .expect_err("invalid VMDK descriptor was accepted");
-        anyhow::ensure!(
-            format!("{error:#}").contains("symbolic links and reparse points are not supported"),
-            "unexpected error for VMDK extent path {path}: {error:#}"
-        );
-    }
-
-    Ok(())
-}
-
 #[cfg(unix)]
 petri::test!(flat_vmdk_rejects_non_regular_sources, |_| Some(()));
 
@@ -607,7 +436,7 @@ async fn flat_vmdk_rejects_invalid_sources(
 ) -> anyhow::Result<()> {
     let directory = tempfile::tempdir().context("failed to create VMDK directory")?;
 
-    // A descriptor referencing a missing source must fail during path resolution.
+    // A descriptor referencing a missing source must fail when opening the source.
     let missing_source_file_name = "missing.bin";
     let descriptor = write_flat_descriptor(&directory, missing_source_file_name, 1)?;
     let error = open_disk_type(
@@ -619,9 +448,9 @@ async fn flat_vmdk_rejects_invalid_sources(
     )
     .await
     .expect_err("invalid VMDK descriptor was accepted");
-    // Check that the missing source is reported as a path-resolution failure.
+    // Check that the missing source is reported as an extent open failure.
     anyhow::ensure!(
-        format!("{error:#}").contains("failed to resolve VMDK path"),
+        format!("{error:#}").contains("failed to open VMDK extent"),
         "unexpected error for missing VMDK source: {error:#}"
     );
 

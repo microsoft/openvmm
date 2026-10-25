@@ -14,7 +14,6 @@ mod tests;
 
 use crate::MAX_DESCRIPTOR_SIZE;
 use crate::OpenError;
-use crate::path::resolve_path;
 use async_trait::async_trait;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -91,15 +90,11 @@ impl AsyncResolveResource<DiskHandleKind, FlatVmdkDiskHandle> for FlatVmdkResolv
         }
 
         // Revalidate the transported handle before wrapping the backend.
-        let disk = FlatVmdkDisk::new(resource)?;
-
-        // Prepare optional io_uring readers on Linux, keeping blocking reads as a fallback.
-        #[cfg(target_os = "linux")]
-        let disk = {
-            let mut disk = disk;
-            disk.enable_native_io(input.driver_source.current()).await;
-            disk
-        };
+        let disk = FlatVmdkDisk::new(
+            resource,
+            #[cfg(target_os = "linux")]
+            Some(Box::new(input.driver_source.current())),
+        )?;
         ResolvedDisk::new(disk).map_err(ResolveFlatVmdkError::InvalidDisk)
     }
 }
@@ -117,10 +112,9 @@ pub(crate) fn open_flat_vmdk(
         return Err(OpenError::ReadWriteUnsupported);
     }
 
-    // Resolve and open the descriptor file.
-    let path = resolve_path(Path::new("."), path)?;
-    let descriptor = File::open(&path).map_err(|source| OpenError::OpenDescriptor {
-        path: path.clone(),
+    // Open the descriptor file.
+    let descriptor = File::open(path).map_err(|source| OpenError::OpenDescriptor {
+        path: path.to_owned(),
         source,
     })?;
 
@@ -128,12 +122,12 @@ pub(crate) fn open_flat_vmdk(
     if !descriptor
         .metadata()
         .map_err(|source| OpenError::ReadDescriptorMetadata {
-            path: path.clone(),
+            path: path.to_owned(),
             source,
         })?
         .is_file()
     {
-        return Err(OpenError::DescriptorNotRegularFile(path));
+        return Err(OpenError::DescriptorNotRegularFile(path.to_owned()));
     }
 
     // Read one byte beyond the limit to detect a descriptor that is too large.
@@ -142,7 +136,7 @@ pub(crate) fn open_flat_vmdk(
         .take(MAX_DESCRIPTOR_SIZE + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| OpenError::ReadDescriptor {
-            path: path.clone(),
+            path: path.to_owned(),
             source,
         })?;
     if bytes.len() as u64 > MAX_DESCRIPTOR_SIZE {
@@ -151,26 +145,22 @@ pub(crate) fn open_flat_vmdk(
 
     // Parse the descriptor to extract the extent entries.
     let parsed_extents = descriptor::parse_descriptor(&bytes)?;
-    let descriptor_directory = path.parent().unwrap_or(Path::new("."));
 
-    // Resolve and validate every extent before opening any source file.
-    // Relative paths use the canonical descriptor directory as their base.
-    let mut resolved_extents = Vec::with_capacity(parsed_extents.len());
-    for extent in parsed_extents {
-        let extent_path = resolve_path(descriptor_directory, Path::new(&extent.path))?;
-        resolved_extents.push((extent, extent_path));
-    }
+    // Relative extent paths are resolved against the descriptor's directory;
+    // absolute extent paths replace it.
+    let descriptor_directory = path.parent().unwrap_or(Path::new("."));
 
     let mut file_indices = HashMap::new();
     let mut files = Vec::new();
-    let mut extents = Vec::with_capacity(resolved_extents.len());
+    let mut extents = Vec::with_capacity(parsed_extents.len());
 
-    // Open each canonical source path once and build the transport extents in
+    // Open each source path once and build the transport extents in
     // descriptor order.
-    for (extent, extent_path) in resolved_extents {
+    for extent in parsed_extents {
+        let extent_path = descriptor_directory.join(&extent.path);
         let file_index = if let Some(&file_index) = file_indices.get(&extent_path) {
             // Reuse the existing handle when another extent names the same
-            // canonical source path.
+            // source path.
             file_index
         } else {
             // Assign the next handle index before opening this source for the
@@ -276,15 +266,18 @@ struct FlatVmdkDisk {
     /// Reusable temporary buffer for assembling blocking reads.
     #[inspect(skip)]
     read_buffer: Mutex<Vec<u8>>,
-    /// Native readers in source order; empty when native I/O is unavailable.
+    /// Shared driver for native reads; absent when io_uring is unavailable.
     #[cfg(target_os = "linux")]
     #[inspect(skip)]
-    native_sources: Vec<crate::native::FileReader>,
+    driver: Option<Box<dyn pal_async::driver::Driver>>,
 }
 
 impl FlatVmdkDisk {
     /// Revalidates a transported handle and builds the runtime disk state.
-    fn new(handle: FlatVmdkDiskHandle) -> Result<Self, OpenError> {
+    fn new(
+        handle: FlatVmdkDiskHandle,
+        #[cfg(target_os = "linux")] driver: Option<Box<dyn pal_async::driver::Driver>>,
+    ) -> Result<Self, OpenError> {
         let Layout {
             source_lengths,
             extents,
@@ -302,13 +295,24 @@ impl FlatVmdkDisk {
             })
             .collect();
 
+        // Store the driver if io_uring is supported, else None.
+        #[cfg(target_os = "linux")]
+        let driver = driver.and_then(|driver| {
+            if crate::io_uring::is_supported(driver.as_ref()) {
+                Some(driver)
+            } else {
+                tracing::debug!("VMDK native I/O unavailable; using pooled blocking reads");
+                None
+            }
+        });
+
         Ok(Self {
             sources,
             extents,
             sector_count,
             read_buffer: Mutex::new(Vec::new()),
             #[cfg(target_os = "linux")]
-            native_sources: Vec::new(),
+            driver,
         })
     }
 
@@ -398,30 +402,6 @@ impl FlatVmdkDisk {
         })
     }
 
-    /// Sets up `io_uring` reads for the VMDK source files on Linux.
-    ///
-    /// If `io_uring` is unavailable, reads use the blocking worker pool instead.
-    #[cfg(target_os = "linux")]
-    async fn enable_native_io(&mut self, driver: impl pal_async::driver::Driver + Clone) {
-        // Store each native reader at the same index as its source file.
-        let mut native_sources = Vec::with_capacity(self.sources.len());
-
-        for source in self.sources.iter() {
-            let Some(native_source) =
-                crate::native::FileReader::new(source.file.clone(), driver.clone())
-            else {
-                // Use blocking reads for the disk if the driver lacks io_uring.
-                tracing::debug!("VMDK native I/O unavailable; using pooled blocking reads");
-                return;
-            };
-
-            native_sources.push(native_source);
-        }
-
-        // Store the prepared readers for future read requests.
-        self.native_sources = native_sources;
-    }
-
     /// Reads a request using native I/O when available or the blocking fallback.
     async fn read(&self, buffers: &RequestBuffers<'_>, sector: u64) -> Result<(), DiskError> {
         let request_byte_count = buffers.len();
@@ -445,13 +425,14 @@ impl FlatVmdkDisk {
 
         // Check if native IO is supported.
         #[cfg(target_os = "linux")]
-        let use_native_io = !self.native_sources.is_empty()
-            && !buffers.is_empty()
-            && buffers.guest_memory().supports_locking();
+        let driver = self
+            .driver
+            .as_deref()
+            .filter(|_| !buffers.is_empty() && buffers.guest_memory().supports_locking());
 
         // Fast path: if the read fits within one extent, use native I/O without building a segment list.
         #[cfg(target_os = "linux")]
-        if use_native_io {
+        if let Some(driver) = driver {
             let extent = &self.extents[extent_index];
             if request_end_sector <= extent.virtual_end_sector {
                 // Translate the virtual sector to a byte offset in the source file.
@@ -464,9 +445,9 @@ impl FlatVmdkDisk {
 
                 // Read into guest memory, padding a partial final sector if needed.
                 return Self::read_native_range(
-                    &self.native_sources[extent.source_index],
+                    driver,
+                    &self.sources[extent.source_index],
                     buffers.clone(),
-                    self.sources[extent.source_index].length,
                     source_byte_offset,
                 )
                 .await;
@@ -478,7 +459,7 @@ impl FlatVmdkDisk {
 
         // Read the planned source ranges directly into guest memory.
         #[cfg(target_os = "linux")]
-        if use_native_io {
+        if let Some(driver) = driver {
             let mut completed_request_byte_count = 0;
 
             let reads = segments
@@ -491,9 +472,9 @@ impl FlatVmdkDisk {
 
                     // Create the read future without starting I/O yet.
                     Self::read_native_range(
-                        &self.native_sources[segment.source_index],
+                        driver,
+                        &self.sources[segment.source_index],
                         segment_output,
-                        self.sources[segment.source_index].length,
                         segment.source_byte_offset,
                     )
                 })
@@ -589,26 +570,28 @@ impl FlatVmdkDisk {
     /// Reads a source range and pads only bytes beyond its cached length.
     #[cfg(target_os = "linux")]
     async fn read_native_range(
-        native_source: &crate::native::FileReader,
+        driver: &dyn pal_async::driver::Driver,
+        source: &Source,
         segment_output: RequestBuffers<'_>,
-        source_length: u64,
         source_byte_offset: u64,
     ) -> Result<(), DiskError> {
         // The file's last sector may contain fewer than 512 bytes.
         // Read the file bytes in this range; the rest will be filled with zeros.
         // Example: with a cached file size of 513 bytes, a 512-byte read at offset
         // 512 reads 1 file byte and fills the remaining 511 bytes with zeros.
-        let readable_byte_count = source_length
+        let readable_byte_count = source
+            .length
             .saturating_sub(source_byte_offset)
             .min(segment_output.len() as u64) as usize;
 
         // Missing bytes inside this range are a truncation error, not padding.
-        native_source
-            .read_exact_at(
-                &segment_output.subrange(0, readable_byte_count),
-                source_byte_offset,
-            )
-            .await?;
+        crate::io_uring::read_exact_at(
+            driver,
+            source.file.clone(),
+            &segment_output.subrange(0, readable_byte_count),
+            source_byte_offset,
+        )
+        .await?;
 
         // Zero only the final sector's padding, preserving the file bytes just read.
         if readable_byte_count < segment_output.len() {

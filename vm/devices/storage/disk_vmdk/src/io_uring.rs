@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Asynchronous reads of VMDK backing files on Linux through [`FileReader`].
+//! Asynchronous `io_uring` reads of VMDK backing files on Linux.
 
 // UNSAFETY: Submitting reads while owning the locked guest pages and iovecs.
 #![expect(unsafe_code)]
@@ -19,117 +19,100 @@ use std::sync::Arc;
 // Linux limits the number of buffer descriptions in one vectored read.
 const MAX_READ_IOVECS: usize = libc::UIO_MAXIOV as usize;
 
-/// A read-only `io_uring` reader for an already-open VMDK backing file.
+/// Returns whether the driver supports both read opcodes used by this module.
+pub(crate) fn is_supported(driver: &dyn Driver) -> bool {
+    driver.io_uring_probe(opcode::Read::CODE) && driver.io_uring_probe(opcode::Readv::CODE)
+}
+
+/// Fills the guest buffers with file data starting at byte `offset`.
 ///
 /// Reads byte ranges into writable guest memory that can be locked during I/O.
 /// The file must be opened without `O_DIRECT`; its length need not be a multiple
 /// of the sector size. Reads past the file's end fail instead of adding zeros,
 /// so callers must handle padding for partial sectors.
-pub(crate) struct FileReader {
+///
+/// Splits submissions to fit the opcode's byte-count and vector-count limits.
+/// Continues after partial reads and retries interrupted operations.
+///
+/// # Cancellation
+///
+/// Dropping this future while I/O is in flight aborts the process, preventing
+/// the kernel from accessing released buffers. Await it to completion instead.
+pub(crate) async fn read_exact_at(
+    driver: &dyn Driver,
     file: Arc<File>,
-    driver: Box<dyn Driver>,
-}
+    buffers: &RequestBuffers<'_>,
+    offset: u64,
+) -> Result<(), DiskError> {
+    // Linux file offsets are signed 64-bit. Validate the entire read range
+    // before locking guest memory.
+    offset
+        .checked_add(buffers.len() as u64)
+        .filter(|end| *end <= i64::MAX as u64)
+        .ok_or(DiskError::InvalidInput)?;
 
-impl FileReader {
-    /// Prepares an existing handle for io_uring reads.
-    ///
-    /// Returns `None` if `Read` or `Readv` is unsupported, allowing the caller
-    /// to fall back to blocking I/O.
-    pub(crate) fn new(file: Arc<File>, driver: impl Driver) -> Option<Self> {
-        if !driver.io_uring_probe(opcode::Read::CODE) || !driver.io_uring_probe(opcode::Readv::CODE)
-        {
-            return None;
-        }
+    // A locked range borrows guest memory, so also retain its owning reference.
+    let guest_memory = buffers.guest_memory().clone();
+    let mut completed = 0;
 
-        Some(Self {
-            file,
-            driver: Box::new(driver),
-        })
-    }
+    // Fill the request, retrying short or interrupted reads.
+    while completed < buffers.len() {
+        let remaining = buffers.subrange(completed, buffers.len() - completed);
 
-    /// Fills the guest buffers with file data starting at byte `offset`.
-    ///
-    /// Splits submissions to fit the opcode's byte-count and vector-count limits.
-    /// Continues after partial reads and retries interrupted operations.
-    /// Returns an error if the file ends before all requested bytes are read.
-    ///
-    /// # Cancellation
-    ///
-    /// Dropping this future while I/O is in flight aborts the process, preventing
-    /// the kernel from accessing released buffers. Await it to completion instead.
-    pub(crate) async fn read_exact_at(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        offset: u64,
-    ) -> Result<(), DiskError> {
-        // Linux file offsets are signed 64-bit. Validate the entire read range
-        // before locking guest memory.
-        offset
-            .checked_add(buffers.len() as u64)
-            .filter(|end| *end <= i64::MAX as u64)
-            .ok_or(DiskError::InvalidInput)?;
+        // Lock guest buffers for writes and get their I/O vectors.
+        // Lists of up to 16 vectors are stored inside the future; longer lists
+        // are allocated separately so the future itself stays small.
+        let locked = remaining.lock_with_capacity::<16>(true)?;
+        let io_vecs = locked.io_vecs();
 
-        let file = self.file.clone();
-        let mut completed = 0;
+        let entry = if io_vecs.len() == 1 {
+            // Read into one guest buffer using its writable address and byte length.
+            // Bound READ's 32-bit length field; the loop handles any remaining bytes.
+            opcode::Read::new(
+                types::Fd(file.as_raw_fd()),
+                io_vecs[0].as_ptr().cast_mut().cast(),
+                io_vecs[0].len().min(u32::MAX as usize) as u32,
+            )
+            .offset(offset + completed as u64)
+            .build()
+        } else {
+            // Read the buffer descriptions, then fill the guest buffers in order.
+            // Submit only as many vectors as Linux allows, then continue the rest.
+            opcode::Readv::new(
+                types::Fd(file.as_raw_fd()),
+                io_vecs.as_ptr().cast(),
+                io_vecs.len().min(MAX_READ_IOVECS) as u32,
+            )
+            .offset(offset + completed as u64)
+            .build()
+        };
 
-        // Fill the request, retrying short or interrupted reads.
-        while completed < buffers.len() {
-            let remaining = buffers.subrange(completed, buffers.len() - completed);
+        // SAFETY: The guest-memory owner, locked pages, iovec storage, and file
+        // handle are owned by this async state machine across the await, even
+        // if leaked. Dropping an in-flight submission aborts before release.
+        let result = unsafe { driver.io_uring_submit(entry) }.await;
 
-            // Lock guest buffers for writes and get their I/O vectors.
-            // Lists of up to 16 vectors are stored inside the future; longer lists
-            // are allocated separately so the future itself stays small.
-            let locked = remaining.lock_with_capacity::<16>(true)?;
-            let io_vecs = locked.io_vecs();
-
-            let entry = if io_vecs.len() == 1 {
-                // Read into one guest buffer using its writable address and byte length.
-                // Bound READ's 32-bit length field; the loop handles any remaining bytes.
-                opcode::Read::new(
-                    types::Fd(file.as_raw_fd()),
-                    io_vecs[0].as_ptr().cast_mut().cast(),
-                    io_vecs[0].len().min(u32::MAX as usize) as u32,
-                )
-                .offset(offset + completed as u64)
-                .build()
-            } else {
-                // Read the buffer descriptions, then fill the guest buffers in order.
-                // Submit only as many vectors as Linux allows, then continue the rest.
-                opcode::Readv::new(
-                    types::Fd(file.as_raw_fd()),
-                    io_vecs.as_ptr().cast(),
-                    io_vecs.len().min(MAX_READ_IOVECS) as u32,
-                )
-                .offset(offset + completed as u64)
-                .build()
-            };
-
-            // SAFETY: The locked pages, iovec storage, and file handle are owned
-            // by this async state machine across the await, including if leaked.
-            // Dropping an in-flight submission aborts before these are released.
-            let result = unsafe { self.driver.io_uring_submit(entry) }.await;
-
-            // Advance both byte positions after a short completion. Only EOF
-            // before the requested end fails; it must never become padding.
-            match result {
-                Ok(0) => {
-                    return Err(DiskError::Io(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "VMDK source file ended before the requested bytes were read",
-                    )));
-                }
-                Ok(count) => completed += count as usize,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(DiskError::Io(error)),
+        // Advance both byte positions after a short completion. Only EOF
+        // before the requested end fails; it must never become padding.
+        match result {
+            Ok(0) => {
+                return Err(DiskError::Io(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "VMDK source file ended before the requested bytes were read",
+                )));
             }
+            Ok(count) => completed += count as usize,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(DiskError::Io(error)),
         }
-
-        Ok(())
     }
+
+    drop(guest_memory);
+    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use guestmem::GuestMemory;
     use guestmem::MemoryRead;
@@ -141,13 +124,13 @@ mod tests {
     use test_with_tracing::test;
 
     /// Test driver that simulates interrupted I/O and unsupported opcodes.
-    struct InterruptedDriver {
+    pub(crate) struct InterruptedDriver {
         /// Real driver used for non-injected operations.
-        inner: pal_async::DefaultDriver,
+        pub(crate) inner: pal_async::DefaultDriver,
         /// Remaining interruptions to inject, shared with the test.
-        interruptions: Arc<AtomicUsize>,
+        pub(crate) interruptions: Arc<AtomicUsize>,
         /// Opcode to report as unsupported, if any.
-        unsupported_opcode: Option<u8>,
+        pub(crate) unsupported_opcode: Option<u8>,
     }
 
     impl Driver for InterruptedDriver {
@@ -229,7 +212,6 @@ mod tests {
             let file = tempfile::tempfile_in(".").unwrap();
             let data = (0..length + 7).map(|i| i as u8).collect::<Vec<_>>();
             io::Write::write_all(&mut &file, &data).unwrap();
-            let reader = FileReader::new(Arc::new(file), driver.clone()).unwrap();
 
             let memory = GuestMemory::allocate(length + 3);
             // linear() counts pages from the length alone, so an unaligned
@@ -238,8 +220,7 @@ mod tests {
             let owned = OwnedRequestBuffers::new_unaligned(&pages, 3, length);
 
             // Read from file offset 7 into guest offset 3.
-            reader
-                .read_exact_at(&owned.buffer(&memory), 7)
+            read_exact_at(&driver, Arc::new(file), &owned.buffer(&memory), 7)
                 .await
                 .unwrap();
 
@@ -260,10 +241,9 @@ mod tests {
             // Include the 7 leading file bytes that the read will skip.
             let data = (0..length + 7).map(|index| index as u8).collect::<Vec<_>>();
 
-            // Write the pattern to a temporary file and create its native reader.
+            // Write the pattern to a temporary file.
             let file = tempfile::tempfile_in(".").unwrap();
             io::Write::write_all(&mut &file, &data).unwrap();
-            let reader = FileReader::new(Arc::new(file), driver.clone()).unwrap();
 
             // Select every other guest page to keep the destination buffers separate.
             let memory = GuestMemory::allocate(page_count * 2 * 4096);
@@ -281,11 +261,13 @@ mod tests {
             // Each separated guest page must produce its own I/O vector.
             assert_eq!(locked.io_vecs().len(), page_count);
 
-            // Release this inspection lock before the reader acquires its own.
+            // Release this inspection lock before the read acquires its own.
             drop(locked);
 
             // Read from a nonzero file offset into the fragmented guest buffers.
-            reader.read_exact_at(&buffers, 7).await.unwrap();
+            read_exact_at(&driver, Arc::new(file), &buffers, 7)
+                .await
+                .unwrap();
 
             // Verify all destination bytes match the requested file range.
             let mut actual = vec![0; length];
@@ -304,7 +286,7 @@ mod tests {
         // Create a source shorter than the requested read.
         let file = tempfile::tempfile_in(".").unwrap();
         io::Write::write_all(&mut &file, &[0x41; 513]).unwrap();
-        let reader = FileReader::new(Arc::new(file), driver).unwrap();
+        let file = Arc::new(file);
 
         // Fill the destination with a sentinel to detect unwanted writes.
         let memory = GuestMemory::allocate(1024);
@@ -312,7 +294,7 @@ mod tests {
         let writable = OwnedRequestBuffers::linear(0, 1024, true);
 
         // Reading past EOF must fail rather than pad the destination.
-        let result = reader.read_exact_at(&writable.buffer(&memory), 0).await;
+        let result = read_exact_at(&driver, file.clone(), &writable.buffer(&memory), 0).await;
         assert!(
             matches!(result, Err(DiskError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof)
         );
@@ -326,8 +308,7 @@ mod tests {
         // A forbidden destination must not be modified, including on failure.
         let read_only = OwnedRequestBuffers::linear(0, 512, false);
         assert!(
-            reader
-                .read_exact_at(&read_only.buffer(&memory), 0)
+            read_exact_at(&driver, file.clone(), &read_only.buffer(&memory), 0)
                 .await
                 .is_err()
         );
@@ -337,9 +318,7 @@ mod tests {
 
         // Reject an overflowing file offset.
         assert!(matches!(
-            reader
-                .read_exact_at(&writable.buffer(&memory), u64::MAX)
-                .await,
+            read_exact_at(&driver, file, &writable.buffer(&memory), u64::MAX).await,
             Err(DiskError::InvalidInput)
         ));
     }
@@ -355,22 +334,23 @@ mod tests {
 
         // Inject two interruptions before allowing real I/O.
         let interruptions = Arc::new(AtomicUsize::new(2));
-        let reader = FileReader::new(
-            file.clone(),
-            InterruptedDriver {
-                inner: driver.clone(),
-                interruptions: interruptions.clone(),
-                unsupported_opcode: None,
-            },
-        )
-        .unwrap();
+        let interrupted_driver = InterruptedDriver {
+            inner: driver.clone(),
+            interruptions: interruptions.clone(),
+            unsupported_opcode: None,
+        };
+        assert!(is_supported(&interrupted_driver));
 
         // Read from offset 1, retrying the injected interruptions.
         let memory = GuestMemory::allocate(16);
-        reader
-            .read_exact_at(&OwnedRequestBuffers::linear(0, 16, true).buffer(&memory), 1)
-            .await
-            .unwrap();
+        read_exact_at(
+            &interrupted_driver,
+            file,
+            &OwnedRequestBuffers::linear(0, 16, true).buffer(&memory),
+            1,
+        )
+        .await
+        .unwrap();
 
         // Verify the read completed and both interruptions were consumed.
         let mut actual = [0; 16];
@@ -380,17 +360,11 @@ mod tests {
 
         // Missing either required read opcode selects the portable fallback.
         for opcode in [opcode::Read::CODE, opcode::Readv::CODE] {
-            assert!(
-                FileReader::new(
-                    file.clone(),
-                    InterruptedDriver {
-                        inner: driver.clone(),
-                        interruptions: interruptions.clone(),
-                        unsupported_opcode: Some(opcode),
-                    },
-                )
-                .is_none()
-            );
+            assert!(!is_supported(&InterruptedDriver {
+                inner: driver.clone(),
+                interruptions: Arc::new(AtomicUsize::new(0)),
+                unsupported_opcode: Some(opcode),
+            }));
         }
     }
 }

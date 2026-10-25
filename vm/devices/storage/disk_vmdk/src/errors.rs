@@ -30,23 +30,6 @@ pub enum OpenError {
     /// The requested VMDK does not support writable access.
     #[error("the requested VMDK does not support writable access")]
     ReadWriteUnsupported,
-    /// A descriptor or extent path is not allowed.
-    #[error("VMDK path '{}' is not allowed: {reason}", path.display())]
-    UnsafePath {
-        /// Rejected path.
-        path: PathBuf,
-        /// Reason for rejecting it.
-        reason: &'static str,
-    },
-    /// A descriptor or extent path could not be inspected or resolved.
-    #[error("failed to resolve VMDK path '{}'", path.display())]
-    ResolvePath {
-        /// Path that could not be inspected or resolved.
-        path: PathBuf,
-        /// I/O error.
-        #[source]
-        source: io::Error,
-    },
     /// The descriptor file could not be opened.
     #[error("failed to open VMDK descriptor '{}'", path.display())]
     OpenDescriptor {

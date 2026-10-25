@@ -43,7 +43,15 @@ fn write_descriptor(directory: &tempfile::TempDir, contents: &str) -> PathBuf {
 fn open_disk(path: &Path) -> Disk {
     let handle = open_flat_vmdk(path, true).unwrap();
 
-    Disk::new(FlatVmdkDisk::new(handle).unwrap()).unwrap()
+    Disk::new(
+        FlatVmdkDisk::new(
+            handle,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
 /// Reads sectors through the disk interface and returns a host copy of the bytes.
@@ -93,83 +101,10 @@ async fn read_backend_sectors(
     Ok(data)
 }
 
-/// Asserts that opening fails with the expected unsafe path and rejection reason.
-fn assert_unsafe_path(
-    result: Result<FlatVmdkDiskHandle, OpenError>,
-    expected_path: &Path,
-    expected_reason: &str,
-) {
-    match result {
-        Err(OpenError::UnsafePath { path, reason }) => {
-            assert_eq!(path, expected_path);
-            assert_eq!(reason, expected_reason);
-        }
-        Err(error) => panic!("expected an unsafe path error, got {error}"),
-        Ok(_) => panic!(
-            "unsafe path unexpectedly accepted: {}",
-            expected_path.display()
-        ),
-    }
-}
-
-/// Checks that an empty descriptor path is rejected, not treated as the current directory.
-#[test]
-fn rejects_empty_descriptor_path() {
-    assert_unsafe_path(
-        open_flat_vmdk(Path::new(""), true),
-        Path::new(""),
-        "path must not be empty",
-    );
-}
-
-/// Checks that descriptor paths reject parent traversal with either separator style.
-#[test]
-fn rejects_parent_traversal_in_descriptor_paths() {
-    let reason = "'.' and '..' path components are not supported";
-
-    for unsafe_path in ["../disk.vmdk", r"..\disk.vmdk"] {
-        assert_unsafe_path(
-            open_flat_vmdk(Path::new(unsafe_path), true),
-            Path::new(unsafe_path),
-            reason,
-        );
-    }
-}
-
-/// Checks that all extent paths are validated before any source file is opened.
+/// Checks that extent paths resolve against the descriptor's directory.
 ///
-/// The first extent names a directory; the second contains parent traversal.
-/// The path error must take precedence over the non-file source error.
-#[test]
-fn rejects_parent_traversal_in_extents_before_opening_sources() {
-    // Use a directory as the first source to detect premature source opening.
-    let directory = tempfile::tempdir().unwrap();
-    let non_regular_source = "source-directory";
-    std::fs::create_dir(directory.path().join(non_regular_source)).unwrap();
-    let reason = "'.' and '..' path components are not supported";
-
-    // Put an unsafe second extent after the directory source for each separator style.
-    for unsafe_path in ["../source.bin", r"..\source.bin"] {
-        let descriptor_path = write_descriptor(
-            &directory,
-            &descriptor(
-                "twoGbMaxExtentFlat",
-                &format!("RW 1 FLAT \"{non_regular_source}\" 0\nRW 1 FLAT \"{unsafe_path}\" 0"),
-            ),
-        );
-
-        assert_unsafe_path(
-            open_flat_vmdk(&descriptor_path, true),
-            Path::new(unsafe_path),
-            reason,
-        );
-    }
-}
-
-/// Checks relative path resolution and permits dots within ordinary file names.
-///
-/// Absolute and relative descriptor paths must both resolve extent paths from
-/// the descriptor's directory and read the same source bytes.
+/// Relative descriptor paths (including `.` components) and extent paths
+/// containing `..` must both resolve, matching other disk backends.
 #[async_test]
 async fn resolves_relative_descriptor_and_extent_paths() {
     // Create the fixture beneath the current directory so the descriptor
@@ -177,34 +112,40 @@ async fn resolves_relative_descriptor_and_extent_paths() {
     let cwd = std::env::current_dir().unwrap();
     let directory = tempfile::tempdir_in(&cwd).unwrap();
 
-    // Use periods in ordinary directory and file names to distinguish them
-    // from rejected `.` and `..` path components.
-    let source_directory_name = "images.with.dots";
-    let source_file_name = ".source.bin";
-    let source_directory = directory.path().join(source_directory_name);
+    // Keep the descriptor and source in sibling directories.
+    let descriptor_directory = directory.path().join("descriptors");
+    let source_directory = directory.path().join("images.with.dots");
+    std::fs::create_dir(&descriptor_directory).unwrap();
     std::fs::create_dir(&source_directory).unwrap();
-    std::fs::write(source_directory.join(source_file_name), [0x25; 512]).unwrap();
+    std::fs::write(source_directory.join(".source.bin"), [0x25; 512]).unwrap();
 
     // The relative extent path is resolved from the descriptor directory.
-    let descriptor_path = write_descriptor(
-        &directory,
-        &descriptor(
+    let descriptor_path = descriptor_directory.join("disk.vmdk");
+    std::fs::write(
+        &descriptor_path,
+        descriptor(
             "monolithicFlat",
-            &format!("RW 1 FLAT \"{source_directory_name}/{source_file_name}\" 0"),
+            "RW 1 FLAT \"../images.with.dots/.source.bin\" 0",
         ),
-    );
+    )
+    .unwrap();
 
-    // Both descriptor-path forms must resolve to the same source data.
+    // Absolute, relative, and `.`-prefixed descriptor paths must all resolve
+    // to the same source data.
     let relative_descriptor_path = descriptor_path.strip_prefix(&cwd).unwrap();
-    for descriptor_path in [descriptor_path.as_path(), relative_descriptor_path] {
-        let disk = open_disk(descriptor_path);
+    for descriptor_path in [
+        descriptor_path.clone(),
+        relative_descriptor_path.to_owned(),
+        Path::new(".").join(relative_descriptor_path),
+    ] {
+        let disk = open_disk(&descriptor_path);
         assert_eq!(read_sectors(&disk, 0, 1).await, [0x25; 512]);
     }
 }
 
 /// Checks that missing descriptors and sources report their paths and `NotFound`.
 #[test]
-fn resolution_errors_preserve_missing_paths() {
+fn open_errors_preserve_missing_paths() {
     // Leave both the descriptor path and its named source missing.
     let directory = tempfile::tempdir().unwrap();
     let missing_descriptor_file_name = "missing.vmdk";
@@ -220,33 +161,25 @@ fn resolution_errors_preserve_missing_paths() {
         ),
     );
 
-    // Source errors report the path relative to the resolved descriptor directory.
-    let missing_source = fs_err::canonicalize(directory.path())
-        .unwrap()
-        .join(missing_source_file_name);
+    // Source errors report the path joined to the descriptor directory.
+    let missing_source = directory.path().join(missing_source_file_name);
 
-    // Check both failure points preserve the path and underlying I/O error.
-    for (kind, result, expected_path) in [
-        (
-            "descriptor",
+    assert!(
+        matches!(
             open_flat_vmdk(&missing_descriptor, true),
-            missing_descriptor,
+            Err(OpenError::OpenDescriptor { path, source })
+                if path == missing_descriptor && source.kind() == io::ErrorKind::NotFound
         ),
-        (
-            "source",
+        "missing descriptor did not preserve its open error"
+    );
+    assert!(
+        matches!(
             open_flat_vmdk(&descriptor_path, true),
-            missing_source,
+            Err(OpenError::OpenExtent { path, source })
+                if path == missing_source && source.kind() == io::ErrorKind::NotFound
         ),
-    ] {
-        assert!(
-            matches!(
-                result,
-                Err(OpenError::ResolvePath { path, source })
-                    if path == expected_path && source.kind() == io::ErrorKind::NotFound
-            ),
-            "missing {kind} did not preserve its resolution error"
-        );
-    }
+        "missing source did not preserve its open error"
+    );
 }
 
 /// Checks that Unix descriptor paths can contain non-UTF-8 directory names.
@@ -282,153 +215,45 @@ fn opens_non_utf8_descriptor_path() {
     assert_eq!(handle.files.len(), 1);
 }
 
-/// Checks that unsupported Windows path forms are rejected in descriptors and extents.
-#[cfg(windows)]
-#[test]
-fn rejects_unsafe_windows_paths() {
-    // Cover network/device paths, ambiguous roots, and alternate data streams.
-    let paths = [
-        (
-            r"\\server\share\source.bin",
-            "network paths are not supported",
-        ),
-        (
-            r"\\?\C:\source.bin",
-            "device and verbatim paths are not supported",
-        ),
-        (
-            r"\\.\PhysicalDrive0",
-            "'.' and '..' path components are not supported",
-        ),
-        (r"C:source.bin", "drive-relative paths are not supported"),
-        (r"\source.bin", "root-relative paths are not supported"),
-        (r"/source.bin", "root-relative paths are not supported"),
-        (
-            r"source.bin:stream",
-            "alternate data streams are not supported",
-        ),
-    ];
-    let directory = tempfile::tempdir().unwrap();
-
-    for (path, reason) in paths {
-        // Reject the path when it appears as an extent in an ordinary descriptor.
-        let descriptor_path = write_descriptor(
-            &directory,
-            &descriptor("monolithicFlat", &format!("RW 1 FLAT \"{path}\" 0")),
-        );
-
-        assert_unsafe_path(
-            open_flat_vmdk(&descriptor_path, true),
-            Path::new(path),
-            reason,
-        );
-
-        // Reject the same path when supplied as the descriptor path itself.
-        assert_unsafe_path(
-            open_flat_vmdk(Path::new(path), true),
-            Path::new(path),
-            reason,
-        );
-    }
-}
-
-/// Checks that Unix descriptor paths reject symlinks to files or parent directories.
+/// Checks that symbolic links in descriptor and extent paths are followed.
+///
+/// Relative extents resolve against the directory of the descriptor path as
+/// given, not the link target's directory, matching VHDX parent locators.
 #[cfg(unix)]
-#[test]
-fn rejects_symlink_descriptor() {
+#[async_test]
+async fn follows_symlinks() {
     use std::os::unix::fs::symlink;
 
-    // Create a real descriptor to target with file and directory symlinks.
+    // Place the descriptor and source in a real directory.
     let directory = tempfile::tempdir().unwrap();
-    let real_directory_name = "real";
-    let source_file_name = "source.bin";
-    let descriptor_file_name = "disk.vmdk";
-    let descriptor_link_name = "disk-link.vmdk";
-    let directory_link_name = "directory-link";
-    let missing_descriptor_file_name = "missing.vmdk";
-
-    let real_directory = directory.path().join(real_directory_name);
+    let real_directory = directory.path().join("real");
     std::fs::create_dir(&real_directory).unwrap();
-
-    let descriptor_path = real_directory.join(descriptor_file_name);
+    std::fs::write(real_directory.join("source.bin"), [0x5c; 512]).unwrap();
     std::fs::write(
-        &descriptor_path,
-        descriptor(
-            "monolithicFlat",
-            &format!("RW 1 FLAT \"{source_file_name}\" 0"),
-        ),
+        real_directory.join("disk.vmdk"),
+        descriptor("monolithicFlat", "RW 1 FLAT \"source-link.bin\" 0"),
     )
     .unwrap();
 
-    // Link both the descriptor file and its containing directory.
-    let descriptor_link = directory.path().join(descriptor_link_name);
-    symlink(&descriptor_path, &descriptor_link).unwrap();
-
-    let directory_link = directory.path().join(directory_link_name);
-    symlink(&real_directory, &directory_link).unwrap();
-
-    // A symlinked directory is rejected even when the descriptor beneath it is missing.
-    for path in [
-        descriptor_link,
-        directory_link.join(descriptor_file_name),
-        directory_link.join(missing_descriptor_file_name),
-    ] {
-        assert!(matches!(
-            open_flat_vmdk(&path, true),
-            Err(OpenError::UnsafePath { .. })
-        ));
+    // Provide the linked source name next to the real descriptor and next to
+    // the descriptor link.
+    for link_directory in [real_directory.as_path(), directory.path()] {
+        symlink(
+            real_directory.join("source.bin"),
+            link_directory.join("source-link.bin"),
+        )
+        .unwrap();
     }
-}
 
-/// Checks that Unix extent paths reject symlinked files and parent directories.
-#[cfg(unix)]
-#[test]
-fn rejects_symlink_source() {
-    use std::os::unix::fs::symlink;
+    // Reach the descriptor through both a directory link and a file link.
+    let directory_link = directory.path().join("linked");
+    symlink(&real_directory, &directory_link).unwrap();
+    let descriptor_link = directory.path().join("disk-link.vmdk");
+    symlink(real_directory.join("disk.vmdk"), &descriptor_link).unwrap();
 
-    // Create source files for direct-file and parent-directory symlink cases.
-    let directory = tempfile::tempdir().unwrap();
-    let source_file_name = "source.bin";
-    let source_directory_name = "data";
-    let source_link_name = "link.bin";
-    let directory_link_name = "link-data";
-
-    let source_path = directory.path().join(source_file_name);
-    let source_directory = directory.path().join(source_directory_name);
-    std::fs::write(&source_path, [0; 512]).unwrap();
-    std::fs::create_dir(&source_directory).unwrap();
-    std::fs::write(source_directory.join(source_file_name), [0; 512]).unwrap();
-
-    // Provide a symlink to a source file and another to a source directory.
-    symlink(&source_path, directory.path().join(source_link_name)).unwrap();
-    symlink(
-        &source_directory,
-        directory.path().join(directory_link_name),
-    )
-    .unwrap();
-
-    // Reject both link types in relative and absolute extent paths.
-    for source in [
-        PathBuf::from(source_link_name),
-        PathBuf::from(directory_link_name).join(source_file_name),
-        directory.path().join(source_link_name),
-        directory
-            .path()
-            .join(directory_link_name)
-            .join(source_file_name),
-    ] {
-        let path = write_descriptor(
-            &directory,
-            &descriptor(
-                "monolithicFlat",
-                &format!("RW 1 FLAT \"{}\" 0", source.display()),
-            ),
-        );
-
-        assert!(matches!(
-            open_flat_vmdk(&path, true),
-            Err(OpenError::UnsafePath { .. })
-        ));
+    for path in [directory_link.join("disk.vmdk"), descriptor_link] {
+        let disk = open_disk(&path);
+        assert_eq!(read_sectors(&disk, 0, 1).await, [0x5c; 512]);
     }
 }
 
@@ -569,7 +394,15 @@ async fn reuses_source_file_across_more_than_512_extents() {
     assert_eq!(handle.extents.len(), 513);
 
     // Read across the first extent boundary and check both source offsets.
-    let disk = Disk::new(FlatVmdkDisk::new(handle).unwrap()).unwrap();
+    let disk = Disk::new(
+        FlatVmdkDisk::new(
+            handle,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(disk.sector_count(), 513);
     assert_eq!(
         read_sectors(&disk, 0, 2).await,
@@ -600,7 +433,12 @@ async fn plans_reads_at_and_across_extent_boundaries() {
         ),
     );
 
-    let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
+    let disk = FlatVmdkDisk::new(
+        open_flat_vmdk(&path, true).unwrap(),
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .unwrap();
 
     // Reject a byte count that is not a whole sector.
     let memory = GuestMemory::allocate(512);
@@ -765,7 +603,12 @@ async fn does_not_cache_oversized_reads() {
     );
 
     // Leave native I/O disabled so this request exercises the blocking buffer.
-    let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
+    let disk = FlatVmdkDisk::new(
+        open_flat_vmdk(&path, true).unwrap(),
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .unwrap();
 
     // The entire request must still be read correctly.
     assert_eq!(
@@ -797,7 +640,12 @@ async fn reuses_read_buffer_and_clears_partial_sector_padding() {
             &format!("RW 2 FLAT \"{}\" 0", source.display()),
         ),
     );
-    let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
+    let disk = FlatVmdkDisk::new(
+        open_flat_vmdk(&path, true).unwrap(),
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .unwrap();
 
     // The first read must preserve file bytes and zero the incomplete sector's tail.
     let data = read_backend_sectors(&disk, 0, 2).await.unwrap();
@@ -827,7 +675,12 @@ async fn failed_read_returns_buffer_to_cache() {
         &directory,
         &descriptor("monolithicFlat", "RW 2 FLAT \"source.bin\" 0"),
     );
-    let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
+    let disk = FlatVmdkDisk::new(
+        open_flat_vmdk(&path, true).unwrap(),
+        #[cfg(target_os = "linux")]
+        None,
+    )
+    .unwrap();
 
     // Warm the buffer cache and remember its allocation.
     assert_eq!(
@@ -860,6 +713,37 @@ async fn failed_read_returns_buffer_to_cache() {
     assert_eq!(disk.read_buffer.lock().len(), 512);
 }
 
+#[cfg(target_os = "linux")]
+#[async_test]
+async fn unsupported_driver_uses_blocking_reads(driver: pal_async::DefaultDriver) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("source.bin"), [0xa5; 512]).unwrap();
+    let path = write_descriptor(
+        &directory,
+        &descriptor("monolithicFlat", "RW 1 FLAT \"source.bin\" 0"),
+    );
+
+    for opcode in [
+        ::io_uring::opcode::Read::CODE,
+        ::io_uring::opcode::Readv::CODE,
+    ] {
+        let driver = crate::io_uring::tests::InterruptedDriver {
+            inner: driver.clone(),
+            interruptions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            unsupported_opcode: Some(opcode),
+        };
+        let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver)))
+            .unwrap();
+
+        assert!(disk.driver.is_none());
+        assert_eq!(
+            read_backend_sectors(&disk, 0, 1).await.unwrap(),
+            [0xa5; 512]
+        );
+        assert_eq!(disk.read_buffer.lock().len(), 512);
+    }
+}
+
 /// Checks that a guest-memory error in one native segment does not cancel another.
 ///
 /// Each segment is made invalid in turn; the valid sibling must finish its read.
@@ -878,9 +762,9 @@ async fn native_read_errors_wait_for_pending_siblings(driver: pal_async::Default
     );
 
     // Enable native reads so each extent writes directly into its guest pages.
-    let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-    backend.enable_native_io(driver).await;
-    assert_eq!(backend.native_sources.len(), 1);
+    let backend =
+        FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
+    assert!(backend.driver.is_some());
 
     // Only page 0 exists; fail each read in turn by targeting page 1.
     for pages in [[1, 0], [0, 1]] {
@@ -909,8 +793,8 @@ async fn native_read_future_fits_inline_storage(driver: pal_async::DefaultDriver
         &directory,
         &descriptor("monolithicFlat", "RW 1 FLAT \"source.bin\" 0"),
     );
-    let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-    backend.enable_native_io(driver).await;
+    let backend =
+        FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
 
     // Construct the future without polling it so its stored size can be measured.
     let memory = GuestMemory::allocate(512);
@@ -959,10 +843,13 @@ async fn native_io_reads_partial_sectors(driver: pal_async::DefaultDriver) {
             ),
         );
 
-        // Prepare native readers for both files.
-        let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-        backend.enable_native_io(driver.clone()).await;
-        assert_eq!(backend.native_sources.len(), 2);
+        // Prepare one native driver for both files.
+        let backend = FlatVmdkDisk::new(
+            open_flat_vmdk(&path, true).unwrap(),
+            Some(Box::new(driver.clone())),
+        )
+        .unwrap();
+        assert!(backend.driver.is_some());
 
         // Cover the single-extent fast path, including reads larger than 1 MiB.
         assert_eq!(
@@ -1032,9 +919,9 @@ async fn native_io_reads_all_final_sector_lengths(driver: pal_async::DefaultDriv
         &directory,
         &descriptor("monolithicFlat", "RW 1 FLAT \"source.bin\" 1"),
     );
-    let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-    backend.enable_native_io(driver).await;
-    let native_source = &backend.native_sources[0];
+    let backend =
+        FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
+    let driver = backend.driver.as_deref().unwrap();
 
     // Replace the path with different data while retaining the original open file.
     std::fs::rename(&source, directory.path().join("previous.bin")).unwrap();
@@ -1059,14 +946,13 @@ async fn native_io_reads_all_final_sector_lengths(driver: pal_async::DefaultDriv
         memory.write_at(0, &[0xff; 512]).unwrap();
 
         // Simulate a file ending final_byte_count bytes into its second sector.
-        FlatVmdkDisk::read_native_range(
-            native_source,
-            owned.buffer(&memory),
-            (512 + final_byte_count) as u64,
-            512,
-        )
-        .await
-        .unwrap();
+        let source = Source {
+            file: backend.sources[0].file.clone(),
+            length: (512 + final_byte_count) as u64,
+        };
+        FlatVmdkDisk::read_native_range(driver, &source, owned.buffer(&memory), 512)
+            .await
+            .unwrap();
 
         // Preserve the declared file bytes and zero only the rest of the sector.
         memory.read_at(0, &mut data).unwrap();
@@ -1098,8 +984,8 @@ async fn native_io_reads_many_extents_without_fallback(driver: pal_async::Defaul
     );
 
     // Enable native I/O and read all extents in one guest request.
-    let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-    backend.enable_native_io(driver).await;
+    let backend =
+        FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
 
     assert_eq!(
         read_backend_sectors(&backend, 0, count).await.unwrap(),
@@ -1131,8 +1017,8 @@ async fn native_io_handles_concurrent_reads_and_read_only_buffers(
         &descriptor("monolithicFlat", "RW 2 FLAT \"source.bin\" 0"),
     );
 
-    let mut backend = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap()).unwrap();
-    backend.enable_native_io(driver).await;
+    let backend =
+        FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
 
     // Read different sectors concurrently through the same backend.
     let (first, second) = futures::join!(

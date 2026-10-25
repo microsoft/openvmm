@@ -81,37 +81,22 @@ Descriptor and source paths may be absolute or relative:
   descriptor.
 - Source paths written in a descriptor must be quoted.
 
-The following restrictions apply to both descriptor and source paths:
-
-- `.` and `..` path components are rejected.
-- Symbolic links and Windows reparse points are rejected.
-- The resolved path must identify a regular file.
-
-Windows also rejects:
-
-- Explicit UNC network paths.
-- Device and verbatim paths.
-- Root-relative and drive-relative paths.
-- Alternate data streams.
-
-OpenVMM validates and canonicalizes every source path before opening it
-read-only. Each extent must fit within its source file. Multiple extents may
-use different ranges of the same source file, which OpenVMM opens only once.
+The descriptor and every source must be regular files. Each extent must fit
+within its source file. Multiple extents may use different ranges of the same
+source file; extents that name the same path share one open file.
 
 ### Resource transport
 
 Opening a flat VMDK uses the following resource flow:
 
-1. Validate and canonicalize the descriptor path, then read and parse the
-   descriptor, which is limited to 1 MiB.
-2. Resolve and validate every source path, then open each distinct source file
-   read-only.
+1. Open, read, and parse the descriptor, which is limited to 1 MiB.
+2. Open each distinct source path read-only.
 3. Convert the ordered extents and open files into a `FlatVmdkDiskHandle`.
 4. Pass that handle directly to the VM worker in single-process mode, or
    transport it through mesh in multi-process mode.
 5. Revalidate the complete layout in the worker before exposing the disk.
 
-Transporting open files preserves the identity of the validated sources. The
+Transporting open files preserves the identity of the opened sources. The
 VM worker revalidates the untrusted handle instead of reopening paths.
 
 ```admonish warning
