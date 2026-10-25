@@ -11,6 +11,7 @@ use crate::Options;
 use crate::cli_args;
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::microvm::MachineProfileCli;
+use crate::storage_builder::microvm::MicrovmSandboxBlockGeometry;
 use anyhow::Context;
 use chipset_resources::microvm_time::RESTORE_ENTROPY_LEN;
 use chipset_resources::microvm_time::RestoreMemoryRange;
@@ -19,6 +20,7 @@ use chipset_resources::microvm_time::RestoreTimeRecord;
 use net_backend_resources::egress::EgressPolicy;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::microvm::MicrovmNetworkConfig;
+use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use openvmm_defs::time_abi::RestoreTimeInput;
 use openvmm_defs::time_abi::SnapshotCpuProfile;
 use openvmm_defs::time_abi::SnapshotTimeContract;
@@ -106,6 +108,12 @@ pub(crate) struct MicrovmRestore {
     pub(crate) memory_ranges: Vec<SnapshotMemoryExpansionRange>,
     /// Private copy of a paired scratch image, kept alive for the VM lifetime.
     pub(crate) private_scratch_dir: Option<tempfile::TempDir>,
+    /// The captured geometry of a platform snapshot's `distro` block, which
+    /// the restore presents over an image that may be shorter.
+    pub(crate) distro_capacity: Option<MicrovmSandboxBlockGeometry>,
+    /// The captured geometry of a platform snapshot's fresh scratch, which
+    /// `--restore-absent-scratch` attaches with no file.
+    pub(crate) absent_scratch: Option<MicrovmSandboxBlockGeometry>,
 }
 
 impl MicrovmRestore {
@@ -189,12 +197,17 @@ pub(crate) fn restore_packet_base(
 /// restore-time inputs of the microVM configuration.
 ///
 /// This may adjust `opt`: the snapshot selects the RAM size, a paired scratch
-/// image is replaced by a private copy, and restore gates require entropy.
+/// image is replaced by a private copy, and restore gates require entropy. A
+/// platform snapshot's `distro` block keeps its captured capacity, whatever
+/// the length of the image that the restore attaches to it, and
+/// `--restore-absent-scratch` attaches its fresh scratch with no file.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
 ) -> anyhow::Result<MicrovmRestore> {
     let mut private_scratch_dir = None;
+    let mut distro_capacity = None;
+    let mut absent_scratch = None;
     let mut restore_gate_required = false;
     let restore_memory_target_requested = opt.microvm.restore_memory.is_some();
     let mut restore_memory_ranges = Vec::new();
@@ -262,65 +275,64 @@ pub(crate) fn prepare_restore(
             "restore-time memory overrides are not allowed"
         );
         opt.memory.size = Some(vmm_cli::MemorySize(restore_memory_size));
-        if !contract.microvm_sandbox_blocks.is_empty() {
-            let scratch = contract
-                .microvm_sandbox_blocks
-                .last()
-                .filter(|block| block.role == "scratch")
-                .context("microVM snapshot is missing its scratch contract")?;
-            if scratch.artifact == openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME {
-                anyhow::ensure!(
-                    !opt.microvm.microvm_sandbox_block.iter().any(|block| {
-                        block.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
-                    }),
-                    "paired snapshot restore supplies scratch.img; do not pass a scratch block"
-                );
-                let source = snapshot
-                    .open_paired_scratch_file()?
-                    .context("paired snapshot is missing scratch.img")?;
-                let restore_mode = if scratch.restore_mode.is_empty() {
-                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
-                } else {
-                    scratch.restore_mode.as_str()
-                };
-                let (private_path, temp_dir) = match restore_mode {
-                    openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED => {
-                        anyhow::ensure!(
-                            manifest.restore_policy
-                                == openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME,
-                            "direct-claimed scratch requires a resume snapshot"
-                        );
-                        let parent = snapshot_dir
-                            .parent()
-                            .filter(|parent| !parent.as_os_str().is_empty())
-                            .unwrap_or(Path::new("."));
-                        let temp_dir = tempfile::Builder::new()
-                            .prefix(".openvmm-claimed-scratch-")
-                            .tempdir_in(parent)
-                            .context("failed to create claimed restore scratch directory")?;
-                        let private_path = temp_dir
-                            .path()
-                            .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
-                        openvmm_helpers::snapshot::restore::link_claimed_paired_scratch_file(
-                            &source,
-                            &private_path,
-                            scratch,
-                        )?;
-                        (private_path, Some(temp_dir))
-                    }
-                    mode => {
-                        let parent = snapshot_dir
-                            .parent()
-                            .filter(|parent| !parent.as_os_str().is_empty())
-                            .unwrap_or(Path::new("."));
-                        let temp_dir = tempfile::Builder::new()
-                            .prefix(".openvmm-private-scratch-")
-                            .tempdir_in(parent)
-                            .context("failed to create private restore scratch directory")?;
-                        let private_path = temp_dir
-                            .path()
-                            .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
-                        match mode {
+        let blocks = plan_sandbox_block_restore(
+            &manifest.snapshot_tier,
+            &contract.microvm_sandbox_blocks,
+            opt.microvm
+                .microvm_sandbox_block
+                .iter()
+                .any(|block| block.role == MicrovmSandboxBlockRole::Scratch),
+            opt.microvm.restore_absent_scratch,
+        )?;
+        distro_capacity = blocks.distro_capacity;
+        absent_scratch = blocks.absent_scratch;
+        if let Some(scratch) = blocks.paired_scratch {
+            let source = snapshot
+                .open_paired_scratch_file()?
+                .context("paired snapshot is missing scratch.img")?;
+            let restore_mode = if scratch.restore_mode.is_empty() {
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY
+            } else {
+                scratch.restore_mode.as_str()
+            };
+            let (private_path, temp_dir) = match restore_mode {
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_DIRECT_CLAIMED => {
+                    anyhow::ensure!(
+                        manifest.restore_policy
+                            == openvmm_helpers::snapshot::format::SNAPSHOT_RESTORE_POLICY_RESUME,
+                        "direct-claimed scratch requires a resume snapshot"
+                    );
+                    let parent = snapshot_dir
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    let temp_dir = tempfile::Builder::new()
+                        .prefix(".openvmm-claimed-scratch-")
+                        .tempdir_in(parent)
+                        .context("failed to create claimed restore scratch directory")?;
+                    let private_path = temp_dir
+                        .path()
+                        .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                    openvmm_helpers::snapshot::restore::link_claimed_paired_scratch_file(
+                        &source,
+                        &private_path,
+                        scratch,
+                    )?;
+                    (private_path, Some(temp_dir))
+                }
+                mode => {
+                    let parent = snapshot_dir
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new("."));
+                    let temp_dir = tempfile::Builder::new()
+                        .prefix(".openvmm-private-scratch-")
+                        .tempdir_in(parent)
+                        .context("failed to create private restore scratch directory")?;
+                    let private_path = temp_dir
+                        .path()
+                        .join(openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME);
+                    match mode {
                             openvmm_helpers::snapshot::microvm::SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY => {
                                 openvmm_helpers::snapshot::restore::copy_paired_scratch_file(
                                     &source,
@@ -339,40 +351,32 @@ pub(crate) fn prepare_restore(
                                 "snapshot scratch restore mode '{mode}' is unsupported"
                             ),
                         }
-                        (private_path, Some(temp_dir))
-                    }
-                };
-                opt.microvm
-                    .microvm_sandbox_block
-                    .push(cli_args::microvm::MicrovmSandboxBlockCli {
-                        role: openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
-                        disk: cli_args::DiskCli {
-                            vtl: DeviceVtl::Vtl0,
-                            kind: DiskCliKind::File {
-                                path: private_path,
-                                create_with_len: None,
-                                direct: false,
-                            },
-                            read_only: false,
-                            is_dvd: false,
-                            underhill: None,
-                            pcie_port: None,
-                            serial: None,
-                            controller: None,
-                            nsid: None,
-                            lun: None,
-                            relay: None,
+                    (private_path, Some(temp_dir))
+                }
+            };
+            opt.microvm
+                .microvm_sandbox_block
+                .push(cli_args::microvm::MicrovmSandboxBlockCli {
+                    role: MicrovmSandboxBlockRole::Scratch,
+                    disk: cli_args::DiskCli {
+                        vtl: DeviceVtl::Vtl0,
+                        kind: DiskCliKind::File {
+                            path: private_path,
+                            create_with_len: None,
+                            direct: false,
                         },
-                    });
-                private_scratch_dir = temp_dir;
-            } else {
-                anyhow::ensure!(
-                    opt.microvm.microvm_sandbox_block.iter().any(|block| {
-                        block.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
-                    }),
-                    "fresh-scratch snapshot restore requires a scratch block"
-                );
-            }
+                        read_only: false,
+                        is_dvd: false,
+                        underhill: None,
+                        pcie_port: None,
+                        serial: None,
+                        controller: None,
+                        nsid: None,
+                        lun: None,
+                        relay: None,
+                    },
+                });
+            private_scratch_dir = temp_dir;
         }
         Some(contract.clone())
     } else {
@@ -384,6 +388,81 @@ pub(crate) fn prepare_restore(
         memory_target_requested: restore_memory_target_requested,
         memory_ranges: restore_memory_ranges,
         private_scratch_dir,
+        distro_capacity,
+        absent_scratch,
+    })
+}
+
+/// How a restore attaches the sandbox blocks of a snapshot.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SandboxBlockRestore<'a> {
+    /// The paired scratch, whose `scratch.img` the restore attaches.
+    paired_scratch: Option<&'a SnapshotMicrovmSandboxBlock>,
+    /// The captured geometry of a platform snapshot's `distro` block, which
+    /// the restore presents over an image that may be shorter.
+    distro_capacity: Option<MicrovmSandboxBlockGeometry>,
+    /// The captured geometry of a platform snapshot's fresh scratch, which the
+    /// restore attaches with no file.
+    absent_scratch: Option<MicrovmSandboxBlockGeometry>,
+}
+
+/// Plans how a restore attaches `blocks`, the sandbox blocks of a snapshot of
+/// tier `snapshot_tier`, given whether the caller passed a scratch block and
+/// whether it declared the scratch absent.
+///
+/// A paired snapshot supplies its own scratch. A fresh-scratch snapshot, the
+/// platform tier's, takes the caller's, or attaches the scratch with no file
+/// when the caller declares it absent; no other scratch may be absent. A
+/// platform restore also presents the captured capacity of its `distro` block
+/// whatever the image's length; other tiers keep exact lengths.
+fn plan_sandbox_block_restore<'a>(
+    snapshot_tier: &str,
+    blocks: &'a [SnapshotMicrovmSandboxBlock],
+    scratch_block: bool,
+    absent_scratch: bool,
+) -> anyhow::Result<SandboxBlockRestore<'a>> {
+    const ABSENT_SCRATCH_REQUIRES_PLATFORM: &str =
+        "--restore-absent-scratch requires the fresh scratch of a platform snapshot";
+    if blocks.is_empty() {
+        anyhow::ensure!(!absent_scratch, ABSENT_SCRATCH_REQUIRES_PLATFORM);
+        return Ok(SandboxBlockRestore::default());
+    }
+    let scratch = blocks
+        .last()
+        .filter(|block| block.role == MicrovmSandboxBlockRole::Scratch.as_str())
+        .context("microVM snapshot is missing its scratch contract")?;
+    let platform = snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+    let paired_scratch = (scratch.artifact == openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME)
+        .then_some(scratch);
+    anyhow::ensure!(
+        !absent_scratch || (platform && paired_scratch.is_none()),
+        ABSENT_SCRATCH_REQUIRES_PLATFORM
+    );
+    if paired_scratch.is_some() {
+        anyhow::ensure!(
+            !scratch_block,
+            "paired snapshot restore supplies scratch.img; do not pass a scratch block"
+        );
+    } else if absent_scratch {
+        anyhow::ensure!(
+            !scratch_block,
+            "--restore-absent-scratch attaches the scratch block with no file; do not pass a scratch block"
+        );
+    } else {
+        anyhow::ensure!(
+            scratch_block,
+            "fresh-scratch snapshot restore requires a scratch block or --restore-absent-scratch"
+        );
+    }
+    let distro_capacity = blocks
+        .iter()
+        .find(|block| block.role == MicrovmSandboxBlockRole::Distro.as_str())
+        .filter(|_| platform)
+        .map(MicrovmSandboxBlockGeometry::of);
+    Ok(SandboxBlockRestore {
+        paired_scratch,
+        distro_capacity,
+        absent_scratch: absent_scratch.then(|| MicrovmSandboxBlockGeometry::of(scratch)),
     })
 }
 
@@ -631,6 +710,154 @@ pub(crate) mod tests {
         entropy[16] = 0xa5;
         assert_eq!(microvm_generation_id(&entropy), [0x5a; 16]);
     }
+
+    /// Returns the contract of a sandbox block of `role` and `length` bytes,
+    /// with a platform snapshot's identity.
+    fn sandbox_block(role: &str, length: u64) -> SnapshotMicrovmSandboxBlock {
+        let scratch = role == MicrovmSandboxBlockRole::Scratch.as_str();
+        SnapshotMicrovmSandboxBlock {
+            role: role.to_owned(),
+            read_only: !scratch,
+            length,
+            identity_kind: if scratch { "fresh" } else { "unbound" }.to_owned(),
+            identity: Vec::new(),
+            artifact: String::new(),
+            logical_block_size: 512,
+            physical_block_size: 4096,
+            restore_mode: String::new(),
+        }
+    }
+
+    #[test]
+    fn only_a_platform_restore_presents_the_distro_capacity() {
+        use openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        let blocks = [
+            sandbox_block("distro", 1 << 30),
+            sandbox_block("scratch", 1 << 20),
+        ];
+        assert_eq!(
+            plan_sandbox_block_restore(SNAPSHOT_TIER_PLATFORM, &blocks, true, false).unwrap(),
+            SandboxBlockRestore {
+                paired_scratch: None,
+                distro_capacity: Some(MicrovmSandboxBlockGeometry {
+                    length: 1 << 30,
+                    logical_block_size: 512,
+                    physical_block_size: 4096,
+                }),
+                absent_scratch: None,
+            }
+        );
+        // The fresh scratch of a platform snapshot needs a file unless it is
+        // declared absent.
+        let err =
+            plan_sandbox_block_restore(SNAPSHOT_TIER_PLATFORM, &blocks, false, false).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "fresh-scratch snapshot restore requires a scratch block or --restore-absent-scratch"
+        );
+
+        // A paired snapshot of another tier keeps the exact lengths and
+        // supplies its own scratch.
+        let mut paired = blocks.clone();
+        paired[1].artifact = SCRATCH_FILE_NAME.to_owned();
+        assert_eq!(
+            plan_sandbox_block_restore(SNAPSHOT_TIER_WORKLOAD_START, &paired, false, false)
+                .unwrap(),
+            SandboxBlockRestore {
+                paired_scratch: Some(&paired[1]),
+                distro_capacity: None,
+                absent_scratch: None,
+            }
+        );
+        let err = plan_sandbox_block_restore(SNAPSHOT_TIER_WORKLOAD_START, &paired, true, false)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "paired snapshot restore supplies scratch.img; do not pass a scratch block"
+        );
+
+        // A snapshot without sandbox blocks has nothing to attach.
+        assert_eq!(
+            plan_sandbox_block_restore("", &[], false, false).unwrap(),
+            SandboxBlockRestore::default()
+        );
+        let err = plan_sandbox_block_restore(SNAPSHOT_TIER_PLATFORM, &blocks[..1], true, false)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "microVM snapshot is missing its scratch contract"
+        );
+    }
+
+    #[test]
+    fn only_a_platform_restore_attaches_an_absent_scratch() {
+        use openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        let blocks = [
+            sandbox_block("distro", 1 << 30),
+            sandbox_block("scratch", 1 << 20),
+        ];
+        // A platform restore attaches its fresh scratch at the captured
+        // geometry, with no file.
+        assert_eq!(
+            plan_sandbox_block_restore(SNAPSHOT_TIER_PLATFORM, &blocks, false, true).unwrap(),
+            SandboxBlockRestore {
+                paired_scratch: None,
+                distro_capacity: Some(MicrovmSandboxBlockGeometry::of(&blocks[0])),
+                absent_scratch: Some(MicrovmSandboxBlockGeometry {
+                    length: 1 << 20,
+                    logical_block_size: 512,
+                    physical_block_size: 4096,
+                }),
+            }
+        );
+        // An absent scratch has no file.
+        let err =
+            plan_sandbox_block_restore(SNAPSHOT_TIER_PLATFORM, &blocks, true, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--restore-absent-scratch attaches the scratch block with no file; do not pass a scratch block"
+        );
+
+        // Outside a platform restore, the scratch is never absent: not for a
+        // paired snapshot, with or without a scratch block, and not for a
+        // snapshot without sandbox blocks.
+        let mut paired = blocks.clone();
+        paired[1].artifact = SCRATCH_FILE_NAME.to_owned();
+        for tier in [
+            SNAPSHOT_TIER_WORKLOAD_START,
+            SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+        ] {
+            for scratch_block in [false, true] {
+                let err =
+                    plan_sandbox_block_restore(tier, &paired, scratch_block, true).unwrap_err();
+                assert_eq!(
+                    err.to_string(),
+                    "--restore-absent-scratch requires the fresh scratch of a platform snapshot"
+                );
+            }
+        }
+        // The fresh scratch of a manifest of another tier, which the manifest
+        // validation rejects, is not absent either.
+        let err = plan_sandbox_block_restore(SNAPSHOT_TIER_WORKLOAD_START, &blocks, false, true)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--restore-absent-scratch requires the fresh scratch of a platform snapshot"
+        );
+        let err = plan_sandbox_block_restore("", &[], false, true).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--restore-absent-scratch requires the fresh scratch of a platform snapshot"
+        );
+    }
+
     fn time_abi_restore(capture_generation: u32) -> MicrovmRestore {
         let mut contract: SnapshotMachineContract = mesh::payload::decode(&[]).unwrap();
         contract.time = Some(SnapshotTimeContract {
@@ -663,6 +890,8 @@ pub(crate) mod tests {
                 length: 0x4000_0000,
             }],
             private_scratch_dir: None,
+            distro_capacity: None,
+            absent_scratch: None,
         }
     }
 
