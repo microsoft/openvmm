@@ -312,26 +312,32 @@ fn enforces_descriptor_size_limit() {
     ));
 }
 
-/// Checks that an extent cannot claim more sectors than its source file provides.
+/// Checks that layout validation rejects empty extents and extents that end
+/// past their source file.
 #[test]
-fn rejects_source_range_past_end() {
-    // Provide one sector of source data but declare a two-sector extent.
+fn rejects_invalid_extent_ranges() {
+    // Provide one sector of source data.
     let directory = tempfile::tempdir().unwrap();
     let source_file_name = "source.bin";
     std::fs::write(directory.path().join(source_file_name), [0; 512]).unwrap();
 
-    let path = write_descriptor(
-        &directory,
-        &descriptor(
-            "monolithicFlat",
-            &format!("RW 2 FLAT \"{source_file_name}\" 0"),
-        ),
-    );
+    for (sector_count, expected) in [
+        (0, "extent 0 has zero sectors"),
+        (2, "extent 0 ends at source sector 2"),
+    ] {
+        let path = write_descriptor(
+            &directory,
+            &descriptor(
+                "monolithicFlat",
+                &format!("RW {sector_count} FLAT \"{source_file_name}\" 0"),
+            ),
+        );
 
-    assert!(matches!(
-        open_flat_vmdk(&path, true),
-        Err(OpenError::InvalidExtentMap(_))
-    ));
+        assert!(matches!(
+            open_flat_vmdk(&path, true),
+            Err(OpenError::InvalidExtentMap(message)) if message.contains(expected)
+        ));
+    }
 }
 
 /// Checks that extent reads honor descriptor order, source offsets, and spaced paths.

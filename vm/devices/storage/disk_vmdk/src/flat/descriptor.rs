@@ -1,22 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Parses flat VMDK text descriptors.
-//!
-//! The parser extracts the ordered `FLAT` extents needed to construct the
-//! virtual disk. Disk database fields are ignored because they do not affect
-//! the virtual layout exposed by this backend.
+//! Parses flat VMDK text descriptors into the ordered `FLAT` extents that
+//! make up the virtual disk.
 
 use crate::ParseError;
-
-// Required first line identifying a VMDK text descriptor.
-const DESCRIPTOR_HEADER: &str = "# Disk DescriptorFile";
-// Section marker separating descriptor fields from extent records.
-const EXTENT_MARKER: &str = "# Extent description";
-// Accepted DDB section markers; either one terminates the extent list.
-const DDB_MARKERS: [&str; 2] = ["# The Disk Data Base", "#DDB"];
-// Prefix used by key/value entries in the DDB section.
-const DDB_ENTRY_PREFIX: &str = "ddb.";
 
 /// Access mode declared for an extent.
 #[derive(Debug, Eq, PartialEq)]
@@ -27,7 +15,7 @@ pub(crate) enum ExtentAccess {
     ReadOnly,
 }
 
-/// One validated `FLAT` extent from the descriptor.
+/// One `FLAT` extent from the descriptor.
 #[derive(Debug)]
 pub(crate) struct ParsedExtent {
     /// Access mode declared by the descriptor.
@@ -40,59 +28,97 @@ pub(crate) struct ParsedExtent {
     pub source_start_sector: u64,
 }
 
-/// Supported flat VMDK disk types.
-enum CreateType {
-    /// Preallocated data stored in a single extent file.
-    MonolithicFlat,
-    /// Preallocated data split across extent files no larger than 2 GB each.
-    TwoGbMaxExtentFlat,
-}
-
-/// Parses and validates the supported subset of a VMDK text descriptor.
+/// Parses the supported subset of a VMDK text descriptor.
+///
+/// The first line must be the descriptor signature. Other `#` lines are
+/// comments, lines starting with an access mode are extents, and all remaining
+/// lines are `key=value` fields, which may appear in any order.
 pub(crate) fn parse_descriptor(bytes: &[u8]) -> Result<Vec<ParsedExtent>, ParseError> {
-    // The descriptor is expected to be valid UTF-8.
     let text = std::str::from_utf8(bytes)?;
-    // UTF-8 permits NUL characters, but VMDK text fields and host paths do not.
-    if let Some(line) = text.lines().find(|line| line.contains('\0')) {
+    let mut lines = text.lines().map(str::trim);
+
+    // Accept the standard signature spellings.
+    let signature = lines.next().unwrap_or_default();
+    if !matches!(
+        signature,
+        "# Disk DescriptorFile"
+            | "# Disk Descriptor File"
+            | "#Disk DescriptorFile"
+            | "#Disk Descriptor File"
+    ) {
         return Err(ParseError::Invalid(format!(
-            "NUL bytes are not allowed in {line:?}"
+            "expected a VMDK descriptor signature: {signature:?}"
         )));
     }
 
-    let mut lines = text.lines();
-
-    // Parse the header and advance the iterator to the extent section.
-    let create_type = parse_header(&mut lines)?;
-
-    // Parse the extents from the extent section in the descriptor.
+    let mut has_version = false;
+    let mut create_type = None;
     let mut extents = Vec::new();
+
+    // Classify each remaining line as a comment, an extent, or a field.
+    // Extents are collected in order, and recognized fields are validated.
     for line in lines {
-        let line = line.trim();
-
-        // Ignore blank lines between extent records.
-        if line.is_empty() {
+        // Skip blank lines and comments, including section markers.
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        // If the DDB section marker was found then we can stop parsing extents.
-        if starts_ddb_section(line) {
-            break;
-        }
-
-        // Ignore ordinary comments within the extent section.
-        if line.starts_with('#') {
+        // Lines starting with an access mode are extents, kept in disk order.
+        if matches!(
+            line.split_ascii_whitespace().next(),
+            Some("RW" | "RDONLY" | "NOACCESS")
+        ) {
+            extents.push(parse_extent(line)?);
             continue;
         }
 
-        // Preserve descriptor order when constructing the virtual extent map.
-        extents.push(parse_extent(line)?);
+        // Every other line must be a `key=value` field.
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            ParseError::Invalid(format!("expected an extent or key/value field: {line:?}"))
+        })?;
+
+        let value = value.trim().trim_matches('"');
+
+        // Validate the fields that affect the layout and ignore the rest.
+        match key.trim() {
+            // Only version 1 descriptors are supported.
+            "version" if value == "1" => has_version = true,
+
+            // Only flat disk types are supported.
+            "createType" if matches!(value, "monolithicFlat" | "twoGbMaxExtentFlat") => {
+                create_type = Some(value);
+            }
+
+            // `ffffffff` means the disk has no parent.
+            "parentCID" if value.eq_ignore_ascii_case("ffffffff") => {}
+
+            // The descriptor text is already known to be UTF-8.
+            "encoding" if value.eq_ignore_ascii_case("UTF-8") => {}
+
+            // Any other value of a recognized field, or any parent file hint,
+            // describes a disk this backend cannot open.
+            "version" | "createType" | "parentCID" | "parentFileNameHint" | "encoding" => {
+                return Err(ParseError::Invalid(format!("unsupported field: {line:?}")));
+            }
+
+            // Other fields, do not affect the layout.
+            _ => {}
+        }
     }
 
+    if !has_version {
+        return Err(ParseError::MissingField("version"));
+    }
+
+    let create_type = create_type.ok_or(ParseError::MissingField("createType"))?;
+
+    // A disk must contain at least one extent.
     if extents.is_empty() {
         return Err(ParseError::MissingField("FLAT extent"));
     }
 
-    if matches!(create_type, CreateType::MonolithicFlat) && extents.len() != 1 {
+    // A monolithicFlat disk stores all of its data in a single extent.
+    if create_type == "monolithicFlat" && extents.len() != 1 {
         return Err(ParseError::Invalid(
             "monolithicFlat descriptors must contain exactly one extent".into(),
         ));
@@ -101,230 +127,58 @@ pub(crate) fn parse_descriptor(bytes: &[u8]) -> Result<Vec<ParsedExtent>, ParseE
     Ok(extents)
 }
 
-/// Parses the descriptor header and leaves `lines` positioned after the extent marker.
-fn parse_header<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<CreateType, ParseError> {
-    // The canonical descriptor header must be the first line in the file.
-    let first_line = lines
-        .next()
-        .ok_or(ParseError::MissingField(DESCRIPTOR_HEADER))?;
-    if first_line.trim_end() != DESCRIPTOR_HEADER {
-        return Err(ParseError::Invalid(format!(
-            "expected '{DESCRIPTOR_HEADER}', found {first_line:?}"
-        )));
-    }
-
-    let mut seen_version = false;
-    let mut seen_parent_cid = false;
-    let mut create_type = None;
-    let mut seen_extent_marker = false;
-
-    // Unknown fields are allowed because descriptor producers may include
-    // metadata this backend does not need to interpret.
-    for line in lines {
-        let line = line.trim();
-
-        // If extent marker was seen then we are finished with header section.
-        if line == EXTENT_MARKER {
-            seen_extent_marker = true;
-            break;
-        }
-        // DDB belongs after the extents, so reaching it here means the extent
-        // section is missing.
-        if starts_ddb_section(line) {
-            break;
-        }
-        // Blank lines and ordinary comments are allowed between header fields.
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        // Parse recognized header fields and ignore unrecognized metadata.
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(ParseError::Invalid(format!(
-                "expected a key/value field, found {line:?}"
-            )));
-        };
-        let key = key.trim();
-        match key {
-            "version" => {
-                if seen_version {
-                    return Err(ParseError::Invalid(format!(
-                        "duplicate 'version' field: {line:?}"
-                    )));
-                }
-                seen_version = true;
-
-                let value = value.trim().trim_matches('"');
-                if value != "1" {
-                    return Err(ParseError::Invalid(format!(
-                        "unsupported descriptor version '{value}'"
-                    )));
-                }
-            }
-            "createType" => {
-                if create_type.is_some() {
-                    return Err(ParseError::Invalid(format!(
-                        "duplicate 'createType' field: {line:?}"
-                    )));
-                }
-
-                let value = value.trim().trim_matches('"');
-                create_type = Some(match value {
-                    "monolithicFlat" => CreateType::MonolithicFlat,
-                    "twoGbMaxExtentFlat" => CreateType::TwoGbMaxExtentFlat,
-                    value => {
-                        return Err(ParseError::Invalid(format!(
-                            "unsupported createType '{value}'"
-                        )));
-                    }
-                });
-            }
-            "parentCID" => {
-                if seen_parent_cid {
-                    return Err(ParseError::Invalid(format!(
-                        "duplicate 'parentCID' field: {line:?}"
-                    )));
-                }
-                seen_parent_cid = true;
-
-                let value = value.trim().trim_matches('"');
-                if !value.eq_ignore_ascii_case("ffffffff") {
-                    return Err(ParseError::Invalid(format!(
-                        "unsupported parentCID '{value}': parent VMDK disks are not supported"
-                    )));
-                }
-            }
-            "parentFileNameHint" => {
-                return Err(ParseError::Invalid(format!(
-                    "parent VMDK disks are not supported: {line:?}"
-                )));
-            }
-            "encoding" => {
-                let value = value.trim().trim_matches('"');
-                if !value.eq_ignore_ascii_case("UTF-8") {
-                    return Err(ParseError::Invalid(format!(
-                        "unsupported descriptor encoding '{value}': only UTF-8 is supported"
-                    )));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Ensure that the version was specified in the header.
-    if !seen_version {
-        return Err(ParseError::MissingField("version"));
-    }
-
-    // Ensure that the create type was specified in the header.
-    let create_type = create_type.ok_or(ParseError::MissingField("createType"))?;
-
-    // EOF or DDB before the marker means the extent section is missing.
-    if !seen_extent_marker {
-        return Err(ParseError::MissingField(EXTENT_MARKER));
-    }
-
-    Ok(create_type)
-}
-
-/// Parses one extent entry of the form `<access> <sectors> FLAT "<path>" [offset]`.
+/// Parses an extent line of the form `<access> <sectors> FLAT "<path>" [<offset>]`.
 fn parse_extent(line: &str) -> Result<ParsedExtent, ParseError> {
-    // Isolate the quoted path so spaces within it are preserved.
-    let (prefix, path_and_remaining) = line
-        .split_once('"')
-        .ok_or_else(|| ParseError::Invalid(format!("extent path must be quoted: {line:?}")))?;
-    let (path, remaining) = path_and_remaining
-        .split_once('"')
-        .ok_or_else(|| ParseError::Invalid(format!("unterminated extent path: {line:?}")))?;
+    let malformed = || ParseError::Invalid(format!("malformed extent: {line:?}"));
 
-    // Parse one of the access modes supported for source-backed extents.
-    let mut fields = prefix.split_ascii_whitespace();
-    let access = match fields
-        .next()
-        .ok_or_else(|| ParseError::Invalid(format!("missing extent access mode: {line:?}")))?
-    {
+    // Split around the quoted path so spaces within it are preserved.
+    let (fields, rest) = line.split_once('"').ok_or_else(malformed)?;
+    let (path, offset) = rest.split_once('"').ok_or_else(malformed)?;
+
+    // Exactly three fields must precede the path.
+    let [access, sector_count, extent_type] =
+        fields.split_ascii_whitespace().collect::<Vec<_>>()[..]
+    else {
+        return Err(malformed());
+    };
+
+    // The path may be followed by an optional starting sector, which
+    // defaults to 0.
+    let source_start_sector = match offset.split_ascii_whitespace().collect::<Vec<_>>()[..] {
+        [] => 0,
+        [offset] => offset.parse().map_err(|_| malformed())?,
+        _ => return Err(malformed()),
+    };
+
+    // Only readable access modes are supported.
+    let access = match access {
         "RW" => ExtentAccess::ReadWrite,
         "RDONLY" => ExtentAccess::ReadOnly,
-        access => {
+        _ => {
             return Err(ParseError::Invalid(format!(
-                "unsupported extent access mode '{access}'"
+                "unsupported extent access mode: {line:?}"
             )));
         }
     };
 
-    // Parse the extent's virtual length and reject empty extents.
-    let sector_count = fields
-        .next()
-        .ok_or_else(|| ParseError::Invalid(format!("missing extent sector count: {line:?}")))?;
-    let sector_count = sector_count
-        .parse::<u64>()
-        .map_err(|_| ParseError::Invalid(format!("invalid sector count '{sector_count}'")))?;
-    if sector_count == 0 {
-        return Err(ParseError::Invalid(format!(
-            "extent sector count must be nonzero: {line:?}"
-        )));
-    }
-
-    // Reject sparse and other extent types.
-    let extent_type = fields
-        .next()
-        .ok_or_else(|| ParseError::Invalid(format!("missing extent type: {line:?}")))?;
+    // Only flat extents are supported.
     if extent_type != "FLAT" {
         return Err(ParseError::Invalid(format!(
-            "unsupported extent type '{extent_type}'"
+            "unsupported extent type: {line:?}"
         )));
     }
 
-    // Require exactly three fields and whitespace before the opening path quote.
-    if fields.next().is_some() || prefix.trim_ascii_end() == prefix {
-        return Err(ParseError::Invalid(format!(
-            "extent path must be quoted: {line:?}"
-        )));
-    }
-
-    // Reject empty paths and paths containing control characters.
-    if path.is_empty() || path.chars().any(char::is_control) {
-        return Err(ParseError::Invalid(format!(
-            "invalid extent path in {line:?}"
-        )));
-    }
-
-    // Parse the optional starting sector in the source file and reject extra fields.
-    let mut fields = remaining.split_ascii_whitespace();
-    let source_start_sector = match fields.next() {
-        Some(value) => value
-            .parse::<u64>()
-            .map_err(|_| ParseError::Invalid(format!("invalid source start sector '{value}'")))?,
-        None => 0,
-    };
-
-    // If there are additional fields then we should reject.
-    if fields.next().is_some() {
-        return Err(ParseError::Invalid(format!(
-            "unexpected trailing extent fields: {line:?}"
-        )));
+    // An extent must name a source file.
+    if path.is_empty() {
+        return Err(malformed());
     }
 
     Ok(ParsedExtent {
         access,
         path: path.to_owned(),
-        sector_count,
+        sector_count: sector_count.parse().map_err(|_| malformed())?,
         source_start_sector,
     })
-}
-
-/// Returns whether `line` starts or belongs to the DDB section.
-fn starts_ddb_section(line: &str) -> bool {
-    let is_marker = DDB_MARKERS
-        .iter()
-        .any(|marker| line.eq_ignore_ascii_case(marker));
-
-    // Some descriptors omit the marker and begin with `ddb.adapterType = ...`.
-    let is_entry = line
-        .get(..DDB_ENTRY_PREFIX.len())
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(DDB_ENTRY_PREFIX));
-
-    is_marker || is_entry
 }
 
 #[cfg(test)]
@@ -374,11 +228,6 @@ mod tests {
         }
     }
 
-    // Verifies that an Invalid error contains the escaped offending line.
-    fn assert_invalid_line(contents: &str, line: &str) {
-        assert_invalid(contents, &format!("{line:?}"));
-    }
-
     // Verifies that parsing reports the expected required field as missing.
     fn assert_missing_field(contents: &str, expected: &'static str) {
         match parse_descriptor(contents.as_bytes()) {
@@ -388,14 +237,13 @@ mod tests {
         }
     }
 
-    // Verifies accepted line endings, access modes, quoted paths, default
-    // offsets, and optional metadata.
+    // Verifies accepted signature spellings, line endings, access modes,
+    // quoted paths, and default offsets.
     #[test]
     fn accepts_monolithic_flat_and_crlf() {
         // Exercise CRLF input, a quoted path containing spaces, read-only
         // access, and the default source offset.
-        let descriptor = concat!(
-            "# Disk DescriptorFile\r\n",
+        let body = concat!(
             "version=1\r\n",
             "CID=fffffffe\r\n",
             "parentCID=ffffffff\r\n",
@@ -408,42 +256,70 @@ mod tests {
             "#DDB\r\n",
             "ddb.adapterType = \"ide\"\r\n",
         );
-        let parsed_extents = parse_descriptor(descriptor.as_bytes()).unwrap();
-        assert_eq!(parsed_extents.len(), 1);
-        assert_eq!(parsed_extents[0].access, ExtentAccess::ReadOnly);
-        assert_eq!(parsed_extents[0].source_start_sector, 0);
-        assert_eq!(parsed_extents[0].path, "disk data.bin");
 
-        // parentCID and the DDB section are both optional.
+        // The signature line may be padded and use any standard spelling.
+        for signature in [
+            "# Disk DescriptorFile",
+            " # Disk DescriptorFile ",
+            "# Disk Descriptor File",
+            "#Disk DescriptorFile",
+            "#Disk Descriptor File",
+        ] {
+            let parsed_extents =
+                parse_descriptor(format!("{signature}\r\n{body}").as_bytes()).unwrap();
+            assert_eq!(parsed_extents.len(), 1);
+            assert_eq!(parsed_extents[0].access, ExtentAccess::ReadOnly);
+            assert_eq!(parsed_extents[0].source_start_sector, 0);
+            assert_eq!(parsed_extents[0].path, "disk data.bin");
+        }
+    }
+
+    // Verifies that section markers are ordinary comments. Markers may be
+    // absent or spelled differently, fields may appear before, between, or
+    // after extents, and extents are classified by their access mode even when
+    // their paths contain `=`.
+    #[test]
+    fn treats_section_markers_as_comments() {
         let descriptor = concat!(
             "# Disk DescriptorFile\n",
             "version=1\n",
-            "createType=\"monolithicFlat\"\n",
-            "# Extent description\n",
-            "RDONLY 1 FLAT \"disk data.bin\"\n",
+            "RW 1 FLAT \"first=1.bin\" 0\n",
+            "# The disk Data Base \n",
+            "ddb.adapterType = \"ide\"\n",
+            "RDONLY 2 FLAT \"second.bin\" 4\n",
+            "createType=\"twoGbMaxExtentFlat\"\n",
         );
-        parse_descriptor(descriptor.as_bytes()).unwrap();
+        let parsed_extents = parse_descriptor(descriptor.as_bytes()).unwrap();
+        let layout = parsed_extents
+            .iter()
+            .map(|extent| {
+                (
+                    extent.path.as_str(),
+                    extent.sector_count,
+                    extent.source_start_sector,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(layout, [("first=1.bin", 1, 0), ("second.bin", 2, 4)]);
     }
 
-    // Verifies supported header forms and rejects missing, duplicate, or
-    // unsupported recognized fields.
+    // Verifies accepted field forms and rejects missing fields and unsupported
+    // values of recognized fields.
     #[test]
     fn validates_header_fields() {
-        // Supported values may be quoted or case-insensitive as appropriate,
-        // while unknown header fields are ignored.
+        // Supported values may be quoted or case-insensitive as appropriate.
         parse_descriptor(
             descriptor_with_header(
                 "version=\"1\"\n\
                  parentCID=FFFFFFFF\n\
                  createType=\"monolithicFlat\"\n\
-                 encoding=\"utf-8\"\n\
-                 unknownField=\"ignored\"",
+                 encoding=\"utf-8\"",
             )
             .as_bytes(),
         )
         .unwrap();
 
-        // Version and createType are the two required header fields.
+        // Version and createType are the two required fields.
         for (header, field) in [
             ("createType=\"monolithicFlat\"", "version"),
             ("version=1", "createType"),
@@ -451,116 +327,47 @@ mod tests {
             assert_missing_field(&descriptor_with_header(header), field);
         }
 
-        // Recognized fields reject duplicate or unsupported values.
-        for (header, expected) in [
-            (
-                "version=2\n\
-                 createType=\"monolithicFlat\"",
-                "unsupported descriptor version '2'",
-            ),
-            (
-                "version=1\n\
-                 version=1\n\
-                 createType=\"monolithicFlat\"",
-                "duplicate 'version' field",
-            ),
-            (
-                "version=1\n\
-                 createType=\"monolithicFlat\"\n\
-                 createType=\"monolithicFlat\"",
-                "duplicate 'createType' field",
-            ),
-            (
-                "version=1\n\
-                 createType=\"monolithicSparse\"",
-                "unsupported createType 'monolithicSparse'",
-            ),
-            (
-                "version=1\n\
-                 parentCID=ffffffff\n\
-                 parentCID=ffffffff\n\
-                 createType=\"monolithicFlat\"",
-                "duplicate 'parentCID' field",
-            ),
-            (
-                "version=1\n\
-                 parentCID=12345678\n\
-                 createType=\"monolithicFlat\"",
-                "unsupported parentCID '12345678'",
-            ),
-            (
-                "version=1\n\
-                 parentCID=ffffffff\n\
-                 parentFileNameHint=\"base.vmdk\"\n\
-                 createType=\"monolithicFlat\"",
-                "parent VMDK disks are not supported",
-            ),
-            (
-                "version=1\n\
-                 createType=\"monolithicFlat\"\n\
-                 encoding=\"UTF-16\"",
-                "unsupported descriptor encoding 'UTF-16'",
-            ),
+        // Every occurrence of a recognized field must have a supported value.
+        for field in [
+            "version=2",
+            "createType=\"monolithicSparse\"",
+            "parentCID=12345678",
+            "parentFileNameHint=\"base.vmdk\"",
+            "encoding=\"UTF-16\"",
         ] {
-            assert_invalid(&descriptor_with_header(header), expected);
+            assert_invalid(
+                &descriptor_with_header(&format!(
+                    "version=1\ncreateType=\"monolithicFlat\"\n{field}"
+                )),
+                &format!("unsupported field: {field:?}"),
+            );
         }
     }
 
-    // Verifies the required descriptor signature, field syntax, section
-    // ordering, extent presence, and text encoding.
+    // Verifies the descriptor signature, line syntax, extent presence, and
+    // text encoding.
     #[test]
     fn validates_descriptor_structure() {
-        // Reject a missing descriptor header, extent marker, or extent record.
-        for (contents, field) in [
-            (String::new(), DESCRIPTOR_HEADER),
-            (
-                String::from(
-                    "# Disk DescriptorFile\n\
-                     version=1\n\
-                     createType=\"twoGbMaxExtentFlat\"\n",
-                ),
-                EXTENT_MARKER,
-            ),
-            (
-                String::from(
-                    "# Disk DescriptorFile\n\
-                     version=1\n\
-                     createType=\"twoGbMaxExtentFlat\"\n\
-                     #DDB\n\
-                     # Extent description\n\
-                     RW 1 FLAT \"disk.bin\" 0\n",
-                ),
-                EXTENT_MARKER,
-            ),
-            (descriptor("twoGbMaxExtentFlat", ""), "FLAT extent"),
-        ] {
-            assert_missing_field(&contents, field);
-        }
+        assert_missing_field(&descriptor("twoGbMaxExtentFlat", ""), "FLAT extent");
 
-        // Present structural elements must have valid contents and ordering.
+        // Errors identify the offending line.
+        let unrecognized_line = descriptor_with_header(
+            "version=1\n\
+             not a key/value field\n\
+             createType=\"twoGbMaxExtentFlat\"",
+        );
         for (contents, expected) in [
+            ("", "expected a VMDK descriptor signature: \"\""),
             (
-                String::from("not a descriptor"),
-                "expected '# Disk DescriptorFile'",
+                "not a descriptor",
+                "expected a VMDK descriptor signature: \"not a descriptor\"",
             ),
             (
-                descriptor_with_header(
-                    "version=1\n\
-                     not a key/value field\n\
-                     createType=\"twoGbMaxExtentFlat\"",
-                ),
-                "expected a key/value field",
-            ),
-            (
-                descriptor_with_header(
-                    "version=1\n\
-                     CID=ffff\0fffe\n\
-                     createType=\"twoGbMaxExtentFlat\"",
-                ),
-                "NUL bytes are not allowed",
+                unrecognized_line.as_str(),
+                "expected an extent or key/value field: \"not a key/value field\"",
             ),
         ] {
-            assert_invalid(&contents, expected);
+            assert_invalid(contents, expected);
         }
 
         // Non-UTF-8 byte input is rejected before parsing text fields.
@@ -570,56 +377,39 @@ mod tests {
         ));
     }
 
-    // Verifies that a malformed header error identifies its source line.
-    #[test]
-    fn header_error_includes_source_line() {
-        assert_invalid_line(
-            &descriptor_with_header(
-                "version=1\n\
-                 not a key/value field\n\
-                 createType=\"monolithicFlat\"",
-            ),
-            "not a key/value field",
-        );
-    }
-
-    // Verifies rejection of invalid extent fields and incompatible layout
-    // combinations.
+    // Verifies rejection of malformed or unsupported extents and of
+    // multi-extent monolithicFlat descriptors. Extent errors identify the
+    // offending line.
     #[test]
     fn rejects_invalid_extent_entries_and_layouts() {
-        // Cover unsupported access and extent types, invalid sizes and paths,
-        // trailing fields, and the single-extent monolithic requirement.
-        for descriptor in [
-            descriptor("twoGbMaxExtentFlat", "NOACCESS 1 FLAT \"disk.bin\" 0"),
-            descriptor("twoGbMaxExtentFlat", "RW 1 ZERO \"disk.bin\" 0"),
-            descriptor("twoGbMaxExtentFlat", "RW 0 FLAT \"disk.bin\" 0"),
-            descriptor("twoGbMaxExtentFlat", "RW 1 FLAT \"\" 0"),
-            descriptor("twoGbMaxExtentFlat", "RW 1 FLAT \"bad\tpath\" 0"),
-            descriptor("twoGbMaxExtentFlat", "RW 1 FLAT \"disk.bin\" 0 trailing"),
-            descriptor(
+        for (extent, reason) in [
+            (
+                "NOACCESS 1 FLAT \"disk.bin\" 0",
+                "unsupported extent access mode",
+            ),
+            ("RW 1 ZERO \"disk.bin\" 0", "unsupported extent type"),
+            ("RW 1 FLAT disk.bin 0", "malformed extent"),
+            ("RW 1 FLAT \"\" 0", "malformed extent"),
+            ("RW one FLAT \"disk.bin\" 0", "malformed extent"),
+            ("RW 1 FLAT \"disk.bin\" 0 trailing", "malformed extent"),
+        ] {
+            assert_invalid(
+                &descriptor("twoGbMaxExtentFlat", extent),
+                &format!("{reason}: {extent:?}"),
+            );
+        }
+
+        assert_invalid(
+            &descriptor(
                 "monolithicFlat",
                 "RW 1 FLAT \"a.bin\" 0\nRW 1 FLAT \"b.bin\" 0",
             ),
-        ] {
-            assert!(
-                parse_descriptor(descriptor.as_bytes()).is_err(),
-                "descriptor unexpectedly accepted:\n{descriptor}"
-            );
-        }
-    }
-
-    // Verifies that a malformed extent error identifies its source line.
-    #[test]
-    fn extent_error_includes_source_line() {
-        assert_invalid_line(
-            &descriptor("monolithicFlat", "RW 1 FLAT \"disk.bin\" 0 trailing"),
-            "RW 1 FLAT \"disk.bin\" 0 trailing",
+            "monolithicFlat descriptors must contain exactly one extent",
         );
     }
 
     // Verifies that a large real-world Kata layout preserves all ordered
     // extents and their aggregate size.
-    #[cfg(unix)]
     #[test]
     fn parses_kata_32_layer_shape() {
         // Reproduce Kata's 32-layer layout to verify that all 64 ordered

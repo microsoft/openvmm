@@ -71,6 +71,10 @@ The virtual disk concatenates extents in descriptor order. In this example,
 the first 2048 virtual sectors come from sector 0 of `metadata.img`, followed
 by 4096 sectors starting at sector 8 of `payload.img`.
 
+The first line must be `# Disk DescriptorFile`. Every other line starting with
+`#`, including section markers, are treated as a comment. Lines starting with an access
+mode are considered to be extents and parsed as such.
+
 ### Descriptor and source paths
 
 Descriptor and source paths may be absolute or relative:
