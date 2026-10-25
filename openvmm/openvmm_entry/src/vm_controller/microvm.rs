@@ -405,7 +405,7 @@ impl VmController {
                         .find(|source| {
                             source.role == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
                         })
-                        .map(|source| &source.file)
+                        .and_then(|source| source.file.as_ref())
                         .context("paired snapshot lost its scratch backing handle")
                 })
                 .transpose()?;
