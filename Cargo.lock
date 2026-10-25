@@ -1666,6 +1666,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_hook"
+version = "0.0.0"
+dependencies = [
+ "disk_backend",
+ "disk_prwrap",
+ "disklayer_ram",
+ "event-listener",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "storage_tests",
+ "test_with_tracing",
+]
+
+[[package]]
 name = "disk_layered"
 version = "0.0.0"
 dependencies = [
@@ -7542,6 +7560,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "disk_backend",
+ "disk_hook",
  "disk_prwrap",
  "futures",
  "getrandom 0.4.2",
@@ -9149,20 +9168,17 @@ dependencies = [
  "crypto",
  "cvm_tracing",
  "der",
- "disk_backend",
- "disklayer_ram",
+ "disk_hook",
  "get_protocol",
  "getrandom 0.4.2",
  "guest_emulation_device",
  "guest_emulation_transport",
  "guid",
  "hex",
- "inspect",
  "mesh",
  "openhcl_attestation_protocol",
  "pal_async",
  "parking_lot",
- "scsi_buffers",
  "serde",
  "serde_json",
  "static_assertions",
@@ -9226,8 +9242,8 @@ dependencies = [
  "disk_backend_resources",
  "disk_blockdevice",
  "disk_get_vmgs",
+ "disk_hook",
  "disk_nvme",
- "disklayer_ram",
  "firmware_pcat",
  "firmware_uefi_resources",
  "framebuffer",
@@ -10108,14 +10124,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "disk_backend",
- "disklayer_ram",
+ "disk_hook",
  "futures",
  "guestmem",
  "inspect",
  "inspect_counters",
  "pal_async",
  "pal_event",
- "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",
@@ -10788,13 +10803,11 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "constant_time_eq",
- "disk_backend",
- "disklayer_ram",
+ "disk_hook",
  "inspect",
  "mesh",
  "pal_async",
  "parking_lot",
- "scsi_buffers",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",

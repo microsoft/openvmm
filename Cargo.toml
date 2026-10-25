@@ -344,6 +344,7 @@ disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_delay = { path = "vm/devices/storage/disk_delay" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
+disk_hook = { path = "vm/devices/storage/disk_hook" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
