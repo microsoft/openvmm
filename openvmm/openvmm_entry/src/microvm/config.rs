@@ -44,6 +44,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use openvmm_defs::microvm::build_microvm_command_line;
 use openvmm_defs::microvm::build_microvm_control_command_line;
 use pal_async::DefaultDriver;
@@ -392,6 +393,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     &disk.kind,
                     disk.read_only,
                     opt.microvm.snapshot_destination.is_some() || opt.restore_snapshot.is_some(),
+                    self.restore
+                        .distro_capacity
+                        .filter(|_| block.role == MicrovmSandboxBlockRole::Distro),
                 )
                 .await?;
         }

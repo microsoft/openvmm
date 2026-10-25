@@ -184,7 +184,12 @@ host can connect while input is gated, but OpenVMM reads its authentication
 only after the release, so its `--microvm-control-auth-timeout-ms` deadline
 starts over when the gate releases. Platform manifests
 leave read-only layer identities unbound, while later tiers require exact image
-identities. An instance-checkpoint restore attempt atomically creates
+identities. A platform restore also presents the captured capacity of its
+`distro` block before any vCPU runs, so one platform snapshot serves images of
+any length up to that capacity. An image with the captured logical and
+physical block sizes may be shorter, and reads past its end, including the tail
+of a request that crosses it, return zeros. OpenVMM rejects a longer image and
+never resizes, pads, or writes the image file. An instance-checkpoint restore attempt atomically creates
 `resume.claim`; subsequent restores are rejected. The claim is committed after
 artifact and configuration validation but before worker construction, so the
 restore attempt remains consumed if later worker startup fails.
