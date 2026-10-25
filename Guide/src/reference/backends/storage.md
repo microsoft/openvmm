@@ -43,6 +43,7 @@ without modifying the backends underneath.
 | CryptDisk | [`disk_crypt`](https://openvmm.dev/rustdoc/linux/disk_crypt/index.html) | XTS-AES-256 encryption. Encrypts on write, decrypts on read. |
 | DelayDisk | [`disk_delay`](https://openvmm.dev/rustdoc/linux/disk_delay/index.html) | Adds configurable latency to each I/O operation. |
 | DiskWithReservations | [`disk_prwrap`](https://openvmm.dev/rustdoc/linux/disk_prwrap/index.html) | In-memory SCSI persistent reservation emulation. |
+| ZeroFillDisk | [`disk_zerofill`](https://openvmm.dev/rustdoc/linux/disk_zerofill/index.html) | Presents a fixed sector count over a shorter disk, or none. Reads past the inner disk's end return zeros; writes fail. |
 
 ## Layered disks
 

@@ -354,6 +354,7 @@ disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disk_vmdk = { path = "vm/devices/storage/disk_vmdk" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
+disk_zerofill = { path = "vm/devices/storage/disk_zerofill" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
 disklayer_sqlite = { path = "vm/devices/storage/disklayer_sqlite" }
 floppy = { path = "vm/devices/storage/floppy" }

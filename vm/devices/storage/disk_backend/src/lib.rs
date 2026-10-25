@@ -69,6 +69,7 @@
 //! | `DelayDisk` | `disk_delay` | Injected I/O latency wrapper |
 //! | `DiskWithReservations` | `disk_prwrap` | In-memory PR emulation wrapper |
 //! | `LayeredDisk` | `disk_layered` | Layered disk with per-sector presence |
+//! | `ZeroFillDisk` | `disk_zerofill` | Fixed geometry over a shorter or absent disk: zeros past its end, no writes |
 
 #![forbid(unsafe_code)]
 
