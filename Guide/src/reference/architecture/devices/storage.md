@@ -107,7 +107,7 @@ A decorator is a `DiskIo` implementation that wraps another `Disk` and transform
     └── BlockDeviceDisk
 ```
 
-Three decorators exist: [`CryptDisk`](https://openvmm.dev/rustdoc/linux/disk_crypt/struct.CryptDisk.html) (XTS-AES-256 encryption), [`DelayDisk`](https://openvmm.dev/rustdoc/linux/disk_delay/struct.DelayDisk.html) (injected latency), and [`DiskWithReservations`](https://openvmm.dev/rustdoc/linux/disk_prwrap/struct.DiskWithReservations.html) (in-memory persistent reservation emulation). All three forward metadata (sector count, sector size, disk ID, `wait_resize`) to the inner disk unchanged. See the [storage backends](../../backends/storage.md) page for the decorator catalog.
+Four decorators exist: [`CryptDisk`](https://openvmm.dev/rustdoc/linux/disk_crypt/struct.CryptDisk.html) (XTS-AES-256 encryption), [`DelayDisk`](https://openvmm.dev/rustdoc/linux/disk_delay/struct.DelayDisk.html) (injected latency), [`DiskWithReservations`](https://openvmm.dev/rustdoc/linux/disk_prwrap/struct.DiskWithReservations.html) (in-memory persistent reservation emulation), and [`ZeroFillDisk`](https://openvmm.dev/rustdoc/linux/disk_zerofill/struct.ZeroFillDisk.html) (a fixed geometry over a shorter inner disk, or none). The first three forward metadata (sector count, sector size, disk ID, `wait_resize`) to the inner disk unchanged. `ZeroFillDisk` presents its own sector count, which never changes: reads past the inner disk's end return zeros, and writes fail without reaching it. See the [storage backends](../../backends/storage.md) page for the decorator catalog.
 
 ## The layered disk model
 
