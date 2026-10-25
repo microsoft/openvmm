@@ -61,6 +61,25 @@ impl ResourceId<DiskHandleKind> for DelayDiskHandle {
     const ID: &'static str = "delay";
 }
 
+/// Disk handle for a disk of fixed geometry that reads zeros past the end of
+/// its backing disk, or everywhere without one, and refuses writes.
+#[derive(MeshPayload)]
+pub struct ZeroFillDiskHandle {
+    /// The backing disk, with the disk's sector sizes and at most its sector
+    /// count, or `None` for a disk that reads zeros everywhere.
+    pub disk: Option<Resource<DiskHandleKind>>,
+    /// The number of sectors that the disk presents.
+    pub sector_count: u64,
+    /// The logical sector size, in bytes.
+    pub sector_size: u32,
+    /// The physical sector size, in bytes.
+    pub physical_sector_size: u32,
+}
+
+impl ResourceId<DiskHandleKind> for ZeroFillDiskHandle {
+    const ID: &'static str = "zerofill";
+}
+
 /// Disk handle for a fixed VHD1 disk.
 #[derive(MeshPayload)]
 pub struct FixedVhd1DiskHandle(pub std::fs::File);
