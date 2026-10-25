@@ -86,6 +86,7 @@ vm_resource::register_static_resolvers! {
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
     disk_blob::resolver::BlobDiskResolver,
+    disk_zerofill::resolver::ZeroFillDiskResolver,
 
     // Disk Layers
     disklayer_ram::resolver::RamDiskLayerResolver,
