@@ -368,7 +368,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
         Ok(virtio_console_backend)
     }
 
-    /// Adds the fixed-role sandbox block devices.
+    /// Adds the fixed-role sandbox block devices, with a platform restore's
+    /// absent fresh scratch.
     pub(crate) async fn add_sandbox_blocks(
         &self,
         storage: &mut StorageBuilder,
@@ -398,6 +399,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         .filter(|_| block.role == MicrovmSandboxBlockRole::Distro),
                 )
                 .await?;
+        }
+        if let Some(geometry) = self.restore.absent_scratch {
+            storage.add_microvm_absent_scratch(geometry);
         }
         Ok(())
     }

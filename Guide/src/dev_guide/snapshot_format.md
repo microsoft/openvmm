@@ -111,7 +111,10 @@ an available snapshot. A missing restore-mode field retains `private-copy`
 behavior.
 
 A pre-mount capture instead records the `fresh` scratch policy and geometry,
-contains no `scratch.img`, and requires a new matching scratch file on restore.
+contains no `scratch.img`, and requires a new scratch file of that geometry on
+restore, unless `--restore-absent-scratch` declares the scratch absent:
+OpenVMM then attaches a writable scratch device of that geometry with no file,
+which reads zeros and fails every write.
 
 ## Code references
 

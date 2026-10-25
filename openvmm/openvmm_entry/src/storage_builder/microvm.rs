@@ -18,6 +18,7 @@ use openvmm_defs::microvm::MicrovmSandboxBlockConfig;
 use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use std::time::Duration;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 
 /// The fixed role of a microVM sandbox block device.
 pub(super) struct SandboxBlock {
@@ -81,7 +82,33 @@ pub(crate) struct MicrovmSandboxBlockSource {
     pub(crate) length: u64,
     pub(crate) logical_block_size: u32,
     pub(crate) physical_block_size: u32,
-    pub(crate) file: std::fs::File,
+    /// The block's file, or `None` for the absent fresh scratch of a platform
+    /// restore.
+    pub(crate) file: Option<std::fs::File>,
+}
+
+impl MicrovmSandboxBlockSource {
+    /// Returns the block's file, which every block but an absent scratch has.
+    fn file(&self) -> anyhow::Result<&std::fs::File> {
+        self.file
+            .as_ref()
+            .with_context(|| format!("microVM {} block has no file", self.role.as_str()))
+    }
+}
+
+/// Returns a disk resource of `geometry` that reads `disk` for the sectors
+/// that it has, and zeros past its end or everywhere without one, and that
+/// refuses writes.
+fn zero_fill_disk(
+    disk: Option<Resource<DiskHandleKind>>,
+    geometry: MicrovmSandboxBlockGeometry,
+) -> Resource<DiskHandleKind> {
+    Resource::new(disk_backend_resources::ZeroFillDiskHandle {
+        disk,
+        sector_count: geometry.length / u64::from(geometry.logical_block_size),
+        sector_size: geometry.logical_block_size,
+        physical_sector_size: geometry.physical_block_size,
+    })
 }
 
 pub(crate) fn capture_snapshot_block_contract(
@@ -98,7 +125,7 @@ pub(crate) fn capture_snapshot_block_contract(
                 && scratch_policy
                     == chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired
             {
-                source.file.sync_all().with_context(|| {
+                source.file()?.sync_all().with_context(|| {
                     format!("failed to flush microVM {} block", source.role.as_str())
                 })?;
             }
@@ -112,7 +139,7 @@ pub(crate) fn capture_snapshot_block_contract(
                     SnapshotBlockIdentityCli::Sha256 => (
                         openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_SHA256,
                         openvmm_helpers::snapshot::fs::file_sha256(
-                            &source.file,
+                            source.file()?,
                             source.length,
                             &format!("microVM {} block", source.role.as_str()),
                         )?,
@@ -175,7 +202,7 @@ pub(crate) fn restore_snapshot_block_contract(
             let identity = match saved.identity_kind.as_str() {
                 openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
                     openvmm_helpers::snapshot::fs::file_sha256(
-                        &source.file,
+                        source.file()?,
                         source.length,
                         &format!("microVM {} block", source.role.as_str()),
                     )?
@@ -345,12 +372,7 @@ impl StorageBuilder {
         #[cfg(not(target_os = "linux"))]
         let disk = Resource::new(disk_backend_resources::FileDiskHandle(disk_file));
         let disk = if presented.length != image.length {
-            Resource::new(disk_backend_resources::ZeroFillDiskHandle {
-                disk: Some(disk),
-                sector_count: presented.length / u64::from(presented.logical_block_size),
-                sector_size: presented.logical_block_size,
-                physical_sector_size: presented.physical_block_size,
-            })
+            zero_fill_disk(Some(disk), presented)
         } else {
             disk
         };
@@ -374,11 +396,37 @@ impl StorageBuilder {
                     length: presented.length,
                     logical_block_size: presented.logical_block_size,
                     physical_block_size: presented.physical_block_size,
-                    file,
+                    file: Some(file),
                 }),
             }),
         });
         Ok(())
+    }
+
+    /// Adds the fresh scratch of a platform restore with no file, at its
+    /// captured `geometry`.
+    ///
+    /// The device stays writable, as the guest negotiated it at the template's
+    /// boot and as the restore contract records it, but it has nowhere to keep
+    /// data: reads return zeros, and writes fail with an I/O error.
+    pub fn add_microvm_absent_scratch(&mut self, geometry: MicrovmSandboxBlockGeometry) {
+        let role = MicrovmSandboxBlockRole::Scratch;
+        self.vtl0_virtio_blk_disks.push(VirtioBlkDisk {
+            disk: zero_fill_disk(None, geometry),
+            read_only: role.is_read_only(),
+            serial: None,
+            microvm: Some(SandboxBlock {
+                role,
+                snapshot_source: Some(MicrovmSandboxBlockSource {
+                    role,
+                    read_only: role.is_read_only(),
+                    length: geometry.length,
+                    logical_block_size: geometry.logical_block_size,
+                    physical_block_size: geometry.physical_block_size,
+                    file: None,
+                }),
+            }),
+        });
     }
 
     /// Adds the sandbox block devices of a microVM at their fixed virtio-mmio
@@ -564,5 +612,57 @@ mod tests {
 
         // Nothing resized, padded, or wrote the image.
         assert_eq!(std::fs::read(&path).unwrap(), contents);
+    }
+
+    #[test]
+    fn absent_scratch_is_writable_and_has_no_file() {
+        let captured = geometry(MIB, 512, 4096);
+        let mut storage = StorageBuilder::new(None);
+        storage.add_microvm_absent_scratch(captured);
+        let [block] = storage.vtl0_virtio_blk_disks.as_slice() else {
+            panic!("one block is attached");
+        };
+        // The guest negotiated the scratch as writable, and a zero-fill disk
+        // without a backing disk serves it.
+        assert!(!block.read_only);
+        assert_eq!(block.disk.id(), "zerofill");
+        let sandbox = block.microvm.as_ref().unwrap();
+        assert_eq!(sandbox.role, MicrovmSandboxBlockRole::Scratch);
+        let source = sandbox.snapshot_source.as_ref().unwrap();
+        assert!(source.file.is_none());
+
+        // Its restore contract is the captured fresh scratch's.
+        let saved = openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock {
+            role: "scratch".to_owned(),
+            read_only: false,
+            length: MIB,
+            identity_kind: "fresh".to_owned(),
+            identity: Vec::new(),
+            artifact: String::new(),
+            logical_block_size: 512,
+            physical_block_size: 4096,
+            restore_mode: String::new(),
+        };
+        let sources = std::slice::from_ref(source);
+        assert_eq!(
+            restore_snapshot_block_contract(
+                sources,
+                chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh,
+                std::slice::from_ref(&saved),
+            )
+            .unwrap(),
+            [saved]
+        );
+        // A paired capture, which no restored microVM can take, fails instead
+        // of reading a file that it does not have.
+        let err = capture_snapshot_block_contract(
+            sources,
+            chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired,
+            SnapshotBlockIdentityCli::Sha256,
+            None,
+            "",
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "microVM scratch block has no file");
     }
 }
