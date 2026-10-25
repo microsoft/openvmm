@@ -44,6 +44,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::microvm::MachineProfile;
+use openvmm_defs::microvm::MicrovmSandboxBlockRole;
 use openvmm_defs::microvm::build_microvm_command_line;
 use openvmm_defs::microvm::build_microvm_control_command_line;
 use pal_async::DefaultDriver;
@@ -367,7 +368,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
         Ok(virtio_console_backend)
     }
 
-    /// Adds the fixed-role sandbox block devices.
+    /// Adds the fixed-role sandbox block devices, with a platform restore's
+    /// absent fresh scratch.
     pub(crate) async fn add_sandbox_blocks(
         &self,
         storage: &mut StorageBuilder,
@@ -392,8 +394,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     &disk.kind,
                     disk.read_only,
                     opt.microvm.snapshot_destination.is_some() || opt.restore_snapshot.is_some(),
+                    self.restore
+                        .distro_capacity
+                        .filter(|_| block.role == MicrovmSandboxBlockRole::Distro),
                 )
                 .await?;
+        }
+        if let Some(geometry) = self.restore.absent_scratch {
+            storage.add_microvm_absent_scratch(geometry);
         }
         Ok(())
     }

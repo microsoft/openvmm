@@ -387,7 +387,8 @@ describes the source definitions.
   mounted, it freezes the workload cgroup with a bounded wait, syncs, freezes
   the scratch filesystem, and asks OpenVMM to drain queues and atomically
   publish `scratch.img`. `/sbin/nvx-snapshot --fresh-scratch` is for a
-  pre-mount boundary and records that restore must supply a fresh scratch.
+  pre-mount boundary and records that restore must supply a fresh scratch,
+  or declare it absent with `--restore-absent-scratch`.
 * `--microvm-workload-identity <UID:GID>`: Add a fixed non-root numeric
   workload identity to the host-owned microVM command line. UID and GID zero
   are rejected. The guest workload supervisor must resolve both values in the
@@ -445,10 +446,15 @@ describes the source definitions.
 
   For sandbox-block snapshots, restore repeats each read-only
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
-  must match the manifest. A paired snapshot supplies scratch internally from
+  must match the manifest, with two exceptions for a platform snapshot: its
+  read-only layers are unbound, and its `distro` block keeps the captured
+  capacity over an image that may be shorter. Such an image must have the
+  captured logical and physical block sizes, reads past its end return zeros,
+  and OpenVMM never resizes, pads, or writes it; a longer image is rejected.
+  A paired snapshot supplies scratch internally from
   a verified process-private copy of `scratch.img`; passing another scratch is
   rejected. A fresh-scratch snapshot instead requires a writable scratch
-  argument with matching geometry.
+  argument with matching geometry, or `--restore-absent-scratch`.
 
   `--restore-memory <SIZE>` selects the total RAM for this launch. It requires
   an expansion-capable snapshot and a 128-MiB-aligned value from the exact
@@ -498,6 +504,16 @@ describes the source definitions.
   validating the full saved VP inventory; that reduced-prefix process cannot
   be saved again. MSHV restores without this option, and KVM and WHP restores,
   instantiate the full VP capacity.
+* `--restore-absent-scratch`: Restore a platform snapshot's fresh scratch
+  without a file. OpenVMM attaches the scratch device at the length and block
+  sizes that the manifest records. The device stays writable, as the guest
+  negotiated it and as the restore contract requires, but has nowhere to keep
+  data: reads return zeros, and every write fails with an I/O error, so no
+  write is dropped or kept in host memory. Only a platform snapshot's fresh
+  scratch may be absent. OpenVMM rejects the option before any vCPU starts
+  for a cold boot, for a paired snapshot or one without sandbox blocks, and
+  together with a scratch `--microvm-sandbox-block`. A scratch file, when given
+  instead, keeps the exact captured length.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`

@@ -288,6 +288,14 @@ pub struct MicrovmCli {
     #[clap(long, value_name = "SIZE", requires = "restore_snapshot")]
     pub restore_memory: Option<vmm_cli::MemorySize>,
 
+    /// Attach a platform snapshot's fresh scratch with no file.
+    ///
+    /// The scratch device keeps the captured length and block sizes, and stays
+    /// writable, as the guest negotiated it: reads return zeros, and writes
+    /// fail with an I/O error. Do not pass a scratch block with it.
+    #[clap(long, requires = "restore_snapshot")]
+    pub restore_absent_scratch: bool,
+
     /// Maximum time allowed for a microVM guest to complete post-restore repair.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
     pub restore_gate_timeout_ms: u64,
@@ -768,13 +776,14 @@ impl Options {
                     && self.microvm.microvm_report.is_none()
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
+                    && !self.microvm.restore_absent_scratch
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.snapshot_block_identity.is_none()
                     && self.microvm.snapshot_generation_id.is_none()
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -889,6 +898,13 @@ impl Options {
                 );
             }
         }
+        // Clap's `requires` does not hold when an option that conflicts with
+        // --restore-snapshot, such as --kernel, is present, so a cold boot
+        // would otherwise ignore the declaration.
+        anyhow::ensure!(
+            self.restore_snapshot.is_some() || !self.microvm.restore_absent_scratch,
+            "--restore-absent-scratch requires --restore-snapshot"
+        );
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
                 self.microvm.microvm_workload_identity.is_none(),
@@ -1573,6 +1589,60 @@ mod tests {
         ])
         .unwrap();
         assert!(unaligned.validate_microvm_options().is_err());
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_restore_absent_scratch_requires_a_microvm_restore() {
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-absent-scratch",
+        ])
+        .unwrap();
+        restore.validate_microvm_options().unwrap();
+        assert!(restore.microvm.restore_absent_scratch);
+
+        // A cold boot has no captured scratch to declare absent.
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--restore-absent-scratch",
+            ])
+            .is_err()
+        );
+        // Clap accepts it when --kernel, which conflicts with --restore-snapshot,
+        // lifts the requirement, so the validation refuses it.
+        let cold_boot = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--kernel",
+            "vmlinux",
+            "--restore-absent-scratch",
+        ])
+        .unwrap();
+        assert_eq!(
+            cold_boot
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string(),
+            "--restore-absent-scratch requires --restore-snapshot"
+        );
+        // Nor does a standard machine.
+        let standard = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-absent-scratch",
+        ])
+        .unwrap();
+        assert!(standard.validate_microvm_options().is_err());
     }
 
     #[cfg(guest_arch = "x86_64")]
