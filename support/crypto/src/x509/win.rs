@@ -459,6 +459,8 @@ impl X509CertificateInner {
         use windows::Win32::Security::Cryptography::CERT_V3;
         use windows::Win32::Security::Cryptography::X509_CERT_TO_BE_SIGNED;
         use windows::Win32::Security::Cryptography::X509_ECC_SIGNATURE;
+        use windows::Win32::Security::Cryptography::X509_OBJECT_IDENTIFIER;
+        use windows::Win32::Security::Cryptography::szOID_ECC_CURVE_P384;
         use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA384;
 
         // 1. Encode the subject (== issuer for self-signed) DN.
@@ -485,8 +487,8 @@ impl X509CertificateInner {
             super::X509KeyPair::Ecdsa(key) => {
                 let mut point = vec![crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
                 point.extend_from_slice(&key.public_key_bytes()?);
-                // DER-encoded secp384r1 named-curve OID (1.3.132.0.34).
-                let curve = vec![0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22];
+                let curve = encode_object(X509_OBJECT_IDENTIFIER, &szOID_ECC_CURVE_P384)
+                    .context("encoding the EC named-curve OID")?;
                 (
                     point,
                     szOID_ECC_PUBLIC_KEY,
