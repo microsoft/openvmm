@@ -617,9 +617,10 @@ appears to.
 
 The single-threaded property holds for the entire `apply` sequence by
 construction: the worker self-applies before it starts any async
-runtime or spawns any thread ([§7.5](#75-why-self-apply-is-safe)),
-which is what makes Landlock (no TSYNC below ABI 8) and
-seccomp-without-TSYNC both behave predictably.
+runtime or spawns any thread ([§7.5](#75-why-self-apply-is-safe)).
+This is required for Landlock (no TSYNC below ABI 8). Both seccomp filters use
+TSYNC during `apply` and `tighten`, so tightening also covers existing threads.
+Synchronization failures are fatal, with no thread-local fallback.
 
 ### 7.4 Control flow — Linux
 

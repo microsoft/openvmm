@@ -113,13 +113,13 @@ pub fn build_clone3_enosys_filter() -> io::Result<BpfProgram> {
     )
 }
 
-/// Apply a pre-built BPF filter to the current thread.
+/// Apply a pre-built BPF filter to all threads in the process using TSYNC.
 ///
-/// Requires `PR_SET_NO_NEW_PRIVS` to be set on the calling thread when
-/// the process lacks `CAP_SYS_ADMIN`.
-pub fn apply_filter(bpf: &BpfProgram) -> io::Result<()> {
-    seccompiler::apply_filter(bpf)
-        .map_err(|e| io::Error::other(format!("seccomp apply failed: {e}")))
+/// Synchronization failures are errors; never fall back to thread-local
+/// enforcement.
+pub fn apply_filter_all_threads(bpf: &BpfProgram) -> io::Result<()> {
+    seccompiler::apply_filter_all_threads(bpf)
+        .map_err(|e| io::Error::other(format!("seccomp TSYNC apply failed: {e}")))
 }
 
 fn target_arch() -> io::Result<TargetArch> {
@@ -371,8 +371,8 @@ pub fn build_denylist_filter(
 }
 
 /// Resolve `extra_deny_names` into syscall numbers, build the denylist filter
-/// (baseline + extras + argument-level guards), and apply it to the current
-/// thread along with the `clone3`-to-`ENOSYS` overlay.
+/// (baseline + extras + argument-level guards), and apply it to all threads
+/// along with the `clone3`-to-`ENOSYS` overlay, using TSYNC for both filters.
 ///
 /// Every name must resolve via [`nr_for_name`]; an unknown name is a hard
 /// error (R-S12 fail-loud) rather than a silent omission. A name on the
@@ -403,12 +403,12 @@ pub fn apply_denylist(extra_deny_names: &[&str], deny_action: SeccompAction) -> 
     }
 
     let filter = build_denylist_filter(&extra, deny_action)?;
-    apply_filter(&filter)?;
+    apply_filter_all_threads(&filter)?;
     // Force clone3 to ENOSYS so the libc thread path falls back to the
     // argument-filtered `clone`; clone3's flags live behind a pointer seccomp
     // can't inspect.
     let clone3 = build_clone3_enosys_filter()?;
-    apply_filter(&clone3)
+    apply_filter_all_threads(&clone3)
 }
 
 fn finalize_filter(

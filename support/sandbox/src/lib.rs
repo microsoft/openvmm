@@ -159,8 +159,13 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
 /// STAGE 3 (optional) — worker, after its own initialization.
 ///
 /// Stacks the additive-only `restrictions` onto the already-applied sandbox.
-/// Unlike [`apply`], it may run multi-threaded. In debug builds, becomes a
-/// no-op when [`DISABLE_ENV`] is set.
+/// Unlike [`apply`], it may run multi-threaded: Linux synchronizes syscall
+/// filters across all threads with seccomp TSYNC. Returns [`Error`] if
+/// synchronization fails or is unsupported, with no thread-local fallback.
+/// The worker should then exit with [`EXIT_SANDBOX_FAILED`]; restrictions
+/// installed before the failure remain in effect.
+///
+/// In debug builds, becomes a no-op when [`DISABLE_ENV`] is set.
 pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
     if sandbox_disabled() {
         return Ok(());

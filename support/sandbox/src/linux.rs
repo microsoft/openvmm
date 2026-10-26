@@ -111,8 +111,8 @@ pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
         ));
     }
 
-    // Stack an additional syscall denylist. Filters compose; the kernel takes
-    // the most restrictive verdict across every installed filter.
+    // Stack an additional syscall denylist across all threads using TSYNC.
+    // Filters compose; the kernel takes the most restrictive verdict.
     if let Some(names) = r.syscalls {
         seccomp::apply_denylist(names, seccomp_deny_action()).map_err(required("seccomp"))?;
     }
@@ -331,8 +331,65 @@ fn fs_required(source: io::Error) -> Error {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixDatagram;
+    use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
+    use std::sync::mpsc;
     use test_with_tracing::test;
+
+    #[test]
+    fn tighten_restricts_existing_threads() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .env_remove(crate::DISABLE_ENV)
+            .args([
+                "--exact",
+                "linux::tests::helper_tighten_existing_thread",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        // Debug builds return EPERM; release builds kill the process when the
+        // existing thread attempts the newly denied syscall.
+        let expected_status = if cfg!(debug_assertions) {
+            output.status.success()
+        } else {
+            output.status.signal() == Some(libc::SIGSYS)
+        };
+        assert!(
+            expected_status,
+            "tighten helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_tighten_existing_thread() {
+        hardening::set_no_new_privs().unwrap();
+        seccomp::apply_denylist(&[], seccomp_deny_action()).unwrap();
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (tightened_tx, tightened_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            drop(UnixDatagram::unbound().unwrap());
+            ready_tx.send(()).unwrap();
+            tightened_rx.recv().unwrap();
+            assert_eq!(
+                UnixDatagram::unbound().unwrap_err().raw_os_error(),
+                Some(libc::EPERM),
+            );
+        });
+
+        ready_rx.recv().unwrap();
+        let restrictions = Restrictions::none().syscalls(&["socket"]).build();
+        crate::tighten(&restrictions).unwrap();
+        tightened_tx.send(()).unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn filesystem_grants_enforce_access_modes() {
