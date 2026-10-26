@@ -86,7 +86,8 @@ pub enum OpenVmmHypervisor {
     Hvf,
 }
 
-/// Information about the VM host, retrieved via PowerShell on Windows.
+/// Information about the VM host. On Windows, petri reads it with the
+/// `Get-VMHost` PowerShell cmdlet. On Linux, petri probes MSHV for SNP support.
 #[derive(Debug, Clone)]
 pub struct VmHostInfo {
     /// VBS support status
@@ -100,7 +101,7 @@ pub struct VmHostInfo {
 /// Platform-specific host context extending the base HostContext
 #[derive(Debug, Clone)]
 pub struct HostContext {
-    /// VmHost information retrieved via PowerShell
+    /// VM host information, if petri can get it on this host
     pub vm_host_info: Option<VmHostInfo>,
     /// CPU vendor
     pub vendor: Vendor,
@@ -140,26 +141,6 @@ impl HostContext {
 
         let vendor = Vendor::host();
 
-        let vm_host_info = {
-            #[cfg(windows)]
-            {
-                crate::vm::hyperv::powershell::run_get_vm_host()
-                    .await
-                    .ok()
-                    .map(|info| VmHostInfo {
-                        vbs_supported: info.guest_isolation_types.contains(
-                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
-                        ),
-                        snp_status: info.snp_status,
-                        tdx_status: info.tdx_status,
-                    })
-            }
-            #[cfg(not(windows))]
-            {
-                None
-            }
-        };
-
         // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
         let vpci_supported = cfg!(windows);
 
@@ -184,6 +165,34 @@ impl HostContext {
             None
         };
 
+        let vm_host_info = {
+            #[cfg(windows)]
+            {
+                crate::vm::hyperv::powershell::run_get_vm_host()
+                    .await
+                    .ok()
+                    .map(|info| VmHostInfo {
+                        vbs_supported: info.guest_isolation_types.contains(
+                            &crate::vm::hyperv::powershell::HyperVGuestStateIsolationType::Vbs,
+                        ),
+                        snp_status: info.snp_status,
+                        tdx_status: info.tdx_status,
+                    })
+            }
+            #[cfg(not(windows))]
+            {
+                // MSHV has no SNP capability query, so probe by creating a
+                // temporary SNP partition. Only AMD hosts can support SNP.
+                (vendor == Vendor::Amd && openvmm_hypervisor == Some(OpenVmmHypervisor::Mshv)).then(
+                    || VmHostInfo {
+                        vbs_supported: false,
+                        snp_status: openvmm_hypervisors::mshv_snp_available(),
+                        tdx_status: false,
+                    },
+                )
+            }
+        };
+
         Self {
             vm_host_info,
             vendor,
@@ -204,6 +213,8 @@ pub enum TestRequirement {
     ExecutionEnvironment(ExecutionEnvironment),
     /// Vendor requirement.
     Vendor(Vendor),
+    /// Hypervisor backend that OpenVMM must select on the host.
+    OpenVmmHypervisor(OpenVmmHypervisor),
     /// Isolation requirement.
     Isolation(IsolationType),
     /// Requires a named capability advertised by the execution environment or
@@ -254,6 +265,9 @@ impl TestRequirement {
         match self {
             TestRequirement::ExecutionEnvironment(env) => context.execution_environment == *env,
             TestRequirement::Vendor(vendor) => context.vendor == *vendor,
+            TestRequirement::OpenVmmHypervisor(hypervisor) => {
+                context.openvmm_hypervisor == Some(*hypervisor)
+            }
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
@@ -389,5 +403,15 @@ mod tests {
         assert!(!requirement(VmmType::OpenVmm).is_satisfied(&mshv));
         assert!(requirement(VmmType::HyperV).is_satisfied(&mshv));
         assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+    }
+
+    #[test]
+    fn openvmm_hypervisor_requirement_matches_the_selected_backend() {
+        let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv);
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        let mut without_hypervisor = host_context(OpenVmmHypervisor::Mshv);
+        without_hypervisor.openvmm_hypervisor = None;
+        assert!(!requirement.is_satisfied(&without_hypervisor));
     }
 }

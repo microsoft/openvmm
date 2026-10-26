@@ -340,7 +340,7 @@ impl RsaKeyPairInner {
                 "exported RSA private key blob has an invalid magic value",
             ));
         }
-        let mut take_component = |size: u32| -> Result<Vec<u8>, RsaError> {
+        let mut take_component = |size: u32| {
             if size == 0 {
                 return Err(invalid_err(
                     "exported RSA private key has an empty component",
@@ -350,21 +350,20 @@ impl RsaKeyPairInner {
                 .split_at_checked(size as usize)
                 .ok_or_else(|| invalid_err("exported RSA private key blob is truncated"))?;
             rest = remaining;
-            // BCrypt components are fixed-width, skip any leading zero bytes.
-            let start = bytes
-                .iter()
-                .position(|&b| b != 0)
-                .ok_or_else(|| invalid_err("exported RSA private key has a zero component"))?;
-            Ok(bytes[start..].to_vec())
+            Ok(bytes)
         };
-        let public_exponent = take_component(cb_e)?;
-        let modulus = take_component(cb_n)?;
-        let prime1 = take_component(cb_p)?;
-        let prime2 = take_component(cb_q)?;
+        let public_exponent = take_component(cb_e)?.to_vec();
+        let modulus = take_component(cb_n)?.to_vec();
+        let prime1 = take_component(cb_p)?.to_vec();
+        let prime2 = take_component(cb_q)?.to_vec();
         let _exponent1 = take_component(cb_p)?;
         let _exponent2 = take_component(cb_q)?;
         let _coefficient = take_component(cb_p)?;
-        let private_exponent = take_component(cb_n)?;
+        // The private exponent is exported at modulus width.
+        let private_exponent =
+            crate::helpers::unpad_component(take_component(cb_n)?).ok_or_else(|| {
+                invalid_err("exported RSA private key has an empty or zero private exponent")
+            })?;
         if !rest.is_empty() {
             return Err(invalid_err(
                 "exported RSA private key blob has trailing bytes",
@@ -534,18 +533,36 @@ fn verify_hash(
     Ok(true)
 }
 
-fn parse_public_components(blob: &[u8]) -> PublicComponents<'_> {
-    assert!(blob.len() >= size_of::<BCRYPT_RSAKEY_BLOB>());
-    let header_ptr = blob.as_ptr().cast::<BCRYPT_RSAKEY_BLOB>();
-    // SAFETY: blob is at least header-sized; header is POD.
-    let header = unsafe { std::ptr::read_unaligned(header_ptr) };
-    let off = size_of::<BCRYPT_RSAKEY_BLOB>();
-    let cb_e = header.cbPublicExp as usize;
-    let cb_n = header.cbModulus as usize;
-    PublicComponents {
-        public_exponent: &blob[off..off + cb_e],
-        modulus: &blob[off + cb_e..off + cb_e + cb_n],
+fn parse_public_components(blob: &[u8]) -> Result<PublicComponents<'_>, RsaError> {
+    use zerocopy::FromBytes;
+
+    let ([magic, _bits, cb_e, cb_n, _cb_p, _cb_q], rest) = <[u32; 6]>::read_from_prefix(blob)
+        .map_err(|_| invalid_err("exported RSA public key blob is too small"))?;
+    if magic != BCRYPT_RSAPUBLIC_MAGIC.0 {
+        return Err(invalid_err(
+            "exported RSA public key blob has an invalid magic value",
+        ));
     }
+    if cb_e == 0 || cb_n == 0 {
+        return Err(invalid_err(
+            "exported RSA public key has an empty component",
+        ));
+    }
+    let (public_exponent, rest) = rest
+        .split_at_checked(cb_e as usize)
+        .ok_or_else(|| invalid_err("exported RSA public key blob is truncated"))?;
+    let (modulus, rest) = rest
+        .split_at_checked(cb_n as usize)
+        .ok_or_else(|| invalid_err("exported RSA public key blob is truncated"))?;
+    if !rest.is_empty() {
+        return Err(invalid_err(
+            "exported RSA public key blob has trailing bytes",
+        ));
+    }
+    Ok(PublicComponents {
+        public_exponent,
+        modulus,
+    })
 }
 
 impl RsaPublicKeyInner {
@@ -668,15 +685,15 @@ impl RsaPublicKeyInner {
     }
 
     pub fn modulus_size(&self) -> usize {
-        self.to_components().modulus.len()
+        self.to_components().unwrap().modulus.len()
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        let components = parse_public_components(&blob);
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB)?;
+        let components = parse_public_components(&blob)?;
+        Ok(RsaPublicKeyComponents {
             modulus: components.modulus.to_vec(),
             public_exponent: components.public_exponent.to_vec(),
-        }
+        })
     }
 }

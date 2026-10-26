@@ -246,8 +246,10 @@ message VirtioDevice {
         VhostUser     vhost_user = 6;
         // Built-in virtio-fs filesystem device.
         VirtioFs       fs        = 7;
+        // virtio-rtc real-time clock device.
+        VirtioRtc      rtc       = 8;
         // File-backed virtio-pmem device.
-        VirtioPmem     pmem      = 8;
+        VirtioPmem     pmem      = 9;
     }
 }
 
@@ -265,13 +267,13 @@ message VirtioConsole {
     SerialBackend backend = 1;
 }
 
-// A serial backend: where a serial/console stream is connected. Modeled as a
-// oneof so more backends (stderr, file, tcp listener, terminal, ...) can be
-// added later. TBD(F): the CLI also accepts console|stderr|file|listen|tcp|term.
+// A serial backend: where a serial/console stream is connected.
 message SerialBackend {
     oneof kind {
         // Relay the stream over a named pipe / Unix domain socket.
         SerialRelay relay = 1;
+        // Write guest output directly to a host file.
+        SerialFile file = 2;
     }
 }
 
@@ -282,6 +284,15 @@ message SerialRelay {
     // When true, connect to an existing pipe/socket as a client instead of
     // creating a new server listener (e.g. the host already created it).
     bool connect = 2;
+}
+
+// A host file receiving guest serial output.
+message SerialFile {
+    // Path to the output file.
+    string path = 1;
+    // Preserve existing contents and append new output. When false, the file
+    // is truncated when the VM configuration is created.
+    bool append = 2;
 }
 
 // Disk backend shared by virtio-blk (and reusable for other disk types).
@@ -387,10 +398,16 @@ message VhostUserGeneric {
 message VirtioRng {
 }
 
+// virtio-rtc carries no device-specific configuration.
+message VirtioRtc {
+}
+
 // virtio-vsock socket device configuration.
 message VirtioVsock {
     // Unix socket base path (mirrors --virtio-vsock-path).
     string socket_path = 1;
+    // Context ID assigned to the guest. Defaults to 3 when omitted.
+    optional uint64 guest_cid = 2;
 }
 
 // NVMe controller. Attached behind a PCIe port in the topology, or hot-added

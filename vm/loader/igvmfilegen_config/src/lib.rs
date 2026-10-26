@@ -128,9 +128,9 @@ pub enum Image {
     SnpLinuxDirect {
         /// The Linux image to load.
         linux: LinuxImage,
-        /// The number of virtual processors in the guest.
-        processor_count: u32,
-        /// The number of pages in the guest.
+        /// The number of 4-KiB RAM pages that the image measures. This is the
+        /// minimum guest RAM. The host device tree describes the guest's CPUs
+        /// and any RAM above this.
         memory_page_count: u64,
         /// The page-table address bit used as the SNP encryption bit.
         c_bit_position: u8,
@@ -175,15 +175,11 @@ impl Image {
     /// Validate constraints intrinsic to this image configuration.
     pub fn validate(&self) -> Result<(), ImageValidationError> {
         if let Image::SnpLinuxDirect {
-            processor_count,
             memory_page_count,
             c_bit_position,
             ..
         } = *self
         {
-            if processor_count == 0 {
-                return Err(ImageValidationError::ZeroProcessorCount);
-            }
             if memory_page_count == 0 {
                 return Err(ImageValidationError::ZeroMemoryPageCount);
             }
@@ -213,9 +209,6 @@ impl Image {
 /// Error returned when an image configuration contains invalid intrinsic fields.
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum ImageValidationError {
-    /// The image requests no virtual processors.
-    #[error("processor_count must be nonzero")]
-    ZeroProcessorCount,
     /// The image requests no guest memory.
     #[error("memory_page_count must be nonzero")]
     ZeroMemoryPageCount,
@@ -419,7 +412,6 @@ mod test {
 
     fn snp_linux_direct_image(
         use_initrd: bool,
-        processor_count: u32,
         memory_page_count: u64,
         c_bit_position: u8,
     ) -> Image {
@@ -428,7 +420,6 @@ mod test {
                 use_initrd,
                 command_line: CString::new("console=ttyS0").unwrap(),
             },
-            processor_count,
             memory_page_count,
             c_bit_position,
         }
@@ -465,7 +456,6 @@ mod test {
         match &guest.image {
             Image::SnpLinuxDirect {
                 linux,
-                processor_count,
                 memory_page_count,
                 c_bit_position,
             } => {
@@ -474,32 +464,12 @@ mod test {
                     linux.command_line.as_bytes(),
                     b"console=ttyS0 earlyprintk=serial earlycon panic=-1"
                 );
-                assert_eq!(*processor_count, 1);
                 assert_eq!(*memory_page_count, 40960);
                 assert_eq!(*c_bit_position, 51);
                 guest.image.validate().unwrap();
             }
             image => panic!("unexpected image: {image:?}"),
         }
-    }
-
-    #[test]
-    fn parse_multi_vp_snp_linux_direct_manifest() {
-        let config: Config = serde_json::from_str(include_str!(
-            "../../manifests/snp-linux-direct-multi-vp.json"
-        ))
-        .unwrap();
-        let [guest] = config.guest_configs.as_slice() else {
-            panic!("expected one guest config");
-        };
-        let Image::SnpLinuxDirect {
-            processor_count, ..
-        } = &guest.image
-        else {
-            panic!("expected SNP Linux-direct image");
-        };
-        assert_eq!(*processor_count, 2);
-        guest.image.validate().unwrap();
     }
 
     #[test]
@@ -523,7 +493,7 @@ mod test {
 
     #[test]
     fn snp_linux_direct_required_resources_with_initrd() {
-        let image = snp_linux_direct_image(true, 1, 40960, 51);
+        let image = snp_linux_direct_image(true, 40960, 51);
 
         assert_eq!(
             image.required_resources(),
@@ -537,7 +507,7 @@ mod test {
 
     #[test]
     fn snp_linux_direct_required_resources_without_initrd() {
-        let image = snp_linux_direct_image(false, 1, 40960, 51);
+        let image = snp_linux_direct_image(false, 40960, 51);
 
         assert_eq!(
             image.required_resources(),
@@ -547,7 +517,7 @@ mod test {
 
     #[test]
     fn snp_linux_direct_requires_bootshim_resource() {
-        let image = snp_linux_direct_image(false, 1, 40960, 51);
+        let image = snp_linux_direct_image(false, 40960, 51);
         let resources = Resources {
             resources: [(ResourceType::LinuxKernel, PathBuf::from("/kernel"))]
                 .into_iter()
@@ -565,7 +535,7 @@ mod test {
 
     #[test]
     fn snp_linux_direct_rejects_zero_memory() {
-        let image = snp_linux_direct_image(false, 1, 0, 51);
+        let image = snp_linux_direct_image(false, 0, 51);
 
         assert_eq!(
             image.validate(),
@@ -576,7 +546,7 @@ mod test {
     #[test]
     fn snp_linux_direct_rejects_oversized_memory() {
         let memory_page_count = u64::from(u32::MAX) / PAGE_SIZE_4K + 1;
-        let image = snp_linux_direct_image(false, 1, memory_page_count, 51);
+        let image = snp_linux_direct_image(false, memory_page_count, 51);
 
         assert_eq!(
             image.validate(),
@@ -587,7 +557,7 @@ mod test {
     #[test]
     fn snp_linux_direct_rejects_invalid_c_bit_positions() {
         for c_bit_position in [11, 31, 52] {
-            let image = snp_linux_direct_image(false, 1, 40960, c_bit_position);
+            let image = snp_linux_direct_image(false, 40960, c_bit_position);
 
             assert_eq!(
                 image.validate(),
@@ -595,19 +565,7 @@ mod test {
             );
         }
 
-        snp_linux_direct_image(false, 1, 40960, 32)
-            .validate()
-            .unwrap();
-    }
-
-    #[test]
-    fn snp_linux_direct_rejects_zero_processors() {
-        let image = snp_linux_direct_image(false, 0, 40960, 51);
-
-        assert_eq!(
-            image.validate(),
-            Err(ImageValidationError::ZeroProcessorCount)
-        );
+        snp_linux_direct_image(false, 40960, 32).validate().unwrap();
     }
 
     #[test]

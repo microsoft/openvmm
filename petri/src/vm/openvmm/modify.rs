@@ -468,14 +468,14 @@ impl PetriVmConfigOpenVmm {
     /// so the segment numbers in the `sXrcY` names continue from where the last
     /// call left off.
     pub fn with_pcie_root_topology(
-        mut self,
+        self,
         segment_count: u64,
         root_complex_per_segment: u64,
         root_ports_per_root_complex: u64,
     ) -> Self {
-        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
-        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
-
+        if segment_count == 0 {
+            return self;
+        }
         // Offset the segments and global indices added by this call so that it
         // can be called multiple times. New segments are numbered after any
         // existing ones, and the global index continues from the existing
@@ -487,6 +487,41 @@ impl PetriVmConfigOpenVmm {
             .map(|rc| u64::from(rc.segment) + 1)
             .max()
             .unwrap_or(0);
+        self.with_pcie_root_topology_at(
+            segment_base,
+            segment_count,
+            root_complex_per_segment,
+            root_ports_per_root_complex,
+        )
+    }
+
+    /// Append a topology starting at an explicit PCI segment, without
+    /// renumbering existing root complexes or their ports.
+    pub fn with_pcie_root_topology_at(
+        mut self,
+        segment_base: u64,
+        segment_count: u64,
+        root_complex_per_segment: u64,
+        root_ports_per_root_complex: u64,
+    ) -> Self {
+        let segment_end = segment_base
+            .checked_add(segment_count)
+            .filter(|end| *end <= u16::MAX as u64 + 1)
+            .expect("PCI segment range exceeds u16");
+        assert!(
+            !self
+                .config
+                .pcie_root_complexes
+                .iter()
+                .any(|rc| (segment_base..segment_end).contains(&u64::from(rc.segment))),
+            "PCI segment range overlaps an existing root complex"
+        );
+        assert!(
+            (1..=256).contains(&root_complex_per_segment),
+            "PCI topology requires between 1 and 256 root complexes per segment"
+        );
+        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
         let index_base = self.config.pcie_root_complexes.len() as u64;
 
         // Add the root complexes to the VM
@@ -533,6 +568,69 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        self
+    }
+
+    pub(super) fn with_guest_shares(mut self) -> Self {
+        if self.guest_shares.is_empty() {
+            return self;
+        }
+        if self.config.pcie_root_complexes.is_empty() {
+            self = self.with_pcie_root_topology(1, 1, 0);
+        }
+        // Prefer an existing nonzero segment for guests that cannot use segment zero.
+        let root_index = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .position(|rc| rc.segment != 0)
+            .unwrap_or(0);
+        let mut port_names = self
+            .config
+            .pcie_root_complexes
+            .iter()
+            .flat_map(|rc| &rc.ports)
+            .chain(self.config.pcie_switches.iter().flat_map(|s| &s.ports))
+            .map(|p| p.name.clone())
+            .chain(self.config.pcie_devices.iter().map(|d| d.port_name.clone()))
+            .collect::<std::collections::HashSet<_>>();
+        let mut shares = std::mem::take(&mut self.guest_shares)
+            .into_iter()
+            .collect::<Vec<_>>();
+        shares.sort_by(|a, b| a.0.cmp(&b.0));
+        for (tag, share) in shares {
+            let port_name = (0..)
+                .map(|i| format!("petri-share-{i}"))
+                .find(|name| port_names.insert(name.clone()))
+                .unwrap();
+            let root_path = share
+                .host_path
+                .into_os_string()
+                .into_string()
+                .expect("guest share path must be UTF-8");
+            self.config.pcie_root_complexes[root_index]
+                .ports
+                .push(PciePortConfig {
+                    name: port_name.clone(),
+                    devfn: None,
+                    hotplug: false,
+                    acs_capabilities_supported: Some(0),
+                    cxl: false,
+                    pasid: false,
+                });
+            self.config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: virtio_resources::VirtioPciDeviceHandle(
+                    virtio_resources::p9::VirtioPlan9Handle {
+                        tag,
+                        root_path,
+                        debug: false,
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+        }
         self
     }
 

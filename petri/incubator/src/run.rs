@@ -1,307 +1,355 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Top-level API to run a command inside an incubator.
+//! Run a command using Petri's VM lifecycle and Pipette connection.
 
 use crate::profile::IncubatorBackend;
+use crate::profile::IncubatorBoot;
 use crate::profile::IncubatorProfile;
+use crate::profile::parse_size;
 use crate::qemu;
 use anyhow::Context;
-use futures::AsyncReadExt;
-use pal_async::pipe::PolledPipe;
-use pal_async::process::PolledChild;
-use pal_async::task::Spawn;
+use futures_concurrency::future::Race;
+use petri::Firmware;
+use petri::PetriLogSource;
+use petri::PetriVmArtifacts;
+use petri::PetriVmBuilder;
+use petri::PetriVmmBackend;
+use petri::ResolvedArtifact;
+use petri_artifacts_common::tags::MachineArch;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-/// Configuration for an incubator run.
+/// Configuration for one disposable VM and guest command.
 pub struct IncubatorConfig {
-    /// The parsed profile.
+    /// Hardware and boot profile.
     pub profile: IncubatorProfile,
-    /// Path to the guest kernel image.
+    /// Root VM kernel, not the kernel of any nested test.
     pub kernel: PathBuf,
-    /// Path to the base initrd (gzip-compressed CPIO).
+    /// Root VM initrd.
     pub initrd: PathBuf,
-    /// Directory to share into the VM at [`crate::GUEST_SHARE_ROOT`].
+    /// Host directory mounted at `/share`.
     pub share_dir: PathBuf,
-    /// Host directory where command output and logs should be written.
+    /// Host directory for persistent logs.
     pub output_dir: PathBuf,
-    /// Path to the pipette binary inside the guest.
+    /// Guest Pipette path under `/share`.
     pub guest_pipette_path: String,
-    /// The command to run inside the VM: program followed by arguments.
+    /// Program and arguments to execute.
     pub guest_command: Vec<String>,
-    /// Environment variables to set for the guest command.
+    /// Guest environment overrides.
     pub guest_env: BTreeMap<String, String>,
-    /// Working directory for the guest command. If unset, the command inherits
-    /// pipette's working directory.
+    /// Guest working directory.
     pub guest_current_dir: Option<String>,
-    /// Timeout for the VM to boot and pipette to become ready. Once pipette
-    /// is connected, the guest command itself runs without a timeout.
+    /// Boot timeout for Linux direct; boot and command timeout for mshv.
     pub timeout: Duration,
-    /// If set, override the QEMU binary path specified in the profile.
+    /// Override the QEMU executable.
     pub qemu_binary_override: Option<PathBuf>,
-    /// Whether to allocate a PTY for the guest command and put the host
-    /// terminal into raw mode. Disabled when running non-interactively (e.g.
-    /// as a cargo-nextest target runner), where raw mode would interfere with
-    /// nextest's Ctrl-C handling.
+    /// Allocate a guest PTY and forward terminal control characters.
     pub allocate_pty: bool,
 }
 
-/// Result of an incubator run.
+/// Guest command result.
 pub struct IncubatorOutput {
-    /// The guest command's exit code, if it was captured.
+    /// Guest exit code, including `128 + signal` for signal termination.
     pub exit_code: Option<i32>,
-    /// Total wall time for the run.
+    /// Total wall time.
     pub elapsed: Duration,
 }
 
-/// Run a command inside an incubator.
-///
-/// Boots an emulated VM according to the profile, mounts `share_dir` at
-/// [`crate::GUEST_SHARE_ROOT`] inside the guest, connects to pipette over TCP, executes the
-/// command, and returns the exit code. Stdout/stderr are relayed to the
-/// host process in real time.
+/// Cold-boot a VM, execute the command through Pipette, and tear down the VM.
 pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutput> {
     let start = Instant::now();
-
-    // --- pick a host port for pipette TCP forwarding ---
-
-    let host_port = pick_free_port().context("failed to find a free port")?;
-
-    // --- prepare the boot initrd (inject the init script) ---
-
-    let patched_initrd_path = qemu::prepare_initrd(
-        &config.initrd,
-        &config.output_dir,
-        &config.guest_pipette_path,
-    )?;
-
-    // --- launch QEMU ---
-
-    let IncubatorBackend::QemuTcg(ref qemu_config) = config.profile.incubator;
-
-    // Apply QEMU binary override if specified.
-    let qemu_config_override;
-    let qemu_config = if let Some(ref qemu_binary) = config.qemu_binary_override {
-        qemu_config_override = crate::profile::QemuTcgConfig {
-            binary: qemu_binary.display().to_string(),
-            ..qemu_config.clone()
-        };
-        &qemu_config_override
-    } else {
-        qemu_config
+    let signals = TerminationSignals::new()?;
+    anyhow::ensure!(!config.guest_command.is_empty(), "empty guest command");
+    config.profile.validate()?;
+    if matches!(config.profile.incubator, IncubatorBackend::Openvmm(_)) {
+        anyhow::ensure!(
+            config.qemu_binary_override.is_none(),
+            "--qemu-binary is not valid for the openvmm launcher"
+        );
+        anyhow::ensure!(
+            cfg!(target_os = "linux") && MachineArch::host() == MachineArch::X86_64,
+            "OpenVMM Incubator requires an x86-64 Linux host"
+        );
+    }
+    fs_err::create_dir_all(&config.output_dir)?;
+    let log_dir = tempfile::Builder::new()
+        .prefix("incubator-")
+        .tempdir_in(&config.output_dir)?
+        .keep();
+    let logs = PetriLogSource::file_only(&log_dir)?;
+    tracing::info!(path = %log_dir.display(), "incubator logs");
+    let initrd = crate::bootstrap::prepare_initrd(&config)?;
+    let firmware = match &config.profile.boot {
+        IncubatorBoot::LinuxDirect => Firmware::LinuxDirect {
+            kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
+            initrd: ResolvedArtifact::from_local_path(config.initrd.clone()),
+        },
+        IncubatorBoot::Mshv(boot) => Firmware::Uefi {
+            uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
+            guest: petri::UefiGuest::Mshv(petri::mshv_boot::MshvBoot {
+                kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
+                initrd: initrd.clone(),
+                boot_artifacts: ResolvedArtifact::from_local_path(boot.boot_artifacts.clone()),
+            }),
+            uefi_config: petri::UefiConfig {
+                default_boot_always_attempt: true,
+                ..Default::default()
+            },
+        },
     };
-
-    let mut cmd = qemu::build_qemu_command(
-        qemu_config,
-        &config.profile.devices,
-        &config.kernel,
-        &patched_initrd_path,
-        &config.share_dir,
-        host_port,
-    )?;
-
-    // QEMU runs in the background. Serial console goes to a pipe;
-    // an async task copies output to a log file and signals when
-    // pipette prints its readiness marker.
-    let output_dir = config.output_dir.clone();
-    std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
-    // Each incubator process runs a single test, but several run concurrently
-    // under nextest sharing this output directory, so disambiguate the serial
-    // log by process id to avoid clobbering each other. The path is logged
-    // below so it remains discoverable from the test's captured output.
-    let serial_log = output_dir.join(format!("incubator-serial.{}.log", std::process::id()));
-    tracing::info!(path = %serial_log.display(), "serial log");
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut qemu_child = cmd.spawn().context("failed to launch QEMU")?;
-    let qemu_stdout = qemu_child.stdout.take().expect("stdout should be piped");
-    let qemu_stderr = qemu_child.stderr.take().expect("stderr should be piped");
-
-    // --- run everything inside the async executor ---
-
-    let result: anyhow::Result<_> = pal_async::DefaultPool::run_with(async |driver| {
-        let mut qemu_child = PolledChild::<std::process::Child>::new(&driver, qemu_child)
-            .context("failed to create PolledChild")?;
-
-        // Relay serial output to the log file in a spawned task.
-        // Sends a signal when pipette's "PIPETTE READY" marker appears.
-        let (ready_tx, ready_rx) = mesh::oneshot::<()>();
-        let serial_pipe = PolledPipe::new(&driver, qemu::child_pipe_to_file(qemu_stdout))
-            .context("failed to create polled pipe for serial output")?;
-        let serial_log_path = serial_log.clone();
-        let relay_task = driver.spawn("serial-relay", async move {
-            qemu::relay_serial_output(serial_pipe, &serial_log_path, ready_tx).await;
-        });
-
-        // Capture QEMU stderr for diagnostics.
-        let stderr_pipe = PolledPipe::new(&driver, qemu::child_pipe_to_file(qemu_stderr))
-            .context("failed to create polled pipe for stderr")?;
-        let stderr_task = driver.spawn("qemu-stderr", async move {
-            let mut buf = Vec::new();
-            let mut pipe = stderr_pipe;
-            let _ = pipe.read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).to_string()
-        });
-
-        let result = run_via_pipette(&driver, host_port, &config, &mut qemu_child, ready_rx).await;
-
-        let exit_code = match result {
-            Ok(code) => Some(code),
-            Err(e) => {
-                tracing::error!("pipette session failed: {e:#}");
-                None
+    let bound_command = matches!(config.profile.boot, IncubatorBoot::Mshv(_));
+    let code = pal_async::DefaultPool::run_with(async |driver| match &config.profile.incubator {
+        IncubatorBackend::Openvmm(profile) => {
+            let artifacts = PetriVmArtifacts {
+                backend: petri::openvmm::OpenVmmPetriBackend::from_binary(profile.binary.clone()),
+                firmware,
+                arch: MachineArch::X86_64,
+                agent_image: None,
+                openhcl_agent_image: None,
+                pipette_binary: None,
+                nested_test: None,
+            };
+            let mut builder = PetriVmBuilder::minimal("incubator", &logs, artifacts, &driver)?
+                .with_memory(petri::MemoryConfig {
+                    startup_bytes: parse_size(&profile.memory)?,
+                    ..Default::default()
+                })
+                .with_processor_topology(petri::ProcessorTopology {
+                    vp_count: profile.processors,
+                    ..Default::default()
+                })
+                .with_external_pipette()
+                .with_shared_directory("hostshare", &config.share_dir, crate::GUEST_SHARE_ROOT);
+            if profile.nested_virt {
+                builder = builder.with_nested_virt();
             }
-        };
-
-        // On success, pipette sent a power_off so QEMU should exit soon.
-        // On failure, QEMU is still running — kill it.
-        let child = qemu_child.get_mut();
-        if exit_code.is_none() {
-            let _ = child.kill();
+            builder = match config.profile.boot {
+                IncubatorBoot::Mshv(_) => builder.with_mshv_platform(),
+                IncubatorBoot::LinuxDirect => builder
+                    .with_prebuilt_initrd(initrd)
+                    .with_no_vmbus()
+                    .with_virtio_vsock(false)
+                    .with_serial_output()
+                    .modify_backend(|backend| {
+                        backend
+                            .with_pcie_root_topology_at(0, 1, 1, 1)
+                            .with_tcp_pipette_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
+                    }),
+            };
+            execute(builder, &driver, &config, &signals, bound_command).await
         }
-        let _ = child.wait();
-
-        // Wait for the serial relay to finish flushing.
-        relay_task.await;
-        if exit_code.is_none() {
-            let stdout_output = fs_err::read(&serial_log)?;
-            tracing::error!(stdout = %String::from_utf8_lossy(&stdout_output).to_string(), "QEMU stdout output");
+        IncubatorBackend::QemuTcg(profile) => {
+            let artifacts = PetriVmArtifacts {
+                backend: petri::qemu::QemuPetriBackend::from_binary(
+                    config
+                        .qemu_binary_override
+                        .clone()
+                        .unwrap_or_else(|| profile.binary.clone().into()),
+                ),
+                firmware,
+                arch: MachineArch::Aarch64,
+                agent_image: None,
+                openhcl_agent_image: None,
+                pipette_binary: None,
+                nested_test: None,
+            };
+            let devices = qemu::petri_devices(&config.profile.devices)?;
+            let profile = profile.clone();
+            let share = config.share_dir.clone();
+            let builder = PetriVmBuilder::minimal("incubator", &logs, artifacts, &driver)?
+                .with_external_pipette()
+                .with_prebuilt_initrd(initrd)
+                .modify_backend(move |backend| {
+                    backend
+                        .with_share_9p(share)
+                        .with_devices(devices)
+                        .with_platform(
+                            profile.machine,
+                            profile.cpu,
+                            profile.smp,
+                            profile.memory,
+                            profile.cmdline,
+                        )
+                });
+            execute(builder, &driver, &config, &signals, bound_command).await
         }
-
-        // Log any QEMU stderr output.
-        let stderr_output = stderr_task.await;
-        if !stderr_output.is_empty() {
-            tracing::warn!(stderr = %stderr_output, "QEMU stderr output");
-        }
-
-        Ok(exit_code)
-    });
-
-    let elapsed = start.elapsed();
-
+    })?;
     Ok(IncubatorOutput {
-        exit_code: result?,
-        elapsed,
+        exit_code: Some(code),
+        elapsed: start.elapsed(),
     })
 }
 
-/// Connect to pipette inside the VM over TCP and execute the command.
-async fn run_via_pipette(
+async fn execute<T: PetriVmmBackend>(
+    builder: PetriVmBuilder<T>,
     driver: &pal_async::DefaultDriver,
-    host_port: u16,
     config: &IncubatorConfig,
-    qemu_child: &mut PolledChild<std::process::Child>,
-    ready_rx: mesh::OneshotReceiver<()>,
+    signals: &TerminationSignals,
+    bound_command: bool,
 ) -> anyhow::Result<i32> {
-    // Wait for pipette to print its readiness marker on the serial
-    // console, or for QEMU to exit (indicating a boot failure).
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], host_port));
-    tracing::info!(%addr, "waiting for pipette ready signal");
-    qemu::wait_for_pipette_ready(driver, config.timeout, qemu_child, ready_rx).await?;
-
-    tracing::info!("pipette ready, connecting");
-    let conn = pal_async::socket::PolledSocket::connect_tcp(driver, addr)
-        .await
-        .context("failed to connect to pipette")?;
-
-    let output_dir = config.output_dir.clone();
-    std::fs::create_dir_all(&output_dir).context("failed to create test results dir")?;
-
-    let client = pipette_client::PipetteClient::new(&driver, conn, &output_dir)
-        .await
-        .context("failed to connect to pipette")?;
-
-    tracing::info!("connected to pipette");
-
-    // Set up VFIO devices before running the guest command.
-    let vfio_env = qemu::setup_vfio_devices(&client, &config.profile.devices).await?;
-
-    tracing::info!("executing command");
-
-    let (program, args) = config
-        .guest_command
-        .split_first()
-        .context("empty guest command")?;
-
-    let use_pty = config.allocate_pty;
-
-    let mut cmd = client.command(program);
-    cmd.args(args);
-    for (key, value) in &config.guest_env {
-        cmd.env(key, value);
-    }
-
-    if let Some(current_dir) = &config.guest_current_dir {
-        cmd.current_dir(current_dir);
-    }
-
-    // Pass VFIO device BDFs as environment variables
-    for (key, value) in &vfio_env {
-        cmd.env(key, value);
-    }
-
-    if use_pty {
-        cmd.pty(true);
-    }
-
-    // Put the host terminal into raw mode so that Ctrl-C, etc.
-    // flow through to the guest PTY instead of being handled locally.
-    let raw_guard = if use_pty {
-        Some(RawModeGuard::enter().context("failed to enter raw mode")?)
-    } else {
-        None
+    let start = Instant::now();
+    signals.check()?;
+    let boot = builder
+        .with_watchdog_timeout(None)
+        .without_screenshots()
+        .run();
+    let (mut vm, client) = (
+        boot,
+        timeout(driver, config.timeout, "boot"),
+        signals.cancelled(driver),
+    )
+        .race()
+        .await?;
+    let session = async {
+        let vfio_env = qemu::setup_vfio_devices(&client, &config.profile.devices).await?;
+        let mut command = client.command(&config.guest_command[0]);
+        command.args(&config.guest_command[1..]);
+        for (key, value) in config.guest_env.iter().chain(vfio_env.iter()) {
+            command.env(key, value);
+        }
+        command.current_dir(
+            config
+                .guest_current_dir
+                .as_deref()
+                .unwrap_or(crate::GUEST_SHARE_ROOT),
+        );
+        command.pty(config.allocate_pty);
+        let guard = config.allocate_pty.then(RawModeGuard::enter).transpose()?;
+        let status = command.spawn().await?.wait().await?;
+        drop(guard);
+        status
+            .code()
+            .or_else(|| status.signal().map(|signal| 128 + signal))
+            .context("guest command returned no exit code or signal")
     };
-
-    let result = async {
-        let mut child = cmd
-            .spawn()
-            .await
-            .context("failed to spawn command in guest")?;
-        child.wait().await.context("failed to wait for command")
-    }
-    .await;
-
-    // Restore terminal before printing anything.
-    drop(raw_guard);
-
-    let status = result?;
-    tracing::info!(%status, "command exited");
-
-    let exit_code = if let Some(code) = status.code() {
-        code
-    } else if let Some(signal) = status.signal() {
-        tracing::warn!("command killed by signal {signal}");
-        128 + signal
-    } else {
-        tracing::warn!("command exited with unknown status");
-        1
+    let result = (
+        session,
+        async {
+            let halt = vm.wait_for_halt().await?;
+            anyhow::bail!("incubator halted before command completed: {halt:?}")
+        },
+        async {
+            if bound_command {
+                timeout(
+                    driver,
+                    config.timeout.saturating_sub(start.elapsed()),
+                    "command",
+                )
+                .await
+            } else {
+                std::future::pending().await
+            }
+        },
+        signals.cancelled(driver),
+    )
+        .race()
+        .await;
+    let result = match result {
+        Ok(code) => {
+            let shutdown = async {
+                client.power_off().await?;
+                vm.wait_for_clean_shutdown().await?;
+                Ok(code)
+            };
+            (
+                shutdown,
+                timeout(driver, Duration::from_secs(10), "shutdown"),
+            )
+                .race()
+                .await
+        }
+        Err(error) => Err(error),
     };
-
-    // Power off the VM
-    let _ = client.power_off().await;
-
-    Ok(exit_code)
+    let teardown = (
+        vm.teardown(),
+        timeout(driver, Duration::from_secs(10), "teardown"),
+    )
+        .race()
+        .await;
+    if let Err(error) = &teardown {
+        tracing::error!(%error, "incubator teardown failed");
+    }
+    let code = result?;
+    teardown?;
+    Ok(code)
 }
 
-/// Find a free TCP port by binding to port 0 and reading the assigned port.
-fn pick_free_port() -> anyhow::Result<u16> {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").context("failed to bind ephemeral port")?;
-    let port = listener
-        .local_addr()
-        .context("failed to get local addr")?
-        .port();
-    Ok(port)
+struct TerminationSignals {
+    #[cfg(unix)]
+    signal: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(unix)]
+    registrations: Vec<signal_hook::SigId>,
 }
 
-/// RAII guard that puts the terminal into raw mode and restores it on drop,
-/// so that Ctrl-C and similar control sequences flow through to the guest PTY
-/// instead of being interpreted by the host terminal.
+impl TerminationSignals {
+    fn check(&self) -> anyhow::Result<()> {
+        #[cfg(unix)]
+        {
+            let signal = self.signal.load(std::sync::atomic::Ordering::Relaxed);
+            anyhow::ensure!(signal == 0, "incubator interrupted by signal {signal}");
+        }
+        Ok(())
+    }
+
+    fn new() -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        {
+            let mut guard = Self {
+                signal: Default::default(),
+                registrations: Vec::new(),
+            };
+            for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+                guard.registrations.push(signal_hook::flag::register_usize(
+                    signal,
+                    guard.signal.clone(),
+                    signal as usize,
+                )?);
+            }
+            Ok(guard)
+        }
+        #[cfg(not(unix))]
+        Ok(Self {})
+    }
+
+    async fn cancelled<T>(&self, driver: &pal_async::DefaultDriver) -> anyhow::Result<T> {
+        #[cfg(unix)]
+        loop {
+            self.check()?;
+            pal_async::timer::PolledTimer::new(driver)
+                .sleep(Duration::from_millis(100))
+                .await;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = driver;
+            std::future::pending().await
+        }
+    }
+}
+
+impl Drop for TerminationSignals {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for id in self.registrations.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
+async fn timeout<T>(
+    driver: &pal_async::DefaultDriver,
+    duration: Duration,
+    phase: &str,
+) -> anyhow::Result<T> {
+    pal_async::timer::PolledTimer::new(driver)
+        .sleep(duration)
+        .await;
+    anyhow::bail!("incubator {phase} timed out after {duration:?}")
+}
+
 struct RawModeGuard;
 
 impl RawModeGuard {
@@ -313,8 +361,8 @@ impl RawModeGuard {
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        if let Err(e) = crossterm::terminal::disable_raw_mode() {
-            tracing::warn!(error = %e, "failed to restore terminal mode");
+        if let Err(error) = crossterm::terminal::disable_raw_mode() {
+            tracing::warn!(%error, "failed to restore terminal mode");
         }
     }
 }

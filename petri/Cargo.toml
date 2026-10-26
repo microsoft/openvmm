@@ -107,5 +107,9 @@ hvdef.workspace = true
 safe_intrinsics.workspace = true
 x86defs.workspace = true
 
+[dev-dependencies]
+flate2.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

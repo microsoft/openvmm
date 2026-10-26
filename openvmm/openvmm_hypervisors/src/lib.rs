@@ -31,6 +31,29 @@ hypervisor_resources::register_hypervisor_probes! {
     hvf::HvfProbe,
 }
 
+/// Returns whether OpenVMM can create SEV-SNP partitions with MSHV on this
+/// machine. See `virt_mshv::is_snp_available` for why this is a probe.
+pub fn mshv_snp_available() -> bool {
+    #[cfg(all(
+        target_os = "linux",
+        feature = "virt_mshv",
+        guest_is_native,
+        guest_arch = "x86_64"
+    ))]
+    {
+        virt_mshv::is_snp_available()
+    }
+    #[cfg(not(all(
+        target_os = "linux",
+        feature = "virt_mshv",
+        guest_is_native,
+        guest_arch = "x86_64"
+    )))]
+    {
+        false
+    }
+}
+
 #[expect(clippy::allow_attributes, reason = "lots of conditions")]
 #[allow(dead_code)]
 pub(crate) fn parse_bool_param(key: &str, val: &str) -> anyhow::Result<bool> {
