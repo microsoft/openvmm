@@ -334,12 +334,12 @@ fn available_capabilities(context: &HostContext, vmm: VmmType) -> BTreeSet<&'sta
         capabilities.insert(capabilities::WINDOWS_PARTITION_RESET);
     }
 
-    // MSHV doesn't support nested virtualization yet
+    // Nested virtualization is supported by the x86 OpenVMM backends and QEMU.
     if matches!(
         (vmm, context.openvmm_hypervisor),
         (
             VmmType::OpenVmm,
-            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp)
+            Some(OpenVmmHypervisor::Kvm | OpenVmmHypervisor::Whp | OpenVmmHypervisor::Mshv)
         ) | (VmmType::Qemu, _)
     ) {
         capabilities.insert(capabilities::NESTED_VIRT);
@@ -414,6 +414,17 @@ mod tests {
         assert!(!requirement(VmmType::OpenVmm).is_satisfied(&mshv));
         assert!(requirement(VmmType::HyperV).is_satisfied(&mshv));
         assert!(requirement(VmmType::OpenVmm).is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+    }
+
+    #[test]
+    fn nested_virt_capability_matches_the_selected_backend() {
+        let requirement = TestRequirement::RequiresCapability {
+            name: capabilities::NESTED_VIRT,
+            vmm: VmmType::OpenVmm,
+        };
+
+        assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Hvf)));
     }
 
     #[test]
