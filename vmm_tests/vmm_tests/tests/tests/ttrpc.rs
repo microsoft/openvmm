@@ -1216,6 +1216,7 @@ async fn test_ttrpc_uefi_boot(
                                 firmware_path: firmware_path.get().to_string_lossy().to_string(),
                                 initial_variables: Some(vmservice::uefi::InitialVariables {
                                     secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
+                                    ..Default::default()
                                 }),
                                 secure_boot_enabled: false,
                             },
