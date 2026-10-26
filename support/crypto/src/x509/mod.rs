@@ -235,6 +235,31 @@ mod tests {
         assert!(reparsed.verify(&public_key).unwrap());
     }
 
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    #[test]
+    fn cert_rejects_wrong_key_type() {
+        let rsa_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let ecdsa_key =
+            crate::ecdsa::EcdsaKeyPair::generate(crate::ecdsa::EcdsaCurve::P384).unwrap();
+        let rsa_cert = build_test_cert(&rsa_key);
+        let ecdsa_cert = build_test_cert(&ecdsa_key);
+        let rsa_public_key = rsa_cert.public_key().unwrap();
+        let ecdsa_public_key = ecdsa_cert.public_key().unwrap();
+
+        assert!(rsa_cert.verify(&rsa_public_key).unwrap());
+        assert!(ecdsa_cert.verify(&ecdsa_public_key).unwrap());
+
+        // Backends may report an algorithm mismatch as an error or an invalid signature.
+        assert!(matches!(
+            rsa_cert.verify(&ecdsa_public_key),
+            Ok(false) | Err(_)
+        ));
+        assert!(matches!(
+            ecdsa_cert.verify(&rsa_public_key),
+            Ok(false) | Err(_)
+        ));
+    }
+
     /// A cert signed by one key must NOT verify against an unrelated key.
     #[test]
     fn cert_rejects_wrong_issuer_key() {
