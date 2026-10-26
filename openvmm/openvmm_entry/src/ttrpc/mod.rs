@@ -677,10 +677,7 @@ fn build_uefi_manifest(
     };
     let custom_uefi_json = initial_variables
         .custom_uefi_json_path
-        .map(|path| {
-            fs_err::read(&path)
-                .with_context(|| format!("failed to read custom UEFI JSON file {path}"))
-        })
+        .map(|path| fs_err::read(&path).context("failed to read custom UEFI JSON file"))
         .transpose()?
         .map(Into::into);
 
