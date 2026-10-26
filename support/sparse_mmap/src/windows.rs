@@ -589,6 +589,7 @@ impl SparseMapping {
 
     /// Flushes a mapped view to the backing file.
     pub fn flush_view(&self, offset: usize, len: usize) -> Result<(), Error> {
+        assert!(self.is_local(), "cannot flush remote mappings");
         let _ = self.validate_offset_len(offset, len)?;
         if len == 0 {
             return Ok(());
