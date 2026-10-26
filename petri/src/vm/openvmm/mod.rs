@@ -166,6 +166,7 @@ pub struct PetriVmConfigOpenVmm {
     arch: MachineArch,
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
+    skip_save_restore: bool,
 
     // Mesh host
     mesh: mesh_process::Mesh,

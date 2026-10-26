@@ -36,6 +36,12 @@ use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
 
 impl PetriVmConfigOpenVmm {
+    /// Skip automatic save/restore verification for devices that do not support it.
+    pub fn without_save_restore(mut self) -> Self {
+        self.skip_save_restore = true;
+        self
+    }
+
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {

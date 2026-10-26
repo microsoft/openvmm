@@ -766,6 +766,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             config,
+            skip_save_restore: false,
             mesh,
 
             resources: PetriVmResourcesOpenVmm {

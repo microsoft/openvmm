@@ -32,6 +32,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             mut config,
+            skip_save_restore,
 
             mesh,
 
@@ -68,7 +69,8 @@ impl PetriVmConfigOpenVmm {
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
-        let supports_save_restore = !resources.properties.is_openhcl
+        let supports_save_restore = !skip_save_restore
+            && !resources.properties.is_openhcl
             && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)

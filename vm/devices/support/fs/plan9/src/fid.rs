@@ -21,10 +21,6 @@ pub trait Fid: Send + Sync {
         Err(lx::Error::EINVAL)
     }
 
-    fn symlink(&self, _name: &lx::LxStr, _target: &lx::LxStr, _gid: u32) -> lx::Result<Qid> {
-        Err(lx::Error::EINVAL)
-    }
-
     fn read_link(&self) -> lx::Result<lx::LxString> {
         Err(lx::Error::EINVAL)
     }
@@ -298,17 +294,6 @@ impl Fid for File {
             .as_ref()
             .ok_or(lx::Error::EBADF)?
             .fsync(data_only)
-    }
-
-    fn symlink(&self, name: &lx::LxStr, target: &lx::LxStr, gid: u32) -> lx::Result<Qid> {
-        let state = self.state.read();
-        let path = state.child_path(name)?;
-        let stat = state.root.symlink_stat(
-            path,
-            target,
-            LxCreateOptions::new(lx::S_IFLNK | 0o777, self.uid, gid),
-        )?;
-        Ok(FileState::stat_to_qid(&stat))
     }
 
     fn read_link(&self) -> lx::Result<lx::LxString> {

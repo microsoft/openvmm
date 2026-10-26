@@ -96,7 +96,7 @@ impl Plan9FileSystem {
             Plan9Message::Tstatfs(m) => self.handle_statfs(m, response),
             Plan9Message::Tlopen(m) => self.handle_lopen(m, response),
             Plan9Message::Tlcreate(m) => self.handle_lcreate(m, response),
-            Plan9Message::Tsymlink(m) => self.handle_symlink(m, response),
+            Plan9Message::Tsymlink(_) => Err(Error::EPERM),
             Plan9Message::Treadlink(m) => self.handle_readlink(m, response),
             Plan9Message::Tgetattr(m) => self.handle_get_attr(m, response),
             // Setattr is not supported but returns success to unblock many scenarios.
@@ -228,17 +228,6 @@ impl Plan9FileSystem {
         response.u64(u64::from_ne_bytes(stat.file_system_id))?;
         response.u32(stat.maximum_file_name_length as u32)?;
         Ok(())
-    }
-
-    fn handle_symlink(
-        &self,
-        message: Tsymlink<'_>,
-        response: &mut SliceWriter<'_>,
-    ) -> lx::Result<()> {
-        let qid =
-            self.lookup_fid(message.fid)?
-                .symlink(message.name, message.symtgt, message.gid)?;
-        response.qid(&qid)
     }
 
     fn handle_readlink(
@@ -439,6 +428,27 @@ mod tests {
         assert_eq!(header.message_type, MESSAGE_RLERROR);
         assert_eq!(header.tag, TAG);
         assert_eq!(reader.u32().unwrap(), error.value() as u32);
+    }
+
+    #[test]
+    fn unsupported_symlink_returns_eperm() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = Plan9FileSystem::new(root.path(), false).unwrap();
+        let (dir, _) = File::new(Arc::clone(&fs.root), 0).unwrap();
+        fs.emplace_fid(1, Arc::new(dir)).unwrap();
+        let message = request(16, |writer| {
+            writer.u32(1).unwrap();
+            writer.string(lx::LxStr::new("escape")).unwrap();
+            writer.string(lx::LxStr::new("../outside")).unwrap();
+            writer.u32(0).unwrap();
+        });
+        assert_error_reply(&fs, &message, Error::EPERM);
+        assert_eq!(
+            std::fs::symlink_metadata(root.path().join("escape"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
     }
 
     #[test]

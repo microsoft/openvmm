@@ -39,10 +39,7 @@ assert stat.f_namemax >= len("host-file")
 
 assert os.readlink(root / "host-link") == "host-file"
 assert (root / "host-link").read_bytes() == b"from host"
-os.symlink("file", root / "symlink")
-assert os.readlink(root / "symlink") == "file"
-assert (root / "symlink").read_bytes() == b"from guest"
-expect_errno(errno.EEXIST, lambda: os.symlink("file", root / "symlink"))
+expect_errno(errno.EPERM, lambda: os.symlink("file", root / "symlink"))
 expect_errno(errno.EINVAL, lambda: os.readlink(root / "file"))
 
 os.link(root / "file", root / "hardlink")
