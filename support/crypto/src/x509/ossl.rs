@@ -5,6 +5,7 @@
 
 use super::X509Error;
 use super::X509PublicKey;
+use super::X509VerifyError;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
     X509Error(crate::BackendError(err, op))
@@ -29,8 +30,6 @@ impl X509CertificateInner {
                 crate::rsa::ossl::RsaPublicKeyInner(pkey),
             )))
         } else if pkey.ec_key().is_ok() {
-            // Hand the already-parsed key to the ECDSA backend directly rather
-            // than re-serializing and re-parsing it.
             let inner = crate::ecdsa::ossl::EcdsaPublicKeyInner::from_pkey(pkey)
                 .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
             Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
@@ -42,16 +41,12 @@ impl X509CertificateInner {
         }
     }
 
-    pub fn verify(
-        &self,
-        issuer_public_key: &crate::rsa::RsaPublicKey,
-    ) -> Result<bool, crate::rsa::RsaError> {
-        self.0.verify(&issuer_public_key.0.0).map_err(|e| {
-            crate::rsa::RsaError(crate::BackendError(
-                e,
-                "verifying the certificate signature",
-            ))
-        })
+    pub fn verify(&self, issuer_public_key: &X509PublicKey) -> Result<bool, X509VerifyError> {
+        match issuer_public_key {
+            X509PublicKey::Rsa(key) => self.0.verify(&key.0.0),
+            X509PublicKey::Ecdsa(key) => self.0.verify(&key.0.pkey),
+        }
+        .map_err(|e| err(e, "verifying the certificate signature").into())
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
@@ -94,18 +89,22 @@ impl X509CertificateInner {
 
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
-        key: &crate::rsa::RsaKeyPair,
+        key: super::X509KeyPair<'_>,
         country: &str,
         state: &str,
         locality: &str,
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
+        let (key, hash) = match key {
+            super::X509KeyPair::Rsa(key) => (&key.0.0, openssl::hash::MessageDigest::sha256()),
+            super::X509KeyPair::Ecdsa(key) => (&key.0.pkey, openssl::hash::MessageDigest::sha384()),
+        };
         let mut builder = openssl::x509::X509::builder()?;
         builder.set_version(2)?;
         let serial = openssl::bn::BigNum::from_u32(1)?.to_asn1_integer()?;
         builder.set_serial_number(&serial)?;
-        builder.set_pubkey(&key.0.0)?;
+        builder.set_pubkey(key)?;
         let mut name = openssl::x509::X509Name::builder()?;
         name.append_entry_by_text("C", country)?;
         name.append_entry_by_text("ST", state)?;
@@ -119,7 +118,7 @@ impl X509CertificateInner {
         builder.set_not_before(&not_before)?;
         let not_after = openssl::asn1::Asn1Time::from_unix(i32::MAX.into())?;
         builder.set_not_after(&not_after)?;
-        builder.sign(&key.0.0, openssl::hash::MessageDigest::sha256())?;
+        builder.sign(key, hash)?;
         Ok(X509CertificateInner(builder.build()))
     }
 

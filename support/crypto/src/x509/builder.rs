@@ -36,16 +36,15 @@ impl x509_cert::builder::profile::BuilderProfile for SelfSignedProfile {
     }
 }
 
-/// Set up a `CertificateBuilder` for a self-signed RSA certificate with the
+/// Set up a `CertificateBuilder` for a self-signed certificate with the
 /// given distinguished name components, serial number 1, and a validity
 /// range covering all of representable time. The caller invokes `.build()`
 /// with a backend-specific signer to produce the final `Certificate`.
 ///
-/// Returns the builder along with the PKCS#1 `RSAPublicKey` DER encoding
-/// of the supplied key, which several backends need to hand to their
+/// Returns the builder and the SubjectPublicKeyInfo DER encoding for the
 /// signer adapter.
 pub(super) fn self_signed_builder(
-    key: &crate::rsa::RsaKeyPair,
+    key: super::X509KeyPair<'_>,
     country: &str,
     state: &str,
     locality: &str,
@@ -56,19 +55,35 @@ pub(super) fn self_signed_builder(
         "CN={common_name},O={organization},L={locality},ST={state},C={country}"
     ))?;
 
-    let components = key.to_components()?;
-    let pkcs1_pub = pkcs1::RsaPublicKey {
-        modulus: der::asn1::UintRef::new(&components.modulus)?,
-        public_exponent: der::asn1::UintRef::new(&components.public_exponent)?,
+    let spki = match key {
+        super::X509KeyPair::Rsa(key) => {
+            let components = key.to_components()?;
+            let pkcs1_pub = pkcs1::RsaPublicKey {
+                modulus: der::asn1::UintRef::new(&components.modulus)?,
+                public_exponent: der::asn1::UintRef::new(&components.public_exponent)?,
+            };
+            x509_cert::spki::SubjectPublicKeyInfoOwned {
+                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                    oid: pkcs1::ALGORITHM_OID,
+                    parameters: Some(der::Any::null()),
+                },
+                subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_pub.to_der()?)?,
+            }
+        }
+        #[cfg(symcrypt)]
+        super::X509KeyPair::Ecdsa(key) => {
+            let mut point = vec![crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
+            point.extend_from_slice(&key.public_key_bytes()?);
+            x509_cert::spki::SubjectPublicKeyInfoOwned {
+                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                    oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+                    parameters: Some(der::oid::db::rfc5912::SECP_384_R_1.into()),
+                },
+                subject_public_key: der::asn1::BitString::from_bytes(&point)?,
+            }
+        }
     };
-    let pkcs1_der = pkcs1_pub.to_der()?;
-    let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-        algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-            oid: pkcs1::ALGORITHM_OID,
-            parameters: Some(der::Any::null()),
-        },
-        subject_public_key: der::asn1::BitString::from_bytes(&pkcs1_der)?,
-    };
+    let public_key_der = spki.to_der()?;
 
     let serial_number = x509_cert::serial_number::SerialNumber::from(1u32);
     let validity = x509_cert::time::Validity::new(
@@ -78,70 +93,87 @@ pub(super) fn self_signed_builder(
 
     let profile = SelfSignedProfile { subject: name };
     let builder = CertificateBuilder::new(profile, serial_number, validity, spki)?;
-    Ok((builder, pkcs1_der))
+    Ok((builder, public_key_der))
 }
 
 /// Adapter that implements the `signature` and `spki` traits required by
 /// [`x509_cert::builder::CertificateBuilder::build`] on top of a
-/// [`crate::rsa::RsaKeyPair`] using its `pkcs1_sign` primitive with SHA-256.
+/// [`super::X509KeyPair`], using SHA-256 for RSA and SHA-384 for ECDSA.
 #[cfg(any(all(native, target_os = "macos"), symcrypt))]
-pub(super) mod rsa_keypair_signer {
+pub(super) mod keypair_signer {
+    use der::Decode;
+    #[cfg(symcrypt)]
     use der::Encode;
 
-    pub struct RsaKeyPairSigner<'a> {
-        pub key: &'a crate::rsa::RsaKeyPair,
-        pub pkcs1_der: Vec<u8>,
+    pub struct KeyPairSigner<'a> {
+        pub key: super::super::X509KeyPair<'a>,
+        pub public_key_der: Vec<u8>,
     }
 
     #[derive(Clone)]
-    pub struct RsaKeyPairVerifyingKey(Vec<u8>);
+    pub struct KeyPairVerifyingKey(Vec<u8>);
 
-    pub struct RsaKeyPairSignature(Vec<u8>);
+    pub struct KeyPairSignature(Vec<u8>);
 
-    impl signature::Keypair for RsaKeyPairSigner<'_> {
-        type VerifyingKey = RsaKeyPairVerifyingKey;
+    impl signature::Keypair for KeyPairSigner<'_> {
+        type VerifyingKey = KeyPairVerifyingKey;
 
         fn verifying_key(&self) -> Self::VerifyingKey {
-            RsaKeyPairVerifyingKey(self.pkcs1_der.clone())
+            KeyPairVerifyingKey(self.public_key_der.clone())
         }
     }
 
-    impl x509_cert::spki::DynSignatureAlgorithmIdentifier for RsaKeyPairSigner<'_> {
+    impl x509_cert::spki::DynSignatureAlgorithmIdentifier for KeyPairSigner<'_> {
         fn signature_algorithm_identifier(
             &self,
         ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
-            Ok(x509_cert::spki::AlgorithmIdentifierOwned {
-                oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
-                parameters: Some(der::Any::null()),
+            Ok(match self.key {
+                super::super::X509KeyPair::Rsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
+                    oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+                    parameters: Some(der::Any::null()),
+                },
+                #[cfg(symcrypt)]
+                super::super::X509KeyPair::Ecdsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
+                    oid: der::oid::db::rfc5912::ECDSA_WITH_SHA_384,
+                    parameters: None,
+                },
             })
         }
     }
 
-    impl signature::Signer<RsaKeyPairSignature> for RsaKeyPairSigner<'_> {
-        fn try_sign(&self, msg: &[u8]) -> Result<RsaKeyPairSignature, signature::Error> {
-            self.key
-                .pkcs1_sign(msg, crate::HashAlgorithm::Sha256)
-                .map(RsaKeyPairSignature)
-                .map_err(signature::Error::from_source)
-        }
-    }
+    impl signature::Signer<KeyPairSignature> for KeyPairSigner<'_> {
+        fn try_sign(&self, msg: &[u8]) -> Result<KeyPairSignature, signature::Error> {
+            let bytes = match self.key {
+                super::super::X509KeyPair::Rsa(key) => key
+                    .pkcs1_sign(msg, crate::HashAlgorithm::Sha256)
+                    .map_err(signature::Error::from_source)?,
+                #[cfg(symcrypt)]
+                super::super::X509KeyPair::Ecdsa(key) => {
+                    use der::asn1::UintRef;
 
-    impl x509_cert::spki::EncodePublicKey for RsaKeyPairVerifyingKey {
-        fn to_public_key_der(&self) -> x509_cert::spki::Result<der::Document> {
-            // Wrap the PKCS#1 RSAPublicKey DER in a SubjectPublicKeyInfo and
-            // encode the result as a DER document.
-            let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
-                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: pkcs1::ALGORITHM_OID,
-                    parameters: Some(der::Any::null()),
-                },
-                subject_public_key: der::asn1::BitString::from_bytes(&self.0)?,
+                    let signature = key
+                        .sign(msg, crate::HashAlgorithm::Sha384)
+                        .map_err(signature::Error::from_source)?;
+                    let (r, s) = signature.split_at(crate::ecdsa::EcdsaCurve::P384.key_size());
+                    [
+                        UintRef::new(r).map_err(signature::Error::from_source)?,
+                        UintRef::new(s).map_err(signature::Error::from_source)?,
+                    ]
+                    .to_der()
+                    .map_err(signature::Error::from_source)?
+                }
             };
-            Ok(der::Document::try_from(spki.to_der()?)?)
+            Ok(KeyPairSignature(bytes))
         }
     }
 
-    impl x509_cert::spki::SignatureBitStringEncoding for RsaKeyPairSignature {
+    impl x509_cert::spki::EncodePublicKey for KeyPairVerifyingKey {
+        fn to_public_key_der(&self) -> x509_cert::spki::Result<der::Document> {
+            Ok(der::Document::from_der(&self.0)?)
+        }
+    }
+
+    impl x509_cert::spki::SignatureBitStringEncoding for KeyPairSignature {
         fn to_bitstring(&self) -> der::Result<der::asn1::BitString> {
             der::asn1::BitString::from_bytes(&self.0)
         }

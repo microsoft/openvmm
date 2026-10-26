@@ -23,6 +23,9 @@ use symcrypt as sys;
 use crate::HashAlgorithm;
 use thiserror::Error;
 
+/// SEC 1 tag for an uncompressed elliptic-curve point (`0x04 || X || Y`).
+pub const SEC1_UNCOMPRESSED_POINT_TAG: u8 = 0x04;
+
 /// An error for ECDSA operations.
 #[derive(Debug, Error)]
 #[error("ECDSA operation failed")]
@@ -46,7 +49,7 @@ impl EcdsaCurve {
 
 /// An ECDSA private key (key pair).
 #[repr(transparent)] // Needed for the transmute in deref.
-pub struct EcdsaKeyPair(sys::EcdsaKeyPairInner);
+pub struct EcdsaKeyPair(pub(crate) sys::EcdsaKeyPairInner);
 
 impl EcdsaKeyPair {
     /// Generate a new random ECDSA key pair for the given curve.
@@ -297,7 +300,7 @@ mod tests {
         let pk = key.public_key_bytes().unwrap();
 
         // Wrap `Qx || Qy` into an uncompressed point and a P-384 SPKI.
-        let mut point = vec![0x04u8];
+        let mut point = vec![SEC1_UNCOMPRESSED_POINT_TAG];
         point.extend_from_slice(&pk);
         let spki = x509_cert::spki::SubjectPublicKeyInfo {
             algorithm: x509_cert::spki::AlgorithmIdentifier {

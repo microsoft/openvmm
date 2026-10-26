@@ -16,6 +16,7 @@ use corim::types::signed::SignedCorimBuilder;
 use crypto::HashAlgorithm;
 use crypto::rsa::RsaKeyPair;
 use crypto::x509::X509Certificate;
+use crypto::x509::X509KeyPair;
 use std::sync::LazyLock;
 
 /// Shared 2048-bit RSA key + self-signed cert reused across every test
@@ -27,10 +28,17 @@ pub(crate) struct TestSigner {
 
 pub(crate) static SIGNER: LazyLock<TestSigner> = LazyLock::new(|| {
     let key = RsaKeyPair::generate(2048).expect("RSA keygen");
-    let cert_der = X509Certificate::build_self_signed(&key, "US", "WA", "Redmond", "Test", "test")
-        .expect("self-signed cert")
-        .to_der()
-        .expect("cert to_der");
+    let cert_der = X509Certificate::build_self_signed(
+        X509KeyPair::Rsa(&key),
+        "US",
+        "WA",
+        "Redmond",
+        "Test",
+        "test",
+    )
+    .expect("self-signed cert")
+    .to_der()
+    .expect("cert to_der");
     TestSigner { key, cert_der }
 });
 

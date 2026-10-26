@@ -5,6 +5,7 @@
 
 use super::EcdsaCurve;
 use super::EcdsaError;
+use super::SEC1_UNCOMPRESSED_POINT_TAG;
 use der::Decode;
 use symcrypt::ecc::CurveType;
 use symcrypt::ecc::EcKey;
@@ -91,7 +92,7 @@ impl EcdsaPublicKeyInner {
         // The SubjectPublicKey bit string is the uncompressed EC point
         // `0x04 || Qx || Qy`; strip the `0x04` tag to get `Qx || Qy`.
         let point = spki.subject_public_key.raw_bytes();
-        if point.len() != 1 + 2 * curve.key_size() || point[0] != 0x04 {
+        if point.len() != 1 + 2 * curve.key_size() || point[0] != SEC1_UNCOMPRESSED_POINT_TAG {
             return Err(invalid_err(
                 "EC public key is not an uncompressed point (0x04 || Qx || Qy)",
             ));
