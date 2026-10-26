@@ -137,6 +137,8 @@ fn verify_inner(
 
 /// Shared UEFI PKCS#7 verification flow.
 ///
+/// Only RSA signer and issuer keys are supported.
+///
 /// 1. Require exactly one signer.
 /// 2. Verify the signer's signature over the detached content.
 /// 3. Walk the chain starting at the signer cert: at each step, succeed
@@ -189,16 +191,22 @@ fn verify_inner(
 
         for trusted in trusted_certs {
             let trusted_id = make_id(trusted)?;
-            let issuer_verifies =
-                trusted.issued(current)? && current.verify(&trusted.public_key()?)?;
+            let issuer_verifies = trusted.issued(current)?
+                && match trusted.public_key()?.rsa() {
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
+                    None => false,
+                };
             if trusted_id == current_id || issuer_verifies {
                 return Ok(true);
             }
         }
 
         for candidate in &embedded {
-            let issuer_verifies =
-                candidate.issued(current)? && current.verify(&candidate.public_key()?)?;
+            let issuer_verifies = candidate.issued(current)?
+                && match candidate.public_key()?.rsa() {
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
+                    None => false,
+                };
             if issuer_verifies {
                 current = candidate;
                 continue 'outer;
