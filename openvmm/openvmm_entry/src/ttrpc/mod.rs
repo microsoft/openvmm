@@ -1273,7 +1273,7 @@ impl VmService {
                     if cfg!(windows) || cfg!(target_os = "macos") {
                         // VMBus sorts VPCI offers by instance ID, comparing data1 first.
                         let instance_id = Guid {
-                            data1: u32::try_from(index).context("too many virtio consoles")?,
+                            data1: u32::try_from(index).unwrap(),
                             ..Guid::new_random()
                         };
                         config.vpci_devices.push(VpciDeviceConfig {
