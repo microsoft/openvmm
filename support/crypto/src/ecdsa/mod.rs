@@ -304,9 +304,8 @@ mod tests {
         point.extend_from_slice(&pk);
         let spki = x509_cert::spki::SubjectPublicKeyInfo {
             algorithm: x509_cert::spki::AlgorithmIdentifier {
-                // id-ecPublicKey / secp384r1
-                oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
-                parameters: Some(der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34")),
+                oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+                parameters: Some(der::oid::db::rfc5912::SECP_384_R_1),
             },
             subject_public_key: der::asn1::BitString::from_bytes(&point).unwrap(),
         };

@@ -68,10 +68,6 @@ impl EcdsaPublicKeyInner {
     }
 
     pub fn from_public_key_der(spki_der: &[u8]) -> Result<Self, EcdsaError> {
-        /// RFC 5480 named-curve OID for NIST P-384 (secp384r1).
-        const SECP384R1: der::asn1::ObjectIdentifier =
-            der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34");
-
         let spki = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki_der)
             .map_err(|e| der_err(e, "parsing the SubjectPublicKeyInfo"))?;
 
@@ -83,7 +79,7 @@ impl EcdsaPublicKeyInner {
             .ok_or_else(|| invalid_err("EC public key has no named curve parameter"))?
             .decode_as::<der::asn1::ObjectIdentifier>()
             .map_err(|e| der_err(e, "decoding the EC curve OID"))?;
-        let curve = if curve_oid == SECP384R1 {
+        let curve = if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
             EcdsaCurve::P384
         } else {
             return Err(invalid_err("public key uses an unsupported EC curve"));
