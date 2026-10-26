@@ -113,11 +113,16 @@ these do not guarantee compatibility with other kernel or hypervisor versions.
 To compose an image without launching it:
 
 ```bash
+hypervisor_cmdline='MSHV_ROOT=\Windows MSHV_ENABLE=TRUE'
+hypervisor_cmdline+=' MSHV_SCHEDULER_TYPE=ROOT MSHV_X2APIC_POLICY=ENABLE'
+hypervisor_cmdline+=' MSHV_FORCE_NESTED=TRUE'
+
 cargo run -p incubator --bin incubator-mshv-image -- \
   --host-boot target/x86_64-unknown-uefi/debug/mshv_host_boot.efi \
   --payload path/to/artifacts/boot \
   --kernel path/to/bzImage --initrd path/to/initrd \
   --kernel-cmdline 'console=ttyS0 rdinit=/init' \
+  --hypervisor-cmdline "$hypervisor_cmdline" \
   --output path/to/new-mshv.img
 ```
 
@@ -135,11 +140,12 @@ GRUB code:
 | `linux.cmdline` | `initrd=\initramfs.cpio` followed by Linux options |
 | `hvloader.cmdline` | `\lxhvloader.dll` followed by hypervisor options |
 
-For Incubator, set `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`; Petri
-appends the prepared initrd's required `rdinit`. The standalone image composer
-exposes `--kernel-cmdline` and `--hypervisor-cmdline`. Both paths write these
-files when composing media. You can also edit the files on an existing ESP
-without rebuilding the host boot application, kernel, or hypervisor.
+Incubator requires both `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`;
+Petri appends the prepared initrd's required `rdinit`. The standalone image
+composer likewise requires both `--kernel-cmdline` and `--hypervisor-cmdline`.
+Neither path supplies default command lines. Both write these files when
+composing media. You can also edit the files on an existing ESP without
+rebuilding the host boot application, kernel, or hypervisor.
 
 Each file is limited to 16 KiB and a single UCS-2-compatible line, with an
 optional final LF or CRLF. Quotes, spaces, backslashes, and shell metacharacters

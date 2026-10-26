@@ -3967,7 +3967,6 @@ dependencies = [
  "crossterm",
  "fs-err",
  "futures-concurrency",
- "mshv_host_boot",
  "pal_async",
  "petri",
  "petri_artifacts_common",

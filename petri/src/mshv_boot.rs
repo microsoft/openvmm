@@ -89,8 +89,8 @@ mod tests {
             kernel: ResolvedArtifact::from_local_path(kernel),
             initrd,
             boot_artifacts: ResolvedArtifact::from_local_path(temp.path().to_path_buf()),
-            kernel_cmdline: mshv_host_boot::DEFAULT_KERNEL_CMDLINE.into(),
-            hypervisor_cmdline: mshv_host_boot::DEFAULT_HYPERVISOR_CMDLINE.into(),
+            kernel_cmdline: "test_option=caller".into(),
+            hypervisor_cmdline: "MSHV_SCHEDULER_TYPE=ROOT".into(),
         }
         .build()?;
         let Disk::Temporary(path) = &disk else {
@@ -119,7 +119,15 @@ mod tests {
         fs.root_dir()
             .open_file(mshv_host_boot::KERNEL_CMDLINE_FILE)?
             .read_to_string(&mut config)?;
-        assert!(config.contains("rdinit=/caller-init"));
+        assert_eq!(
+            config,
+            "initrd=\\initramfs.cpio test_option=caller rdinit=/caller-init\n"
+        );
+        config.clear();
+        fs.root_dir()
+            .open_file(mshv_host_boot::HYPERVISOR_CMDLINE_FILE)?
+            .read_to_string(&mut config)?;
+        assert_eq!(config, "\\lxhvloader.dll MSHV_SCHEDULER_TYPE=ROOT\n");
         fs.unmount()?;
         assert_eq!(fs_err::read(&initrd_path)?, prepared);
         drop(disk);

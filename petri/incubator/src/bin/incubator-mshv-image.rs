@@ -24,10 +24,10 @@ struct Args {
     #[arg(long)]
     initrd: PathBuf,
     /// Linux command line, passed literally to its EFI stub.
-    #[arg(long, default_value = "console=ttyS0,115200 rdinit=/init")]
+    #[arg(long)]
     kernel_cmdline: String,
     /// Hypervisor options passed literally to HvLoader.
-    #[arg(long, default_value = mshv_host_boot::DEFAULT_HYPERVISOR_CMDLINE)]
+    #[arg(long)]
     hypervisor_cmdline: String,
     /// New raw GPT/FAT32 image path. Existing files are never overwritten.
     #[arg(long)]
@@ -47,4 +47,52 @@ fn main() -> anyhow::Result<()> {
     .build(&args.output)?;
     eprintln!("Created {}", args.output.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn command_lines_are_required() {
+        let base = [
+            "incubator-mshv-image",
+            "--host-boot",
+            "host.efi",
+            "--payload",
+            "payload",
+            "--kernel",
+            "bzImage",
+            "--initrd",
+            "initrd",
+            "--output",
+            "image.img",
+        ];
+        for (missing, provided) in [
+            ("--kernel-cmdline", "--hypervisor-cmdline"),
+            ("--hypervisor-cmdline", "--kernel-cmdline"),
+        ] {
+            let error = Args::try_parse_from(base.into_iter().chain([provided, "explicit=value"]))
+                .err()
+                .expect("omitted command line must be rejected");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+            assert!(error.to_string().contains(missing), "{error}");
+        }
+        let args = Args::try_parse_from(base.into_iter().chain([
+            "--kernel-cmdline",
+            "console=ttyS0 rdinit=/caller-init",
+            "--hypervisor-cmdline",
+            r"MSHV_ROOT=\Windows MSHV_ENABLE=TRUE",
+        ]))
+        .unwrap();
+        assert_eq!(args.kernel_cmdline, "console=ttyS0 rdinit=/caller-init");
+        assert_eq!(
+            args.hypervisor_cmdline,
+            r"MSHV_ROOT=\Windows MSHV_ENABLE=TRUE"
+        );
+    }
 }

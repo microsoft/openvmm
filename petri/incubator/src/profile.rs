@@ -53,19 +53,9 @@ pub struct MshvBootConfig {
     /// Extracted artifact directory containing `boot/`.
     pub boot_artifacts: std::path::PathBuf,
     /// Linux options, before Incubator's required initrd entry point.
-    #[serde(default = "default_kernel_cmdline")]
     pub kernel_cmdline: String,
     /// Hypervisor options, excluding the loader DLL path.
-    #[serde(default = "default_hypervisor_cmdline")]
     pub hypervisor_cmdline: String,
-}
-
-fn default_kernel_cmdline() -> String {
-    mshv_host_boot::DEFAULT_KERNEL_CMDLINE.into()
-}
-
-fn default_hypervisor_cmdline() -> String {
-    mshv_host_boot::DEFAULT_HYPERVISOR_CMDLINE.into()
 }
 
 impl IncubatorBackend {
@@ -338,9 +328,25 @@ mod tests {
     }
 
     #[test]
+    fn mshv_command_lines_are_required() {
+        for field in ["kernel-cmdline", "hypervisor-cmdline"] {
+            let profile = MSHV
+                .lines()
+                .filter(|line| !line.starts_with(field))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let error = IncubatorProfile::from_toml(&profile).unwrap_err();
+            assert!(
+                format!("{error:#}").contains(&format!("missing field `{field}`")),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_combinations_and_misplaced_fields_fail() -> anyhow::Result<()> {
         let qemu_mshv = format!(
-            "{QEMU}\n[boot]\ntype = 'mshv'\nhost-boot = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\n"
+            "{QEMU}\n[boot]\ntype = 'mshv'\nhost-boot = 'app.efi'\nfirmware = 'fw'\nboot-artifacts = 'boot'\nkernel-cmdline = 'test-kernel'\nhypervisor-cmdline = 'test-hypervisor'\n"
         );
         let error = IncubatorProfile::from_toml(&qemu_mshv)?
             .validate()

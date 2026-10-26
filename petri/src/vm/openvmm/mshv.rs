@@ -115,8 +115,8 @@ mod tests {
                 rdinit_param: "/caller-init".into(),
             },
             boot_artifacts: ResolvedArtifact::from_local_path(dir.to_path_buf()),
-            kernel_cmdline: mshv_host_boot::DEFAULT_KERNEL_CMDLINE.into(),
-            hypervisor_cmdline: mshv_host_boot::DEFAULT_HYPERVISOR_CMDLINE.into(),
+            kernel_cmdline: "console=ttyS0 panic=-1".into(),
+            hypervisor_cmdline: "MSHV_ENABLE=TRUE".into(),
         }))
     }
 
