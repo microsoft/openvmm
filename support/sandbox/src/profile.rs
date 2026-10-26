@@ -70,7 +70,7 @@ impl Profile {
     /// ```
     /// use sandbox::Profile;
     ///
-    /// let base = Profile::deny_all().name("base").read("/usr/lib").build();
+    /// let base = Profile::deny_all().name("base").read_exec("/usr/lib").build();
     /// let worker = base.edit().name("worker").read_write("/run/worker").build();
     /// assert_eq!(worker.name(), "worker");
     /// ```
@@ -105,13 +105,17 @@ impl Builder {
         self
     }
 
-    /// Grant read (and execute) access to `path`.
+    /// Grant read-only access to `path`, without allowing execution.
     ///
-    /// Read grants include execute so that shared libraries and interpreters
-    /// under system directories (e.g. `/lib`, `/usr`) remain loadable. Use
-    /// [`Builder::read_write`] for data the worker must modify; write grants
-    /// are mounted non-executable.
+    /// Directory traversal is still allowed. Use [`Builder::read_exec`] for
+    /// shared libraries, interpreters, and other executable code.
     pub fn read(mut self, path: impl AsRef<Path>) -> Self {
+        self.push_fs(path.as_ref().to_path_buf(), Access::Read);
+        self
+    }
+
+    /// Grant read and execute access to `path`, without allowing writes.
+    pub fn read_exec(mut self, path: impl AsRef<Path>) -> Self {
         self.push_fs(path.as_ref().to_path_buf(), Access::ReadExec);
         self
     }
@@ -356,10 +360,12 @@ pub(crate) struct RestrictionsInner {
 }
 
 /// Access mode for a filesystem grant. Internal — the public builder exposes
-/// only [`Builder::read`] and [`Builder::read_write`], mapped to the mount
-/// flags and Landlock rights the backend needs.
+/// [`Builder::read`], [`Builder::read_exec`], and [`Builder::read_write`],
+/// mapped to the mount flags and Landlock rights the backend needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
+    /// Read only. No write or execute.
+    Read,
     /// Read + execute. No write.
     ReadExec,
     /// Read + write. No execute.
@@ -376,13 +382,6 @@ mod tests {
         assert_eq!(profile.inner.network, Network::None);
         assert!(matches!(profile.inner.syscalls, Syscalls::Unfiltered));
         assert!(profile.inner.fs.is_empty());
-    }
-
-    #[test]
-    fn read_grants_are_read_exec() {
-        let profile = Profile::deny_all().read("/lib").build();
-        assert_eq!(profile.inner.fs.len(), 1);
-        assert_eq!(profile.inner.fs[0].access, Access::ReadExec);
     }
 
     #[test]

@@ -96,8 +96,12 @@ integrated into the worker.
 #### Filesystem policy
 
 The profile builder uses the file accesses in the trace to determine which
-directories the worker needs to read or modify. Read access produces
-`.read(...)` entries, and write access produces `.read_write(...)` entries.
+directories the worker needs to read or modify. Read access under `/sys`
+produces `.read(...)` entries, which allow reads and directory traversal but
+not execution. Other read access conservatively produces `.read_exec(...)`
+entries because the trace does not capture executable mappings of shared
+libraries. Review these grants and use `.read(...)` for data that does not
+need execution. Write access produces non-executable `.read_write(...)` entries.
 `/proc` and `/tmp` are provided by the sandbox and are described in the
 generated profile's filesystem notes instead of being added as directory
 entries.

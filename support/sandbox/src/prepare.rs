@@ -243,7 +243,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn filesystem_grants_preserve_default_namespaces() {
-        let profile = Profile::deny_all().read("/usr/lib").build();
+        let profile = Profile::deny_all().read_exec("/usr/lib").build();
 
         assert_eq!(
             linux_clone_flags(&profile),
@@ -269,7 +269,7 @@ mod tests {
     fn unrestricted_network_keeps_filesystem_namespace() {
         let profile = Profile::deny_all()
             .network(crate::Network::Unrestricted)
-            .read("/usr/lib")
+            .read_exec("/usr/lib")
             .build();
 
         assert_eq!(

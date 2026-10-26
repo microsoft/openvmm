@@ -98,10 +98,6 @@ pub fn resolve_trace_syscalls(
 }
 
 fn is_known_without_native_number(name: &str) -> bool {
-    if name == "umount" {
-        return true;
-    }
-
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     {
         matches!(name, "create_module" | "dup2" | "fork" | "ioperm" | "iopl")
@@ -109,6 +105,7 @@ fn is_known_without_native_number(name: &str) -> bool {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     {
+        let _ = name;
         false
     }
 }
@@ -144,6 +141,8 @@ impl TraceConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use test_with_tracing::test;
 
     fn test_syscall_number(name: &str) -> Option<i64> {
         SYSCALLS_TO_TRACE
@@ -155,11 +154,7 @@ mod tests {
 
     #[test]
     fn profile_trace_syscalls_include_configured_denials() {
-        let syscalls = resolve_trace_syscalls(
-            &["kill".to_string(), "umount".to_string()],
-            test_syscall_number,
-        )
-        .unwrap();
+        let syscalls = resolve_trace_syscalls(&["kill".to_string()], test_syscall_number).unwrap();
 
         assert_eq!(
             syscalls
@@ -169,18 +164,17 @@ mod tests {
         );
         assert_eq!(syscalls.get(&1000).map(String::as_str), Some("kill"));
         assert!(!is_profile_trace_syscall("kill"));
-        assert!(!syscalls.values().any(|name| name == "umount"));
     }
 
     #[test]
     fn profile_trace_syscalls_reject_unknown_names() {
-        let error = resolve_trace_syscalls(&["not_a_syscall".to_string()], test_syscall_number)
-            .unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("parsing support needs to be added")
-        );
+        for name in ["not_a_syscall", "umount"] {
+            let error =
+                resolve_trace_syscalls(&[name.to_string()], test_syscall_number).unwrap_err();
+            assert!(matches!(
+                error,
+                TraceSyscallError::UnsupportedConfigured(rejected) if rejected == name
+            ));
+        }
     }
 }

@@ -204,6 +204,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 fn mount_flags_for_access(access: Access) -> libc::c_ulong {
     const BASE: libc::c_ulong = libc::MS_NOSUID | libc::MS_NODEV;
     match access {
+        Access::Read => BASE | libc::MS_RDONLY | libc::MS_NOEXEC,
         Access::ReadExec => BASE | libc::MS_RDONLY,
         Access::ReadWrite => BASE | libc::MS_NOEXEC,
     }
@@ -246,6 +247,7 @@ fn apply_landlock(grants: &[FsGrant]) -> io::Result<()> {
             continue;
         }
         let rights = match grant.access {
+            Access::Read => from_read & !AccessFs::Execute,
             Access::ReadExec => from_read,
             Access::ReadWrite => (from_read & !AccessFs::Execute) | from_write,
         };
@@ -322,5 +324,94 @@ fn fs_required(source: io::Error) -> Error {
     Error::ApplyFailed {
         primitive: "filesystem",
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use test_with_tracing::test;
+
+    #[test]
+    fn filesystem_grants_enforce_access_modes() {
+        let output = Command::new("unshare")
+            .args(["--user", "--map-root-user", "--mount"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux::tests::helper_filesystem_grants",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "filesystem grant helper failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_filesystem_grants() {
+        mount_namespace::make_root_private().unwrap();
+        mount_namespace::mount_tmpfs(Path::new("/run")).unwrap();
+
+        let mut profile = Profile::deny_all()
+            .read("/run/read")
+            .read_exec("/run/read-exec")
+            .read_write("/run/read-write")
+            .read("/sys/devices/system/cpu");
+        for path in ["/bin", "/lib", "/lib64", "/usr/lib"] {
+            if Path::new(path).exists() {
+                profile = profile.read_exec(path);
+            }
+        }
+        let script = "#!/bin/sh\nexit 0\n";
+        let cases = [
+            ("/run/read", false, false),
+            ("/run/read-exec", false, true),
+            ("/run/read-write", true, false),
+        ];
+        for (directory, _, _) in cases {
+            fs_err::create_dir(directory).unwrap();
+            let path = Path::new(directory).join("probe");
+            fs_err::write(&path, script).unwrap();
+            fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        hardening::set_no_new_privs().unwrap();
+        apply_filesystem(&profile.build().inner.fs).unwrap();
+
+        assert!(
+            !fs_err::read_to_string("/sys/devices/system/cpu/online")
+                .unwrap()
+                .is_empty()
+        );
+        for (directory, writable, executable) in cases {
+            let directory = Path::new(directory);
+            let path = directory.join("probe");
+            assert_eq!(fs_err::read_to_string(&path).unwrap(), script);
+            assert_eq!(
+                fs_err::write(directory.join("new-file"), "probe").is_ok(),
+                writable,
+                "unexpected write permission on {}",
+                directory.display(),
+            );
+            if executable {
+                assert!(Command::new(&path).status().unwrap().success());
+            } else {
+                assert_eq!(
+                    Command::new(&path).status().unwrap_err().kind(),
+                    io::ErrorKind::PermissionDenied,
+                    "execution was not denied on {}",
+                    directory.display(),
+                );
+            }
+        }
     }
 }

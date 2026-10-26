@@ -55,7 +55,7 @@ pub struct TraceReport {
     /// Syscall names observed in the trace.
     pub observed_syscalls: Vec<String>,
 
-    /// Read-only directory grants emitted.
+    /// Read-only directory grants emitted, with execute access outside sysfs.
     pub policy_read_paths: Vec<PathBuf>,
     /// Read-write directory grants emitted.
     pub policy_read_write_paths: Vec<PathBuf>,
@@ -663,9 +663,16 @@ fn render_profile(
     writeln!(source, "    Profile::deny_all()").unwrap();
     writeln!(source, "        .name({})", rust_string(function_name)).unwrap();
     for path in &trace_analysis.policy_read_paths {
+        // Traces do not capture executable mappings. Keep execution available
+        // outside sysfs so that shared libraries remain loadable.
+        let method = if path.starts_with("/sys") {
+            "read"
+        } else {
+            "read_exec"
+        };
         writeln!(
             source,
-            "        .read({})",
+            "        .{method}({})",
             rust_string(&path.display().to_string())
         )
         .unwrap();
@@ -807,6 +814,9 @@ mod tests {
                 "{\"event\":\"syscall\",\"syscall\":\"openat\",\"sys_nr\":257,",
                 "\"args\":[4294967196,1,524288,0,0,0],",
                 "\"decoded_args\":{\"path\":\"/usr/lib/libexample.so\"},\"result\":3}\n",
+                "{\"event\":\"syscall\",\"syscall\":\"openat\",\"sys_nr\":257,",
+                "\"args\":[4294967196,1,524288,0,0,0],",
+                "\"decoded_args\":{\"path\":\"/sys/devices/system/cpu/online\"},\"result\":5}\n",
                 "{\"event\":\"syscall\",\"syscall\":\"socket\",\"sys_nr\":41,",
                 "\"args\":[2,1,0,0,0,0],\"decoded_args\":null,\"result\":4}\n",
                 "{\"event\":\"syscall\",\"syscall\":\"connect\",\"sys_nr\":42,",
@@ -833,11 +843,17 @@ mod tests {
 
         assert_eq!(
             trace_report.policy_read_paths,
-            vec![PathBuf::from("/usr/lib")]
+            vec![
+                PathBuf::from("/sys/devices/system/cpu"),
+                PathBuf::from("/usr/lib"),
+            ]
         );
         assert_eq!(
             trace_report.observed_filesystem,
-            vec!["/usr/lib/libexample.so (RO)"]
+            vec![
+                "/sys/devices/system/cpu/online (RO)",
+                "/usr/lib/libexample.so (RO)",
+            ]
         );
         assert_eq!(
             trace_report.observed_network,
@@ -845,7 +861,8 @@ mod tests {
         );
         assert_eq!(trace_report.policy_network, sandbox::Network::Loopback);
         let generated = fs_err::read_to_string(trace_report.profile_path).unwrap();
-        assert!(generated.contains(".read(\"/usr/lib\")"));
+        assert!(generated.contains(".read(\"/sys/devices/system/cpu\")"));
+        assert!(generated.contains(".read_exec(\"/usr/lib\")"));
         assert!(generated.contains(".network(Network::Loopback)"));
         assert!(generated.contains("Observed filesystem accesses"));
         assert!(generated.contains("Observed network accesses"));
