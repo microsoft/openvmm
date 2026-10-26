@@ -63,7 +63,7 @@ fn inspect_meminfo(req: Request<'_>) {
 
     let mut resp = req.respond();
     fn inner(resp: &mut Response<'_>) -> anyhow::Result<()> {
-        let mut contents = fs_err::read_to_string("/proc/meminfo")?;
+        let contents = fs_err::read_to_string("/proc/meminfo")?;
         for line in contents.lines() {
             let (name, rest) = line.split_once(':').context("line had no :")?;
             if FIELDS.contains(&name) {
@@ -77,7 +77,7 @@ fn inspect_meminfo(req: Request<'_>) {
             }
         }
 
-        contents = fs_err::read_to_string("/proc/zoneinfo")?;
+        let contents = fs_err::read_to_string("/proc/zoneinfo")?;
         let mut zoneinfo_nr_free_pages: u64 = 0;
         let mut zoneinfo_per_cpu_page_count: u64 = 0;
         for line in contents.lines() {
@@ -87,6 +87,8 @@ fn inspect_meminfo(req: Request<'_>) {
             };
 
             if matches!(field, "count:") {
+                // Per-CPU free page counts are not counted in nr_free_pages or MemFree. In memory validation this is added to the memory from nr_free_pages to have a more accurate
+                // measurement of usage when comparing versions. These values are kept separate in the actual inspect counters to have a better breakdown of the distribution of memory usage.
                 zoneinfo_per_cpu_page_count += split_line
                     .next()
                     .context("line had no value")?
