@@ -2669,7 +2669,7 @@ mod tests {
                     .to_string()
                     .contains("failed to read custom UEFI JSON file")
             );
-            assert!(error.to_string().contains(path.to_str().unwrap()));
+            assert!(format!("{error:#}").contains(path.to_str().unwrap()));
         }
     }
 
