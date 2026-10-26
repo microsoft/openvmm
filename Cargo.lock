@@ -1149,7 +1149,6 @@ dependencies = [
  "signature",
  "symcrypt",
  "thiserror 2.0.16",
- "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "x509-cert",

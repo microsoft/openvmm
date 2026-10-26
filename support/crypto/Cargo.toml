@@ -77,7 +77,6 @@ anyhow.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-wchar.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
