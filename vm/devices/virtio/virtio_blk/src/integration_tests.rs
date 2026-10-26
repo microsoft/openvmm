@@ -3,9 +3,9 @@
 
 //! Integration tests for the virtio-blk device.
 //!
-//! These tests construct a full `VirtioBlkDevice` with guest memory, a RAM
-//! disk backend, and real virtio queues — then drive requests through the
-//! descriptor ring just as a guest driver would.
+//! These tests construct a full `VirtioBlkDevice` with guest memory and real
+//! virtio queues, then drive requests through the descriptor ring using RAM
+//! or instrumented backends.
 
 use crate::VirtioBlkDevice;
 use disk_backend::Disk;
@@ -26,6 +26,7 @@ use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
@@ -158,7 +159,7 @@ impl TestHarness {
     ///   desc 0 (readable): VirtioBlkReqHeader { type=IN, sector }
     ///   desc 1 (writable): data buffer (data_len bytes) + 1 status byte
     ///
-    /// Returns the head descriptor index.
+    /// Returns the data buffer GPA; the status byte follows the data.
     fn post_read_request(&mut self, head_desc: u16, sector: u64, data_len: u32) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let data_gpa = self.alloc_data(data_len + 1); // +1 for status byte
@@ -171,9 +172,8 @@ impl TestHarness {
         };
         self.mem.write_at(header_gpa, header.as_bytes()).unwrap();
 
-        // Zero the data+status buffer
-        let zeroes = vec![0u8; (data_len + 1) as usize];
-        self.mem.write_at(data_gpa, &zeroes).unwrap();
+        let sentinel = vec![0xFFu8; (data_len + 1) as usize];
+        self.mem.write_at(data_gpa, &sentinel).unwrap();
 
         // desc 0: header (readable)
         let flags0 = DescriptorFlags::new().with_next(true);
@@ -218,8 +218,8 @@ impl TestHarness {
     ///   desc 1 (readable): data to write
     ///   desc 2 (writable): 1-byte status
     ///
-    /// Returns the head descriptor index.
-    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) {
+    /// Returns the status byte GPA.
+    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let data_gpa = self.alloc_data(data.len() as u32);
         let status_gpa = self.alloc_data(1);
@@ -235,8 +235,7 @@ impl TestHarness {
         // Write the data payload
         self.mem.write_at(data_gpa, data).unwrap();
 
-        // Zero the status byte
-        self.mem.write_at(status_gpa, &[0u8]).unwrap();
+        self.mem.write_at(status_gpa, &[0xFFu8]).unwrap();
 
         // desc 0: header (readable)
         let flags0 = DescriptorFlags::new().with_next(true);
@@ -282,10 +281,11 @@ impl TestHarness {
             &mut self.avail_idx,
         );
         self.queue_event.signal();
+        status_gpa
     }
 
-    /// Build a flush request descriptor chain.
-    fn post_flush_request(&mut self, head_desc: u16) {
+    /// Build a flush request descriptor chain and return the status byte GPA.
+    fn post_flush_request(&mut self, head_desc: u16) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let status_gpa = self.alloc_data(1);
 
@@ -329,6 +329,7 @@ impl TestHarness {
             &mut self.avail_idx,
         );
         self.queue_event.signal();
+        status_gpa
     }
 
     /// Build a get-id request descriptor chain.
@@ -549,17 +550,18 @@ async fn with_timeout<F: Future>(
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
 #[async_test]
 async fn write_then_read_roundtrip(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false); // 64 KiB
+    let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
     harness.enable().await;
 
     // Write a recognizable pattern to sector 0.
     let data: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
-    harness.post_write_request(0, 0, &data);
+    let status_gpa = harness.post_write_request(0, 0, &data);
     let (used_id, used_len) = harness.wait_for_used().await;
     assert_eq!(used_id, 0);
     // used_len = 1 (status byte only for writes)
     assert_eq!(used_len, 1);
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
 
     // Read sector 0 back.
     let data_gpa = harness.post_read_request(3, 0, 512);
@@ -589,6 +591,7 @@ async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
     let (used_id, used_len) = harness.wait_for_used().await;
     assert_eq!(used_id, 0);
     assert_eq!(used_len, 513);
+    assert_eq!(harness.read_status(data_gpa + 512), VIRTIO_BLK_S_OK);
 
     let mut readback = vec![0xFFu8; 512];
     harness.mem.read_at(data_gpa, &mut readback).unwrap();
@@ -598,69 +601,15 @@ async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
 /// Write to a read-only disk — should fail with IOERR status.
 #[async_test]
 async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, true);
-    let mut harness = TestHarness::new(&driver, disk, true);
+    let backend = TestDisk4K::new(64 * 1024, 512);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), true);
     harness.enable().await;
 
-    // Attempt to write — this should fail.
-    // We need to find the status byte location: it's the writable descriptor
-    // (desc 2 at status_gpa).
-    let header_gpa = harness.alloc_data(REQ_HEADER_SIZE);
-    let data_gpa = harness.alloc_data(512);
-    let status_gpa = harness.alloc_data(1);
-
-    let header = VirtioBlkReqHeader {
-        request_type: VIRTIO_BLK_T_OUT,
-        reserved: 0,
-        sector: 0,
-    };
-    harness.mem.write_at(header_gpa, header.as_bytes()).unwrap();
-    harness.mem.write_at(data_gpa, &[0xABu8; 512]).unwrap();
-    harness.mem.write_at(status_gpa, &[0xFFu8]).unwrap();
-
-    let flags0 = DescriptorFlags::new().with_next(true);
-    write_descriptor(
-        &harness.mem,
-        DESC_ADDR,
-        0,
-        header_gpa,
-        REQ_HEADER_SIZE,
-        flags0,
-        1,
-    );
-    let flags1 = DescriptorFlags::new().with_next(true);
-    write_descriptor(&harness.mem, DESC_ADDR, 1, data_gpa, 512, flags1, 2);
-    let flags2 = DescriptorFlags::new().with_write(true);
-    write_descriptor(&harness.mem, DESC_ADDR, 2, status_gpa, 1, flags2, 0);
-
-    make_available(
-        &harness.mem,
-        AVAIL_ADDR,
-        QUEUE_SIZE,
-        0,
-        &mut harness.avail_idx,
-    );
-    harness.queue_event.signal();
-
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, 0);
-    assert_eq!(used_len, 1); // just the status byte
-
-    let status = harness.read_status(status_gpa);
-    assert_eq!(status, VIRTIO_BLK_S_IOERR);
-}
-
-/// Flush command should succeed.
-#[async_test]
-async fn flush_succeeds(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable().await;
-
-    harness.post_flush_request(0);
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, 0);
-    assert_eq!(used_len, 1); // status byte only
+    let status_gpa = harness.post_write_request(0, 0, &[0xAB; 512]);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_IOERR);
+    assert!(state.lock().calls.is_empty());
 }
 
 /// GET_ID request should return a device identifier string.
@@ -727,8 +676,9 @@ async fn get_id_returns_configured_serial(driver: DefaultDriver) {
 /// Unsupported request type should return UNSUPP status.
 #[async_test]
 async fn unsupported_request_type(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
+    let backend = TestDisk4K::new(64 * 1024, 512);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
     harness.enable().await;
 
     let status_gpa = harness.post_raw_request(0, 0xFF, 0);
@@ -738,6 +688,7 @@ async fn unsupported_request_type(driver: DefaultDriver) {
 
     let status = harness.read_status(status_gpa);
     assert_eq!(status, VIRTIO_BLK_S_UNSUPP);
+    assert!(state.lock().calls.is_empty());
 }
 
 /// Write to multiple sectors then read them back to verify multi-sector IO.
@@ -749,99 +700,120 @@ async fn multi_sector_write_read(driver: DefaultDriver) {
 
     // Write 2 sectors (1024 bytes) starting at sector 2.
     let data: Vec<u8> = (0..1024).map(|i| ((i * 7 + 3) % 256) as u8).collect();
-    harness.post_write_request(0, 2, &data);
-    let (_used_id, _used_len) = harness.wait_for_used().await;
+    let status_gpa = harness.post_write_request(0, 2, &data);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
 
     // Read 2 sectors back from sector 2.
     let data_gpa = harness.post_read_request(3, 2, 1024);
     let (_used_id, used_len) = harness.wait_for_used().await;
     assert_eq!(used_len, 1025); // 1024 data + 1 status
+    assert_eq!(harness.read_status(data_gpa + 1024), VIRTIO_BLK_S_OK);
 
     let mut readback = vec![0u8; 1024];
     harness.mem.read_at(data_gpa, &mut readback).unwrap();
     assert_eq!(readback, data);
 }
 
-/// Three sequential requests: write, read, flush — verifies the device
-/// correctly processes a sequence of different operations.
-#[async_test]
-async fn sequential_write_read_flush(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false);
-    let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable().await;
-
-    // Write
-    let pattern = [0xDE; 512];
-    harness.post_write_request(0, 0, &pattern);
-    let (used_id, _) = harness.wait_for_used().await;
-    assert_eq!(used_id, 0);
-
-    // Read
-    let data_gpa = harness.post_read_request(3, 0, 512);
-    let (used_id, _) = harness.wait_for_used().await;
-    assert_eq!(used_id, 3);
-
-    let mut buf = [0u8; 512];
-    harness.mem.read_at(data_gpa, &mut buf).unwrap();
-    assert!(buf.iter().all(|&b| b == 0xDE));
-
-    // Flush
-    harness.post_flush_request(5);
-    let (used_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_id, 5);
-    assert_eq!(used_len, 1);
-}
-
-/// Verify that the sector conversion uses right-shift (not left-shift)
-/// when the disk's native sector size exceeds 512 bytes.
-///
-/// This test uses a 512-byte sector disk (where sector_shift == 0, so
-/// the shift direction doesn't matter), and then writes/reads at specific
-/// sectors to verify the data lands at the correct offset.
-///
-/// The real proof that the fix is correct is a unit test below that
-/// directly checks the arithmetic. The integration test ensures the
-/// full request path works at non-zero sector offsets.
+/// Sector addresses are unchanged for a backend with 512-byte sectors.
 #[async_test]
 async fn sector_offset_correctness(driver: DefaultDriver) {
-    let disk = ram_disk(64 * 1024, false); // 128 × 512-byte sectors
-    let mut harness = TestHarness::new(&driver, disk, false);
+    let backend = TestDisk4K::new(64 * 1024, 512);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
     harness.enable().await;
 
     // Write to sector 10.
     let data = [0xAA; 512];
-    harness.post_write_request(0, 10, &data);
-    harness.wait_for_used().await;
+    let status_gpa = harness.post_write_request(0, 10, &data);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
 
     // Write different data to sector 11.
     let data2 = [0xBB; 512];
-    harness.post_write_request(3, 11, &data2);
-    harness.wait_for_used().await;
+    let status_gpa = harness.post_write_request(3, 11, &data2);
+    assert_eq!(harness.wait_for_used().await, (3, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
 
     // Read sector 10 — should be 0xAA.
     let gpa10 = harness.post_read_request(6, 10, 512);
-    harness.wait_for_used().await;
+    assert_eq!(harness.wait_for_used().await, (6, 513));
+    assert_eq!(harness.read_status(gpa10 + 512), VIRTIO_BLK_S_OK);
     let mut buf = [0u8; 512];
     harness.mem.read_at(gpa10, &mut buf).unwrap();
     assert!(buf.iter().all(|&b| b == 0xAA), "sector 10 data wrong");
 
     // Read sector 11 — should be 0xBB.
     let gpa11 = harness.post_read_request(8, 11, 512);
-    harness.wait_for_used().await;
+    assert_eq!(harness.wait_for_used().await, (8, 513));
+    assert_eq!(harness.read_status(gpa11 + 512), VIRTIO_BLK_S_OK);
     harness.mem.read_at(gpa11, &mut buf).unwrap();
     assert!(buf.iter().all(|&b| b == 0xBB), "sector 11 data wrong");
 
     // Read sector 9 — should be zeroes (never written).
     let gpa9 = harness.post_read_request(10, 9, 512);
-    harness.wait_for_used().await;
+    assert_eq!(harness.wait_for_used().await, (10, 513));
+    assert_eq!(harness.read_status(gpa9 + 512), VIRTIO_BLK_S_OK);
     harness.mem.read_at(gpa9, &mut buf).unwrap();
     assert!(buf.iter().all(|&b| b == 0), "sector 9 should be zeroes");
+    assert_eq!(
+        state.lock().calls,
+        [
+            BackendCall::Write {
+                sector: 10,
+                len: 512,
+                fua: false
+            },
+            BackendCall::Write {
+                sector: 11,
+                len: 512,
+                fua: false
+            },
+            BackendCall::Read {
+                sector: 10,
+                len: 512
+            },
+            BackendCall::Read {
+                sector: 11,
+                len: 512
+            },
+            BackendCall::Read {
+                sector: 9,
+                len: 512
+            },
+        ]
+    );
 }
 
 // --- 4K-sector test disk ---
 
+#[derive(Debug, PartialEq, Eq)]
+enum BackendCall {
+    Read {
+        sector: u64,
+        len: usize,
+    },
+    Write {
+        sector: u64,
+        len: usize,
+        fua: bool,
+    },
+    Flush,
+    Unmap {
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    },
+}
+
+#[derive(Default)]
+struct TestDiskState {
+    calls: Vec<BackendCall>,
+    next_error: Option<DiskError>,
+}
+
 /// A simple in-memory disk with configurable sector size, used to test the
-/// sector shift conversion path with non-512-byte sectors.
+/// sector shift conversion path, backend dispatch, and error translation.
 #[derive(Inspect)]
 struct TestDisk4K {
     sector_size: u32,
@@ -850,6 +822,8 @@ struct TestDisk4K {
     storage: Mutex<Vec<u8>>,
     #[inspect(skip)]
     supports_discard: bool,
+    #[inspect(skip)]
+    state: Arc<Mutex<TestDiskState>>,
 }
 
 impl TestDisk4K {
@@ -861,6 +835,7 @@ impl TestDisk4K {
             disk_id: None,
             storage: Mutex::new(vec![0u8; total_bytes]),
             supports_discard: false,
+            state: Arc::default(),
         }
     }
 
@@ -872,6 +847,15 @@ impl TestDisk4K {
     fn with_discard(mut self) -> Self {
         self.supports_discard = true;
         self
+    }
+
+    fn record(&self, call: BackendCall) -> Result<(), DiskError> {
+        let mut state = self.state.lock();
+        state.calls.push(call);
+        match state.next_error.take() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 }
 
@@ -909,6 +893,10 @@ impl DiskIo for TestDisk4K {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
+        self.record(BackendCall::Read {
+            sector,
+            len: buffers.len(),
+        })?;
         let offset = sector as usize * self.sector_size as usize;
         let end = offset + buffers.len();
         let storage = self.storage.lock();
@@ -923,8 +911,13 @@ impl DiskIo for TestDisk4K {
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        _fua: bool,
+        fua: bool,
     ) -> Result<(), DiskError> {
+        self.record(BackendCall::Write {
+            sector,
+            len: buffers.len(),
+            fua,
+        })?;
         let offset = sector as usize * self.sector_size as usize;
         let end = offset + buffers.len();
         let mut storage = self.storage.lock();
@@ -936,16 +929,20 @@ impl DiskIo for TestDisk4K {
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
-        Ok(())
+        self.record(BackendCall::Flush)
     }
 
     async fn unmap(
         &self,
-        _sector: u64,
-        _count: u64,
-        _block_level_only: bool,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
     ) -> Result<(), DiskError> {
-        Ok(())
+        self.record(BackendCall::Unmap {
+            sector,
+            count,
+            block_level_only,
+        })
     }
 
     fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
@@ -959,58 +956,14 @@ impl DiskIo for TestDisk4K {
 
 // --- Sector shift regression tests ---
 
-/// Write and read via a 4096-byte-sector disk to exercise the sector shift
-/// conversion. The virtio protocol always uses 512-byte sector numbers, so
-/// writing to virtio sector 8 means byte offset 4096, which is disk sector 1
-/// on a 4K disk.
-///
-/// With the old bug (`<< sector_shift`), virtio sector 8 became disk sector
-/// `8 << 3 = 64`, which is well beyond the disk — the IO would fail or
-/// silently corrupt. With the fix (`>> sector_shift`), it correctly maps
-/// to disk sector `8 >> 3 = 1`.
-#[async_test]
-async fn write_read_4k_sector_disk(driver: DefaultDriver) {
-    // 64 KiB disk with 4096-byte sectors → 16 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(64 * 1024, 4096)).unwrap();
-    let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable().await;
-
-    // Write to virtio sector 8 (= byte offset 4096 = disk sector 1).
-    let data = [0xAA; 4096];
-    harness.post_write_request(0, 8, &data);
-    let (_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_len, 1); // status byte only
-
-    // Read it back from the same virtio sector.
-    let data_gpa = harness.post_read_request(3, 8, 4096);
-    let (_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_len, 4097); // 4096 data + 1 status
-
-    let mut readback = vec![0u8; 4096];
-    harness.mem.read_at(data_gpa, &mut readback).unwrap();
-    assert!(
-        readback.iter().all(|&b| b == 0xAA),
-        "data mismatch: sector shift conversion is wrong"
-    );
-
-    // Verify the adjacent sectors are still zeroes (no misplaced writes).
-    let gpa0 = harness.post_read_request(5, 0, 4096);
-    harness.wait_for_used().await;
-    let mut buf = vec![0u8; 4096];
-    harness.mem.read_at(gpa0, &mut buf).unwrap();
-    assert!(
-        buf.iter().all(|&b| b == 0),
-        "sector 0 should be zeroes (data written to wrong location)"
-    );
-}
-
 /// Write at various 512-byte-granularity offsets on a 4K disk and verify
 /// they land at the correct disk positions.
 #[async_test]
 async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
     // 128 KiB disk with 4096-byte sectors → 32 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(128 * 1024, 4096)).unwrap();
-    let mut harness = TestHarness::new(&driver, disk, false);
+    let backend = TestDisk4K::new(128 * 1024, 4096);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
     harness.enable().await;
 
     // Write different patterns to virtio sectors 0, 16, and 24.
@@ -1022,15 +975,17 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
     let mut desc = 0u16;
     for &(sector, pattern) in patterns {
         let data = vec![pattern; 4096];
-        harness.post_write_request(desc, sector, &data);
-        harness.wait_for_used().await;
+        let status_gpa = harness.post_write_request(desc, sector, &data);
+        assert_eq!(harness.wait_for_used().await, (desc, 1));
+        assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
         desc += 3; // each write uses 3 descriptors
     }
 
     // Read them all back.
     for &(sector, pattern) in patterns {
         let gpa = harness.post_read_request(desc, sector, 4096);
-        harness.wait_for_used().await;
+        assert_eq!(harness.wait_for_used().await, (desc, 4097));
+        assert_eq!(harness.read_status(gpa + 4096), VIRTIO_BLK_S_OK);
         let mut buf = vec![0u8; 4096];
         harness.mem.read_at(gpa, &mut buf).unwrap();
         assert!(
@@ -1042,54 +997,95 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
 
     // Virtio sector 8 (disk sector 1) was never written — should be zeroes.
     let gpa = harness.post_read_request(desc, 8, 4096);
-    harness.wait_for_used().await;
+    assert_eq!(harness.wait_for_used().await, (desc, 4097));
+    assert_eq!(harness.read_status(gpa + 4096), VIRTIO_BLK_S_OK);
     let mut buf = vec![0u8; 4096];
     harness.mem.read_at(gpa, &mut buf).unwrap();
     assert!(
         buf.iter().all(|&b| b == 0),
         "virtio sector 8 should be zeroes"
     );
+    assert_eq!(
+        state.lock().calls,
+        [
+            BackendCall::Write {
+                sector: 0,
+                len: 4096,
+                fua: false
+            },
+            BackendCall::Write {
+                sector: 2,
+                len: 4096,
+                fua: false
+            },
+            BackendCall::Write {
+                sector: 3,
+                len: 4096,
+                fua: false
+            },
+            BackendCall::Read {
+                sector: 0,
+                len: 4096
+            },
+            BackendCall::Read {
+                sector: 2,
+                len: 4096
+            },
+            BackendCall::Read {
+                sector: 3,
+                len: 4096
+            },
+            BackendCall::Read {
+                sector: 1,
+                len: 4096
+            },
+        ]
+    );
 }
 
 // --- Discard integration tests ---
 
-/// Submit a discard request on a fresh harness and assert the expected status.
+/// Submit a discard request, check its completion, and return the backend calls.
 async fn check_discard(
     driver: &DefaultDriver,
-    disk: Disk,
+    backend: TestDisk4K,
     read_only: bool,
     sector: u64,
     num_sectors: u32,
     flags: u32,
     expected_status: u8,
-) {
-    let mut harness = TestHarness::new(driver, disk, read_only);
+) -> Vec<BackendCall> {
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(driver, Disk::new(backend).unwrap(), read_only);
     harness.enable().await;
     let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
-    let (_id, used_len) = harness.wait_for_used().await;
-    assert_eq!(used_len, 1);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
     assert_eq!(harness.read_status(status_gpa), expected_status);
-}
-
-fn test_disk_4k_discard() -> Disk {
-    Disk::new(TestDisk4K::new(64 * 1024, 4096).with_discard()).unwrap()
+    std::mem::take(&mut state.lock().calls)
 }
 
 /// Discard with properly aligned sector and num_sectors on a 4K disk
 /// should succeed.
 #[async_test]
 async fn discard_aligned_succeeds(driver: DefaultDriver) {
-    // Discard virtio sector 8 (disk sector 1), num_sectors=8 (8×512 = 4096).
-    check_discard(
+    let calls = check_discard(
         &driver,
-        test_disk_4k_discard(),
+        TestDisk4K::new(64 * 1024, 4096).with_discard(),
         false,
         8,
-        8,
+        16,
         0,
         VIRTIO_BLK_S_OK,
     )
     .await;
+    assert_eq!(
+        calls,
+        [BackendCall::Unmap {
+            sector: 1,
+            count: 2,
+            block_level_only: false
+        }]
+    );
 }
 
 /// Discard with num_sectors not aligned to the backend sector size (4K)
@@ -1098,9 +1094,9 @@ async fn discard_aligned_succeeds(driver: DefaultDriver) {
 #[async_test]
 async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
     // num_sectors=5 is not a multiple of 8 (4096/512).
-    check_discard(
+    let calls = check_discard(
         &driver,
-        test_disk_4k_discard(),
+        TestDisk4K::new(64 * 1024, 4096).with_discard(),
         false,
         0,
         5,
@@ -1108,6 +1104,7 @@ async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
         VIRTIO_BLK_S_IOERR,
     )
     .await;
+    assert!(calls.is_empty());
 }
 
 /// Discard with sector not aligned to the backend sector size (4K)
@@ -1115,9 +1112,9 @@ async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
 #[async_test]
 async fn discard_misaligned_sector_fails(driver: DefaultDriver) {
     // sector=3 is not aligned to 8 (4096/512).
-    check_discard(
+    let calls = check_discard(
         &driver,
-        test_disk_4k_discard(),
+        TestDisk4K::new(64 * 1024, 4096).with_discard(),
         false,
         3,
         8,
@@ -1125,15 +1122,16 @@ async fn discard_misaligned_sector_fails(driver: DefaultDriver) {
         VIRTIO_BLK_S_IOERR,
     )
     .await;
+    assert!(calls.is_empty());
 }
 
 /// Discard with the unmap flag set should be rejected with UNSUPP
 /// per spec §5.2.6.2.
 #[async_test]
 async fn discard_with_unmap_flag_returns_unsupp(driver: DefaultDriver) {
-    check_discard(
+    let calls = check_discard(
         &driver,
-        test_disk_4k_discard(),
+        TestDisk4K::new(64 * 1024, 4096).with_discard(),
         false,
         0,
         8,
@@ -1141,14 +1139,15 @@ async fn discard_with_unmap_flag_returns_unsupp(driver: DefaultDriver) {
         VIRTIO_BLK_S_UNSUPP,
     )
     .await;
+    assert!(calls.is_empty());
 }
 
 /// Discard on a read-only disk should fail with IOERR.
 #[async_test]
 async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
-    check_discard(
+    let calls = check_discard(
         &driver,
-        test_disk_4k_discard(),
+        TestDisk4K::new(64 * 1024, 4096).with_discard(),
         true,
         0,
         8,
@@ -1156,6 +1155,7 @@ async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
         VIRTIO_BLK_S_IOERR,
     )
     .await;
+    assert!(calls.is_empty());
 }
 
 /// Discard on a 512-byte-sector disk (no shift) should succeed even with
@@ -1164,16 +1164,119 @@ async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
 #[async_test]
 async fn discard_512b_sector_any_count_succeeds(driver: DefaultDriver) {
     // sector_shift=0, sector_mask=0 → any num_sectors is "aligned".
-    check_discard(
+    let calls = check_discard(
         &driver,
-        ram_disk(64 * 1024, false),
+        TestDisk4K::new(64 * 1024, 512).with_discard(),
         false,
-        0,
+        3,
         5,
         0,
         VIRTIO_BLK_S_OK,
     )
     .await;
+    assert_eq!(
+        calls,
+        [BackendCall::Unmap {
+            sector: 3,
+            count: 5,
+            block_level_only: false
+        }]
+    );
+}
+
+#[async_test]
+async fn misaligned_read_write_never_reach_backend(driver: DefaultDriver) {
+    for is_read in [true, false] {
+        for (sector, len) in [(3, 4096), (8, 512)] {
+            let backend = TestDisk4K::new(64 * 1024, 4096);
+            let state = Arc::clone(&backend.state);
+            let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
+            harness.enable().await;
+
+            let status_gpa = if is_read {
+                harness.post_read_request(0, sector, len) + u64::from(len)
+            } else {
+                harness.post_write_request(0, sector, &vec![0xAB; len as usize])
+            };
+            assert_eq!(harness.wait_for_used().await, (0, 1));
+            assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_IOERR);
+            assert!(state.lock().calls.is_empty());
+        }
+    }
+}
+
+#[async_test]
+async fn flush_succeeds(driver: DefaultDriver) {
+    let backend = TestDisk4K::new(64 * 1024, 4096);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
+    harness.enable().await;
+
+    let status_gpa = harness.post_flush_request(0);
+
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+    assert_eq!(state.lock().calls, [BackendCall::Flush]);
+}
+
+#[async_test]
+async fn backend_errors_translate_to_ioerr(driver: DefaultDriver) {
+    for request_type in [
+        VIRTIO_BLK_T_IN,
+        VIRTIO_BLK_T_OUT,
+        VIRTIO_BLK_T_FLUSH,
+        VIRTIO_BLK_T_DISCARD,
+    ] {
+        for error in [
+            DiskError::IllegalBlock,
+            DiskError::InvalidInput,
+            DiskError::ReadOnly,
+            DiskError::Io(std::io::Error::other("injected backend failure")),
+        ] {
+            let backend = TestDisk4K::new(64 * 1024, 4096).with_discard();
+            let state = Arc::clone(&backend.state);
+            state.lock().next_error = Some(error);
+            let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
+            harness.enable().await;
+
+            let (status_gpa, expected_call) = match request_type {
+                VIRTIO_BLK_T_IN => (
+                    harness.post_read_request(0, 8, 8192) + 8192,
+                    BackendCall::Read {
+                        sector: 1,
+                        len: 8192,
+                    },
+                ),
+                VIRTIO_BLK_T_OUT => (
+                    harness.post_write_request(0, 8, &[0xAB; 8192]),
+                    BackendCall::Write {
+                        sector: 1,
+                        len: 8192,
+                        fua: false,
+                    },
+                ),
+                VIRTIO_BLK_T_FLUSH => (harness.post_flush_request(0), BackendCall::Flush),
+                VIRTIO_BLK_T_DISCARD => (
+                    harness.post_discard_request(0, 8, 16, 0),
+                    BackendCall::Unmap {
+                        sector: 1,
+                        count: 2,
+                        block_level_only: false,
+                    },
+                ),
+                _ => unreachable!(),
+            };
+            assert_eq!(harness.wait_for_used().await, (0, 1));
+            assert_eq!(
+                harness.read_status(status_gpa),
+                VIRTIO_BLK_S_IOERR,
+                "request type {request_type} must propagate the backend failure"
+            );
+            let state = state.lock();
+            assert_eq!(state.calls, [expected_call]);
+            assert!(state.next_error.is_none());
+        }
+    }
 }
 
 // --- Bounce buffer integration tests ---
@@ -1427,4 +1530,65 @@ async fn cyclic_descriptor_chain_does_not_wedge_worker(driver: DefaultDriver) {
         harness.device.stop_queue(0),
     )
     .await;
+}
+
+/// Backend range errors must become IOERR without corrupting in-range data.
+#[async_test]
+async fn out_of_range_request_fails(driver: DefaultDriver) {
+    let backend = TestDisk4K::new(64 * 1024, 4096);
+    let state = Arc::clone(&backend.state);
+    let mut harness = TestHarness::new(&driver, Disk::new(backend).unwrap(), false);
+    harness.enable().await;
+
+    let pattern = [0x5Au8; 4096];
+    let status_gpa = harness.post_write_request(0, 0, &pattern);
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+
+    // Aligned virtio sector 128 maps to backend sector 16, just past capacity.
+    let data_gpa = harness.post_read_request(3, 128, 4096);
+    assert_eq!(harness.wait_for_used().await, (3, 1));
+    assert_eq!(
+        harness.read_status(data_gpa + 4096),
+        VIRTIO_BLK_S_IOERR,
+        "out-of-range read should fail with IOERR"
+    );
+
+    let status_gpa = harness.post_write_request(5, 128, &[0xEE; 4096]);
+    assert_eq!(harness.wait_for_used().await, (5, 1));
+    assert_eq!(
+        harness.read_status(status_gpa),
+        VIRTIO_BLK_S_IOERR,
+        "out-of-range write should fail with IOERR"
+    );
+
+    let check_gpa = harness.post_read_request(8, 0, 4096);
+    assert_eq!(harness.wait_for_used().await, (8, 4097));
+    assert_eq!(harness.read_status(check_gpa + 4096), VIRTIO_BLK_S_OK);
+    let mut buf = [0u8; 4096];
+    harness.mem.read_at(check_gpa, &mut buf).unwrap();
+    assert_eq!(buf, pattern, "in-range data corrupted by out-of-range op");
+    assert_eq!(
+        state.lock().calls,
+        [
+            BackendCall::Write {
+                sector: 0,
+                len: 4096,
+                fua: false,
+            },
+            BackendCall::Read {
+                sector: 16,
+                len: 4096,
+            },
+            BackendCall::Write {
+                sector: 16,
+                len: 4096,
+                fua: false,
+            },
+            BackendCall::Read {
+                sector: 0,
+                len: 4096,
+            },
+        ]
+    );
 }

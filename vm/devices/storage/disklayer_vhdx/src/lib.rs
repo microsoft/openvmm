@@ -313,12 +313,23 @@ mod tests {
 
     /// Create a VHDX file at the given path and return a `VhdxLayer`.
     async fn create_and_open_layer(path: &std::path::Path, driver: &DefaultDriver) -> VhdxLayer {
-        // Create a 1 MiB VHDX.
+        create_and_open_layer_with_params(
+            path,
+            driver,
+            vhdx::CreateParams {
+                disk_size: 1024 * 1024,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn create_and_open_layer_with_params(
+        path: &std::path::Path,
+        driver: &DefaultDriver,
+        mut params: vhdx::CreateParams,
+    ) -> VhdxLayer {
         let bf = BlockingFile::open(path, false).unwrap();
-        let mut params = vhdx::CreateParams {
-            disk_size: 1024 * 1024,
-            ..Default::default()
-        };
         vhdx::create(&bf, &mut params).await.unwrap();
 
         // Re-open and wrap as VhdxLayer.
@@ -507,5 +518,195 @@ mod tests {
         let mut buf = vec![0u8; len];
         mem.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, pattern);
+    }
+
+    #[async_test]
+    async fn fixed_write_read_first_and_last_sectors(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer_with_params(
+            &path,
+            &driver,
+            vhdx::CreateParams {
+                disk_size: 64 * 1024,
+                logical_sector_size: 512,
+                physical_sector_size: 512,
+                disk_type: vhdx::DiskType::Fixed,
+                ..Default::default()
+            },
+        )
+        .await;
+        let disk = wrap_in_layered_disk(layer).await;
+        assert_eq!(disk.sector_count(), 128);
+
+        let first: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
+        let last: Vec<u8> = (0..512).map(|i| ((i * 3 + 7) % 251) as u8).collect();
+        let mem = GuestMemory::allocate(512);
+        let write = OwnedRequestBuffers::linear(0, 512, false);
+        for (sector, pattern) in [(0, &first), (127, &last)] {
+            mem.write_at(0, pattern).unwrap();
+            disk.write_vectored(&write.buffer(&mem), sector, false)
+                .await
+                .unwrap();
+        }
+
+        let zeroes = vec![0u8; 512];
+        let read = OwnedRequestBuffers::linear(0, 512, true);
+        let mut actual = vec![0u8; 512];
+        for (sector, expected) in [(0, &first), (127, &last), (64, &zeroes)] {
+            mem.write_at(0, &[0xFF; 512]).unwrap();
+            disk.read_vectored(&read.buffer(&mem), sector)
+                .await
+                .unwrap();
+            mem.read_at(0, &mut actual).unwrap();
+            assert_eq!(&actual, expected, "sector {sector} mismatch");
+        }
+    }
+
+    #[async_test]
+    async fn dynamic_block_boundary_and_holes(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer_with_params(
+            &path,
+            &driver,
+            vhdx::CreateParams {
+                disk_size: 2 * 1024 * 1024,
+                block_size: 1024 * 1024,
+                logical_sector_size: 512,
+                physical_sector_size: 512,
+                ..Default::default()
+            },
+        )
+        .await;
+        let disk = wrap_in_layered_disk(layer).await;
+
+        let mem = GuestMemory::allocate(2048);
+        let mut pattern = vec![0xA1; 1024];
+        pattern[512..].fill(0xB2);
+        mem.write_at(0, &pattern).unwrap();
+        let write = OwnedRequestBuffers::linear(0, pattern.len(), false);
+        disk.write_vectored(&write.buffer(&mem), 2047, false)
+            .await
+            .unwrap();
+
+        // Include an untouched sector on each side of the crossing write.
+        mem.write_at(0, &[0xFF; 2048]).unwrap();
+        let read = OwnedRequestBuffers::linear(0, 2048, true);
+        disk.read_vectored(&read.buffer(&mem), 2046).await.unwrap();
+        let mut actual = vec![0u8; 2048];
+        mem.read_at(0, &mut actual).unwrap();
+        let mut expected = vec![0u8; 2048];
+        expected[512..1536].copy_from_slice(&pattern);
+        assert_eq!(actual, expected);
+    }
+
+    #[async_test]
+    async fn partial_write_512e_preserves_neighbors(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer_with_params(
+            &path,
+            &driver,
+            vhdx::CreateParams {
+                disk_size: 64 * 1024,
+                logical_sector_size: 512,
+                physical_sector_size: 4096,
+                ..Default::default()
+            },
+        )
+        .await;
+        let disk = wrap_in_layered_disk(layer).await;
+        assert_eq!(disk.sector_size(), 512);
+        assert_eq!(disk.physical_sector_size(), 4096);
+        assert_eq!(disk.sector_count(), 128);
+
+        let mem = GuestMemory::allocate(4096);
+        mem.write_at(0, &[0xAA; 4096]).unwrap();
+        let write = OwnedRequestBuffers::linear(0, 4096, false);
+        disk.write_vectored(&write.buffer(&mem), 0, false)
+            .await
+            .unwrap();
+
+        mem.write_at(0, &[0xBB; 512]).unwrap();
+        let write = OwnedRequestBuffers::linear(0, 512, false);
+        disk.write_vectored(&write.buffer(&mem), 1, false)
+            .await
+            .unwrap();
+
+        mem.write_at(0, &[0xFF; 4096]).unwrap();
+        let read = OwnedRequestBuffers::linear(0, 4096, true);
+        disk.read_vectored(&read.buffer(&mem), 0).await.unwrap();
+        let mut actual = vec![0u8; 4096];
+        mem.read_at(0, &mut actual).unwrap();
+        let mut expected = vec![0xAA; 4096];
+        expected[512..1024].fill(0xBB);
+        assert_eq!(actual, expected);
+    }
+
+    #[async_test]
+    async fn unmap_zeroes_block_and_preserves_neighbor(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.vhdx");
+        let layer = create_and_open_layer_with_params(
+            &path,
+            &driver,
+            vhdx::CreateParams {
+                disk_size: 2 * 1024 * 1024,
+                block_size: 1024 * 1024,
+                logical_sector_size: 512,
+                physical_sector_size: 512,
+                ..Default::default()
+            },
+        )
+        .await;
+        let disk = wrap_in_layered_disk(layer).await;
+        assert_eq!(disk.unmap_behavior(), UnmapBehavior::Zeroes);
+
+        let block_size = 1024 * 1024;
+        let mem = GuestMemory::allocate(block_size);
+        let write = OwnedRequestBuffers::linear(0, block_size, false);
+        for (sector, value) in [(0, 0xCC), (2048, 0xDD)] {
+            mem.write_at(0, &vec![value; block_size]).unwrap();
+            disk.write_vectored(&write.buffer(&mem), sector, false)
+                .await
+                .unwrap();
+        }
+
+        disk.unmap(0, 2048, false).await.unwrap();
+
+        let read = OwnedRequestBuffers::linear(0, block_size, true);
+        let mut actual = vec![0u8; block_size];
+        for (sector, expected) in [(0, 0), (2048, 0xDD)] {
+            mem.write_at(0, &vec![0xFF; block_size]).unwrap();
+            disk.read_vectored(&read.buffer(&mem), sector)
+                .await
+                .unwrap();
+            mem.read_at(0, &mut actual).unwrap();
+            assert!(
+                actual.iter().all(|&byte| byte == expected),
+                "block at sector {sector} changed unexpectedly after unmap"
+            );
+        }
+
+        mem.write_at(0, &[0xEE; 512]).unwrap();
+        let write = OwnedRequestBuffers::linear(0, 512, false);
+        disk.write_vectored(&write.buffer(&mem), 0, false)
+            .await
+            .unwrap();
+
+        mem.write_at(0, &vec![0xFF; block_size]).unwrap();
+        disk.read_vectored(&read.buffer(&mem), 0).await.unwrap();
+        mem.read_at(0, &mut actual).unwrap();
+        assert!(actual[..512].iter().all(|&byte| byte == 0xEE));
+        assert!(actual[512..].iter().all(|&byte| byte == 0));
+
+        mem.write_at(0, &vec![0xFF; block_size]).unwrap();
+        disk.read_vectored(&read.buffer(&mem), 2048).await.unwrap();
+        mem.read_at(0, &mut actual).unwrap();
+        assert!(
+            actual.iter().all(|&byte| byte == 0xDD),
+            "neighbor block changed after write-after-trim"
+        );
     }
 }
