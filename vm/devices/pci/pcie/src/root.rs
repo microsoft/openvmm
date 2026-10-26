@@ -1186,6 +1186,56 @@ mod tests {
         }
     }
 
+    struct PioTestEndpoint {
+        bus: u8,
+        devfn: u8,
+        registers: Arc<Mutex<[u32; 2]>>,
+    }
+
+    impl GenericPciBusDevice for PioTestEndpoint {
+        fn pci_cfg_read(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
+            unreachable!()
+        }
+
+        fn pci_cfg_write(
+            &mut self,
+            _offset: u16,
+            _value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
+            unreachable!()
+        }
+
+        fn pci_cfg_read_with_routing(
+            &mut self,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
+            mut value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
+            assert_eq!(access_type, PciConfigAccessType::Type0);
+            assert_eq!((address.bus, address.devfn), (self.bus, self.devfn));
+            let index = usize::from((address.byte_offset() - 0x40) / 4);
+            value.set(self.registers.lock()[index]);
+            Some(IoResult::Ok)
+        }
+
+        fn pci_cfg_write_with_routing(
+            &mut self,
+            access_type: PciConfigAccessType,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
+            assert_eq!(access_type, PciConfigAccessType::Type0);
+            assert_eq!((address.bus, address.devfn), (self.bus, self.devfn));
+            let index = usize::from((address.byte_offset() - 0x40) / 4);
+            value.merge_into(&mut self.registers.lock()[index]);
+            Some(IoResult::Ok)
+        }
+    }
+
     impl GenericPciBusDevice for DeferredEndpoint {
         fn pci_cfg_read(
             &mut self,
@@ -1318,6 +1368,68 @@ mod tests {
             u32::from_le_bytes(value),
             (ROOT_PORT_DEVICE_ID as u32) << 16 | VENDOR_ID as u32
         );
+    }
+
+    #[test]
+    fn test_pio_config_write() {
+        const BUS: u8 = 3;
+        const DEVFN: u8 = (2 << 3) | 1;
+        const CONFIG_OFFSET: u16 = 0x40;
+
+        let mut register_mmio = TestPcieMmioRegistration {};
+        let mut register_pio = TestPciePioRegistration;
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(BUS, BUS));
+        let mut rc = GenericPcieRootComplex::builder(&mut register_mmio, BUS..=BUS, ecam)
+            .pci_config_io(&mut register_pio)
+            .build()
+            .unwrap();
+        let registers = Arc::new(Mutex::new([0x1122_3344, 0x5566_7788]));
+        rc.add_rciep(
+            DEVFN,
+            "pio-test",
+            Box::new(PioTestEndpoint {
+                bus: BUS,
+                devfn: DEVFN,
+                registers: registers.clone(),
+            }),
+        )
+        .unwrap();
+
+        let config_address = (1 << 31) | (u32::from(BUS) << 16) | (u32::from(DEVFN) << 8);
+        let ecam_address = u64::from(DEVFN) * PAGE_SIZE64 + u64::from(CONFIG_OFFSET);
+        let read_ecam = |rc: &mut GenericPcieRootComplex, address| {
+            let mut value = 0u32;
+            rc.mmio_read(address, value.as_mut_bytes()).unwrap();
+            value
+        };
+
+        rc.io_write(
+            0xcf8,
+            &(config_address | u32::from(CONFIG_OFFSET)).to_le_bytes(),
+        )
+        .unwrap();
+        rc.io_write(0xcfd, &[0xaa]).unwrap();
+        assert_eq!(read_ecam(&mut rc, ecam_address), 0x1122_aa44);
+
+        rc.io_write(0xcfe, &0xbbccu16.to_le_bytes()).unwrap();
+        assert_eq!(read_ecam(&mut rc, ecam_address), 0xbbcc_aa44);
+
+        rc.io_write(
+            0xcf8,
+            &(config_address | u32::from(CONFIG_OFFSET + 4)).to_le_bytes(),
+        )
+        .unwrap();
+        rc.io_write(0xcfc, &0xa1b2_c3d4u32.to_le_bytes()).unwrap();
+        assert_eq!(read_ecam(&mut rc, ecam_address + 4), 0xa1b2_c3d4);
+
+        rc.io_write(
+            0xcf8,
+            &((config_address | u32::from(CONFIG_OFFSET)) & !(1 << 31)).to_le_bytes(),
+        )
+        .unwrap();
+        rc.io_write(0xcfc, &0xffff_ffffu32.to_le_bytes()).unwrap();
+        assert_eq!(read_ecam(&mut rc, ecam_address), 0xbbcc_aa44);
+        assert_eq!(*registers.lock(), [0xbbcc_aa44, 0xa1b2_c3d4]);
     }
 
     #[test]
