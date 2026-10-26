@@ -128,9 +128,7 @@ impl VmmMesh {
         sandbox_role: Option<SandboxRole>,
     ) -> anyhow::Result<WorkerHost> {
         #[cfg(not(target_os = "linux"))]
-        if sandbox_role.is_some() {
-            return Err(sandbox::Error::UnsupportedPlatform.into());
-        }
+        let _ = sandbox_role;
 
         let log_file: Option<std::fs::File> = if let Some(file) = &log_file {
             Some(
