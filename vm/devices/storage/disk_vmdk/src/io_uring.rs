@@ -123,6 +123,14 @@ pub(crate) mod tests {
     use std::sync::atomic::Ordering;
     use test_with_tracing::test;
 
+    /// Counts submissions in flight through [`InterruptedDriver`].
+    #[derive(Default)]
+    pub(crate) struct InFlight {
+        current: AtomicUsize,
+        /// Highest number of submissions in flight at once.
+        pub(crate) peak: AtomicUsize,
+    }
+
     /// Test driver that simulates interrupted I/O and unsupported opcodes.
     pub(crate) struct InterruptedDriver {
         /// Real driver used for non-injected operations.
@@ -131,6 +139,8 @@ pub(crate) mod tests {
         pub(crate) interruptions: Arc<AtomicUsize>,
         /// Opcode to report as unsupported, if any.
         pub(crate) unsupported_opcode: Option<u8>,
+        /// Counts submissions in flight, if set.
+        pub(crate) in_flight: Option<Arc<InFlight>>,
     }
 
     impl Driver for InterruptedDriver {
@@ -185,9 +195,22 @@ pub(crate) mod tests {
                     return Err(io::ErrorKind::Interrupted.into());
                 }
 
+                // Count this submission as in flight until it completes. Real
+                // submissions are pending on their first poll, so concurrent
+                // reads overlap here.
+                if let Some(in_flight) = &self.in_flight {
+                    let current = in_flight.current.fetch_add(1, Ordering::SeqCst) + 1;
+                    in_flight.peak.fetch_max(current, Ordering::SeqCst);
+                }
+
                 // SAFETY: The caller's submission contract is forwarded
                 // unchanged to the underlying driver and awaited to completion.
-                unsafe { self.inner.io_uring_submit(sqe) }.await
+                let result = unsafe { self.inner.io_uring_submit(sqe) }.await;
+
+                if let Some(in_flight) = &self.in_flight {
+                    in_flight.current.fetch_sub(1, Ordering::SeqCst);
+                }
+                result
             })
         }
     }
@@ -338,6 +361,7 @@ pub(crate) mod tests {
             inner: driver.clone(),
             interruptions: interruptions.clone(),
             unsupported_opcode: None,
+            in_flight: None,
         };
         assert!(is_supported(&interrupted_driver));
 
@@ -364,6 +388,7 @@ pub(crate) mod tests {
                 inner: driver.clone(),
                 interruptions: Arc::new(AtomicUsize::new(0)),
                 unsupported_opcode: Some(opcode),
+                in_flight: None,
             }));
         }
     }

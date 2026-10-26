@@ -737,6 +737,7 @@ async fn unsupported_driver_uses_blocking_reads(driver: pal_async::DefaultDriver
             inner: driver.clone(),
             interruptions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             unsupported_opcode: Some(opcode),
+            in_flight: None,
         };
         let disk = FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver)))
             .unwrap();
@@ -750,12 +751,13 @@ async fn unsupported_driver_uses_blocking_reads(driver: pal_async::DefaultDriver
     }
 }
 
-/// Checks that a guest-memory error in one native segment does not cancel another.
+/// Checks that native reads stop after the first failed segment.
 ///
-/// Each segment is made invalid in turn; the valid sibling must finish its read.
+/// Each segment is made invalid in turn. An earlier valid segment still
+/// completes, but no segment after a failure is read.
 #[cfg(target_os = "linux")]
 #[async_test]
-async fn native_read_errors_wait_for_pending_siblings(driver: pal_async::DefaultDriver) {
+async fn native_read_errors_stop_later_reads(driver: pal_async::DefaultDriver) {
     // Map two virtual extents to the same eight-sector source.
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("source.bin"), [0xa5; 4096]).unwrap();
@@ -779,10 +781,16 @@ async fn native_read_errors_wait_for_pending_siblings(driver: pal_async::Default
         let result = backend.read_vectored(&buffers.buffer(&memory), 0).await;
         assert!(matches!(result, Err(DiskError::MemoryAccess(_))));
 
-        // The valid read must finish despite the other segment's lock error.
+        // A valid segment before the failure fills page 0; a valid segment
+        // after the failure is never read, leaving page 0 zeroed.
+        let expected = if pages[0] == 0 {
+            [0xa5; 4096]
+        } else {
+            [0; 4096]
+        };
         let mut actual = [0; 4096];
         memory.read_at(0, &mut actual).unwrap();
-        assert_eq!(actual, [0xa5; 4096]);
+        assert_eq!(actual, expected);
     }
 }
 
@@ -973,10 +981,14 @@ async fn native_io_reads_all_final_sector_lengths(driver: pal_async::DefaultDriv
     }
 }
 
-/// Checks that a read spanning 513 extents uses native I/O without a blocking buffer.
+/// Checks that a read spanning 513 extents uses native I/O without a blocking
+/// buffer and stays within the subread limit.
 #[cfg(target_os = "linux")]
 #[async_test]
 async fn native_io_reads_many_extents_without_fallback(driver: pal_async::DefaultDriver) {
+    // A zero limit would never start a subread, so reads would hang.
+    assert_ne!(MAX_READ_SUB_WORKERS, 0);
+
     // Reuse one source sector across enough extents to exercise a large read plan.
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("source.bin"), [0xa5; 512]).unwrap();
@@ -989,7 +1001,15 @@ async fn native_io_reads_many_extents_without_fallback(driver: pal_async::Defaul
         ),
     );
 
-    // Enable native I/O and read all extents in one guest request.
+    // Enable native I/O, counting subreads in flight, and read all extents in
+    // one guest request.
+    let in_flight = Arc::new(crate::io_uring::tests::InFlight::default());
+    let driver = crate::io_uring::tests::InterruptedDriver {
+        inner: driver,
+        interruptions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        unsupported_opcode: None,
+        in_flight: Some(in_flight.clone()),
+    };
     let backend =
         FlatVmdkDisk::new(open_flat_vmdk(&path, true).unwrap(), Some(Box::new(driver))).unwrap();
 
@@ -997,6 +1017,9 @@ async fn native_io_reads_many_extents_without_fallback(driver: pal_async::Defaul
         read_backend_sectors(&backend, 0, count).await.unwrap(),
         vec![0xa5; count * 512]
     );
+
+    // The request kept exactly the limit of subreads in flight.
+    assert_eq!(in_flight.peak.load(Ordering::SeqCst), MAX_READ_SUB_WORKERS);
 
     // A blocking fallback would have populated the reusable buffer cache.
     assert!(backend.read_buffer.lock().is_empty());

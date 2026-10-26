@@ -23,6 +23,8 @@ use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::FlatVmdkDiskHandle;
 use disk_backend_resources::FlatVmdkExtent;
 use disk_backend_resources::VmdkExtentAccess;
+#[cfg(target_os = "linux")]
+use futures::StreamExt;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::Mutex;
@@ -37,6 +39,10 @@ use std::os::unix::fs::FileExt;
 use std::os::windows::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
@@ -51,6 +57,9 @@ const DEFAULT_PHYSICAL_SECTOR_SIZE: u32 = 512;
 const MAX_SECTOR_COUNT: u64 = (i64::MAX as u64) / SECTOR_SIZE;
 // Maximum temporary-buffer capacity retained for reuse after blocking reads.
 const MAX_CACHED_READ_BUFFER_SIZE: usize = 1024 * 1024;
+// Maximum concurrent native subreads per guest request.
+#[cfg(target_os = "linux")]
+const MAX_READ_SUB_WORKERS: usize = 1;
 
 /// Converts transported [`FlatVmdkDiskHandle`] resources into read-only disks.
 ///
@@ -461,32 +470,44 @@ impl FlatVmdkDisk {
         #[cfg(target_os = "linux")]
         if let Some(driver) = driver {
             let mut completed_request_byte_count = 0;
+            // Set by `fold` below when a read fails; checked before each new read.
+            let failed = AtomicBool::new(false);
 
+            // Lazily build one read per segment. Nothing runs here: `buffered`
+            // below pulls each read only when it has room for another.
             let reads = segments
-                .iter()
+                .into_iter()
+                // Checked at pull time, so reads after a failure are never built.
+                .take_while(|_| !failed.load(Ordering::Relaxed))
                 .map(|segment| {
-                    // Select the guest buffer range where this segment's data will be written.
+                    // Select the guest buffer range that receives this segment.
                     let segment_output =
                         buffers.subrange(completed_request_byte_count, segment.byte_count);
+
+                    // Advance past this segment for the next one.
                     completed_request_byte_count += segment.byte_count;
 
-                    // Create the read future without starting I/O yet.
+                    // Create the read future; I/O starts when it is first polled.
                     Self::read_native_range(
                         driver,
                         &self.sources[segment.source_index],
                         segment_output,
                         segment.source_byte_offset,
                     )
+                });
+
+            // Run up to MAX_READ_SUB_WORKERS reads at once. After a failure, no
+            // new reads start, but in-flight ones finish (dropping them aborts).
+            return futures::stream::iter(reads)
+                .buffered(MAX_READ_SUB_WORKERS)
+                .fold(Ok(()), |result, read_result| {
+                    if read_result.is_err() {
+                        failed.store(true, Ordering::Relaxed);
+                    }
+                    // Keep the earliest error.
+                    async move { result.and(read_result) }
                 })
-                .collect::<Vec<_>>();
-
-            // Native I/O borrows guest buffers until completion, so pending
-            // siblings cannot be dropped when another read fails.
-            for result in futures::future::join_all(reads).await {
-                result?;
-            }
-
-            return Ok(());
+                .await;
         }
 
         // At this point, native IO was not used, so fall back to blocking reads.
