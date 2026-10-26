@@ -79,7 +79,6 @@ edition = "2024"
 version = "0.3.0"
 
 [workspace.dependencies]
-mshv_host_boot = { path = "petri/mshv_host_boot" }
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
 
 # opentmk
@@ -120,6 +119,7 @@ vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
 initrd_cpio = { path = "petri/initrd_cpio" }
+mshv_host_boot = { path = "petri/mshv_host_boot" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 
