@@ -12,6 +12,7 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
 use std::fs;
+use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -97,7 +98,7 @@ impl Device {
             mapping
                 .map_file(0, file_len, &mappable, 0, true)
                 .context("failed to map persistent memory for flushing")?;
-            Some(mapping)
+            Some(Arc::new(mapping))
         } else {
             None
         };
@@ -105,7 +106,7 @@ impl Device {
             driver: driver_source.simple(),
             worker: TaskControl::new(PmemWorker {
                 writable,
-                file,
+                file: Arc::new(file),
                 #[cfg(windows)]
                 file_len,
                 #[cfg(windows)]
@@ -161,7 +162,7 @@ impl VirtioDevice for Device {
 
     fn set_shared_memory_region(
         &mut self,
-        region: &std::sync::Arc<dyn guestmem::MappedMemoryRegion>,
+        region: &Arc<dyn guestmem::MappedMemoryRegion>,
     ) -> anyhow::Result<()> {
         region
             .map(0, &self.mappable, 0, self.file_len, self.writable)
@@ -232,25 +233,32 @@ impl VirtioDevice for Device {
 #[derive(InspectMut)]
 struct PmemWorker {
     writable: bool,
-    file: fs::File,
+    file: Arc<fs::File>,
     #[cfg(windows)]
     file_len: usize,
     #[cfg(windows)]
     #[inspect(skip)]
-    flush_mapping: Option<sparse_mmap::SparseMapping>,
+    flush_mapping: Option<Arc<sparse_mmap::SparseMapping>>,
 }
 
 impl PmemWorker {
-    fn flush(&self) -> anyhow::Result<()> {
+    async fn flush(&self) -> anyhow::Result<()> {
+        let file = self.file.clone();
         #[cfg(windows)]
-        self.flush_mapping
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("flush mapping was not created"))?
-            .flush_view(0, self.file_len)
-            .context("failed to flush mapped persistent memory")?;
-        self.file
-            .sync_all()
-            .context("failed to flush persistent memory file")
+        let flush_mapping = self.flush_mapping.clone();
+        #[cfg(windows)]
+        let file_len = self.file_len;
+        blocking::unblock(move || {
+            #[cfg(windows)]
+            flush_mapping
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("flush mapping was not created"))?
+                .flush_view(0, file_len)
+                .context("failed to flush mapped persistent memory")?;
+            file.sync_all()
+                .context("failed to flush persistent memory file")
+        })
+        .await
     }
 }
 
@@ -277,7 +285,7 @@ impl AsyncRun<PmemQueue> for PmemWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    let bytes = process_pmem_request(self, &state.mem, &work);
+                    let bytes = process_pmem_request(self, &state.mem, &work).await;
                     state.queue.complete(work, bytes);
                 }
                 Err(err) => {
@@ -290,7 +298,7 @@ impl AsyncRun<PmemQueue> for PmemWorker {
     }
 }
 
-fn process_pmem_request(
+async fn process_pmem_request(
     worker: &PmemWorker,
     mem: &GuestMemory,
     work: &VirtioQueueCallbackWork,
@@ -302,7 +310,7 @@ fn process_pmem_request(
                 // Ignore the request for read-only devices.
                 0
             }
-            0 => match worker.flush() {
+            0 => match worker.flush().await {
                 Ok(()) => 0,
                 Err(err) => {
                     tracing::error!(error = %err, "flush error");
