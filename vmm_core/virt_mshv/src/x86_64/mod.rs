@@ -575,6 +575,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 self.config.isolation.isolation_type(),
                 caps.hv1_reference_tsc_page,
             );
+            caps.nested_virt = self.config.nested_virt;
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -747,6 +748,9 @@ impl Hv1 for MshvPartition {
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        if self.inner.caps.nested_virt {
+            anyhow::bail!("synic ports are not supported with nested virtualization on MSHV");
+        }
         Ok(self.synic_ports.clone())
     }
 }
