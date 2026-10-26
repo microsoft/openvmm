@@ -1210,7 +1210,51 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
-        emulate_translate_gva(self, gva, mode)
+        if self.partition.caps.nested_virt {
+            let mut flags =
+                hvdef::hypercall::TranslateGvaControlFlagsX64::new().with_set_page_table_bits(true);
+            match mode {
+                TranslateMode::Read => flags.set_validate_read(true),
+                TranslateMode::Write => {
+                    flags.set_validate_read(true);
+                    flags.set_validate_write(true);
+                }
+                TranslateMode::Execute => flags.set_validate_execute(true),
+            }
+
+            match self.vcpufd.translate_gva(gva, flags.into()) {
+                Ok((gpa, result)) => {
+                    // SAFETY: The kernel initialized the u64 view of this union.
+                    let result =
+                        hvdef::hypercall::TranslateGvaResult::from(unsafe { result.as_uint64 });
+                    let code = hvdef::hypercall::TranslateGvaResultCode(result.result_code());
+                    if code == hvdef::hypercall::TranslateGvaResultCode::SUCCESS {
+                        Ok(EmuTranslateResult {
+                            gpa,
+                            overlay_page: Some(result.overlay_page()),
+                        })
+                    } else {
+                        Err(EmuTranslateError {
+                            code,
+                            event_info: None,
+                        })
+                    }
+                }
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        gva,
+                        "failed to translate nested guest virtual address"
+                    );
+                    Err(EmuTranslateError {
+                        code: hvdef::hypercall::TranslateGvaResultCode::INTERCEPT,
+                        event_info: None,
+                    })
+                }
+            }
+        } else {
+            emulate_translate_gva(self, gva, mode)
+        }
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
