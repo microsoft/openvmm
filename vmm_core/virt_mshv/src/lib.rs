@@ -489,6 +489,11 @@ impl virt::ResetPartition for MshvPartition {
         let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
 
         #[cfg(guest_arch = "x86_64")]
+        if inner.caps.nested_virt && !scrubbed {
+            return Err(ErrorInner::NestedResetRequiresScrub.into());
+        }
+
+        #[cfg(guest_arch = "x86_64")]
         for irq in 0..virt::irqcon::IRQ_LINES as u8 {
             irq_routes.set_irq_route(irq, None);
         }
@@ -955,6 +960,15 @@ enum ErrorInner {
     ScrubPartition(#[source] io::Error),
     #[error("failed to install {0:?} intercept")]
     InstallIntercept(hvdef::hypercall::HvInterceptType, #[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization reset requires partition scrub support")]
+    NestedResetRequiresScrub,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving nested virtualization state is not supported by MSHV")]
+    NestedStateSaveUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring nested virtualization state is not supported by MSHV")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] KernelError),
