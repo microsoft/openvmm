@@ -125,6 +125,11 @@ message UEFI {
 
         // The predefined Secure Boot variable set to use for initialization.
         SecureBootTemplate secure_boot_template = 1;
+
+        // Optional path to a custom UEFI variable delta JSON file on the host.
+        // Applied after the selected template, or without a template when NONE
+        // is selected.
+        optional string custom_uefi_json_path = 2;
     }
 
     // Path to the UEFI firmware image on the host.
