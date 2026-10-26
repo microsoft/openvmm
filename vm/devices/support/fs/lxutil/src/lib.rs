@@ -29,8 +29,10 @@ pub use path::PathExt;
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
 /// it has Unix semantics.
 ///
-/// N.B.: all methods take relative paths, but do not attempt to make sure the path does not escape
-///       the root of the `LxVolume`, and therefore should not be relied upon for security.
+/// Paths beneath the captured volume root must contain only normal relative components.
+/// Intermediate symlinks are never followed; final symlinks can be accessed as links.
+/// The trusted root path itself may contain symlinks. Mount crossings and existing hard links
+/// are not restricted, so this is not a general-purpose filesystem sandbox.
 ///
 /// Use `PathExt` and `PathBufExt` to write cross-platform code that deals only with Unix-style
 /// paths.
@@ -53,7 +55,8 @@ pub use path::PathExt;
 ///
 /// # Unix
 ///
-/// All calls pass through directly to their libc equivalent. Attributes like mode are always
+/// Paths are resolved relative to captured directory descriptors without following symlinks.
+/// Linux 5.6 or later is required for `openat2`. Attributes like mode are always
 /// enabled if the file system supports them. `LxVolumeOptions` is entirely ignored, as are the
 /// `uid` and `gid` fields of `LxCreateOptions`.
 pub struct LxVolume {
@@ -115,8 +118,8 @@ impl LxVolume {
     ///
     /// # Unix
     ///
-    /// Symlinks are followed for chmod, because the `fchmodat` syscall does not offer a way to not
-    /// follow symlinks.
+    /// Chmod does not follow symlinks. On kernels without `fchmodat2`, it uses a captured
+    /// file descriptor through `/proc/self/fd` and requires procfs.
     ///
     /// The `SetAttributes::thread_uid` field is ignored, and the thread's actual capabilities are
     /// are used.
@@ -181,8 +184,7 @@ impl LxVolume {
     ///
     /// # Unix
     ///
-    /// Symlinks are followed for chmod, because the `fchmodat` syscall does not offer a way to not
-    /// follow symlinks.
+    /// Symlinks are not followed. Changing a symlink's mode may return `ENOTSUP`.
     pub fn chmod(&self, path: impl AsRef<Path>, mode: lx::mode_t) -> lx::Result<()> {
         let mut attr = SetAttributes::default();
         attr.mode = Some(mode);
@@ -224,6 +226,8 @@ impl LxVolume {
     }
 
     /// Opens or creates a file.
+    ///
+    /// Symlinks are never followed, even if `O_NOFOLLOW` is omitted.
     ///
     /// # Windows
     ///
@@ -701,7 +705,6 @@ pub struct LxVolumeOptions {
     metadata: bool,
     create_case_sensitive_dirs: bool,
     sandbox: bool,
-    no_follow: bool,
     sandbox_disallowed_extensions: Vec<OsString>,
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
@@ -723,7 +726,6 @@ impl LxVolumeOptions {
             metadata: false,
             create_case_sensitive_dirs: false,
             sandbox: false,
-            no_follow: false,
             sandbox_disallowed_extensions: Vec::new(),
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
@@ -983,16 +985,6 @@ impl LxVolumeOptions {
     /// Hide files and directories that are marked as hidden or may cause hydration (e.g. OneDrive backed).
     pub fn sandbox(&mut self, enabled: bool) -> &mut Self {
         self.sandbox = enabled;
-        self
-    }
-
-    /// Reject traversal through reparse points on Windows.
-    ///
-    /// Paths must contain only relative, normal components. Final reparse points
-    /// can still be accessed without following them, including for readlink and rename.
-    /// This option has no effect on Unix.
-    pub fn no_follow(&mut self, enabled: bool) -> &mut Self {
-        self.no_follow = enabled;
         self
     }
 
@@ -1623,6 +1615,128 @@ mod tests {
                 .unwrap_err()
                 .value(),
             lx::EINVAL
+        );
+    }
+
+    #[test]
+    fn symlink_ancestors_are_not_walked() {
+        let env = TestEnv::new();
+        env.create_file("target/file", "unchanged");
+        env.create_file("source", "source");
+        env.volume
+            .symlink(
+                Path::from_lx("target/childlink").unwrap(),
+                "file",
+                LxCreateOptions::default(),
+            )
+            .unwrap();
+        env.volume
+            .symlink("link", "target", LxCreateOptions::default())
+            .unwrap();
+        let file = Path::from_lx("link/file").unwrap();
+        let new = Path::from_lx("link/new").unwrap();
+        assert!(env.volume.lstat(&file).is_err());
+        assert!(env.volume.statx(&file).is_err());
+        assert!(env.volume.open(&file, lx::O_RDONLY, None).is_err());
+        assert!(
+            env.volume
+                .open(
+                    &file,
+                    lx::O_WRONLY | lx::O_CREAT | lx::O_TRUNC,
+                    Some(LxCreateOptions::default()),
+                )
+                .is_err()
+        );
+        assert!(
+            env.volume
+                .mkdir_stat(&new, LxCreateOptions::default())
+                .is_err()
+        );
+        assert!(
+            env.volume
+                .mknod_stat(&new, LxCreateOptions::new(lx::S_IFREG | 0o600, 0, 0), 0)
+                .is_err()
+        );
+        assert!(
+            env.volume
+                .symlink_stat(&new, "file", LxCreateOptions::default())
+                .is_err()
+        );
+        assert!(
+            env.volume
+                .read_link(Path::from_lx("link/childlink").unwrap())
+                .is_err()
+        );
+        assert!(env.volume.unlink(&file, 0).is_err());
+        assert!(env.volume.rename("source", &new, 0).is_err());
+        assert!(env.volume.rename(&file, "renamed", 0).is_err());
+        assert!(env.volume.link("source", &new).is_err());
+        assert!(env.volume.link(&file, "hardlink").is_err());
+        assert!(env.volume.truncate(&file, 0, 0).is_err());
+        assert!(env.volume.chmod(&file, 0o400).is_err());
+        assert!(env.volume.stat_fs(&file).is_err());
+        assert!(
+            env.volume
+                .set_xattr(&file, "user.test", b"value", 0)
+                .is_err()
+        );
+        assert!(env.volume.get_xattr(&file, "user.test", None).is_err());
+        assert!(env.volume.list_xattr(&file, None).is_err());
+        assert!(env.volume.remove_xattr(&file, "user.test").is_err());
+        assert_eq!(
+            fs::read(env.root_dir.path().join("target/file")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            fs::read(env.root_dir.path().join("source")).unwrap(),
+            b"source"
+        );
+        assert!(!env.root_dir.path().join("target/new").exists());
+        assert!(!env.root_dir.path().join("hardlink").exists());
+    }
+
+    #[test]
+    fn final_symlinks_remain_operable() {
+        let env = TestEnv::new();
+        env.create_file("target/file", "unchanged");
+        env.volume
+            .symlink("link", "target/file", LxCreateOptions::default())
+            .unwrap();
+        assert!(lx::s_islnk(env.volume.lstat("link").unwrap().mode));
+        assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
+        assert!(
+            env.volume
+                .open("link", lx::O_WRONLY | lx::O_TRUNC, None)
+                .is_err()
+        );
+        env.volume.rename("link", "renamed", 0).unwrap();
+        assert_eq!(env.volume.read_link("renamed").unwrap(), "target/file");
+        env.volume.unlink("renamed", 0).unwrap();
+        assert_eq!(
+            fs::read(env.root_dir.path().join("target/file")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
+    fn paths_cannot_escape_the_volume() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        for path in ["../file", "./file", "dir/../file"] {
+            let path = Path::from_lx(path).unwrap();
+            assert_eq!(env.volume.lstat(&path).unwrap_err(), lx::Error::EINVAL);
+            assert_eq!(
+                env.volume
+                    .open(&path, lx::O_WRONLY | lx::O_TRUNC, None)
+                    .err()
+                    .unwrap(),
+                lx::Error::EINVAL
+            );
+            assert_eq!(env.volume.unlink(&path, 0).unwrap_err(), lx::Error::EINVAL);
+        }
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
         );
     }
 

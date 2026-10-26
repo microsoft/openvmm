@@ -441,9 +441,6 @@ impl LxVolume {
             Some(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0)
         };
         let open_target = |desired_access| -> lx::Result<OwnedHandle> {
-            if !self.state.options.no_follow {
-                self.check_sandbox_enforcement(new_path)?;
-            }
             let (target, _) = util::open_relative_file(
                 Some(target_parent),
                 target_path,
@@ -451,7 +448,6 @@ impl LxVolume {
                 FileSystem::FILE_OPEN,
                 util::OpenOptions {
                     create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
-                    no_follow: self.state.options.no_follow,
                     ..Default::default()
                 },
             )?;
@@ -1045,24 +1041,18 @@ impl LxVolume {
                 file_attributes,
                 create_options,
                 ea_buffer: ea,
-                no_follow: self.state.options.no_follow,
             },
         )
     }
 
     /// Resolves namespace-operation destinations without following reparse points.
     fn open_parent<'a>(&self, path: &'a Path) -> lx::Result<Option<(OwnedHandle, &'a Path)>> {
-        if !self.state.options.no_follow {
-            return Ok(None);
-        }
-        if path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-        {
-            return Err(lx::Error::EINVAL);
-        }
+        crate::path::validate_relative_path(path)?;
         let parent_path = path.parent().ok_or(lx::Error::EINVAL)?;
         let name = Path::new(path.file_name().ok_or(lx::Error::EINVAL)?);
+        if parent_path.as_os_str().is_empty() {
+            return Ok(None);
+        }
         let (parent, _) = util::open_relative_file(
             Some(&self.root),
             parent_path,
@@ -1070,7 +1060,6 @@ impl LxVolume {
             FileSystem::FILE_OPEN,
             util::OpenOptions {
                 create_options: FileSystem::FILE_DIRECTORY_FILE,
-                no_follow: true,
                 ..Default::default()
             },
         )
@@ -1524,8 +1513,14 @@ mod tests {
     use test_with_tracing::test;
 
     fn deny_read_ea(handle: &impl AsRawHandle) {
+        deny_access(handle, W32Fs::FILE_READ_EA);
+    }
+
+    fn deny_access(handle: &impl AsRawHandle, access: W32Fs::FILE_ACCESS_RIGHTS) {
         let descriptor: pal::windows::security::LocalSecurityDescriptor =
-            "D:P(D;;0x8;;;WD)(A;;FA;;;WD)".parse().unwrap();
+            format!("D:P(D;;0x{:x};;;WD)(A;;FA;;;WD)", access.0)
+                .parse()
+                .unwrap();
         // SAFETY: The handle and security descriptor remain valid throughout the call.
         unsafe {
             windows::Win32::Security::SetKernelObjectSecurity(
@@ -1535,6 +1530,29 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn metadata_query_does_not_open_a_synchronous_handle() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(W32Fs::WRITE_DAC.0)
+            .open(root.path().join("file"))
+            .unwrap();
+        deny_access(&handle, W32Fs::SYNCHRONIZE);
+        let open_error = volume
+            .open_file(
+                Path::new("file"),
+                W32Fs::FILE_READ_ATTRIBUTES,
+                Default::default(),
+            )
+            .err();
+        let stat = volume.lstat(Path::new("file"));
+        deny_access(&handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+        assert_eq!(open_error, Some(lx::Error::EACCES));
+        assert_eq!(stat.unwrap().file_size, 4);
     }
 
     #[test]
@@ -1563,7 +1581,7 @@ mod tests {
 
         for metadata in [false, true] {
             let mut options = LxVolumeOptions::new();
-            options.no_follow(true).metadata(metadata);
+            options.metadata(metadata);
             let volume = LxVolume::new(root.path(), &options).unwrap();
             assert_eq!(
                 volume
@@ -1587,7 +1605,7 @@ mod tests {
     fn no_follow_symlink_stat_without_read_ea() {
         let root = tempfile::tempdir().unwrap();
         let mut options = LxVolumeOptions::new();
-        options.no_follow(true).metadata(true);
+        options.metadata(true);
         let volume = LxVolume::new(root.path(), &options).unwrap();
         let path = Path::new("link");
         let target = "missing";
@@ -1618,8 +1636,7 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             std::fs::create_dir(root.path().join("dir")).unwrap();
             std::fs::write(root.path().join(r"dir\file"), b"data").unwrap();
-            let mut options = LxVolumeOptions::new();
-            options.no_follow(true);
+            let options = LxVolumeOptions::new();
             let mut volume = LxVolume::new(root.path(), &options).unwrap();
             let flags = &mut Arc::get_mut(&mut volume.state)
                 .unwrap()
@@ -1646,7 +1663,7 @@ mod tests {
     fn no_follow_normal_operations() {
         let root = tempfile::tempdir().unwrap();
         let mut options = LxVolumeOptions::new();
-        options.no_follow(true).metadata(true);
+        options.metadata(true);
         let volume = LxVolume::new(root.path(), &options).unwrap();
         let create = || LxCreateOptions::new(0o777, 0, 0);
         volume.mkdir(Path::new("dir"), create()).unwrap();
@@ -1703,7 +1720,7 @@ mod tests {
                 std::fs::set_permissions(&original_target, permissions).unwrap();
 
                 let mut options = LxVolumeOptions::new();
-                options.no_follow(true).sandbox(sandbox);
+                options.sandbox(sandbox);
                 let mut volume = LxVolume::new(root.path(), &options).unwrap();
                 Arc::get_mut(&mut volume.state)
                     .unwrap()
@@ -1768,7 +1785,7 @@ mod tests {
         std::fs::write(root.path().join("source"), b"source").unwrap();
         std::fs::write(root.path().join(r"dir\target"), b"original").unwrap();
         let mut options = LxVolumeOptions::new();
-        options.no_follow(true).sandbox(true);
+        options.sandbox(true);
         let mut volume = LxVolume::new(root.path(), &options).unwrap();
         Arc::get_mut(&mut volume.state)
             .unwrap()
@@ -1796,7 +1813,6 @@ mod tests {
             FileSystem::FILE_OPEN,
             util::OpenOptions {
                 create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
-                no_follow: true,
                 ..Default::default()
             },
         )
@@ -1841,8 +1857,7 @@ mod tests {
         std::fs::write(root.path().join("source"), b"source").unwrap();
         std::os::windows::fs::symlink_dir(outside.path(), root.path().join("link")).unwrap();
 
-        let mut options = LxVolumeOptions::new();
-        options.no_follow(true);
+        let options = LxVolumeOptions::new();
         let volume = LxVolume::new(root.path(), &options).unwrap();
         let path = Path::new(r"link\file");
         let create = || LxCreateOptions::new(0o777, 0, 0);
@@ -1953,8 +1968,7 @@ mod tests {
     #[ignore = "requires native Windows symlink creation privilege"]
     fn no_follow_preserves_native_symlinks() {
         let root = tempfile::tempdir().unwrap();
-        let mut options = LxVolumeOptions::new();
-        options.no_follow(true);
+        let options = LxVolumeOptions::new();
         let volume = LxVolume::new(root.path(), &options).unwrap();
         let create = || LxCreateOptions::new(0o777, 0, 0);
         volume.mkdir(Path::new("dir"), create()).unwrap();

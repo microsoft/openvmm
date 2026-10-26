@@ -629,34 +629,34 @@ async fn fuse_create_rejects_symlink_parent(driver: DefaultDriver) {
     assert!(!harness.tmpdir_path().join("child").exists());
 }
 
-#[cfg(windows)]
 #[test]
-#[ignore = "requires permission to create native Windows symlinks"]
+#[cfg_attr(
+    windows,
+    ignore = "requires permission to create native Windows symlinks"
+)]
 fn stale_directory_paths_do_not_follow_native_links() {
     for aggregate in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("parent")).unwrap();
-        std::fs::write(tmp.path().join(r"parent\file"), b"inside").unwrap();
+        std::fs::write(tmp.path().join("parent").join("file"), b"inside").unwrap();
         std::fs::write(outside.path().join("file"), b"outside").unwrap();
-        let mut options = crate::LxVolumeOptions::new();
-        options.no_follow(false);
         let (fs, root_id) = if aggregate {
             let fs = VirtioFs::new_aggregate();
-            fs.add_child("share", tmp.path(), Some(&options)).unwrap();
+            fs.add_child("share", tmp.path(), None).unwrap();
             let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
             (fs, root.nodeid)
         } else {
-            (
-                VirtioFs::new(tmp.path(), Some(&options)).unwrap(),
-                FUSE_ROOT_ID,
-            )
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
         };
         let root = fs.get_inode(root_id).unwrap();
         let (parent, _) = root.lookup_child("parent".as_ref()).unwrap();
         let (file, _) = parent.lookup_child("file".as_ref()).unwrap();
         std::fs::rename(tmp.path().join("parent"), tmp.path().join("old")).unwrap();
+        #[cfg(windows)]
         std::os::windows::fs::symlink_dir(outside.path(), tmp.path().join("parent")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("parent")).unwrap();
         assert_eq!(
             parent
                 .create(
@@ -677,11 +677,10 @@ fn stale_directory_paths_do_not_follow_native_links() {
                 .unwrap(),
             lx::Error::ELOOP
         );
-        assert_eq!(
-            root.rename("old".as_ref(), &parent, "renamed".as_ref(), 0)
-                .unwrap_err(),
-            lx::Error::ENOTDIR
-        );
+        let error = root
+            .rename("old".as_ref(), &parent, "renamed".as_ref(), 0)
+            .unwrap_err();
+        assert!(matches!(error, lx::Error::ENOTDIR | lx::Error::ELOOP));
         assert_eq!(
             std::fs::read(outside.path().join("file")).unwrap(),
             b"outside"

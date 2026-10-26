@@ -6956,6 +6956,8 @@ dependencies = [
  "lx",
  "lxutil",
  "parking_lot",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
 ]
 

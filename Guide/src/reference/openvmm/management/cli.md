@@ -265,6 +265,10 @@ describes the source definitions.
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+  Both filesystem backends reject host-side traversal through symlinks beneath
+  the exported root. The configured host root path itself may contain symlinks.
+  Linux hosts require `openat2` (Linux 5.6 or later) and mounted procfs for
+  extended attributes and the older-kernel chmod compatibility path.
 * `--virtio-fs-bus <BUS>`: Select the bus for `--virtio-fs` and
   `--virtio-fs-shmem` devices. Accepted values are `auto`, `mmio`, `pci`,
   `pcie:PORT`, and `vpci`. Defaults to `auto`. A `pcie_port` prefix on either

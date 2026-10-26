@@ -175,6 +175,9 @@ impl FileState {
     }
 
     fn child_path(&self, name: &lx::LxStr) -> lx::Result<PathBuf> {
+        if self.qid.qid_type & QID_TYPE_DIRECTORY == 0 {
+            return Err(lx::Error::ENOTDIR);
+        }
         // Defense in depth: the protocol parser already validates names,
         // but assert here to catch any bypass.
         assert!(!name.is_empty(), "empty child name");
@@ -270,8 +273,10 @@ impl Fid for File {
     // Walk to a child, and make sure it exists.
     fn walk(&self, name: &lx::LxStr) -> lx::Result<Qid> {
         let mut state = self.state.write();
-        state.path.push_lx(name)?;
-        state.validate_exists()?;
+        let path = state.child_path(name)?;
+        let stat = state.root.lstat(&path)?;
+        state.path = path;
+        state.qid = FileState::stat_to_qid(&stat);
         Ok(state.qid)
     }
 
@@ -336,5 +341,72 @@ impl Fid for File {
         let state = self.state.read();
         let child_path = state.child_path(name)?;
         state.root.unlink(child_path, flags as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn non_directory_fids_reject_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"unchanged").unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        volume
+            .symlink("link", "dir", LxCreateOptions::default())
+            .unwrap();
+        for name in ["file", "link"] {
+            let (fid, _) = File::new(Arc::clone(&volume), 0).unwrap();
+            fid.walk(name.as_ref()).unwrap();
+            assert_eq!(fid.walk("child".as_ref()).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(
+                fid.create("child".as_ref(), 0, 0o600, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                fid.mkdir("child".as_ref(), 0o700, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                fid.unlink_at("child".as_ref(), 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+        }
+        assert_eq!(
+            std::fs::read(tmp.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!tmp.path().join("dir/child").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_directory_fid_rejects_replacement_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        std::fs::write(outside.path().join("file"), b"outside").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (fid, _) = File::new(volume, 0).unwrap();
+        fid.walk("dir".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("dir"), tmp.path().join("original")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("dir")).unwrap();
+        assert!(matches!(
+            fid.walk("file".as_ref()).unwrap_err(),
+            lx::Error::ELOOP | lx::Error::ENOTDIR
+        ));
+        assert_eq!(
+            fid.create("new".as_ref(), lx::O_WRONLY as u32, 0o600, 0)
+                .unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside"
+        );
+        assert!(!outside.path().join("new").exists());
     }
 }

@@ -11,12 +11,8 @@ mod util;
 use crate::SetAttributes;
 use lx::StatEx;
 use std::ffi;
-use std::mem;
 use std::os::unix::prelude::*;
 use std::path::Path;
-
-const STATX_BASIC_STATS: u32 = 0x000007ff;
-const STATX_BTIME: u32 = 0x00000800;
 
 // Unix implementation of LxVolume.
 // See crate::LxVolume for more detailed comments.
@@ -33,7 +29,7 @@ impl LxVolume {
             // Open a file descriptor to the root to use with "*at" functions.
             let fd = util::check_lx_errno(libc::open(
                 path.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY,
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
             ))?;
 
             Ok(Self {
@@ -47,32 +43,27 @@ impl LxVolume {
     }
 
     pub fn lstat(&self, path: &Path) -> lx::Result<StatEx> {
-        assert!(path.is_relative());
-        let path = util::path_to_cstr(path)?;
-
-        // SAFETY: Calling syscall as documented, with no special requirements.
-        let statx = unsafe {
-            let mut statx: StatEx = mem::zeroed();
-            util::check_lx_errno(libc::syscall(
-                libc::SYS_statx as ffi::c_long,
-                self.root.as_raw_fd(),
-                path.as_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH,
-                STATX_BASIC_STATS | STATX_BTIME,
-                &mut statx,
-            ))?;
-            statx
-        };
-        Ok(statx)
+        let parent = util::Parent::new(&self.root, path)?;
+        util::stat_at(parent.directory(), parent.name)
     }
 
     pub fn set_attr(&self, path: &Path, attr: SetAttributes) -> lx::Result<()> {
-        util::set_attr(&self.root, Some(path), &attr)
+        let parent = util::Parent::new(&self.root, path)?;
+        util::set_attr(
+            parent.directory(),
+            (!parent.name.as_os_str().is_empty()).then_some(parent.name),
+            &attr,
+        )
     }
 
     pub fn set_attr_stat(&self, path: &Path, attr: SetAttributes) -> lx::Result<lx::Stat> {
-        util::set_attr(&self.root, Some(path), &attr)?;
-        self.lstat(path).map(|x| x.into())
+        let parent = util::Parent::new(&self.root, path)?;
+        util::set_attr(
+            parent.directory(),
+            (!parent.name.as_os_str().is_empty()).then_some(parent.name),
+            &attr,
+        )?;
+        util::stat_at(parent.directory(), parent.name).map(|x| x.into())
     }
 
     pub fn open(
@@ -81,8 +72,6 @@ impl LxVolume {
         flags: i32,
         options: Option<super::LxCreateOptions>,
     ) -> lx::Result<LxFile> {
-        assert!(path.is_relative());
-
         let fd = util::openat(&self.root, path, flags, options)?;
 
         Ok(LxFile {
@@ -92,14 +81,17 @@ impl LxVolume {
     }
 
     pub fn mkdir(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<()> {
-        assert!(path.is_relative());
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::mkdir_at(&parent, options)
+    }
 
-        let path = util::path_to_cstr(path)?;
+    fn mkdir_at(parent: &util::Parent<'_>, options: super::LxCreateOptions) -> lx::Result<()> {
+        let path = util::path_to_cstr(parent.name)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         unsafe {
             util::check_lx_errno(libc::mkdirat(
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
                 options.mode,
             ))?;
@@ -109,8 +101,9 @@ impl LxVolume {
     }
 
     pub fn mkdir_stat(&self, path: &Path, options: super::LxCreateOptions) -> lx::Result<lx::Stat> {
-        self.mkdir(path, options)?;
-        self.lstat(path).map(|x| x.into())
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::mkdir_at(&parent, options)?;
+        util::stat_at(parent.directory(), parent.name).map(|x| x.into())
     }
 
     // The options are entirely ignored on Unix, because uid/gid are never used, and mode isn't
@@ -121,16 +114,19 @@ impl LxVolume {
         target: &lx::LxStr,
         _: super::LxCreateOptions,
     ) -> lx::Result<()> {
-        assert!(path.is_relative());
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::symlink_at(&parent, target)
+    }
 
-        let path = util::path_to_cstr(path)?;
+    fn symlink_at(parent: &util::Parent<'_>, target: &lx::LxStr) -> lx::Result<()> {
+        let path = util::path_to_cstr(parent.name)?;
         let target = util::create_cstr(target.as_bytes())?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         unsafe {
             util::check_lx_errno(libc::symlinkat(
                 target.as_ptr(),
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
             ))?;
         }
@@ -142,22 +138,22 @@ impl LxVolume {
         &self,
         path: &Path,
         target: &lx::LxStr,
-        options: super::LxCreateOptions,
+        _options: super::LxCreateOptions,
     ) -> lx::Result<lx::Stat> {
-        self.symlink(path, target, options)?;
-        self.lstat(path).map(|x| x.into())
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::symlink_at(&parent, target)?;
+        util::stat_at(parent.directory(), parent.name).map(|x| x.into())
     }
 
     pub fn read_link(&self, path: &Path) -> lx::Result<lx::LxString> {
-        assert!(path.is_relative());
-
+        let parent = util::Parent::new(&self.root, path)?;
         let mut buffer = [0u8; libc::PATH_MAX as usize];
-        let path = util::path_to_cstr(path)?;
+        let path = util::path_to_cstr(parent.name)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         let size = unsafe {
             util::check_lx_errno(libc::readlinkat(
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
@@ -169,13 +165,16 @@ impl LxVolume {
     }
 
     pub fn unlink(&self, path: &Path, flags: i32) -> lx::Result<()> {
-        assert!(path.is_relative());
-
-        let path = util::path_to_cstr(path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let path = util::path_to_cstr(parent.name)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         unsafe {
-            util::check_lx_errno(libc::unlinkat(self.root.as_raw_fd(), path.as_ptr(), flags))?;
+            util::check_lx_errno(libc::unlinkat(
+                parent.directory().as_raw_fd(),
+                path.as_ptr(),
+                flags,
+            ))?;
         }
 
         Ok(())
@@ -187,14 +186,21 @@ impl LxVolume {
         options: super::LxCreateOptions,
         device_id: lx::dev_t,
     ) -> lx::Result<()> {
-        assert!(path.is_relative());
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::mknod_at(&parent, options, device_id)
+    }
 
-        let path = util::path_to_cstr(path)?;
+    fn mknod_at(
+        parent: &util::Parent<'_>,
+        options: super::LxCreateOptions,
+        device_id: lx::dev_t,
+    ) -> lx::Result<()> {
+        let path = util::path_to_cstr(parent.name)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         unsafe {
             util::check_lx_errno(libc::mknodat(
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
                 options.mode,
                 device_id as u64,
@@ -210,15 +216,24 @@ impl LxVolume {
         options: super::LxCreateOptions,
         device_id: lx::dev_t,
     ) -> lx::Result<lx::Stat> {
-        self.mknod(path, options, device_id)?;
-        self.lstat(path).map(|x| x.into())
+        let parent = util::Parent::new(&self.root, path)?;
+        Self::mknod_at(&parent, options, device_id)?;
+        util::stat_at(parent.directory(), parent.name).map(|x| x.into())
     }
 
     pub fn rename(&self, path: &Path, new_path: &Path, flags: u32) -> lx::Result<()> {
-        assert!(path.is_relative());
-        assert!(new_path.is_relative());
-        let path = util::path_to_cstr(path)?;
-        let new_path = util::path_to_cstr(new_path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let new_parent = util::Parent::new(&self.root, new_path)?;
+        Self::rename_at(&parent, &new_parent, flags)
+    }
+
+    fn rename_at(
+        parent: &util::Parent<'_>,
+        new_parent: &util::Parent<'_>,
+        flags: u32,
+    ) -> lx::Result<()> {
+        let path = util::path_to_cstr(parent.name)?;
+        let new_path = util::path_to_cstr(new_parent.name)?;
 
         // renameat2 does not have a wrapper in musl, though it does in glibc. Call it using syscall directly instead.
         // SAFETY: Our arguments are valid for this syscall. We are passing arguments in the
@@ -226,9 +241,9 @@ impl LxVolume {
         unsafe {
             util::check_lx_errno(libc::syscall(
                 libc::SYS_renameat2,
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
-                self.root.as_raw_fd(),
+                new_parent.directory().as_raw_fd(),
                 new_path.as_ptr(),
                 flags,
             ) as libc::c_int)?;
@@ -238,17 +253,21 @@ impl LxVolume {
     }
 
     pub fn link(&self, path: &Path, new_path: &Path) -> lx::Result<()> {
-        assert!(path.is_relative());
-        assert!(new_path.is_relative());
-        let path = util::path_to_cstr(path)?;
-        let new_path = util::path_to_cstr(new_path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let new_parent = util::Parent::new(&self.root, new_path)?;
+        Self::link_at(&parent, &new_parent)
+    }
+
+    fn link_at(parent: &util::Parent<'_>, new_parent: &util::Parent<'_>) -> lx::Result<()> {
+        let path = util::path_to_cstr(parent.name)?;
+        let new_path = util::path_to_cstr(new_parent.name)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
         unsafe {
             util::check_lx_errno(libc::linkat(
-                self.root.as_raw_fd(),
+                parent.directory().as_raw_fd(),
                 path.as_ptr(),
-                self.root.as_raw_fd(),
+                new_parent.directory().as_raw_fd(),
                 new_path.as_ptr(),
                 0,
             ))?;
@@ -258,18 +277,24 @@ impl LxVolume {
     }
 
     pub fn link_stat(&self, path: &Path, new_path: &Path) -> lx::Result<lx::Stat> {
-        self.link(path, new_path)?;
-        self.lstat(new_path).map(|x| x.into())
+        let parent = util::Parent::new(&self.root, path)?;
+        let new_parent = util::Parent::new(&self.root, new_path)?;
+        Self::link_at(&parent, &new_parent)?;
+        util::stat_at(new_parent.directory(), new_parent.name).map(|x| x.into())
     }
 
     pub fn stat_fs(&self, path: &Path) -> lx::Result<lx::StatFs> {
-        assert!(path.is_relative());
-        let path = self.full_path(path)?;
+        let file = if path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(util::openat(&self.root, path, libc::O_PATH, None)?)
+        };
+        let file = file.as_ref().unwrap_or(&self.root);
 
         // SAFETY: Calling C API as documented, with no special requirements.
         let stat_fs = unsafe {
-            let mut stat_fs = mem::zeroed();
-            util::check_lx_errno(libc::statfs(path.as_ptr(), &mut stat_fs))?;
+            let mut stat_fs = std::mem::zeroed();
+            util::check_lx_errno(libc::fstatfs(file.as_raw_fd(), &mut stat_fs))?;
             stat_fs
         };
 
@@ -283,10 +308,8 @@ impl LxVolume {
         value: &[u8],
         flags: i32,
     ) -> lx::Result<()> {
-        assert!(path.is_relative());
-
-        // There is no *at version of the xattr APIs.
-        let path = self.full_path(path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let path = parent.proc_path()?;
         let name = util::create_cstr(name.as_bytes())?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
@@ -309,10 +332,8 @@ impl LxVolume {
         name: &lx::LxStr,
         value: Option<&mut [u8]>,
     ) -> lx::Result<usize> {
-        assert!(path.is_relative());
-
-        // There is no *at version of the xattr APIs.
-        let path = self.full_path(path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let path = parent.proc_path()?;
         let name = util::create_cstr(name.as_bytes())?;
 
         // Set the pointer to NULL if no value buffer is provided, to query the attribute's size.
@@ -337,10 +358,8 @@ impl LxVolume {
     }
 
     pub fn list_xattr(&self, path: &Path, list: Option<&mut [u8]>) -> lx::Result<usize> {
-        assert!(path.is_relative());
-
-        // There is no *at version of the xattr APIs.
-        let path = self.full_path(path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let path = parent.proc_path()?;
 
         // Set the list pointer to NULL if no list buffer was provided, to query the size.
         let (list_ptr, size) = if let Some(list) = list {
@@ -359,10 +378,8 @@ impl LxVolume {
     }
 
     pub fn remove_xattr(&self, path: &Path, name: &lx::LxStr) -> lx::Result<()> {
-        assert!(path.is_relative());
-
-        // There is no *at version of the xattr APIs.
-        let path = self.full_path(path)?;
+        let parent = util::Parent::new(&self.root, path)?;
+        let path = parent.proc_path()?;
         let name = util::create_cstr(name.as_bytes())?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
@@ -371,12 +388,6 @@ impl LxVolume {
         }
 
         Ok(())
-    }
-
-    fn full_path(&self, path: &Path) -> lx::Result<ffi::CString> {
-        let mut full_path = util::get_fd_path(&self.root)?;
-        full_path.push(path);
-        util::path_to_cstr(&full_path)
     }
 }
 
@@ -389,21 +400,7 @@ pub struct LxFile {
 
 impl LxFile {
     pub fn fstat(&self) -> lx::Result<StatEx> {
-        // SAFETY: Calling syscall as documented, with no special requirements.
-        let empty_path = util::create_cstr("")?;
-        let statx = unsafe {
-            let mut statx: StatEx = mem::zeroed();
-            util::check_lx_errno(libc::syscall(
-                libc::SYS_statx as ffi::c_long,
-                self.fd.as_raw_fd(),
-                empty_path.as_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH,
-                STATX_BASIC_STATS | STATX_BTIME,
-                &mut statx,
-            ))?;
-            statx
-        };
-        Ok(statx)
+        util::stat_at(&self.fd, Path::new(""))
     }
 
     pub fn set_attr(&self, attr: SetAttributes) -> lx::Result<()> {
@@ -476,5 +473,119 @@ impl LxFile {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use test_with_tracing::test;
+
+    #[test]
+    fn namespace_operations_keep_captured_parents() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        std::fs::write(root.path().join("source"), b"rename").unwrap();
+        std::fs::write(root.path().join("link_source"), b"link").unwrap();
+        std::fs::write(root.path().join("dir/file"), b"inside").unwrap();
+        let volume = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new()).unwrap();
+        let source = util::Parent::new(&volume.root, Path::new("source")).unwrap();
+        let link_source = util::Parent::new(&volume.root, Path::new("link_source")).unwrap();
+        let destination = util::Parent::new(&volume.root, Path::new("dir/renamed")).unwrap();
+        let link = util::Parent::new(&volume.root, Path::new("dir/linked")).unwrap();
+        let directory = util::Parent::new(&volume.root, Path::new("dir/newdir")).unwrap();
+        let file = util::Parent::new(&volume.root, Path::new("dir/file")).unwrap();
+        std::fs::rename(root.path().join("dir"), root.path().join("original")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("dir")).unwrap();
+
+        LxVolume::rename_at(&source, &destination, 0).unwrap();
+        LxVolume::link_at(&link_source, &link).unwrap();
+        LxVolume::mkdir_at(&directory, super::super::LxCreateOptions::default()).unwrap();
+        let path = file.proc_path().unwrap();
+        // SAFETY: All pathname, attribute-name, and value buffers are valid for the call.
+        unsafe {
+            util::check_lx_errno(libc::lsetxattr(
+                path.as_ptr(),
+                c"user.test".as_ptr(),
+                b"inside".as_ptr().cast(),
+                6,
+                0,
+            ))
+            .unwrap();
+        }
+        assert_eq!(
+            std::fs::read(root.path().join("original/renamed")).unwrap(),
+            b"rename"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("original/linked")).unwrap(),
+            b"link"
+        );
+        assert!(root.path().join("original/newdir").is_dir());
+        assert_eq!(
+            volume
+                .get_xattr(Path::new("original/file"), "user.test".as_ref(), None)
+                .unwrap(),
+            6
+        );
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn chmod_does_not_follow_final_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("file");
+        std::fs::write(&target, b"outside").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&target, root.path().join("link")).unwrap();
+        let volume = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new()).unwrap();
+        match volume.set_attr_stat(
+            Path::new("link"),
+            SetAttributes {
+                mode: Some(0o400),
+                ..Default::default()
+            },
+        ) {
+            Ok(stat) => assert!(lx::s_islnk(stat.mode)),
+            Err(error) => assert_eq!(error, lx::Error::ENOTSUP),
+        }
+        assert_eq!(
+            std::fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn renamed_root_is_not_reopened_by_host_path() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let share = root.path().join("share");
+        std::fs::create_dir(&share).unwrap();
+        std::fs::write(share.join("file"), b"inside").unwrap();
+        std::fs::write(outside.path().join("file"), b"outside").unwrap();
+        let volume = LxVolume::new(&share, &super::super::LxVolumeOptions::new()).unwrap();
+        std::fs::rename(&share, root.path().join("original")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &share).unwrap();
+        let original_inode = volume.lstat(Path::new("")).unwrap().inode_id;
+        let reopened = volume
+            .open(Path::new(""), lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        assert_eq!(reopened.fstat().unwrap().inode_id, original_inode);
+        let file = volume.open(Path::new("file"), lx::O_RDONLY, None).unwrap();
+        let mut buffer = [0; 6];
+        assert_eq!(file.pread(&mut buffer, 0).unwrap(), 6);
+        assert_eq!(&buffer, b"inside");
+        volume
+            .set_xattr(Path::new(""), "user.test".as_ref(), b"root", 0)
+            .unwrap();
+        assert_eq!(
+            volume
+                .get_xattr(Path::new(""), "user.test".as_ref(), None)
+                .unwrap(),
+            4
+        );
     }
 }

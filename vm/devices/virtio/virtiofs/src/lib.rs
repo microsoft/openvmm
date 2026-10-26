@@ -81,15 +81,14 @@ fn build_volume(
     mount_options: Option<&LxVolumeOptions>,
 ) -> lx::Result<(lxutil::LxVolume, bool)> {
     let readonly = mount_options.is_some_and(|options| options.is_readonly());
-    let mut options = mount_options.cloned().unwrap_or_default();
-    options.no_follow(true);
+    let options = mount_options.cloned().unwrap_or_default();
     let volume = options.new_volume(root_path)?;
     Ok((volume, readonly))
 }
 
 /// Implementation of the virtio-fs file system.
 ///
-/// On Windows, reparse points are exposed without host-side traversal.
+/// Symlinks are exposed without host-side traversal.
 /// Symbolic links are resolved by the guest, in both direct and aggregate mode.
 #[derive(Clone)]
 pub struct VirtioFs {

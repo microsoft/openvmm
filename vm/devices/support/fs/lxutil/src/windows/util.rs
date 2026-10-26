@@ -23,7 +23,6 @@ use std::ffi;
 use std::mem;
 use std::mem::offset_of;
 use std::os::windows::prelude::*;
-use std::path::Component;
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
@@ -91,7 +90,6 @@ pub struct OpenOptions<'a> {
     pub file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
     pub create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
     pub ea_buffer: Option<&'a [u8]>,
-    pub no_follow: bool,
 }
 
 // Open a file using NtCreateFile.
@@ -104,17 +102,13 @@ pub fn open_relative_file(
     creation_disposition: FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
     options: OpenOptions<'_>,
 ) -> lx::Result<(OwnedHandle, usize)> {
-    if options.no_follow
-        && path
-            .components()
-            .any(|c| !matches!(c, Component::Normal(_)))
-    {
-        return Err(lx::Error::EINVAL);
+    if root.is_some() {
+        crate::path::validate_relative_path(path)?;
     }
     let path = dos_to_nt_path(root, path)?;
     let mut oa = windows::ObjectAttributes::new();
     let mut attributes = Foundation::OBJ_CASE_INSENSITIVE.0;
-    if options.no_follow {
+    if root.is_some() {
         // FILE_OPEN_REPARSE_POINT only protects the final component.
         attributes |= Foundation::OBJ_DONT_REPARSE.0;
     }
@@ -386,36 +380,9 @@ pub fn get_attributes(
         return get_attributes_by_handle(fs_context, state, existing_handle);
     }
 
-    let no_follow_handle = if state.options.no_follow && root_handle.is_some() {
-        let desired_access = if fs_context.compatibility_flags.supports_query_by_name() {
-            W32Fs::FILE_READ_ATTRIBUTES
-        } else {
-            MINIMUM_PERMISSIONS
-        };
-        let (handle, _) = open_relative_file(
-            root_handle,
-            path,
-            desired_access,
-            FileSystem::FILE_OPEN,
-            OpenOptions {
-                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
-                no_follow: true,
-                ..Default::default()
-            },
-        )?;
-        if !fs_context.compatibility_flags.supports_query_by_name() {
-            return get_attributes_by_handle(fs_context, state, &handle);
-        }
-        Some(handle)
-    } else {
-        None
-    };
-    // Querying by name avoids requiring FILE_READ_EA. An empty name queries the
-    // captured file without traversing its path again.
-    let (root_handle, path) = match &no_follow_handle {
-        Some(handle) => (Some(handle), Path::new("")),
-        None => (root_handle, path),
-    };
+    if root_handle.is_some() {
+        crate::path::validate_relative_path(path)?;
+    }
 
     // If NtQueryInformationByName is supported, use it.
     if fs_context.compatibility_flags.supports_query_by_name() {
@@ -427,12 +394,10 @@ pub fn get_attributes(
         // determined based on the reparse data, which requires opening the file.
         let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
         {
-            let symlink_len = if let Some(handle) = &no_follow_handle {
-                fs::read_link_length(handle, state).unwrap_or(0)
-            } else if let Ok((handle, _)) = open_relative_file(
+            let symlink_len = if let Ok((handle, _)) = open_relative_file(
                 root_handle,
                 path,
-                MINIMUM_PERMISSIONS,
+                W32Fs::FILE_READ_ATTRIBUTES,
                 FileSystem::FILE_OPEN,
                 OpenOptions {
                     create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
@@ -763,7 +728,12 @@ pub fn query_information_file_by_name<T: FileInformationClass>(
         Length: size_of::<Wdk::Foundation::OBJECT_ATTRIBUTES>() as _,
         RootDirectory: root_handle,
         ObjectName: path.as_ptr().cast(),
-        Attributes: Foundation::OBJ_FORCE_ACCESS_CHECK as _,
+        Attributes: Foundation::OBJ_FORCE_ACCESS_CHECK
+            | if parent_handle.is_some() {
+                Foundation::OBJ_DONT_REPARSE
+            } else {
+                Foundation::OBJECT_ATTRIBUTE_FLAGS(0)
+            },
         SecurityDescriptor: ptr::null_mut(),
         SecurityQualityOfService: ptr::null_mut(),
     };
