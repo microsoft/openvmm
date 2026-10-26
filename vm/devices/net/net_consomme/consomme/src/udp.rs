@@ -797,6 +797,7 @@ mod tests {
     use crate::IpVersion;
     use crate::PortForwardKey;
     use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
     use parking_lot::Mutex;
     use smoltcp::wire::Ipv4Address;
     use std::io::ErrorKind;
@@ -822,8 +823,12 @@ mod tests {
     }
 
     impl Client for TestClient {
-        fn driver(&self) -> &dyn pal_async::driver::Driver {
+        fn driver(&self) -> &dyn Driver {
             &*self.driver
+        }
+
+        fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
+            Some(self.driver.clone())
         }
 
         fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
@@ -901,8 +906,11 @@ mod tests {
     #[pal_async::async_test]
     async fn test_udp_bind_port_forward(driver: DefaultDriver) {
         let driver = Arc::new(driver);
+        let (old_thread, old_driver) =
+            DefaultPool::spawn_on_thread("consomme-old-udp-listener-driver");
+        let old_driver = Arc::new(old_driver);
         let mut consomme = create_consomme_with_timeout(Duration::from_secs(30));
-        let mut client = TestClient::new(driver.clone());
+        let mut client = TestClient::new(old_driver.clone());
 
         // Bind a UDP listener socket on an ephemeral port.
         let socket = Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, None).unwrap();
@@ -913,18 +921,27 @@ mod tests {
 
         let guest_port = 5555;
         let packets = client.received_packets.clone();
-        let mut access = consomme.access(&mut client);
-        access
-            .bind_udp_port(socket, guest_port)
-            .expect("bind should succeed");
-
-        assert!(
+        {
+            let mut access = consomme.access(&mut client);
             access
-                .inner
-                .udp
-                .listeners
-                .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
-            "listener should be registered"
+                .bind_udp_port(socket, guest_port)
+                .expect("bind should succeed");
+
+            assert!(
+                access
+                    .inner
+                    .udp
+                    .listeners
+                    .contains_key(&PortForwardKey::new(IpVersion::Ipv4, guest_port)),
+                "listener should be registered"
+            );
+        }
+
+        client.driver = driver.clone();
+        drop(old_driver);
+        assert!(
+            !old_thread.is_finished(),
+            "the listener must retain its original driver"
         );
 
         // Send a UDP packet to the listener from another socket.
@@ -936,7 +953,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             std::future::poll_fn(|cx| {
-                access.poll(cx);
+                consomme.access(&mut client).poll(cx);
                 Poll::Ready(())
             })
             .await;
@@ -954,16 +971,35 @@ mod tests {
         }
 
         // Verify the packet targets the guest IP and the correct guest port.
-        let packets = packets.lock();
-        let pkt = &packets[0];
-        let eth = EthernetFrame::new_unchecked(pkt.as_slice());
-        let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
-        let udp = UdpPacket::new_unchecked(ipv4.payload());
-        assert_eq!(
-            udp.dst_port(),
-            guest_port,
-            "forwarded packet should target the guest port"
+        {
+            let packets = packets.lock();
+            let pkt = &packets[0];
+            let eth = EthernetFrame::new_unchecked(pkt.as_slice());
+            let ipv4 = Ipv4Packet::new_unchecked(eth.payload());
+            let udp = UdpPacket::new_unchecked(ipv4.payload());
+            assert_eq!(
+                udp.dst_port(),
+                guest_port,
+                "forwarded packet should target the guest port"
+            );
+        }
+
+        consomme
+            .access(&mut client)
+            .unbind_udp_port(IpVersion::Ipv4, guest_port)
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !old_thread.is_finished() && Instant::now() < deadline {
+            pal_async::timer::PolledTimer::new(&*driver)
+                .sleep(Duration::from_millis(10))
+                .await;
+        }
+        assert!(
+            old_thread.is_finished(),
+            "the listener driver must be released when the listener is unbound"
         );
+        old_thread.join().unwrap();
     }
 
     #[pal_async::async_test]
