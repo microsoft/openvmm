@@ -117,6 +117,7 @@ impl virt::Hypervisor for LinuxMshv {
         };
         let isolation = config.isolation.isolation_type();
         validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        validate_nested_virt_config(config.nested_virt, config.hv_config.as_ref())?;
         let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
@@ -125,9 +126,11 @@ impl virt::Hypervisor for LinuxMshv {
         );
         let create_args = partition_create_args(
             &config.isolation,
-            x2apic,
-            config.processor_topology.smt_enabled(),
-            config.nested_virt,
+            PartitionCreateOptions {
+                x2apic,
+                smt: config.processor_topology.smt_enabled(),
+                nested: config.nested_virt,
+            },
         )?;
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
@@ -135,7 +138,7 @@ impl virt::Hypervisor for LinuxMshv {
         // Set synthetic processor features before initialization when the
         // guest interface is configured. SNP partitions require the smaller
         // early-property feature set accepted by the hypervisor.
-        if config.hv_config.is_some() || snp || config.nested_virt {
+        if config.hv_config.is_some() || snp {
             let synthetic_features_mask = if snp {
                 u64::from(snp_synthetic_features())
             } else if config.nested_virt {
@@ -241,11 +244,16 @@ impl virt::Hypervisor for LinuxMshv {
     }
 }
 
-fn partition_create_args(
-    isolation: &virt::ProtoPartitionIsolation,
+#[derive(Default)]
+struct PartitionCreateOptions {
     x2apic: bool,
     smt: bool,
     nested: bool,
+}
+
+fn partition_create_args(
+    isolation: &virt::ProtoPartitionIsolation,
+    options: PartitionCreateOptions,
 ) -> Result<mshv_bindings::mshv_create_partition_v2, Error> {
     let restricted_injection = match isolation {
         virt::ProtoPartitionIsolation::None => None,
@@ -261,10 +269,10 @@ fn partition_create_args(
     let mut pt_flags =
         1 << mshv_bindings::MSHV_PT_BIT_LAPIC | 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES;
 
-    if snp || x2apic {
+    if snp || options.x2apic {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_X2APIC;
     }
-    if smt {
+    if options.smt {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
     }
     if let Some(restricted_injection) = restricted_injection {
@@ -275,7 +283,7 @@ fn partition_create_args(
         };
         pt_flags |= injection_policy << MSHV_PT_SNP_INJECTION_POLICY_SHIFT;
     }
-    if nested {
+    if options.nested {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION;
     }
 
@@ -356,6 +364,16 @@ fn validate_snp_cpuid_offload_config(
             "snp_disable_cpuid_offload requires SNP isolation",
         )
         .into());
+    }
+    Ok(())
+}
+
+fn validate_nested_virt_config(
+    nested_virt: bool,
+    hv_config: Option<&virt::HvConfig>,
+) -> Result<(), Error> {
+    if nested_virt && hv_config.is_none() {
+        return Err(ErrorInner::InvalidConfiguration("nested_virt requires hv_config").into());
     }
     Ok(())
 }
@@ -1694,6 +1712,25 @@ mod tests {
     }
 
     #[test]
+    fn nested_virtualization_requires_hv_config() {
+        validate_nested_virt_config(false, None).unwrap();
+        validate_nested_virt_config(
+            true,
+            Some(&virt::HvConfig {
+                allow_device_assignment: false,
+                vtl2: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_nested_virt_config(true, None)
+                .unwrap_err()
+                .to_string(),
+            "invalid MSHV configuration: nested_virt requires hv_config"
+        );
+    }
+
+    #[test]
     fn snp_does_not_report_reference_tsc_page_support() {
         assert!(!hv1_reference_tsc_page_supported(
             true,
@@ -1781,9 +1818,7 @@ mod tests {
             &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                 restricted_injection: true,
             }),
-            false,
-            false,
-            false,
+            Default::default(),
         )
         .unwrap();
         let pt_isolation = args.pt_isolation;
@@ -1819,8 +1854,14 @@ mod tests {
 
     #[test]
     fn ordinary_partition_creation_keeps_feature_banks() {
-        let args = partition_create_args(&virt::ProtoPartitionIsolation::None, false, true, false)
-            .unwrap();
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                smt: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
 
@@ -1851,8 +1892,14 @@ mod tests {
 
     #[test]
     fn nested_partition_creation_sets_nested_virtualization_flag() {
-        let args = partition_create_args(&virt::ProtoPartitionIsolation::None, false, false, true)
-            .unwrap();
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                nested: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION,
