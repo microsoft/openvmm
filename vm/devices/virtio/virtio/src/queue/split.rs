@@ -69,6 +69,11 @@ impl SplitQueueGetWork {
         self.last_avail_index
     }
 
+    pub fn rewind(&mut self, index: u16) {
+        self.last_avail_index = index;
+        self.cached_avail_index = index;
+    }
+
     fn set_used_flags(&self, flags: spec::UsedFlags) -> Result<(), QueueError> {
         self.queue_used
             .write_plain::<u16_le>(0, &u16::from(flags).into())

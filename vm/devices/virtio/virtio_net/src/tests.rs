@@ -111,6 +111,7 @@ impl Default for TxAvailBehavior {
 // --- MockQueue ---
 
 struct MockQueue {
+    lifetime: Arc<Mutex<MockQueueLifetime>>,
     tx_avail_behavior: Arc<Mutex<TxAvailBehavior>>,
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
@@ -119,6 +120,19 @@ struct MockQueue {
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
+}
+
+#[derive(Default)]
+struct MockQueueLifetime {
+    dropped: bool,
+    stopped: bool,
+    stop_barrier: Option<(mesh::Sender<()>, mesh::Receiver<()>)>,
+}
+
+impl Drop for MockQueue {
+    fn drop(&mut self) {
+        self.lifetime.lock().dropped = true;
+    }
 }
 
 impl InspectMut for MockQueue {
@@ -225,6 +239,7 @@ impl net_backend::Queue for MockQueue {
 // --- MockQueueHandle ---
 
 struct MockQueueHandle {
+    lifetime: Arc<Mutex<MockQueueLifetime>>,
     tx_avail_behavior: Arc<Mutex<TxAvailBehavior>>,
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
@@ -326,6 +341,7 @@ impl MockQueueHandle {
 }
 
 fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
+    let lifetime = Arc::new(Mutex::new(MockQueueLifetime::default()));
     let tx_avail_behavior = Arc::new(Mutex::new(TxAvailBehavior::default()));
     let tx_avail_log = Arc::new(Mutex::new(Vec::new()));
     let tx_completions = Arc::new(Mutex::new(VecDeque::new()));
@@ -336,6 +352,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
     let (tx_avail_tx, tx_avail_rx) = mesh::channel();
 
     let queue = MockQueue {
+        lifetime: lifetime.clone(),
         tx_avail_behavior: tx_avail_behavior.clone(),
         tx_avail_log: tx_avail_log.clone(),
         tx_completions: tx_completions.clone(),
@@ -346,6 +363,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
         tx_avail_notify: tx_avail_tx,
     };
     let handle = MockQueueHandle {
+        lifetime,
         tx_avail_behavior,
         tx_avail_log,
         tx_completions,
@@ -363,6 +381,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
     is_ordered: bool,
+    lifetime: Option<Arc<Mutex<MockQueueLifetime>>>,
 }
 
 impl InspectMut for MockEndpoint {
@@ -384,12 +403,27 @@ impl Endpoint for MockEndpoint {
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
         let (queue, handle) = new_mock_queue();
+        assert!(self.lifetime.is_none());
+        self.lifetime = Some(handle.lifetime.clone());
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
         Ok(())
     }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        if let Some(lifetime) = self.lifetime.take() {
+            let barrier = {
+                let mut state = lifetime.lock();
+                assert!(state.dropped, "backend queue must be dropped before stop");
+                state.stop_barrier.take()
+            };
+            if let Some((entered, mut release)) = barrier {
+                entered.send(());
+                release.next().await.expect("stop barrier closed");
+            }
+            lifetime.lock().stopped = true;
+        }
+    }
 
     fn is_ordered(&self) -> bool {
         self.is_ordered
@@ -487,6 +521,7 @@ impl TestHarness {
         let endpoint = MockEndpoint {
             queue_tx,
             is_ordered: true,
+            lifetime: None,
         };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
@@ -528,54 +563,48 @@ impl TestHarness {
         &mut self,
         features: VirtioDeviceFeatures,
     ) -> MockQueueHandle {
-        let rx_interrupt = Interrupt::from_event(self.rx_interrupt_event.clone());
-        let tx_interrupt = Interrupt::from_event(self.tx_interrupt_event.clone());
+        for idx in 0..2 {
+            self.device
+                .start_queue(idx, self.queue_resources(idx), &features, None)
+                .await
+                .unwrap();
+        }
+        self.next_queue_handle().await
+    }
 
-        // Queue 0: RX
-        self.device
-            .start_queue(
-                0,
-                QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: RX_DESC_ADDR,
-                        avail_addr: RX_AVAIL_ADDR,
-                        used_addr: RX_USED_ADDR,
-                    },
-                    notify: rx_interrupt,
-                    event: self.rx_event.clone(),
-                    guest_memory: self.mem.clone(),
-                },
-                &features,
-                None,
-            )
-            .await
-            .unwrap();
+    fn queue_resources(&self, idx: u16) -> QueueResources {
+        let (desc, avail, used, kick, call) = match idx {
+            0 => (
+                RX_DESC_ADDR,
+                RX_AVAIL_ADDR,
+                RX_USED_ADDR,
+                &self.rx_event,
+                &self.rx_interrupt_event,
+            ),
+            1 => (
+                TX_DESC_ADDR,
+                TX_AVAIL_ADDR,
+                TX_USED_ADDR,
+                &self.tx_event,
+                &self.tx_interrupt_event,
+            ),
+            _ => unreachable!(),
+        };
+        QueueResources {
+            params: QueueParams {
+                size: QUEUE_SIZE,
+                enable: true,
+                desc_addr: desc,
+                avail_addr: avail,
+                used_addr: used,
+            },
+            notify: Interrupt::from_event(call.clone()),
+            event: kick.clone(),
+            guest_memory: self.mem.clone(),
+        }
+    }
 
-        // Queue 1: TX
-        self.device
-            .start_queue(
-                1,
-                QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: TX_DESC_ADDR,
-                        avail_addr: TX_AVAIL_ADDR,
-                        used_addr: TX_USED_ADDR,
-                    },
-                    notify: tx_interrupt,
-                    event: self.tx_event.clone(),
-                    guest_memory: self.mem.clone(),
-                },
-                &features,
-                None,
-            )
-            .await
-            .unwrap();
-
-        // Wait for the mock endpoint to provide a queue handle
+    async fn next_queue_handle(&mut self) -> MockQueueHandle {
         mesh::CancelContext::new()
             .with_timeout(Duration::from_secs(5))
             .until_cancelled(self.queue_handle_rx.next())
@@ -805,6 +834,54 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
     assert_eq!(used_len, 0);
 }
 
+async fn check_duplicate_start_preserves_traffic(driver: &DefaultDriver, queue_idx: u16) {
+    let mut harness = TestHarness::new(driver);
+    let mut handle = harness.enable_and_get_handle().await;
+    handle.tx_avail_behavior.lock().sync = false;
+
+    for id in [0, 2] {
+        harness.post_rx_buffer_and_signal(id, 256);
+        harness.post_tx_and_signal(id, 64);
+        handle.wait_for_rx_pending().await;
+        handle.wait_for_tx_avail().await;
+
+        if id == 0 {
+            let result = harness
+                .device
+                .start_queue(
+                    queue_idx,
+                    harness.queue_resources(queue_idx),
+                    &VirtioDeviceFeatures::new(),
+                    None,
+                )
+                .await;
+            assert!(result.is_err(), "duplicate start must be rejected");
+            assert!(!handle.lifetime.lock().dropped, "backend must be retained");
+            assert_eq!(harness.try_read_tx_used(), None);
+            assert_eq!(harness.try_read_rx_used(), None);
+        }
+
+        // Both pre-existing work and subsequent traffic must still complete.
+        handle.complete_tx(vec![TxId(id.into())]);
+        handle.inject_rx_packet(&[0x5a; 64]);
+        assert_eq!(harness.wait_for_used().await, (id, 0));
+        assert_eq!(harness.wait_for_rx_used().await, (id, NET_HEADER_SIZE + 64));
+        assert_eq!(harness.try_read_tx_used(), None);
+        assert_eq!(harness.try_read_rx_used(), None);
+    }
+    harness.disable().await;
+}
+
+#[async_test]
+async fn duplicate_rx_start_preserves_traffic(driver: DefaultDriver) {
+    check_duplicate_start_preserves_traffic(&driver, 0).await;
+}
+
+#[async_test]
+async fn duplicate_tx_start_preserves_traffic(driver: DefaultDriver) {
+    check_duplicate_start_preserves_traffic(&driver, 1).await;
+}
+
 /// Submit a descriptor index that is already in-flight (async completion
 /// pending). A duplicate descriptor index cannot be tracked (the pending slot
 /// is already taken), so the device treats it as a fatal protocol violation:
@@ -871,6 +948,7 @@ async fn unordered_backend_rejected(driver: DefaultDriver) {
     let endpoint = MockEndpoint {
         queue_tx,
         is_ordered: false,
+        lifetime: None,
     };
 
     let err = Device::builder()
@@ -1029,6 +1107,102 @@ async fn three_sequential_sync_packets(driver: DefaultDriver) {
         assert!(segments[0].is_head);
         assert_eq!(segments[0].tx_id, Some(expected_id));
     }
+}
+
+#[async_test]
+async fn stop_cancels_accepted_and_unsent_tx_after_backend_release(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features = VirtioDeviceFeatures::new();
+    harness
+        .device
+        .start_queue(1, harness.queue_resources(1), &features, None)
+        .await
+        .unwrap();
+    let mut handle = harness.next_queue_handle().await;
+    {
+        let mut behavior = handle.tx_avail_behavior.lock();
+        behavior.sync = false;
+        behavior.consume_all = false;
+        behavior.consume_count = Some(1);
+    }
+    // All three are consumed from virtio, but only the first reaches the
+    // backend. Non-monotonic IDs also exercise in-order cancellation.
+    for id in [6, 0, 4] {
+        harness.post_tx_and_signal(id, 64);
+    }
+    handle.wait_for_tx_avail().await;
+    let log = handle.take_tx_avail_log();
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log[0]
+            .iter()
+            .map(|segment| segment.tx_id.unwrap())
+            .collect::<Vec<_>>(),
+        [6, 0, 4]
+    );
+    assert_eq!(harness.try_read_tx_used(), None);
+
+    let (entered_tx, mut entered_rx) = mesh::channel();
+    let (release_tx, release_rx) = mesh::channel();
+    handle.lifetime.lock().stop_barrier = Some((entered_tx, release_rx));
+    let mem = harness.mem.clone();
+    let interrupt = harness.tx_interrupt_event.clone();
+    let (state, ()) = mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(async {
+            futures::join!(harness.device.stop_queue(1), async {
+                entered_rx
+                    .next()
+                    .await
+                    .expect("stop did not enter endpoint");
+                assert!(handle.lifetime.lock().dropped);
+                assert!(!handle.lifetime.lock().stopped);
+                assert_eq!(read_used(&mem, TX_USED_ADDR, QUEUE_SIZE, &mut 0), None);
+                assert!(
+                    !interrupt.try_wait(),
+                    "completion before endpoint stop returned"
+                );
+                release_tx.send(());
+            })
+        })
+        .await
+        .expect("queue stop timed out");
+    let state = state.unwrap();
+    assert_eq!(
+        state,
+        virtio::queue::QueueState {
+            avail_index: 3,
+            used_index: 3
+        }
+    );
+    assert!(handle.lifetime.lock().stopped);
+    for id in [6, 0, 4] {
+        assert_eq!(harness.try_read_tx_used(), Some((id, 0)));
+    }
+    assert_eq!(harness.try_read_tx_used(), None);
+    assert!(harness.device.stop_queue(1).await.is_none());
+
+    harness
+        .device
+        .start_queue(1, harness.queue_resources(1), &features, Some(state))
+        .await
+        .unwrap();
+    let restarted = harness.next_queue_handle().await;
+    harness.post_tx_and_signal(2, 64);
+    assert_eq!(harness.wait_for_used().await, (2, 0));
+    assert_eq!(harness.try_read_tx_used(), None);
+    let sent: Vec<_> = restarted
+        .take_tx_avail_log()
+        .into_iter()
+        .flatten()
+        .map(|segment| segment.tx_id.unwrap())
+        .collect();
+    assert_eq!(
+        sent,
+        [2],
+        "old accepted or unsent packets were retransmitted"
+    );
+    harness.disable().await;
 }
 
 /// Partial submit with multiple packets — Phase 2 contract test.

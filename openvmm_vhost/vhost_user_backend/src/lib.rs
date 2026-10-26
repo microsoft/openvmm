@@ -190,6 +190,15 @@ impl VhostUserDeviceServer {
                 // vhost-user control bit, not a virtio device feature.
                 state.negotiated_features = VirtioDeviceFeatures::from_bits(msg.value)
                     .with_vhost_user_protocol_features(false);
+                if !VirtioDeviceFeatures::from_bits(msg.value).vhost_user_protocol_features() {
+                    for (idx, queue) in state.queues.iter_mut().enumerate() {
+                        self.device.set_queue_enabled(idx as u16, true).await?;
+                        queue.enabled = true;
+                    }
+                    for idx in 0..state.queues.len() {
+                        self.maybe_start_queue(state, idx).await?;
+                    }
+                }
                 maybe_ack(socket, hdr, state).await?
             }
 
@@ -310,6 +319,7 @@ impl VhostUserDeviceServer {
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_NUM: invalid queue index");
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -334,6 +344,7 @@ impl VhostUserDeviceServer {
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_ADDR: invalid queue index");
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -342,6 +353,7 @@ impl VhostUserDeviceServer {
                 let idx = msg.index as usize;
                 tracing::trace!(idx, base = %format!("0x{:x}", msg.num), "SET_VRING_BASE");
                 if let Some(q) = state.queues.get_mut(idx) {
+                    anyhow::ensure!(!q.is_active(), "cannot change base of active queue {idx}");
                     q.set_base(msg.num);
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_BASE: invalid queue index");
@@ -352,19 +364,24 @@ impl VhostUserDeviceServer {
             VhostUserRequestCode::GET_VRING_BASE => {
                 let msg = parse_payload::<VhostUserVringState>(payload)?;
                 let idx = msg.index as usize;
-                // Stop the queue and get its state. If the queue was
-                // already stopped via SET_VRING_ENABLE(0), use the
-                // saved state from that stop.
                 let queue_state = if let Some(q) = state.queues.get_mut(idx) {
                     if q.is_active() {
-                        let qs = stop_queue(&mut *self.device, idx as u16).await;
-                        q.set_inactive();
-                        qs.unwrap_or_default()
+                        let qs = stop_queue(&mut *self.device, idx as u16)
+                            .await
+                            .context("active queue did not return stop state")?;
+                        q.set_inactive_with_state(qs);
+                        q.stop();
+                        qs
                     } else {
-                        q.take_saved_state().unwrap_or_default()
+                        let qs = q.saved_state().unwrap_or(QueueState {
+                            avail_index: q.base() as u16,
+                            used_index: (q.base() >> 16) as u16,
+                        });
+                        q.stop();
+                        qs
                     }
                 } else {
-                    QueueState::default()
+                    anyhow::bail!("invalid queue index {idx}");
                 };
                 // For packed ring, pack both avail and used state into
                 // the reply (avail in low 16, used in high 16). For split
@@ -386,12 +403,16 @@ impl VhostUserDeviceServer {
                 let idx = (msg.value & VHOST_USER_VRING_INDEX_MASK) as usize;
                 let nofd = msg.value & VHOST_USER_VRING_NOFD_MASK != 0;
                 tracing::trace!(idx, nofd, fd_count = fds.len(), "SET_VRING_KICK");
+                anyhow::ensure!(!nofd, "queue polling without a kick fd is not supported");
+                anyhow::ensure!(fds.len() == 1, "SET_VRING_KICK requires one fd");
+                self.stop_active_queue(state, idx).await?;
                 if !nofd
                     && let Some(fd) = fds.into_iter().next()
                     && let Some(q) = state.queues.get_mut(idx)
                 {
                     q.set_kick(event_from_fd(fd));
                 }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -400,11 +421,21 @@ impl VhostUserDeviceServer {
                 let idx = (msg.value & VHOST_USER_VRING_INDEX_MASK) as usize;
                 let nofd = msg.value & VHOST_USER_VRING_NOFD_MASK != 0;
                 tracing::trace!(idx, nofd, fd_count = fds.len(), "SET_VRING_CALL");
+                anyhow::ensure!(nofd || fds.len() == 1, "SET_VRING_CALL requires one fd");
+                let restart = self.stop_active_queue(state, idx).await?;
                 if let Some(q) = state.queues.get_mut(idx) {
                     if nofd {
                         q.set_call(Interrupt::null());
                     } else if let Some(fd) = fds.into_iter().next() {
-                        q.set_call(Interrupt::from_event(event_from_fd(fd)));
+                        let call = Interrupt::from_event(event_from_fd(fd));
+                        // Completions, including those published while stopping,
+                        // may have used a missing or replaced CALL fd. Notify
+                        // the frontend to check the used ring for those completions.
+                        call.deliver();
+                        q.set_call(call);
+                    }
+                    if restart {
+                        self.start_queue(state, idx).await?;
                     }
                 }
                 maybe_ack(socket, hdr, state).await?;
@@ -420,62 +451,16 @@ impl VhostUserDeviceServer {
                 let idx = msg.index as usize;
                 let enable = msg.num != 0;
                 tracing::trace!(idx, enable, "SET_VRING_ENABLE");
-                if let Some(q) = state.queues.get_mut(idx) {
-                    if enable {
-                        if !q.is_active() {
-                            if let Some((resources, raw_base)) =
-                                q.try_activate(self.guest_memory.clone())
-                            {
-                                // Split raw_base into QueueState based on ring type.
-                                let queue_state = if state.negotiated_features.ring_packed() {
-                                    // Packed: low 16 = avail state, high 16 = used state.
-                                    QueueState {
-                                        avail_index: raw_base as u16,
-                                        used_index: (raw_base >> 16) as u16,
-                                    }
-                                } else {
-                                    // Split: only avail index from SET_VRING_BASE.
-                                    // Used index is read from guest memory by the queue.
-                                    QueueState {
-                                        avail_index: raw_base as u16,
-                                        used_index: 0,
-                                    }
-                                };
-                                tracing::trace!(
-                                    idx,
-                                    avail_index = queue_state.avail_index,
-                                    used_index = queue_state.used_index,
-                                    desc_addr = %format!("0x{:x}", resources.params.desc_addr),
-                                    avail_addr = %format!("0x{:x}", resources.params.avail_addr),
-                                    used_addr = %format!("0x{:x}", resources.params.used_addr),
-                                    size = resources.params.size,
-                                    "activating queue",
-                                );
-                                self.device
-                                    .start_queue(
-                                        idx as u16,
-                                        resources,
-                                        &state.negotiated_features,
-                                        Some(queue_state),
-                                    )
-                                    .await?;
-                                q.set_active();
-                            } else {
-                                tracelimit::warn_ratelimited!(
-                                    idx,
-                                    "SET_VRING_ENABLE: queue not ready to activate"
-                                );
-                            }
-                        }
-                    } else if q.is_active() {
-                        let state = stop_queue(&mut *self.device, idx as u16)
-                            .await
-                            .unwrap_or_default();
-                        q.set_inactive_with_state(state);
-                    }
-                } else {
-                    tracelimit::warn_ratelimited!(idx, "SET_VRING_ENABLE: invalid queue index");
+                if !enable && !self.device.supports_queue_enable() {
+                    self.stop_active_queue(state, idx).await?;
                 }
+                if let Some(q) = state.queues.get_mut(idx) {
+                    self.device.set_queue_enabled(idx as u16, enable).await?;
+                    q.enabled = enable;
+                } else {
+                    anyhow::bail!("invalid queue index {idx}");
+                }
+                self.maybe_start_queue(state, idx).await?;
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -496,6 +481,71 @@ impl VhostUserDeviceServer {
         }
 
         Ok(())
+    }
+
+    async fn start_queue(&mut self, state: &mut ConnectionState, idx: usize) -> anyhow::Result<()> {
+        let q = &mut state.queues[idx];
+        let (resources, base) = q
+            .try_activate(self.guest_memory.clone())
+            .context("queue configuration is incomplete")?;
+        let used_index = if state.negotiated_features.ring_packed() {
+            (base >> 16) as u16
+        } else {
+            self.guest_memory
+                .read_plain::<virtio::spec::u16_le>(
+                    resources
+                        .params
+                        .used_addr
+                        .checked_add(virtio::spec::queue::USED_OFFSET_IDX)
+                        .context("used ring address overflow")?,
+                )
+                .context("reading used index")?
+                .get()
+        };
+        self.device.set_queue_enabled(idx as u16, q.enabled).await?;
+        self.device
+            .start_queue(
+                idx as u16,
+                resources,
+                &state.negotiated_features,
+                Some(QueueState {
+                    avail_index: base as u16,
+                    used_index,
+                }),
+            )
+            .await?;
+        q.set_active();
+        Ok(())
+    }
+
+    async fn maybe_start_queue(
+        &mut self,
+        state: &mut ConnectionState,
+        idx: usize,
+    ) -> anyhow::Result<()> {
+        let q = state.queues.get(idx).context("invalid queue index")?;
+        if q.ready_to_start(self.device.supports_queue_enable()) {
+            self.start_queue(state, idx).await?;
+        }
+        Ok(())
+    }
+
+    async fn stop_active_queue(
+        &mut self,
+        state: &mut ConnectionState,
+        idx: usize,
+    ) -> anyhow::Result<bool> {
+        let q = state.queues.get_mut(idx).context("invalid queue index")?;
+        if !q.is_active() {
+            return Ok(false);
+        }
+        let saved = self
+            .device
+            .stop_queue(idx as u16)
+            .await
+            .context("active queue did not return stop state")?;
+        q.set_inactive_with_state(saved);
+        Ok(true)
     }
 
     /// Handle SET_MEM_TABLE: build new guest memory, stop/restart queues.
@@ -1006,8 +1056,8 @@ mod tests {
         .await;
     }
 
-    /// Helper: set up and enable queue 0 with dummy addresses and eventfds.
-    async fn setup_and_enable_queue(frontend: &VhostUserSocket) {
+    /// Configure queue 0 without signaling its kick eventfd.
+    async fn setup_queue(frontend: &VhostUserSocket, enable: bool) {
         // SET_VRING_NUM
         let vring_num = VhostUserVringState { index: 0, num: 256 };
         send_msg(
@@ -1047,7 +1097,7 @@ mod tests {
 
         // SET_VRING_KICK (with eventfd)
         let kick_event = Event::new();
-        let kick_fd: OwnedFd = kick_event.into();
+        let kick_fd: OwnedFd = kick_event.clone().into();
         let kick_msg = VhostUserU64Msg { value: 0 }; // index 0, no NOFD
         send_msg(
             frontend,
@@ -1069,15 +1119,16 @@ mod tests {
         )
         .await;
 
-        // SET_VRING_ENABLE
-        let enable_msg = VhostUserVringState { index: 0, num: 1 };
-        send_msg(
-            frontend,
-            VhostUserRequestCode::SET_VRING_ENABLE,
-            enable_msg.as_bytes(),
-            &[] as &[OwnedFd],
-        )
-        .await;
+        if enable {
+            let enable_msg = VhostUserVringState { index: 0, num: 1 };
+            send_msg(
+                frontend,
+                VhostUserRequestCode::SET_VRING_ENABLE,
+                enable_msg.as_bytes(),
+                &[] as &[OwnedFd],
+            )
+            .await;
+        }
     }
 
     /// Verify that sending SET_MEM_TABLE while a queue is active causes
@@ -1093,6 +1144,7 @@ mod tests {
         struct TrackingDevice {
             inner: MockDevice,
             log: Arc<Mutex<Vec<&'static str>>>,
+            started: Event,
         }
 
         impl InspectMut for TrackingDevice {
@@ -1122,6 +1174,7 @@ mod tests {
                 initial_state: Option<QueueState>,
             ) -> anyhow::Result<()> {
                 self.log.lock().push("start");
+                self.started.signal();
                 VirtioDevice::start_queue(&mut self.inner, idx, resources, features, initial_state)
                     .await
             }
@@ -1138,9 +1191,12 @@ mod tests {
         }
 
         let log = Arc::new(Mutex::new(Vec::new()));
+        let started = Event::new();
+        let mut started_wait = pal_async::wait::PolledWait::new(&driver, started.clone()).unwrap();
         let device = TrackingDevice {
             inner: MockDevice::new(),
             log: log.clone(),
+            started,
         };
 
         let (frontend_stream, backend_stream) = socket_pair();
@@ -1158,7 +1214,10 @@ mod tests {
             send_mem_table(&frontend, 0x10_0000).await;
 
             // 2. Set up and enable queue 0.
-            setup_and_enable_queue(&frontend).await;
+            setup_queue(&frontend, true).await;
+            started_wait.wait().await.unwrap();
+            send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+            log.lock().clear();
 
             // 3. Send another SET_MEM_TABLE while queue 0 is active.
             //    This simulates a runtime memory update (e.g., hotplug/balloon).
@@ -1178,7 +1237,6 @@ mod tests {
 
         let log = log.lock();
         // Expected sequence:
-        //   start  — SET_VRING_ENABLE (initial queue start)
         //   stop   — SET_MEM_TABLE stops the active queue
         //   start  — SET_MEM_TABLE restarts it with new memory
         //   stop   — serve_connection cleanup (stop_all_queues)
@@ -1187,17 +1245,465 @@ mod tests {
         //
         // The critical assertion: after the first start, a stop is
         // followed by another start (the restart), not just a stop.
-        let start_count = log.iter().filter(|&&s| s == "start").count();
-        assert!(
-            start_count >= 2,
-            "queue should be started at least twice (initial + restart after SET_MEM_TABLE), \
-             got {start_count}. log: {log:?}"
-        );
-        // The first three entries should be: start, stop, start
         assert_eq!(
-            &log[..3],
-            &["start", "stop", "start"],
-            "expected start→stop→start sequence for queue restart. log: {log:?}"
+            &log[..2],
+            &["stop", "start"],
+            "expected stop followed by restart after SET_MEM_TABLE. log: {log:?}"
         );
+    }
+
+    #[async_test]
+    async fn kick_fd_starts_disabled_ring_without_signal_and_enable_does_not_restart(
+        driver: DefaultDriver,
+    ) {
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        struct Device {
+            log: Arc<Mutex<Vec<&'static str>>>,
+            started: Event,
+        }
+        impl InspectMut for Device {
+            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+                req.ignore();
+            }
+        }
+        impl VirtioDevice for Device {
+            fn traits(&self) -> DeviceTraits {
+                MockDevice::new().traits
+            }
+            async fn read_registers_u32(&mut self, _: u16) -> u32 {
+                0
+            }
+            async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+            async fn start_queue(
+                &mut self,
+                _: u16,
+                _: QueueResources,
+                _: &VirtioDeviceFeatures,
+                _: Option<QueueState>,
+            ) -> anyhow::Result<()> {
+                self.log.lock().push("start");
+                self.started.signal();
+                Ok(())
+            }
+            async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+                self.log.lock().push("stop");
+                Some(QueueState {
+                    avail_index: 7,
+                    used_index: 7,
+                })
+            }
+            fn supports_queue_enable(&self) -> bool {
+                true
+            }
+            async fn set_queue_enabled(&mut self, _: u16, enabled: bool) -> anyhow::Result<()> {
+                self.log
+                    .lock()
+                    .push(if enabled { "enable" } else { "disable" });
+                Ok(())
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let started = Event::new();
+        let mut wait = pal_async::wait::PolledWait::new(&driver, started.clone()).unwrap();
+        let server = VhostUserDeviceServer::new(Box::new(Device {
+            log: log.clone(),
+            started,
+        }));
+        let (a, b) = socket_pair();
+        let frontend = VhostUserSocket::new(PolledSocket::new(&driver, a).unwrap());
+        let backend = VhostUserSocket::new(PolledSocket::new(&driver, b).unwrap());
+        let client = async {
+            do_handshake(&frontend).await;
+            send_mem_table(&frontend, 0x10_0000).await;
+            setup_queue(&frontend, false).await;
+            send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+            assert!(
+                log.lock().contains(&"start"),
+                "installing kick fd must start the disabled ring"
+            );
+            wait.wait().await.unwrap();
+            log.lock().clear();
+            for enable in [0, 1] {
+                send_msg(
+                    &frontend,
+                    VhostUserRequestCode::SET_VRING_ENABLE,
+                    VhostUserVringState {
+                        index: 0,
+                        num: enable,
+                    }
+                    .as_bytes(),
+                    &[] as &[OwnedFd],
+                )
+                .await;
+            }
+            send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+            assert_eq!(*log.lock(), ["disable", "enable"]);
+            for _ in 0..2 {
+                let response = send_and_recv(
+                    &frontend,
+                    VhostUserRequestCode::GET_VRING_BASE,
+                    VhostUserVringState { index: 0, num: 0 }.as_bytes(),
+                )
+                .await;
+                let state = parse_payload::<VhostUserVringState>(&response).unwrap();
+                assert_eq!(state.num, 7);
+            }
+            assert_eq!(*log.lock(), ["disable", "enable", "stop"]);
+            drop(frontend);
+        };
+        let (result, ()) = futures::join!(server.serve_connection(backend), client);
+        result.unwrap();
+    }
+
+    #[async_test]
+    async fn call_fd_catches_up_completions_before_install_and_during_stop(driver: DefaultDriver) {
+        use pal_async::wait::PolledWait;
+        use virtio::VirtioQueue;
+        use virtio::spec::queue::DescriptorFlags;
+        use virtio::test_helpers::{make_available, read_used, write_descriptor};
+
+        struct CompletingDevice {
+            driver: DefaultDriver,
+            queue: Option<VirtioQueue>,
+        }
+        impl InspectMut for CompletingDevice {
+            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+                req.ignore();
+            }
+        }
+        impl VirtioDevice for CompletingDevice {
+            fn traits(&self) -> DeviceTraits {
+                MockDevice::new().traits
+            }
+            async fn read_registers_u32(&mut self, _: u16) -> u32 {
+                0
+            }
+            async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+            async fn start_queue(
+                &mut self,
+                _: u16,
+                resources: QueueResources,
+                features: &VirtioDeviceFeatures,
+                initial_state: Option<QueueState>,
+            ) -> anyhow::Result<()> {
+                let mut queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    PolledWait::new(&self.driver, resources.event)?,
+                    initial_state,
+                )?;
+                if let Some(work) = queue.try_next()? {
+                    queue.complete(work, 0);
+                }
+                self.queue = Some(queue);
+                Ok(())
+            }
+            async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+                let mut queue = self.queue.take()?;
+                if let Some(work) = queue.try_next().unwrap() {
+                    queue.complete(work, 0);
+                }
+                Some(queue.queue_state())
+            }
+        }
+
+        // Exercise an absent CALL, explicit NOFD, and replacement of a live fd.
+        for initial_call in [None, Some(false), Some(true)] {
+            let mem = GuestMemory::allocate(0x10000);
+            let device = CompletingDevice {
+                driver: driver.clone(),
+                queue: None,
+            };
+            let traits = VirtioDevice::traits(&device);
+            let mut server = VhostUserDeviceServer::new(Box::new(device));
+            server.guest_memory = mem.clone();
+            let mut state = ConnectionState::new(&traits);
+            state.queues[0].set_num(16);
+            state.queues[0].set_addr(0x1000, 0x2000, 0x3000);
+            state.queues[0].enabled = true;
+            let (a, _b) = socket_pair();
+            let socket = VhostUserSocket::new(PolledSocket::new(&driver, a).unwrap());
+            let header = |code: VhostUserRequestCode| VhostUserMsgHeader {
+                request: code.0,
+                flags: VHOST_USER_FLAG_VERSION,
+                size: size_of::<VhostUserU64Msg>() as u32,
+            };
+            let old_call = Event::new();
+            if let Some(with_fd) = initial_call {
+                server
+                    .dispatch_message(
+                        &socket,
+                        &mut state,
+                        &traits,
+                        &header(VhostUserRequestCode::SET_VRING_CALL),
+                        VhostUserU64Msg {
+                            value: if with_fd {
+                                0
+                            } else {
+                                VHOST_USER_VRING_NOFD_MASK
+                            },
+                        }
+                        .as_bytes(),
+                        if with_fd {
+                            vec![old_call.clone().into()]
+                        } else {
+                            vec![]
+                        },
+                    )
+                    .await
+                    .unwrap();
+                old_call.try_wait();
+            }
+            let mut avail = 0;
+            for id in 0..2 {
+                write_descriptor(&mem, 0x1000, id, 0x4000, 1, DescriptorFlags::new(), 0);
+                make_available(&mem, 0x2000, 16, id, &mut avail);
+            }
+            server
+                .dispatch_message(
+                    &socket,
+                    &mut state,
+                    &traits,
+                    &header(VhostUserRequestCode::SET_VRING_KICK),
+                    VhostUserU64Msg { value: 0 }.as_bytes(),
+                    vec![Event::new().into()],
+                )
+                .await
+                .unwrap();
+            let mut used = 0;
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), Some((0, 0)));
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), None);
+
+            let new_call = Event::new();
+            server
+                .dispatch_message(
+                    &socket,
+                    &mut state,
+                    &traits,
+                    &header(VhostUserRequestCode::SET_VRING_CALL),
+                    VhostUserU64Msg { value: 0 }.as_bytes(),
+                    vec![new_call.clone().into()],
+                )
+                .await
+                .unwrap();
+            assert!(new_call.try_wait(), "new CALL must cover old completions");
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), Some((1, 0)));
+            assert_eq!(read_used(&mem, 0x3000, 16, &mut used), None);
+            assert!(!new_call.try_wait(), "no work was replayed on restart");
+            server.stop_all_queues().await;
+        }
+    }
+
+    #[async_test]
+    async fn net_enable_before_setup_and_stop_restart(driver: DefaultDriver) {
+        use net_backend::loopback::LoopbackEndpoint;
+        use net_backend_resources::mac_address::MacAddress;
+        use virtio::spec::queue::DescriptorFlags;
+        use virtio::test_helpers::{make_available, wait_for_used, write_descriptor};
+        use vmcore::vm_task::{SingleDriverBackend, VmTaskDriverSource};
+
+        async fn enable(socket: &VhostUserSocket, idx: u32, enabled: bool) {
+            let payload = VhostUserVringState {
+                index: idx,
+                num: u32::from(enabled),
+            };
+            socket
+                .send_message(
+                    &VhostUserMsgHeader {
+                        request: VhostUserRequestCode::SET_VRING_ENABLE.0,
+                        flags: VHOST_USER_FLAG_VERSION | VHOST_USER_FLAG_NEED_REPLY,
+                        size: size_of::<VhostUserVringState>() as u32,
+                    },
+                    payload.as_bytes(),
+                    &[] as &[OwnedFd],
+                )
+                .await
+                .unwrap();
+            let mut receiver = ScmReceiver::new(VHOST_USER_MAX_FDS);
+            let (hdr, payload, _) = socket.recv_message(&mut receiver).await.unwrap();
+            assert_eq!(hdr.request, VhostUserRequestCode::SET_VRING_ENABLE.0);
+            assert!(hdr.is_reply());
+            assert_eq!(parse_payload::<VhostUserU64Msg>(&payload).unwrap().value, 0);
+        }
+
+        async fn setup(socket: &VhostUserSocket, idx: u32, base: u32, kick: &Event, call: &Event) {
+            for (code, num) in [
+                (VhostUserRequestCode::SET_VRING_NUM, 16),
+                (VhostUserRequestCode::SET_VRING_BASE, base),
+            ] {
+                send_msg(
+                    socket,
+                    code,
+                    VhostUserVringState { index: idx, num }.as_bytes(),
+                    &[] as &[OwnedFd],
+                )
+                .await;
+            }
+            let offset = u64::from(idx) * 0x3000;
+            send_msg(
+                socket,
+                VhostUserRequestCode::SET_VRING_ADDR,
+                VhostUserVringAddr {
+                    index: idx,
+                    flags: 0,
+                    desc_user_addr: 0x1000_1000 + offset,
+                    avail_user_addr: 0x1000_2000 + offset,
+                    used_user_addr: 0x1000_3000 + offset,
+                    log_guest_addr: 0,
+                }
+                .as_bytes(),
+                &[] as &[OwnedFd],
+            )
+            .await;
+            // Exercise activation before the notification fd is installed.
+            for (code, event) in [
+                (VhostUserRequestCode::SET_VRING_KICK, kick),
+                (VhostUserRequestCode::SET_VRING_CALL, call),
+            ] {
+                let fd: OwnedFd = event.clone().into();
+                send_msg(
+                    socket,
+                    code,
+                    VhostUserU64Msg { value: idx.into() }.as_bytes(),
+                    &[fd],
+                )
+                .await;
+            }
+        }
+
+        // GET_VRING_BASE must stop a ring with or without prior disablement.
+        for disable_before_stop in [false, true] {
+            let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+            let device = virtio_net::Device::builder()
+                .build(
+                    &source,
+                    Box::new(LoopbackEndpoint::new()),
+                    MacAddress::new([2, 0, 0, 0, 0, 1]),
+                )
+                .unwrap();
+            let server = VhostUserDeviceServer::new(Box::new(device));
+            let (a, b) = socket_pair();
+            let frontend = VhostUserSocket::new(PolledSocket::new(&driver, a).unwrap());
+            let backend = VhostUserSocket::new(PolledSocket::new(&driver, b).unwrap());
+            let fd = make_memfd(0x10000);
+            let mem = build_guest_memory(vec![(
+                VhostUserMemoryRegion {
+                    guest_phys_addr: 0,
+                    memory_size: 0x10000,
+                    userspace_addr: 0x1000_0000,
+                    mmap_offset: 0,
+                },
+                fd.try_clone().unwrap(),
+            )])
+            .unwrap()
+            .guest_memory;
+            let kicks = [Event::new(), Event::new()];
+            let calls = [Event::new(), Event::new()];
+            let client = async {
+                do_handshake(&frontend).await;
+                send_msg(
+                    &frontend,
+                    VhostUserRequestCode::SET_PROTOCOL_FEATURES,
+                    VhostUserU64Msg {
+                        value: VhostUserProtocolFeatures::new()
+                            .with_mq(true)
+                            .with_reply_ack(true)
+                            .into_bits(),
+                    }
+                    .as_bytes(),
+                    &[] as &[OwnedFd],
+                )
+                .await;
+                // Enable state can be set before memory and ring configuration.
+                for i in 0..2 {
+                    enable(&frontend, i, true).await;
+                }
+                send_msg(
+                    &frontend,
+                    VhostUserRequestCode::SET_MEM_TABLE,
+                    &mem_table_payload(0, 0x10000, 0x1000_0000),
+                    &[fd],
+                )
+                .await;
+                let mut rx_avail = 0;
+                for (id, addr) in [(4, 0x8000), (7, 0x8100)] {
+                    write_descriptor(
+                        &mem,
+                        0x1000,
+                        id,
+                        addr,
+                        256,
+                        DescriptorFlags::new().with_write(true),
+                        0,
+                    );
+                    make_available(&mem, 0x2000, 16, id, &mut rx_avail);
+                }
+                // Posted RX buffers must be usable without any RX kick.
+                for i in 0..2 {
+                    setup(&frontend, i as u32, 0, &kicks[i], &calls[i]).await;
+                }
+                send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+                let mut tx_avail = 0;
+                let mut tx_used = 0;
+                let mut rx_used = 0;
+                for (tx_id, rx_id, rx_addr) in [(0, 4, 0x8000), (1, 7, 0x8100)] {
+                    let mut packet = [0xab + tx_id as u8; 44];
+                    packet[..12].fill(0);
+                    mem.write_at(0x9000, &packet).unwrap();
+                    write_descriptor(&mem, 0x4000, tx_id, 0x9000, 44, DescriptorFlags::new(), 0);
+                    make_available(&mem, 0x5000, 16, tx_id, &mut tx_avail);
+                    kicks[1].signal();
+                    assert_eq!(
+                        wait_for_used(&driver, &calls[1], &mem, 0x6000, 16, &mut tx_used)
+                            .await
+                            .0,
+                        tx_id
+                    );
+                    assert_eq!(
+                        wait_for_used(&driver, &calls[0], &mem, 0x3000, 16, &mut rx_used).await,
+                        (rx_id, 44)
+                    );
+                    let mut received = [0; 32];
+                    mem.read_at(rx_addr + 12, &mut received).unwrap();
+                    assert_eq!(received, [0xab + tx_id as u8; 32]);
+                    if tx_id == 0 {
+                        if disable_before_stop {
+                            for i in 0..2 {
+                                enable(&frontend, i, false).await;
+                            }
+                        }
+                        let mut bases = [0; 2];
+                        for (i, base) in bases.iter_mut().enumerate() {
+                            let response = send_and_recv(
+                                &frontend,
+                                VhostUserRequestCode::GET_VRING_BASE,
+                                VhostUserVringState {
+                                    index: i as u32,
+                                    num: 0,
+                                }
+                                .as_bytes(),
+                            )
+                            .await;
+                            *base = parse_payload::<VhostUserVringState>(&response).unwrap().num;
+                            assert_eq!(*base, 1);
+                        }
+                        for i in 0..2 {
+                            enable(&frontend, i, true).await;
+                        }
+                        for i in 0..2 {
+                            setup(&frontend, i as u32, bases[i], &kicks[i], &calls[i]).await;
+                        }
+                        send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
+                    }
+                }
+                drop(frontend);
+            };
+            let (result, ()) = futures::join!(server.serve_connection(backend), client);
+            result.unwrap();
+        }
     }
 }

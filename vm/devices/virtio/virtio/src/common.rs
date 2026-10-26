@@ -311,6 +311,13 @@ impl VirtioQueue {
         }
     }
 
+    /// Returns outstanding buffers to the available side without completing
+    /// them. Only valid for an in-order device, after releasing all backend
+    /// ownership and discarding every outstanding work/completion token.
+    pub fn rewind_uncompleted(&mut self) {
+        self.core.rewind(self.complete.used_index());
+    }
+
     /// Polls until the queue is kicked by the guest, indicating new work may be
     /// available.
     ///

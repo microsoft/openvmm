@@ -31,11 +31,11 @@ pub struct QueueSetup {
     /// For packed ring: bits 0-15 = avail state (index + wrap),
     ///                  bits 16-31 = used state (index + wrap).
     base: u32,
-    /// Whether this queue is currently active (started).
+    /// Whether the device is currently processing this queue. Devices without
+    /// enable control are inactive while disabled, even with a kick fd.
     active: bool,
-    /// Queue state saved when the queue was stopped via
-    /// SET_VRING_ENABLE(0). GET_VRING_BASE returns this if the queue
-    /// has already been stopped.
+    pub enabled: bool,
+    /// Progress retained across queue stop or reconfiguration.
     saved_state: Option<QueueState>,
 }
 
@@ -61,6 +61,7 @@ impl QueueSetup {
             call: None,
             base: 0,
             active: false,
+            enabled: false,
             saved_state: None,
         }
     }
@@ -84,6 +85,16 @@ impl QueueSetup {
         self.kick = Some(event);
     }
 
+    /// Installing the kick fd starts a configured ring; the
+    /// eventfd need not have been signaled.
+    pub fn ready_to_start(&self, process_disabled: bool) -> bool {
+        !self.active
+            && (self.enabled || process_disabled)
+            && self.size.is_some()
+            && self.addrs.is_some()
+            && self.kick.is_some()
+    }
+
     /// Store the call interrupt (from SET_VRING_CALL).
     pub fn set_call(&mut self, interrupt: Interrupt) {
         self.call = Some(interrupt);
@@ -95,9 +106,20 @@ impl QueueSetup {
     /// For packed ring, bits 0-15 = avail state, bits 16-31 = used state.
     pub fn set_base(&mut self, base: u32) {
         self.base = base;
+        self.saved_state = None;
     }
 
-    /// Whether this queue is currently active (started).
+    pub fn base(&self) -> u32 {
+        self.base
+    }
+
+    pub fn stop(&mut self) {
+        self.set_inactive();
+        self.kick = None;
+        self.call = None;
+    }
+
+    /// Whether this queue is currently active in the device.
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -117,11 +139,12 @@ impl QueueSetup {
     pub fn set_inactive_with_state(&mut self, state: QueueState) {
         self.active = false;
         self.saved_state = Some(state);
+        self.base = state.avail_index as u32 | ((state.used_index as u32) << 16);
     }
 
-    /// Take the saved queue state (from a prior SET_VRING_ENABLE(0)).
-    pub fn take_saved_state(&mut self) -> Option<QueueState> {
-        self.saved_state.take()
+    /// Return the saved queue state without consuming it.
+    pub fn saved_state(&self) -> Option<QueueState> {
+        self.saved_state
     }
 
     /// Try to build `QueueResources` for activation.
@@ -165,6 +188,7 @@ impl QueueSetup {
         self.call = None;
         self.base = 0;
         self.active = false;
+        self.enabled = false;
         self.saved_state = None;
     }
 }
@@ -189,6 +213,29 @@ mod tests {
         q.set_addr(0x1000, 0x2000, 0x3000);
         // Still missing kick.
         assert!(q.try_activate(test_mem()).is_none());
+    }
+
+    #[test]
+    fn kick_fd_starts_ring_independently_of_enable_and_signal() {
+        let mut q = QueueSetup::new();
+        q.set_num(16);
+        q.set_addr(0, 0x1000, 0x2000);
+        q.enabled = true;
+        assert!(!q.ready_to_start(true));
+        let kick = Event::new();
+        q.set_kick(kick.clone());
+        assert!(q.ready_to_start(false));
+        q.enabled = false;
+        assert!(q.ready_to_start(true));
+        assert!(!q.ready_to_start(false));
+        assert!(!kick.try_wait());
+        q.set_active();
+        assert!(!q.ready_to_start(true));
+        q.stop();
+        q.enabled = true;
+        assert!(!q.ready_to_start(true));
+        q.set_kick(Event::new());
+        assert!(q.ready_to_start(false));
     }
 
     #[test]
