@@ -823,7 +823,7 @@ impl LxVolumeOptions {
                 }
                 "umask" => {
                     if let Some(value) = value {
-                        if let Ok(umask) = value.parse::<u32>() {
+                        if let Ok(umask) = u32::from_str_radix(value, 8) {
                             if (umask & !0o777) == 0 {
                                 options.umask(umask);
                             } else {
@@ -838,7 +838,7 @@ impl LxVolumeOptions {
                 }
                 "dmask" => {
                     if let Some(value) = value {
-                        if let Ok(dmask) = value.parse::<u32>() {
+                        if let Ok(dmask) = u32::from_str_radix(value, 8) {
                             if (dmask & !0o777) == 0 {
                                 options.dmask(dmask);
                             } else {
@@ -853,7 +853,7 @@ impl LxVolumeOptions {
                 }
                 "fmask" => {
                     if let Some(value) = value {
-                        if let Ok(fmask) = value.parse::<u32>() {
+                        if let Ok(fmask) = u32::from_str_radix(value, 8) {
                             if (fmask & !0o777) == 0 {
                                 options.fmask(fmask);
                             } else {
@@ -1150,6 +1150,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
+    use test_with_tracing::test;
 
     #[test]
     fn lstat() {
@@ -2276,6 +2277,76 @@ mod tests {
             .unwrap();
 
         assert_ne!(stat1.inode_nr, stat2.inode_nr);
+    }
+
+    #[test]
+    fn permission_mask_options() {
+        for (value, mask) in [
+            ("0", 0u32),
+            ("022", 0o022),
+            ("22", 0o022),
+            ("111", 0o111),
+            ("0777", 0o777),
+            ("777", 0o777),
+            ("", 0),
+            ("8", 0),
+            ("18", 0),
+            ("1000", 0),
+        ] {
+            let options = LxVolumeOptions::from_option_string(&format!(
+                "umask={value};dmask={value};fmask={value}"
+            ));
+            assert_eq!(options.umask, !mask, "umask={value}");
+            assert_eq!(options.dmask, !mask, "dmask={value}");
+            assert_eq!(options.fmask, !mask, "fmask={value}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn permission_masks_apply_by_file_type() {
+        let env = TestEnv::new();
+        env.create_file("testdir/testfile", "test");
+
+        for metadata in [false, true] {
+            for (umask, dmask, fmask) in [
+                (0, 0, 0),
+                (0o022, 0, 0),
+                (0, 0o022, 0),
+                (0, 0, 0o111),
+                (0o022, 0, 0o111),
+                (0o022, 0o022, 0o111),
+            ] {
+                let volume = LxVolumeOptions::new()
+                    .metadata(metadata)
+                    .umask(umask)
+                    .dmask(dmask)
+                    .fmask(fmask)
+                    .new_volume(env.root_dir.path())
+                    .unwrap();
+
+                for (path, mask, flags) in [
+                    ("", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("testdir", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("testdir/testfile", fmask, lx::O_RDONLY),
+                ] {
+                    let path = Path::from_lx(path).unwrap();
+                    let expected = env.volume.lstat(&path).unwrap().mode & !(umask | mask);
+                    assert_eq!(
+                        volume.lstat(&path).unwrap().mode,
+                        expected,
+                        "lstat({path:?}), metadata={metadata}, umask={umask:o}, dmask={dmask:o}, fmask={fmask:o}"
+                    );
+
+                    let file = volume.open(&path, flags, None).unwrap();
+                    assert_eq!(
+                        u32::from(file.fstat().unwrap().mode),
+                        expected,
+                        "fstat({path:?}), metadata={metadata}, umask={umask:o}, dmask={dmask:o}, fmask={fmask:o}"
+                    );
+                }
+            }
+        }
     }
 
     fn check_symlink(volume: &LxVolume, path: impl AsRef<Path>, target: &str) {

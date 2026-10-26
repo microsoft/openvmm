@@ -208,9 +208,6 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
 pub async fn read_hardware_key_protector(
     vmgs: &mut Vmgs,
 ) -> Result<HwKeyProtector, ReadFromVmgsError> {
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_V3_SIZE;
-
     let file_id = FileId::HW_KEY_PROTECTOR;
     let data = match vmgs.read_file(file_id).await {
         Ok(data) => data,
@@ -222,13 +219,25 @@ pub async fn read_hardware_key_protector(
         }
     };
 
+    parse_hardware_key_protector(&data)
+}
+
+/// Decode either on-disk layout without interpreting its header or policy.
+/// Callers must validate compatibility before deriving keys or unsealing.
+pub(crate) fn parse_hardware_key_protector(
+    data: &[u8],
+) -> Result<HwKeyProtector, ReadFromVmgsError> {
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
+    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_V3_SIZE;
+
+    let file_id = FileId::HW_KEY_PROTECTOR;
     // Dispatch by blob size: the legacy v1/v2 layout and the current v3 layout
     // have distinct sizes.
     match data.len() {
-        HW_KEY_PROTECTOR_SIZE => HardwareKeyProtector::read_from_prefix(&data)
+        HW_KEY_PROTECTOR_SIZE => HardwareKeyProtector::read_from_prefix(data)
             .map(|k| HwKeyProtector::Legacy(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
-        HW_KEY_PROTECTOR_V3_SIZE => HardwareKeyProtectorV3::read_from_prefix(&data)
+        HW_KEY_PROTECTOR_V3_SIZE => HardwareKeyProtectorV3::read_from_prefix(data)
             .map(|k| HwKeyProtector::V3(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
         size => Err(ReadFromVmgsError::EntrySizeUnexpected {
@@ -285,8 +294,7 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disk_backend::Disk;
-    use disklayer_ram::ram_disk;
+    use disk_hook::HookDisk;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
@@ -306,14 +314,10 @@ mod tests {
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    fn new_test_file() -> Disk {
-        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
-    }
-
     async fn new_formatted_vmgs() -> Vmgs {
-        let disk = new_test_file();
-
-        Vmgs::format_new(disk, None).await.unwrap()
+        Vmgs::format_new(HookDisk::new(4 * ONE_MEGA_BYTE, 512).into_disk(), None)
+            .await
+            .unwrap()
     }
 
     fn new_hardware_key_protector() -> HardwareKeyProtectorV3 {

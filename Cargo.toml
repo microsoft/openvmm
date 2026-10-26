@@ -76,7 +76,7 @@ rust-version = "1.95"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
-version = "0.2.0"
+version = "0.3.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -344,6 +344,7 @@ disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_delay = { path = "vm/devices/storage/disk_delay" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
+disk_hook = { path = "vm/devices/storage/disk_hook" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
@@ -401,6 +402,7 @@ virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
+virtio_rtc = { path = "vm/devices/virtio/virtio_rtc" }
 virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
@@ -658,6 +660,7 @@ igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
+uart_16550 = "0.9.0"
 uefi = "0.41.0"
 vfio-bindings = "0.4.0"
 x86_64 = { version = "0.15.2", default-features = false }

@@ -27,7 +27,9 @@ use vm_resource::IntoResource;
 
 impl PetriVmConfigOpenVmm {
     async fn run_core(self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
+        let has_guest_shares = !self.guest_shares.is_empty();
         let Self {
+            guest_shares: _,
             runtime_config,
             arch,
             host_log_levels,
@@ -46,7 +48,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
-        } = self;
+        } = self.with_guest_shares();
 
         // Resolve deferred IOMMU assignments.
         for (name, iommu_config) in &pending_iommu {
@@ -63,17 +65,20 @@ impl PetriVmConfigOpenVmm {
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
         // TODO: virtio vsock doesn't support save/restore yet
+        // TODO: 9p shares don't support save/restore yet
         // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
         let supports_save_restore = !resources.properties.is_openhcl
+            && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
             && !resources.properties.use_virtio_vsock
+            && !has_guest_shares
             && !config.hypervisor.nested_virt;
 
         // Add the GED and VTL 2 settings.
@@ -199,6 +204,7 @@ impl PetriVmConfigOpenVmm {
         // Skip when VMBus is disabled — the no-vmbus prepped image has
         // pipette pre-configured via offline registry injection.
         if self.resources.properties.using_vtl0_pipette
+            && !self.resources.properties.external_pipette
             && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
             && !self.resources.properties.is_isolated
             && !self.resources.properties.no_vmbus

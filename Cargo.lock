@@ -33,6 +33,7 @@ dependencies = [
  "cxl_spec",
  "guid",
  "memory_range",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -354,9 +355,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.9.3"
+version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34efbcccd345379ca2868b2b2c9d3782e9cc58ba87bc7d79d5b53d9c9ae6f25d"
+checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "bitvec"
@@ -579,6 +580,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 name = "chipset"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
@@ -716,6 +718,7 @@ dependencies = [
 name = "chipset_resources"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "arbitrary",
  "inspect",
  "ipmi_protocol",
@@ -1101,7 +1104,7 @@ version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "crossterm_winapi",
  "document-features",
  "mio",
@@ -1663,6 +1666,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "disk_hook"
+version = "0.0.0"
+dependencies = [
+ "disk_backend",
+ "disk_prwrap",
+ "disklayer_ram",
+ "event-listener",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "storage_tests",
+ "test_with_tracing",
+]
+
+[[package]]
 name = "disk_layered"
 version = "0.0.0"
 dependencies = [
@@ -1851,7 +1872,7 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "objc2",
 ]
 
@@ -2387,6 +2408,7 @@ dependencies = [
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "initrd_cpio",
  "log",
  "opentmk_disk",
  "paste",
@@ -3898,11 +3920,9 @@ dependencies = [
 name = "igvmfilegen"
 version = "0.0.0"
 dependencies = [
- "acpi_spec",
  "anyhow",
  "base64 0.22.1",
  "bitfield-struct 0.11.0",
- "chipset_resources",
  "clap",
  "corim",
  "crypto",
@@ -3921,14 +3941,12 @@ dependencies = [
  "range_map_vec",
  "serde",
  "serde_json",
- "serial_16550_resources",
  "signature",
  "test_with_tracing",
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
  "vm_topology",
- "vmm_core",
  "x509-cert",
  "x86defs",
  "zerocopy",
@@ -3966,14 +3984,15 @@ dependencies = [
  "clap",
  "crossterm",
  "fs-err",
- "futures",
  "futures-concurrency",
- "initrd_cpio",
- "mesh",
  "pal_async",
+ "petri",
+ "petri_artifacts_common",
  "pipette_client",
  "serde",
+ "signal-hook",
  "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
@@ -4099,7 +4118,7 @@ version = "0.7.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd7bddefd0a8833b88a4b68f90dae22c7450d11b354198baee3874fd811b344"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "libc",
 ]
@@ -4323,7 +4342,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "391290121bad3d37fbddad76d8f5d1c1c314cfc646d143d7e07a3086ddff0ce3"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "libc",
 ]
 
@@ -4526,6 +4545,7 @@ dependencies = [
  "parking_lot",
  "static_assertions",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "widestring",
  "windows 0.62.0",
@@ -4863,8 +4883,10 @@ dependencies = [
  "arrayvec",
  "cfg-if",
  "hvdef",
+ "memory_range",
  "minimal_rt_build",
  "minimal_rt_reloc",
+ "uart_16550",
  "zerocopy",
 ]
 
@@ -5241,7 +5263,7 @@ version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "cfg_aliases",
  "libc",
@@ -5253,7 +5275,7 @@ version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "cfg_aliases",
  "libc",
@@ -5475,7 +5497,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "dispatch2",
  "objc2",
 ]
@@ -5492,7 +5514,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "objc2",
 ]
 
@@ -5651,6 +5673,7 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
+ "uart_16550",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy",
@@ -5701,7 +5724,7 @@ version = "0.10.80"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a45fa2aa886c42762255da344f0a0d313e254066c46aad76f300c3d3da62d967"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "foreign-types",
  "libc",
@@ -5794,6 +5817,7 @@ dependencies = [
  "serde_json",
  "spin",
  "thiserror 2.0.16",
+ "uart_16550",
  "uefi",
  "x86_64",
  "zerocopy",
@@ -5839,6 +5863,7 @@ dependencies = [
  "opentmk_exec_packet",
  "postcard",
  "spin",
+ "uart_16550",
  "uefi",
  "zerocopy",
 ]
@@ -5855,7 +5880,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -5887,7 +5912,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "test_with_tracing",
 ]
@@ -6277,6 +6302,7 @@ dependencies = [
  "virtio_p9",
  "virtio_pmem",
  "virtio_rng",
+ "virtio_rtc",
  "virtio_vsock",
  "virtiofs",
  "vm_resource",
@@ -6670,6 +6696,7 @@ dependencies = [
  "disk_vhdmp",
  "fatfs",
  "firmware_uefi_resources",
+ "flate2",
  "framebuffer",
  "fs-err",
  "fscommon",
@@ -6721,6 +6748,7 @@ dependencies = [
  "storvsp_resources",
  "target-lexicon",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tpm_resources",
  "tpm_vmgs",
@@ -7233,7 +7261,7 @@ version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5407465600fb0548f1442edf71dd20683c6ed326200ace4b1ef0763521bb3b77"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
 ]
 
 [[package]]
@@ -7331,7 +7359,7 @@ version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",
@@ -7372,7 +7400,7 @@ version = "0.38.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
@@ -7385,7 +7413,7 @@ version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11181fbabf243db407ef8df94a6ce0b2f9a733bd8be4ad02b4eda9602296cac8"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
@@ -7404,7 +7432,7 @@ version = "17.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6614df0b6d4cfb20d1d5e295332921793ce499af3ebc011bf1e393380e1e492"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "clipboard-win",
  "fd-lock",
@@ -7540,6 +7568,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "disk_backend",
+ "disk_hook",
  "disk_prwrap",
  "futures",
  "getrandom 0.4.2",
@@ -7590,7 +7619,7 @@ version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "core-foundation",
  "core-foundation-sys",
  "libc",
@@ -7905,6 +7934,7 @@ dependencies = [
  "minimal_rt_build",
  "sidecar_defs",
  "spin",
+ "uart_16550",
  "x86defs",
  "zerocopy",
 ]
@@ -8059,10 +8089,18 @@ dependencies = [
 name = "snp_bootshim"
 version = "0.0.0"
 dependencies = [
+ "acpi",
+ "acpi_spec",
+ "arrayvec",
+ "fdt",
  "loader_defs",
+ "memory_range",
  "minimal_rt",
  "minimal_rt_build",
+ "test_with_tracing",
+ "thiserror 2.0.16",
  "x86defs",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8971,6 +9009,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
 
 [[package]]
+name = "uart_16550"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a97f2587e2352cdee51c1f55c3eef6ddd4bcb08a9119bfbce800dd4a198fc42a"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
 name = "ucs2"
 version = "0.0.0"
 dependencies = [
@@ -8992,7 +9039,7 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "368cef7d94514897e6dad4350945c7910a9f5bf9021191d1c58ee3ec09962697"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "cfg-if",
  "log",
  "ptr_meta",
@@ -9019,7 +9066,7 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3636327a6d88a38c0f2567fb695ec7ba27b3483d1877730486605aa0866da201"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "uguid",
 ]
 
@@ -9139,8 +9186,7 @@ dependencies = [
  "crypto",
  "cvm_tracing",
  "der",
- "disk_backend",
- "disklayer_ram",
+ "disk_hook",
  "get_protocol",
  "getrandom 0.4.2",
  "guest_emulation_device",
@@ -9150,6 +9196,7 @@ dependencies = [
  "mesh",
  "openhcl_attestation_protocol",
  "pal_async",
+ "parking_lot",
  "serde",
  "serde_json",
  "static_assertions",
@@ -9157,10 +9204,12 @@ dependencies = [
  "test_igvm_agent_lib",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "user_driver_emulated_mock",
  "vmgs",
  "vmgs_format",
+ "x86defs",
  "zerocopy",
 ]
 
@@ -9211,8 +9260,8 @@ dependencies = [
  "disk_backend_resources",
  "disk_blockdevice",
  "disk_get_vmgs",
+ "disk_hook",
  "disk_nvme",
- "disklayer_ram",
  "firmware_pcat",
  "firmware_uefi_resources",
  "framebuffer",
@@ -9261,6 +9310,7 @@ dependencies = [
  "nvme_spec",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
+ "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
@@ -10092,14 +10142,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "disk_backend",
- "disklayer_ram",
+ "disk_hook",
  "futures",
  "guestmem",
  "inspect",
  "inspect_counters",
  "pal_async",
  "pal_event",
- "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",
@@ -10235,6 +10284,26 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "virtio_rtc"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "pal_event",
+ "task_control",
+ "test_with_tracing",
+ "tracelimit",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+ "zerocopy",
 ]
 
 [[package]]
@@ -10759,6 +10828,7 @@ dependencies = [
  "parking_lot",
  "scsi_buffers",
  "serde_json",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
@@ -10770,9 +10840,13 @@ name = "vmgs_broker"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "constant_time_eq",
+ "disk_hook",
  "inspect",
  "mesh",
  "pal_async",
+ "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -11390,7 +11464,7 @@ version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "hashbrown",
  "indexmap",
  "semver",
@@ -11706,7 +11780,7 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "193cae8e647981c35bc947fdd57ba7928b1fa0d4a79305f6dd2dc55221ac35ac"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "widestring",
  "windows-sys 0.59.0",
 ]
@@ -11970,7 +12044,7 @@ version = "0.39.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
 dependencies = [
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
 ]
 
 [[package]]
@@ -12011,7 +12085,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
 dependencies = [
  "anyhow",
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "indexmap",
  "log",
  "serde",
@@ -12070,7 +12144,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0f042214de98141e9c8706e8192b73f56494087cc55ebec28ce10f26c5c364ae"
 dependencies = [
  "bit_field",
- "bitflags 2.9.3",
+ "bitflags 2.13.2",
  "rustversion",
  "volatile",
 ]
@@ -12083,6 +12157,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "open_enum",
  "static_assertions",
+ "test_with_tracing",
  "zerocopy",
 ]
 

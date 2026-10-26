@@ -228,6 +228,35 @@ pub fn is_available() -> Result<bool, Error> {
     }
 }
 
+/// Returns whether MSHV can create SEV-SNP partitions on this machine.
+/// This function currently probes SNP availability by attempting to create
+/// a temporary SNP partition.
+///
+/// The probe does not initialize the partition. The mshv_root driver cannot
+/// tear down an initialized SNP partition that never imported its memory, so
+/// that partition would permanently use one of the host's SNP partition slots.
+///
+/// TODO: Replace this probe with a proper usermode query once the MSHV
+/// driver exposes SNP status.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_snp_available() -> bool {
+    let probe = || -> Result<(), MshvError> {
+        let mshv = Mshv::new()?;
+        mshv.create_vm_with_type(mshv_ioctls::VmType::Snp)?;
+        Ok(())
+    };
+    match probe() {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::debug!(
+                error = &err as &dyn std::error::Error,
+                "SNP partition probe failed"
+            );
+            false
+        }
+    }
+}
+
 /// Prototype partition.
 pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
@@ -321,6 +350,9 @@ struct MshvPartitionInner {
     #[inspect(skip)]
     isolation: MshvIsolationState,
     time_frozen: Mutex<bool>,
+    /// Whether the current partition reset scrubbed hypervisor-managed state.
+    /// Published before per-VP reset requests are dispatched.
+    reset_with_scrub: AtomicBool,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
     /// assertions via a v2m frame.
     #[cfg(guest_arch = "aarch64")]
@@ -339,6 +371,22 @@ struct MshvVpInner {
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,
+}
+
+impl MshvVpInner {
+    fn reset(&self) {
+        let Self {
+            vp_info: _,
+            thread: _,
+            needs_yield: _,
+            message_queues,
+            message_queues_pending,
+            waker: _,
+        } = self;
+
+        message_queues.clear();
+        message_queues_pending.store(false, Ordering::Relaxed);
+    }
 }
 
 struct MshvVpInnerCleaner<'a> {
@@ -388,6 +436,75 @@ impl virt::PartitionTimeControl for MshvPartition {
             *frozen = false;
         }
     }
+}
+
+impl virt::ResetPartition for MshvPartition {
+    type Error = Error;
+
+    fn reset(&self) -> Result<(), Error> {
+        let Self {
+            inner,
+            synic_ports: _,
+        } = self;
+        let MshvPartitionInner {
+            vmfd,
+            bsp_vcpufd: _,
+            memory: _,
+            gm: _,
+            mem_layout: _,
+            vps: _,
+            #[cfg(guest_arch = "x86_64")]
+            irq_routes,
+            gsi_states: _,
+            caps: _,
+            synic_ports: _,
+            #[cfg(guest_arch = "x86_64")]
+                software_devices: _,
+            isolation: _,
+            time_frozen,
+            reset_with_scrub,
+            #[cfg(guest_arch = "aarch64")]
+                gic_msi: _,
+        } = inner.as_ref();
+
+        reset_with_scrub.store(false, Ordering::Release);
+        let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
+
+        #[cfg(guest_arch = "x86_64")]
+        for irq in 0..virt::irqcon::IRQ_LINES as u8 {
+            irq_routes.set_irq_route(irq, None);
+        }
+
+        if scrubbed {
+            // Re-establish the frozen-time invariant even if the cached value
+            // was already true before scrub.
+            let mut frozen = time_frozen.lock();
+            vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+            *frozen = true;
+        }
+
+        self.reset_arch_state(scrubbed)?;
+        reset_with_scrub.store(scrubbed, Ordering::Release);
+        tracing::debug!(scrubbed, "reset mshv partition");
+        Ok(())
+    }
+}
+
+/// Returns false only when the kernel does not implement partition scrub.
+fn scrub_partition(vmfd: &VmFd) -> io::Result<bool> {
+    // TODO: Use mshv-ioctls once it exposes MSHV_SCRUB_PARTITION.
+    // SAFETY: The partition fd is valid, the ioctl takes no arguments, and
+    // ResetPartition's caller has stopped all VPs and quiesced device work.
+    let ret = unsafe { libc::ioctl(vmfd.as_raw_fd(), libc::_IO(0xb8, 0x0b) as _) };
+    if ret < 0 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ENOTTY) {
+            return Ok(false);
+        }
+        return Err(err);
+    }
+    Ok(true)
 }
 
 impl MshvPartitionInner {
@@ -583,13 +700,24 @@ impl MshvProcessor<'_> {
         self.flush_messages(deliverable_sints);
     }
 
-    /// Resets the VP's message queue and deliverability notification state.
-    fn reset_synic_state(&mut self) {
-        self.inner.message_queues.clear();
-        self.inner
-            .message_queues_pending
-            .store(false, Ordering::Relaxed);
-        self.deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
+    fn reset_local_state(&mut self) {
+        let Self {
+            partition: _,
+            inner,
+            vpindex: _,
+            runner:
+                MshvVpRunner {
+                    vcpufd: _,
+                    #[cfg(guest_arch = "x86_64")]
+                        reg_page: _,
+                    #[cfg(guest_arch = "x86_64")]
+                        ghcb_page: _,
+                },
+            deliverability_notifications,
+        } = self;
+
+        inner.reset();
+        *deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
     }
 }
 
@@ -678,11 +806,20 @@ impl virt::Processor for MshvProcessor<'_> {
         use virt::vp::AccessVpState;
 
         let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(&vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        let scrubbed = self.partition.reset_with_scrub.load(Ordering::Acquire);
+        if scrubbed {
+            self.finish_reset()?;
+        } else {
+            self.access_state(Vtl::Vtl0)
+                .reset_all(&vp_info)
+                .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        }
 
-        self.reset_synic_state();
+        self.reset_local_state();
+
+        if scrubbed && cfg!(debug_assertions) {
+            self.access_state(Vtl::Vtl0).check_reset_all(&vp_info);
+        }
 
         Ok::<(), Error>(())
     }
@@ -796,6 +933,8 @@ enum ErrorInner {
     },
     #[error("failed to reset state")]
     ResetState(#[source] Box<virt::state::StateError<Error>>),
+    #[error("failed to scrub partition")]
+    ScrubPartition(#[source] io::Error),
     #[error("install intercept failed")]
     InstallIntercept(#[source] KernelError),
     #[cfg(guest_arch = "x86_64")]

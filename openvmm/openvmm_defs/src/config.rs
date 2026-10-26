@@ -185,8 +185,20 @@ pub enum LoadMode {
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
         com_serial: Option<UartId>,
+        personality: IgvmPersonality,
     },
     None,
+}
+
+/// The firmware that an IGVM file contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub enum IgvmPersonality {
+    /// The OpenHCL paravisor, hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware.
+    Uefi,
+    /// A Linux kernel.
+    LinuxDirect,
 }
 
 /// Different types to specify the base address for the VTL2 region of the IGVM

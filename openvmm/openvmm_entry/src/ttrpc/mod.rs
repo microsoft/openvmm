@@ -59,6 +59,7 @@ use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::IsolationType;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -971,6 +972,7 @@ impl VmService {
                         cmdline: String::new(),
                         vtl2_base_address: Vtl2BaseAddressType::File,
                         com_serial: None,
+                        personality: IgvmPersonality::LinuxDirect,
                     },
                     base_chipset_type,
                     None,
@@ -2352,6 +2354,9 @@ async fn build_virtio_device(
         }
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
+        }
+        Kind::Rtc(vmservice::VirtioRtc {}) => {
+            virtio_resources::rtc::VirtioRtcHandle.into_resource()
         }
         Kind::Vsock(vmservice::VirtioVsock {
             socket_path,

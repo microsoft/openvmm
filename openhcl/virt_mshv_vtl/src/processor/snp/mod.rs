@@ -2927,6 +2927,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
+    fn set_tsc_deadline(&mut self, _value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::TscAux {

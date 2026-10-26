@@ -410,6 +410,7 @@ impl MshvProtoPartition<'_> {
             cet_ss: false,
             sgx: false,
             tsc_aux: false,
+            tsc_deadline: false,
             vtom: None,
             physical_address_width: self
                 .vmfd
@@ -588,6 +589,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             software_devices: ApicSoftwareDevices::new(apic_id_map),
             isolation,
             time_frozen: Mutex::new(true),
+            reset_with_scrub: false.into(),
         });
         inner.add_snp_vmsa_mapping()?;
 
@@ -687,20 +689,20 @@ impl virt::X86Partition for MshvPartition {
     }
 }
 
-impl virt::ResetPartition for MshvPartition {
-    type Error = Error;
-
-    fn reset(&self) -> Result<(), Error> {
+impl MshvPartition {
+    pub(super) fn reset_arch_state(&self, scrubbed: bool) -> Result<(), Error> {
         use virt::x86::vm::AccessVmState;
 
-        for irq in 0..virt::irqcon::IRQ_LINES as u8 {
-            self.inner.irq_routes.set_irq_route(irq, None);
-        }
-
         let bsp_vp_info = &self.inner.vps[0].vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(bsp_vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        if scrubbed {
+            if cfg!(debug_assertions) {
+                self.access_state(Vtl::Vtl0).check_reset_all(bsp_vp_info);
+            }
+        } else {
+            self.access_state(Vtl::Vtl0)
+                .reset_all(bsp_vp_info)
+                .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        }
 
         Ok(())
     }
@@ -838,27 +840,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
         };
 
         if this.partition.isolation.snp().is_none() {
-            // Set the APIC state.
-            let apic_base =
-                virt::vp::Apic::at_reset(&this.partition.caps, &this.inner.vp_info).apic_base;
-
-            let regs = &[
-                HvRegisterAssoc::from((
-                    HvX64RegisterName::InitialApicId,
-                    u64::from(inner.vp_info.apic_id),
-                )),
-                HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
-                HvRegisterAssoc::from((
-                    HvX64RegisterName::ApicId,
-                    u64::from(inner.vp_info.apic_id),
-                )),
-            ];
-
-            let reg_count = if this.partition.caps.x2apic { 2 } else { 3 };
-
-            vcpufd
-                .set_hvdef_regs(&regs[..reg_count])
-                .map_err(ErrorInner::Register)?;
+            this.finish_reset()?;
         }
 
         Ok(this)
@@ -866,6 +848,45 @@ impl virt::BindProcessor for MshvProcessorBinder {
 }
 
 impl MshvProcessor<'_> {
+    fn reset_apic(&self) -> Result<(), Error> {
+        let apic_base =
+            virt::vp::Apic::at_reset(&self.partition.caps, &self.inner.vp_info).apic_base;
+        let regs = &[
+            HvRegisterAssoc::from((
+                HvX64RegisterName::InitialApicId,
+                u64::from(self.inner.vp_info.apic_id),
+            )),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
+            HvRegisterAssoc::from((
+                HvX64RegisterName::ApicId,
+                u64::from(self.inner.vp_info.apic_id),
+            )),
+        ];
+        let reg_count = if self.partition.caps.x2apic { 2 } else { 3 };
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&regs[..reg_count])
+            .map_err(ErrorInner::Register)?;
+        Ok(())
+    }
+
+    pub(super) fn finish_reset(&self) -> Result<(), Error> {
+        // Like WHP, fix up architectural CS and TSC at creation and after scrub.
+        let registers = virt::vp::Registers::at_reset(&self.partition.caps, &self.inner.vp_info);
+        let tsc = virt::vp::Tsc::at_reset(&self.partition.caps, &self.inner.vp_info);
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&[
+                HvRegisterAssoc::from((
+                    HvX64RegisterName::Cs,
+                    hvdef::HvX64SegmentRegister::from(registers.cs),
+                )),
+                HvRegisterAssoc::from((HvX64RegisterName::Tsc, tsc.value)),
+            ])
+            .map_err(ErrorInner::Register)?;
+        self.reset_apic()
+    }
+
     async fn emulate(
         &mut self,
         message: &HvMessage,

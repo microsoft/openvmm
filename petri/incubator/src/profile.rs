@@ -9,9 +9,13 @@ use std::path::Path;
 
 /// An incubator profile describing the backend platform and how to run it.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IncubatorProfile {
     /// Incubator backend configuration.
     pub incubator: IncubatorBackend,
+    /// Guest boot environment, independent of the VM launcher.
+    #[serde(default)]
+    pub boot: IncubatorBoot,
     /// Extra devices to add to the platform.
     #[serde(default)]
     pub devices: Vec<DeviceConfig>,
@@ -23,6 +27,29 @@ pub struct IncubatorProfile {
 pub enum IncubatorBackend {
     /// QEMU TCG emulation.
     QemuTcg(QemuTcgConfig),
+    /// Native OpenVMM launcher.
+    Openvmm(OpenvmmConfig),
+}
+
+/// Guest boot environment.
+#[derive(Debug, Default, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum IncubatorBoot {
+    /// Boot a Linux kernel and prepared initrd directly.
+    #[default]
+    LinuxDirect,
+    /// Launch the Microsoft hypervisor and its Linux root partition via UEFI.
+    Mshv(MshvBootConfig),
+}
+
+/// Artifacts for mshv boot, independent of the launcher executable.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct MshvBootConfig {
+    /// Compatible x64 UEFI firmware.
+    pub firmware: std::path::PathBuf,
+    /// Extracted artifact directory containing `boot/`.
+    pub boot_artifacts: std::path::PathBuf,
 }
 
 impl IncubatorBackend {
@@ -30,8 +57,26 @@ impl IncubatorBackend {
     pub fn arch(&self) -> Arch {
         match self {
             IncubatorBackend::QemuTcg(config) => config.arch,
+            IncubatorBackend::Openvmm(config) => config.arch,
         }
     }
+}
+
+/// Native OpenVMM launcher and machine configuration.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct OpenvmmConfig {
+    /// Guest architecture (must match the native host).
+    pub arch: Arch,
+    /// Native host OpenVMM executable, independent of the guest test build.
+    pub binary: std::path::PathBuf,
+    /// Outer VM memory size.
+    pub memory: String,
+    /// Outer VM processor count.
+    pub processors: u32,
+    /// Expose nested virtualization. Required for mshv boot.
+    #[serde(default)]
+    pub nested_virt: bool,
 }
 
 /// Guest architecture emulated by an incubator backend.
@@ -149,6 +194,7 @@ pub struct IvshmemPlainDeviceConfig {
 
 /// QEMU TCG configuration parsed from the profile.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QemuTcgConfig {
     /// Guest architecture (e.g., "aarch64", "x86-64"). Selects the
     /// arch-specific kernel/initrd when those are auto-detected.
@@ -164,13 +210,54 @@ pub struct QemuTcgConfig {
     /// Number of CPUs (e.g., "2").
     pub smp: String,
     /// Extra kernel command line arguments. The incubator always appends
-    /// `rdinit=/tcg-init.sh` (the injected init script); everything else,
+    /// `rdinit=/incubator-init.sh` (the injected init script); everything else,
     /// including the arch-specific serial console (e.g., "console=ttyAMA0"
     /// for aarch64 PL011, "console=ttyS0" for x86 16550), comes from here.
     pub cmdline: String,
 }
 
 impl IncubatorProfile {
+    /// Reject unsupported launcher/boot combinations before reading artifacts.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        match (&self.incubator, &self.boot) {
+            (IncubatorBackend::QemuTcg(_), IncubatorBoot::Mshv(_)) => {
+                anyhow::bail!("mshv boot is not yet supported by the qemu-tcg launcher");
+            }
+            (IncubatorBackend::Openvmm(config), IncubatorBoot::Mshv(_)) => {
+                anyhow::ensure!(config.arch == Arch::X86_64, "mshv boot requires x86-64");
+                anyhow::ensure!(config.nested_virt, "mshv boot requires nested-virt = true");
+            }
+            (_, IncubatorBoot::LinuxDirect) => {}
+        }
+        match &self.incubator {
+            IncubatorBackend::QemuTcg(config) => {
+                anyhow::ensure!(
+                    config.arch == Arch::Aarch64,
+                    "Petri QEMU currently supports only AArch64 guests"
+                );
+            }
+            IncubatorBackend::Openvmm(config) => {
+                anyhow::ensure!(
+                    config.arch == Arch::X86_64,
+                    "OpenVMM Incubator currently supports only x86-64 guests"
+                );
+                anyhow::ensure!(
+                    config.processors > 0,
+                    "OpenVMM requires at least one processor"
+                );
+                anyhow::ensure!(
+                    parse_size(&config.memory)? > 0,
+                    "OpenVMM memory must be nonzero"
+                );
+                anyhow::ensure!(
+                    self.devices.is_empty(),
+                    "extra profile devices are currently supported only by qemu-tcg"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Load a profile from a TOML file.
     pub fn from_file(path: &Path) -> anyhow::Result<Self> {
         let contents = fs_err::read_to_string(path).context("failed to read incubator profile")?;
@@ -180,5 +267,82 @@ impl IncubatorProfile {
     /// Parse a profile from a TOML string.
     pub fn from_toml(toml: &str) -> anyhow::Result<Self> {
         toml_edit::de::from_str(toml).context("failed to parse incubator profile")
+    }
+}
+
+/// Parse memory/device sizes using the OpenVMM suffix convention.
+pub(crate) fn parse_size(s: &str) -> anyhow::Result<u64> {
+    || -> Option<u64> {
+        let mut b = s.as_bytes();
+        if s.ends_with('B') {
+            b = &b[..b.len() - 1]
+        }
+        if b.is_empty() {
+            return None;
+        }
+        let multi = match b[b.len() - 1] as char {
+            'T' => Some(1024 * 1024 * 1024 * 1024),
+            'G' => Some(1024 * 1024 * 1024),
+            'M' => Some(1024 * 1024),
+            'K' => Some(1024),
+            _ => None,
+        };
+        if multi.is_some() {
+            b = &b[..b.len() - 1]
+        }
+        let n: u64 = std::str::from_utf8(b).ok()?.parse().ok()?;
+        n.checked_mul(multi.unwrap_or(1))
+    }()
+    .with_context(|| format!("invalid size '{s}'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    const OPENVMM: &str = include_str!("../profiles/x86_64-openvmm.toml");
+    const MSHV: &str = include_str!("../profiles/x86_64-mshv.toml");
+    const QEMU: &str = include_str!("../profiles/aarch64-tcg-pcie.toml");
+
+    #[test]
+    fn launcher_and_boot_are_separate() -> anyhow::Result<()> {
+        for profile in [OPENVMM, MSHV, QEMU] {
+            IncubatorProfile::from_toml(profile)?.validate()?;
+        }
+        let direct = IncubatorProfile::from_toml(OPENVMM)?;
+        assert!(matches!(direct.incubator, IncubatorBackend::Openvmm(_)));
+        assert!(matches!(direct.boot, IncubatorBoot::LinuxDirect));
+        let mshv = IncubatorProfile::from_toml(MSHV)?;
+        assert!(matches!(mshv.incubator, IncubatorBackend::Openvmm(_)));
+        assert!(matches!(mshv.boot, IncubatorBoot::Mshv(_)));
+        let qemu = IncubatorProfile::from_toml(QEMU)?;
+        assert!(matches!(qemu.boot, IncubatorBoot::LinuxDirect));
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_combinations_and_misplaced_fields_fail() -> anyhow::Result<()> {
+        let qemu_mshv =
+            format!("{QEMU}\n[boot]\ntype = 'mshv'\nfirmware = 'fw'\nboot-artifacts = 'boot'\n");
+        let error = IncubatorProfile::from_toml(&qemu_mshv)?
+            .validate()
+            .unwrap_err();
+        assert!(error.to_string().contains("not yet supported"), "{error:#}");
+        for invalid in [
+            MSHV.replace("nested-virt = true", "nested-virt = false"),
+            MSHV.replace("x86-64", "aarch64"),
+            OPENVMM.replace("processors = 2", "processors = 0"),
+        ] {
+            assert!(IncubatorProfile::from_toml(&invalid)?.validate().is_err());
+        }
+        assert!(
+            IncubatorProfile::from_toml(
+                &OPENVMM.replace("[boot]", "boot-artifacts = 'wrong-section'\n[boot]")
+            )
+            .is_err()
+        );
+        assert!(IncubatorProfile::from_toml(&OPENVMM.replace("linux-direct", "typo")).is_err());
+        Ok(())
     }
 }

@@ -133,7 +133,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 #[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .with_virtio_vsock()
+        .with_virtio_vsock(true)
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
@@ -732,6 +732,53 @@ async fn reboot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), any
     agent.reboot().await?;
     let agent = vm.wait_for_reset().await?;
     agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Preserve a multi-socket topology and agent connectivity across repeated resets.
+#[vmm_test(openvmm_linux_direct_x64)]
+async fn reboot_multisocket(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (mut vm, mut agent) = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            enable_smt: Some(false),
+            ..Default::default()
+        })
+        .run()
+        .await?;
+
+    let mut previous_boot_id = None;
+    for boot in 0..=5 {
+        let shell = agent.unix_shell();
+        let online = shell.read_file("/sys/devices/system/cpu/online").await?;
+        anyhow::ensure!(online.trim() == "0-3", "boot {boot}: online CPUs: {online}");
+        let boot_id = shell.read_file("/proc/sys/kernel/random/boot_id").await?;
+        anyhow::ensure!(
+            previous_boot_id.as_ref() != Some(&boot_id),
+            "boot {boot}: guest did not reboot"
+        );
+        previous_boot_id = Some(boot_id);
+        for cpu in 0..4 {
+            let socket = shell
+                .read_file(format!(
+                    "/sys/devices/system/cpu/cpu{cpu}/topology/physical_package_id"
+                ))
+                .await?;
+            anyhow::ensure!(
+                socket.trim().parse::<u32>()? == cpu / 2,
+                "boot {boot}: CPU {cpu} socket: {socket}"
+            );
+        }
+        agent.ping().await?;
+        if boot != 5 {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+        }
+    }
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())

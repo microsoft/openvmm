@@ -113,7 +113,7 @@ fn build_zero_page(
     //
     // The RSDP lives at the fixed 0xe0000 and the tables it points to live in
     // reclaimable ACPI memory below; the kernel discovers the RSDP via its
-    // legacy scan, so no `acpi_rsdp_addr` (Linux 5.0+) is required. The SMBIOS
+    // legacy scan, so no `acpi_rsdp_addr` (Linux 4.20+) is required. The SMBIOS
     // structure table sits just above the ACPI tables in its own reserved
     // region so it can grow well past the 64 KiB F-segment.
     const ONE_MB: u64 = 0x100000;
@@ -261,8 +261,8 @@ const LOW_METADATA_END: u64 = CR3_BASE + PAGE_TABLE_MAX_BYTES as u64;
 const ACPI_TABLES_BASE: u64 = LOW_METADATA_END + 0x1000;
 /// The RSDP is pinned at the fixed 0xe0000 so the kernel's legacy RSDP scan of
 /// `[0xe0000, 0x100000)` finds it, with no dependency on
-/// `boot_params.acpi_rsdp_addr` (Linux 5.0+).
-const RSDP_BASE: u64 = 0xe0000;
+/// `boot_params.acpi_rsdp_addr` (Linux 4.20+).
+pub const RSDP_BASE: u64 = 0xe0000;
 /// The x86 kernel brute-force scans the F-segment `[0xf0000, 0x100000)` for the
 /// SMBIOS `_SM3_` DMI anchor, so the 24-byte entry point is pinned there. Its
 /// 64-bit structure-table pointer lets the (potentially large) structure table
