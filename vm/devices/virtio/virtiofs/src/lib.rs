@@ -761,11 +761,10 @@ impl InodeMap {
     /// Insert an inode into the map, returning its node ID.
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
         let key = inode.dedup_key();
-        if matches!(&key, DedupKey::Path(..))
-            && self
-                .inodes_by_key
-                .get(&key)
-                .is_some_and(|(existing, _)| existing.file_type() != inode.file_type())
+        if self
+            .inodes_by_key
+            .get(&key)
+            .is_some_and(|(existing, _)| existing.file_type() != inode.file_type())
         {
             self.evict_dedup_key(&key);
         }
@@ -802,14 +801,11 @@ impl InodeMap {
         }
     }
 
-    /// Detach a [`DedupKey::Path`] entry from its current inode so a later
-    /// create at that path gets a fresh node id instead of aliasing the
-    /// removed/renamed file. The inode stays in `inodes_by_node_id` for any
-    /// live fd or watch.
+    /// Detach a dedup entry so a later lookup gets a fresh node id instead of
+    /// aliasing a removed, renamed, or type-replaced file. The inode stays in
+    /// `inodes_by_node_id` for any live fd or watch.
     pub fn evict_dedup_key(&mut self, key: &DedupKey) {
-        if matches!(key, DedupKey::Path(..)) {
-            self.inodes_by_key.remove(key);
-        }
+        self.inodes_by_key.remove(key);
     }
 
     /// Clears the map, preserving the root inode.

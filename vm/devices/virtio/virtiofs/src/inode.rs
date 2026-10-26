@@ -475,6 +475,53 @@ mod tests {
     }
 
     #[test]
+    fn stable_inode_key_file_to_directory() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            std::fs::create_dir(tmp.path().join("replacement")).unwrap();
+            std::fs::write(tmp.path().join("replacement").join("child"), b"child").unwrap();
+            let volume = Arc::new(VirtioFsVolume::new(
+                LxVolume::new(tmp.path()).unwrap(),
+                u32::from(aggregate),
+                false,
+            ));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root);
+
+            let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert!(matches!(file.dedup_key(), DedupKey::Ino(..)));
+            let (old, old_id) = inodes.insert(file);
+
+            let mut replacement_stat = volume.lstat(PathBuf::from("replacement")).unwrap();
+            replacement_stat.inode_nr = old.inode_nr();
+            assert!(lx::s_isdir(replacement_stat.mode));
+
+            let replacement = VirtioFsInode::with_attr(
+                Arc::clone(&volume),
+                PathBuf::from("replacement"),
+                &replacement_stat,
+            );
+            let (current, current_id) = inodes.insert(replacement);
+
+            assert_ne!(current_id, old_id);
+            assert!(lx::s_isdir(current.file_type()));
+            assert!(lx::s_isreg(
+                current.lookup_child("child".as_ref()).unwrap().1.mode
+            ));
+            assert_eq!(
+                old.lookup_child("child".as_ref()).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+
+            assert_eq!(old.forget(old_id, 1), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+        }
+    }
+
+    #[test]
     fn path_keyed_file_to_directory() {
         for aggregate in [false, true] {
             let tmp = tempfile::tempdir().unwrap();
