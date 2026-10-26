@@ -1691,6 +1691,7 @@ async fn new_underhill_vm(
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
     let use_mmio_hypercalls = use_mmio_hypercalls
+        || isolation == virt::IsolationType::Vbs
         || hardware_isolated && {
             let result =
                 safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
@@ -1767,9 +1768,11 @@ async fn new_underhill_vm(
         with_vmbus_relay = !hide_isolation;
     }
 
+    // Default on for all isolated guests (VBS, SNP, TDX) so that only
+    // allow-listed devices are relayed to VTL0.
     let enable_vpci_relay = env_cfg
         .enable_vpci_relay
-        .unwrap_or(hardware_isolated && !hide_isolation && with_vmbus_relay);
+        .unwrap_or(isolation.is_isolated() && !hide_isolation && with_vmbus_relay);
 
     if enable_vpci_relay && !with_vmbus_relay {
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
@@ -3509,7 +3512,7 @@ async fn new_underhill_vm(
                     dma_manager.new_client(DmaClientParameters {
                         device_name: "vpci-relay".into(),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                        allocation_visibility: if hardware_isolated {
+                        allocation_visibility: if isolation.is_isolated() {
                             AllocationVisibility::Shared
                         } else {
                             AllocationVisibility::Private
@@ -3558,6 +3561,19 @@ async fn new_underhill_vm(
                     prog_if: Some(ProgrammingInterface::NETWORK_CONTROLLER_ETHERNET_GDMA),
                     sub_class: Some(Subclass::NETWORK_CONTROLLER_ETHERNET),
                     base_class: Some(ClassCode::NETWORK_CONTROLLER),
+                    sub_vendor_id: None,
+                    sub_system_id: None,
+                });
+
+                // Allow an SR-IOV enabled NVIDIA consumer GPU, matched by
+                // vendor, device, and revision ID.
+                relay.add_allowed_device(AllowedDevice {
+                    vendor_id: Some(0x10de),
+                    device_id: Some(0x2704),
+                    revision_id: Some(0xa1),
+                    prog_if: None,
+                    sub_class: None,
+                    base_class: Some(ClassCode::DISPLAY_CONTROLLER),
                     sub_vendor_id: None,
                     sub_system_id: None,
                 });
@@ -3804,7 +3820,11 @@ async fn new_underhill_vm(
                 .new_client(DmaClientParameters {
                     device_name: "shutdown-relay".into(),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                    allocation_visibility: AllocationVisibility::Private,
+                    allocation_visibility: if isolation.is_isolated() {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
                     persistent_allocations: false,
                 })
                 .context("shutdown relay dma client")?,
