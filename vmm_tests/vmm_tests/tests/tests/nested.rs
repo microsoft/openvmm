@@ -7,7 +7,7 @@ use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 
 pub(crate) async fn vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_nested_virt().run().await?;
+    let (vm, agent) = config.with_nested_virt().with_no_vmbus().run().await?;
 
     vm.run_nested_test(&agent, Default::default()).await?;
     agent.power_off().await?;
