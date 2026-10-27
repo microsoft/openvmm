@@ -26,7 +26,6 @@ use vtl2_settings_proto::*;
 pub(crate) const NAMESPACE_BASE: &str = "Base";
 pub(crate) const NAMESPACE_NETWORK_DEVICE: &str = "NetworkDevice";
 pub(crate) const NAMESPACE_NETWORK_ACCELERATION: &str = "NetworkAcceleration";
-pub(crate) const NAMESPACE_ATTESTED_SETTINGS: &str = "AttestedSettings";
 
 #[derive(Error, Debug)]
 pub(crate) enum Error<'a> {
