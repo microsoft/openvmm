@@ -1056,7 +1056,7 @@ impl LxVolume {
         let (parent, _) = util::open_relative_file(
             Some(&self.root),
             parent_path,
-            W32Fs::FILE_READ_ATTRIBUTES,
+            W32Fs::FILE_ACCESS_RIGHTS(0),
             FileSystem::FILE_OPEN,
             util::OpenOptions {
                 create_options: FileSystem::FILE_DIRECTORY_FILE,
@@ -1529,6 +1529,60 @@ mod tests {
                 windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_ptr()),
             )
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn namespace_destinations_without_parent_read_attributes() {
+        for force_legacy_rename in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("dir")).unwrap();
+            std::fs::write(root.path().join("source"), b"data").unwrap();
+            let mut options = LxVolumeOptions::new();
+            options.sandbox(false);
+            let mut volume = LxVolume::new(root.path(), &options).unwrap();
+            if force_legacy_rename {
+                Arc::get_mut(&mut volume.state)
+                    .unwrap()
+                    .fs_context
+                    .compatibility_flags
+                    .set_supports_posix_unlink_rename(false);
+            }
+            let open_directory = |path: &Path| {
+                std::fs::OpenOptions::new()
+                    .access_mode(W32Fs::WRITE_DAC.0)
+                    .custom_flags(W32Fs::FILE_FLAG_BACKUP_SEMANTICS.0)
+                    .open(path)
+                    .unwrap()
+            };
+            let root_handle = open_directory(root.path());
+            let parent_handle = open_directory(&root.path().join("dir"));
+            deny_access(&parent_handle, W32Fs::FILE_READ_ATTRIBUTES);
+            // Listing the root can otherwise permit reading its child's attributes.
+            deny_access(&root_handle, W32Fs::FILE_LIST_DIRECTORY);
+
+            let attribute_error = volume
+                .open_file(
+                    Path::new("dir"),
+                    W32Fs::FILE_READ_ATTRIBUTES,
+                    FileSystem::FILE_DIRECTORY_FILE,
+                )
+                .err();
+            let link_result = volume.link(Path::new("source"), Path::new(r"dir\linked"));
+            let rename_result = volume.rename(Path::new("source"), Path::new(r"dir\renamed"), 0);
+            deny_access(&parent_handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+            deny_access(&root_handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+
+            assert_eq!(attribute_error, Some(lx::Error::EACCES));
+            link_result.unwrap();
+            rename_result.unwrap();
+            for name in ["linked", "renamed"] {
+                assert_eq!(
+                    std::fs::read(root.path().join("dir").join(name)).unwrap(),
+                    b"data"
+                );
+            }
+            assert!(!root.path().join("source").exists());
         }
     }
 
