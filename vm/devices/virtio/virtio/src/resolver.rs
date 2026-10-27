@@ -49,6 +49,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VirtioPciDeviceHandle> for Virtio
                 resource.0,
                 VirtioResolveInput {
                     driver_source: input.driver_source,
+                    guest_memory: Some(input.dma_target.guest_memory()),
                 },
             )
             .await
