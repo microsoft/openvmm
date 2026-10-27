@@ -2984,7 +2984,10 @@ async fn run_control_inner(
     }
 
     if !opt.paused {
-        vm_rpc.call(VmRpc::Resume, ()).await?;
+        anyhow::ensure!(
+            vm_rpc.call_failable(VmRpc::Resume, ()).await?,
+            "VM failed to start; inspect the worker log for the device startup error"
+        );
     }
 
     let paravisor_diag = Arc::new(diag_client::DiagClient::from_dialer(

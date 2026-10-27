@@ -20,7 +20,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
-    Resume(Rpc<(), bool>),
+    Resume(FailableRpc<(), bool>),
     Pause(Rpc<(), bool>),
     ClearHalt(Rpc<(), bool>),
     Reset(FailableRpc<(), ()>),
