@@ -214,6 +214,17 @@ pub struct EfiSystemTable {
 pub const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453595320494249; // "IBI SYST"
 /// EFI 2.70 system table revision.
 pub const EFI_2_70_SYSTEM_TABLE_REVISION: u32 = 0x0002_0046;
+/// From UEFI spec 4.4
+pub const EFI_BOOT_SERVICES_SIGNATURE: u64 = 0x56524553544f4f42; // "BOOTSERV"
+/// From UEFI spec 4.5
+pub const EFI_RUNTIME_SERVICES_SIGNATURE: u64 = 0x56524553544e5552; // "RUNTSERV"
+/// From UEFI spec 7.1 — the task priority level of applications.
+pub const TPL_APPLICATION: usize = 4;
+/// From UEFI spec 9.1 — EFI_LOADED_IMAGE_PROTOCOL_REVISION
+pub const EFI_LOADED_IMAGE_PROTOCOL_REVISION: u32 = 0x1000;
+/// From UEFI spec 7.2 — the size of a page in AllocatePages and the memory
+/// map.
+pub const EFI_PAGE_SIZE: u64 = 0x1000;
 
 /// From UEFI spec 7.2 — EFI_MEMORY_DESCRIPTOR
 #[repr(C)]
@@ -234,6 +245,27 @@ pub const EFI_MEMORY_DESCRIPTOR_VERSION: u32 = 1;
 
 /// From UEFI spec 7.2 — EFI_MEMORY_WB attribute
 pub const EFI_MEMORY_WB: u64 = 0x8;
+
+/// From UEFI spec 7.2 — EFI_MEMORY_RUNTIME attribute: the OS must map the
+/// memory for runtime services.
+pub const EFI_MEMORY_RUNTIME: u64 = 1 << 63;
+
+/// UEFI spec 9.1 — EFI_LOADED_IMAGE_PROTOCOL GUID.
+pub const LOADED_IMAGE_PROTOCOL_GUID: Guid = guid::guid!("5b1b31a1-9562-11d2-8e3f-00a0c969723b");
+
+/// UEFI spec 10.2 — EFI_DEVICE_PATH_PROTOCOL GUID.
+pub const DEVICE_PATH_PROTOCOL_GUID: Guid = guid::guid!("09576e91-6d3f-11d2-8e39-00a0c969723b");
+
+/// UEFI spec 13.2 — EFI_LOAD_FILE2_PROTOCOL GUID.
+pub const LOAD_FILE2_PROTOCOL_GUID: Guid = guid::guid!("4006c0c1-fcb3-403e-996d-4a6c8724e06d");
+
+/// Linux initrd vendor media device path GUID. The Linux EFI stub loads the
+/// initrd through `LoadFile2` on a device path with this vendor node.
+pub const LINUX_EFI_INITRD_MEDIA_GUID: Guid = guid::guid!("5568e427-68fc-4f3d-ac74-ca555231cc68");
+
+/// Confidential-computing blob table GUID. On SEV-SNP, the table points to the
+/// `cc_blob_sev_info` structure with the secrets and CPUID pages.
+pub const EFI_CC_BLOB_GUID: Guid = guid::guid!("067b1f5f-cf26-44c5-8554-93d777912d42");
 
 /// ACPI 2.0 table GUID for EFI configuration table entries.
 pub const ACPI_20_TABLE_GUID: Guid = guid::guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
