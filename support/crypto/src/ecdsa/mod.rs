@@ -23,9 +23,6 @@ use symcrypt as sys;
 use crate::HashAlgorithm;
 use thiserror::Error;
 
-/// SEC 1 tag for an uncompressed elliptic-curve point (`0x04 || X || Y`).
-pub const SEC1_UNCOMPRESSED_POINT_TAG: u8 = 0x04;
-
 /// An error for ECDSA operations.
 #[derive(Debug, Error)]
 #[error("ECDSA operation failed")]
@@ -99,12 +96,15 @@ pub struct EcdsaPublicKeyComponents {
 }
 
 impl EcdsaPublicKeyComponents {
+    /// SEC 1 tag for an uncompressed elliptic-curve point (`0x04 || X || Y`).
+    const SEC1_UNCOMPRESSED_POINT_TAG: u8 = 0x04;
+
     /// Decode a SEC 1 uncompressed point (`0x04 || Qx || Qy`).
     ///
     /// Returns `None` for an incorrect tag or empty or unequal coordinates.
     /// Coordinate sizes and curve membership are validated when importing a key.
     pub fn from_uncompressed_point(point: &[u8]) -> Option<Self> {
-        let coordinates = point.strip_prefix(&[SEC1_UNCOMPRESSED_POINT_TAG])?;
+        let coordinates = point.strip_prefix(&[Self::SEC1_UNCOMPRESSED_POINT_TAG])?;
         let (qx, qy) = coordinates.split_at(coordinates.len() / 2);
         if qx.is_empty() || qx.len() != qy.len() {
             return None;
@@ -120,7 +120,7 @@ impl EcdsaPublicKeyComponents {
     /// Coordinates are copied as-is, preserving leading zero padding.
     pub fn to_uncompressed_point(&self) -> Vec<u8> {
         let mut point = Vec::with_capacity(1 + self.qx.len() + self.qy.len());
-        point.push(SEC1_UNCOMPRESSED_POINT_TAG);
+        point.push(Self::SEC1_UNCOMPRESSED_POINT_TAG);
         point.extend_from_slice(&self.qx);
         point.extend_from_slice(&self.qy);
         point
