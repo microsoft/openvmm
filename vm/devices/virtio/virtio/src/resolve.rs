@@ -26,4 +26,7 @@ impl<T: 'static + VirtioDevice> From<T> for ResolvedVirtioDevice {
 pub struct VirtioResolveInput<'a> {
     /// The VM driver source.
     pub driver_source: &'a VmTaskDriverSource,
+    /// Memory used by the transport. External vhost-user servers supply it at activation.
+    /// `None` defers admission; devices must check the actual activation memory.
+    pub guest_memory: Option<&'a guestmem::GuestMemory>,
 }

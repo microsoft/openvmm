@@ -167,13 +167,12 @@ impl<'a> hv1_emulator::VtlProtectAccess for HvfNoVtlProtections<'a> {
         gpn: u64,
         _check_perms: hvdef::HvMapGpaFlags,
         _new_perms: Option<hvdef::HvMapGpaFlags>,
-    ) -> Result<guestmem::LockedPages, HvError> {
+    ) -> Result<guestmem::UserLockedPages, HvError> {
         // Overlay pages are written through the returned locked pages, so lock
         // them for write.
-        Ok(self
-            .0
-            .lock_gpns(guestmem::AccessType::Write, false, &[gpn])
-            .unwrap())
+        self.0
+            .lock_user_gpns(guestmem::AccessType::Write, &[gpn])
+            .map_err(|_| HvError::OperationDenied)
     }
 
     fn unlock_overlay_page(&mut self, _gpn: u64) -> Result<(), HvError> {
@@ -196,5 +195,60 @@ impl SignalEvent for HvfHypercallHandler<'_, '_> {
             .partition
             .synic_ports
             .handle_signal_event(Vtl::Vtl0, connection_id, flag)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hv1_emulator::VtlProtectAccess;
+    use std::ptr::NonNull;
+    use test_with_tracing::test;
+
+    struct NoUserLockMemory;
+
+    // SAFETY: no raw mapping is exposed, and the default fallbacks return errors.
+    unsafe impl guestmem::GuestMemoryAccess for NoUserLockMemory {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            None
+        }
+
+        fn max_address(&self) -> u64 {
+            0x1000
+        }
+    }
+
+    #[test]
+    fn overlay_lock_preserves_valid_ram_and_rejects_invalid_gpn() {
+        let memory = guestmem::GuestMemory::allocate(0x1000);
+        let mut access = HvfNoVtlProtections(&memory);
+        let permissions = hvdef::HvMapGpaFlags::new()
+            .with_readable(true)
+            .with_writable(true);
+        assert!(
+            access
+                .check_modify_and_lock_overlay_page(0, permissions, None)
+                .is_ok()
+        );
+        assert!(matches!(
+            access.check_modify_and_lock_overlay_page(1, permissions, None),
+            Err(HvError::OperationDenied)
+        ));
+    }
+
+    #[test]
+    fn overlay_lock_returns_error_when_user_locks_are_denied() {
+        let memory = guestmem::GuestMemory::new("no-user-locks", NoUserLockMemory);
+        assert!(!memory.supports_user_lock());
+        assert!(matches!(
+            HvfNoVtlProtections(&memory).check_modify_and_lock_overlay_page(
+                0,
+                hvdef::HvMapGpaFlags::new()
+                    .with_readable(true)
+                    .with_writable(true),
+                None,
+            ),
+            Err(HvError::OperationDenied)
+        ));
     }
 }

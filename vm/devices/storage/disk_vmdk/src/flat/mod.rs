@@ -437,7 +437,7 @@ impl FlatVmdkDisk {
         let driver = self
             .driver
             .as_deref()
-            .filter(|_| !buffers.is_empty() && buffers.guest_memory().supports_locking());
+            .filter(|_| !buffers.is_empty() && buffers.guest_memory().supports_kernel_lock());
 
         // Fast path: if the read fits within one extent, use native I/O without building a segment list.
         #[cfg(target_os = "linux")]
