@@ -299,7 +299,16 @@ message DiskBackend {
     oneof kind {
         // A file-backed disk.
         FileDisk file = 1;
+        // A memory-backed disk.
+        MemoryDisk memory = 2;
+        // A memory-backed writable overlay over a read-only lower disk.
+        DiskBackend memory_diff = 3;
     }
+}
+
+message MemoryDisk {
+    // Disk size in bytes.
+    uint64 size_bytes = 1;
 }
 
 // A disk backed by a host file.
@@ -308,6 +317,26 @@ message FileDisk {
     string path = 1;
     // Bypass the OS page cache (O_DIRECT).
     bool   direct = 2;
+    // Create or truncate the backing file to this size in bytes before use.
+    // For .vhd and .vmgs files, also write a fixed VHD1 footer.
+    optional uint64 create_size_bytes = 3;
+}
+
+// Virtual machine guest state storage, equivalent to --vmgs.
+message VmgsConfig {
+    enum Provisioning {
+        // Open existing VMGS data, formatting only an empty disk.
+        ON_EMPTY = 0;
+        // Reformat if the existing VMGS data cannot be opened (--vmgs ...,fmt-on-fail).
+        ON_FAILURE = 1;
+        // Always reformat, discarding existing guest state (--vmgs ...,fmt).
+        ALWAYS = 2;
+    }
+
+    // Required writable backing disk. VMGS files must already exist unless
+    // FileDisk.create_size_bytes is specified.
+    DiskBackend backend = 1;
+    Provisioning provisioning = 2;
 }
 
 // virtio-blk block device configuration.
@@ -707,6 +736,9 @@ message VMConfig {
     IsolationConfig isolation_config = 19;
     // Expose hardware virtualization extensions to the guest.
     bool nested_virt = 20;
+    // Guest state storage, including UEFI variables. If absent, guest state
+    // remains in memory and is lost when the VM is torn down.
+    VmgsConfig vmgs = 21;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

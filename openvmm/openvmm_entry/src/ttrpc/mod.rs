@@ -19,7 +19,9 @@ use fd_passing::FdRegistry;
 #[derive(Clone, Default)]
 struct FdRegistry {}
 
+use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
+use crate::cli_args::ProvisionVmgs;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -109,7 +111,8 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsResource;
 use vmservice::uefi::initial_variables::SecureBootTemplate;
 
 #[cfg(guest_arch = "aarch64")]
@@ -656,6 +659,7 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
 fn build_uefi_manifest(
     arch: vm_manifest_builder::MachineArch,
     uefi: vmservice::Uefi,
+    with_vmgs: bool,
 ) -> anyhow::Result<vm_manifest_builder::UefiManifest> {
     let initial_variables = uefi.initial_variables.unwrap_or_default();
     let base_template = match (arch, initial_variables.secure_boot_template()) {
@@ -688,7 +692,7 @@ fn build_uefi_manifest(
         uefi.secure_boot_enabled,
         firmware_uefi_resources::LogLevel::make_default(),
         None,
-        EphemeralNonVolatileStoreHandle.into_resource(),
+        crate::non_volatile_store_resource(with_vmgs, vmgs_format::FileId::BIOS_NVRAM),
         None,
     ))
 }
@@ -895,6 +899,7 @@ impl VmService {
 
         validate_platform_config(&req_config)?;
 
+        let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
         // Snapshot the fd registry so tap NIC backends can resolve descriptors
@@ -1027,7 +1032,7 @@ impl VmService {
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
-                let uefi_manifest = build_uefi_manifest(arch, uefi)?;
+                let uefi_manifest = build_uefi_manifest(arch, uefi, vmgs.is_some())?;
                 (
                     LoadMode::Uefi {
                         firmware,
@@ -1073,9 +1078,7 @@ impl VmService {
         }
         if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
-            // runtime services, so it is required for a UEFI boot. The store is
-            // ephemeral: with no VMGS file configured there is nowhere to
-            // persist boot entries or secure boot state across reboots.
+            // runtime services, so it is required for a UEFI boot.
             chipset_builder = chipset_builder.with_uefi(uefi_manifest);
         }
         let layout_config = chipset_builder.layout_config();
@@ -1171,7 +1174,7 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs: None,
+            vmgs,
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
@@ -2464,14 +2467,48 @@ async fn build_disk_backend(
     backend: vmservice::DiskBackend,
     read_only: bool,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
+    crate::disk_open(&disk_backend_from_proto(backend)?, read_only).await
+}
+
+fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<DiskCliKind> {
     let vmservice::DiskBackend { kind } = backend;
-    match kind.context("missing disk backend kind")? {
-        vmservice::disk_backend::Kind::File(vmservice::FileDisk { path, direct }) => {
-            open_disk_type(path.as_ref(), OpenDiskOptions { read_only, direct })
-                .await
-                .with_context(|| format!("failed to open {path}"))
+    Ok(match kind.context("missing disk backend kind")? {
+        vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+            path,
+            direct,
+            create_size_bytes,
+        }) => DiskCliKind::File {
+            path: path.into(),
+            create_with_len: create_size_bytes,
+            direct,
+        },
+        vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
+            DiskCliKind::Memory(size_bytes)
         }
-    }
+        vmservice::disk_backend::Kind::MemoryDiff(lower) => {
+            DiskCliKind::MemoryDiff(Box::new(disk_backend_from_proto(*lower)?))
+        }
+    })
+}
+
+async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Option<VmgsResource>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let provisioning = vmservice::vmgs_config::Provisioning::from_i32(config.provisioning)
+        .with_context(|| format!("unknown VMGS provisioning policy {}", config.provisioning))?;
+    let provision = match provisioning {
+        vmservice::vmgs_config::Provisioning::OnEmpty => ProvisionVmgs::OnEmpty,
+        vmservice::vmgs_config::Provisioning::OnFailure => ProvisionVmgs::OnFailure,
+        vmservice::vmgs_config::Provisioning::Always => ProvisionVmgs::True,
+    };
+    let kind = disk_backend_from_proto(config.backend.context("missing VMGS backend")?)
+        .context("failed to open VMGS disk")?;
+    Ok(Some(
+        crate::open_vmgs(&kind, provision, GuestStateEncryptionPolicy::None(true))
+            .await
+            .context("failed to open VMGS disk")?,
+    ))
 }
 
 /// Builds a host network endpoint resource from the proto `NicBackend`.
@@ -2618,6 +2655,176 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
 
+    fn memory_disk() -> vmservice::DiskBackend {
+        vmservice::DiskBackend {
+            kind: Some(vmservice::disk_backend::Kind::Memory(
+                vmservice::MemoryDisk {
+                    size_bytes: vmgs_format::VMGS_DEFAULT_CAPACITY,
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn vmgs_defaults_and_provisioning() {
+        futures::executor::block_on(async {
+            assert!(build_vmgs(None).await.unwrap().is_none());
+            assert!(vmservice::VmConfig::default().vmgs.is_none());
+            for provisioning in [
+                vmservice::vmgs_config::Provisioning::OnEmpty,
+                vmservice::vmgs_config::Provisioning::OnFailure,
+                vmservice::vmgs_config::Provisioning::Always,
+            ] {
+                let resource = build_vmgs(Some(vmservice::VmgsConfig {
+                    backend: Some(memory_disk()),
+                    provisioning: provisioning as i32,
+                }))
+                .await
+                .unwrap()
+                .unwrap();
+                let disk = match (provisioning, resource) {
+                    (vmservice::vmgs_config::Provisioning::OnEmpty, VmgsResource::Disk(disk))
+                    | (
+                        vmservice::vmgs_config::Provisioning::OnFailure,
+                        VmgsResource::ReprovisionOnFailure(disk),
+                    )
+                    | (
+                        vmservice::vmgs_config::Provisioning::Always,
+                        VmgsResource::Reprovision(disk),
+                    ) => disk,
+                    other => panic!("incorrect VMGS provisioning: {other:?}"),
+                };
+                assert!(matches!(
+                    disk.encryption_policy,
+                    GuestStateEncryptionPolicy::None(true)
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn vmgs_rejects_invalid_configuration() {
+        futures::executor::block_on(async {
+            for (config, expected) in [
+                (vmservice::VmgsConfig::default(), "missing VMGS backend"),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(Default::default()),
+                        ..Default::default()
+                    },
+                    "missing disk backend kind",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(memory_disk()),
+                        provisioning: i32::MAX,
+                    },
+                    "unknown VMGS provisioning policy",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(vmservice::DiskBackend {
+                            kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::default())),
+                        }),
+                        ..Default::default()
+                    },
+                    "missing disk backend kind",
+                ),
+            ] {
+                let error = build_vmgs(Some(config)).await.unwrap_err();
+                assert!(
+                    format!("{error:#}").contains(expected),
+                    "expected {expected}, got {error:#}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn vmgs_file_backend() {
+        futures::executor::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("guest.vmgs");
+            let mut backend = vmservice::FileDisk {
+                path: path.to_str().unwrap().into(),
+                ..Default::default()
+            };
+            let config = |file| vmservice::VmgsConfig {
+                backend: Some(vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::File(file)),
+                }),
+                ..Default::default()
+            };
+            let error = build_vmgs(Some(config(backend.clone()))).await.unwrap_err();
+            assert!(format!("{error:#}").contains("failed to open VMGS disk"));
+            assert!(!path.exists());
+
+            backend.create_size_bytes = Some(vmgs_format::VMGS_DEFAULT_CAPACITY);
+            assert!(matches!(
+                build_vmgs(Some(config(backend.clone()))).await.unwrap(),
+                Some(VmgsResource::Disk(_))
+            ));
+            let original = std::fs::read(&path).unwrap();
+            assert_eq!(
+                original.len() as u64,
+                vmgs_format::VMGS_DEFAULT_CAPACITY + 512
+            );
+
+            backend.create_size_bytes = None;
+            assert!(matches!(
+                build_vmgs(Some(config(backend.clone()))).await.unwrap(),
+                Some(VmgsResource::Disk(_))
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            backend.direct = true;
+            assert!(
+                format!("{:#}", build_vmgs(Some(config(backend))).await.unwrap_err())
+                    .contains("direct I/O is not supported")
+            );
+        });
+    }
+
+    #[test]
+    fn disk_backends_match_cli() {
+        use prost::Message;
+
+        for (backend, cli) in [
+            (memory_disk(), "mem:VMGS_DEFAULT".to_owned()),
+            (
+                vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                        vmservice::DiskBackend {
+                            kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+                                path: "guest.vmgs".into(),
+                                create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                                ..Default::default()
+                            })),
+                        },
+                    ))),
+                },
+                "memdiff:file:guest.vmgs;create=VMGS_DEFAULT".to_owned(),
+            ),
+            (
+                vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+                        path: "disk.img".into(),
+                        direct: true,
+                        ..Default::default()
+                    })),
+                },
+                "file:disk.img;direct".to_owned(),
+            ),
+        ] {
+            let backend =
+                vmservice::DiskBackend::decode(backend.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(
+                disk_backend_from_proto(backend).unwrap(),
+                cli.parse::<DiskCliKind>().unwrap()
+            );
+        }
+    }
+
     #[test]
     fn uefi_initial_variables_defaults() {
         for arch in [
@@ -2625,17 +2832,28 @@ mod tests {
             vm_manifest_builder::MachineArch::Aarch64,
         ] {
             for initial_variables in [None, Some(Default::default())] {
-                let manifest = build_uefi_manifest(
-                    arch,
-                    vmservice::Uefi {
-                        initial_variables,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-                assert!(manifest.config.base_template.is_none());
-                assert!(manifest.config.custom_uefi_json.is_none());
-                assert!(!manifest.config.secure_boot);
+                for with_vmgs in [false, true] {
+                    let manifest = build_uefi_manifest(
+                        arch,
+                        vmservice::Uefi {
+                            initial_variables: initial_variables.clone(),
+                            ..Default::default()
+                        },
+                        with_vmgs,
+                    )
+                    .unwrap();
+                    assert!(manifest.config.base_template.is_none());
+                    assert!(manifest.config.custom_uefi_json.is_none());
+                    assert!(!manifest.config.secure_boot);
+                    assert_eq!(
+                        manifest.nvram_storage.id(),
+                        crate::non_volatile_store_resource(
+                            with_vmgs,
+                            vmgs_format::FileId::BIOS_NVRAM,
+                        )
+                        .id()
+                    );
+                }
             }
         }
     }
@@ -2669,7 +2887,7 @@ mod tests {
                         };
                         let uefi =
                             vmservice::Uefi::decode(uefi.encode_to_vec().as_slice()).unwrap();
-                        let manifest = build_uefi_manifest(arch, uefi).unwrap();
+                        let manifest = build_uefi_manifest(arch, uefi, false).unwrap();
                         assert_eq!(
                             manifest.config.base_template.is_some(),
                             template != SecureBootTemplate::None
@@ -2696,6 +2914,7 @@ mod tests {
                     }),
                     ..Default::default()
                 },
+                false,
             )
             .err()
             .unwrap();
