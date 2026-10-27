@@ -128,7 +128,6 @@ impl From<vmbus_client_core::ConnectError> for ConnectError {
             vmbus_client_core::ConnectError::FailedToConnect(status) => {
                 Self::FailedToConnect(status)
             }
-            _ => Self::InvalidState,
         }
     }
 }
@@ -1137,12 +1136,10 @@ impl ClientTask {
                         vmbus_client_core::ChannelObservable::Opened
                         | vmbus_client_core::ChannelObservable::Closed
                         | vmbus_client_core::ChannelObservable::Revoked => {}
-                        _ => {}
                     }
                 }
             }
             Action::PauseComplete => outcome.pause_complete = true,
-            _ => {}
         }
     }
 
@@ -1263,19 +1260,6 @@ impl ClientTask {
                 rpc.complete(());
             }
             CompletionResult::ReleaseChannel => {}
-            other => {
-                // `CompletionResult` is `#[non_exhaustive]`, so adding
-                // a new variant to `vmbus_client_core` will silently
-                // compile past this match. Rate-limit rather than
-                // panic — the wrapper is a trust boundary and a
-                // future protocol addition should not kill the vmbus
-                // client task for the whole VM.
-                tracelimit::warn_ratelimited!(
-                    ?other,
-                    request_id = request_id.0,
-                    "unhandled completion from vmbus_client_core; ignoring"
-                );
-            }
         }
     }
 

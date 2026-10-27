@@ -202,7 +202,6 @@ pub enum GpadlPhase {
 
 /// Errors returned by [`FlagAllocator`].
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum FlagAllocError {
     /// The flag pool is exhausted ([`FlagAllocator::MAX_FLAGS`] flags
     /// are already allocated).
@@ -411,7 +410,6 @@ pub struct HvsockConnectRequest {
 /// messages, caller-initiated requests, lifecycle hooks — arrives as
 /// an [`Event`]. Deserialisation of host wire bytes happens inside the
 /// core.
-#[non_exhaustive]
 #[derive(Debug)]
 pub enum Event<'a> {
     // --- Host-originated ---
@@ -523,7 +521,6 @@ pub struct OfferDescriptor {
 /// A completed request result payload delivered on
 /// [`Action::Complete`].
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum CompletionResult {
     /// Result of [`Event::Connect`].
     Connect(Result<ConnectionSuccess, ConnectError>),
@@ -560,7 +557,6 @@ pub struct OpenChannelSuccess {
 /// Reasons an [`Event::OpenChannel`] or [`Event::RestoreChannel`]
 /// can fail.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum OpenChannelError {
     /// The channel is not currently in a state that allows opening
     /// (e.g., already Opened, or in Opening / Restored waiting for
@@ -582,7 +578,6 @@ pub enum OpenChannelError {
 
 /// Reasons an [`Event::EstablishGpadl`] can fail.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum EstablishGpadlError {
     /// The GPADL payload is too large for the wire format.
     #[error("gpadl request is too large")]
@@ -608,7 +603,6 @@ pub struct ConnectionSuccess {
 
 /// Reasons a connect can fail.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ConnectError {
     /// The client was not in the `Disconnected` phase.
     #[error("invalid client state for InitiateContact")]
@@ -627,7 +621,6 @@ pub enum ConnectError {
 /// per-channel `Arc<AtomicU32>` connection-id bookkeeping and for
 /// forwarding to `revoke_send` on rescinds.
 #[derive(Copy, Clone, Debug)]
-#[non_exhaustive]
 pub enum ChannelObservable {
     /// A live connection id was assigned to the channel by
     /// `OpenResult`.
@@ -649,7 +642,6 @@ pub enum ChannelObservable {
 /// Actions are streamed through an [`ActionSink`] in the order the
 /// core generates them; the wrapper is expected to observe them
 /// synchronously within a single `step` call.
-#[non_exhaustive]
 #[derive(Debug)]
 pub enum Action {
     /// Post a wire-encoded vmbus channel-manager message to the host.
