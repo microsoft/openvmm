@@ -25,11 +25,16 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use inspect::Inspect;
+use inspect_counters::SharedCounter;
 use once_cell::sync::OnceCell;
+use parking_lot::Mutex;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Debug;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use thiserror::Error;
 use tokio::time::Instant;
@@ -123,7 +128,7 @@ type HttpClient = Client<HttpsConnector<HttpConnector>, Empty<&'static [u8]>>;
 /// describes.
 #[derive(Debug, Inspect)]
 pub struct HttpBlob {
-    #[inspect(skip)]
+    #[inspect(flatten)]
     requester: Arc<Requester>,
     #[inspect(debug)]
     version: http::Version,
@@ -209,15 +214,31 @@ impl Blob for HttpBlob {
 }
 
 /// Makes the requests for an [`HttpBlob`], with timeouts and retries.
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 struct Requester {
+    #[inspect(skip)]
     options: HttpBlobOptions,
     /// Makes first attempts, which may reuse idle connections.
+    #[inspect(skip)]
     client: HttpClient,
     /// Makes retries, each on a new connection: whatever broke the previous
     /// attempt's connection may have broken the idle ones too.
+    #[inspect(skip)]
     retry_client: HttpClient,
+    #[inspect(skip)]
     tokio_handle: tokio::runtime::Handle,
+    /// Attempts made, retries included.
+    requests: SharedCounter,
+    /// Attempts made after a failed attempt.
+    retries: SharedCounter,
+    /// Attempts cut short by a timeout.
+    timeouts: SharedCounter,
+    /// Requests that failed, after any retries.
+    failures: SharedCounter,
+    /// The requests in progress.
+    in_flight: InFlightTable,
+    #[inspect(skip)]
+    next_id: AtomicU64,
 }
 
 impl Requester {
@@ -237,6 +258,12 @@ impl Requester {
                 .build(connector),
             options,
             tokio_handle,
+            requests: SharedCounter::new(),
+            retries: SharedCounter::new(),
+            timeouts: SharedCounter::new(),
+            failures: SharedCounter::new(),
+            in_flight: InFlightTable::default(),
+            next_id: AtomicU64::new(0),
         }
     }
 
@@ -265,7 +292,7 @@ impl Requester {
             }
 
             let response = self
-                .request(RequestKind::Head, deadline, |client| {
+                .request(RequestKind::Head, deadline, |client, _| {
                     head_once(client, uri.clone(), response_timeout)
                 })
                 .await
@@ -303,50 +330,65 @@ impl Requester {
         let deadline = deadline_after(self.options.operation_timeout);
         let response_timeout = self.options.response_timeout;
         let body_idle_timeout = self.options.body_idle_timeout;
-        self.request(RequestKind::Get { offset, len }, deadline, |client| {
-            get_once(
-                client,
-                uri.clone(),
-                offset,
-                len,
-                response_timeout,
-                body_idle_timeout,
-            )
-        })
+        self.request(
+            RequestKind::Get { offset, len },
+            deadline,
+            |client, progress| {
+                get_once(
+                    client,
+                    uri.clone(),
+                    offset,
+                    len,
+                    response_timeout,
+                    body_idle_timeout,
+                    progress,
+                )
+            },
+        )
         .await
     }
 
-    /// Makes `request`, by calling `attempt` with the client to use, and
-    /// retrying it as the options say, until it succeeds, fails for good, or
-    /// `deadline` passes.
+    /// Makes `request`, by calling `attempt` with the client to use and a
+    /// handle to report progress through, and retrying it as the options
+    /// say, until it succeeds, fails for good, or `deadline` passes.
     async fn request<T, F, Fut>(
-        &self,
+        self: &Arc<Self>,
         request: RequestKind,
         deadline: Instant,
         mut attempt: F,
     ) -> io::Result<T>
     where
-        F: FnMut(HttpClient) -> Fut,
+        F: FnMut(HttpClient, Progress) -> Fut,
         Fut: Future<Output = Result<T, Failure>>,
     {
+        let tracker = self.track(request);
         let mut backoff = self.options.initial_backoff.min(self.options.max_backoff);
         let mut attempts = 0;
         loop {
             attempts += 1;
+            tracker.0.update(|entry| entry.start_attempt(attempts));
+            self.requests.increment();
             let client = if attempts == 1 {
                 &self.client
             } else {
                 &self.retry_client
             };
             let (err, retry) =
-                match tokio::time::timeout_at(deadline, attempt(client.clone())).await {
+                match tokio::time::timeout_at(deadline, attempt(client.clone(), tracker.0.clone()))
+                    .await
+                {
                     Ok(Ok(output)) => return Ok(output),
                     Ok(Err(Failure::Transient(err))) => (err, true),
                     Ok(Err(Failure::Timeout(err))) => {
+                        self.timeouts.increment();
                         (io::Error::new(io::ErrorKind::TimedOut, err), true)
                     }
-                    Ok(Err(Failure::Permanent(err))) => return Err(err),
+                    Ok(Err(Failure::Permanent(err))) => {
+                        self.failures.increment();
+                        return Err(err);
+                    }
                     Err(_) => {
+                        self.timeouts.increment();
                         let err = RequestError::OperationTimeout {
                             request,
                             timeout: self.options.operation_timeout,
@@ -367,11 +409,14 @@ impl Requester {
                     ?backoff,
                     "http blob request failed, retrying"
                 );
+                self.retries.increment();
+                tracker.0.update(|entry| entry.state = State::BackingOff);
                 tokio::time::sleep(backoff).await;
                 backoff = backoff.saturating_mul(2).min(self.options.max_backoff);
                 continue;
             }
 
+            self.failures.increment();
             tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 %request,
@@ -392,7 +437,28 @@ impl Requester {
             });
         }
     }
+
+    /// Lists `request` in [`Requester::in_flight`] until the returned tracker
+    /// is dropped.
+    fn track(self: &Arc<Self>, request: RequestKind) -> Tracker {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.in_flight.0.lock().insert(
+            id,
+            InFlight {
+                request,
+                attempt: 0,
+                state: State::AwaitingResponse,
+                started: Instant::now(),
+                received: 0,
+            },
+        );
+        Tracker(Progress {
+            requester: self.clone(),
+            id,
+        })
+    }
 }
+
 /// Returns the instant `timeout` from now, or a distant one if that cannot be
 /// represented.
 fn deadline_after(timeout: Duration) -> Instant {
@@ -423,6 +489,7 @@ async fn get_once(
     len: usize,
     response_timeout: Duration,
     body_idle_timeout: Duration,
+    progress: Progress,
 ) -> Result<Vec<u8>, Failure> {
     let request = Request::builder()
         .uri(uri)
@@ -440,6 +507,7 @@ async fn get_once(
         ))));
     }
 
+    progress.update(|entry| entry.state = State::ReceivingBody);
     let mut body = response.into_body();
     let mut data = Vec::with_capacity(len);
     loop {
@@ -463,6 +531,7 @@ async fn get_once(
                 )));
             }
             data.extend_from_slice(chunk);
+            progress.update(|entry| entry.received = data.len());
         }
     }
 
@@ -597,6 +666,76 @@ impl fmt::Display for RequestKind {
                 write!(f, "GET bytes={}-{}", offset, offset + len as u64 - 1)
             }
         }
+    }
+}
+
+/// The requests in progress, by ID.
+#[derive(Debug, Default)]
+struct InFlightTable(Mutex<BTreeMap<u64, InFlight>>);
+
+impl Inspect for InFlightTable {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        inspect::iter_by_key(self.0.lock().iter()).inspect(req);
+    }
+}
+
+/// A request in progress, as inspection shows it.
+#[derive(Debug, Inspect)]
+struct InFlight {
+    /// The request, such as `GET bytes=0-4095`.
+    #[inspect(display)]
+    request: RequestKind,
+    /// The current attempt, counting from 1.
+    attempt: u32,
+    /// What the request is waiting for.
+    state: State,
+    /// How long ago the request started.
+    #[inspect(rename = "elapsed", with = "Instant::elapsed")]
+    started: Instant,
+    /// How much of the response body the current attempt has received.
+    received: usize,
+}
+
+impl InFlight {
+    fn start_attempt(&mut self, attempt: u32) {
+        self.attempt = attempt;
+        self.state = State::AwaitingResponse;
+        self.received = 0;
+    }
+}
+
+/// What a request in progress is waiting for.
+#[derive(Debug, Copy, Clone, Inspect)]
+enum State {
+    /// The response headers, connecting first if need be.
+    AwaitingResponse,
+    /// More of the response body.
+    ReceivingBody,
+    /// The delay before the next attempt.
+    BackingOff,
+}
+
+/// A handle through which an attempt reports its progress to inspection.
+#[derive(Clone)]
+struct Progress {
+    requester: Arc<Requester>,
+    id: u64,
+}
+
+impl Progress {
+    fn update(&self, f: impl FnOnce(&mut InFlight)) {
+        if let Some(entry) = self.requester.in_flight.0.lock().get_mut(&self.id) {
+            f(entry);
+        }
+    }
+}
+
+/// Removes a request from [`Requester::in_flight`] when dropped.
+struct Tracker(Progress);
+
+impl Drop for Tracker {
+    fn drop(&mut self) {
+        self.0.requester.in_flight.0.lock().remove(&self.0.id);
     }
 }
 

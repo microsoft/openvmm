@@ -21,6 +21,7 @@ use scsi_buffers::OwnedRequestBuffers;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -243,6 +244,11 @@ fn read_blob(
     })
 }
 
+/// Returns the JSON for `path` in the blob's inspection output.
+fn inspect_json(blob: &HttpBlob, path: &str) -> String {
+    inspect::inspect(path, blob).results().json().to_string()
+}
+
 /// Reads through a server that fails the first GET requests as `failures` says,
 /// and checks that the read recovers: one retry per failure, the right data,
 /// and every stalled connection closed rather than leaked or reused.
@@ -452,7 +458,7 @@ fn stalled_connection_is_not_reused() {
         },
     );
     let url = server.url();
-    let (_blob, results) = bounded("reads", async move {
+    let (blob, results) = bounded("reads", async move {
         let blob = HttpBlob::with_options(&url, fast_options()).await.unwrap();
         let mut results = Vec::new();
         for i in 0..3 {
@@ -466,10 +472,64 @@ fn stalled_connection_is_not_reused() {
         assert!(data == content[i * 4096..][..4096], "read {i}: wrong data");
     }
     // Only the stalled request was retried.
+    assert_eq!(inspect_json(&blob, "retries"), "1");
+    assert_eq!(inspect_json(&blob, "timeouts"), "1");
     assert_eq!(server.stats().gets, 4);
     server.wait_for("the stalled connection to be closed", LIMIT, |stats| {
         stats.abandoned == 1
     });
+}
+
+/// Inspection shows what a request that is taking long is waiting for, so that
+/// a hung guest's disk can be told apart from a slow one.
+#[test]
+fn inspect_shows_stalled_request() {
+    let content = content();
+    let server = TestHttpServer::with_script(
+        content.clone(),
+        Script {
+            get: vec![Behavior::StallBeforeResponse],
+            ..Default::default()
+        },
+    );
+    let url = server.url();
+    // Long enough that the stall does not time out while it is inspected.
+    // Releasing the server ends it instead.
+    let options = HttpBlobOptions {
+        response_timeout: LIMIT * 3,
+        operation_timeout: LIMIT * 3,
+        ..fast_options()
+    };
+    let blob = Arc::new(bounded("open", async move {
+        HttpBlob::with_options(&url, options).await.unwrap()
+    }));
+    let read = background({
+        let blob = blob.clone();
+        async move {
+            let mut buf = vec![0; 4096];
+            blob.read(&mut buf, 8192).await.map(|()| buf)
+        }
+    });
+    server.wait_for("the request to stall", LIMIT, |stats| stats.stalled == 1);
+    let in_flight = inspect_json(&blob, "in_flight");
+    for expected in [
+        r#""request":"GET bytes=8192-12287""#,
+        r#""attempt":1"#,
+        r#""state":"awaiting_response""#,
+    ] {
+        assert!(
+            in_flight.contains(expected),
+            "{expected} not in {in_flight}"
+        );
+    }
+
+    // Ending the stall fails the attempt, and the retry succeeds.
+    server.release();
+    let data = read.wait("read").unwrap();
+    assert!(data == content[8192..][..4096], "wrong data");
+    assert_eq!(inspect_json(&blob, "in_flight"), "{}");
+    assert_eq!(inspect_json(&blob, "retries"), "1");
+    assert_eq!(inspect_json(&blob, "timeouts"), "0");
 }
 
 /// A failure that a new attempt would only repeat is returned at once.
