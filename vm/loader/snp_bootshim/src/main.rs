@@ -1,14 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Measured SEV-SNP boot stage that reads host devices, accepts sparse guest
-//! RAM, builds complete ACPI, and enters a direct-boot Linux kernel.
+//! Measured SEV-SNP boot stage that reads host devices, builds complete
+//! ACPI, and boots Linux through the kernel's own EFI stub.
 //!
 //! The IGVM generator starts this x86_64 bare-metal payload with `RSI` pointing
 //! to a measured [`SnpBootShimParams`] page. After validating that complete
-//! handoff, the shim makes each omitted RAM range private through the GHCB MSR
-//! protocol, executes `PVALIDATE`, repairs its cache state, and jumps to the
-//! measured Linux entry point with the architectural direct-boot registers.
+//! handoff, the shim:
+//!
+//! 1. reads the CPUs, RAM, PCIe host bridges, and COM ports from the host
+//!    device tree;
+//! 2. builds a UEFI memory map, in which the RAM that the image did not
+//!    import is unaccepted;
+//! 3. accepts only the memory that it and the EFI stub need, through the GHCB
+//!    MSR protocol and `PVALIDATE`;
+//! 4. builds the ACPI tables;
+//! 5. installs a `#VC` handler that answers `CPUID`; and
+//! 6. enters the kernel's PE/COFF entry point with a minimal set of UEFI boot
+//!    services.
+//!
+//! The EFI stub then does the work that Linux expects from firmware. It also
+//! sets up lazy acceptance, so Linux accepts the remaining memory on demand.
 //!
 //! It has no command-line interface and is only useful as an IGVM component.
 //! SNP Linux-direct image generation builds and embeds it; invalid parameters
@@ -16,8 +28,9 @@
 //! memory.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
-// UNSAFETY: The bootshim issues PVALIDATE, reads freshly accepted pages, and
-// transfers control directly to the measured Linux entrypoint.
+// UNSAFETY: The bootshim issues PVALIDATE, installs exception handlers,
+// implements UEFI services for the EFI stub, and transfers control to the
+// measured kernel.
 #![cfg_attr(minimal_rt, expect(unsafe_code))]
 // Keep shared code visible to rust-analyzer in normal host builds even though
 // only tests and the minimal-runtime entry point call it.
@@ -26,7 +39,10 @@
 extern crate alloc;
 
 mod acpi_tables;
+mod efi;
 mod host_dt;
+mod memory_map;
+mod vc;
 
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
@@ -35,6 +51,7 @@ use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
 use loader_defs::linux::SnpBootShimPlatformParams;
 use loader_defs::linux::SnpBootShimRange;
+use memory_range::MemoryRange;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -45,8 +62,7 @@ enum ParamsError {
     UnsupportedVersion,
     TooManyRanges,
     InvalidRamEnd,
-    InvalidLinuxEntry,
-    InvalidLinuxZeroPage,
+    Reserved,
     EmptyRange,
     RangeOverflow,
     RangeOutsideRam,
@@ -88,22 +104,8 @@ fn validate_params(
     if params_end > params.ram_end {
         return Err(ParamsError::RangeOutsideRam);
     }
-    if params.linux_entry == 0
-        || params.linux_entry >= params.ram_end
-        || (params_gpa..params_end).contains(&params.linux_entry)
-    {
-        return Err(ParamsError::InvalidLinuxEntry);
-    }
-    let linux_zero_page_end = params
-        .linux_zero_page
-        .checked_add(PAGE_SIZE)
-        .ok_or(ParamsError::RangeOverflow)?;
-    if params.linux_zero_page == 0
-        || !params.linux_zero_page.is_multiple_of(PAGE_SIZE)
-        || linux_zero_page_end > params.ram_end
-        || params.linux_zero_page < params_end && params_gpa < linux_zero_page_end
-    {
-        return Err(ParamsError::InvalidLinuxZeroPage);
+    if params.reserved != [0; 2] {
+        return Err(ParamsError::Reserved);
     }
 
     let mut previous_end = 0;
@@ -135,10 +137,87 @@ fn validate_params(
     Ok(ranges)
 }
 
-/// Checks that the generator wrote the platform page that this shim expects.
-fn check_platform(platform: &SnpBootShimPlatformParams) -> bool {
-    platform.magic == SNP_BOOT_SHIM_PLATFORM_MAGIC
-        && platform.version == SNP_BOOT_SHIM_PLATFORM_VERSION
+#[derive(Debug, Eq, PartialEq)]
+enum PlatformError {
+    InvalidMagic,
+    UnsupportedVersion,
+    InvalidCBit,
+    /// A region is missing, unaligned, overflows, or lies outside RAM.
+    InvalidRegion(&'static str),
+    /// A work area does not lie in one omitted RAM range.
+    NotOmitted(&'static str),
+    InvalidKernelEntry,
+    InvalidStack,
+    InvalidCommandLine,
+}
+
+/// UEFI spec 2.3.4 gives an x64 image at least 128 KiB of stack.
+const MIN_EFI_STACK_SIZE: u64 = 128 * 1024;
+
+/// Validates the measured platform page.
+///
+/// Like the parameter page, the generator measures this page, so a failure
+/// indicates an incompatible or corrupt image.
+fn validate_platform(
+    platform: &SnpBootShimPlatformParams,
+    ram_end: u64,
+    omitted: &[SnpBootShimRange],
+) -> Result<(), PlatformError> {
+    if platform.magic != SNP_BOOT_SHIM_PLATFORM_MAGIC {
+        return Err(PlatformError::InvalidMagic);
+    }
+    if platform.version != SNP_BOOT_SHIM_PLATFORM_VERSION {
+        return Err(PlatformError::UnsupportedVersion);
+    }
+    if !platform.c_bit_mask.is_power_of_two() {
+        return Err(PlatformError::InvalidCBit);
+    }
+
+    let region = |name, gpa: u64, size: u64| {
+        size.checked_next_multiple_of(PAGE_SIZE)
+            .and_then(|size| gpa.checked_add(size))
+            .filter(|&end| size != 0 && gpa.is_multiple_of(PAGE_SIZE) && end <= ram_end)
+            .map(|end| MemoryRange::new(gpa..end))
+            .ok_or(PlatformError::InvalidRegion(name))
+    };
+    let p = platform;
+    region("device tree", p.dt_gpa, p.dt_size)?;
+    region("ACPI output", p.acpi_output_gpa, p.acpi_output_size)?;
+    region("RSDP", p.rsdp_gpa, PAGE_SIZE)?;
+    region("SMBIOS", p.smbios_gpa, p.smbios_size)?;
+    region("secrets page", p.secrets_gpa, PAGE_SIZE)?;
+    region("CPUID page", p.cpuid_gpa, PAGE_SIZE)?;
+    region("CC blob", p.cc_blob_gpa, PAGE_SIZE)?;
+    region("command line", p.cmdline_gpa, p.cmdline_size)?;
+    if p.initrd_size != 0 {
+        region("initrd", p.initrd_gpa, p.initrd_size)?;
+    }
+    let kernel = region("kernel", p.kernel_gpa, p.kernel_size)?;
+    if !kernel.contains_addr(p.kernel_entry) {
+        return Err(PlatformError::InvalidKernelEntry);
+    }
+    // The command line is UTF-16 and ends with a NUL character.
+    if p.cmdline_size < 2 || !p.cmdline_size.is_multiple_of(2) || p.cmdline_size > u32::MAX.into() {
+        return Err(PlatformError::InvalidCommandLine);
+    }
+    if p.stack_size < MIN_EFI_STACK_SIZE {
+        return Err(PlatformError::InvalidStack);
+    }
+
+    for (name, gpa, size) in [
+        ("heap", p.heap_gpa, p.heap_size),
+        ("stack", p.stack_gpa, p.stack_size),
+        ("boot pool", p.boot_pool_gpa, p.boot_pool_size),
+    ] {
+        let range = region(name, gpa, size)?;
+        if !omitted.iter().any(|omitted| {
+            let start = omitted.start_gpn * PAGE_SIZE;
+            start <= range.start() && range.end() <= start + omitted.page_count * PAGE_SIZE
+        }) {
+            return Err(PlatformError::NotOmitted(name));
+        }
+    }
+    Ok(())
 }
 
 /// Why the shim stopped the guest.
@@ -152,10 +231,18 @@ enum Failure {
     Params = 0x01,
     Platform = 0x02,
     Accept = 0x03,
-    E820Full = 0x04,
+    MemoryMap = 0x04,
     Heap = 0x05,
     AcpiTooLarge = 0x06,
     Panic = 0x07,
+    /// The EFI stub returned, which means that it failed.
+    EfiStub = 0x08,
+    /// The EFI stub called `Exit`.
+    EfiExit = 0x09,
+    /// A `#VC` exception for something other than `CPUID`.
+    UnhandledVc = 0x0a,
+    /// An unexpected exception.
+    Exception = 0x0b,
     DeviceTree = 0x10,
     DeviceTreeProperty = 0x11,
     TooManyCpus = 0x12,
@@ -209,32 +296,27 @@ static ALLOCATOR: minimal_rt::bump_alloc::BumpAllocator =
     unsafe { minimal_rt::bump_alloc::BumpAllocator::new() };
 
 #[cfg(minimal_rt)]
-fn install_platform_acpi(
-    params: &SnpBootShimParams,
-    platform: &SnpBootShimPlatformParams,
-    devices: &host_dt::HostDevices,
-) {
+fn install_platform_acpi(platform: &SnpBootShimPlatformParams, devices: &host_dt::HostDevices) {
     let heap = platform
         .heap_gpa
         .checked_add(platform.heap_size)
-        .and_then(|end| memory_range::MemoryRange::try_new(platform.heap_gpa..end).ok());
+        .and_then(|end| MemoryRange::try_new(platform.heap_gpa..end).ok());
     let Some(heap) = heap else {
         terminate(Failure::Heap)
     };
     // SAFETY: The measured platform page gives this heap region, which the
-    // shim accepted with the other omitted RAM. The shim runs with an
-    // identity map.
+    // shim accepted. The shim runs with an identity map.
     unsafe { ALLOCATOR.init(heap) };
     let (rsdp, tables) =
         ALLOCATOR.with_alloc(|| acpi_tables::build(devices, platform.acpi_output_gpa));
-    // Do not write past the measured output region.
-    if tables.len() as u64 > platform.acpi_output_size {
+    // Do not write past the measured output regions.
+    if tables.len() as u64 > platform.acpi_output_size || rsdp.len() as u64 > PAGE_SIZE {
         terminate(Failure::AcpiTooLarge);
     }
 
     // SAFETY: The measured platform page gives the output and RSDP regions,
-    // which are disjoint from the heap that owns these buffers. Publish the
-    // RSDP only after all tables exist.
+    // which are disjoint from the heap that owns these buffers. The EFI
+    // configuration table publishes the RSDP after all tables exist.
     unsafe {
         core::ptr::copy_nonoverlapping(
             tables.as_ptr(),
@@ -242,50 +324,7 @@ fn install_platform_acpi(
             tables.len(),
         );
         core::ptr::copy_nonoverlapping(rsdp.as_ptr(), platform.rsdp_gpa as *mut u8, rsdp.len());
-        let zero_page = &mut *(params.linux_zero_page as *mut loader_defs::linux::boot_params);
-        zero_page.acpi_rsdp_addr = platform.rsdp_gpa;
     }
-}
-
-/// Returns the parts of the host RAM ranges above the measured RAM.
-///
-/// The image measures and imports pages only below `measured_ram_end`, so the
-/// shim can accept these parts.
-fn extra_ram(
-    ram: &[acpi::minimal::Ram],
-    measured_ram_end: u64,
-) -> impl Iterator<Item = memory_range::MemoryRange> + '_ {
-    let above =
-        memory_range::MemoryRange::new(measured_ram_end..memory_range::MemoryRange::MAX_ADDRESS);
-    ram.iter()
-        .map(move |r| r.range.intersection(&above))
-        .filter(|r| !r.is_empty())
-}
-
-/// Adds the host RAM above the measured RAM to the Linux E820 map.
-///
-/// The measured zero page already describes the measured RAM. Returns `false`
-/// if the map is full.
-fn add_e820_ram(
-    zero_page: &mut loader_defs::linux::boot_params,
-    ram: &[acpi::minimal::Ram],
-    measured_ram_end: u64,
-) -> bool {
-    for range in extra_ram(ram, measured_ram_end) {
-        let Some(entry) = zero_page
-            .e820_map
-            .get_mut(usize::from(zero_page.e820_entries))
-        else {
-            return false;
-        };
-        *entry = loader_defs::linux::e820entry {
-            addr: range.start().into(),
-            size: range.len().into(),
-            typ: loader_defs::linux::E820_RAM.into(),
-        };
-        zero_page.e820_entries += 1;
-    }
-    true
 }
 
 #[cfg(minimal_rt)]
@@ -405,11 +444,13 @@ mod arch {
 
     const _: () = assert!(loader_defs::linux::SNP_BOOT_SHIM_MAX_RAM_END == 512 << 30);
 
-    /// Runs `f` with an identity map of the low 512 GiB in 1-GiB pages.
+    /// Switches to an identity map of the low 512 GiB in 1-GiB pages.
     ///
     /// The measured page tables map only the low 4 GiB, but `PVALIDATE` takes
-    /// a virtual address. The original page tables are restored afterward.
-    pub fn with_large_identity_map(c_bit_mask: u64, f: impl FnOnce()) {
+    /// a virtual address, and the EFI stub uses memory anywhere in RAM. These
+    /// page tables stay in use until Linux installs its own. They lie in the
+    /// shim's image, which the memory map reports as runtime-services memory.
+    pub fn install_large_identity_map(c_bit_mask: u64) {
         const PRESENT: u64 = 1 << 0;
         const WRITABLE: u64 = 1 << 1;
         const LARGE_PAGE: u64 = 1 << 7;
@@ -433,9 +474,6 @@ mod arch {
         // SAFETY: The new tables identity-map all memory that the shim uses,
         // with the same encryption, so execution continues unchanged.
         unsafe { asm!("mov cr3, {}", in(reg) new_cr3, options(nostack, preserves_flags)) };
-        f();
-        // SAFETY: These are the original page tables.
-        unsafe { asm!("mov cr3, {}", in(reg) old_cr3, options(nostack, preserves_flags)) };
     }
 
     pub fn accept_range(range: SnpBootShimRange) -> Result<(), AcceptError> {
@@ -479,7 +517,7 @@ mod arch {
 }
 
 #[cfg(minimal_rt)]
-const STACK_SIZE: usize = 32 * 1024;
+const STACK_SIZE: usize = 64 * 1024;
 
 #[cfg(minimal_rt)]
 #[repr(C, align(16))]
@@ -488,54 +526,25 @@ struct Stack([u8; STACK_SIZE]);
 #[cfg(minimal_rt)]
 static mut STACK: Stack = Stack([0; STACK_SIZE]);
 
-// Assembly needs fixed symbols for the final indirect handoff. These start in
-// zeroed BSS and `start` writes the validated parameter values before use.
+/// Returns the shim's own image, from its ELF header to the end of its BSS.
 #[cfg(minimal_rt)]
-static mut LINUX_ENTRY: u64 = 0;
-
-#[cfg(minimal_rt)]
-static mut LINUX_ZERO_PAGE: u64 = 0;
-
-#[cfg(minimal_rt)]
-fn jump_to_linux() -> ! {
-    // SAFETY: The caller accepted all omitted RAM and populated these
-    // single-threaded handoff statics from the measured parameter page.
-    unsafe {
-        core::arch::asm!(
-            // Clear registers to restore the original direct-boot register state.
-            "xor eax, eax",
-            "xor ebx, ebx",
-            "xor ecx, ecx",
-            "xor edx, edx",
-            "xor edi, edi",
-            "xor ebp, ebp",
-            "xor r8d, r8d",
-            "xor r9d, r9d",
-            "xor r10d, r10d",
-            "xor r11d, r11d",
-            "xor r12d, r12d",
-            "xor r13d, r13d",
-            "xor r14d, r14d",
-            "xor r15d, r15d",
-            // Stage the architectural initial RFLAGS value after all XORs,
-            // since XOR changes the arithmetic flags.
-            "push 2",
-            // Restore RFLAGS without leaving the staged value on the stack.
-            "popfq",
-            // Restore RSI to the measured Linux boot-parameter page.
-            "mov rsi, qword ptr [rip + {linux_zero_page}]",
-            // Explicitly ensure that string operations increment addresses.
-            "cld",
-            // Use MOV rather than XOR after POPFQ so RFLAGS stays at its
-            // architectural direct-boot value.
-            "mov rsp, 0",
-            // Jump through memory so the Linux entrypoint consumes no GPR.
-            "jmp qword ptr [rip + {linux_entry}]",
-            linux_entry = sym LINUX_ENTRY,
-            linux_zero_page = sym LINUX_ZERO_PAGE,
-            options(noreturn),
-        )
+fn shim_range() -> MemoryRange {
+    unsafe extern "C" {
+        static __ehdr_start: u8;
+        static _end: u8;
     }
+    let start = (&raw const __ehdr_start) as u64 & !(PAGE_SIZE - 1);
+    let end = ((&raw const _end) as u64).next_multiple_of(PAGE_SIZE);
+    MemoryRange::new(start..end)
+}
+
+#[cfg(minimal_rt)]
+fn accept(range: MemoryRange) -> bool {
+    arch::accept_range(SnpBootShimRange {
+        start_gpn: range.start() / PAGE_SIZE,
+        page_count: range.len() / PAGE_SIZE,
+    })
+    .is_ok()
 }
 
 #[cfg(minimal_rt)]
@@ -554,7 +563,7 @@ extern "C" fn start(params_gpa: u64) -> ! {
     // SAFETY: The measured parameter page gives the address of this measured,
     // imported platform page.
     let platform = unsafe { &*(params.platform_gpa as *const SnpBootShimPlatformParams) };
-    if !check_platform(platform) {
+    if validate_platform(platform, params.ram_end, ranges).is_err() {
         terminate(Failure::Platform);
     }
     // SAFETY: The measured platform page gives the location and size of this
@@ -568,40 +577,48 @@ extern "C" fn start(params_gpa: u64) -> ! {
         Err(error) => terminate(error.into()),
     };
 
-    for &range in ranges {
-        if arch::accept_range(range).is_err() {
-            terminate(Failure::Accept);
+    arch::install_large_identity_map(platform.c_bit_mask);
+    let layout = efi::ImageLayout {
+        ram: &devices.ram,
+        measured_ram_end: params.ram_end,
+        omitted: ranges,
+        platform,
+        shim: shim_range(),
+    };
+    let Ok(mut map) = efi::build_memory_map(&layout) else {
+        terminate(Failure::MemoryMap)
+    };
+    for (range, ty) in efi::initial_acceptance(&layout) {
+        match map.accept(range, ty, &mut accept) {
+            Ok(()) => {}
+            Err(memory_map::Error::Accept) => terminate(Failure::Accept),
+            Err(_) => terminate(Failure::MemoryMap),
         }
     }
-    arch::with_large_identity_map(platform.c_bit_mask, || {
-        for range in extra_ram(&devices.ram, params.ram_end) {
-            let range = SnpBootShimRange {
-                start_gpn: range.start() / PAGE_SIZE,
-                page_count: range.len() / PAGE_SIZE,
-            };
-            if arch::accept_range(range).is_err() {
-                terminate(Failure::Accept);
-            }
-        }
-    });
-    // SAFETY: The measured parameter page gives the address of this measured,
-    // imported zero page. Nothing else references it.
-    let zero_page =
-        unsafe { &mut *(params.linux_zero_page as *mut loader_defs::linux::boot_params) };
-    if !add_e820_ram(zero_page, &devices.ram, params.ram_end) {
-        terminate(Failure::E820Full);
-    }
 
-    install_platform_acpi(params, platform, &devices);
+    install_platform_acpi(platform, &devices);
+    vc::install(platform.cpuid_gpa);
 
-    // SAFETY: These statics are single-threaded bootshim handoff state. Their
-    // values came from the measured parameter page and are consumed
-    // immediately by `jump_to_linux`.
-    unsafe {
-        core::ptr::write_volatile(&raw mut LINUX_ENTRY, params.linux_entry);
-        core::ptr::write_volatile(&raw mut LINUX_ZERO_PAGE, params.linux_zero_page);
-    }
-    jump_to_linux()
+    let p = platform;
+    efi::enter_linux(
+        map,
+        &efi::Boot {
+            kernel: MemoryRange::new(p.kernel_gpa..p.kernel_gpa + p.kernel_size),
+            kernel_entry: p.kernel_entry,
+            initrd: (p.initrd_size != 0).then(|| {
+                MemoryRange::new(
+                    p.initrd_gpa..p.initrd_gpa + p.initrd_size.next_multiple_of(PAGE_SIZE),
+                )
+            }),
+            initrd_size: p.initrd_size,
+            cmdline_gpa: p.cmdline_gpa,
+            cmdline_size: p.cmdline_size,
+            rsdp_gpa: p.rsdp_gpa,
+            smbios_gpa: p.smbios_gpa,
+            cc_blob_gpa: p.cc_blob_gpa,
+            stack_top: (p.stack_gpa + p.stack_size) & !0xf,
+        },
+    )
 }
 
 #[cfg(minimal_rt)]
@@ -629,67 +646,16 @@ mod tests {
     use test_with_tracing::test;
     use zerocopy::FromZeros;
 
-    #[test]
-    fn adds_only_ram_above_the_measured_ram_to_e820() {
-        use acpi::minimal::Ram;
-        use memory_range::MemoryRange;
-
-        let ram = [
-            Ram {
-                range: MemoryRange::new(0..0x8000_0000),
-                vnode: 0,
-            },
-            Ram {
-                range: MemoryRange::new(0x1_0000_0000..0x2_0000_0000),
-                vnode: 1,
-            },
-        ];
-        let mut zero_page = loader_defs::linux::boot_params::new_zeroed();
-        zero_page.e820_entries = 1;
-        assert!(add_e820_ram(&mut zero_page, &ram, 0x1000_0000));
-        let entries = zero_page.e820_map[..usize::from(zero_page.e820_entries)]
-            .iter()
-            .map(|e| (e.addr.get(), e.size.get(), e.typ.get()))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            entries[1..],
-            [
-                (0x1000_0000, 0x7000_0000, 1),
-                (0x1_0000_0000, 0x1_0000_0000, 1)
-            ]
-        );
-
-        zero_page.e820_entries = zero_page.e820_map.len() as u8;
-        assert!(!add_e820_ram(&mut zero_page, &ram, 0x1000_0000));
-    }
-
-    #[test]
-    fn checks_platform_magic_and_version() {
-        let platform = SnpBootShimPlatformParams {
-            magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
-            version: SNP_BOOT_SHIM_PLATFORM_VERSION,
-            ..FromZeros::new_zeroed()
-        };
-        assert!(check_platform(&platform));
-        assert!(!check_platform(&SnpBootShimPlatformParams {
-            magic: 0,
-            ..platform
-        }));
-        assert!(!check_platform(&SnpBootShimPlatformParams {
-            version: SNP_BOOT_SHIM_PLATFORM_VERSION + 1,
-            ..platform
-        }));
-    }
+    const MB: u64 = 1 << 20;
 
     fn valid_params() -> SnpBootShimParams {
         SnpBootShimParams {
             magic: SNP_BOOT_SHIM_PARAMS_MAGIC,
             version: SNP_BOOT_SHIM_PARAMS_VERSION,
             range_count: 2,
-            linux_entry: 0x10_0000,
-            linux_zero_page: 0x2000,
             ram_end: 0x20_0000,
             platform_gpa: 0x3000,
+            reserved: [0; 2],
             ranges: {
                 let mut ranges = [SnpBootShimRange {
                     start_gpn: 0,
@@ -725,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_magic_and_version() {
+    fn rejects_bad_magic_version_and_reserved() {
         let mut params = valid_params();
         params.magic = 0;
         assert_eq!(
@@ -733,7 +699,7 @@ mod tests {
             Err(ParamsError::InvalidMagic)
         );
 
-        for version in [1, 2, SNP_BOOT_SHIM_PARAMS_VERSION + 1] {
+        for version in [1, 3, SNP_BOOT_SHIM_PARAMS_VERSION + 1] {
             params = valid_params();
             params.version = version;
             assert_eq!(
@@ -741,10 +707,14 @@ mod tests {
                 Err(ParamsError::UnsupportedVersion)
             );
         }
+
+        params = valid_params();
+        params.reserved[1] = 1;
+        assert_eq!(validate_params(&params, 0x1000), Err(ParamsError::Reserved));
     }
 
     #[test]
-    fn rejects_unaligned_parameter_page_and_zero_page() {
+    fn rejects_unaligned_parameter_page_and_ram_end() {
         let params = valid_params();
         assert_eq!(
             validate_params(&params, 0x1001),
@@ -756,13 +726,6 @@ mod tests {
         assert_eq!(
             validate_params(&params, 0x1000),
             Err(ParamsError::InvalidRamEnd)
-        );
-
-        params = valid_params();
-        params.linux_zero_page += 1;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxZeroPage)
         );
     }
 
@@ -833,51 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_linux_entry_and_zero_page() {
-        let mut params = valid_params();
-        params.linux_entry = 0;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxEntry)
-        );
-
-        params = valid_params();
-        params.linux_entry = params.ram_end;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxEntry)
-        );
-
-        params = valid_params();
-        params.linux_entry = 0x1000;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxEntry)
-        );
-
-        params = valid_params();
-        params.linux_zero_page = 0;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxZeroPage)
-        );
-
-        params = valid_params();
-        params.linux_zero_page = params.ram_end;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxZeroPage)
-        );
-
-        params = valid_params();
-        params.linux_zero_page = 0x1000;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::InvalidLinuxZeroPage)
-        );
-    }
-
-    #[test]
     fn rejects_too_many_ranges() {
         let mut params = valid_params();
         params.range_count = (SNP_BOOT_SHIM_MAX_RANGES + 1) as u32;
@@ -885,5 +803,158 @@ mod tests {
             validate_params(&params, 0x1000),
             Err(ParamsError::TooManyRanges)
         );
+    }
+
+    const RAM_END: u64 = 64 * MB;
+
+    /// One omitted range holds the heap, the stack, and the boot pool.
+    fn omitted() -> [SnpBootShimRange; 1] {
+        [SnpBootShimRange {
+            start_gpn: (8 * MB) / PAGE_SIZE,
+            page_count: (56 * MB) / PAGE_SIZE,
+        }]
+    }
+
+    fn valid_platform() -> SnpBootShimPlatformParams {
+        SnpBootShimPlatformParams {
+            magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
+            version: SNP_BOOT_SHIM_PLATFORM_VERSION,
+            c_bit_mask: 1 << 51,
+            secrets_gpa: 0x10000,
+            cpuid_gpa: 0x11000,
+            cc_blob_gpa: 0x12000,
+            smbios_gpa: 0x13000,
+            smbios_size: 0x200,
+            rsdp_gpa: 0x14000,
+            acpi_output_gpa: 0x15000,
+            acpi_output_size: 0x10000,
+            kernel_gpa: MB,
+            kernel_size: 4 * MB,
+            kernel_entry: MB + 0x1000,
+            initrd_gpa: 5 * MB,
+            initrd_size: 0x1234,
+            cmdline_gpa: 6 * MB,
+            cmdline_size: 30,
+            dt_gpa: 7 * MB,
+            dt_size: 0x10000,
+            heap_gpa: 8 * MB,
+            heap_size: MB,
+            stack_gpa: 9 * MB,
+            stack_size: MIN_EFI_STACK_SIZE,
+            boot_pool_gpa: 16 * MB,
+            boot_pool_size: 32 * MB,
+            ..FromZeros::new_zeroed()
+        }
+    }
+
+    #[test]
+    fn accepts_a_valid_platform() {
+        validate_platform(&valid_platform(), RAM_END, &omitted()).unwrap();
+        // The initrd is optional.
+        let platform = SnpBootShimPlatformParams {
+            initrd_gpa: 0,
+            initrd_size: 0,
+            ..valid_platform()
+        };
+        validate_platform(&platform, RAM_END, &omitted()).unwrap();
+    }
+
+    #[test]
+    fn rejects_bad_platform_header() {
+        for (platform, error) in [
+            (
+                SnpBootShimPlatformParams {
+                    magic: 0,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidMagic,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    version: SNP_BOOT_SHIM_PLATFORM_VERSION - 1,
+                    ..valid_platform()
+                },
+                PlatformError::UnsupportedVersion,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    c_bit_mask: 3 << 50,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidCBit,
+            ),
+        ] {
+            assert_eq!(
+                validate_platform(&platform, RAM_END, &omitted()),
+                Err(error)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_bad_platform_regions() {
+        for (platform, error) in [
+            (
+                SnpBootShimPlatformParams {
+                    kernel_size: 0,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidRegion("kernel"),
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    smbios_gpa: 0x13001,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidRegion("SMBIOS"),
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    initrd_gpa: RAM_END,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidRegion("initrd"),
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    boot_pool_gpa: !(PAGE_SIZE - 1),
+                    ..valid_platform()
+                },
+                PlatformError::InvalidRegion("boot pool"),
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    kernel_entry: 5 * MB,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidKernelEntry,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    cmdline_size: 31,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidCommandLine,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    stack_size: MIN_EFI_STACK_SIZE - PAGE_SIZE,
+                    ..valid_platform()
+                },
+                PlatformError::InvalidStack,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    heap_gpa: 7 * MB,
+                    ..valid_platform()
+                },
+                PlatformError::NotOmitted("heap"),
+            ),
+        ] {
+            assert_eq!(
+                validate_platform(&platform, RAM_END, &omitted()),
+                Err(error)
+            );
+        }
     }
 }
