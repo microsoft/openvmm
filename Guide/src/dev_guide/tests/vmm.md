@@ -286,6 +286,22 @@ Hyper-V Administrators group.
 
 To see all available options: `cargo xflowey vmm-tests-run --help`.
 
+### Copy-only Block I/O and SNP
+
+The `virtio_blk_bounce` tests verify block payloads through RAM, regular-file,
+read-only flat VMDK, and host-block backends. They also hot-add a second disk,
+remove it, and re-add it. Persistent backends are re-added read-only and
+checked against the written payload. Guest PCI drivers are unbound before
+removal; these tests do not cover surprise removal.
+
+The `linux_direct_x64[snp]` variants use an SNP IGVM and automatic copy-only
+memory on an AMD MSHV host.
+
+Host-block cases require Linux, `losetup`, and permission to create loop
+devices (`CAP_SYS_ADMIN`). Enable them explicitly with
+`PETRI_CAPABILITIES=loop_device`. The tests create and detach their own
+temporary loop devices; they do not accept arbitrary host disks.
+
 ### Lazy Fetch (Default)
 
 By default, VHD/ISO disk images are streamed on demand via HTTP and cached

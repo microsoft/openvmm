@@ -317,8 +317,7 @@ async fn vm_config_from_command_line(
     mesh: &VmmMesh,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
-    opt.validate_isolation_options()?;
-    opt.validate_igvm_options()?;
+    opt.validate_vm_options()?;
 
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     let uefi = opt.effective_uefi()?;
@@ -2184,6 +2183,7 @@ async fn vm_config_from_command_line(
             }),
             with_isolation,
             nested_virt: opt.nested_virt,
+            force_guest_memory_bounce: opt.force_guest_memory_bounce,
         },
         #[cfg(windows)]
         kernel_vmnics,
@@ -2729,6 +2729,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     meshworker::run_vmm_mesh_host()?;
 
     let opt = cli_args::parse_options();
+    opt.validate_vm_options()?;
 
     // Print the version number. This comes after argument parsing to not interfere
     // with --version and --help.
@@ -2822,8 +2823,15 @@ async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32
 async fn run_control_inner(
     driver: &DefaultDriver,
     mesh_slot: &mut Option<VmmMesh>,
-    opt: Options,
+    mut opt: Options,
 ) -> anyhow::Result<i32> {
+    let hypervisor = match &opt.hypervisor {
+        Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+        None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+    };
+    // Resource creation validates backend parameters once. All admission and
+    // device defaults below use the actual selected backend, including auto.
+    opt.hypervisor = Some(hypervisor.id().to_owned());
     let mesh = mesh_slot.as_ref().unwrap();
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
@@ -2966,10 +2974,7 @@ async fn run_control_inner(
         };
 
         let params = VmWorkerParameters {
-            hypervisor: match &opt.hypervisor {
-                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
-                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
-            },
+            hypervisor,
             cfg: vm_config,
             saved_state,
             shared_memory,
@@ -3371,6 +3376,8 @@ mod tests {
             let initrd_path = temp_dir.path().join("initrd");
             File::create(&initrd_path).unwrap();
             let socket_path = temp_dir.path().join("vsock");
+            let cwd = std::env::current_dir().unwrap();
+            let socket_path = socket_path.strip_prefix(cwd).unwrap_or(&socket_path);
             let opt = Options::try_parse_from([
                 "openvmm",
                 "--kernel",

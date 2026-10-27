@@ -22,6 +22,7 @@ pub mod capabilities {
         WINDOWS_PARTITION_RESET,
         NESTED_VIRT,
         "test_disk",
+        "loop_device",
         "edu_initiator",
         "ivshmem_target",
     ];
