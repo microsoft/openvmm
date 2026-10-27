@@ -303,8 +303,15 @@ impl RestrictionsBuilder {
     /// denies, installed as an additional stacked seccomp filter. The kernel
     /// takes the most restrictive verdict across every installed filter, so a
     /// stacked denylist can only ever narrow the surface further.
+    ///
+    /// Repeated calls union the denials, deduplicating in first-seen order.
     pub fn syscalls(mut self, deny: &'static [&'static str]) -> Self {
-        self.inner.syscalls = Some(deny);
+        let existing = self.inner.syscalls.get_or_insert_with(Vec::new);
+        for &name in deny {
+            if !existing.contains(&name) {
+                existing.push(name);
+            }
+        }
         self
     }
 
@@ -355,7 +362,7 @@ pub(crate) struct FsGrant {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RestrictionsInner {
-    pub(crate) syscalls: Option<&'static [&'static str]>,
+    pub(crate) syscalls: Option<Vec<&'static str>>,
     pub(crate) revoke_paths: Vec<PathBuf>,
 }
 
@@ -375,6 +382,22 @@ pub(crate) enum Access {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use test_with_tracing::test;
+
+    #[test]
+    fn restriction_syscall_denials_are_additive_and_deduplicated() {
+        let restrictions = Restrictions::none()
+            .syscalls(&["socket", "connect"])
+            .syscalls(&["connect", "kill"])
+            .syscalls(&[])
+            .build();
+
+        assert_eq!(
+            restrictions.inner.syscalls.as_deref(),
+            Some(["socket", "connect", "kill"].as_slice()),
+        );
+    }
 
     #[test]
     fn deny_all_defaults_to_no_network_no_seccomp() {

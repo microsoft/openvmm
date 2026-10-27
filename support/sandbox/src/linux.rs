@@ -110,7 +110,7 @@ pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
 
     // Stack an additional syscall denylist across all threads using TSYNC.
     // Filters compose; the kernel takes the most restrictive verdict.
-    if let Some(names) = r.syscalls {
+    if let Some(names) = &r.syscalls {
         seccomp::apply_denylist(names, seccomp_deny_action()).map_err(required("seccomp"))?;
     }
 
