@@ -7,6 +7,10 @@
 //! NIC to a pluggable [`net_backend::Endpoint`]. It currently operates with a
 //! single queue pair (one RX, one TX) and supports synchronous and asynchronous
 //! TX completion modes depending on the backend.
+//!
+//! Copy-only guest memory supports Consomme, TAP, and null software endpoints.
+//! The frontend passes guest memory directly to the backend buffer pool.
+//! Software backends copy packet data.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -257,6 +261,19 @@ enum QueuePairState {
 }
 
 impl VirtioDevice for Device {
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self
+                .coordinator
+                .task()
+                .endpoint
+                .requires_lockable_guest_memory()
+                || memory.supports_kernel_lock(),
+            "network backend requires lockable guest memory"
+        );
+        Ok(())
+    }
+
     fn traits(&self) -> DeviceTraits {
         let offloads = &self.adapter.tx_offload_support;
 
@@ -332,6 +349,13 @@ impl VirtioDevice for Device {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        if !self
+            .pairs
+            .iter()
+            .any(|pair| matches!(pair, QueuePairState::Active))
+        {
+            self.validate_guest_memory(&resources.guest_memory)?;
+        }
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
 
@@ -793,10 +817,11 @@ impl Coordinator {
                         error = &err as &dyn std::error::Error,
                         "failed to restart queues"
                     );
+                } else {
+                    self.start_workers();
                 }
                 self.restart = false;
             }
-            self.start_workers();
             match stop
                 .until_stopped(state.endpoint.wait_for_endpoint_action())
                 .await?
@@ -819,6 +844,22 @@ impl Coordinator {
         // Drop all of the current queues.
         for worker in &mut self.workers {
             worker.task_mut().state = None;
+        }
+
+        if c_state.endpoint.requires_lockable_guest_memory()
+            && self.workers.iter().any(|worker| {
+                !worker
+                    .state()
+                    .unwrap()
+                    .active_state
+                    .pending_rx_packets
+                    .mem()
+                    .supports_kernel_lock()
+            })
+        {
+            return Err(WorkerError::Endpoint(anyhow::anyhow!(
+                "network backend requires lockable guest memory"
+            )));
         }
 
         let queue_config = self

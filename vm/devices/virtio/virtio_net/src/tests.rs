@@ -29,6 +29,8 @@ use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::future::pending;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -89,10 +91,10 @@ const NET_HEADER_SIZE: u32 = header_size() as u32;
 struct TxSegmentInfo {
     is_head: bool,
     tx_id: Option<u32>,
-    #[expect(dead_code)]
     gpa: u64,
     len: u32,
     metadata: Option<net_backend::TxMetadata>,
+    data: Vec<u8>,
 }
 
 // --- TxAvailBehavior ---
@@ -182,7 +184,7 @@ impl net_backend::Queue for MockQueue {
 
     fn tx_avail(
         &mut self,
-        _pool: &mut dyn net_backend::BufferAccess,
+        pool: &mut dyn net_backend::BufferAccess,
         segments: &[TxSegment],
     ) -> anyhow::Result<(bool, usize)> {
         // Log the segments
@@ -193,12 +195,15 @@ impl net_backend::Queue for MockQueue {
                     TxSegmentType::Head(meta) => (true, Some(meta.id.0), Some(meta.clone())),
                     TxSegmentType::Tail => (false, None, None),
                 };
+                let mut data = vec![0; seg.len as usize];
+                pool.guest_memory().read_at(seg.gpa, &mut data).unwrap();
                 TxSegmentInfo {
                     is_head,
                     tx_id,
                     gpa: seg.gpa,
                     len: seg.len,
                     metadata,
+                    data,
                 }
             })
             .collect();
@@ -397,6 +402,9 @@ struct MockEndpoint {
     queue_config_tx: mesh::Sender<RxOffloadSupport>,
     endpoint_action_rx: mesh::Receiver<EndpointAction>,
     is_ordered: bool,
+    endpoint_type: &'static str,
+    requires_lockable_guest_memory: Arc<AtomicBool>,
+    endpoint_wait_tx: Option<mesh::Sender<()>>,
 }
 
 impl InspectMut for MockEndpoint {
@@ -408,11 +416,11 @@ impl InspectMut for MockEndpoint {
 #[async_trait]
 impl Endpoint for MockEndpoint {
     fn requires_lockable_guest_memory(&self) -> bool {
-        false
+        self.requires_lockable_guest_memory.load(Ordering::SeqCst)
     }
 
     fn endpoint_type(&self) -> &'static str {
-        "mock"
+        self.endpoint_type
     }
 
     async fn get_queues(
@@ -451,6 +459,9 @@ impl Endpoint for MockEndpoint {
     }
 
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
+        if let Some(tx) = &self.endpoint_wait_tx {
+            tx.send(());
+        }
         self.endpoint_action_rx
             .next()
             .await
@@ -504,6 +515,8 @@ struct TestHarness {
     queue_handle_rx: mesh::Receiver<MockQueueHandle>,
     queue_config_rx: mesh::Receiver<RxOffloadSupport>,
     endpoint_action_tx: mesh::Sender<EndpointAction>,
+    requires_lockable_guest_memory: Arc<AtomicBool>,
+    endpoint_wait_rx: mesh::Receiver<()>,
     rx_event: Event,
     rx_interrupt_event: Event,
     tx_event: Event,
@@ -517,6 +530,10 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
+        Self::new_with_endpoint_type(driver, "mock")
+    }
+
+    fn new_with_endpoint_type(driver: &DefaultDriver, endpoint_type: &'static str) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
         // Initialize RX queue rings
@@ -531,11 +548,16 @@ impl TestHarness {
         let (queue_tx, queue_handle_rx) = mesh::channel();
         let (queue_config_tx, queue_config_rx) = mesh::channel();
         let (endpoint_action_tx, endpoint_action_rx) = mesh::channel();
+        let (endpoint_wait_tx, endpoint_wait_rx) = mesh::channel();
+        let requires_lockable_guest_memory = Arc::new(AtomicBool::new(false));
         let endpoint = MockEndpoint {
             queue_tx,
             queue_config_tx,
             endpoint_action_rx,
             is_ordered: true,
+            endpoint_type,
+            requires_lockable_guest_memory: requires_lockable_guest_memory.clone(),
+            endpoint_wait_tx: Some(endpoint_wait_tx),
         };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
@@ -557,6 +579,8 @@ impl TestHarness {
             queue_handle_rx,
             queue_config_rx,
             endpoint_action_tx,
+            requires_lockable_guest_memory,
+            endpoint_wait_rx,
             rx_event,
             rx_interrupt_event,
             tx_event,
@@ -803,6 +827,147 @@ impl TestHarness {
 
 use futures::StreamExt;
 
+#[async_test]
+async fn lockable_backend_rejected_before_queue_start(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness
+        .requires_lockable_guest_memory
+        .store(true, Ordering::SeqCst);
+    harness.device.validate_guest_memory(&harness.mem).unwrap();
+    harness.mem = harness.mem.copy_only_view();
+    assert!(harness.device.validate_guest_memory(&harness.mem).is_err());
+    let error = harness
+        .device
+        .start_queue(
+            0,
+            QueueResources {
+                params: QueueParams {
+                    size: QUEUE_SIZE,
+                    enable: true,
+                    desc_addr: RX_DESC_ADDR,
+                    avail_addr: RX_AVAIL_ADDR,
+                    used_addr: RX_USED_ADDR,
+                },
+                notify: Interrupt::from_event(harness.rx_interrupt_event.clone()),
+                event: harness.rx_event.clone(),
+                guest_memory: harness.mem.clone(),
+            },
+            &VirtioDeviceFeatures::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("requires lockable guest memory"));
+    assert!(matches!(
+        harness.device.pairs[0],
+        crate::QueuePairState::Empty
+    ));
+    assert!(!harness.device.coordinator.is_running());
+}
+
+#[async_test]
+async fn queue_restart_revalidates_backend_memory(driver: DefaultDriver) {
+    use futures::FutureExt as _;
+
+    let mut harness = TestHarness::new(&driver);
+    harness.mem = harness.mem.copy_only_view();
+    let _old_handle = harness.enable_and_get_handle().await;
+    harness.endpoint_wait_rx.next().await.unwrap();
+    harness
+        .requires_lockable_guest_memory
+        .store(true, Ordering::SeqCst);
+    harness
+        .endpoint_action_tx
+        .send(EndpointAction::RestartRequired);
+    harness.endpoint_wait_rx.next().await.unwrap();
+    assert!(harness.queue_handle_rx.next().now_or_never().is_none());
+
+    harness
+        .requires_lockable_guest_memory
+        .store(false, Ordering::SeqCst);
+    harness
+        .endpoint_action_tx
+        .send(EndpointAction::RestartRequired);
+    harness.endpoint_wait_rx.next().await.unwrap();
+    let mut handle = harness.queue_handle_rx.next().await.unwrap();
+    let gpa = harness.post_rx_buffer_and_signal(0, 1500);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet(b"retry");
+    assert_eq!(harness.wait_for_rx_used().await, (0, NET_HEADER_SIZE + 5));
+    let mut payload = [0; 5];
+    harness
+        .mem
+        .read_at(gpa + NET_HEADER_SIZE as u64, &mut payload)
+        .unwrap();
+    assert_eq!(&payload, b"retry");
+    harness.disable().await;
+}
+
+#[async_test]
+async fn copy_only_software_tx_rx(driver: DefaultDriver) {
+    for sync in [true, false] {
+        let mut harness = TestHarness::new_with_endpoint_type(&driver, "copying-test-backend");
+        harness.mem = harness.mem.copy_only_view();
+        harness.device.validate_guest_memory(&harness.mem).unwrap();
+        assert!(harness.mem.full_mapping().is_none());
+        assert!(harness.device.supports_save_restore());
+        let mut handle = harness.enable_and_get_handle().await;
+        handle.tx_avail_behavior.lock().sync = sync;
+
+        harness.post_tx_and_signal(0, 100);
+        handle.wait_for_tx_avail().await;
+        let log = handle.take_tx_avail_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].len(), 1);
+        assert_eq!(log[0][0].gpa, DATA_BASE + NET_HEADER_SIZE as u64);
+        assert_eq!(log[0][0].data, [0xAB; 100]);
+        assert_eq!(log[0][0].tx_id, Some(0));
+        if !sync {
+            assert_eq!(harness.try_read_tx_used(), None);
+            handle.complete_tx(vec![TxId(0)]);
+        }
+        assert_eq!(harness.wait_for_used().await, (0, 0));
+
+        let gpa = harness.post_rx_buffer_and_signal(0, 1500);
+        handle.wait_for_rx_pending().await;
+        let payload = b"copy-only software RX";
+        handle.inject_rx_packet(payload);
+        assert_eq!(
+            harness.wait_for_rx_used().await,
+            (0, NET_HEADER_SIZE + payload.len() as u32)
+        );
+        let mut readback = [0; 21];
+        harness
+            .mem
+            .read_at(gpa + NET_HEADER_SIZE as u64, &mut readback)
+            .unwrap();
+        assert_eq!(&readback, payload);
+        harness.disable().await;
+    }
+}
+
+#[async_test]
+async fn short_rx_buffers_drop_packets_without_panicking(driver: DefaultDriver) {
+    for copy_only in [false, true] {
+        for capacity in [ETHERNET_HEADER_LEN, ETHERNET_HEADER_LEN + 1] {
+            let mut harness = TestHarness::new(&driver);
+            if copy_only {
+                harness.mem = harness.mem.copy_only_view();
+            }
+            let mut handle = harness.enable_and_get_handle().await;
+            harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + capacity);
+            handle.wait_for_rx_pending().await;
+            handle.inject_rx_packet(b"larger than the posted RX buffer");
+            assert_eq!(harness.wait_for_rx_used().await, (0, 0));
+            harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + 64);
+            handle.wait_for_rx_pending().await;
+            handle.inject_rx_packet(b"next packet");
+            assert_eq!(harness.wait_for_rx_used().await, (1, NET_HEADER_SIZE + 11));
+            harness.disable().await;
+        }
+    }
+}
+
 /// Post 1 TX packet. tx_avail returns (sync: true, all segments consumed).
 /// Verify segments logged and used ring updated.
 #[async_test]
@@ -950,6 +1115,9 @@ async fn unordered_backend_rejected(driver: DefaultDriver) {
         queue_config_tx,
         endpoint_action_rx,
         is_ordered: false,
+        endpoint_type: "mock",
+        requires_lockable_guest_memory: Arc::new(AtomicBool::new(false)),
+        endpoint_wait_tx: None,
     };
 
     let err = Device::builder()
