@@ -61,8 +61,9 @@ impl MappingManager {
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
         supports_memory_fault_resolution: bool,
+        io_policy: guestmem::GuestMemoryIoPolicy,
     ) -> Result<(Self, Arc<VaMapper>), VaMapperError> {
-        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment);
+        let this = Self::new_bare(spawn, max_addr, minimum_va_alignment, io_policy);
         // Create the primary mapper as part of construction. Being first, it is
         // the instance the shared cache hands to every later `new_mapper` in
         // this process.
@@ -80,7 +81,12 @@ impl MappingManager {
 
     /// Spawns the manager task and builds the client, without creating a primary
     /// mapper.
-    fn new_bare(spawn: impl Spawn, max_addr: u64, minimum_va_alignment: Option<usize>) -> Self {
+    fn new_bare(
+        spawn: impl Spawn,
+        max_addr: u64,
+        minimum_va_alignment: Option<usize>,
+        io_policy: guestmem::GuestMemoryIoPolicy,
+    ) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -96,6 +102,7 @@ impl MappingManager {
                 req_send,
                 max_addr,
                 minimum_va_alignment,
+                copy_only: io_policy == guestmem::GuestMemoryIoPolicy::CopyOnly,
             },
         }
     }
@@ -109,7 +116,12 @@ impl MappingManager {
         max_addr: u64,
         minimum_va_alignment: Option<usize>,
     ) -> Self {
-        Self::new_bare(spawn, max_addr, minimum_va_alignment)
+        Self::new_bare(
+            spawn,
+            max_addr,
+            minimum_va_alignment,
+            guestmem::GuestMemoryIoPolicy::Direct,
+        )
     }
 
     /// Returns an object used to access the mapping manager, potentially from a
@@ -126,6 +138,8 @@ pub struct MappingManagerClient {
     id: ObjectId,
     max_addr: u64,
     minimum_va_alignment: Option<usize>,
+    // Carried over mesh so remote mappers have the same policy at construction.
+    copy_only: bool,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -180,6 +194,7 @@ impl MappingManagerClient {
                     self.minimum_va_alignment,
                     eager,
                     role,
+                    self.copy_only,
                 )
                 .await
             })
@@ -223,6 +238,7 @@ impl MappingManagerClient {
                 // in the owning process. This mapper shares the same section
                 // pages, so it just maps them plain read-write 4 KB.
                 MapperRole::Secondary,
+                self.copy_only,
             )
             .await?,
         ))
@@ -1491,6 +1507,7 @@ mod tests {
             MapperRole::Primary {
                 supports_memory_fault_resolution: false,
             },
+            false,
         );
         let (mapper, _) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
@@ -1531,6 +1548,7 @@ mod tests {
             MapperRole::Primary {
                 supports_memory_fault_resolution: false,
             },
+            false,
         );
         let (mapper, mapper_req_send) = futures::join!(mapper_future, async {
             let msg = req_recv.recv().await.unwrap();
