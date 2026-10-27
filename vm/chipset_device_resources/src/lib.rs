@@ -92,6 +92,12 @@ pub trait ConfigureChipsetDevice: Send {
 #[async_trait]
 trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
     fn start(&mut self);
+    /// Runs with the ArcMutex chipset lock held; must not await work that
+    /// requires the same lock.
+    async fn quiesce_input(&mut self) -> anyhow::Result<()>;
+    /// Runs with the ArcMutex chipset lock held; must not await work that
+    /// requires the same lock.
+    async fn resume_input(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
     async fn reset(&mut self);
 }
@@ -102,6 +108,12 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Dy
 {
     fn start(&mut self) {
         self.start()
+    }
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        ChangeDeviceState::quiesce_input(self).await
+    }
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        ChangeDeviceState::resume_input(self).await
     }
     async fn stop(&mut self) {
         self.stop().await
@@ -130,6 +142,14 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Fr
 impl ChangeDeviceState for ErasedChipsetDevice {
     fn start(&mut self) {
         self.0.start()
+    }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        self.0.quiesce_input().await
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.0.resume_input().await
     }
 
     async fn stop(&mut self) {

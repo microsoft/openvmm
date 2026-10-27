@@ -253,6 +253,14 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                     },
                     WorkerEvent::DeviceRequest(req) => match req {
                         DeviceRequest::Start => self.device.start(),
+                        DeviceRequest::QuiesceInput(rpc) => {
+                            rpc.handle_failable(async |()| self.device.quiesce_input().await)
+                                .await
+                        }
+                        DeviceRequest::ResumeInput(rpc) => {
+                            rpc.handle_failable(async |()| self.device.resume_input().await)
+                                .await
+                        }
                         DeviceRequest::Stop(rpc) => {
                             rpc.handle(async |()| self.device.stop().await).await
                         }
