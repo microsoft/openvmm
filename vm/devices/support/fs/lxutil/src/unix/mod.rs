@@ -25,17 +25,27 @@ impl LxVolume {
         let path = util::path_to_cstr(root_path)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
-        unsafe {
+        let root = unsafe {
             // Open a file descriptor to the root to use with "*at" functions.
             let fd = util::check_lx_errno(libc::open(
                 path.as_ptr(),
                 libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
             ))?;
 
-            Ok(Self {
-                root: std::fs::File::from_raw_fd(fd),
-            })
-        }
+            std::fs::File::from_raw_fd(fd)
+        };
+        // Check the required syscall and resolution flags before exposing the volume.
+        // A missing syscall or a seccomp denial must fail setup, not a later guest request.
+        util::openat(&root, Path::new(""), libc::O_PATH | libc::O_DIRECTORY, None).inspect_err(
+            |error| {
+                tracing::error!(
+                    error = %error,
+                    "Linux filesystem volumes require openat2 with RESOLVE_NO_SYMLINKS and \
+                     RESOLVE_BENEATH (Linux 5.6+); check kernel support and seccomp policy"
+                );
+            },
+        )?;
+        Ok(Self { root })
     }
 
     pub fn supports_stable_file_id(&self) -> bool {
@@ -481,6 +491,74 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use test_with_tracing::test;
+
+    #[test]
+    fn volume_creation_checks_openat2() {
+        const CHILD_ERRNO: &str = "LXUTIL_TEST_OPENAT2_ERRNO";
+        if let Some(errno) = std::env::var_os(CHILD_ERRNO) {
+            let errno: u32 = errno.to_str().unwrap().parse().unwrap();
+            let root = tempfile::tempdir().unwrap();
+            let filter = [
+                libc::sock_filter {
+                    code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: 0, // seccomp_data.nr.
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 1,
+                    k: libc::SYS_openat2 as u32,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ERRNO | errno,
+                },
+                libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ALLOW,
+                },
+            ];
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr().cast_mut(),
+            };
+            // SAFETY: In this child only, install a valid filter on the current thread.
+            // It allows all syscalls except openat2, which returns the selected errno.
+            unsafe {
+                util::check_lx_errno(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)).unwrap();
+                util::check_lx_errno(libc::prctl(
+                    libc::PR_SET_SECCOMP,
+                    libc::SECCOMP_MODE_FILTER,
+                    &program,
+                ))
+                .unwrap();
+            }
+            let error = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new())
+                .err()
+                .expect("volume setup must reject unavailable constrained opens");
+            assert_eq!(error.value(), errno as i32);
+            return;
+        }
+
+        for errno in [libc::ENOSYS, libc::EPERM] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "unix::tests::volume_creation_checks_openat2",
+                    "--nocapture",
+                ])
+                .env(CHILD_ERRNO, errno.to_string())
+                .status()
+                .unwrap();
+            assert!(status.success(), "openat2 errno {errno}: {status}");
+        }
+    }
 
     #[test]
     fn namespace_operations_keep_captured_parents() {

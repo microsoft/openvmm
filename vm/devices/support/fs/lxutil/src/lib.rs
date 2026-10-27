@@ -1620,9 +1620,41 @@ mod tests {
 
     #[test]
     fn symlink_ancestors_are_not_walked() {
+        fn expect_traversal_error<T>(result: lx::Result<T>) {
+            let error = result.err().expect("symlink traversal must be rejected");
+            if matches!(error, lx::Error::ELOOP | lx::Error::ENOTDIR) {
+                return;
+            }
+            // Unhandled LX reparse tags can be rejected by the filesystem itself.
+            #[cfg(windows)]
+            if error == lx::Error::ENXIO {
+                return;
+            }
+            panic!("expected a traversal error, got {error}");
+        }
+
         let env = TestEnv::new();
         env.create_file("target/file", "unchanged");
         env.create_file("source", "source");
+        let target = Path::from_lx("target/file").unwrap();
+        env.volume.chmod(&target, 0o600).unwrap();
+        let initial_mode = env.volume.lstat(&target).unwrap().mode;
+        env.volume
+            .set_xattr(&target, "user.test", b"original", lx::XATTR_CREATE)
+            .unwrap();
+        let mut value = [0; 32];
+        let size = env
+            .volume
+            .get_xattr(&target, "user.test", Some(&mut value))
+            .unwrap();
+        assert_eq!(&value[..size], b"original");
+        let mut names = [0; 512];
+        let size = env.volume.list_xattr(&target, Some(&mut names)).unwrap();
+        assert!(
+            names[..size]
+                .split(|&c| c == 0)
+                .any(|name| name == b"user.test")
+        );
         env.volume
             .symlink(
                 Path::from_lx("target/childlink").unwrap(),
@@ -1635,54 +1667,51 @@ mod tests {
             .unwrap();
         let file = Path::from_lx("link/file").unwrap();
         let new = Path::from_lx("link/new").unwrap();
-        assert!(env.volume.lstat(&file).is_err());
-        assert!(env.volume.statx(&file).is_err());
-        assert!(env.volume.open(&file, lx::O_RDONLY, None).is_err());
-        assert!(
+        expect_traversal_error(env.volume.lstat(&file));
+        expect_traversal_error(env.volume.statx(&file));
+        expect_traversal_error(env.volume.open(&file, lx::O_RDONLY, None));
+        expect_traversal_error(env.volume.open(
+            &file,
+            lx::O_WRONLY | lx::O_CREAT | lx::O_TRUNC,
+            Some(LxCreateOptions::default()),
+        ));
+        expect_traversal_error(env.volume.mkdir_stat(&new, LxCreateOptions::default()));
+        expect_traversal_error(env.volume.mknod_stat(
+            &new,
+            LxCreateOptions::new(lx::S_IFREG | 0o600, 0, 0),
+            0,
+        ));
+        expect_traversal_error(
             env.volume
-                .open(
-                    &file,
-                    lx::O_WRONLY | lx::O_CREAT | lx::O_TRUNC,
-                    Some(LxCreateOptions::default()),
-                )
-                .is_err()
+                .symlink_stat(&new, "file", LxCreateOptions::default()),
         );
-        assert!(
+        expect_traversal_error(
             env.volume
-                .mkdir_stat(&new, LxCreateOptions::default())
-                .is_err()
+                .read_link(Path::from_lx("link/childlink").unwrap()),
         );
-        assert!(
-            env.volume
-                .mknod_stat(&new, LxCreateOptions::new(lx::S_IFREG | 0o600, 0, 0), 0)
-                .is_err()
-        );
-        assert!(
-            env.volume
-                .symlink_stat(&new, "file", LxCreateOptions::default())
-                .is_err()
-        );
-        assert!(
-            env.volume
-                .read_link(Path::from_lx("link/childlink").unwrap())
-                .is_err()
-        );
-        assert!(env.volume.unlink(&file, 0).is_err());
-        assert!(env.volume.rename("source", &new, 0).is_err());
-        assert!(env.volume.rename(&file, "renamed", 0).is_err());
-        assert!(env.volume.link("source", &new).is_err());
-        assert!(env.volume.link(&file, "hardlink").is_err());
-        assert!(env.volume.truncate(&file, 0, 0).is_err());
-        assert!(env.volume.chmod(&file, 0o400).is_err());
-        assert!(env.volume.stat_fs(&file).is_err());
-        assert!(
-            env.volume
-                .set_xattr(&file, "user.test", b"value", 0)
-                .is_err()
-        );
-        assert!(env.volume.get_xattr(&file, "user.test", None).is_err());
-        assert!(env.volume.list_xattr(&file, None).is_err());
-        assert!(env.volume.remove_xattr(&file, "user.test").is_err());
+        expect_traversal_error(env.volume.unlink(&file, 0));
+        expect_traversal_error(env.volume.rename("source", &new, 0));
+        expect_traversal_error(env.volume.rename(&file, "renamed", 0));
+        expect_traversal_error(env.volume.link("source", &new));
+        expect_traversal_error(env.volume.link(&file, "hardlink"));
+        expect_traversal_error(env.volume.truncate(&file, 0, 0));
+        expect_traversal_error(env.volume.chmod(&file, 0o400));
+        expect_traversal_error(env.volume.stat_fs(&file));
+        expect_traversal_error(env.volume.set_xattr(
+            &file,
+            "user.test",
+            b"value",
+            lx::XATTR_REPLACE,
+        ));
+        expect_traversal_error(env.volume.get_xattr(&file, "user.test", Some(&mut value)));
+        expect_traversal_error(env.volume.list_xattr(&file, Some(&mut names)));
+        expect_traversal_error(env.volume.remove_xattr(&file, "user.test"));
+        let size = env
+            .volume
+            .get_xattr(&target, "user.test", Some(&mut value))
+            .unwrap();
+        assert_eq!(&value[..size], b"original");
+        assert_eq!(env.volume.lstat(&target).unwrap().mode, initial_mode);
         assert_eq!(
             fs::read(env.root_dir.path().join("target/file")).unwrap(),
             b"unchanged"
