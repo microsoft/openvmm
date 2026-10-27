@@ -86,8 +86,13 @@ pub fn resolve_trace_syscalls(
     validate_trace_syscalls(configured, &syscall_number)?;
     let mut syscalls = BTreeMap::new();
     for &name in SYSCALLS_TO_TRACE {
-        let number = syscall_number(name).ok_or(TraceSyscallError::UnsupportedBuiltIn(name))?;
-        syscalls.insert(number, name.to_string());
+        match syscall_number(name) {
+            Some(number) => {
+                syscalls.insert(number, name.to_string());
+            }
+            None if is_known_without_native_number(name) => continue,
+            None => return Err(TraceSyscallError::UnsupportedBuiltIn(name)),
+        }
     }
     for name in configured {
         if let Some(number) = syscall_number(name) {
@@ -176,5 +181,44 @@ mod tests {
                 TraceSyscallError::UnsupportedConfigured(rejected) if rejected == name
             ));
         }
+    }
+
+    #[test]
+    fn profile_trace_syscalls_reject_unresolved_built_ins() {
+        let error = resolve_trace_syscalls(&[], |name| {
+            if name == "openat" {
+                None
+            } else {
+                test_syscall_number(name)
+            }
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            TraceSyscallError::UnsupportedBuiltIn("openat")
+        ));
+    }
+
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    #[test]
+    fn profile_trace_syscalls_skip_architecture_absent_built_ins() {
+        let syscalls = resolve_trace_syscalls(&[], |name| {
+            if name == "dup2" {
+                None
+            } else {
+                test_syscall_number(name)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(syscalls.len(), SYSCALLS_TO_TRACE.len() - 1);
+        assert!(!syscalls.values().any(|name| name == "dup2"));
+        assert_eq!(
+            syscalls
+                .get(&test_syscall_number("dup3").unwrap())
+                .map(String::as_str),
+            Some("dup3")
+        );
     }
 }
