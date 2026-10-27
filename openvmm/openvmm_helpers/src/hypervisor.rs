@@ -42,6 +42,13 @@ fn parse_hypervisor_spec(spec: &str) -> anyhow::Result<(&str, Vec<(&str, &str)>)
     Ok((name, params))
 }
 
+/// Whether the selected backend and isolation require owned device IO.
+///
+/// Call after backend selection, including auto-detection.
+pub fn requires_snp_bounce(backend: &str, snp: bool) -> bool {
+    backend == "mshv" && snp
+}
+
 /// Returns a [`Resource<HypervisorKind>`] for the named backend, with
 /// optional parameters.
 ///
