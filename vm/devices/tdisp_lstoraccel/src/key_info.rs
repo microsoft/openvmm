@@ -27,20 +27,22 @@ const MEK_LOADED: u8 = 1;
 /// the key we believe it holds.
 ///
 /// Both forms begin at offset 1, immediately after the present flag.
+///
+/// The certificate and confirmation digest borrow from the report buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeyInfo {
+pub enum KeyInfo<'a> {
     /// The device holds no key, and reports the wrapping key to use when
     /// provisioning one.
     NotLoaded {
         /// X509 certificate carrying the wrapping key, with the length prefix
         /// already consumed.
-        mek_wrapping_key_cert: Vec<u8>,
+        mek_wrapping_key_cert: &'a [u8],
     },
 
     /// The device holds a key, and reports its confirmation of that key.
     Loaded {
         /// SHA-384 over the CSP X509 certificate and the wrapped MEK.
-        mek_confirmation_digest: [u8; SHA384_DIGEST_SIZE],
+        mek_confirmation_digest: &'a [u8; SHA384_DIGEST_SIZE],
     },
 }
 
@@ -51,7 +53,7 @@ pub enum KeyInfo {
 /// controller section and are not examined here.
 ///
 /// * `data` - The whole DEVICE_SPECIFIC_INFO field, as reported by the device.
-pub fn deserialize_key_info(data: &[u8]) -> anyhow::Result<(KeyInfo, &[u8])> {
+pub fn deserialize_key_info(data: &[u8]) -> anyhow::Result<(KeyInfo<'_>, &[u8])> {
     let (mek_present, trailing_bytes) = u8::read_from_prefix(data)
         .map_err(|e| anyhow::anyhow!("failed to deserialize MEK present flag: {e:?}"))?;
 
@@ -74,14 +76,14 @@ pub fn deserialize_key_info(data: &[u8]) -> anyhow::Result<(KeyInfo, &[u8])> {
 
             Ok((
                 KeyInfo::NotLoaded {
-                    mek_wrapping_key_cert: mek_wrapping_key_cert.to_vec(),
+                    mek_wrapping_key_cert,
                 },
                 trailing_bytes,
             ))
         }
         MEK_LOADED => {
             let (mek_confirmation_digest, trailing_bytes) =
-                <[u8; SHA384_DIGEST_SIZE]>::read_from_prefix(trailing_bytes).map_err(|e| {
+                <[u8; SHA384_DIGEST_SIZE]>::ref_from_prefix(trailing_bytes).map_err(|e| {
                     anyhow::anyhow!("failed to deserialize MEK confirmation digest: {e:?}")
                 })?;
 
@@ -107,7 +109,7 @@ pub fn deserialize_key_info(data: &[u8]) -> anyhow::Result<(KeyInfo, &[u8])> {
 ///
 /// Returns an error if the wrapping key certificate exceeds the 16-bit
 /// length field.
-pub fn serialize_key_info(key_info: &KeyInfo) -> anyhow::Result<Vec<u8>> {
+pub fn serialize_key_info(key_info: &KeyInfo<'_>) -> anyhow::Result<Vec<u8>> {
     let mut buffer = Vec::new();
 
     match key_info {
@@ -125,7 +127,7 @@ pub fn serialize_key_info(key_info: &KeyInfo) -> anyhow::Result<Vec<u8>> {
             mek_confirmation_digest,
         } => {
             buffer.push(MEK_LOADED);
-            buffer.extend_from_slice(mek_confirmation_digest);
+            buffer.extend_from_slice(*mek_confirmation_digest);
         }
     }
 
@@ -139,8 +141,9 @@ mod tests {
     /// The DEVICE_SPECIFIC_INFO field of a device holding no key, with
     /// `trailing` bytes standing in for the NVMe controller section.
     fn not_loaded(wrapping_key_size: usize, trailing: usize) -> Vec<u8> {
+        let certificate = vec![0xee; wrapping_key_size];
         let mut buffer = serialize_key_info(&KeyInfo::NotLoaded {
-            mek_wrapping_key_cert: vec![0xee; wrapping_key_size],
+            mek_wrapping_key_cert: &certificate,
         })
         .unwrap();
         buffer.extend(std::iter::repeat_n(0x11, trailing));
@@ -151,7 +154,7 @@ mod tests {
     /// `trailing` bytes standing in for the NVMe controller section.
     fn loaded(trailing: usize) -> Vec<u8> {
         let mut buffer = serialize_key_info(&KeyInfo::Loaded {
-            mek_confirmation_digest: [0x5a; SHA384_DIGEST_SIZE],
+            mek_confirmation_digest: &[0x5a; SHA384_DIGEST_SIZE],
         })
         .unwrap();
         buffer.extend(std::iter::repeat_n(0x22, trailing));
@@ -161,8 +164,9 @@ mod tests {
     #[test]
     fn wrapping_key_survives_a_round_trip() {
         for len in [0, 600, usize::from(u16::MAX)] {
+            let certificate = vec![0xee; len];
             let key_info = KeyInfo::NotLoaded {
-                mek_wrapping_key_cert: vec![0xee; len],
+                mek_wrapping_key_cert: &certificate,
             };
             let buffer = serialize_key_info(&key_info).unwrap();
             assert_eq!(buffer.len(), 3 + len);
@@ -174,9 +178,28 @@ mod tests {
     }
 
     #[test]
+    fn wrapping_key_certificate_borrows_the_report_buffer() {
+        let buffer = not_loaded(16, 0);
+        let (key_info, _) = deserialize_key_info(&buffer).unwrap();
+        let KeyInfo::NotLoaded {
+            mek_wrapping_key_cert,
+        } = key_info
+        else {
+            panic!("expected a wrapping-key certificate");
+        };
+
+        let certificate_offset = size_of::<u8>() + size_of::<u16>();
+        assert_eq!(
+            mek_wrapping_key_cert.as_ptr(),
+            buffer[certificate_offset..].as_ptr()
+        );
+    }
+
+    #[test]
     fn oversized_wrapping_key_certificate_cannot_be_serialized() {
+        let certificate = vec![0xee; usize::from(u16::MAX) + 1];
         let key_info = KeyInfo::NotLoaded {
-            mek_wrapping_key_cert: vec![0xee; usize::from(u16::MAX) + 1],
+            mek_wrapping_key_cert: &certificate,
         };
 
         assert!(serialize_key_info(&key_info).is_err());
@@ -185,13 +208,30 @@ mod tests {
     #[test]
     fn confirmation_digest_survives_a_round_trip() {
         let key_info = KeyInfo::Loaded {
-            mek_confirmation_digest: [0x5a; SHA384_DIGEST_SIZE],
+            mek_confirmation_digest: &[0x5a; SHA384_DIGEST_SIZE],
         };
         let buffer = serialize_key_info(&key_info).unwrap();
         let (parsed, nvme_section) = deserialize_key_info(&buffer).unwrap();
 
         assert_eq!(parsed, key_info);
         assert!(nvme_section.is_empty());
+    }
+
+    #[test]
+    fn confirmation_digest_borrows_the_report_buffer() {
+        let buffer = loaded(0);
+        let (key_info, _) = deserialize_key_info(&buffer).unwrap();
+        let KeyInfo::Loaded {
+            mek_confirmation_digest,
+        } = key_info
+        else {
+            panic!("expected a confirmation digest");
+        };
+
+        assert_eq!(
+            mek_confirmation_digest.as_ptr(),
+            buffer[size_of::<u8>()..].as_ptr()
+        );
     }
 
     /// Nothing in the layout pads the wrapping key certificate, so the NVMe

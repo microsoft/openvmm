@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![forbid(unsafe_code)]
-
 //! This crate reads the vendor/device specific information a local storage
 //! accelerator (lstoraccel) places in the DEVICE_SPECIFIC_INFO field of its
 //! TDI interface report, which `tdisp::devicereport::deserialize_tdi_report`
@@ -36,6 +34,8 @@
 //! DEVICE_INTERFACE_REPORT Reporting Structure). Both sections are parsed;
 //! the key confirmation digest and NVMe queue hash are not verified.
 
+#![forbid(unsafe_code)]
+
 /// The key information section of the vendor/device specific information.
 pub mod key_info;
 
@@ -50,10 +50,12 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 /// The deserialized DEVICE_SPECIFIC_INFO field of a local storage accelerator.
+///
+/// The key information borrows from the report buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LstoraccelDeviceSpecificInfo {
+pub struct LstoraccelDeviceSpecificInfo<'a> {
     /// What the device reported about its media encryption key.
-    pub key_info: KeyInfo,
+    pub key_info: KeyInfo<'a>,
     /// The reported NVMe controller state and queue hash.
     pub nvme_info: NvmeTdispInfo,
 }
@@ -64,7 +66,7 @@ pub struct LstoraccelDeviceSpecificInfo {
 /// * `data` - The whole DEVICE_SPECIFIC_INFO field, as reported by the device.
 pub fn deserialize_device_specific_info(
     data: &[u8],
-) -> anyhow::Result<LstoraccelDeviceSpecificInfo> {
+) -> anyhow::Result<LstoraccelDeviceSpecificInfo<'_>> {
     let (key_info, nvme_section) =
         deserialize_key_info(data).context("failed to deserialize the key information section")?;
 
@@ -98,7 +100,7 @@ pub fn deserialize_device_specific_info(
 ///
 /// Returns an error if the key information cannot be serialized.
 pub fn serialize_device_specific_info(
-    info: &LstoraccelDeviceSpecificInfo,
+    info: &LstoraccelDeviceSpecificInfo<'_>,
 ) -> anyhow::Result<Vec<u8>> {
     let mut buffer = serialize_key_info(&info.key_info)
         .context("failed to serialize the key information section")?;
@@ -110,6 +112,7 @@ pub fn serialize_device_specific_info(
 mod tests {
     use super::*;
     use crate::key_info::SHA384_DIGEST_SIZE;
+    use nvme_spec::tdisp::TdispInformation;
     use tdisp::devicereport::TdiReportStruct;
     use tdisp::devicereport::TdispTdiReportInterfaceInfo;
     use tdisp::devicereport::TdispTdiReportMmioFlags;
@@ -117,68 +120,90 @@ mod tests {
     use tdisp::devicereport::deserialize_tdi_report;
     use tdisp::devicereport::serialize_tdi_report;
 
-    fn report(key_info: KeyInfo) -> LstoraccelDeviceSpecificInfo {
+    // Arbitrary test values, not values prescribed by the device or NVMe spec.
+    // Distinct register bytes expose byte-order and field-placement errors.
+    const TEST_CU: u8 = 0x12;
+    const TEST_VU: u8 = 0x23;
+    const TEST_AQA: u32 = 0x0007_0003; // ASQS = 3, ACQS = 7.
+    const TEST_ASQ: u32 = 0x1122_3344;
+    const TEST_ACQ: u32 = 0x5566_7788;
+    const TEST_CMBMSC: u32 = 0x99aa_bbcc;
+    const TEST_PMRMSC: u32 = 0xddee_ff00;
+    const TEST_PMRCTL: u32 = 0x1234_5678;
+
+    const TEST_SHNV: u8 = 2;
+    const TEST_SHSTV: u8 = 1;
+    const TEST_CSSV: u8 = 5;
+    const TEST_MPSV: u8 = 9;
+    const TEST_IOSQESV: u8 = 6;
+    const TEST_IOCQESV: u8 = 4;
+
+    // 0x0102 bytes exercises both bytes of the device-specific length field.
+    // This is an opaque parser payload, not a valid X.509 certificate.
+    const TEST_CERTIFICATE: [u8; 258] = [0xee; 258];
+
+    // Synthetic digest bytes; these tests check transport, not hash verification.
+    const TEST_CONFIRMATION_DIGEST: [u8; SHA384_DIGEST_SIZE] = [0x33; SHA384_DIGEST_SIZE];
+    const TEST_QUEUE_HASH: [u8; SHA384_DIGEST_SIZE] = [0x5a; SHA384_DIGEST_SIZE];
+
+    fn report<'a>(key_info: KeyInfo<'a>) -> LstoraccelDeviceSpecificInfo<'a> {
         LstoraccelDeviceSpecificInfo {
             key_info,
             nvme_info: NvmeTdispInfo {
                 tni: TNI_NVME,
-                ti: 0x4695_5b01,
-                cu: 0x12,
-                vu: 0x23,
+                ti: TdispInformation::new()
+                    .with_ver(NVME_TDISP_INFO_VERSION)
+                    .with_acps(true)
+                    .with_env(true)
+                    .with_shnv(TEST_SHNV)
+                    .with_shstv(TEST_SHSTV)
+                    .with_stv(true)
+                    .with_cssv(TEST_CSSV)
+                    .with_mpsv(TEST_MPSV)
+                    .with_iosqesv(TEST_IOSQESV)
+                    .with_iocqesv(TEST_IOCQESV)
+                    .into(),
+                cu: TEST_CU,
+                vu: TEST_VU,
                 reserved0: [0; 2],
-                aqa: 0x0007_0003,
-                asq: 0x1122_3344,
-                acq: 0x5566_7788,
-                cmbmsc: 0x99aa_bbcc,
-                pmrmsc: 0xddee_ff00,
-                pmrctl: 0x1234_5678,
-                queue_hash: [0x5a; 48],
+                aqa: TEST_AQA,
+                asq: TEST_ASQ,
+                acq: TEST_ACQ,
+                cmbmsc: TEST_CMBMSC,
+                pmrmsc: TEST_PMRMSC,
+                pmrctl: TEST_PMRCTL,
+                queue_hash: TEST_QUEUE_HASH,
                 reserved1: [0; 44],
             },
         }
     }
 
-    fn fixed_nvme_section() -> [u8; 128] {
-        let mut data = [0; 128];
-        data[..0x24].copy_from_slice(&[
-            0x65, 0x4d, 0x56, 0x4e, // TNI.
-            0x01, 0x5b, 0x95, 0x46, // TI.
-            0x12, 0x23, 0x00, 0x00, // CU, VU, reserved.
-            0x03, 0x00, 0x07, 0x00, // AQA.
-            0x44, 0x33, 0x22, 0x11, // ASQ.
-            0x88, 0x77, 0x66, 0x55, // ACQ.
-            0xcc, 0xbb, 0xaa, 0x99, // CMBMSC.
-            0x00, 0xff, 0xee, 0xdd, // PMRMSC.
-            0x78, 0x56, 0x34, 0x12, // PMRCTL.
-        ]);
-        data[0x24..0x54].fill(0x5a);
-        data
-    }
-
     #[test]
-    fn complete_report_matches_fixed_wire_bytes() {
+    fn complete_report_matches_section_bytes() {
+        // Device-specific prefix: MEK absent, certificate length 0x0102.
         let mut not_loaded = vec![0x00, 0x02, 0x01];
-        not_loaded.extend(std::iter::repeat_n(0xee, 258));
+        not_loaded.extend_from_slice(&TEST_CERTIFICATE);
 
+        // Device-specific prefix: MEK present, followed by its digest.
         let mut loaded = vec![0x01];
-        loaded.extend_from_slice(&[0x33; 48]);
+        loaded.extend_from_slice(&TEST_CONFIRMATION_DIGEST);
 
         for (mut data, key_info) in [
             (
                 not_loaded,
                 KeyInfo::NotLoaded {
-                    mek_wrapping_key_cert: vec![0xee; 258],
+                    mek_wrapping_key_cert: &TEST_CERTIFICATE,
                 },
             ),
             (
                 loaded,
                 KeyInfo::Loaded {
-                    mek_confirmation_digest: [0x33; SHA384_DIGEST_SIZE],
+                    mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
                 },
             ),
         ] {
-            data.extend_from_slice(&fixed_nvme_section());
             let expected = report(key_info);
+            data.extend_from_slice(expected.nvme_info.as_bytes());
 
             let parsed = deserialize_device_specific_info(&data).unwrap();
             assert_eq!(parsed, expected);
@@ -188,13 +213,13 @@ mod tests {
             assert_eq!(ti.ver(), NVME_TDISP_INFO_VERSION);
             assert!(ti.acps());
             assert!(ti.env());
-            assert_eq!(ti.shnv(), 2);
-            assert_eq!(ti.shstv(), 1);
+            assert_eq!(ti.shnv(), TEST_SHNV);
+            assert_eq!(ti.shstv(), TEST_SHSTV);
             assert!(ti.stv());
-            assert_eq!(ti.cssv(), 5);
-            assert_eq!(ti.mpsv(), 9);
-            assert_eq!(ti.iosqesv(), 6);
-            assert_eq!(ti.iocqesv(), 4);
+            assert_eq!(ti.cssv(), TEST_CSSV);
+            assert_eq!(ti.mpsv(), TEST_MPSV);
+            assert_eq!(ti.iosqesv(), TEST_IOSQESV);
+            assert_eq!(ti.iocqesv(), TEST_IOCQESV);
         }
     }
 
@@ -202,10 +227,10 @@ mod tests {
     fn device_specific_info_is_parsed_from_a_complete_tdi_report() {
         for key_info in [
             KeyInfo::NotLoaded {
-                mek_wrapping_key_cert: vec![0xee; 258],
+                mek_wrapping_key_cert: &TEST_CERTIFICATE,
             },
             KeyInfo::Loaded {
-                mek_confirmation_digest: [0x33; SHA384_DIGEST_SIZE],
+                mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
             },
         ] {
             let expected = report(key_info);
@@ -248,8 +273,9 @@ mod tests {
 
     #[test]
     fn oversized_wrapping_key_certificate_prevents_report_serialization() {
+        let certificate = vec![0xee; usize::from(u16::MAX) + 1];
         let info = report(KeyInfo::NotLoaded {
-            mek_wrapping_key_cert: vec![0xee; usize::from(u16::MAX) + 1],
+            mek_wrapping_key_cert: &certificate,
         });
 
         assert!(serialize_device_specific_info(&info).is_err());
@@ -257,12 +283,13 @@ mod tests {
 
     #[test]
     fn complete_report_survives_both_key_forms_and_variable_offsets() {
-        let key_infos = (0..=7)
+        let certificate = [0xee; 7];
+        let key_infos = (0..=certificate.len())
             .map(|len| KeyInfo::NotLoaded {
-                mek_wrapping_key_cert: vec![0xee; len],
+                mek_wrapping_key_cert: &certificate[..len],
             })
             .chain(std::iter::once(KeyInfo::Loaded {
-                mek_confirmation_digest: [0x33; SHA384_DIGEST_SIZE],
+                mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
             }));
 
         for key_info in key_infos {
@@ -279,10 +306,10 @@ mod tests {
     fn missing_or_truncated_nvme_section_is_rejected() {
         for key_info in [
             KeyInfo::NotLoaded {
-                mek_wrapping_key_cert: vec![0xee; 5],
+                mek_wrapping_key_cert: &[0xee; 5],
             },
             KeyInfo::Loaded {
-                mek_confirmation_digest: [0x33; SHA384_DIGEST_SIZE],
+                mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
             },
         ] {
             let key_size = serialize_key_info(&key_info).unwrap().len();
@@ -297,18 +324,21 @@ mod tests {
     #[test]
     fn invalid_nvme_section_is_rejected() {
         let key_info = KeyInfo::Loaded {
-            mek_confirmation_digest: [0x33; SHA384_DIGEST_SIZE],
+            mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
         };
         let nvme_offset = serialize_key_info(&key_info).unwrap().len();
         let data = serialize_device_specific_info(&report(key_info)).unwrap();
 
         let mut invalid = data.clone();
-        invalid[nvme_offset] ^= 1;
+        let tni_offset = nvme_offset + std::mem::offset_of!(NvmeTdispInfo, tni);
+        invalid[tni_offset] ^= 1;
         assert!(deserialize_device_specific_info(&invalid).is_err());
 
+        let ti_offset = nvme_offset + std::mem::offset_of!(NvmeTdispInfo, ti);
         for version in [0, 2, 0x11, 0xff] {
             let mut invalid = data.clone();
-            invalid[nvme_offset + 4] = version;
+            // The version occupies the first byte of TI.
+            invalid[ti_offset] = version;
             assert!(deserialize_device_specific_info(&invalid).is_err());
         }
 
