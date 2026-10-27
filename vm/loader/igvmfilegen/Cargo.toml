@@ -40,9 +40,8 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 crypto = { workspace = true, features = ["test_helpers"] }
-signature.workspace = true
 test_with_tracing.workspace = true
-x509-cert = { workspace = true, features = ["pem", "builder"] }
+x509-cert.workspace = true
 
 [lints]
 workspace = true

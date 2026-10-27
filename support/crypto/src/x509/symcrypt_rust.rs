@@ -65,24 +65,34 @@ impl X509CertificateInner {
         // backend has no ECDSA support, so any non-RSA key is rejected below.
         #[cfg(symcrypt)]
         if spki.algorithm.oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
-            // The SubjectPublicKey bit string of an EC key is the uncompressed
-            // point `0x04 || Qx || Qy`. Require the `0x04` prefix (as the
-            // OpenSSL and Windows backends do) and hand the raw coordinates to
-            // the ECDSA parser, which validates the curve and imports the key.
-            let point = spki.subject_public_key.raw_bytes();
-            let qxqy = point
-                .strip_prefix(&[crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG])
-                .ok_or_else(|| {
-                    der_err(
-                        der::ErrorKind::Failed.into(),
-                        "parsing the EC public key point",
-                    )
-                })?;
-            let key = crate::ecdsa::EcdsaPublicKey::from_public_key_bytes(
-                crate::ecdsa::EcdsaCurve::P384,
-                qxqy,
+            let curve_oid = spki
+                .algorithm
+                .parameters
+                .as_ref()
+                .ok_or(X509Error(crate::BackendError::Invalid(
+                    "EC public key has no named curve parameter",
+                )))?
+                .decode_as::<der::asn1::ObjectIdentifier>()
+                .map_err(|e| der_err(e, "decoding the EC curve OID"))?;
+            let curve = if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
+                crate::ecdsa::EcdsaCurve::P384
+            } else {
+                return Err(X509Error(crate::BackendError::Invalid(
+                    "public key uses an unsupported EC curve",
+                )));
+            };
+
+            let components = crate::ecdsa::EcdsaPublicKeyComponents::from_uncompressed_point(
+                spki.subject_public_key.raw_bytes(),
             )
-            .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+            .ok_or_else(|| {
+                der_err(
+                    der::ErrorKind::Failed.into(),
+                    "parsing the EC public key point",
+                )
+            })?;
+            let key = crate::ecdsa::EcdsaPublicKey::from_public_key_bytes(curve, &components)
+                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
             return Ok(X509PublicKey::Ecdsa(key));
         }
 
@@ -127,10 +137,13 @@ impl X509CertificateInner {
                 })()
                 .map_err(|e| der_err(e, "decoding the ECDSA certificate signature"))?;
 
-                // X.509 uses DER INTEGERs; the ECDSA API expects fixed-width r || s.
+                // X.509 uses DER INTEGERs; the ECDSA API expects fixed-width components.
                 let size = crate::ecdsa::EcdsaCurve::P384.key_size();
-                let mut signature = vec![0; size * 2];
-                for (component, output) in [r, s].iter().zip(signature.chunks_exact_mut(size)) {
+                let mut signature = crate::ecdsa::EcdsaSignature {
+                    r: vec![0; size],
+                    s: vec![0; size],
+                };
+                for (component, output) in [r, s].iter().zip([&mut signature.r, &mut signature.s]) {
                     let bytes = component.as_bytes();
                     if bytes.len() > size {
                         return Ok(false);

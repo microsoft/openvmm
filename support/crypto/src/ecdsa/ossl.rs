@@ -5,7 +5,8 @@
 
 use super::EcdsaCurve;
 use super::EcdsaError;
-use super::SEC1_UNCOMPRESSED_POINT_TAG;
+use super::EcdsaPublicKeyComponents;
+use super::EcdsaSignature;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError(err, op))
@@ -31,7 +32,7 @@ impl EcdsaKeyPairInner {
         Ok(Self { pkey, curve })
     }
 
-    pub fn sign_prehash(&self, hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {
+    pub fn sign_prehash(&self, hash: &[u8]) -> Result<EcdsaSignature, EcdsaError> {
         let ec_key = self
             .pkey
             .ec_key()
@@ -40,19 +41,16 @@ impl EcdsaKeyPairInner {
             .map_err(|e| err(e, "computing the ECDSA signature"))?;
 
         let key_size = self.curve.key_size();
-        let r_bytes = sig
+        let r = sig
             .r()
             .to_vec_padded(key_size as i32)
             .map_err(|e| err(e, "encoding the signature r component"))?;
-        let s_bytes = sig
+        let s = sig
             .s()
             .to_vec_padded(key_size as i32)
             .map_err(|e| err(e, "encoding the signature s component"))?;
 
-        let mut result = Vec::with_capacity(key_size * 2);
-        result.extend_from_slice(&r_bytes);
-        result.extend_from_slice(&s_bytes);
-        Ok(result)
+        Ok(EcdsaSignature { r, s })
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
@@ -70,7 +68,10 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
-    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+    pub fn from_public_key_bytes(
+        curve: EcdsaCurve,
+        public_key: &EcdsaPublicKeyComponents,
+    ) -> Result<Self, EcdsaError> {
         let nid = match curve {
             EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
         };
@@ -79,20 +80,11 @@ impl EcdsaPublicKeyInner {
         let mut ctx =
             openssl::bn::BigNumContext::new().map_err(|e| err(e, "creating the BigNum context"))?;
 
-        // `public_key` is the raw `Qx || Qy` affine coordinates. Prepend the
-        // `0x04` uncompressed-point tag and let OpenSSL parse the encoding,
-        // which rejects a wrong-length input and a point that is not on the
-        // curve.
-        let mut encoded = Vec::with_capacity(1 + public_key.len());
-        encoded.push(SEC1_UNCOMPRESSED_POINT_TAG);
-        encoded.extend_from_slice(public_key);
+        let encoded = public_key.to_uncompressed_point();
         let point = openssl::ec::EcPoint::from_bytes(&group, &encoded, &mut ctx)
             .map_err(|e| err(e, "parsing the EC public key point"))?;
         let ec_key = openssl::ec::EcKey::from_public_key(&group, &point)
             .map_err(|e| err(e, "constructing the EC public key"))?;
-        ec_key
-            .check_key()
-            .map_err(|e| err(e, "validating the EC public key"))?;
         let pkey = openssl::pkey::PKey::from_ec_key(ec_key)
             .map_err(|e| err(e, "wrapping the EC key in a PKey"))?;
 
@@ -131,22 +123,19 @@ impl EcdsaPublicKeyInner {
         Ok(Self { pkey, curve })
     }
 
-    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
-        let key_size = self.curve.key_size();
-        // A signature must be exactly `r || s`, each `key_size` bytes. Any
-        // other length cannot be a valid signature for this curve.
-        if signature.len() != key_size * 2 {
-            return Ok(false);
-        }
-
+    pub fn verify_prehash(
+        &self,
+        hash: &[u8],
+        signature: &EcdsaSignature,
+    ) -> Result<bool, EcdsaError> {
         let ec_key = self
             .pkey
             .ec_key()
             .map_err(|e| err(e, "extracting the EC key from the PKey"))?;
 
-        let r = openssl::bn::BigNum::from_slice(&signature[..key_size])
+        let r = openssl::bn::BigNum::from_slice(&signature.r)
             .map_err(|e| err(e, "parsing the signature r component"))?;
-        let s = openssl::bn::BigNum::from_slice(&signature[key_size..])
+        let s = openssl::bn::BigNum::from_slice(&signature.s)
             .map_err(|e| err(e, "parsing the signature s component"))?;
         let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
             .map_err(|e| err(e, "constructing the ECDSA signature"))?;
@@ -155,7 +144,7 @@ impl EcdsaPublicKeyInner {
             .map_err(|e| err(e, "verifying the ECDSA signature"))
     }
 
-    pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
+    pub fn public_key_bytes(&self) -> Result<EcdsaPublicKeyComponents, EcdsaError> {
         let ec_key = self
             .pkey
             .ec_key()
@@ -175,16 +164,13 @@ impl EcdsaPublicKeyInner {
             .map_err(|e| err(e, "reading the public key affine coordinates"))?;
 
         let key_size = self.curve.key_size();
-        let x_bytes = x
+        let qx = x
             .to_vec_padded(key_size as i32)
             .map_err(|e| err(e, "encoding the x coordinate"))?;
-        let y_bytes = y
+        let qy = y
             .to_vec_padded(key_size as i32)
             .map_err(|e| err(e, "encoding the y coordinate"))?;
 
-        let mut result = Vec::with_capacity(key_size * 2);
-        result.extend_from_slice(&x_bytes);
-        result.extend_from_slice(&y_bytes);
-        Ok(result)
+        Ok(EcdsaPublicKeyComponents { qx, qy })
     }
 }

@@ -215,18 +215,21 @@ impl X509CertificateInner {
                     },
                 )?;
                 let size = crate::ecdsa::EcdsaCurve::P384.key_size();
-                let mut signature = vec![0; size * 2];
+                let mut signature = crate::ecdsa::EcdsaSignature {
+                    r: vec![0; size],
+                    s: vec![0; size],
+                };
                 for (component, output) in [&components.value.r, &components.value.s]
                     .iter()
-                    .zip(signature.chunks_exact_mut(size))
+                    .zip([&mut signature.r, &mut signature.s])
                 {
                     let bytes = blob_as_slice(component)
                         .ok_or_else(|| invalid_err("malformed ECDSA signature component"))?;
                     if bytes.len() > size {
                         return Ok(false);
                     }
-                    // CryptoAPI decodes little-endian integers; BCrypt uses
-                    // fixed-width big-endian r || s.
+                    // CryptoAPI decodes little-endian integers; the ECDSA API
+                    // uses fixed-width big-endian components.
                     for (output, byte) in output.iter_mut().rev().zip(bytes) {
                         *output = *byte;
                     }
@@ -485,8 +488,7 @@ impl X509CertificateInner {
                 )
             }
             super::X509KeyPair::Ecdsa(key) => {
-                let mut point = vec![crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
-                point.extend_from_slice(&key.public_key_bytes()?);
+                let point = key.public_key_bytes()?.to_uncompressed_point();
                 let curve = encode_object(X509_OBJECT_IDENTIFIER, &szOID_ECC_CURVE_P384)
                     .context("encoding the EC named-curve OID")?;
                 (
@@ -554,10 +556,8 @@ impl X509CertificateInner {
         let signature = match key {
             super::X509KeyPair::Rsa(key) => key.pkcs1_sign(&tbs, crate::HashAlgorithm::Sha256)?,
             super::X509KeyPair::Ecdsa(key) => {
-                let raw = key.sign(&tbs, crate::HashAlgorithm::Sha384)?;
-                let (r, s) = raw.split_at(crate::ecdsa::EcdsaCurve::P384.key_size());
-                let mut r = r.to_vec();
-                let mut s = s.to_vec();
+                let crate::ecdsa::EcdsaSignature { mut r, mut s } =
+                    key.sign(&tbs, crate::HashAlgorithm::Sha384)?;
                 r.reverse();
                 s.reverse();
                 let signature = CERT_ECC_SIGNATURE {

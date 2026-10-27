@@ -72,8 +72,7 @@ pub(super) fn self_signed_builder(
         }
         #[cfg(symcrypt)]
         super::X509KeyPair::Ecdsa(key) => {
-            let mut point = vec![crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
-            point.extend_from_slice(&key.public_key_bytes()?);
+            let point = key.public_key_bytes()?.to_uncompressed_point();
             x509_cert::spki::SubjectPublicKeyInfoOwned {
                 algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
                     oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
@@ -154,10 +153,9 @@ pub(super) mod keypair_signer {
                     let signature = key
                         .sign(msg, crate::HashAlgorithm::Sha384)
                         .map_err(signature::Error::from_source)?;
-                    let (r, s) = signature.split_at(crate::ecdsa::EcdsaCurve::P384.key_size());
                     [
-                        UintRef::new(r).map_err(signature::Error::from_source)?,
-                        UintRef::new(s).map_err(signature::Error::from_source)?,
+                        UintRef::new(&signature.r).map_err(signature::Error::from_source)?,
+                        UintRef::new(&signature.s).map_err(signature::Error::from_source)?,
                     ]
                     .to_der()
                     .map_err(signature::Error::from_source)?
