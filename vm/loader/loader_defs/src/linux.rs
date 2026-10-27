@@ -300,17 +300,26 @@ pub struct cc_setup_data {
 /// Magic value for a measured [`SnpBootShimParams`] page.
 pub const SNP_BOOT_SHIM_PARAMS_MAGIC: u64 = u64::from_le_bytes(*b"SNPBSHIM");
 /// Version of the [`SnpBootShimParams`] handoff ABI.
-pub const SNP_BOOT_SHIM_PARAMS_VERSION: u32 = 3;
+pub const SNP_BOOT_SHIM_PARAMS_VERSION: u32 = 4;
 /// Magic value for the measured platform extension.
 pub const SNP_BOOT_SHIM_PLATFORM_MAGIC: u64 = u64::from_le_bytes(*b"SNPACPI3");
 /// Version of the platform extension.
-pub const SNP_BOOT_SHIM_PLATFORM_VERSION: u32 = 2;
+pub const SNP_BOOT_SHIM_PLATFORM_VERSION: u32 = 3;
 /// Maximum host device-tree size accepted by the fixed SNP profile.
 pub const SNP_BOOT_SHIM_DT_SIZE: u64 = 64 * 1024;
 /// Reserved capacity for the complete generated ACPI table set.
 pub const SNP_BOOT_SHIM_ACPI_SIZE: u64 = 64 * 1024;
 /// Temporary allocator capacity for bounded full ACPI generation.
 pub const SNP_BOOT_SHIM_HEAP_SIZE: u64 = 1024 * 1024;
+/// The stack that the shim gives to the Linux EFI stub. UEFI spec 2.3.4
+/// requires at least 128 KiB on x64.
+pub const SNP_BOOT_SHIM_EFI_STACK_SIZE: u64 = 256 * 1024;
+/// The lowest address at which the Linux EFI stub places the decompressed
+/// kernel. The stub passes `LOAD_PHYSICAL_ADDR` to `efi_random_alloc`
+/// (`drivers/firmware/efi/libstub/x86-stub.c`). Linux defines it in
+/// `arch/x86/include/asm/page_types.h` from `CONFIG_PHYSICAL_START`, which
+/// defaults to 16 MiB.
+pub const SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS: u64 = 16 << 20;
 /// Maximum number of PCIe host bridges supported by the SNP bootshim.
 pub const SNP_BOOT_SHIM_MAX_PCIE_BRIDGES: usize = 8;
 /// Maximum number of CPUs in the host device tree.
@@ -339,7 +348,7 @@ pub struct SnpBootShimRange {
 ///
 /// The generator imports one page with this layout and starts the bootshim
 /// with RSI pointing to it. The bootshim validates the complete header and the
-/// active prefix of `ranges` before it accepts any omitted RAM or enters Linux.
+/// active prefix of `ranges` before it uses any omitted RAM or enters Linux.
 #[repr(C, align(4096))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpBootShimParams {
@@ -349,41 +358,76 @@ pub struct SnpBootShimParams {
     pub version: u32,
     /// Number of valid entries at the start of `ranges`.
     pub range_count: u32,
-    /// Identity-mapped address of the direct-boot Linux entry point.
-    pub linux_entry: u64,
-    /// Guest physical address of the Linux zero page passed in RSI.
-    pub linux_zero_page: u64,
     /// Exclusive end of the RAM that the image measures. The host device tree
     /// describes this RAM and any RAM above it.
     pub ram_end: u64,
     /// Page-aligned GPA of the mandatory [`SnpBootShimPlatformParams`].
     pub platform_gpa: u64,
+    /// Must be zero.
+    pub reserved: [u64; 2],
     /// Sorted, non-overlapping RAM ranges omitted from measured page data.
+    ///
+    /// These pages are not accepted at launch. The shim accepts only the ones
+    /// that it and the Linux EFI stub need, and reports the rest to Linux as
+    /// unaccepted memory.
     pub ranges: [SnpBootShimRange; SNP_BOOT_SHIM_MAX_RANGES],
 }
 
-/// Measured locations and capacities for host-DT-based full ACPI generation.
+/// Measured locations and capacities for the shim's work and for the Linux
+/// EFI boot.
 ///
 /// The device-tree contents are unmeasured host input. These bounds, unlike
 /// those contents, are part of the measured image and cannot be supplied by DT.
+/// Every range is page aligned. A size of zero means that the item is absent.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpBootShimPlatformParams {
     pub magic: u64,
     pub version: u32,
     pub reserved: u32,
+    /// The parameter area for the host device tree.
     pub dt_gpa: u64,
     pub dt_size: u64,
+    /// Temporary memory for building ACPI. It lies in `ranges`.
     pub heap_gpa: u64,
     pub heap_size: u64,
+    /// Zero-filled, imported storage for the ACPI tables.
     pub acpi_output_gpa: u64,
     pub acpi_output_size: u64,
+    /// A zero-filled, imported page for the RSDP.
     pub rsdp_gpa: u64,
     /// SNP page-table encryption bit; PCIe addresses must lie below this bit.
     pub c_bit_mask: u64,
+    /// The stack for the Linux EFI stub. It lies in `ranges`.
+    pub stack_gpa: u64,
+    pub stack_size: u64,
+    /// Memory that the shim accepts and reports as free, so that the EFI stub
+    /// can place the decompressed kernel. It lies in `ranges`.
+    pub boot_pool_gpa: u64,
+    pub boot_pool_size: u64,
+    /// The kernel's PE/COFF image, laid out at its section addresses.
+    pub kernel_gpa: u64,
+    pub kernel_size: u64,
+    /// The address of the kernel's PE/COFF entry point.
+    pub kernel_entry: u64,
+    /// The initrd. `initrd_size` is the exact size in bytes.
+    pub initrd_gpa: u64,
+    pub initrd_size: u64,
+    /// The NUL-terminated UTF-16 command line. `cmdline_size` is the exact
+    /// size in bytes, including the NUL.
+    pub cmdline_gpa: u64,
+    pub cmdline_size: u64,
+    /// The SMBIOS 3.0 entry point, followed by the structure table that it
+    /// points to.
+    pub smbios_gpa: u64,
+    pub smbios_size: u64,
+    /// The SNP secrets, CPUID, and CC-blob pages.
+    pub secrets_gpa: u64,
+    pub cpuid_gpa: u64,
+    pub cc_blob_gpa: u64,
 }
 
-const_assert_eq!(size_of::<SnpBootShimPlatformParams>(), 80);
+const_assert_eq!(size_of::<SnpBootShimPlatformParams>(), 208);
 const_assert_eq!(core::mem::offset_of!(boot_params, acpi_rsdp_addr), 0x70);
 
 const_assert_eq!(size_of::<SnpBootShimRange>(), 16);

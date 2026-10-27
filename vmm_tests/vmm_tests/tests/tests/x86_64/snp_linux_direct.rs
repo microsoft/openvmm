@@ -34,10 +34,10 @@ async fn boot_with_vps(
             startup_bytes: 160 * petri::SIZE_1_MB,
             ..Default::default()
         })
-        .modify_backend(|b| {
-            b.with_pcie_root_topology(1, 1, 1)
-                .with_custom_config(|c| c.pcie_ecam_below_4gb = true)
-        })
+        // The ECAM stays at its default placement above 4 GiB. Linux accepts
+        // it because the shim boots the EFI stub, so the kernel reads the
+        // SMBIOS BIOS date.
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
 
@@ -47,9 +47,30 @@ async fn boot_with_vps(
         "SEV: Status: SEV SEV-ES SEV-SNP".to_string(),
         "x2apic enabled".to_string(),
         format!("smp: Brought up 1 node, {vp_count} CPU"),
+        // The shim's UEFI environment booted the kernel's EFI stub.
+        "by OpenVMM".to_string(),
+        "PCI: ECAM [mem ".to_string(),
     ] {
         anyhow::ensure!(dmesg.contains(&marker), "guest dmesg missing {marker}");
     }
+    anyhow::ensure!(
+        !dmesg.contains("above 4GB, ignored"),
+        "guest ignored the PCIe ECAM above 4 GiB"
+    );
+
+    let bios_date = cmd!(shell, "cat /sys/class/dmi/id/bios_date")
+        .read()
+        .await?;
+    anyhow::ensure!(
+        bios_date.trim() == "06/19/2026",
+        "unexpected SMBIOS BIOS date: {bios_date:?}"
+    );
+    // The image leaves most RAM unaccepted, and Linux accepts it lazily.
+    let meminfo = cmd!(shell, "cat /proc/meminfo").read().await?;
+    anyhow::ensure!(
+        meminfo.contains("Unaccepted:"),
+        "guest does not report unaccepted memory"
+    );
 
     let output = cmd!(shell, "echo petri-snp-ok").read().await?;
     anyhow::ensure!(

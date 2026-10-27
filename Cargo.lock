@@ -4101,7 +4101,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
- "vm_topology",
  "x86defs",
  "zerocopy",
 ]
@@ -8562,12 +8561,14 @@ dependencies = [
  "acpi_spec",
  "arrayvec",
  "fdt",
+ "guid",
  "loader_defs",
  "memory_range",
  "minimal_rt",
  "minimal_rt_build",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "uefi_specs",
  "x86defs",
  "zerocopy",
 ]

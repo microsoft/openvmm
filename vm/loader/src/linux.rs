@@ -348,20 +348,31 @@ pub struct LoadInfo {
     pub bzimage_setup_header: Option<defs::setup_header>,
 }
 
-fn import_snp_boot_pages(
+/// The SEV-SNP pages that a Linux guest needs on every boot path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnpGuestPages {
+    /// The GPA of the secrets page.
+    pub secrets: u64,
+    /// The GPA of the CPUID page.
+    pub cpuid: u64,
+    /// The GPA of the `cc_blob_sev_info` page that points to the other two.
+    pub cc_blob: u64,
+}
+
+/// Imports the secrets, CPUID, and CC-blob pages at three pages from `base`.
+fn import_snp_guest_pages(
     importer: &mut impl ImageLoad<X86Register>,
-    range: MemoryRange,
-) -> Result<u64, Error> {
-    assert_eq!(range.len(), SNP_BOOT_PAGE_COUNT * HV_PAGE_SIZE);
-    let secrets_address = range.start();
-    let cpuid_address = range.start() + HV_PAGE_SIZE;
-    let cc_blob_address = range.start() + 2 * HV_PAGE_SIZE;
-    let cc_setup_data_address = range.start() + 3 * HV_PAGE_SIZE;
-    let vmsa_address = range.start() + 4 * HV_PAGE_SIZE;
+    base: u64,
+) -> Result<SnpGuestPages, Error> {
+    let pages = SnpGuestPages {
+        secrets: base,
+        cpuid: base + HV_PAGE_SIZE,
+        cc_blob: base + 2 * HV_PAGE_SIZE,
+    };
 
     importer
         .import_pages(
-            secrets_address / HV_PAGE_SIZE,
+            pages.secrets / HV_PAGE_SIZE,
             1,
             "linux-snp-secrets",
             BootPageAcceptance::SecretsPage,
@@ -386,7 +397,7 @@ fn import_snp_boot_pages(
     cpuid_page.count = crate::cpuid::SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR.len() as u32;
     importer
         .import_pages(
-            cpuid_address / HV_PAGE_SIZE,
+            pages.cpuid / HV_PAGE_SIZE,
             1,
             "linux-snp-cpuid",
             BootPageAcceptance::CpuidPage,
@@ -398,16 +409,16 @@ fn import_snp_boot_pages(
         magic: defs::CC_BLOB_SEV_INFO_MAGIC,
         version: 0,
         _reserved: 0,
-        secrets_phys: secrets_address,
+        secrets_phys: pages.secrets,
         secrets_len: HV_PAGE_SIZE as u32,
         _rsvd1: 0,
-        cpuid_phys: cpuid_address,
+        cpuid_phys: pages.cpuid,
         cpuid_len: HV_PAGE_SIZE as u32,
         _rsvd2: 0,
     };
     importer
         .import_pages(
-            cc_blob_address / HV_PAGE_SIZE,
+            pages.cc_blob / HV_PAGE_SIZE,
             1,
             "linux-snp-cc-blob",
             BootPageAcceptance::Exclusive,
@@ -415,8 +426,20 @@ fn import_snp_boot_pages(
         )
         .map_err(Error::Importer)?;
 
-    let cc_blob_address = u32::try_from(cc_blob_address)
-        .map_err(|_| Error::SnpCcBlobAddressTooHigh(cc_blob_address))?;
+    Ok(pages)
+}
+
+fn import_snp_boot_pages(
+    importer: &mut impl ImageLoad<X86Register>,
+    range: MemoryRange,
+) -> Result<u64, Error> {
+    assert_eq!(range.len(), SNP_BOOT_PAGE_COUNT * HV_PAGE_SIZE);
+    let pages = import_snp_guest_pages(importer, range.start())?;
+    let cc_setup_data_address = range.start() + 3 * HV_PAGE_SIZE;
+    let vmsa_address = range.start() + 4 * HV_PAGE_SIZE;
+
+    let cc_blob_address =
+        u32::try_from(pages.cc_blob).map_err(|_| Error::SnpCcBlobAddressTooHigh(pages.cc_blob))?;
     let cc_setup_data = defs::cc_setup_data {
         header: defs::setup_data {
             next: 0,
@@ -663,29 +686,7 @@ fn import_config(
     }
 
     import_default_gdt(importer, GDT_BASE / HV_PAGE_SIZE).map_err(Error::Importer)?;
-    let mut page_table_work_buffer: Vec<PageTable> =
-        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
-    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
-    let mut page_table_builder = IdentityMapBuilder::new(
-        CR3_BASE,
-        IdentityMapSize::Size4Gb,
-        page_table_work_buffer.as_mut_slice(),
-        page_table.as_mut_slice(),
-    )?;
-    if let Some(snp_boot) = snp_boot {
-        page_table_builder = page_table_builder.with_confidential_bit(snp_boot.c_bit.into());
-    }
-    let page_table = page_table_builder.build();
-    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
-    importer
-        .import_pages(
-            CR3_BASE / HV_PAGE_SIZE,
-            page_table.len() as u64 / HV_PAGE_SIZE,
-            "linux-pagetables",
-            BootPageAcceptance::Exclusive,
-            page_table,
-        )
-        .map_err(Error::Importer)?;
+    import_identity_map(importer, snp_boot)?;
 
     if acpi.tables.is_empty() {
         return Err(Error::EmptyAcpiTables);
@@ -738,32 +739,16 @@ fn import_config(
         .map_err(Error::Importer)?;
 
     // Set common X64 registers. Segments already set by default gdt.
+    import_long_mode_registers(importer)?;
     let mut import_reg = |register| {
         importer
             .import_vp_register(register)
             .map_err(Error::Importer)
     };
 
-    import_reg(X86Register::Cr0(x86defs::X64_CR0_PG | x86defs::X64_CR0_PE))?;
-    import_reg(X86Register::Cr3(CR3_BASE))?;
-    import_reg(X86Register::Cr4(x86defs::X64_CR4_PAE))?;
-    import_reg(X86Register::Efer(
-        x86defs::X64_EFER_SCE
-            | x86defs::X64_EFER_LME
-            | x86defs::X64_EFER_LMA
-            | x86defs::X64_EFER_NXE,
-    ))?;
-    import_reg(X86Register::Pat(x86defs::X86X_MSR_DEFAULT_PAT))?;
-
     // Set rip to entry point and rsi to zero page.
     import_reg(X86Register::Rip(load_info.kernel.entrypoint))?;
     import_reg(X86Register::Rsi(ZERO_PAGE_BASE))?;
-
-    // No firmware will set MTRR values for the BSP.  Replicate what UEFI does here.
-    // (enable MTRRs, default MTRR is uncached, and set lowest 640KB as WB)
-    import_reg(X86Register::MtrrDefType(0xc00))?;
-    import_reg(X86Register::MtrrFix64k00000(0x0606060606060606))?;
-    import_reg(X86Register::MtrrFix16k80000(0x0606060606060606))?;
 
     if let Some(smbios) = smbios {
         // The `_SM3_` entry point (anchor) goes in the F-segment for the
@@ -794,6 +779,84 @@ fn import_config(
     }
 
     Ok(())
+}
+
+/// Imports the 4-GiB identity map at `CR3_BASE`, with the C-bit for SNP.
+fn import_identity_map(
+    importer: &mut impl ImageLoad<X86Register>,
+    snp_boot: Option<SnpBootConfig>,
+) -> Result<(), Error> {
+    let mut page_table_work_buffer: Vec<PageTable> =
+        vec![PageTable::new_zeroed(); PAGE_TABLE_MAX_COUNT];
+    let mut page_table: Vec<u8> = vec![0; PAGE_TABLE_MAX_BYTES];
+    let mut page_table_builder = IdentityMapBuilder::new(
+        CR3_BASE,
+        IdentityMapSize::Size4Gb,
+        page_table_work_buffer.as_mut_slice(),
+        page_table.as_mut_slice(),
+    )?;
+    if let Some(snp_boot) = snp_boot {
+        page_table_builder = page_table_builder.with_confidential_bit(snp_boot.c_bit.into());
+    }
+    let page_table = page_table_builder.build();
+    assert!((page_table.len() as u64).is_multiple_of(HV_PAGE_SIZE));
+    importer
+        .import_pages(
+            CR3_BASE / HV_PAGE_SIZE,
+            page_table.len() as u64 / HV_PAGE_SIZE,
+            "linux-pagetables",
+            BootPageAcceptance::Exclusive,
+            page_table,
+        )
+        .map_err(Error::Importer)
+}
+
+/// Imports the long-mode control registers, PAT, and MTRRs that use the GDT
+/// at `GDT_BASE` and the identity map at `CR3_BASE`.
+fn import_long_mode_registers(importer: &mut impl ImageLoad<X86Register>) -> Result<(), Error> {
+    let mut import_reg = |register| {
+        importer
+            .import_vp_register(register)
+            .map_err(Error::Importer)
+    };
+
+    import_reg(X86Register::Cr0(x86defs::X64_CR0_PG | x86defs::X64_CR0_PE))?;
+    import_reg(X86Register::Cr3(CR3_BASE))?;
+    import_reg(X86Register::Cr4(x86defs::X64_CR4_PAE))?;
+    import_reg(X86Register::Efer(
+        x86defs::X64_EFER_SCE
+            | x86defs::X64_EFER_LME
+            | x86defs::X64_EFER_LMA
+            | x86defs::X64_EFER_NXE,
+    ))?;
+    import_reg(X86Register::Pat(x86defs::X86X_MSR_DEFAULT_PAT))?;
+
+    // No firmware will set MTRR values for the BSP.  Replicate what UEFI does here.
+    // (enable MTRRs, default MTRR is uncached, and set lowest 640KB as WB)
+    import_reg(X86Register::MtrrDefType(0xc00))?;
+    import_reg(X86Register::MtrrFix64k00000(0x0606060606060606))?;
+    import_reg(X86Register::MtrrFix16k80000(0x0606060606060606))?;
+    Ok(())
+}
+
+/// Imports the initial state for a 64-bit SEV-SNP boot stage that runs before
+/// Linux, such as a bootshim that starts the Linux EFI stub.
+///
+/// This imports a GDT, a 4-GiB identity map with the C-bit, the SEV-SNP guest
+/// pages, and the long-mode registers. It does not build a zero page. The
+/// caller sets RIP and any argument registers.
+///
+/// Returns the SNP guest pages and the end of the low memory that this uses.
+pub fn import_snp_boot_stage(
+    importer: &mut impl ImageLoad<X86Register>,
+    snp_boot: SnpBootConfig,
+) -> Result<(SnpGuestPages, u64), Error> {
+    import_default_gdt(importer, GDT_BASE / HV_PAGE_SIZE).map_err(Error::Importer)?;
+    import_identity_map(importer, Some(snp_boot))?;
+    let pages_base = align_up_to_page_size(LOW_METADATA_END);
+    let pages = import_snp_guest_pages(importer, pages_base)?;
+    import_long_mode_registers(importer)?;
+    Ok((pages, pages_base + 3 * HV_PAGE_SIZE))
 }
 
 /// Place the ACPI tables, SMBIOS tables, boot metadata, zero page, and initial

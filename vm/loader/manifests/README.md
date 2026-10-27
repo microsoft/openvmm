@@ -17,6 +17,8 @@ starts the initrd shell. These profiles have these assumptions:
 - no shared GPA boundary, normal interrupt injection, and secure AVIC disabled
 - base SNP policy `0x30000`; `enable_debug` adds the debug bit to produce the
   current debug-capable policy `0xb0000`
+- a bzImage kernel with an EFI stub (`CONFIG_EFI_STUB`), and preferably
+  `CONFIG_UNACCEPTED_MEMORY`
 - an initrd and the kernel command line
   `console=ttyS0 earlyprintk=serial earlycon panic=-1`
 - SNP C-bit position 51; the value must be bit 32 or higher because the
@@ -51,19 +53,41 @@ The measured handoff supplies the end of the measured RAM and bounded
 workspace locations. Older experimental images and shims are incompatible.
 Rebuild both; there is no static-table fallback.
 
-The image contains a small measured bootshim. Only pages containing the kernel,
-initrd, boot metadata, SNP special pages, bootshim, or bootshim parameters are
-included as IGVM `PageData`, along with zero-filled permanent ACPI and RSDP
-storage. The DT uses private, already-imported parameter pages. The shim
-reads the DT without allocating before it accepts any omitted pages. Then it
-accepts the remaining private RAM with `PVALIDATE` and enters Linux. This avoids
-loading and measuring every configured RAM page, but still accepts all RAM
-before Linux starts.
+The image contains a small measured bootshim. Only pages containing the
+kernel's PE/COFF image, the initrd, the UTF-16 command line, the SMBIOS tables,
+the SNP special pages, the bootshim, or the bootshim parameters are included as
+IGVM `PageData`, along with zero-filled permanent ACPI and RSDP storage. The DT
+uses private, already-imported parameter pages. The shim reads the DT without
+allocating before it accepts any omitted pages.
 
-The shim trusts the RAM that the host device tree describes. Below the
-measured RAM end, it accepts only the gaps that the measured parameter page
-lists, so it never accepts a measured page again. It accepts all host RAM
-above the measured RAM end and adds that RAM to the Linux E820 map.
+The shim boots Linux through the kernel's own EFI stub. It builds a minimal
+UEFI environment: a system table, the boot services that the x86 EFI stub
+uses, `LOADED_IMAGE` for the command line, and `LoadFile2` on the
+`LINUX_EFI_INITRD_MEDIA_GUID` device path for the initrd. The configuration
+tables give the ACPI RSDP, SMBIOS, the SNP CC blob, and an RT properties table
+that reports no runtime services. Then the shim calls the kernel's PE/COFF
+entry point. The stub decompresses the kernel, builds the E820 map from the
+UEFI memory map, calls `ExitBootServices`, and enters the kernel. Linux finds
+everything through the UEFI tables, so the image has no zero page.
+
+Linux on SNP reads SMBIOS only after an EFI boot. Its SMBIOS BIOS date lets
+Linux accept a PCIe ECAM above 4 GiB, so the image does not need
+`--pcie-ecam-below-4gb`.
+
+Memory acceptance is lazy. The shim trusts the RAM that the host device tree
+describes. It accepts only its ACPI heap, the stack for the EFI stub, a boot
+pool for the decompressed kernel, and the omitted RAM below 1 MiB. The UEFI
+memory map reports all other omitted RAM, and all host RAM above the measured
+RAM end, as `EfiUnacceptedMemory`. When the stub needs more memory, the shim
+accepts it on demand. The stub then sets up the Linux unaccepted-memory
+bitmap, and Linux accepts the rest when it first uses it. A kernel without
+`CONFIG_UNACCEPTED_MEMORY` cannot use unaccepted memory.
+
+The shim installs a `#VC` handler before it calls the stub. The handler answers
+`CPUID` from the measured SNP CPUID page, and stops the guest for any other
+`#VC` reason. The shim's image is EFI runtime-services memory, so its page
+tables, its EFI tables, and the handler stay valid until Linux installs its
+own.
 
 The IGVM contains only the BSP VMSA, regardless of processor count. Backends
 are responsible for any AP launch state they require. Current KVM constructs
@@ -145,16 +169,10 @@ openvmm --hypervisor mshv --isolation snp --hv --no-vmbus \
   --memory 160MB --processors 2 --vps-per-socket 2 \
   --com1 file=path/to/serial.log \
   --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=31,low_mmio=64M,high_mmio=1G,node=0 \
-  --pcie-ecam-below-4gb \
   --pcie-root-port rc0:disk0 --pcie-root-port rc0:net0 \
   --virtio-blk file:path/to/disk.raw,pcie_port=disk0 \
   --virtio-net pcie_port=net0:consomme
 ```
-
-The below-4-GiB option selects a placement class, not a fixed address.
-Some direct-boot Linux kernels reject MCFG entries above 4 GiB unless SMBIOS
-reports a sufficiently recent BIOS date. Keep this option for those kernels;
-the converter supports 64-bit addresses but cannot bypass that guest policy.
 
 This implementation supports at most 255 CPUs, 64 RAM ranges that end at or
 below 512 GiB, the four fixed COM ports, and eight generic ECAM bridges in
@@ -164,16 +182,17 @@ omitted. The bootshim stops the guest when the device tree exceeds these
 limits or puts two bridges in one segment. The x86 device tree does not
 describe an IOMMU or CXL, so the guest does not see them.
 
-The image reserves 64 KiB for the device tree, 64 KiB for generated ACPI,
-a temporary 1-MiB heap, and a 32-KiB bootshim stack. The heap is omitted from
-page data and accepted with the RAM gaps before use. ACPI output, RSDP, DT,
-the shim, measured handoff pages, and SNP special pages are imported, not
-accepted again. No final table points into the DT, heap, or shim.
-The bootshim stops the guest if it cannot parse a PCIe bridge, or if a PCIe
-ECAM or MMIO window overlaps RAM or reaches the C-bit. The ACPI arena is
-ACPI-reclaimable in E820; the pinned RSDP remains reserved. The shim copies
-all tables to permanent storage before it publishes the RSDP and Linux
-zero-page pointer. It never enters Linux with partial ACPI.
+The image reserves 64 KiB for the device tree, 64 KiB for generated ACPI, a
+temporary 1-MiB heap, a 256-KiB stack for the EFI stub, and a boot pool of the
+bzImage `init_size` plus 8 MiB, between 16 MiB and 512 MiB. The heap, the
+stack, and the boot pool are omitted from page data, and the shim accepts them
+before use. ACPI output, RSDP, DT, the shim, measured handoff pages, and SNP
+special pages are imported, not accepted again. No final table points into the
+DT or the heap. The bootshim stops the guest if it cannot parse a PCIe bridge,
+or if a PCIe ECAM or MMIO window overlaps RAM or reaches the C-bit. The ACPI
+tables and the RSDP are ACPI reclaim memory. The shim copies all tables to
+permanent storage before it publishes the RSDP in the configuration table. It
+never enters Linux with partial ACPI.
 
 The shim ignores all other device-tree nodes and properties, including the
 `/chosen` and VMBus nodes. OpenVMM adds the `/openhcl` node only for
