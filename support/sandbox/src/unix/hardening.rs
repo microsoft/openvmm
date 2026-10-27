@@ -35,19 +35,6 @@ pub fn set_dumpable_off() -> io::Result<()> {
     Ok(())
 }
 
-/// Request `SIGKILL` when the parent process dies
-/// (`PR_SET_PDEATHSIG = SIGKILL`).
-///
-/// Ensures a sandbox cannot outlive the parent process that confines and
-/// supervises it. This must be set *after* any credential change,
-/// because changing the real/effective UID clears a pending pdeathsig.
-pub fn set_pdeathsig_kill() -> io::Result<()> {
-    // SAFETY: prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) affects only the
-    // calling process and takes no pointer arguments.
-    unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) }.syscall_result()?;
-    Ok(())
-}
-
 /// Lock securebits so sandbox cannot re-acquire root-like authority across an
 /// `execve`.
 ///

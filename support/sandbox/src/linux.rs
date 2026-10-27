@@ -16,8 +16,8 @@
 //! Every primitive this backend applies is *required*: if it fails, the worker
 //! aborts via [`Error`] rather than run with a weaker sandbox than its profile
 //! declares (fail-closed). Namespaces, the `pivot_root` scaffold, capability
-//! drop, securebits, filesystem grants, `PR_SET_DUMPABLE`, `PR_SET_PDEATHSIG`,
-//! and `no_new_privs` all abort on failure.
+//! drop, securebits, filesystem grants, `PR_SET_DUMPABLE`, and `no_new_privs`
+//! all abort on failure.
 //!
 //! The two deliberate exceptions are *supplementary* layers whose failure
 //! policy differs. **Landlock** (an FS-isolation supplement to the mount
@@ -77,9 +77,6 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
     drop_all_capabilities()?;
 
     hardening::set_dumpable_off().map_err(required("dumpable"))?;
-    // PR_SET_PDEATHSIG must come after any credential change (none here, but the
-    // ordering is preserved so identity work added later stays correct).
-    hardening::set_pdeathsig_kill().map_err(required("pdeathsig"))?;
 
     // Step 6 — no_new_privs. Required, and a prerequisite for unprivileged
     // seccomp below.
