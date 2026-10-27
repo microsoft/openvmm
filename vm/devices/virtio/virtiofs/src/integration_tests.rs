@@ -18,6 +18,7 @@ use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
@@ -64,14 +65,22 @@ struct TestHarness {
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
         let tmpdir = tempfile::tempdir().unwrap();
-
-        let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
-        init_avail_ring(&mem, AVAIL_ADDR);
-        init_used_ring(&mem, USED_ADDR);
-
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
+        Self::with_device(driver, device, tmpdir)
+    }
+
+    /// Creates a harness that drives `device`, whose filesystem is backed by
+    /// `tmpdir`.
+    fn with_device(
+        driver: &DefaultDriver,
+        device: VirtioFsDevice,
+        tmpdir: tempfile::TempDir,
+    ) -> Self {
+        let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
+        init_avail_ring(&mem, AVAIL_ADDR);
+        init_used_ring(&mem, USED_ADDR);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -91,6 +100,12 @@ impl TestHarness {
     }
 
     async fn enable(&mut self) {
+        self.start_queue(None).await;
+    }
+
+    /// Starts queue 0, which carries every request of the harness, from
+    /// `initial_state` if there is one, as a restore starts it.
+    async fn start_queue(&mut self, initial_state: Option<QueueState>) {
         let interrupt = Interrupt::from_event(self.interrupt_event.clone());
         self.device
             .start_queue(
@@ -108,7 +123,7 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &VirtioDeviceFeatures::new(),
-                None,
+                initial_state,
             )
             .await
             .unwrap();
@@ -277,8 +292,9 @@ impl TestHarness {
         T::read_from_bytes(&buf).unwrap()
     }
 
-    /// Send FUSE_INIT and wait for the response. Panics on failure.
-    async fn fuse_init(&mut self, head_desc: u16) {
+    /// Post FUSE_INIT without waiting for the response. Returns
+    /// `(unique, resp_gpa)`, as [`Self::post_fuse_request`] does.
+    fn post_fuse_init(&mut self, head_desc: u16) -> (u64, u64) {
         let init_args = fuse_init_in {
             major: FUSE_KERNEL_VERSION,
             minor: FUSE_KERNEL_MINOR_VERSION,
@@ -289,9 +305,13 @@ impl TestHarness {
         };
 
         let resp_size = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
-        let (unique, resp_gpa) =
-            self.post_fuse_request(head_desc, FUSE_INIT, 0, init_args.as_bytes(), resp_size);
+        self.post_fuse_request(head_desc, FUSE_INIT, 0, init_args.as_bytes(), resp_size)
+    }
 
+    /// Wait for the response to the FUSE_INIT that [`Self::post_fuse_init`]
+    /// posted as `unique`, with its response buffer at `resp_gpa`. Panics on
+    /// failure.
+    async fn wait_for_init(&mut self, unique: u64, resp_gpa: u64) {
         let (_used_id, used_len) = self.wait_for_used().await;
         assert!(used_len > 0, "FUSE_INIT response should not be empty");
 
@@ -301,6 +321,12 @@ impl TestHarness {
 
         let init_out: fuse_init_out = self.read_response(resp_gpa);
         assert_eq!(init_out.major, FUSE_KERNEL_VERSION);
+    }
+
+    /// Send FUSE_INIT and wait for the response. Panics on failure.
+    async fn fuse_init(&mut self, head_desc: u16) {
+        let (unique, resp_gpa) = self.post_fuse_init(head_desc);
+        self.wait_for_init(unique, resp_gpa).await;
     }
 
     /// Return the path to the temp directory backing the filesystem.
