@@ -167,6 +167,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "restart_syscall" => libc::SYS_restart_syscall,
         "sigaltstack" => libc::SYS_sigaltstack,
         "execve" => libc::SYS_execve,
+        "execveat" => libc::SYS_execveat,
         "wait4" => libc::SYS_wait4,
         "kill" => libc::SYS_kill,
         "tkill" => libc::SYS_tkill,
@@ -508,6 +509,55 @@ fn socket_deny_rules() -> io::Result<Vec<SeccompRule>> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn mandatory_filter_denies_executable_replacement() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_deny_executable_replacement",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "execution denial helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_deny_executable_replacement() {
+        crate::unix::hardening::set_no_new_privs().unwrap();
+        apply_denylist(&[], SeccompAction::Errno(libc::EPERM as u32)).unwrap();
+
+        // Empty paths cannot execute anything even if the filter regresses.
+        // SAFETY: The path is NUL-terminated; null argument arrays are accepted
+        // by Linux.
+        let result = unsafe { libc::execve(c"".as_ptr(), std::ptr::null(), std::ptr::null()) };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+
+        // SAFETY: As above. AT_EMPTY_PATH exercises execution via a file
+        // descriptor; -1 ensures no executable is available without the filter.
+        let result = unsafe {
+            libc::execveat(
+                -1,
+                c"".as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+    }
 
     #[test]
     fn mandatory_deny_disjoint_from_survival() {

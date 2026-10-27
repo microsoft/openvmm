@@ -66,6 +66,11 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         reason: None,
     },
     DeniedSyscall {
+        name: "execveat",
+        enforcement: MANDATORY,
+        reason: Some("Replaces the worker executable, including execution via a file descriptor."),
+    },
+    DeniedSyscall {
         name: "fanotify_init",
         enforcement: MANDATORY,
         reason: Some("Creates privileged filesystem-monitoring groups."),
