@@ -224,41 +224,6 @@ impl Timer {
         let mode = self.state.op_mode();
         let bcd = self.state.control.bcd();
         while ticks > 0 {
-            if self.state.state == CountState::Active
-                && self.state.ce == self.state.cr
-                && !self.state.null
-                && self.state.gate
-                && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
-            {
-                let reload = if bcd {
-                    u64::from(from_bcd(self.state.cr))
-                } else {
-                    u64::from(self.state.cr)
-                };
-                if reload == 1 && mode == Mode::RateGenerator {
-                    // A count-one rate generator reloads every tick without
-                    // lowering OUT.
-                    break;
-                }
-                let period = if reload == 0 {
-                    if bcd { 10_000 } else { 0x1_0000 }
-                } else if reload == 1 {
-                    // Mode 3 strips the odd bit before wrapping through the
-                    // counter range, taking one extra tick to return here.
-                    if bcd { 10_001 } else { 0x1_0001 }
-                } else {
-                    reload
-                };
-                if ticks >= period {
-                    let out = self.state.out;
-                    self.set_out(!out);
-                    self.set_out(out);
-                    ticks %= period;
-                    if ticks == 0 {
-                        break;
-                    }
-                }
-            }
             match self.state.state {
                 CountState::Inactive | CountState::WaitingForGate => break,
                 CountState::Reloading => {
@@ -269,6 +234,41 @@ impl Timer {
                 CountState::Active => {
                     if !self.state.gate && mode.gate_stops_count() {
                         break;
+                    }
+                    if self.state.ce == self.state.cr
+                        && !self.state.null
+                        && matches!(mode, Mode::RateGenerator | Mode::SquareWave)
+                    {
+                        let reload = if bcd {
+                            u64::from(from_bcd(self.state.cr))
+                        } else {
+                            u64::from(self.state.cr)
+                        };
+                        if reload == 1 && mode == Mode::RateGenerator {
+                            // A count-one rate generator reloads every tick without
+                            // lowering OUT.
+                            break;
+                        }
+                        let period = if reload == 0 {
+                            if bcd { 10_000 } else { 0x1_0000 }
+                        } else if reload == 1 {
+                            // Mode 3 strips the odd bit before wrapping through the
+                            // counter range, taking one extra tick to return here.
+                            if bcd { 10_001 } else { 0x1_0001 }
+                        } else {
+                            reload
+                        };
+                        if ticks >= period {
+                            // Skip whole cycles, preserving phase and emitting one
+                            // representative pulse instead of replaying every transition.
+                            let out = self.state.out;
+                            self.set_out(!out);
+                            self.set_out(out);
+                            ticks %= period;
+                            if ticks == 0 {
+                                break;
+                            }
+                        }
                     }
                     // Counts per tick.
                     let per = match mode {
@@ -1040,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_downtime_matches_incremental_pit_evaluation() {
+    fn elapsed_interval_matches_incremental_pit_evaluation() {
         for mode in [
             Mode::TerminalCount,
             Mode::RateGenerator,
@@ -1062,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_downtime_preserves_periodic_phase() {
+    fn elapsed_interval_preserves_periodic_phase() {
         let mut timer = Timer::new(true, None);
         set_timer(&mut timer, Mode::RateGenerator, 100, false);
 
@@ -1074,11 +1074,15 @@ mod tests {
     }
 
     #[test]
-    fn long_elapsed_downtime_fast_forwards_periodic_pit() {
+    fn long_elapsed_interval_fast_forwards_periodic_pit() {
         for mode in [Mode::RateGenerator, Mode::SquareWave] {
             for (count, bcd) in [
                 (100, false),
                 (1234, true),
+                (3, false),
+                (3, true),
+                (1001, false),
+                (1001, true),
                 (0, false),
                 (0, true),
                 (1, false),
@@ -1123,6 +1127,49 @@ mod tests {
                     elapsed.state, remainder.state,
                     "{mode:?}, count={count}, bcd={bcd}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn periodic_fast_forward_matches_incremental_from_each_phase() {
+        for mode in [Mode::RateGenerator, Mode::SquareWave] {
+            for bcd in [false, true] {
+                for count in [2, 3, 100, 1001] {
+                    let period = u64::from(count);
+                    for phase in [0, 1, period / 2, period / 2 + 1, period - 1] {
+                        let mut initial = Timer::new(true, None);
+                        set_timer(&mut initial, mode, count, bcd);
+                        initial.evaluate(1);
+                        for _ in 0..phase {
+                            initial.evaluate(1);
+                        }
+
+                        for ticks in [
+                            period - 1,
+                            period,
+                            period + 1,
+                            period * 3 - 1,
+                            period * 3,
+                            period * 3 + 1,
+                        ] {
+                            let mut elapsed = Timer::new(true, None);
+                            let mut incremental = Timer::new(true, None);
+                            elapsed.state = initial.state;
+                            incremental.state = initial.state;
+
+                            elapsed.evaluate(ticks);
+                            for _ in 0..ticks {
+                                incremental.evaluate(1);
+                            }
+
+                            assert_eq!(
+                                elapsed.state, incremental.state,
+                                "{mode:?}, count={count}, bcd={bcd}, phase={phase}, ticks={ticks}"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -1203,7 +1250,7 @@ mod tests {
     }
 
     #[test]
-    fn long_elapsed_downtime_coalesces_periodic_irq0_edges() {
+    fn long_elapsed_interval_coalesces_periodic_irq0_edges() {
         let target = Arc::new(RecordingTarget::default());
         let interrupt = LineInterrupt::new_with_target("pit", target.clone(), 0);
         let mut timer = Timer::new(true, Some(interrupt));
