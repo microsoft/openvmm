@@ -1268,7 +1268,7 @@ async fn test_ttrpc_uefi_boot(
                                 kind: Some(vmservice::disk_backend::Kind::File(
                                     vmservice::FileDisk {
                                         path: vmgs_path.to_string_lossy().into(),
-                                        create_size_bytes: Some(4 * 1024 * 1024),
+                                        create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
                                         ..Default::default()
                                     },
                                 )),
