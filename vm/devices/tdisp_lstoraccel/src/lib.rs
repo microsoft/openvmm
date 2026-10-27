@@ -146,6 +146,33 @@ mod tests {
     const TEST_CONFIRMATION_DIGEST: [u8; SHA384_DIGEST_SIZE] = [0x33; SHA384_DIGEST_SIZE];
     const TEST_QUEUE_HASH: [u8; SHA384_DIGEST_SIZE] = [0x5a; SHA384_DIGEST_SIZE];
 
+    // NVMe over PCIe Transport Specification 1.4, Section 3.8.9,
+    // Figure 69. These offsets are independent of the Rust structure layout.
+    const NVME_TNI_OFFSET: usize = 0x00;
+    const NVME_TI_OFFSET: usize = 0x04;
+    const NVME_CU_OFFSET: usize = 0x08;
+    const NVME_VU_OFFSET: usize = 0x09;
+    const NVME_AQA_OFFSET: usize = 0x0c;
+    const NVME_ASQ_OFFSET: usize = 0x10;
+    const NVME_ACQ_OFFSET: usize = 0x14;
+    const NVME_CMBMSC_OFFSET: usize = 0x18;
+    const NVME_PMRMSC_OFFSET: usize = 0x1c;
+    const NVME_PMRCTL_OFFSET: usize = 0x20;
+    const NVME_QUEUE_HASH_OFFSET: usize = 0x24;
+    const NVME_RESERVED1_OFFSET: usize = 0x54;
+    const NVME_REPORT_SIZE: usize = 0x80;
+
+    // Spec-defined identifier bytes, independent of TNI_NVME.
+    const NVME_TNI_WIRE_BYTES: [u8; 4] = [0x65, 0x4d, 0x56, 0x4e];
+
+    // Independent encoding of the synthetic TI values used by report():
+    // VER=1, ACPS=1, ENV=1, SHNV=2, SHSTV=1, STV=1,
+    // CSSV=5, MPSV=9, IOSQESV=6, IOCQESV=4.
+    const TEST_TI_WIRE_BYTES: [u8; 4] = [0x01, 0x5b, 0x95, 0x46];
+
+    // Device-specific prefix flag indicating that the MEK is present.
+    const TEST_MEK_PRESENT_FLAG: u8 = 0x01;
+
     fn report<'a>(key_info: KeyInfo<'a>) -> LstoraccelDeviceSpecificInfo<'a> {
         LstoraccelDeviceSpecificInfo {
             key_info,
@@ -221,6 +248,49 @@ mod tests {
             assert_eq!(ti.iosqesv(), TEST_IOSQESV);
             assert_eq!(ti.iocqesv(), TEST_IOCQESV);
         }
+    }
+
+    #[test]
+    fn complete_report_matches_spec_wire_layout() {
+        let mut nvme_bytes = [0u8; NVME_REPORT_SIZE];
+        nvme_bytes[NVME_TNI_OFFSET..NVME_TI_OFFSET].copy_from_slice(&NVME_TNI_WIRE_BYTES);
+        nvme_bytes[NVME_TI_OFFSET..NVME_CU_OFFSET].copy_from_slice(&TEST_TI_WIRE_BYTES);
+        nvme_bytes[NVME_CU_OFFSET] = TEST_CU;
+        nvme_bytes[NVME_VU_OFFSET] = TEST_VU;
+        nvme_bytes[NVME_AQA_OFFSET..NVME_ASQ_OFFSET].copy_from_slice(&TEST_AQA.to_le_bytes());
+        nvme_bytes[NVME_ASQ_OFFSET..NVME_ACQ_OFFSET].copy_from_slice(&TEST_ASQ.to_le_bytes());
+        nvme_bytes[NVME_ACQ_OFFSET..NVME_CMBMSC_OFFSET].copy_from_slice(&TEST_ACQ.to_le_bytes());
+        nvme_bytes[NVME_CMBMSC_OFFSET..NVME_PMRMSC_OFFSET]
+            .copy_from_slice(&TEST_CMBMSC.to_le_bytes());
+        nvme_bytes[NVME_PMRMSC_OFFSET..NVME_PMRCTL_OFFSET]
+            .copy_from_slice(&TEST_PMRMSC.to_le_bytes());
+        nvme_bytes[NVME_PMRCTL_OFFSET..NVME_QUEUE_HASH_OFFSET]
+            .copy_from_slice(&TEST_PMRCTL.to_le_bytes());
+        nvme_bytes[NVME_QUEUE_HASH_OFFSET..NVME_RESERVED1_OFFSET].copy_from_slice(&TEST_QUEUE_HASH);
+
+        let mut data = vec![TEST_MEK_PRESENT_FLAG];
+        data.extend_from_slice(&TEST_CONFIRMATION_DIGEST);
+        data.extend_from_slice(&nvme_bytes);
+
+        let parsed = deserialize_device_specific_info(&data).unwrap();
+        let expected = report(KeyInfo::Loaded {
+            mek_confirmation_digest: &TEST_CONFIRMATION_DIGEST,
+        });
+        assert_eq!(parsed, expected);
+
+        let ti = parsed.nvme_info.tdisp_information();
+        assert_eq!(ti.ver(), NVME_TDISP_INFO_VERSION);
+        assert!(ti.acps());
+        assert!(ti.env());
+        assert_eq!(ti.shnv(), TEST_SHNV);
+        assert_eq!(ti.shstv(), TEST_SHSTV);
+        assert!(ti.stv());
+        assert_eq!(ti.cssv(), TEST_CSSV);
+        assert_eq!(ti.mpsv(), TEST_MPSV);
+        assert_eq!(ti.iosqesv(), TEST_IOSQESV);
+        assert_eq!(ti.iocqesv(), TEST_IOCQESV);
+
+        assert_eq!(serialize_device_specific_info(&expected).unwrap(), data);
     }
 
     #[test]
