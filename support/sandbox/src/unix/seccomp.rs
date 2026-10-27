@@ -85,8 +85,8 @@ pub fn mandatory_deny_syscall_nrs() -> io::Result<Vec<i64>> {
 /// be inspected by seccomp at the argument level. Returning `ENOSYS`
 /// (rather than the default `EPERM`) lets glibc/musl's `pthread_create`
 /// treat `clone3` as unsupported and fall back to `clone`, which the
-/// main baseline filter validates against `CLONE_NEW*` bits. This
-/// mirrors Docker's default profile.
+/// main baseline filter requires `CLONE_THREAD` and rejects `CLONE_NEW*`
+/// bits. The `ENOSYS` fallback mirrors Docker's default profile.
 ///
 /// The filter's `mismatch_action` is `Allow` so it doesn't affect any
 /// syscall other than `clone3`; the main baseline filter's decisions
@@ -273,6 +273,8 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "finit_module" => libc::SYS_finit_module,
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "fork" => libc::SYS_fork,
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        "vfork" => libc::SYS_vfork,
         "fsconfig" => libc::SYS_fsconfig,
         "fsmount" => libc::SYS_fsmount,
         "fsopen" => libc::SYS_fsopen,
@@ -455,14 +457,26 @@ fn ioctl_deny_rules() -> io::Result<Vec<SeccompRule>> {
     ])
 }
 
-/// `clone` — deny when any `CLONE_NEW*` namespace bit is set in arg0; a plain
-/// `clone` for threads (no such bit) falls through to the default allow.
+/// `clone` — require `CLONE_THREAD` and deny any `CLONE_NEW*` namespace bit
+/// in arg0. Sharing memory alone (`CLONE_VM`) does not make a child a thread.
 ///
 /// seccomp can't express "any bit in a mask is set" in one condition, so this
 /// emits one rule per bit in [`CLONE_NEW_BITS`] (rules are OR'd, so any match
-/// denies). Matches the effect of Docker's default profile filter.
+/// denies), in addition to the missing-`CLONE_THREAD` rule.
 fn clone_deny_rules() -> io::Result<Vec<SeccompRule>> {
-    let mut rules = Vec::with_capacity(CLONE_NEW_BITS.len());
+    let mut rules = Vec::with_capacity(CLONE_NEW_BITS.len() + 1);
+    rules.push(
+        SeccompRule::new(vec![
+            SeccompCondition::new(
+                0,
+                SeccompCmpArgLen::Qword,
+                SeccompCmpOp::MaskedEq(libc::CLONE_THREAD as u64),
+                0,
+            )
+            .map_err(|e| io::Error::other(format!("seccomp condition: {e}")))?,
+        ])
+        .map_err(|e| io::Error::other(format!("seccomp rule: {e}")))?,
+    );
     for bit in CLONE_NEW_BITS {
         rules.push(
             SeccompRule::new(vec![
@@ -652,6 +666,98 @@ mod tests {
         };
         assert_eq!(result, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+    }
+
+    #[test]
+    fn mandatory_filter_denies_process_creation_but_allows_threads() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_deny_process_creation",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "process creation helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_deny_process_creation() {
+        crate::unix::hardening::set_no_new_privs().unwrap();
+
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            // Keep raw fork/vfork probes safe even if the policy regresses.
+            // The newer policy's EACCES must override this older ENOSYS.
+            let guard = finalize_filter(
+                BTreeMap::from([(libc::SYS_fork, Vec::new()), (libc::SYS_vfork, Vec::new())]),
+                SeccompAction::Allow,
+                SeccompAction::Errno(libc::ENOSYS as u32),
+                target_arch().unwrap(),
+            )
+            .unwrap();
+            apply_filter_all_threads(&guard).unwrap();
+        }
+
+        apply_denylist(&[], SeccompAction::Errno(libc::EACCES as u32)).unwrap();
+        assert_eq!(std::thread::spawn(|| 42).join().unwrap(), 42);
+
+        // SAFETY: Null arguments cannot create a child if the overlay regresses.
+        let result = unsafe { libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENOSYS)
+        );
+
+        extern "C" fn child(_: *mut libc::c_void) -> libc::c_int {
+            0
+        }
+
+        let mut stack = vec![0u128; 4096];
+        // SAFETY: The aligned buffer stays alive until each child is reaped.
+        // clone's stack grows down from the end of the allocation.
+        let stack_top = unsafe { stack.as_mut_ptr().add(stack.len()).cast() };
+        for flags in [
+            libc::SIGCHLD,
+            libc::CLONE_VM | libc::SIGCHLD,
+            libc::CLONE_VM | libc::CLONE_SIGHAND | libc::SIGCHLD,
+            libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD,
+        ] {
+            // SAFETY: The callback needs no Rust runtime or TLS and returns
+            // directly to libc's child exit path, using its own valid stack.
+            let result = unsafe { libc::clone(child, stack_top, flags, std::ptr::null_mut()) };
+            let error = io::Error::last_os_error().raw_os_error();
+            if result > 0 {
+                // SAFETY: Reap only the child just created by this helper.
+                assert_eq!(
+                    unsafe { libc::waitpid(result, std::ptr::null_mut(), 0) },
+                    result
+                );
+            }
+            assert_eq!(result, -1, "process-forming clone allowed: {flags:#x}");
+            assert_eq!(error, Some(libc::EACCES), "clone flags: {flags:#x}");
+        }
+
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        for nr in [libc::SYS_fork, libc::SYS_vfork] {
+            // SAFETY: The guard above prevents child creation even if the
+            // main policy omits this syscall.
+            assert_eq!(unsafe { libc::syscall(nr) }, -1);
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::EACCES)
+            );
+        }
     }
 
     #[test]

@@ -101,7 +101,7 @@ them.
 | **R-S2** | No ambient filesystem authority. A compromised worker cannot `open(2)` / `CreateFile` any path outside its granted view, including via `/proc/self/fd` re-open or `..` traversal. | Lateral movement to host FS |
 | **R-S3** | No ambient network authority. A worker not granted network access cannot create a socket that reaches any peer. | Exfiltration, lateral movement |
 | **R-S4** | No privilege acquisition. A worker cannot gain a capability, privilege, or token group it did not start with — including via `execve` of a setuid binary or a token-manipulating API. | Privilege escalation |
-| **R-S5** | No process creation. A worker cannot `fork`, `execve`, or `CreateProcess`. | Payload staging, sandbox escape via helper |
+| **R-S5** | No subprocess creation or executable replacement. A worker cannot use process-forming `clone`, `fork`, `vfork`, `execve`, `execveat`, or `CreateProcess`. Thread creation within the worker's thread group remains permitted. | Payload staging, sandbox escape via helper |
 | **R-S6** | No inter-process reach. A worker cannot `ptrace`, debug, signal, open, or read the memory of any other process, including its siblings and its own control process. | Lateral movement between workers |
 | **R-S7** | No ambient descriptor authority. Every FD/HANDLE in the worker is on an explicit allowlist; everything else is closed or non-inheritable before the worker runs. | Ambient-authority leak |
 | **R-S8** | Minimized kernel attack surface. Workers restrict their syscall surface (Linux, opt-in per [R-S13]) and disable Win32k (Windows). | Kernel LPE from a compromised worker |
@@ -1062,7 +1062,7 @@ is `apply`; on Windows launch-only work is `prepare` and the rest is
 | `Privileges::DropAll` | clear ambient → `capset` zero → `PR_CAPBSET_DROP` all → locked securebits | **`apply`** | `AdjustTokenPrivileges(SE_PRIVILEGE_REMOVED)` | **`apply`** |
 | `Credentials::Uid(uid)/Gid(gid)` | uid_map/gid_map then `setgroups([])`→`setgid`→`setuid` | **`apply`** | AppContainer SID *is* the identity; `AdjustTokenGroups(SE_GROUP_USE_FOR_DENY_ONLY)` for residual groups | `prepare` + `apply` |
 | `NoNewPrivs` | `prctl(PR_SET_NO_NEW_PRIVS, 1)` — before the filters it enables | **`apply`** | Analogous LPAC token behavior | `prepare` (inherent) |
-| `Subprocess::Deny` | seccomp block on `clone`, `clone3`, `fork`, `vfork`, `execve`, `execveat` | **`apply`** | `ProcessChildProcessPolicy` + Job Object `ACTIVE_PROCESS = 1` | **`apply`** |
+| `Subprocess::Deny` | seccomp requires `CLONE_THREAD` and rejects `CLONE_NEW*` for `clone`; `clone3` returns `ENOSYS` for libc thread fallback; `fork`/`vfork` (where present), `execve`, and `execveat` are denied | **`apply`** | `ProcessChildProcessPolicy` + Job Object `ACTIVE_PROCESS = 1` | **`apply`** |
 | `DynamicCode::Deny` | seccomp filter on `mprotect(PROT_EXEC)` / `mmap(PROT_EXEC)` | **`apply`** | `ProcessDynamicCodePolicy` | **`apply`** |
 | `RemoteImages::Deny` | Landlock `FS_EXECUTE` denied outside the root; `MS_NOEXEC` on data mounts | **`apply`** | `ProcessImageLoadPolicy` (`NoRemoteImages`) | **`prepare`** (launch-only) |
 | `UserInterface::Deny` | Inherent — headless netns, no display socket bound in | (inherent) | `ProcessSystemCallDisablePolicy` (Win32k lockdown) + no UI capability SIDs | `prepare` + **`apply`** |
@@ -1235,7 +1235,7 @@ apply-before-threads ordering invariant.
    |---|---|
    | Cannot open a path outside the rootfs | `open("/etc/shadow")` → `ENOENT`/`EACCES` |
    | Cannot reach the network | `connect()` → `ENETUNREACH` |
-   | Cannot spawn a child | `fork`/`execve` → denied |
+   | Cannot spawn a child or replace its executable | Process-forming `clone`, `fork`/`vfork` (where present), `execve`/`execveat` → denied; `clone3` → `ENOSYS`; ordinary thread creation still works |
    | Cannot see other processes | `/proc` shows only self |
    | Holds no capabilities/privileges | `/proc/self/status` `CapEff: 0` |
    | Holds no unexpected handles | `/proc/self/fd` matches the allowlist |

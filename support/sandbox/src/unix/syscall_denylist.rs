@@ -36,7 +36,7 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         name: "clone3",
         enforcement: MANDATORY,
         reason: Some(
-            "Can hide CLONE_NEW namespace flags behind a pointer that seccomp cannot inspect.",
+            "Can create processes or namespaces using flags behind a pointer that seccomp cannot inspect.",
         ),
     },
     DeniedSyscall {
@@ -311,6 +311,12 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         reason: Some(
             "Provides userspace page-fault handling used to widen race windows and groom kernel memory.",
         ),
+    },
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    DeniedSyscall {
+        name: "vfork",
+        enforcement: MANDATORY,
+        reason: Some("Creates a child process sharing the worker's address space."),
     },
     DeniedSyscall {
         name: "vhangup",
