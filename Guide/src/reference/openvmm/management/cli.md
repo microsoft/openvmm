@@ -166,8 +166,9 @@ describes the source definitions.
   each announced port, relaying only peers whose addresses are not globally
   reachable. Globally reachable peers are refused, and so is the host itself
   unless `--host-loopback allow` admits it. Replies to admitted peers pass
-  regardless of the egress policy. Snapshot capture and restore reject ingress
-  `allow`, because its listeners are live host attachments.
+  regardless of the egress policy. Snapshot capture rejects ingress `allow`,
+  because its listeners are live host attachments, and so does a restore,
+  unless it installs a new policy with `--restore-network-policy`.
 
   Egress `allow` may accompany `--block-host`; egress `deny` may accompany
   `--allow-host` or `--allow-endpoint`. Contradictory default and rule
@@ -213,8 +214,10 @@ describes the source definitions.
   loopback at each announced port, never displacing a host listener that
   already holds the port. Replies to the host pass regardless of the egress
   policy. With `--network-ingress allow`, the listeners published to the
-  host's private networks admit the host instead. Snapshot capture and restore
-  reject explicit `allow`, because its listeners are live host attachments.
+  host's private networks admit the host instead. Snapshot capture rejects
+  explicit `allow`, because its listeners are live host attachments, and so
+  does a restore, unless it installs a new policy with
+  `--restore-network-policy`.
   Omitting the option preserves the existing guest-gateway-to-host-loopback
   mapping, from the IPv4 gateway to host IPv4 loopback and from the IPv6
   gateway to host IPv6 loopback, without publishing guest ports. `deny` blocks
@@ -231,17 +234,19 @@ describes the source definitions.
   port and forwards it into the guest, possibly to another guest port. It
   requires explicit `--host-loopback allow`; duplicate bindings and more than
   64 forwards are rejected before resources are opened. Live forwards are
-  process-local attachments and are rejected for snapshot capture or restore.
+  process-local attachments: snapshot capture rejects them, and so does a
+  restore, unless it installs a new policy with `--restore-network-policy`.
 
   Networked snapshots record the `portable` profile, drain accepted TX and
   endpoint-ready RX at the capture boundary, rewind unused guest RX
   descriptors, and recreate a fresh Consomme endpoint generation on restore.
-  Restore of a networked snapshot requires `--network-profile portable` and
-  the same active egress policy rules. The policy digest binds the saved static
-  identity, including the IPv6 identity, and its derived ARP next hops, which
-  are reconstructed before vCPUs start. A snapshot whose network predates IPv6
-  restores IPv4-only, with its original digest. Native sockets and NAT flow
-  tables are not serialized. The capture
+  Restore of a networked snapshot requires `--network-profile portable` and,
+  unless `--restore-network-policy` replaces a platform snapshot's complete
+  deny-all, the same active egress policy rules. The policy digest binds the
+  saved static identity, including the IPv6 identity, and its derived ARP
+  next hops, which are reconstructed before vCPUs start. A snapshot whose
+  network predates IPv6 restores IPv4-only, with its original digest. Native
+  sockets and NAT flow tables are not serialized. The capture
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
@@ -447,7 +452,8 @@ describes the source definitions.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress
-  policy must match the supplied portable configuration.
+  policy must match the supplied portable configuration, unless
+  `--restore-network-policy` installs a new policy on a platform snapshot.
 
   For sandbox-block snapshots, restore repeats each read-only
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
@@ -519,6 +525,26 @@ describes the source definitions.
   for a cold boot, for a paired snapshot or one without sandbox blocks, and
   together with a scratch `--microvm-sandbox-block`. A scratch file, when given
   instead, keeps the exact captured length.
+* `--restore-network-policy`: Restore a platform snapshot's NIC with the
+  network policy of this restore's options rather than the captured one. The
+  snapshot must be a NIC template: a platform snapshot whose NIC was captured
+  with a complete deny-all policy, `--network-egress deny` and
+  `--host-loopback deny` without egress rules, `--network-proxy`, or
+  ingress. Its guest learned no DNS server and announces no listeners, and its
+  endpoint held no flows, listeners, or forwards, so its clones may each
+  install their own policy, including `--network-ingress allow`, explicit
+  `--host-loopback allow`, and `--host-loopback-forward`. OpenVMM validates the
+  policy as at a cold boot, binds it to the captured identity, which the NIC
+  keeps, and installs it, with its forwards bound, before any vCPU runs; a
+  policy that fails validation, or a forward that cannot bind its port, fails
+  the restore. A restore that wants no connectivity passes the template's own
+  deny-all. The restore cannot readdress the NIC, and a policy may name IPv6
+  destinations only when the captured identity has IPv6. OpenVMM rejects the
+  option before any vCPU starts for a cold boot, for a snapshot of another
+  tier, for a snapshot without a NIC, and for a NIC captured with any other
+  policy, including one whose digest encoding predates version 3. The guest
+  keeps its captured command line, so it learns its DNS server and whether
+  to announce its listeners from its host, after the restore.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
