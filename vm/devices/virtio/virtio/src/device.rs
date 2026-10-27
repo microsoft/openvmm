@@ -9,6 +9,7 @@ use crate::DeviceTraits;
 use crate::QueueResources;
 use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
+use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
 use std::future::Future;
@@ -22,6 +23,14 @@ use std::sync::Arc;
 pub trait VirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
+
+    /// Validates the guest memory before any queues are started.
+    ///
+    /// Queue startup must also validate memory supplied without a transport,
+    /// and backend replacement must revalidate before submitting buffers.
+    fn validate_guest_memory(&self, _memory: &GuestMemory) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// The queue size for the given queue index.
     ///
@@ -126,6 +135,9 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
 
+    /// Validates the guest memory before any queues are started.
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()>;
+
     /// The queue size for the given queue index.
     fn queue_size(&self, queue_index: u16) -> u16;
 
@@ -171,6 +183,10 @@ pub trait DynVirtioDevice: InspectMut + Send {
 impl<T: VirtioDevice> DynVirtioDevice for T {
     fn traits(&self) -> DeviceTraits {
         VirtioDevice::traits(self)
+    }
+
+    fn validate_guest_memory(&self, memory: &GuestMemory) -> anyhow::Result<()> {
+        VirtioDevice::validate_guest_memory(self, memory)
     }
 
     fn queue_size(&self, queue_index: u16) -> u16 {

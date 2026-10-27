@@ -55,7 +55,7 @@ impl Iterator for DataRegions<'_> {
             let mut plen = payload.length as u64;
             if self.skip > 0 {
                 let s = self.skip.min(plen);
-                addr += s;
+                addr = addr.saturating_add(s);
                 plen -= s;
                 self.skip -= s;
             }
