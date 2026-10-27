@@ -292,7 +292,13 @@ impl FlagAllocator {
 
     /// Returns the number of flags currently allocated.
     pub fn used_count(&self) -> usize {
-        self.used.iter().filter(|&&u| u).count()
+        let mut count = 0;
+        for &used in &self.used {
+            if used {
+                count += 1;
+            }
+        }
+        count
     }
 }
 
@@ -1106,25 +1112,12 @@ impl ClientCore {
         let mut queued_gpadls = alloc::collections::BTreeSet::new();
         for channel in saved_channels {
             let channel_id = channel.offer.channel_id;
-            let mut gpadls = alloc::collections::BTreeMap::new();
-            for gpadl in channel.gpadls {
-                let phase = match gpadl.phase {
-                    SavedGpadlPhase::Created => GpadlPhase::Created,
-                    SavedGpadlPhase::TearingDown { queued } => {
-                        if queued {
-                            queued_gpadls.insert(gpadl.id);
-                        } else if teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
-                            return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
-                        }
-                        GpadlPhase::TearingDown {
-                            request_ids: alloc::vec::Vec::new(),
-                        }
-                    }
-                };
-                if gpadls.insert(gpadl.id, phase).is_some() {
-                    return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
-                }
-            }
+            let gpadls = Self::restore_gpadls(
+                channel_id,
+                channel.gpadls,
+                &mut teardown_gpadls,
+                &mut queued_gpadls,
+            )?;
             let phase = match channel.phase {
                 SavedChannelPhase::Offered => ChannelPhase::Offered,
                 SavedChannelPhase::Opened => ChannelPhase::Restored,
@@ -1166,6 +1159,38 @@ impl ClientCore {
         self.host_busy = false;
         self.modify_connection_request_id = None;
         Ok(())
+    }
+
+    fn restore_gpadls(
+        channel_id: vmbus_core::protocol::ChannelId,
+        saved: alloc::vec::Vec<SavedGpadl>,
+        teardown_gpadls: &mut alloc::collections::BTreeMap<
+            vmbus_core::protocol::GpadlId,
+            vmbus_core::protocol::ChannelId,
+        >,
+        queued_gpadls: &mut alloc::collections::BTreeSet<vmbus_core::protocol::GpadlId>,
+    ) -> Result<alloc::collections::BTreeMap<vmbus_core::protocol::GpadlId, GpadlPhase>, RestoreError>
+    {
+        let mut gpadls = alloc::collections::BTreeMap::new();
+        for gpadl in saved {
+            let phase = match gpadl.phase {
+                SavedGpadlPhase::Created => GpadlPhase::Created,
+                SavedGpadlPhase::TearingDown { queued } => {
+                    if queued {
+                        queued_gpadls.insert(gpadl.id);
+                    } else if teardown_gpadls.insert(gpadl.id, channel_id).is_some() {
+                        return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
+                    }
+                    GpadlPhase::TearingDown {
+                        request_ids: alloc::vec::Vec::new(),
+                    }
+                }
+            };
+            if gpadls.insert(gpadl.id, phase).is_some() {
+                return Err(RestoreError::DuplicateGpadlId(gpadl.id.0));
+            }
+        }
+        Ok(gpadls)
     }
 
     /// Close restored channels that were not reclaimed and tear down their GPADLs.
