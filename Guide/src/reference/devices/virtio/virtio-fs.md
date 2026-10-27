@@ -363,6 +363,12 @@ mkdir -p /mnt/share
 mount -t virtiofs microvm /mnt/share
 ```
 
+A tiered restore starts the device behind the post-restore input gate that
+[Snapshots](../../../user_guide/openvmm/snapshots.md) describes. Requests that
+the guest sends before it acknowledges the restore stay on their virtqueues,
+and OpenVMM serves them once it releases device input, so post-restore repair
+must not wait for a virtio-fs reply.
+
 Snapshots created before the dormant-slot capability cannot add a restore-time
 attachment and fail with a compatibility error. Snapshots that an earlier
 OpenVMM captured with a second virtio-fs slot, `fs:microvm1`, cannot be

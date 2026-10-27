@@ -8,12 +8,17 @@
 //! as a guest kernel would.
 
 use crate::VirtioFs;
+use crate::profile::MICROVM_ATTACHMENT_ID;
+use crate::profile::MicroVmOwnerMode;
+use crate::profile::microvm_root_identity;
 use crate::virtio::VirtioFsDevice;
 use fuse::protocol::*;
 use guestmem::GuestMemory;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::timer::PolledTimer;
 use pal_event::Event;
+use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
@@ -24,6 +29,7 @@ use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
 use virtio::test_helpers::init_used_ring;
 use virtio::test_helpers::make_available;
+use virtio::test_helpers::read_used_idx;
 use virtio::test_helpers::wait_for_used;
 use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
@@ -68,6 +74,28 @@ impl TestHarness {
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let device = VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None);
+        Self::with_device(driver, device, tmpdir)
+    }
+
+    /// Creates a harness for the fixed microVM device of a writable host
+    /// directory, whose requests run as the VMM. Unlike the device of
+    /// [`Self::new`], it honors an input quiesce.
+    fn new_microvm(driver: &DefaultDriver) -> Self {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let device = VirtioFsDevice::new_microvm_hostfs(
+            &driver_source,
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            microvm_root_identity(tmpdir.path()).unwrap(),
+            false,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            MicroVmOwnerMode::Vmm,
+            tmpdir.path(),
+            None,
+        )
+        .unwrap();
         Self::with_device(driver, device, tmpdir)
     }
 
@@ -277,6 +305,19 @@ impl TestHarness {
         .await
     }
 
+    /// Gives the device time to serve the posted requests, then checks that
+    /// it completed none of them.
+    async fn assert_no_request_completes(&self) {
+        PolledTimer::new(&self.driver)
+            .sleep(Duration::from_millis(100))
+            .await;
+        assert_eq!(
+            read_used_idx(&self.mem, USED_ADDR),
+            self.used_idx,
+            "the device completed a request that it must leave on the virtqueue"
+        );
+    }
+
     /// Read the FUSE out_header from a response buffer GPA.
     fn read_out_header(&self, resp_gpa: u64) -> fuse_out_header {
         let mut buf = [0u8; size_of::<fuse_out_header>()];
@@ -343,6 +384,46 @@ async fn fuse_init_succeeds(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
     harness.enable().await;
     harness.fuse_init(0).await;
+}
+
+/// A microVM queue that starts while host input is quiesced, as a restore
+/// starts its queues behind the post-restore input gate, leaves its requests
+/// on the virtqueue until input resumes, and then serves them.
+#[async_test]
+async fn microvm_queue_started_while_input_is_quiesced_serves_once_input_resumes(
+    driver: DefaultDriver,
+) {
+    let mut harness = TestHarness::new_microvm(&driver);
+    harness.device.quiesce_input().await.unwrap();
+    harness.enable().await;
+    let (unique, resp_gpa) = harness.post_fuse_init(0);
+    harness.assert_no_request_completes().await;
+
+    harness.device.resume_input().await.unwrap();
+    harness.wait_for_init(unique, resp_gpa).await;
+}
+
+/// A microVM queue that stops while it waits for host input to resume, as a
+/// capture under the post-restore input gate stops it, leaves its requests on
+/// the virtqueue, and the device saves with no request in flight. The queue
+/// that starts again from the saved state, as after a failed save, serves
+/// them once input resumes.
+#[async_test]
+async fn microvm_queue_stopped_while_input_is_quiesced_keeps_its_requests(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_microvm(&driver);
+    harness.device.quiesce_input().await.unwrap();
+    harness.enable().await;
+    let (unique, resp_gpa) = harness.post_fuse_init(0);
+    harness.assert_no_request_completes().await;
+
+    let state = harness.device.stop_queue(0).await.unwrap();
+    assert_eq!(state.avail_index, 0, "the stopped queue took a request");
+    harness.device.save_device().unwrap();
+
+    harness.start_queue(Some(state)).await;
+    harness.assert_no_request_completes().await;
+    harness.device.resume_input().await.unwrap();
+    harness.wait_for_init(unique, resp_gpa).await;
 }
 
 /// GETATTR on the root inode returns a directory after INIT.

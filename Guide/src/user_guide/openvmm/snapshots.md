@@ -174,11 +174,13 @@ releasing gated input. The peer must accept and read while resume is in
 progress; on Windows, flush completion waits until the named-pipe peer consumes
 the complete frame.
 
-For a tiered microVM restore, OpenVMM starts device workers with network and
-control input gated. The guest performs post-restore repair and writes the
-existing snapshot port (`0x605`) to acknowledge completion. OpenVMM stops at
-that exact post-write boundary, completes the deferred write while the vCPU is
-stopped, and then releases device input before resuming the vCPU. The acknowledgement is bounded by
+For a tiered microVM restore, OpenVMM starts device workers with network,
+control, and filesystem input gated. The guest performs post-restore repair
+and writes the existing snapshot port (`0x605`) to acknowledge completion.
+OpenVMM stops at that exact post-write boundary, completes the deferred write
+while the vCPU is stopped, and then releases device input before resuming the
+vCPU. Until then, the guest's virtio-fs requests wait on their virtqueues, so
+repair must not wait for a virtio-fs reply. The acknowledgement is bounded by
 `--restore-gate-timeout-ms` (60000 milliseconds by default). A control-console
 host can connect while input is gated, but OpenVMM reads its authentication
 only after the release, so its `--microvm-control-auth-timeout-ms` deadline
