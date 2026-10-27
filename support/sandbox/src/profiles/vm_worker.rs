@@ -92,7 +92,7 @@ pub fn vm_worker() -> Builder {
             "keyctl",
             "request_key",
         ]))
-        .network(Network::None)
+        .network(Network::Unrestricted)
 }
 
 #[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
