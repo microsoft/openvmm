@@ -5,7 +5,6 @@
 resolver = "2"
 default-members = [
   "openvmm/openvmm",
-  "support/sandbox_profiler",
 ]
 members = [
   # openvmm
