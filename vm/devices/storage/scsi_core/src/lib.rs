@@ -53,6 +53,14 @@ pub const ASYNC_SCSI_DISK_STACK_SIZE: usize = 1256 + 336;
 
 /// Trait for issuing SCSI device requests.
 pub trait AsyncScsiDisk: Send + Sync + Inspect + ScsiSaveRestore {
+    /// Returns whether the backend requires kernel-lockable caller guest memory.
+    ///
+    /// DMA addressing may also require separate validation. If false, the
+    /// backend can use fallible CPU copies and backend-owned staging. Frontends
+    /// must check this against the memory used for requests. Removable media can
+    /// change this requirement, so it must also be checked before each request.
+    fn requires_lockable_guest_memory(&self) -> bool;
+
     /// Executes a SCSI request.
     fn execute_scsi<'a>(
         &'a self,

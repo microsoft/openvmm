@@ -1259,6 +1259,10 @@ impl SimpleScsiDisk {
 }
 
 impl AsyncScsiDisk for SimpleScsiDisk {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        self.disk.requires_lockable_guest_memory()
+    }
+
     fn clear_nexus_state(&self) {
         // last_sector_count is deliberately left alone. It latches a capacity
         // change so the unit attention is reported once; re-latching it here

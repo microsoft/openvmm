@@ -68,6 +68,8 @@ enum ScsiDvdError {
     DataOverrun,
     #[error("memory access error")]
     MemoryAccess(#[source] AccessError),
+    #[error("backend requires kernel-lockable guest memory")]
+    GuestMemoryNotLockable,
     #[error("io error")]
     IoError(#[source] DiskError),
     #[error("not ready, sense key: {0:?}, qualifier: {1}")]
@@ -82,6 +84,13 @@ struct RequestParametersIso {
 }
 
 impl AsyncScsiDisk for SimpleScsiDvd {
+    fn requires_lockable_guest_memory(&self) -> bool {
+        match &*self.media.read() {
+            Media::Unloaded => false,
+            Media::Loaded(disk) => disk.requires_lockable_guest_memory(),
+        }
+    }
+
     fn clear_nexus_state(&self) {
         self.sense_data.set(None);
         let mut media_state = self.media_state.lock();
@@ -423,6 +432,13 @@ impl SimpleScsiDvd {
             }
 
             if let Some(disk) = media {
+                // Media can change after frontend admission. Check the snapshot
+                // that will receive this read.
+                if disk.requires_lockable_guest_memory()
+                    && !external_data.guest_memory().supports_kernel_lock()
+                {
+                    return Err(ScsiDvdError::GuestMemoryNotLockable);
+                }
                 disk.read_vectored(&external_data.subrange(0, p.tx), p.offset)
                     .await
                     .map_err(ScsiDvdError::IoError)?;
@@ -2309,15 +2325,17 @@ impl SimpleScsiDvd {
                     tx: 0,
                     sense_data: None,
                 },
-                ScsiDvdError::MemoryAccess(_) => ScsiResult {
-                    scsi_status: ScsiStatus::CHECK_CONDITION,
-                    srb_status: SrbStatus::INVALID_REQUEST,
-                    tx: 0,
-                    sense_data: Some(illegal_request_sense_iso(
-                        AdditionalSenseCode::INVALID_CDB,
-                        0,
-                    )),
-                },
+                ScsiDvdError::MemoryAccess(_) | ScsiDvdError::GuestMemoryNotLockable => {
+                    ScsiResult {
+                        scsi_status: ScsiStatus::CHECK_CONDITION,
+                        srb_status: SrbStatus::INVALID_REQUEST,
+                        tx: 0,
+                        sense_data: Some(illegal_request_sense_iso(
+                            AdditionalSenseCode::INVALID_CDB,
+                            0,
+                        )),
+                    }
+                }
                 ScsiDvdError::SenseNotReady(sense_code, sense_qualifier) => ScsiResult {
                     scsi_status: ScsiStatus::CHECK_CONDITION,
                     srb_status: SrbStatus::ERROR,

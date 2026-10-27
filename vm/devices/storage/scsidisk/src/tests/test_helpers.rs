@@ -29,12 +29,14 @@ use zerocopy::IntoBytes;
 #[derive(Debug)]
 pub struct TestDiskStorageState {
     pub storage: Vec<u8>,
+    pub read_count: usize,
     pub is_fua_set: bool,
     pub sector_count: u64,
 }
 
 #[derive(Debug)]
 pub struct TestDisk {
+    pub requires_lockable_guest_memory: bool,
     pub sector_size: u32,
     pub physical_sector_size: u32,
     pub read_only: bool,
@@ -61,11 +63,13 @@ impl TestDisk {
         }
         let state = Arc::new(Mutex::new(TestDiskStorageState {
             storage: buffer,
+            read_count: 0,
             is_fua_set: false,
             sector_count,
         }));
         (
             TestDisk {
+                requires_lockable_guest_memory: false,
                 sector_size: logical_sector_size,
                 read_only,
                 state: state.clone(),
@@ -78,7 +82,7 @@ impl TestDisk {
 
 impl DiskIo for TestDisk {
     fn requires_lockable_guest_memory(&self) -> bool {
-        false
+        self.requires_lockable_guest_memory
     }
 
     fn disk_type(&self) -> &str {
@@ -117,6 +121,7 @@ impl DiskIo for TestDisk {
         let offset = sector as usize * self.sector_size() as usize;
         let end_point = offset + buffers.len();
         let mut state = self.state.lock();
+        state.read_count += 1;
         if state.storage.len() < end_point {
             return Err(DiskError::IllegalBlock);
         }

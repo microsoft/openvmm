@@ -3,6 +3,7 @@
 
 //! ScsiDisk basic tests.
 
+use super::test_helpers::TestDisk;
 use super::test_helpers::check_execute_scsi_failed_with_result;
 use super::test_helpers::check_execute_scsi_pass;
 use super::test_helpers::check_execute_scsi_pass_with_tx;
@@ -34,8 +35,82 @@ use scsi_core::save_restore::ScsiSavedState;
 use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use test_with_tracing::test;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
+
+#[test]
+fn backend_memory_contract_tracks_scsi_wrappers_and_media_changes() {
+    let dvd = Arc::new(crate::scsidvd::SimpleScsiDvd::new(None));
+    let atapi = crate::atapi_scsi::AtapiScsiDisk::new(dvd.clone());
+    assert!(!atapi.requires_lockable_guest_memory());
+    for requires_lockable_guest_memory in [false, true, false] {
+        let (mut backing, _) = TestDisk::new(512, 512, 8, false, false);
+        backing.requires_lockable_guest_memory = requires_lockable_guest_memory;
+        let disk = disk_backend::Disk::new(backing).unwrap();
+        let scsi = SimpleScsiDisk::new(disk.clone(), Default::default());
+        assert_eq!(
+            scsi.requires_lockable_guest_memory(),
+            requires_lockable_guest_memory
+        );
+        dvd.change_media(Some(disk));
+        assert_eq!(
+            atapi.requires_lockable_guest_memory(),
+            requires_lockable_guest_memory
+        );
+    }
+    dvd.change_media(None);
+    assert!(!atapi.requires_lockable_guest_memory());
+}
+
+#[async_test]
+async fn media_replacement_checks_memory_for_the_disk_being_read() {
+    const SECTOR_SIZE: u32 = 2048;
+    let direct = GuestMemory::allocate(SECTOR_SIZE as usize);
+    for memory in [direct.clone(), direct.copy_only_view()] {
+        for requires_lockable_guest_memory in [false, true] {
+            let dvd = crate::scsidvd::SimpleScsiDvd::new(Some(
+                disk_hook::HookDisk::new(u64::from(SECTOR_SIZE), SECTOR_SIZE).into_disk(),
+            ));
+            // Model a media swap after the frontend's admission check.
+            assert!(!dvd.requires_lockable_guest_memory());
+            let (mut backing, state) = TestDisk::new(SECTOR_SIZE, SECTOR_SIZE, 1, true, true);
+            backing.requires_lockable_guest_memory = requires_lockable_guest_memory;
+            state.lock().storage.fill(0x5a);
+            dvd.change_media(Some(disk_backend::Disk::new(backing).unwrap()));
+
+            memory.fill_at(0, 0xcc, SECTOR_SIZE as usize).unwrap();
+            let buffers = OwnedRequestBuffers::linear(0, SECTOR_SIZE as usize, true);
+            let result = dvd
+                .execute_scsi(
+                    &buffers.buffer(&memory),
+                    &make_cdb16_request(ScsiOp::READ16, false, 0, 1),
+                )
+                .await;
+            let mut data = vec![0; SECTOR_SIZE as usize];
+            memory.read_at(0, &mut data).unwrap();
+            if requires_lockable_guest_memory && !memory.supports_kernel_lock() {
+                assert_eq!(state.lock().read_count, 0);
+                assert_eq!(result.scsi_status, ScsiStatus::CHECK_CONDITION);
+                assert_eq!(result.srb_status, SrbStatus::INVALID_REQUEST);
+                assert_eq!(result.tx, 0);
+                let sense = result.sense_data.unwrap();
+                assert_eq!(sense.header.sense_key, SenseKey::ILLEGAL_REQUEST);
+                assert_eq!(
+                    sense.additional_sense_code,
+                    AdditionalSenseCode::INVALID_CDB
+                );
+                assert_eq!(data, vec![0xcc; SECTOR_SIZE as usize]);
+            } else {
+                assert_eq!(state.lock().read_count, 1);
+                assert_eq!(result.scsi_status, ScsiStatus::GOOD);
+                assert_eq!(result.srb_status, SrbStatus::SUCCESS);
+                assert_eq!(result.tx, SECTOR_SIZE as usize);
+                assert_eq!(data, vec![0x5a; SECTOR_SIZE as usize]);
+            }
+        }
+    }
+}
 
 #[async_test]
 async fn logical_block_provisioning_threshold_boundaries() {
