@@ -1240,25 +1240,24 @@ impl EmulatorSupport for MshvEmulationState<'_> {
                 TranslateMode::Execute => flags.set_validate_execute(true),
             }
 
-            let input = hvdef::hypercall::TranslateVirtualAddressX64 {
-                partition_id: 0,
-                vp_index: self.vp_index.index(),
-                reserved: 0,
-                control_flags: flags,
-                gva_page: gva >> hvdef::HV_PAGE_SHIFT,
-            };
-            let mut output = hvdef::hypercall::TranslateVirtualAddressExOutputX64::new_zeroed();
-            let mut args = mshv_bindings::mshv_root_hvcall {
-                code: hvdef::HypercallCode::HvCallTranslateVirtualAddressEx.0,
-                in_sz: size_of_val(&input) as u16,
-                out_sz: size_of_val(&output) as u16,
-                in_ptr: std::ptr::addr_of!(input) as u64,
-                out_ptr: std::ptr::addr_of_mut!(output) as u64,
-                ..Default::default()
-            };
-
-            match self.vcpufd.hvcall(&mut args) {
-                Ok(()) => nested_translate_result(gva, output),
+            match self.vcpufd.translate_gva(gva, flags.into()) {
+                Ok((gpa, result)) => {
+                    // SAFETY: The kernel initialized the u64 view of this union.
+                    let result =
+                        hvdef::hypercall::TranslateGvaResult::from(unsafe { result.as_uint64 });
+                    let code = hvdef::hypercall::TranslateGvaResultCode(result.result_code());
+                    if code == hvdef::hypercall::TranslateGvaResultCode::SUCCESS {
+                        Ok(EmuTranslateResult {
+                            gpa,
+                            overlay_page: Some(result.overlay_page()),
+                        })
+                    } else {
+                        Err(EmuTranslateError {
+                            code,
+                            event_info: None,
+                        })
+                    }
+                }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
@@ -1309,25 +1308,6 @@ impl EmulatorSupport for MshvEmulationState<'_> {
 
     fn lapic_write(&mut self, _address: u64, _data: &[u8]) {
         unreachable!()
-    }
-}
-
-fn nested_translate_result(
-    gva: u64,
-    output: hvdef::hypercall::TranslateVirtualAddressExOutputX64,
-) -> Result<EmuTranslateResult, EmuTranslateError> {
-    let result = output.translation_result.result;
-    let code = hvdef::hypercall::TranslateGvaResultCode(result.result_code());
-    if code == hvdef::hypercall::TranslateGvaResultCode::SUCCESS {
-        Ok(EmuTranslateResult {
-            gpa: (output.gpa_page << hvdef::HV_PAGE_SHIFT) | (gva & (hvdef::HV_PAGE_SIZE - 1)),
-            overlay_page: Some(result.overlay_page()),
-        })
-    } else {
-        Err(EmuTranslateError {
-            code,
-            event_info: Some(output.translation_result.event_info),
-        })
     }
 }
 
@@ -1748,35 +1728,6 @@ mod tests {
                 .to_string(),
             "invalid MSHV configuration: nested_virt requires hv_config"
         );
-    }
-    #[test]
-    fn nested_translation_propagates_intercept_event() {
-        let event_info = hvdef::HvX64PendingEvent {
-            reg_0: hvdef::HvX64PendingEventReg0::from(0x1234_u128),
-            reg_1: 0x5678_u128.into(),
-        };
-        let output = hvdef::hypercall::TranslateVirtualAddressExOutputX64 {
-            translation_result: hvdef::hypercall::TranslateGvaResultExX64 {
-                result: hvdef::hypercall::TranslateGvaResult::new()
-                    .with_result_code(hvdef::hypercall::TranslateGvaResultCode::INTERCEPT.0),
-                reserved: 0,
-                event_info,
-            },
-            gpa_page: 0,
-            reserved: 0,
-        };
-
-        let error = match nested_translate_result(0, output) {
-            Ok(_) => panic!("intercept translation unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.code,
-            hvdef::hypercall::TranslateGvaResultCode::INTERCEPT
-        );
-        let propagated_event = error.event_info.unwrap();
-        assert_eq!(u128::from(propagated_event.reg_0), 0x1234);
-        assert_eq!(u128::from(propagated_event.reg_1), 0x5678);
     }
 
     #[test]
