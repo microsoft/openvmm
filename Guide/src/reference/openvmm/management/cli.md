@@ -130,6 +130,8 @@ describes the source definitions.
   support are checked by the selected backend.
   See [guest-memory I/O policy](#guest-memory-io-policy).
 
+  For VM-service configuration, see [MSHV SNP devices](grpc.md#mshv-snp-devices).
+
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP,
