@@ -103,6 +103,8 @@ struct AdmissionState {
 
 pub(crate) struct RequestAdmission {
     state: Mutex<AdmissionState>,
+    /// Notified when admission reopens.
+    reopened: event_listener::Event,
 }
 
 struct RequestGuard {
@@ -116,18 +118,31 @@ impl RequestAdmission {
                 accepting: true,
                 in_flight: 0,
             }),
+            reopened: event_listener::Event::new(),
         }
     }
 
-    fn accept(self: &Arc<Self>) -> Option<RequestGuard> {
-        let mut state = self.state.lock();
-        if !state.accepting {
-            return None;
+    /// Admits one request, waiting while admission is closed for
+    /// [`Self::resume`] to reopen it. Returns `None` if the in-flight count
+    /// would overflow.
+    ///
+    /// Dropping the future cancels the wait and leaves nothing registered.
+    async fn accept(self: &Arc<Self>) -> Option<RequestGuard> {
+        loop {
+            let reopened = {
+                let mut state = self.state.lock();
+                if state.accepting {
+                    state.in_flight = state.in_flight.checked_add(1)?;
+                    return Some(RequestGuard {
+                        admission: Arc::clone(self),
+                    });
+                }
+                // Listen before releasing the lock, so that no resume between
+                // the check and the wait goes unnoticed.
+                self.reopened.listen()
+            };
+            reopened.await;
         }
-        state.in_flight = state.in_flight.checked_add(1)?;
-        Some(RequestGuard {
-            admission: Arc::clone(self),
-        })
     }
 
     pub(crate) fn quiesce(&self) {
@@ -135,9 +150,10 @@ impl RequestAdmission {
         state.accepting = false;
     }
 
+    /// Reopens admission and wakes the requests that wait for it.
     pub(crate) fn resume(&self) {
-        let mut state = self.state.lock();
-        state.accepting = true;
+        self.state.lock().accepting = true;
+        self.reopened.notify(usize::MAX);
     }
 
     pub(crate) fn verify_drained(&self) -> anyhow::Result<()> {
@@ -413,7 +429,11 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
             // Admission must precede queue.next(): after save closes the
             // gate, an unowned descriptor must remain on the virtqueue rather
             // than being dequeued and falsely completed with an empty reply.
-            let Some(request_guard) = self.admission.accept() else {
+            // While the gate is closed, wait for it to reopen rather than
+            // end: a restore starts the queues behind its post-restore input
+            // gate, and a worker that ended would not run again when input
+            // resumes.
+            let Some(request_guard) = stop.until_stopped(self.admission.accept()).await? else {
                 break;
             };
             let work = stop.until_stopped(state.queue.next()).await?;
@@ -569,8 +589,10 @@ impl fuse::Mapper for VirtioMapper<'_> {
 mod tests {
     use super::*;
     use crate::VirtioFs;
+    use futures::FutureExt;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::pin::pin;
     use test_with_tracing::test;
     use vmcore::vm_task::SingleDriverBackend;
 
@@ -630,14 +652,31 @@ mod tests {
     }
 
     #[test]
-    fn closed_admission_rejects_new_work_until_all_requests_drain() {
+    fn closed_admission_admits_nothing_and_drains_once_requests_complete() {
         let admission = Arc::new(RequestAdmission::new());
-        let request = admission.accept().unwrap();
+        let request = admission.accept().now_or_never().flatten().unwrap();
         admission.quiesce();
-        assert!(admission.accept().is_none());
+        assert!(admission.accept().now_or_never().is_none());
         assert!(admission.verify_drained().is_err());
 
         drop(request);
         admission.verify_drained().unwrap();
+    }
+
+    #[test]
+    fn resume_admits_a_waiting_request_and_a_dropped_wait_stays_unregistered() {
+        let admission = Arc::new(RequestAdmission::new());
+        admission.quiesce();
+
+        // A queue that stops while it waits drops its wait.
+        assert!(admission.accept().now_or_never().is_none());
+        assert_eq!(admission.reopened.total_listeners(), 0);
+
+        let mut waiting = pin!(admission.accept());
+        assert!(waiting.as_mut().now_or_never().is_none());
+        assert_eq!(admission.reopened.total_listeners(), 1);
+        admission.resume();
+        assert!(waiting.now_or_never().flatten().is_some());
+        assert_eq!(admission.reopened.total_listeners(), 0);
     }
 }
