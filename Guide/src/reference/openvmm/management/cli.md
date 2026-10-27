@@ -521,6 +521,20 @@ PCIe root port. The syntax varies slightly between device types:
 The optional `serial` value accepts 1-20 printable ASCII bytes except commas
 and brackets. If omitted, OpenVMM uses the disk ID or `openvmm-virtio-blk`.
 
+#### Guest-memory I/O policy
+
+`--force-guest-memory-bounce` makes guest-origin memory copy-only for the
+whole VM. It defaults to off. MSHV SNP selects this policy automatically.
+Raw guest-memory exports and kernel I/O locks are denied. Backends must copy
+through owned buffers or reject unsupported operations. Host-owned scratch
+allocations remain kernel-accessible. Pointer-based VMBus rings and synthetic
+page loans are not made copyable by this option.
+
+```admonish warning
+Copy-only is an OpenVMM I/O policy, not Linux memory isolation. It does not
+revoke other mappings, change guest page visibility, or add kernel enforcement.
+```
+
 **CXL test endpoint** (comma-separated option): `--cxl-test`
 
 ```sh

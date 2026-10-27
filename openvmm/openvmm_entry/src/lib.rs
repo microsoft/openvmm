@@ -2184,6 +2184,7 @@ async fn vm_config_from_command_line(
             }),
             with_isolation,
             nested_virt: opt.nested_virt,
+            force_guest_memory_bounce: opt.force_guest_memory_bounce,
         },
         #[cfg(windows)]
         kernel_vmnics,

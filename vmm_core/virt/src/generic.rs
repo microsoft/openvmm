@@ -441,6 +441,14 @@ pub trait ProtoPartition {
         false
     }
 
+    /// The immutable IO policy for this backend and isolation mode.
+    ///
+    /// Select this before constructing any guest-memory views. Guest page
+    /// visibility changes do not change this policy.
+    fn guest_memory_io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        guestmem::GuestMemoryIoPolicy::Direct
+    }
+
     /// Constructs the full partition.
     fn build(
         self,

@@ -349,6 +349,7 @@ pub struct GuestMemoryBuilder {
     x86_legacy_support: bool,
     supports_memory_fault_resolution: bool,
     backing_requests: Vec<RamBackingRequest>,
+    io_policy: guestmem::GuestMemoryIoPolicy,
 }
 
 impl GuestMemoryBuilder {
@@ -360,6 +361,7 @@ impl GuestMemoryBuilder {
             x86_legacy_support: false,
             supports_memory_fault_resolution: false,
             backing_requests: Vec::new(),
+            io_policy: guestmem::GuestMemoryIoPolicy::Direct,
         }
     }
 
@@ -408,6 +410,12 @@ impl GuestMemoryBuilder {
     /// or once for a non-NUMA VM).
     pub fn add_backing(mut self, request: RamBackingRequest) -> Self {
         self.backing_requests.push(request);
+        self
+    }
+
+    /// Sets the backing policy before any mapping or view can be exported.
+    pub fn io_policy(mut self, policy: guestmem::GuestMemoryIoPolicy) -> Self {
+        self.io_policy = policy;
         self
     }
 
@@ -575,6 +583,7 @@ impl GuestMemoryBuilder {
             max_addr,
             max_hugepage_size,
             self.supports_memory_fault_resolution,
+            self.io_policy,
         )
         .await
         .map_err(MemoryBuildError::VaMapper)?;
@@ -753,9 +762,17 @@ impl GuestMemoryManager {
         DeviceMemoryMapper::new(self.region_manager.client().clone())
     }
 
-    /// Returns a client for registering DMA mappers (VFIO, iommufd).
-    pub fn dma_mapper_client(&self) -> crate::region_manager::DmaMapperClient {
-        crate::region_manager::DmaMapperClient::new(self.region_manager.client())
+    /// Returns a client for registering DMA mappers (VFIO, iommufd), unless
+    /// the guest backing forbids I/O exports.
+    pub fn dma_mapper_client(&self) -> Option<crate::region_manager::DmaMapperClient> {
+        if guestmem::GuestMemoryAccess::io_policy(&*self.va_mapper)
+            == guestmem::GuestMemoryIoPolicy::CopyOnly
+        {
+            return None;
+        }
+        Some(crate::region_manager::DmaMapperClient::new(
+            self.region_manager.client(),
+        ))
     }
 
     /// Returns an object for manipulating the visibility state of different RAM
@@ -779,6 +796,11 @@ impl GuestMemoryManager {
     /// file-backed. This currently means multi-backing and private-memory
     /// configurations cannot be restarted.
     pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
+        if guestmem::GuestMemoryAccess::io_policy(&*self.va_mapper)
+            == guestmem::GuestMemoryIoPolicy::CopyOnly
+        {
+            return None;
+        }
         // Require exactly one backing, and it must be file-backed.
         if self.guest_ram.len() != 1 {
             return None;
@@ -947,6 +969,31 @@ mod tests {
         let mgr = builder.build(max_addr).await.unwrap();
         let gm = mgr.client().guest_memory().await.unwrap();
         (mgr, gm)
+    }
+
+    #[async_test]
+    async fn copy_only_policy_precedes_callback_attachment() {
+        let manager = GuestMemoryBuilder::new()
+            .io_policy(guestmem::GuestMemoryIoPolicy::CopyOnly)
+            .add_backing(RamBackingRequest::new(vec![MemoryRange::new(0..0x10000)]))
+            .build(0x10000)
+            .await
+            .unwrap();
+        let memory = manager.client().guest_memory().await.unwrap();
+        let derived = memory.subrange(0, 0x1000, false).unwrap();
+        for memory in [&memory, &derived] {
+            assert_eq!(memory.io_policy(), guestmem::GuestMemoryIoPolicy::CopyOnly);
+            assert!(!memory.supports_kernel_lock());
+            assert!(!memory.supports_user_lock());
+            assert!(memory.full_mapping().is_none());
+            assert!(memory.sharing().is_none());
+        }
+        assert!(manager.shared_memory_backing().is_none());
+        assert!(manager.dma_mapper_client().is_none());
+        assert_eq!(
+            GuestMemory::allocate(0x1000).io_policy(),
+            guestmem::GuestMemoryIoPolicy::Direct
+        );
     }
 
     #[async_test]

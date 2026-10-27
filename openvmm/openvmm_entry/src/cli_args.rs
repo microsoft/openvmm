@@ -150,6 +150,15 @@ pub struct NumaDistanceCli {
     long_version = openvmm_build_info::get().long_version(),
 )]
 pub struct Options {
+    /// Force guest-memory copies instead of exporting guest pages for I/O.
+    ///
+    /// Unsupported direct-access operations fail during resolution or use.
+    /// VMBus rings and synthetic-page loans may be unavailable. Host-owned
+    /// I/O buffers remain kernel-accessible. MSHV SNP requires this policy
+    /// automatically, without this option.
+    #[clap(long)]
+    pub force_guest_memory_bounce: bool,
+
     /// processor count
     #[clap(short = 'p', long, value_name = "COUNT", default_value = "1")]
     pub processors: u32,
@@ -3965,6 +3974,20 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn force_guest_memory_bounce_is_vm_wide_and_defaults_off() {
+        assert!(
+            !Options::try_parse_from(["openvmm"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
+        assert!(
+            Options::try_parse_from(["openvmm", "--force-guest-memory-bounce"])
+                .unwrap()
+                .force_guest_memory_bounce
+        );
+    }
 
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.
