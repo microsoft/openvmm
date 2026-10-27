@@ -295,7 +295,8 @@ checked against the written payload. Guest PCI drivers are unbound before
 removal; these tests do not cover surprise removal.
 
 The `linux_direct_x64[snp]` variants use an SNP IGVM and automatic copy-only
-memory on an AMD MSHV host.
+memory on an AMD MSHV host. The `ttrpc::snp` cases exercise VM creation and
+PCIe add/remove through the RPC API.
 
 Host-block cases require Linux, `losetup`, and permission to create loop
 devices (`CAP_SYS_ADMIN`). Enable them explicitly with

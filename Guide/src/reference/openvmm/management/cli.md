@@ -130,6 +130,14 @@ describes the source definitions.
   support are checked by the selected backend.
   See [guest-memory I/O policy](#guest-memory-io-policy).
 
+  The VM service also supports these devices over PCIe for MSHV SNP,
+  including PCIe hot-add. Bouncing is automatic; the API does not expose
+  force-bounce options. Disable VMBus. The service selects base-page backing
+  by default and rejects explicit NUMA huge-page settings. Its block API uses
+  the normal disk backend and image-format selection, including Linux host
+  block devices. Raw regular files and host block devices support direct I/O.
+  The API does not expose RAM disks.
+
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
   and only by backends that support nested virtualization (currently WHP and
