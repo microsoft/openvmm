@@ -152,8 +152,8 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
             });
         }
         let target = join_under(staging, source);
-        let flags = mount_flags_for_access(grant.access);
-        mount_namespace::bind_mount(source, &target, flags).map_err(fs_required)?;
+        let attributes = mount_attrs_for_access(grant.access);
+        mount_namespace::bind_mount(source, &target, attributes).map_err(fs_required)?;
     }
 
     // Best-effort `/proc`: works cleanly in a PID namespace and is still useful
@@ -163,7 +163,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
         let _ = mount_namespace::bind_mount(
             Path::new("/proc"),
             &proc_target,
-            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+            libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
         );
     }
 
@@ -194,16 +194,16 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Translate a policy [`Access`] into `MS_*` remount flags.
+/// Translate a policy [`Access`] into `MOUNT_ATTR_*` restrictions.
 ///
-/// `MS_NOSUID` and `MS_NODEV` are always set — no setuid execution and no
-/// device-node creation inside the sandbox, regardless of the grant.
-fn mount_flags_for_access(access: Access) -> libc::c_ulong {
-    const BASE: libc::c_ulong = libc::MS_NOSUID | libc::MS_NODEV;
+/// `MOUNT_ATTR_NOSUID` and `MOUNT_ATTR_NODEV` are always set — no setuid
+/// execution and no device-node access, regardless of the grant.
+fn mount_attrs_for_access(access: Access) -> u64 {
+    const BASE: u64 = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
     match access {
-        Access::Read => BASE | libc::MS_RDONLY | libc::MS_NOEXEC,
-        Access::ReadExec => BASE | libc::MS_RDONLY,
-        Access::ReadWrite => BASE | libc::MS_NOEXEC,
+        Access::Read => BASE | libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOEXEC,
+        Access::ReadExec => BASE | libc::MOUNT_ATTR_RDONLY,
+        Access::ReadWrite => BASE | libc::MOUNT_ATTR_NOEXEC,
     }
 }
 

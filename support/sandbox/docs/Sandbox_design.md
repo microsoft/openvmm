@@ -522,7 +522,7 @@ alternatives most likely to be reconsidered.
 
 | Primitive | Role in this design | Baseline | Notes / why not more |
 |---|---|---|---|
-| **Mount NS + bind mounts + `pivot_root`** | **Primary FS isolation** (D11, R-S2). The worker's `/` is a curated view built from explicit bind mounts; it cannot `open(2)` a path the control process did not bind in. | 2.4.19+ | Hard kernel boundary, not a path-string matcher. Requires `CAP_SYS_ADMIN` in the caller's user namespace, hence the `CLONE_NEWUSER`-first sequence. `chroot(2)` alone is escapable from a held `dirfd`; we use `pivot_root` + `umount2(MNT_DETACH)`. |
+| **Mount NS + bind mounts + `pivot_root`** | **Primary FS isolation** (D11, R-S2). The worker's `/` is a curated view built from explicit bind mounts; it cannot `open(2)` a path the control process did not bind in. | 5.12+ for recursive mount attributes | Hard kernel boundary, not a path-string matcher. Requires `CAP_SYS_ADMIN` in the caller's user namespace, hence the `CLONE_NEWUSER`-first sequence. `chroot(2)` alone is escapable from a held `dirfd`; we use `pivot_root` + `umount2(MNT_DETACH)`. |
 | **Network NS (empty)** | **Primary network restriction** (D12, R-S3). | 2.6.24+ | Landlock network scoping would be the elegant answer but needs ABI 4 / kernel 6.7 — above both baselines (R-P1, R-P2). An empty netns has no interface and no peer, so `socket()` succeeds and reaches nothing. |
 | **User NS (`CLONE_NEWUSER`)** | **Unprivileged bootstrap** for the other `CLONE_NEW*` calls, and the substrate for the UID remap. | 3.8+ | Not a boundary in its own right in our model. Where the control process already has `CAP_SYS_ADMIN` (OpenHCL), it is still used, because it is what makes the uid_map remap possible. Blocked on some distros — see [§7.6](#76-deployment-surface--degradation-matrix). |
 | **Linux capabilities + securebits** | **Configuration hygiene** (R-S4). Drop all five sets to empty, then lock securebits so they cannot be re-acquired. | Universal | `SECBIT_NOROOT_LOCKED \| SECBIT_NO_SETUID_FIXUP_LOCKED \| SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED`. Without the locked securebits, a UID-0 worker regains caps across `execve`. |
@@ -536,7 +536,7 @@ alternatives most likely to be reconsidered.
 
 | Control | Purpose | Stage |
 |---|---|---|
-| `MS_NOSUID \| MS_NODEV` on every bind mount, plus `MS_NOEXEC` and `MS_RDONLY` unless the spec opts out | Defangs mount contents: no setuid escalation, no device nodes, no execution from data mounts | `apply` |
+| `mount_setattr(AT_RECURSIVE)` sets `MOUNT_ATTR_NOSUID \| MOUNT_ATTR_NODEV` on every bind mount and submount, plus `MOUNT_ATTR_NOEXEC` and `MOUNT_ATTR_RDONLY` unless the spec opts out | Defangs mount contents: no setuid escalation, no device-node access, no execution from data mounts. Existing restrictions are preserved; failure aborts startup, with no top-mount-only fallback. | `apply` |
 | `MS_REC \| MS_PRIVATE` on `/` before `pivot_root` | Hard prerequisite of `pivot_root`; also stops mount events propagating back out | `apply` |
 | `/proc` with `hidepid=2,subset=pid` | Hides other processes' `/proc` entries — a component of R-S6 | `apply` |
 | `/sys` read-only, or omitted entirely | Reduces attack surface | `apply` |
@@ -763,6 +763,7 @@ Per D16 and R-P4, features are probed at runtime, never pinned:
 | Landlock ABI | 3 — FS read/write/refer/truncate | 1 — FS read/write only | Probe with `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`; request the best available rights and drop unsupported ones. On ABI 1, cross-directory rename and `O_TRUNC` are not restrictable — the mount-NS boundary covers this, which is one more reason D11 makes mount NS primary. |
 | Landlock network | ❌ (needs ABI 4 / 6.7) | ❌ | Empty netns is the mechanism (D12). Not a degradation — it is the design. |
 | Landlock `IOCTL_DEV` | ❌ (needs ABI 5 / 6.10) | ❌ | seccomp `ioctl` argument filtering for the sensitive cases, per profile. |
+| Recursive mount attributes (`mount_setattr`) | ✅ | ✅ (5.12+) | Required for filesystem grants; failure aborts startup. No weaker remount fallback. |
 | `close_range` | ✅ | ✅ (5.9+) | None. |
 | io_uring restrictions | ✅ | ✅ (5.10+) | None. |
 | seccomp user-notify + `ADDFD` | ✅ | ✅ (5.9+) | Present but currently unused (deferred broker). |

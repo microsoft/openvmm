@@ -67,17 +67,16 @@ pub fn mount_tmpfs(target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Recursively bind-mount `source` at `target`, then remount with the
-/// caller-supplied flags.
+/// Recursively bind-mount `source` at `target`, then set the caller-supplied
+/// `MOUNT_ATTR_*` restrictions on the entire imported mount tree.
 ///
-/// The two-step (bind then remount) sequence is required because
-/// per-mount flags such as `MS_RDONLY`, `MS_NOEXEC`, `MS_NOSUID`, and
-/// `MS_NODEV` are silently ignored on the initial `MS_BIND` call and
-/// only take effect on a subsequent `MS_REMOUNT | MS_BIND` call. When
-/// `remount_flags` is zero the remount step is skipped.
+/// Requires `mount_setattr` (Linux 5.12+) when restrictions are requested;
+/// `MS_REMOUNT | MS_BIND` cannot enforce flags on submounts recursively.
+/// Existing restrictions are preserved, and any failure is returned to the
+/// caller rather than falling back to top-mount-only enforcement.
 ///
 /// The target directory is created if it doesn't already exist.
-pub fn bind_mount(source: &Path, target: &Path, remount_flags: libc::c_ulong) -> io::Result<()> {
+pub fn bind_mount(source: &Path, target: &Path, mount_attrs: u64) -> io::Result<()> {
     let c_source = path_to_cstring(source)?;
     let c_target = path_to_cstring(target)?;
 
@@ -97,16 +96,23 @@ pub fn bind_mount(source: &Path, target: &Path, remount_flags: libc::c_ulong) ->
     }
     .syscall_result()?;
 
-    if remount_flags != 0 {
-        // SAFETY: same rationale as the bind above; source and data are
-        // documented to be ignored for a remount.
+    if mount_attrs != 0 {
+        let attributes = libc::mount_attr {
+            attr_set: mount_attrs,
+            attr_clr: 0,
+            propagation: 0,
+            userns_fd: 0,
+        };
+        // SAFETY: The target is NUL-terminated and attributes is initialized
+        // with the size passed to the kernel.
         unsafe {
-            libc::mount(
-                std::ptr::null(),
+            libc::syscall(
+                libc::SYS_mount_setattr,
+                libc::AT_FDCWD,
                 c_target.as_ptr(),
-                std::ptr::null(),
-                libc::MS_BIND | libc::MS_REC | libc::MS_REMOUNT | remount_flags,
-                std::ptr::null(),
+                libc::AT_RECURSIVE,
+                std::ptr::from_ref(&attributes),
+                size_of::<libc::mount_attr>(),
             )
         }
         .syscall_result()?;
@@ -177,6 +183,7 @@ fn path_to_cstring(path: &Path) -> io::Result<CString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::Command;
     use test_with_tracing::test;
@@ -257,24 +264,82 @@ mod tests {
         fs_err::write(base.join("tmpfs-marker"), "tmpfs").expect("failed to write to tmpfs");
 
         let source = base.join("source");
-        let target = base.join("target");
-        fs_err::create_dir(&source).expect("failed to create bind source");
-        fs_err::write(source.join("marker"), "bind").expect("failed to populate bind source");
-        bind_mount(&source, &target, libc::MS_RDONLY).expect("failed to create read-only bind");
-        assert_eq!(
-            fs_err::read_to_string(target.join("marker")).expect("failed to read bind target"),
-            "bind"
-        );
-        assert!(
-            fs_err::write(target.join("new-file"), "denied").is_err(),
-            "read-only bind mount allowed a write"
-        );
+        let child = source.join("child");
+        fs_err::create_dir_all(&child).expect("failed to create bind source");
+        mount_tmpfs(&child).expect("failed to mount child tmpfs");
+        for directory in [&source, &child] {
+            let probe = directory.join("probe");
+            fs_err::write(&probe, "#!/bin/sh\nexit 0\n").unwrap();
+            fs_err::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(Command::new(&probe).status().unwrap().success());
+        }
+
+        let baseline = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
+        for (name, attributes, writable, executable) in [
+            (
+                "read",
+                baseline | libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOEXEC,
+                false,
+                false,
+            ),
+            ("read-exec", baseline | libc::MOUNT_ATTR_RDONLY, false, true),
+            (
+                "read-write",
+                baseline | libc::MOUNT_ATTR_NOEXEC,
+                true,
+                false,
+            ),
+        ] {
+            let target = base.join(name);
+            bind_mount(&source, &target, attributes).expect("failed to bind mount");
+            let mounts = fs_err::read_to_string("/proc/self/mountinfo").unwrap();
+            for directory in [&target, &target.join("child")] {
+                let probe = directory.join("probe");
+                assert_eq!(
+                    fs_err::read_to_string(&probe).unwrap(),
+                    "#!/bin/sh\nexit 0\n",
+                );
+                assert_eq!(
+                    fs_err::write(directory.join("new-file"), "probe").is_ok(),
+                    writable,
+                    "unexpected write permission on {}",
+                    directory.display(),
+                );
+                if executable {
+                    assert!(Command::new(&probe).status().unwrap().success());
+                } else {
+                    assert_eq!(
+                        Command::new(&probe).status().unwrap_err().kind(),
+                        io::ErrorKind::PermissionDenied,
+                        "execution was not denied on {}",
+                        directory.display(),
+                    );
+                }
+                let options = mounts
+                    .lines()
+                    .find_map(|line| {
+                        let mut fields = line.split_whitespace();
+                        let mountpoint = fields.nth(4)?;
+                        let options = fields.next()?;
+                        (mountpoint == directory.to_str().unwrap()).then_some(options)
+                    })
+                    .expect("bind mount missing from mountinfo");
+                for flag in ["nosuid", "nodev"] {
+                    assert!(
+                        options.split(',').any(|option| option == flag),
+                        "{flag} missing on {}",
+                        directory.display(),
+                    );
+                }
+            }
+            umount(&target).expect("failed to unmount bind target");
+        }
 
         let proc_target = base.join("proc");
         mount_proc(&proc_target).expect("failed to mount proc");
         assert!(proc_target.join("self/status").exists());
         umount(&proc_target).expect("failed to unmount proc");
-        umount(&target).expect("failed to unmount bind target");
+        umount(&child).expect("failed to unmount child tmpfs");
         umount(&base).expect("failed to unmount tmpfs");
 
         let new_root = PathBuf::from(format!("/tmp/sandbox-root-{}", std::process::id()));
