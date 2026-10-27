@@ -34,7 +34,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::time::Instant;
 
-/// Timeouts for the requests that an [`HttpBlob`] makes.
+/// Timeouts and retries for the requests that an [`HttpBlob`] makes.
 ///
 /// A guest waits for its disk reads to complete, typically without a timeout
 /// of its own, so a request that never completes hangs the guest. And a request
@@ -43,11 +43,18 @@ use tokio::time::Instant;
 /// will never come, with no reset or FIN to end the wait. So every request is
 /// bounded in time:
 ///
-/// - It must receive the response headers within
+/// - Each attempt must receive the response headers within
 ///   [`response_timeout`](Self::response_timeout), and then more of the body at
 ///   least every [`body_idle_timeout`](Self::body_idle_timeout). These limit
 ///   silence rather than duration, so that a connection that has stopped is
 ///   detected without cutting off a slow response that is still arriving.
+/// - An attempt that fails in a way that the next one might not -- by timing
+///   out, by losing its connection, or with status 408, 429, 500, 502, 503, or
+///   504 -- is retried on a new connection, after a delay that starts at
+///   [`initial_backoff`](Self::initial_backoff) and doubles with each retry, up
+///   to [`max_backoff`](Self::max_backoff), for up to
+///   [`max_attempts`](Self::max_attempts) attempts in all. Any other failure is
+///   returned at once.
 /// - [`operation_timeout`](Self::operation_timeout) bounds the request as a
 ///   whole, so that even a response that trickles in too slowly ever to finish
 ///   fails in bounded time.
@@ -57,20 +64,29 @@ use tokio::time::Instant;
 ///
 /// The defaults suit a blob store such as Azure Blob Storage, where a range
 /// request normally completes in tens of milliseconds. A connection that is
-/// silent for 20 seconds, a thousand times that, is taken to be dead, and no
-/// request takes more than two minutes, so a hopeless request fails well before
-/// a typical test watchdog, such as petri's ten minutes, would intervene.
+/// silent for 20 seconds, a thousand times that, is taken to be dead; a request
+/// whose every attempt stalls fails after about 80 seconds; and no request
+/// takes more than two minutes. That rides out a transient network failure,
+/// but still fails a hopeless request well before a typical test watchdog, such
+/// as petri's ten minutes, would intervene.
 #[derive(Debug, Clone)]
 pub struct HttpBlobOptions {
     /// How long to wait for a TCP connection to be established.
     pub connect_timeout: Duration,
-    /// How long a request waits for the response headers, including the time
+    /// How long an attempt waits for the response headers, including the time
     /// to connect and to send the request.
     pub response_timeout: Duration,
-    /// How long a request waits for more of the response body.
+    /// How long an attempt waits for more of the response body.
     pub body_idle_timeout: Duration,
-    /// How long a request may take in all.
+    /// How long a request may take in all, across all its attempts.
     pub operation_timeout: Duration,
+    /// How many attempts to make at a request, including the first. At least
+    /// one attempt is always made.
+    pub max_attempts: u32,
+    /// The delay before the first retry.
+    pub initial_backoff: Duration,
+    /// The longest delay before a retry.
+    pub max_backoff: Duration,
 }
 
 impl Default for HttpBlobOptions {
@@ -80,6 +96,9 @@ impl Default for HttpBlobOptions {
             response_timeout: Duration::from_secs(20),
             body_idle_timeout: Duration::from_secs(20),
             operation_timeout: Duration::from_secs(120),
+            max_attempts: 4,
+            initial_backoff: Duration::from_millis(250),
+            max_backoff: Duration::from_secs(4),
         }
     }
 }
@@ -100,7 +119,8 @@ type HttpClient = Client<HttpsConnector<HttpConnector>, Empty<&'static [u8]>>;
 
 /// A blob backed by an HTTP/HTTPS connection.
 ///
-/// Its requests are bounded in time, as [`HttpBlobOptions`] describes.
+/// Its requests are bounded in time, and retried, as [`HttpBlobOptions`]
+/// describes.
 #[derive(Debug, Inspect)]
 pub struct HttpBlob {
     #[inspect(skip)]
@@ -122,7 +142,7 @@ impl HttpBlob {
     }
 
     /// Connects to `url` and returns an object to access it as a blob, with the
-    /// timeouts that `options` specifies.
+    /// timeouts and retries that `options` specifies.
     pub async fn with_options(url: &str, options: HttpBlobOptions) -> anyhow::Result<Self> {
         let uri: Uri = url.parse()?;
 
@@ -188,11 +208,15 @@ impl Blob for HttpBlob {
     }
 }
 
-/// Makes the requests for an [`HttpBlob`], with timeouts.
+/// Makes the requests for an [`HttpBlob`], with timeouts and retries.
 #[derive(Debug)]
 struct Requester {
     options: HttpBlobOptions,
+    /// Makes first attempts, which may reuse idle connections.
     client: HttpClient,
+    /// Makes retries, each on a new connection: whatever broke the previous
+    /// attempt's connection may have broken the idle ones too.
+    retry_client: HttpClient,
     tokio_handle: tokio::runtime::Handle,
 }
 
@@ -205,9 +229,12 @@ impl Requester {
         http.set_keepalive(Some(TCP_KEEPALIVE_TIME));
         http.set_keepalive_interval(Some(TCP_KEEPALIVE_INTERVAL));
         http.set_keepalive_retries(Some(TCP_KEEPALIVE_RETRIES));
+        let connector = HttpsConnector::new_with_connector(http);
         Self {
-            client: Client::builder(TokioExecutor::new())
-                .build(HttpsConnector::new_with_connector(http)),
+            client: Client::builder(TokioExecutor::new()).build(connector.clone()),
+            retry_client: Client::builder(TokioExecutor::new())
+                .pool_max_idle_per_host(0)
+                .build(connector),
             options,
             tokio_handle,
         }
@@ -289,31 +316,83 @@ impl Requester {
         .await
     }
 
-    /// Makes `request`, by calling `attempt` with the client to use, and fails
-    /// it if it has not completed by `deadline`.
+    /// Makes `request`, by calling `attempt` with the client to use, and
+    /// retrying it as the options say, until it succeeds, fails for good, or
+    /// `deadline` passes.
     async fn request<T, F, Fut>(
         &self,
         request: RequestKind,
         deadline: Instant,
-        attempt: F,
+        mut attempt: F,
     ) -> io::Result<T>
     where
-        F: FnOnce(HttpClient) -> Fut,
-        Fut: Future<Output = io::Result<T>>,
+        F: FnMut(HttpClient) -> Fut,
+        Fut: Future<Output = Result<T, Failure>>,
     {
-        match tokio::time::timeout_at(deadline, attempt(self.client.clone())).await {
-            Ok(result) => result,
-            Err(_) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                RequestError::OperationTimeout {
-                    request,
-                    timeout: self.options.operation_timeout,
-                },
-            )),
+        let mut backoff = self.options.initial_backoff.min(self.options.max_backoff);
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let client = if attempts == 1 {
+                &self.client
+            } else {
+                &self.retry_client
+            };
+            let (err, retry) =
+                match tokio::time::timeout_at(deadline, attempt(client.clone())).await {
+                    Ok(Ok(output)) => return Ok(output),
+                    Ok(Err(Failure::Transient(err))) => (err, true),
+                    Ok(Err(Failure::Timeout(err))) => {
+                        (io::Error::new(io::ErrorKind::TimedOut, err), true)
+                    }
+                    Ok(Err(Failure::Permanent(err))) => return Err(err),
+                    Err(_) => {
+                        let err = RequestError::OperationTimeout {
+                            request,
+                            timeout: self.options.operation_timeout,
+                        };
+                        (io::Error::new(io::ErrorKind::TimedOut, err), false)
+                    }
+                };
+
+            let next_attempt = Instant::now().checked_add(backoff);
+            if retry
+                && attempts < self.options.max_attempts
+                && next_attempt.is_some_and(|next| next < deadline)
+            {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    %request,
+                    attempt = attempts,
+                    ?backoff,
+                    "http blob request failed, retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2).min(self.options.max_backoff);
+                continue;
+            }
+
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                %request,
+                attempts,
+                "http blob request failed"
+            );
+            return Err(if retry && attempts > 1 {
+                io::Error::new(
+                    err.kind(),
+                    RequestError::Exhausted {
+                        request,
+                        attempts,
+                        source: err,
+                    },
+                )
+            } else {
+                err
+            });
         }
     }
 }
-
 /// Returns the instant `timeout` from now, or a distant one if that cannot be
 /// represented.
 fn deadline_after(timeout: Duration) -> Instant {
@@ -327,7 +406,7 @@ async fn head_once(
     client: HttpClient,
     uri: Uri,
     response_timeout: Duration,
-) -> io::Result<Response<Incoming>> {
+) -> Result<Response<Incoming>, Failure> {
     let request = Request::builder()
         .uri(uri)
         .method(Method::HEAD)
@@ -344,7 +423,7 @@ async fn get_once(
     len: usize,
     response_timeout: Duration,
     body_idle_timeout: Duration,
-) -> io::Result<Vec<u8>> {
+) -> Result<Vec<u8>, Failure> {
     let request = Request::builder()
         .uri(uri)
         .header(
@@ -356,36 +435,41 @@ async fn get_once(
     let response = send(client, request, response_timeout).await?;
 
     if !response.status().is_success() {
-        return Err(io::Error::other(RequestError::Status(response.status())));
+        return Err(Failure::Permanent(io::Error::other(RequestError::Status(
+            response.status(),
+        ))));
     }
 
     let mut body = response.into_body();
     let mut data = Vec::with_capacity(len);
     loop {
         let frame = match tokio::time::timeout(body_idle_timeout, body.frame()).await {
-            Ok(Some(frame)) => frame.map_err(io::Error::other)?,
+            Ok(Some(Ok(frame))) => frame,
             Ok(None) => break,
+            // The connection failed part way through the body.
+            Ok(Some(Err(err))) => return Err(Failure::Transient(io::Error::other(err))),
             Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    RequestError::BodyTimeout {
-                        timeout: body_idle_timeout,
-                        received: data.len(),
-                        expected: len,
-                    },
-                ));
+                return Err(Failure::Timeout(RequestError::BodyTimeout {
+                    timeout: body_idle_timeout,
+                    received: data.len(),
+                    expected: len,
+                }));
             }
         };
         if let Some(chunk) = frame.data_ref() {
             if chunk.len() > len - data.len() {
-                return Err(io::Error::other("server did not respect range query"));
+                return Err(Failure::Permanent(io::Error::other(
+                    "server did not respect range query",
+                )));
             }
             data.extend_from_slice(chunk);
         }
     }
 
     if data.len() < len {
-        return Err(io::ErrorKind::UnexpectedEof.into());
+        // A well-formed response that is shorter than was asked for. Another
+        // attempt would get the same.
+        return Err(Failure::Permanent(io::ErrorKind::UnexpectedEof.into()));
     }
 
     Ok(data)
@@ -397,20 +481,39 @@ async fn send(
     client: HttpClient,
     request: Request<Empty<&'static [u8]>>,
     response_timeout: Duration,
-) -> io::Result<Response<Incoming>> {
-    match tokio::time::timeout(response_timeout, client.request(request)).await {
-        Ok(Ok(response)) => Ok(response),
+) -> Result<Response<Incoming>, Failure> {
+    let response = match tokio::time::timeout(response_timeout, client.request(request)).await {
+        Ok(Ok(response)) => response,
         // The connector gave up on connecting.
-        Ok(Err(err)) if is_timed_out(&err) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            RequestError::ConnectTimeout(err),
-        )),
-        Ok(Err(err)) => Err(io::Error::other(err)),
-        Err(_) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            RequestError::ResponseTimeout(response_timeout),
-        )),
+        Ok(Err(err)) if is_timed_out(&err) => {
+            return Err(Failure::Timeout(RequestError::ConnectTimeout(err)));
+        }
+        // The request is well formed, so this is a failure to connect, or to
+        // keep the connection.
+        Ok(Err(err)) => return Err(Failure::Transient(io::Error::other(err))),
+        Err(_) => {
+            return Err(Failure::Timeout(RequestError::ResponseTimeout(
+                response_timeout,
+            )));
+        }
+    };
+
+    let status = response.status();
+    if matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT
+            | StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+            | StatusCode::GATEWAY_TIMEOUT
+    ) {
+        return Err(Failure::Transient(io::Error::other(RequestError::Status(
+            status,
+        ))));
     }
+
+    Ok(response)
 }
 
 /// Returns whether `err`, or any error in its chain of sources, is a timeout,
@@ -438,6 +541,16 @@ impl<T> Drop for AbortOnDrop<T> {
     }
 }
 
+/// Why an attempt failed, which decides whether to retry it.
+enum Failure {
+    /// The attempt failed in a way that the next attempt might not.
+    Transient(io::Error),
+    /// The attempt timed out, which the next attempt might not.
+    Timeout(RequestError),
+    /// The attempt failed in a way that the next attempt would repeat.
+    Permanent(io::Error),
+}
+
 #[derive(Debug, Error)]
 enum RequestError {
     #[error("connection timed out")]
@@ -454,6 +567,13 @@ enum RequestError {
     OperationTimeout {
         request: RequestKind,
         timeout: Duration,
+    },
+    #[error("{request} failed after {attempts} attempts")]
+    Exhausted {
+        request: RequestKind,
+        attempts: u32,
+        #[source]
+        source: io::Error,
     },
     #[error("server returned {0}")]
     Status(StatusCode),

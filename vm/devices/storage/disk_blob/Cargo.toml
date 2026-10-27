@@ -16,6 +16,7 @@ guestmem.workspace = true
 vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["filepath"] }
+tracelimit.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
@@ -36,6 +37,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 disk_vhd1.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true
+socket2.workspace = true
 storage_tests.workspace = true
 tempfile.workspace = true
 test_with_tracing.workspace = true

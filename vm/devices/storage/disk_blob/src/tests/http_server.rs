@@ -9,10 +9,11 @@
 //! importantly, the interesting cases are all responses a well-behaved server
 //! would never produce. See [`Behavior`].
 //!
-//! A [`Script`] can make the server misbehave for the first few requests only.
-//! The server counts what it sees in [`Stats`], so that tests can wait for it
-//! to reach a given point rather than sleep, and can check how many requests a
-//! read made.
+//! A [`Script`] can make the server misbehave for the first few requests only,
+//! which models the transient failures that [`HttpBlob`] must recover from. The
+//! server counts what it sees in [`Stats`], so that tests can wait for it to
+//! reach a given point rather than sleep, and can check how many attempts a
+//! read took.
 //!
 //! [`HttpBlob`]: crate::blob::http::HttpBlob
 
@@ -51,6 +52,13 @@ pub enum Behavior {
     /// Send the headers and half the body, then stall as for
     /// [`Behavior::StallBeforeResponse`].
     StallMidBody,
+    /// Reset the connection instead of answering.
+    ResetBeforeResponse,
+    /// Send the headers and half the body, then reset the connection.
+    ResetMidBody,
+    /// Answer `503 Service Unavailable`, as an overloaded or throttling server
+    /// does.
+    ServiceUnavailable,
     /// Answer correctly, but send the body in `pieces` pieces, pausing for
     /// `interval` before each: slow, but never silent for much longer than
     /// `interval`.
@@ -63,12 +71,16 @@ pub struct Script {
     /// How to respond to the first HEAD requests, in order. Later ones are
     /// answered correctly. A HEAD response has no body, so a behavior that
     /// concerns the body acts as its counterpart that does not: a stall
-    /// stalls before the response, and the rest answer correctly.
+    /// stalls before the response, a reset resets before it, and the rest
+    /// answer correctly.
     pub head: Vec<Behavior>,
     /// How to respond to the first GET requests, in order.
     pub get: Vec<Behavior>,
     /// How to respond to the GET requests after those in `get`.
     pub then: Behavior,
+    /// Serve further requests on a connection after a response, as real
+    /// servers do, rather than closing it after each one.
+    pub keep_alive: bool,
 }
 
 /// What the server has seen so far.
@@ -199,17 +211,21 @@ impl Drop for TestHttpServer {
 }
 
 impl Shared {
-    /// Serves one request on `stream`, then closes it.
+    /// Serves requests on `stream` until it is closed.
     fn serve(&self, mut stream: TcpStream) -> std::io::Result<()> {
         // Send each write at once, so that the client sees the pieces and
         // pauses of a response as the behavior describes them.
         stream.set_nodelay(true)?;
-        let request = read_headers(&mut stream)?;
-        // An empty request means the client has closed the connection.
-        if request.is_empty() {
-            return Ok(());
+        loop {
+            let request = read_headers(&mut stream)?;
+            // An empty request means the client has closed the connection.
+            if request.is_empty()
+                || !self.respond(&mut stream, &request)?
+                || !self.script.keep_alive
+            {
+                return Ok(());
+            }
         }
-        self.respond(&mut stream, &request)
     }
 
     /// Counts a request, and returns how to respond to it: as the next of the
@@ -231,7 +247,9 @@ impl Shared {
 
     /// Holds the connection open without sending anything, until the client
     /// closes it or the server is released.
-    fn stall(&self, stream: &mut TcpStream) {
+    ///
+    /// Returns false, since the connection cannot carry another request.
+    fn stall(&self, stream: &mut TcpStream) -> bool {
         self.state.lock().stats.stalled += 1;
         self.changed.notify_all();
         // Poll, rather than block, so that a release is noticed promptly.
@@ -254,10 +272,11 @@ impl Shared {
                 }
             }
         }
+        false
     }
 
-    /// Answers one request.
-    fn respond(&self, stream: &mut TcpStream, request: &str) -> std::io::Result<()> {
+    /// Answers one request. Returns whether the connection can carry another.
+    fn respond(&self, stream: &mut TcpStream, request: &str) -> std::io::Result<bool> {
         let content = &self.content;
         let mut lines = request.lines();
         let method = lines
@@ -265,26 +284,35 @@ impl Shared {
             .and_then(|l| l.split(' ').next())
             .unwrap_or_default()
             .to_owned();
+        let close = if self.script.keep_alive {
+            ""
+        } else {
+            "Connection: close\r\n"
+        };
 
         // `HttpBlob::new` probes the length with a HEAD request.
         if method.eq_ignore_ascii_case("HEAD") {
-            if let Behavior::StallBeforeResponse | Behavior::StallMidBody = self.count(
+            match self.count(
                 |stats| &mut stats.heads,
                 &self.script.head,
                 Behavior::Correct,
             ) {
-                self.stall(stream);
-                return Ok(());
+                Behavior::StallBeforeResponse | Behavior::StallMidBody => {
+                    return Ok(self.stall(stream));
+                }
+                Behavior::ResetBeforeResponse | Behavior::ResetMidBody => return Ok(reset(stream)),
+                Behavior::ServiceUnavailable => return service_unavailable(stream, close),
+                _ => {}
             }
             write!(
                 stream,
                 "HTTP/1.1 200 OK\r\n\
                  Content-Length: {}\r\n\
                  Accept-Ranges: bytes\r\n\
-                 Connection: close\r\n\r\n",
+                 {close}\r\n",
                 content.len()
             )?;
-            return Ok(());
+            return Ok(true);
         }
 
         let behavior = self.count(|stats| &mut stats.gets, &self.script.get, self.script.then);
@@ -302,16 +330,18 @@ impl Shared {
                 stream,
                 "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
             )?;
-            return Ok(());
+            return Ok(false);
         };
         let (start, end) = range.split_once('-').unwrap();
         let start: usize = start.parse().unwrap();
         // The range is inclusive at both ends.
         let end: usize = end.parse().unwrap();
 
-        if behavior == Behavior::StallBeforeResponse {
-            self.stall(stream);
-            return Ok(());
+        match behavior {
+            Behavior::StallBeforeResponse => return Ok(self.stall(stream)),
+            Behavior::ResetBeforeResponse => return Ok(reset(stream)),
+            Behavior::ServiceUnavailable => return service_unavailable(stream, close),
+            _ => {}
         }
 
         if behavior == Behavior::RangeNotSatisfiable || start >= content.len() {
@@ -319,10 +349,11 @@ impl Shared {
                 stream,
                 "HTTP/1.1 416 Range Not Satisfiable\r\n\
                  Content-Range: bytes */{}\r\n\
-                 Connection: close\r\n\r\n",
+                 Content-Length: 0\r\n\
+                 {close}\r\n",
                 content.len()
             )?;
-            return Ok(());
+            return Ok(true);
         }
 
         if behavior == Behavior::IgnoreRange {
@@ -330,10 +361,11 @@ impl Shared {
                 stream,
                 "HTTP/1.1 200 OK\r\n\
                  Content-Length: {}\r\n\
-                 Connection: close\r\n\r\n",
+                 {close}\r\n",
                 content.len()
             )?;
-            return stream.write_all(content);
+            stream.write_all(content)?;
+            return Ok(true);
         }
 
         let end = end.min(content.len() - 1);
@@ -357,7 +389,7 @@ impl Shared {
             "HTTP/1.1 206 Partial Content\r\n\
              Content-Range: bytes {}-{}/{}\r\n\
              Content-Length: {}\r\n\
-             Connection: close\r\n\r\n",
+             {close}\r\n",
             start,
             start + body.len() - 1,
             content.len(),
@@ -369,22 +401,53 @@ impl Shared {
         // with a truncated message rather than a well-formed short one.
         let half = &body[..body.len() / 2];
         match behavior {
-            Behavior::CloseMidBody => stream.write_all(half),
+            Behavior::CloseMidBody => {
+                stream.write_all(half)?;
+                Ok(false)
+            }
             Behavior::StallMidBody => {
                 stream.write_all(half)?;
-                self.stall(stream);
-                Ok(())
+                Ok(self.stall(stream))
+            }
+            Behavior::ResetMidBody => {
+                stream.write_all(half)?;
+                Ok(reset(stream))
             }
             Behavior::SlowBody { pieces, interval } => {
                 for piece in body.chunks(body.len().div_ceil(pieces.max(1))) {
                     std::thread::sleep(interval);
                     stream.write_all(piece)?;
                 }
-                Ok(())
+                Ok(true)
             }
-            _ => stream.write_all(body),
+            _ => {
+                stream.write_all(body)?;
+                Ok(true)
+            }
         }
     }
+}
+
+/// Makes closing the connection send a reset rather than a FIN: with a zero
+/// linger timeout, closing a socket discards any unsent data and aborts the
+/// connection.
+///
+/// Returns false, since the connection cannot carry another request.
+fn reset(stream: &mut TcpStream) -> bool {
+    let _ = socket2::SockRef::from(&*stream).set_linger(Some(Duration::ZERO));
+    false
+}
+
+/// Answers `503 Service Unavailable`. Returns whether the connection can carry
+/// another request.
+fn service_unavailable(stream: &mut TcpStream, close: &str) -> std::io::Result<bool> {
+    write!(
+        stream,
+        "HTTP/1.1 503 Service Unavailable\r\n\
+         Content-Length: 0\r\n\
+         {close}\r\n"
+    )?;
+    Ok(true)
 }
 
 /// Reads up to and including the blank line that terminates the headers.
