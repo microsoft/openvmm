@@ -106,7 +106,10 @@ pub(crate) struct MicrovmResources {
     pub(crate) control_console_socket_cleanup: Option<MicrovmConsoleSocketCleanup>,
     /// Snapshot identity of the portable network attachment.
     pub(crate) network_attachment: Option<SnapshotAttachment>,
-    /// The bound run-scoped egress policy.
+    /// The egress policy that the snapshot contract records: the bound
+    /// run-scoped policy, except at a restore with `--restore-network-policy`,
+    /// where it is the complete deny-all of the template whose policy the
+    /// restore replaces.
     pub(crate) egress_policy: Option<EgressPolicy>,
     /// The live host side of the attached filesystem.
     pub(crate) filesystem: Option<MicrovmFilesystemHost>,
