@@ -27,7 +27,8 @@ message Vtl2SettingsFixed {
     optional uint32 io_ring_size = 2;
     // Specify the maximum number of bounce buffer pages allowed per cpu
     optional uint32 max_bounce_buffer_pages = 3;
-    optional Vtl2AttestedSettings attested_settings = 4;
+    // JSON or protobuf Vtl2AttestedSettings; hashed as-is.
+    optional bytes attested_settings = 4;
 }
 
 message Vtl2SettingsDynamic {
@@ -177,7 +178,7 @@ message NicAcceleration {
     string subordinate_instance_id = 2; // GUID
 }
 
-// Settings used for the 'AttestedSettings' namespace
+// Attested settings carried by Vtl2SettingsFixed.attested_settings.
 message Vtl2AttestedSettings {
     enum Version {
         UNKNOWN = 0;
