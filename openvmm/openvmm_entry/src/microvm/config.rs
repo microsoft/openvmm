@@ -202,7 +202,9 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .as_ref()
                 .map(|(_, _, attachment)| attachment.clone()),
             network_attachment: network.as_ref().map(|network| network.attachment.clone()),
-            egress_policy: network.as_ref().map(|network| network.policy.clone()),
+            egress_policy: network
+                .as_ref()
+                .map(|network| network.contract_policy.clone()),
             filesystem: filesystem
                 .as_ref()
                 .map(|filesystem| super::MicrovmFilesystemHost {
