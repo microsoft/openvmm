@@ -995,6 +995,7 @@ mod tests {
     use crate::test_support::fingerprint_with;
     use crate::test_support::genoa_kvm_entries;
     use crate::test_support::genoa_mshv_fingerprint;
+    use crate::test_support::genoa_whp_fingerprint;
     use crate::test_support::host_fingerprint;
     use crate::test_support::milan_whp_entries;
     use crate::test_support::profile;
@@ -1498,6 +1499,38 @@ mod tests {
                 "CPUID 0x80000021 ECX bits 1, 2 are not supported",
             ]
         );
+    }
+
+    /// The WHP host of `test_support::GENOA_WHP_CPUID` supports
+    /// `amd.genoa.v2`, and adding it to the KVM and MSHV hosts that v2
+    /// derives from derives v2's CPUID, XSAVE state, and MSRs again: it lacks
+    /// nothing that v2 takes from them.
+    #[test]
+    fn the_whp_host_adds_nothing_to_the_second_genoa_profile() {
+        let pinned = profile("amd.genoa.v2");
+        let whp = genoa_whp_fingerprint();
+        let surface = crate::HostCpuSurface::from_fingerprint(&whp.backend);
+        assert_eq!(
+            crate::support_violations(pinned, &surface),
+            Vec::<String>::new()
+        );
+
+        let hosts = [
+            host_fingerprint("kvm", genoa_kvm_entries()),
+            genoa_mshv_fingerprint(),
+            whp,
+        ];
+        let derived = derive_profile(generation("genoa"), 2, &hosts).unwrap();
+        assert_eq!(derived.id(), pinned.id());
+        assert_eq!(derived.cpuid(), pinned.cpuid());
+        assert_eq!(derived.xcr0(), pinned.xcr0());
+        assert_eq!(derived.xss(), pinned.xss());
+        assert_eq!(derived.xsave_components(), pinned.xsave_components());
+        assert_eq!(
+            derived.physical_address_width(),
+            pinned.physical_address_width()
+        );
+        assert_eq!(derived.msrs(), pinned.msrs());
     }
 
     /// KVM enumerates Intel's speculation controls and

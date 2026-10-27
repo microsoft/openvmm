@@ -442,6 +442,126 @@ pub(crate) fn genoa_mshv_fingerprint() -> CpuFingerprint {
     backend_host_fingerprint(backend)
 }
 
+/// The CPUID of an AMD EPYC 9V74 (Genoa: family 0x19, model 0x11,
+/// stepping 1) as WHP presents it in an Azure VM with nested
+/// virtualization, which `--cpu-fingerprint` recorded (microsoft/nvx#928):
+/// each leaf, subleaf, and the registers of a probe partition that enables
+/// every processor and XSAVE feature WHP offers ([`GENOA_WHP_HOST`]). That
+/// WHP offers the x87, SSE, AVX, and CET XSAVE states, enumerates the basic
+/// leaves only up to 0xD, and presents nothing in `0x80000021`: neither
+/// `LFENCE` serialization nor the TSA immunities that the Genoa runner's
+/// Azure host presents to KVM ([`GENOA_KVM_CPUID`]). Its CPUID is the Milan
+/// host's ([`MILAN_WHP_CPUID`]) but for the CPU's identity and its cache and
+/// TLB descriptors.
+pub(crate) const GENOA_WHP_CPUID: [(u32, Option<u32>, [u32; 4]); 57] = [
+    (0x0, None, [0xd, 0x6874_7541, 0x444d_4163, 0x6974_6e65]),
+    (0x1, None, [0x00a1_0f11, 0x800, 0x76fa_3203, 0x078b_fbff]),
+    (0x2, None, [0; 4]),
+    (0x3, None, [0; 4]),
+    (0x4, Some(0), [0; 4]),
+    (0x5, None, [0; 4]),
+    (0x6, None, [0, 0, 0x1, 0]),
+    (0x7, Some(0), [0, 0x219c_07a9, 0x0040_0684, 0x10]),
+    (0x8, None, [0; 4]),
+    (0x9, None, [0; 4]),
+    (0xa, None, [0; 4]),
+    (0xb, Some(0), [0; 4]),
+    (0xc, None, [0; 4]),
+    (0xd, Some(0), [0x7, 0x340, 0x340, 0]),
+    (0xd, Some(1), [0xf, 0x368, 0x1800, 0]),
+    (0xd, Some(2), [0x100, 0x240, 0, 0]),
+    (0xd, Some(0xb), [0x10, 0, 0x1, 0]),
+    (0xd, Some(0xc), [0x18, 0, 0x1, 0]),
+    (0x4000_0000, None, [0; 4]),
+    (
+        0x8000_0000,
+        None,
+        [0x8000_0021, 0x6874_7541, 0x444d_4163, 0x6974_6e65],
+    ),
+    (
+        0x8000_0001,
+        None,
+        [0x00a1_0f11, 0x4000_0000, 0x0040_03f3, 0x2fd3_fbff],
+    ),
+    (
+        0x8000_0002,
+        None,
+        [0x2044_4d41, 0x4359_5045, 0x3756_3920, 0x3038_2034],
+    ),
+    (
+        0x8000_0003,
+        None,
+        [0x726f_432d, 0x7250_2065, 0x7365_636f, 0x2072_6f73],
+    ),
+    (
+        0x8000_0004,
+        None,
+        [0x2020_2020, 0x2020_2020, 0x2020_2020, 0x0020_2020],
+    ),
+    (
+        0x8000_0005,
+        None,
+        [0xff48_ff40, 0xff48_ff40, 0x2008_0140, 0x2008_0140],
+    ),
+    (
+        0x8000_0006,
+        None,
+        [0x5c00_2200, 0x6c00_4200, 0x0400_6140, 0x0a00_9140],
+    ),
+    (0x8000_0007, None, [0; 4]),
+    (0x8000_0008, None, [0x3030, 0x3000_0015, 0, 0x0001_0000]),
+    (0x8000_0009, None, [0; 4]),
+    (0x8000_000a, None, [0; 4]),
+    (0x8000_000b, None, [0; 4]),
+    (0x8000_000c, None, [0; 4]),
+    (0x8000_000d, None, [0; 4]),
+    (0x8000_000e, None, [0; 4]),
+    (0x8000_000f, None, [0; 4]),
+    (0x8000_0010, None, [0; 4]),
+    (0x8000_0011, None, [0; 4]),
+    (0x8000_0012, None, [0; 4]),
+    (0x8000_0013, None, [0; 4]),
+    (0x8000_0014, None, [0; 4]),
+    (0x8000_0015, None, [0; 4]),
+    (0x8000_0016, None, [0; 4]),
+    (0x8000_0017, None, [0; 4]),
+    (0x8000_0018, None, [0; 4]),
+    (0x8000_0019, None, [0; 4]),
+    (0x8000_001a, None, [0x2, 0, 0, 0]),
+    (0x8000_001b, None, [0; 4]),
+    (0x8000_001c, None, [0; 4]),
+    (0x8000_001d, Some(0), [0x121, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(1), [0x122, 0x01c0_003f, 0x3f, 0]),
+    (0x8000_001d, Some(2), [0x143, 0x01c0_003f, 0x7ff, 0x2]),
+    (0x8000_001d, Some(3), [0x163, 0x03c0_003f, 0x7fff, 0x1]),
+    (0x8000_001d, Some(4), [0; 4]),
+    (0x8000_001e, None, [0; 4]),
+    (0x8000_001f, None, [0; 4]),
+    (0x8000_0020, None, [0; 4]),
+    (0x8000_0021, None, [0; 4]),
+];
+
+/// The processor features that WHP offers the host of [`GENOA_WHP_CPUID`],
+/// as it does the Milan host: none of the TSA immunities.
+pub(crate) const GENOA_WHP_HOST: HvFeatures = HvFeatures {
+    banks: [0x0602_0fcb_67f7_9fbf, 0x0000_0000_2000_01ed],
+    xsave: 0x50_381f,
+};
+
+/// Returns the fingerprint of the WHP host of [`GENOA_WHP_CPUID`], with its
+/// processor features.
+pub(crate) fn genoa_whp_fingerprint() -> CpuFingerprint {
+    let mut backend = BackendFingerprint::new("whp", "test", entries(&GENOA_WHP_CPUID));
+    let [bank0, bank1] = GENOA_WHP_HOST.banks;
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank0", bank0);
+    backend.set_feature_bank("whp.capability.ProcessorFeaturesBanks.bank1", bank1);
+    backend.set_feature_bank(
+        "whp.capability.ProcessorXsaveFeatures",
+        GENOA_WHP_HOST.xsave,
+    );
+    backend_host_fingerprint(backend)
+}
+
 /// The CPUID of an AMD EPYC 9V45 (Turin: family 0x1a, model 2, stepping 1)
 /// as KVM reports it in an Azure VM with nested virtualization, a
 /// GitHub-hosted Actions runner, which `--cpu-fingerprint` recorded. That
