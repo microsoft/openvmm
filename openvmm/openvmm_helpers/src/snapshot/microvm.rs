@@ -606,6 +606,66 @@ pub fn validate_microvm_network_policy(
     Ok(())
 }
 
+/// Returns the complete deny-all policy of a NIC template bound to `config`:
+/// it denies every guest frame, host loopback, and inbound access, and keeps
+/// no proxy endpoint.
+///
+/// A capture with `--network-egress deny` and `--host-loopback deny`, without
+/// rules, a proxy, or ingress, records this policy. Its guest learned no DNS
+/// server and announces no listeners, and its endpoint held no flows,
+/// listeners, or forwards, so nothing in the snapshot depends on the policy
+/// beyond the NIC's identity.
+pub fn microvm_network_template_policy(
+    config: &openvmm_defs::microvm::MicrovmNetworkConfig,
+) -> anyhow::Result<net_backend_resources::egress::EgressPolicy> {
+    use net_backend_resources::egress::EgressAction;
+
+    Ok(config
+        .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::DenyAll)?
+        .with_host_loopback(EgressAction::Deny, None)?
+        .with_ingress(EgressAction::Deny)
+        .with_host_loopback_ingress(EgressAction::Deny))
+}
+
+/// Validates a restore-time policy that replaces the policy of a NIC template,
+/// and returns the template's policy, which the snapshot's contract records in
+/// place of `policy`.
+///
+/// `saved` must record the [complete deny-all policy](microvm_network_template_policy)
+/// of its own identity in the encoding that the policy has today: version 3
+/// without IPv6, or version 4 with it. Versions 0 to 2 encode neither the
+/// host-loopback action nor the proxy endpoint, so no snapshot that records
+/// one is a template. `policy` must be bound to the identity that `saved`
+/// records, which it keeps; it may name IPv6 destinations only when that
+/// identity has IPv6.
+pub fn validate_microvm_network_replacement(
+    saved: &SnapshotMicrovmNetwork,
+    policy: &net_backend_resources::egress::EgressPolicy,
+) -> anyhow::Result<net_backend_resources::egress::EgressPolicy> {
+    let config = microvm_network_config_from_snapshot(saved)?;
+    let template = microvm_network_template_policy(&config)?;
+    anyhow::ensure!(
+        SnapshotMicrovmNetwork::new(&config, &template) == *saved,
+        "snapshot network policy is not a complete deny-all, so a restore cannot replace it; capture the template with --network-egress deny and --host-loopback deny, without egress rules, a proxy, or ingress"
+    );
+    anyhow::ensure!(
+        config.ipv6.is_some() || !egress_policy_names_ipv6(policy),
+        "restore-time egress policy names IPv6 destinations, but the snapshot network has no IPv6 identity"
+    );
+    Ok(template)
+}
+
+/// Returns whether `policy` has a rule for an IPv6 destination.
+fn egress_policy_names_ipv6(policy: &net_backend_resources::egress::EgressPolicy) -> bool {
+    match policy.mode() {
+        net_backend_resources::egress::EgressPolicyMode::Rules { allow, deny, .. } => allow
+            .iter()
+            .chain(deny)
+            .any(|rule| rule.destination().is_ipv6()),
+        _ => false,
+    }
+}
+
 /// Machine composition that becomes authoritative after capture.
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
@@ -3552,6 +3612,153 @@ mod tests {
             .unwrap();
         let error = validate_microvm_network_policy(&saved, &ipv6_rules).unwrap_err();
         assert!(error.to_string().contains("predates"), "{error:#}");
+    }
+
+    #[test]
+    fn only_a_complete_deny_all_network_is_a_template() {
+        use net_backend_resources::egress::EgressAction;
+        use net_backend_resources::egress::EgressPolicyMode;
+
+        let dual_stack = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap();
+        for (network, encoding_version) in [
+            (dual_stack.clone(), 4),
+            // A network that predates IPv6 keeps the encoding without it.
+            (dual_stack.clone().without_ipv6(), 3),
+        ] {
+            let template = microvm_network_template_policy(&network).unwrap();
+            assert_eq!(template.mode_name(), "deny-all");
+            assert_eq!(template.host_loopback_action(), EgressAction::Deny);
+            assert_eq!(template.proxy_endpoint(), None);
+            assert_eq!(template.ingress_action(), EgressAction::Deny);
+            assert_eq!(template.host_loopback_ingress_action(), EgressAction::Deny);
+            let saved = SnapshotMicrovmNetwork::new(&network, &template);
+            assert_eq!(saved.egress_policy_encoding_version, encoding_version);
+
+            // Whatever replaces the template's policy, its contract keeps it.
+            let open = network
+                .bind_egress_policy(EgressPolicyMode::AllowAll)
+                .unwrap()
+                .with_host_loopback(EgressAction::Allow, None)
+                .unwrap()
+                .with_ingress(EgressAction::Allow)
+                .with_host_loopback_ingress(EgressAction::Allow);
+            for replacement in [&template, &open] {
+                assert_eq!(
+                    validate_microvm_network_replacement(&saved, replacement).unwrap(),
+                    template
+                );
+            }
+
+            let gateway_proxy = format!("{}:3128", network.derived_gateway_ipv4)
+                .parse()
+                .unwrap();
+            for captured in [
+                // Plain deny-all egress leaves host loopback allowed.
+                network
+                    .bind_egress_policy(EgressPolicyMode::DenyAll)
+                    .unwrap(),
+                network
+                    .bind_egress_policy(EgressPolicyMode::DenyAll)
+                    .unwrap()
+                    .with_host_loopback(EgressAction::Deny, Some(gateway_proxy))
+                    .unwrap(),
+                template.clone().with_ingress(EgressAction::Allow),
+                template
+                    .clone()
+                    .with_host_loopback_ingress(EgressAction::Allow),
+                // Rules that deny every destination are not a deny-all.
+                network
+                    .bind_egress_policy(EgressPolicyMode::Rules {
+                        default_action: EgressAction::Deny,
+                        allow: Vec::new(),
+                        deny: vec!["0.0.0.0/0".parse().unwrap()],
+                    })
+                    .unwrap()
+                    .with_host_loopback(EgressAction::Deny, None)
+                    .unwrap(),
+                network
+                    .bind_egress_policy(EgressPolicyMode::AllowAll)
+                    .unwrap()
+                    .with_host_loopback(EgressAction::Deny, None)
+                    .unwrap(),
+            ] {
+                let saved = SnapshotMicrovmNetwork::new(&network, &captured);
+                let error = validate_microvm_network_replacement(&saved, &template).unwrap_err();
+                assert!(
+                    error.to_string().contains("not a complete deny-all"),
+                    "{error:#}"
+                );
+            }
+        }
+
+        // Encodings before version 3 cannot tell a complete deny-all from one
+        // with host loopback or a proxy, so they never record a template.
+        let ipv4_only = dual_stack.without_ipv6();
+        let template = microvm_network_template_policy(&ipv4_only).unwrap();
+        for version in [0, 1, 2] {
+            let mut saved = SnapshotMicrovmNetwork::new(&ipv4_only, &template);
+            saved.egress_policy_encoding_version = version;
+            saved.egress_policy_sha256 = sha2::Sha256::digest(
+                template
+                    .canonical_bytes_for_version(version.max(1))
+                    .unwrap(),
+            )
+            .to_vec();
+            validate_microvm_network_policy(&saved, &template).unwrap();
+            let error = validate_microvm_network_replacement(&saved, &template).unwrap_err();
+            assert!(
+                error.to_string().contains("not a complete deny-all"),
+                "{error:#}"
+            );
+        }
+
+        // The template's identity must be canonical.
+        let mut saved = SnapshotMicrovmNetwork::new(&ipv4_only, &template);
+        saved.guest_mac[5] ^= 1;
+        let error = validate_microvm_network_replacement(&saved, &template).unwrap_err();
+        assert!(error.to_string().contains("not canonical"), "{error:#}");
+    }
+
+    #[test]
+    fn a_template_replacement_names_ipv6_only_with_an_ipv6_identity() {
+        use net_backend_resources::egress::EgressAction;
+        use net_backend_resources::egress::EgressPolicyMode;
+
+        let rules = |allow: &str| EgressPolicyMode::Rules {
+            default_action: EgressAction::Deny,
+            allow: vec![allow.parse().unwrap()],
+            deny: Vec::new(),
+        };
+        let dual_stack = "10.0.0.2/24"
+            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
+            .unwrap();
+        let saved = SnapshotMicrovmNetwork::new(
+            &dual_stack,
+            &microvm_network_template_policy(&dual_stack).unwrap(),
+        );
+        for allow in ["2001:db8::/32:tcp:443", "192.0.2.0/24:tcp:443"] {
+            let policy = dual_stack.bind_egress_policy(rules(allow)).unwrap();
+            validate_microvm_network_replacement(&saved, &policy).unwrap();
+        }
+
+        // A template whose network predates IPv6 keeps that identity, so a
+        // replacement cannot reach IPv6 destinations.
+        let ipv4_only = dual_stack.without_ipv6();
+        let saved = SnapshotMicrovmNetwork::new(
+            &ipv4_only,
+            &microvm_network_template_policy(&ipv4_only).unwrap(),
+        );
+        let ipv4_rules = ipv4_only
+            .bind_egress_policy(rules("192.0.2.0/24:tcp:443"))
+            .unwrap();
+        validate_microvm_network_replacement(&saved, &ipv4_rules).unwrap();
+        let ipv6_rules = ipv4_only
+            .bind_egress_policy(rules("2001:db8::/32:tcp:443"))
+            .unwrap();
+        let error = validate_microvm_network_replacement(&saved, &ipv6_rules).unwrap_err();
+        assert!(error.to_string().contains("no IPv6 identity"), "{error:#}");
     }
 
     #[test]
