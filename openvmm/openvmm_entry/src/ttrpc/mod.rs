@@ -2500,7 +2500,7 @@ async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Opt
     let provision = match provisioning {
         vmservice::vmgs_config::Provisioning::OnEmpty => ProvisionVmgs::OnEmpty,
         vmservice::vmgs_config::Provisioning::OnFailure => ProvisionVmgs::OnFailure,
-        vmservice::vmgs_config::Provisioning::Always => ProvisionVmgs::True,
+        vmservice::vmgs_config::Provisioning::Reprovision => ProvisionVmgs::True,
     };
     let kind = disk_backend_from_proto(config.backend.context("missing VMGS backend")?)
         .context("failed to open VMGS disk")?;
@@ -2673,7 +2673,7 @@ mod tests {
             for provisioning in [
                 vmservice::vmgs_config::Provisioning::OnEmpty,
                 vmservice::vmgs_config::Provisioning::OnFailure,
-                vmservice::vmgs_config::Provisioning::Always,
+                vmservice::vmgs_config::Provisioning::Reprovision,
             ] {
                 let resource = build_vmgs(Some(vmservice::VmgsConfig {
                     backend: Some(memory_disk()),
@@ -2689,7 +2689,7 @@ mod tests {
                         VmgsResource::ReprovisionOnFailure(disk),
                     )
                     | (
-                        vmservice::vmgs_config::Provisioning::Always,
+                        vmservice::vmgs_config::Provisioning::Reprovision,
                         VmgsResource::Reprovision(disk),
                     ) => disk,
                     other => panic!("incorrect VMGS provisioning: {other:?}"),

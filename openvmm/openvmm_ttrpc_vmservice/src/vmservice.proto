@@ -329,8 +329,11 @@ message VmgsConfig {
         ON_EMPTY = 0;
         // Reformat if the existing VMGS data cannot be opened (--vmgs ...,fmt-on-fail).
         ON_FAILURE = 1;
-        // Always reformat, discarding existing guest state (--vmgs ...,fmt).
-        ALWAYS = 2;
+        // Request marker-aware reprovisioning (--vmgs ...,fmt). Format unless
+        // the VMGS reprovisioned marker is already set. Opening without a
+        // reprovision request clears the marker, allowing a later request
+        // to format again.
+        REPROVISION = 2;
     }
 
     // Required writable backing disk. VMGS files must already exist unless
