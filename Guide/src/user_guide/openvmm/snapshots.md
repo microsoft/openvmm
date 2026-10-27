@@ -198,7 +198,15 @@ then attaches the scratch device with no file, at the captured length and
 block sizes. The device stays writable, as the guest negotiated it, but reads
 return zeros and writes fail with an I/O error: OpenVMM never drops a write or
 keeps one in host memory. Only a platform snapshot's fresh scratch may be
-absent, and a scratch file, when given, keeps the exact captured length. An instance-checkpoint restore attempt atomically creates
+absent, and a scratch file, when given, keeps the exact captured length. A
+platform snapshot whose NIC was captured with a complete deny-all policy,
+`--network-egress deny` and `--host-loopback deny` without egress rules, a
+proxy, or ingress, is a NIC template: with `--restore-network-policy`, each
+clone installs the policy of its own restore options, which may publish its
+listeners and forward host ports, instead of the captured one. OpenVMM
+validates that policy as at a cold boot and installs it before any vCPU runs,
+and the NIC keeps its captured identity. Every other networked restore
+requires the captured policy. An instance-checkpoint restore attempt atomically creates
 `resume.claim`; subsequent restores are rejected. The claim is committed after
 artifact and configuration validation but before worker construction, so the
 restore attempt remains consumed if later worker startup fails.

@@ -200,7 +200,8 @@ pub(crate) fn restore_packet_base(
 /// image is replaced by a private copy, and restore gates require entropy. A
 /// platform snapshot's `distro` block keeps its captured capacity, whatever
 /// the length of the image that the restore attaches to it, and
-/// `--restore-absent-scratch` attaches its fresh scratch with no file.
+/// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
+/// platform snapshot admits `--restore-network-policy`.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
@@ -240,6 +241,10 @@ pub(crate) fn prepare_restore(
         if let Some(time) = &contract.time {
             openvmm_helpers::snapshot::time::validate_time_contract(time)?;
         }
+        validate_network_policy_restore(
+            &manifest.snapshot_tier,
+            opt.microvm.restore_network_policy,
+        )?;
         if let Some(restore_processors) = opt.microvm.restore_processors {
             openvmm_helpers::snapshot::microvm::validate_restore_online_vp_count(
                 manifest,
@@ -391,6 +396,23 @@ pub(crate) fn prepare_restore(
         distro_capacity,
         absent_scratch,
     })
+}
+
+/// Rejects `--restore-network-policy`, which `restore_network_policy`
+/// reports, for a snapshot of a tier other than the platform tier.
+///
+/// A platform snapshot is captured before any tenant input. Later tiers carry
+/// a workload that ran under the captured policy, so they keep it.
+fn validate_network_policy_restore(
+    snapshot_tier: &str,
+    restore_network_policy: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !restore_network_policy
+            || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
+        "--restore-network-policy requires a platform snapshot"
+    );
+    Ok(())
 }
 
 /// How a restore attaches the sandbox blocks of a snapshot.
@@ -856,6 +878,31 @@ pub(crate) mod tests {
             err.to_string(),
             "--restore-absent-scratch requires the fresh scratch of a platform snapshot"
         );
+    }
+
+    #[test]
+    fn only_a_platform_restore_replaces_the_network_policy() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        for tier in [
+            SNAPSHOT_TIER_PLATFORM,
+            SNAPSHOT_TIER_WORKLOAD_START,
+            SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+            "",
+        ] {
+            validate_network_policy_restore(tier, false).unwrap();
+            let replaced = validate_network_policy_restore(tier, true);
+            if tier == SNAPSHOT_TIER_PLATFORM {
+                replaced.unwrap();
+            } else {
+                assert_eq!(
+                    replaced.unwrap_err().to_string(),
+                    "--restore-network-policy requires a platform snapshot"
+                );
+            }
+        }
     }
 
     fn time_abi_restore(capture_generation: u32) -> MicrovmRestore {
