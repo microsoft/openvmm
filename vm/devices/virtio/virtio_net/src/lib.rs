@@ -7,6 +7,10 @@
 //! NIC to a pluggable [`net_backend::Endpoint`]. It currently operates with a
 //! single queue pair (one RX, one TX) and supports synchronous and asynchronous
 //! TX completion modes depending on the backend.
+//!
+//! Copy-only guest memory supports Consomme, TAP, and null software endpoints.
+//! The frontend passes guest memory directly to the backend buffer pool.
+//! Software backends copy packet data.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
@@ -228,6 +232,7 @@ struct Adapter {
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
     enable_rx_gso: bool,
+    supports_copy_only: bool,
 }
 
 pub struct Device {
@@ -332,6 +337,11 @@ impl VirtioDevice for Device {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            resources.guest_memory.io_policy() != guestmem::GuestMemoryIoPolicy::CopyOnly
+                || self.adapter.supports_copy_only,
+            "copy-only guest memory requires a software network endpoint"
+        );
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
 
@@ -627,6 +637,8 @@ impl NicBuilder {
             mac_address,
             tx_offload_support,
             enable_rx_gso: self.enable_rx_gso,
+            supports_copy_only: matches!(endpoint.endpoint_type(), "consomme" | "tap" | "null")
+                || cfg!(test) && endpoint.endpoint_type() == "mock",
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
