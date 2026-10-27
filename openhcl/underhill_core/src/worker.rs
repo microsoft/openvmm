@@ -1563,26 +1563,28 @@ async fn new_underhill_vm(
         bootloader_fdt_parser::IsolationType::Snp => virt::IsolationType::Snp,
         bootloader_fdt_parser::IsolationType::Tdx => virt::IsolationType::Tdx,
     };
-    // Now that we have the isolation type, we can determine if the VM is SNP/TDX
-    // and use the dps.vtl2_settings.attested_settings.verify() to validate
-    // the vtl2_settings against the init-time data.
-    if let Some(init_data_hash) = dps
+    // Validate the hash of the attested settings payload against the value
+    // recorded in the hardware attestation report.
+    if let Some(attested_settings) = dps
         .general
         .vtl2_settings
         .as_ref()
         .and_then(|s| s.fixed.attested_settings.as_ref())
-        .and_then(|s| s.init_data_hash)
     {
-        let attestation_type = match isolation {
-            virt::IsolationType::Snp => AttestationType::Snp,
-            virt::IsolationType::Tdx => AttestationType::Tdx,
-            _ => AttestationType::Host,
-        };
-        verify_init_data(init_data_hash, attestation_type).context("failed to verify init data")?;
         tracing::info!(
-            ?init_data_hash,
-            "using init data hash from attested settings for verification"
+            version = attested_settings.version,
+            init_data_hash = ?attested_settings.init_data_hash,
+            "received attested settings from Base fixed settings"
         );
+        if let Some(init_data_hash) = attested_settings.init_data_hash {
+            let attestation_type = match isolation {
+                virt::IsolationType::Snp => AttestationType::Snp,
+                virt::IsolationType::Tdx => AttestationType::Tdx,
+                _ => AttestationType::Host,
+            };
+            verify_init_data(init_data_hash, attestation_type)
+                .context("failed to verify init data")?;
+        }
     } else {
         tracing::info!(
             "attested_settings is missing. This fallback is acceptable because the init data hash is optional for non-isolated VMs or when attestation is not required."

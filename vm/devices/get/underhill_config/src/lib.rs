@@ -176,7 +176,7 @@ pub struct NicDevice {
 #[derive(Default, Debug, Clone, Eq, PartialEq, MeshPayload, Inspect)]
 pub struct Vtl2AttestedSettings {
     pub version: i32,
-    // Reserved for future use
+    /// SHA-256 of the encoded attested settings payload.
     pub init_data_hash: Option<[u8; 32]>,
 }
 
