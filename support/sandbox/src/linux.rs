@@ -16,8 +16,8 @@
 //! Every primitive this backend applies is *required*: if it fails, the worker
 //! aborts via [`Error`] rather than run with a weaker sandbox than its profile
 //! declares (fail-closed). Namespaces, the `pivot_root` scaffold, capability
-//! drop, securebits, filesystem grants, `PR_SET_DUMPABLE`, `PR_SET_PDEATHSIG`,
-//! and `no_new_privs` all abort on failure.
+//! drop, securebits, filesystem grants, `PR_SET_DUMPABLE`, and `no_new_privs`
+//! all abort on failure.
 //!
 //! The two deliberate exceptions are *supplementary* layers whose failure
 //! policy differs. **Landlock** (an FS-isolation supplement to the mount
@@ -77,9 +77,6 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
     drop_all_capabilities()?;
 
     hardening::set_dumpable_off().map_err(required("dumpable"))?;
-    // PR_SET_PDEATHSIG must come after any credential change (none here, but the
-    // ordering is preserved so identity work added later stays correct).
-    hardening::set_pdeathsig_kill().map_err(required("pdeathsig"))?;
 
     // Step 6 — no_new_privs. Required, and a prerequisite for unprivileged
     // seccomp below.
@@ -111,9 +108,9 @@ pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
         ));
     }
 
-    // Stack an additional syscall denylist. Filters compose; the kernel takes
-    // the most restrictive verdict across every installed filter.
-    if let Some(names) = r.syscalls {
+    // Stack an additional syscall denylist across all threads using TSYNC.
+    // Filters compose; the kernel takes the most restrictive verdict.
+    if let Some(names) = &r.syscalls {
         seccomp::apply_denylist(names, seccomp_deny_action()).map_err(required("seccomp"))?;
     }
 
@@ -155,8 +152,8 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
             });
         }
         let target = join_under(staging, source);
-        let flags = mount_flags_for_access(grant.access);
-        mount_namespace::bind_mount(source, &target, flags).map_err(fs_required)?;
+        let attributes = mount_attrs_for_access(grant.access);
+        mount_namespace::bind_mount(source, &target, attributes).map_err(fs_required)?;
     }
 
     // Best-effort `/proc`: works cleanly in a PID namespace and is still useful
@@ -166,7 +163,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
         let _ = mount_namespace::bind_mount(
             Path::new("/proc"),
             &proc_target,
-            libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+            libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
         );
     }
 
@@ -197,16 +194,16 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Translate a policy [`Access`] into `MS_*` remount flags.
+/// Translate a policy [`Access`] into `MOUNT_ATTR_*` restrictions.
 ///
-/// `MS_NOSUID` and `MS_NODEV` are always set — no setuid execution and no
-/// device-node creation inside the sandbox, regardless of the grant.
-fn mount_flags_for_access(access: Access) -> libc::c_ulong {
-    const BASE: libc::c_ulong = libc::MS_NOSUID | libc::MS_NODEV;
+/// `MOUNT_ATTR_NOSUID` and `MOUNT_ATTR_NODEV` are always set — no setuid
+/// execution and no device-node access, regardless of the grant.
+fn mount_attrs_for_access(access: Access) -> u64 {
+    const BASE: u64 = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
     match access {
-        Access::Read => BASE | libc::MS_RDONLY | libc::MS_NOEXEC,
-        Access::ReadExec => BASE | libc::MS_RDONLY,
-        Access::ReadWrite => BASE | libc::MS_NOEXEC,
+        Access::Read => BASE | libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOEXEC,
+        Access::ReadExec => BASE | libc::MOUNT_ATTR_RDONLY,
+        Access::ReadWrite => BASE | libc::MOUNT_ATTR_NOEXEC,
     }
 }
 
@@ -331,8 +328,65 @@ fn fs_required(source: io::Error) -> Error {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixDatagram;
+    use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
+    use std::sync::mpsc;
     use test_with_tracing::test;
+
+    #[test]
+    fn tighten_restricts_existing_threads() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .env_remove(crate::DISABLE_ENV)
+            .args([
+                "--exact",
+                "linux::tests::helper_tighten_existing_thread",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        // Debug builds return EPERM; release builds kill the process when the
+        // existing thread attempts the newly denied syscall.
+        let expected_status = if cfg!(debug_assertions) {
+            output.status.success()
+        } else {
+            output.status.signal() == Some(libc::SIGSYS)
+        };
+        assert!(
+            expected_status,
+            "tighten helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_tighten_existing_thread() {
+        hardening::set_no_new_privs().unwrap();
+        seccomp::apply_denylist(&[], seccomp_deny_action()).unwrap();
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (tightened_tx, tightened_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            drop(UnixDatagram::unbound().unwrap());
+            ready_tx.send(()).unwrap();
+            tightened_rx.recv().unwrap();
+            assert_eq!(
+                UnixDatagram::unbound().unwrap_err().raw_os_error(),
+                Some(libc::EPERM),
+            );
+        });
+
+        ready_rx.recv().unwrap();
+        let restrictions = Restrictions::none().syscalls(&["socket"]).build();
+        crate::tighten(&restrictions).unwrap();
+        tightened_tx.send(()).unwrap();
+        worker.join().unwrap();
+    }
 
     #[test]
     fn filesystem_grants_enforce_access_modes() {

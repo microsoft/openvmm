@@ -151,6 +151,11 @@ let restrictions = Restrictions::none()
 sandbox::tighten(&restrictions)?;
 ```
 
+On Linux, both seccomp filters are synchronized across all threads with TSYNC.
+An unsupported TSYNC operation or a synchronization failure returns an error,
+never a thread-local fallback. As with `apply`, the worker should exit with
+`EXIT_SANDBOX_FAILED` on error; already-installed restrictions remain in effect.
+
 ## Dev escape hatch
 
 In **debug builds only**, setting the `OPENVMM_SANDBOX_DISABLE` environment

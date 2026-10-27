@@ -113,13 +113,13 @@ pub fn build_clone3_enosys_filter() -> io::Result<BpfProgram> {
     )
 }
 
-/// Apply a pre-built BPF filter to the current thread.
+/// Apply a pre-built BPF filter to all threads in the process using TSYNC.
 ///
-/// Requires `PR_SET_NO_NEW_PRIVS` to be set on the calling thread when
-/// the process lacks `CAP_SYS_ADMIN`.
-pub fn apply_filter(bpf: &BpfProgram) -> io::Result<()> {
-    seccompiler::apply_filter(bpf)
-        .map_err(|e| io::Error::other(format!("seccomp apply failed: {e}")))
+/// Synchronization failures are errors; never fall back to thread-local
+/// enforcement.
+pub fn apply_filter_all_threads(bpf: &BpfProgram) -> io::Result<()> {
+    seccompiler::apply_filter_all_threads(bpf)
+        .map_err(|e| io::Error::other(format!("seccomp TSYNC apply failed: {e}")))
 }
 
 fn target_arch() -> io::Result<TargetArch> {
@@ -167,6 +167,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "restart_syscall" => libc::SYS_restart_syscall,
         "sigaltstack" => libc::SYS_sigaltstack,
         "execve" => libc::SYS_execve,
+        "execveat" => libc::SYS_execveat,
         "wait4" => libc::SYS_wait4,
         "kill" => libc::SYS_kill,
         "tkill" => libc::SYS_tkill,
@@ -317,6 +318,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "settimeofday" => libc::SYS_settimeofday,
         "swapoff" => libc::SYS_swapoff,
         "swapon" => libc::SYS_swapon,
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "sysfs" => libc::SYS_sysfs,
         "syslog" => libc::SYS_syslog,
         "umount2" => libc::SYS_umount2,
@@ -371,8 +373,8 @@ pub fn build_denylist_filter(
 }
 
 /// Resolve `extra_deny_names` into syscall numbers, build the denylist filter
-/// (baseline + extras + argument-level guards), and apply it to the current
-/// thread along with the `clone3`-to-`ENOSYS` overlay.
+/// (baseline + extras + argument-level guards), and apply it to all threads
+/// along with the `clone3`-to-`ENOSYS` overlay, using TSYNC for both filters.
 ///
 /// Every name must resolve via [`nr_for_name`]; an unknown name is a hard
 /// error (R-S12 fail-loud) rather than a silent omission. A name on the
@@ -403,12 +405,12 @@ pub fn apply_denylist(extra_deny_names: &[&str], deny_action: SeccompAction) -> 
     }
 
     let filter = build_denylist_filter(&extra, deny_action)?;
-    apply_filter(&filter)?;
+    apply_filter_all_threads(&filter)?;
     // Force clone3 to ENOSYS so the libc thread path falls back to the
     // argument-filtered `clone`; clone3's flags live behind a pointer seccomp
     // can't inspect.
     let clone3 = build_clone3_enosys_filter()?;
-    apply_filter(&clone3)
+    apply_filter_all_threads(&clone3)
 }
 
 fn finalize_filter(
@@ -507,6 +509,150 @@ fn socket_deny_rules() -> io::Result<Vec<SeccompRule>> {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn worker_profiles_preserve_numa_binding_policy() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_worker_numa_binding",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "NUMA binding helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_worker_numa_binding() {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let node: usize = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Mems_allowed_list:"))
+            .unwrap_or("0")
+            .trim()
+            .split([',', '-'])
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let maxnode = node + 2;
+        let word_bits = libc::c_ulong::BITS as usize;
+        let mut nodemask = vec![0 as libc::c_ulong; maxnode.div_ceil(word_bits)];
+        nodemask[node / word_bits] = 1 << (node % word_bits);
+
+        const LEN: usize = 4096;
+        // SAFETY: An anonymous mapping with no requested address or backing fd.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                LEN,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let bind = || {
+            // SAFETY: The mapping and nodemask remain valid throughout the call.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_mbind,
+                    mapping,
+                    LEN,
+                    libc::MPOL_BIND,
+                    nodemask.as_ptr(),
+                    maxnode,
+                    0,
+                )
+            };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error().raw_os_error().unwrap())
+            }
+        };
+
+        caps::clear(None, caps::CapSet::Effective).unwrap();
+        caps::clear(None, caps::CapSet::Permitted).unwrap();
+        let unfiltered = bind();
+        // Use a distinct errno to distinguish our filter from host restrictions
+        // or kernels without NUMA support.
+        assert_ne!(unfiltered, Err(libc::EACCES));
+        crate::unix::hardening::set_no_new_privs().unwrap();
+        for (profile, expected) in [
+            (crate::profiles::vm_worker().build(), unfiltered),
+            (crate::profiles::tpm_worker().build(), Err(libc::EACCES)),
+        ] {
+            let crate::Syscalls::Deny(names) = &profile.inner.syscalls else {
+                panic!("worker must use syscall filtering");
+            };
+            let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+            apply_denylist(&names, SeccompAction::Errno(libc::EACCES as u32)).unwrap();
+            assert_eq!(bind(), expected, "NUMA policy for {}", profile.name());
+        }
+        // SAFETY: Release the mapping obtained above; it is no longer used.
+        assert_eq!(unsafe { libc::munmap(mapping, LEN) }, 0);
+    }
+
+    #[test]
+    fn mandatory_filter_denies_executable_replacement() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_deny_executable_replacement",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "execution denial helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_deny_executable_replacement() {
+        crate::unix::hardening::set_no_new_privs().unwrap();
+        apply_denylist(&[], SeccompAction::Errno(libc::EPERM as u32)).unwrap();
+
+        // Empty paths cannot execute anything even if the filter regresses.
+        // SAFETY: The path is NUL-terminated; null argument arrays are accepted
+        // by Linux.
+        let result = unsafe { libc::execve(c"".as_ptr(), std::ptr::null(), std::ptr::null()) };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+
+        // SAFETY: As above. AT_EMPTY_PATH exercises execution via a file
+        // descriptor; -1 ensures no executable is available without the filter.
+        let result = unsafe {
+            libc::execveat(
+                -1,
+                c"".as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                libc::AT_EMPTY_PATH,
+            )
+        };
+        assert_eq!(result, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+    }
 
     #[test]
     fn mandatory_deny_disjoint_from_survival() {

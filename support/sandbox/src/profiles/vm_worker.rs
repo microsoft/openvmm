@@ -44,6 +44,8 @@ use crate::Profile;
 use crate::Syscalls;
 
 /// Profile derived from observed worker behavior.
+///
+/// Leaves `mbind` available for host NUMA placement of guest RAM.
 pub fn vm_worker() -> Builder {
     Profile::deny_all()
         .name("vm_worker")
@@ -54,17 +56,21 @@ pub fn vm_worker() -> Builder {
             "bpf",
             "chroot",
             "clone3",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "create_module",
             "delete_module",
             "execve",
             "finit_module",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "fork",
             "fsconfig",
             "fsmount",
             "fsopen",
             "fspick",
             "init_module",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "ioperm",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "iopl",
             "kexec_file_load",
             "kexec_load",
@@ -91,7 +97,7 @@ pub fn vm_worker() -> Builder {
         .network(Network::None)
 }
 
-#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use test_with_tracing::test;

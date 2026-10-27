@@ -173,7 +173,6 @@ accidentally weakening the design.
 | **C5** | **Workers build concrete profiles from `Profile::deny_all()` in their owning crate.** Policy is linked, not sent, and `support/sandbox` does not enumerate worker classes. | Adding a worker does not require editing the sandbox crate. The deny-all base guarantees R-S1 by construction; an inventory test provides centralized audit visibility ([§12](#12-testing--ci-strategy)). |
 | **C7** | **Apply Landlock before installing seccomp last.** | Installing seccomp first would require permanently permitting the Landlock setup syscalls. |
 | **C8** | **Set `PR_SET_DUMPABLE=0` in `apply`, after the credential drop.** | `execve` and effective-UID changes reset the dumpable state. |
-| **C9** | **Set `PR_SET_PDEATHSIG` in `apply`, after the credential drop.** | `execve` and `setuid` clear the parent-death signal. |
 | **C10** | **Always apply the supporting controls listed in [§7.2](#72-primitive--stage--apply-point-matrix).** | Locked securebits, credential hardening, mount flags, limits, and related controls are cheap and high-value. |
 | **C11** | **Fail hard for every requested namespace and required confinement primitive.** | Retrying with fewer boundaries silently changes the security contract. Any fallback must be an explicit, reviewed profile. |
 | **C15** | **Handle tags are opaque and caller-defined.** `support/sandbox` never interprets their meaning. | Keeps the crate free of OpenVMM domain concepts and reusable across consumers. |
@@ -523,7 +522,7 @@ alternatives most likely to be reconsidered.
 
 | Primitive | Role in this design | Baseline | Notes / why not more |
 |---|---|---|---|
-| **Mount NS + bind mounts + `pivot_root`** | **Primary FS isolation** (D11, R-S2). The worker's `/` is a curated view built from explicit bind mounts; it cannot `open(2)` a path the control process did not bind in. | 2.4.19+ | Hard kernel boundary, not a path-string matcher. Requires `CAP_SYS_ADMIN` in the caller's user namespace, hence the `CLONE_NEWUSER`-first sequence. `chroot(2)` alone is escapable from a held `dirfd`; we use `pivot_root` + `umount2(MNT_DETACH)`. |
+| **Mount NS + bind mounts + `pivot_root`** | **Primary FS isolation** (D11, R-S2). The worker's `/` is a curated view built from explicit bind mounts; it cannot `open(2)` a path the control process did not bind in. | 5.12+ for recursive mount attributes | Hard kernel boundary, not a path-string matcher. Requires `CAP_SYS_ADMIN` in the caller's user namespace, hence the `CLONE_NEWUSER`-first sequence. `chroot(2)` alone is escapable from a held `dirfd`; we use `pivot_root` + `umount2(MNT_DETACH)`. |
 | **Network NS (empty)** | **Primary network restriction** (D12, R-S3). | 2.6.24+ | Landlock network scoping would be the elegant answer but needs ABI 4 / kernel 6.7 — above both baselines (R-P1, R-P2). An empty netns has no interface and no peer, so `socket()` succeeds and reaches nothing. |
 | **User NS (`CLONE_NEWUSER`)** | **Unprivileged bootstrap** for the other `CLONE_NEW*` calls, and the substrate for the UID remap. | 3.8+ | Not a boundary in its own right in our model. Where the control process already has `CAP_SYS_ADMIN` (OpenHCL), it is still used, because it is what makes the uid_map remap possible. Blocked on some distros — see [§7.6](#76-deployment-surface--degradation-matrix). |
 | **Linux capabilities + securebits** | **Configuration hygiene** (R-S4). Drop all five sets to empty, then lock securebits so they cannot be re-acquired. | Universal | `SECBIT_NOROOT_LOCKED \| SECBIT_NO_SETUID_FIXUP_LOCKED \| SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED`. Without the locked securebits, a UID-0 worker regains caps across `execve`. |
@@ -537,14 +536,13 @@ alternatives most likely to be reconsidered.
 
 | Control | Purpose | Stage |
 |---|---|---|
-| `MS_NOSUID \| MS_NODEV` on every bind mount, plus `MS_NOEXEC` and `MS_RDONLY` unless the spec opts out | Defangs mount contents: no setuid escalation, no device nodes, no execution from data mounts | `apply` |
+| `mount_setattr(AT_RECURSIVE)` sets `MOUNT_ATTR_NOSUID \| MOUNT_ATTR_NODEV` on every bind mount and submount, plus `MOUNT_ATTR_NOEXEC` and `MOUNT_ATTR_RDONLY` unless the spec opts out | Defangs mount contents: no setuid escalation, no device-node access, no execution from data mounts. Existing restrictions are preserved; failure aborts startup, with no top-mount-only fallback. | `apply` |
 | `MS_REC \| MS_PRIVATE` on `/` before `pivot_root` | Hard prerequisite of `pivot_root`; also stops mount events propagating back out | `apply` |
 | `/proc` with `hidepid=2,subset=pid` | Hides other processes' `/proc` entries — a component of R-S6 | `apply` |
 | `/sys` read-only, or omitted entirely | Reduces attack surface | `apply` |
 | `close_range` outside the fixed child-FD allowlist | Prevents any unexpected descriptor from crossing `execve` (R-S7) | `clone` |
 | `keyctl(KEYCTL_JOIN_SESSION_KEYRING, NULL)` | Detaches the inherited session keyring (Kerberos tickets, MSI tokens, NFS auth). **Opportunistic** — blocked by Docker's default seccomp, which is acceptable since container keyrings are typically empty | `apply` |
 | `prctl(PR_SET_DUMPABLE, 0)` | Blocks same-UID `ptrace` at Yama level 0 and locks `/proc/PID/` ownership to root. Component of R-S6. **Must run after the credential drop** (C8) | `apply` |
-| `prctl(PR_SET_PDEATHSIG, SIGKILL)` | Worker dies with its control process. **Set in `apply`, after the credential drop clears it** (C9) | `apply` |
 | `IORING_REGISTER_RESTRICTIONS` on every ring, for workers that use io_uring; seccomp denial of `io_uring_setup`/`_register`/`_enter` for workers that do not | seccomp cannot see SQE opcodes, so there is no middle ground | `apply` / worker |
 | Yama `ptrace_scope` | Operator-deployed; documented in `Guide/`, not authored at runtime | — |
 
@@ -580,7 +578,6 @@ callback; `apply` = worker startup, single-threaded and freshly execve'd;
 | `prctl(PR_SET_SECUREBITS, ...LOCKED)` | `apply` | R | Immediately after the capability drop |
 | `setgroups([])` → `setgid` → `setuid` | `apply` | R | **In that order.** `setuid` last, or the later calls lose privilege |
 | `prctl(PR_SET_DUMPABLE, 0)` | `apply` | R | **After `setuid`** — the credential change resets it (C8) |
-| `prctl(PR_SET_PDEATHSIG, SIGKILL)` | `apply` | R | **After `setuid`** — the credential change clears it (C9) |
 | `prctl(PR_SET_NO_NEW_PRIVS, 1)` | `apply` | R | Before Landlock and seccomp, the primitives it enables |
 | Landlock ABI probe + ruleset apply | `apply` | O | After mounts (paths must exist); **before** seccomp (C7) |
 | seccomp filter install | `apply` | O (per D13) | **Last.** Least reversible, and it can now deny the Landlock syscalls |
@@ -599,12 +596,12 @@ appears to.
    window after entering the new user namespace but before any map has
    been written — the kernel permits exactly one write.
 
-2. **Credential drops come after mounts, and `DUMPABLE`/`PDEATHSIG`
-   come after credentials.** Mount setup may need `CAP_SYS_ADMIN` in
+2. **Credential drops come after mounts, and `DUMPABLE`
+   comes after credentials.** Mount setup may need `CAP_SYS_ADMIN` in
    the new user namespace, so capabilities cannot be dropped first.
    And changing the effective UID resets the dumpable flag to
-   `/proc/sys/fs/suid_dumpable` and clears the parent-death signal —
-   so both must be re-established afterwards. This is C8 and C9, and
+   `/proc/sys/fs/suid_dumpable`, so it must be re-established afterwards.
+   This is C8, and
    it is the most commonly-missed sequencing bug in this class of
    code.
 
@@ -617,9 +614,10 @@ appears to.
 
 The single-threaded property holds for the entire `apply` sequence by
 construction: the worker self-applies before it starts any async
-runtime or spawns any thread ([§7.5](#75-why-self-apply-is-safe)),
-which is what makes Landlock (no TSYNC below ABI 8) and
-seccomp-without-TSYNC both behave predictably.
+runtime or spawns any thread ([§7.5](#75-why-self-apply-is-safe)).
+This is required for Landlock (no TSYNC below ABI 8). Both seccomp filters use
+TSYNC during `apply` and `tighten`, so tightening also covers existing threads.
+Synchronization failures are fatal, with no thread-local fallback.
 
 ### 7.4 Control flow — Linux
 
@@ -659,7 +657,6 @@ sequenceDiagram
         W->>K: prctl(PR_SET_SECUREBITS, ...LOCKED)
         W->>K: setgroups([]); setgid; setuid
         W->>K: prctl(PR_SET_DUMPABLE, 0)        [after setuid]
-        W->>K: prctl(PR_SET_PDEATHSIG, SIGKILL)  [after setuid]
         W->>K: prctl(PR_SET_NO_NEW_PRIVS, 1)
         W->>K: landlock: probe ABI, build ruleset, restrict_self
         W->>K: seccomp(SET_MODE_FILTER, initial)   [last]
@@ -766,6 +763,7 @@ Per D16 and R-P4, features are probed at runtime, never pinned:
 | Landlock ABI | 3 — FS read/write/refer/truncate | 1 — FS read/write only | Probe with `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`; request the best available rights and drop unsupported ones. On ABI 1, cross-directory rename and `O_TRUNC` are not restrictable — the mount-NS boundary covers this, which is one more reason D11 makes mount NS primary. |
 | Landlock network | ❌ (needs ABI 4 / 6.7) | ❌ | Empty netns is the mechanism (D12). Not a degradation — it is the design. |
 | Landlock `IOCTL_DEV` | ❌ (needs ABI 5 / 6.10) | ❌ | seccomp `ioctl` argument filtering for the sensitive cases, per profile. |
+| Recursive mount attributes (`mount_setattr`) | ✅ | ✅ (5.12+) | Required for filesystem grants; failure aborts startup. No weaker remount fallback. |
 | `close_range` | ✅ | ✅ (5.9+) | None. |
 | io_uring restrictions | ✅ | ✅ (5.10+) | None. |
 | seccomp user-notify + `ADDFD` | ✅ | ✅ (5.9+) | Present but currently unused (deferred broker). |
@@ -819,7 +817,7 @@ be reviewed against the implemented Linux backend.
 | **Launch-time mitigation policies** (`PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY`) | Mitigations that can *only* be set at creation: CFG, some ASLR flavors, user shadow stack, `NoRemoteImages`. | Win 8+ (per-flag varies) | Must be on the parent-side attribute list; there is no post-launch equivalent. |
 | **`ProcessSystemCallDisablePolicy`** (Win32k lockdown) | Blocks the entire `user32`/`gdi32` syscall surface — historically the largest source of Windows kernel LPE. | Win 8+ | Headless workers need no windows, so this should be on for essentially every profile. It is the closest Windows analogue to seccomp's surface-reduction role (R-S8). |
 | **Other post-launch mitigation policies** | `ProcessDynamicCodePolicy` (W^X), `ProcessChildProcessPolicy` (R-S9), `ProcessExtensionPointDisablePolicy`, `ProcessImageLoadPolicy`, `ProcessStrictHandleCheckPolicy`, `ProcessSignaturePolicy`, `ProcessSideChannelIsolationPolicy`. | Varies | Self-applied in `apply`. Each is one-way for the process lifetime, which is what makes `tighten` monotonic on Windows. |
-| **Job Objects** | Resource caps and a second child-process block. Nested jobs give us the `tighten` ratchet. | Win 8+ for nesting | `JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1`, `BREAKAWAY_OK` cleared, plus memory and CPU caps. Also carries the parent-death semantics via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — the Windows analogue of `PR_SET_PDEATHSIG`. |
+| **Job Objects** | Resource caps and a second child-process block. Nested jobs give us the `tighten` ratchet. | Win 8+ for nesting | `JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1`, `BREAKAWAY_OK` cleared, plus memory and CPU caps. |
 | **Token surgery** | `AdjustTokenPrivileges(SE_PRIVILEGE_REMOVED)` to empty the privilege set (R-S4); `AdjustTokenGroups(SE_GROUP_USE_FOR_DENY_ONLY)` for residual groups. | Universal | `SE_PRIVILEGE_REMOVED` is irreversible for the token's lifetime, unlike `SE_PRIVILEGE_DISABLED`. Always use `REMOVED`. |
 | **Integrity level** | Set to Low. | Vista+ | Mostly subsumed by LPAC, but cheap and it hardens the write side of the object manager. |
 
@@ -1053,7 +1051,6 @@ is `apply`; on Windows launch-only work is `prepare` and the rest is
 | `ExtensionPoints::Deny` | N/A | — | `ProcessExtensionPointDisablePolicy` | **`apply`** |
 | `IntegrityLevel::Low` | N/A | — | `SetTokenInformation(TokenIntegrityLevel, ...)` | **`apply`** |
 | `Debuggability::Deny` | `prctl(PR_SET_DUMPABLE, 0)` **after `setuid`** (C8) + `/proc` `hidepid=2,subset=pid` + seccomp `ptrace` deny | **`apply`** | Restrictive DACL on the process and token objects | **`apply`** |
-| `ParentDeath::Kill` | `prctl(PR_SET_PDEATHSIG, SIGKILL)` **after `setuid`** (C9) | **`apply`** | Job Object `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` | `prepare` or `apply` |
 | `SyscallFilter(name)` | `seccomp(SET_MODE_FILTER, ...)` — **last** in `apply` (C7) | **`apply`** | Win32k lockdown covers the analogous surface | — |
 | `LpacCapability(name)` | N/A | — | Add the named capability SID — only when the worker genuinely needs the API surface | **`prepare`** |
 | `IoUring::Restricted` | `IORING_REGISTER_RESTRICTIONS` per ring; or seccomp-deny `io_uring_*` entirely if unused | `apply` / worker | N/A | — |
@@ -1268,6 +1265,11 @@ complete per-worker syscall inventories. Update the policy as follows:
    enforcement coverage.
 5. Run the affected workers through their full lifecycle, including shutdown
    and error paths.
+
+For example, `mbind` is workload-dependent: VM workers use `MPOL_BIND` with
+flags set to zero for host NUMA placement of guest RAM, so their profile leaves
+it available. TPM workers deny it explicitly. Capability dropping is unchanged;
+the more powerful `MPOL_MF_MOVE_ALL` operation still requires `CAP_SYS_NICE`.
 
 This trades some theoretical syscall minimization for a policy that can remain
 enabled and maintained as worker link sets, libc, allocators, and toolchains

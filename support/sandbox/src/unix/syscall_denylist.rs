@@ -66,6 +66,11 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         reason: None,
     },
     DeniedSyscall {
+        name: "execveat",
+        enforcement: MANDATORY,
+        reason: Some("Replaces the worker executable, including execution via a file descriptor."),
+    },
+    DeniedSyscall {
         name: "fanotify_init",
         enforcement: MANDATORY,
         reason: Some("Creates privileged filesystem-monitoring groups."),
@@ -140,11 +145,6 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         name: "kexec_load",
         enforcement: MANDATORY,
         reason: Some("Loads a replacement kernel image, enabling complete host takeover."),
-    },
-    DeniedSyscall {
-        name: "mbind",
-        enforcement: MANDATORY,
-        reason: Some("Changes memory placement policy across NUMA nodes."),
     },
     DeniedSyscall {
         name: "migrate_pages",
@@ -282,6 +282,7 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         enforcement: MANDATORY,
         reason: Some("Enables files or devices as host swap areas."),
     },
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     DeniedSyscall {
         name: "sysfs",
         enforcement: MANDATORY,
@@ -371,6 +372,13 @@ pub(crate) const SYSCALL_DENYLIST_OPTIONAL: &[DeniedSyscall] = &[
         name: "keyctl",
         enforcement: OPTIONAL,
         reason: Some("Accepts attacker-controlled variable-size payloads."),
+    },
+    DeniedSyscall {
+        name: "mbind",
+        enforcement: OPTIONAL,
+        reason: Some(
+            "Exposes NUMA policy and page migration; VM workers require it for host memory placement.",
+        ),
     },
     DeniedSyscall {
         name: "request_key",
