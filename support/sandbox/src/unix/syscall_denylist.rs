@@ -282,6 +282,7 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         enforcement: MANDATORY,
         reason: Some("Enables files or devices as host swap areas."),
     },
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     DeniedSyscall {
         name: "sysfs",
         enforcement: MANDATORY,

@@ -317,6 +317,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "settimeofday" => libc::SYS_settimeofday,
         "swapoff" => libc::SYS_swapoff,
         "swapon" => libc::SYS_swapon,
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         "sysfs" => libc::SYS_sysfs,
         "syslog" => libc::SYS_syslog,
         "umount2" => libc::SYS_umount2,

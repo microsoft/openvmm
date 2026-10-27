@@ -55,17 +55,21 @@ pub fn tpm_worker() -> Builder {
             "bpf",
             "chroot",
             "clone3",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "create_module",
             "delete_module",
             "execve",
             "finit_module",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "fork",
             "fsconfig",
             "fsmount",
             "fsopen",
             "fspick",
             "init_module",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "ioperm",
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             "iopl",
             "kexec_file_load",
             "kexec_load",
@@ -92,7 +96,7 @@ pub fn tpm_worker() -> Builder {
         .network(Network::None)
 }
 
-#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use test_with_tracing::test;
