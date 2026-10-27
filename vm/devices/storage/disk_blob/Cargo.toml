@@ -16,6 +16,8 @@ guestmem.workspace = true
 vm_resource.workspace = true
 
 inspect = { workspace = true, features = ["filepath"] }
+inspect_counters.workspace = true
+tracelimit.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
@@ -26,17 +28,21 @@ hyper = { workspace = true, features = ["client", "http1", "http2"] }
 hyper-tls.workspace = true
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "http2"] }
 once_cell.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
 # tokio use is allowed in this crate only.
 # FUTURE: replace this with our own executor
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 disk_vhd1.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 pal_async.workspace = true
+socket2.workspace = true
 storage_tests.workspace = true
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
