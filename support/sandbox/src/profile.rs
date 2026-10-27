@@ -127,6 +127,16 @@ impl Builder {
         self
     }
 
+    /// Grant read, write, and ioctl access to a single device node.
+    ///
+    /// Unlike ordinary filesystem grants, this permits device-node use.
+    /// The Linux backend rejects sources that are not character or block
+    /// devices. Existing host mount restrictions and device permissions remain.
+    pub fn device(mut self, path: impl AsRef<Path>) -> Self {
+        self.push_fs(path.as_ref().to_path_buf(), Access::Device);
+        self
+    }
+
     /// Grant network reachability up to `scope`.
     ///
     /// The default (from [`Profile::deny_all`]) is [`Network::None`] — an
@@ -367,7 +377,7 @@ pub(crate) struct RestrictionsInner {
 }
 
 /// Access mode for a filesystem grant. Internal — the public builder exposes
-/// [`Builder::read`], [`Builder::read_exec`], and [`Builder::read_write`],
+/// [`Builder::read`], [`Builder::read_exec`], [`Builder::read_write`], and [`Builder::device`],
 /// mapped to the mount flags and Landlock rights the backend needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Access {
@@ -377,6 +387,8 @@ pub(crate) enum Access {
     ReadExec,
     /// Read + write. No execute.
     ReadWrite,
+    /// Read + write + ioctl for a single device node. No execute.
+    Device,
 }
 
 #[cfg(test)]

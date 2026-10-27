@@ -149,7 +149,7 @@ them.
 | **D5** | **Progressive tightening is `tighten`** and is optional and strictly monotonic — expressed as an additive-only `Restrictions` spec, so the ratchet holds by type ([§6.1](#61-type-vocabulary)). |
 | **D6** | **Public vocabulary is intent-level and platform-neutral.** No `landlock` / `seccompiler` / `caps` / `windows-sys` types cross the public API. |
 | **D7** | **Backends are `cfg`-gated modules inside one crate.** |
-| **D8** | **Broker-and-handles is mandatory.** Workers see resources only as inherited FDs / HANDLEs. Deferred: broker server and seccomp user-notify. |
+| **D8** | **Prefer broker-and-handles for resources.** Explicit role-profile grants cover ambient filesystem access and the narrow device exceptions in C3. Deferred: broker server and seccomp user-notify. |
 | **D9** | **Handle hygiene is mandatory.** `FD_CLOEXEC` / non-inheritable by default, explicit allowlist, pre-`execve` `close_range` enforcement on Linux, `HANDLE_LIST` on Windows. |
 | **D10** | **`mesh_process` stays role-agnostic.** OpenVMM owns role selection and passes the resulting `Profile`; Mesh calls `sandbox::prepare` and passes the prepared launch data intact to PAL. Mesh worker names are not security selectors. |
 | **D11** | **Mount namespace + bind mounts + `pivot_root` is the primary Linux FS isolation mechanism.** Landlock is a supplement, applied opportunistically with ABI-aware degradation. |
@@ -168,7 +168,7 @@ accidentally weakening the design.
 |---|---|---|
 | **C1** | **No launcher; PAL creates namespaces during its existing vfork-based clone.** The clone callback self-maps namespace IDs with fixed libc writes, then `execve`s. The worker performs policy-rich setup in `apply`. | Preserves PAL's established process path while ensuring the program image starts inside its namespaces. The callback carries only preformatted mapping bytes; allocation-heavy and lock-taking work remains in the fresh post-`execve` image. |
 | **C2** | **PID namespaces are currently omitted.** Workers remain in the control process's PID namespace. | R-S6 is met by `PR_SET_DUMPABLE=0`, Yama, and seccomp denial of cross-process operations. Distinct outer UIDs and a PID namespace remain possible later hardening steps. |
-| **C3** | **Device access uses FD passing only.** The control process opens `/dev/kvm`, `/dev/mshv`, or similar devices and passes the FD through Mesh, or preserves it at launch if genuinely needed earlier. | Avoids `mknod`, `CAP_MKNOD`, and device-node management inside the new root while reusing Mesh's resource path ([§10.4](#104-mesh-compatibility)). |
+| **C3** | **Prefer FD passing for devices, with explicit single-node exceptions.** The control process passes hypervisor and assigned-device FDs through Mesh. The VM role also grants existing `/dev/sev` and `/dev/vfio/vfio` nodes for worker-side opens. | Preserves KVM SNP and legacy VFIO without exposing all of `/dev` or numbered VFIO group nodes. Device grants validate character/block nodes and permit Landlock `IOCTL_DEV` where supported; ordinary filesystem grants remain `NODEV`. |
 | **C4** | **The investigation includes the intended shape of Windows sandboxing, but implementation has not been scheduled.** | Preserves the feasibility work without representing an unmade stakeholder or delivery commitment. |
 | **C5** | **Workers build concrete profiles from `Profile::deny_all()` in their owning crate.** Policy is linked, not sent, and `support/sandbox` does not enumerate worker classes. | Adding a worker does not require editing the sandbox crate. The deny-all base guarantees R-S1 by construction; an inventory test provides centralized audit visibility ([§12](#12-testing--ci-strategy)). |
 | **C7** | **Apply Landlock before installing seccomp last.** | Installing seccomp first would require permanently permitting the Landlock setup syscalls. |
@@ -536,7 +536,7 @@ alternatives most likely to be reconsidered.
 
 | Control | Purpose | Stage |
 |---|---|---|
-| `mount_setattr(AT_RECURSIVE)` sets `MOUNT_ATTR_NOSUID \| MOUNT_ATTR_NODEV` on every bind mount and submount, plus `MOUNT_ATTR_NOEXEC` and `MOUNT_ATTR_RDONLY` unless the spec opts out | Defangs mount contents: no setuid escalation, no device-node access, no execution from data mounts. Existing restrictions are preserved; failure aborts startup, with no top-mount-only fallback. | `apply` |
+| `mount_setattr(AT_RECURSIVE)` sets `MOUNT_ATTR_NOSUID` on every bind mount and submount, `MOUNT_ATTR_NODEV` except for explicit single-device grants, plus access-dependent `MOUNT_ATTR_NOEXEC` and `MOUNT_ATTR_RDONLY` | Defangs mount contents: no setuid escalation, no implicit device-node access, no execution from data mounts. Existing restrictions are preserved; failure aborts startup, with no top-mount-only fallback. | `apply` |
 | `MS_REC \| MS_PRIVATE` on `/` before `pivot_root` | Hard prerequisite of `pivot_root`; also stops mount events propagating back out | `apply` |
 | `/proc` with `hidepid=2,subset=pid` | Hides other processes' `/proc` entries — a component of R-S6 | `apply` |
 | `/sys` read-only, or omitted entirely | Reduces attack surface | `apply` |
@@ -771,15 +771,33 @@ Per D16 and R-P4, features are probed at runtime, never pinned:
 **If the OpenHCL kernel branch advances past 6.6**, workers pick up the
 higher Landlock ABI automatically via the probe. We do not pin.
 
-### 7.8 Device access — `/dev/kvm` and `/dev/mshv`
+### 7.8 Device access — passed FDs and single-node grants
 
-Per C3, **FD passing only.** The control process opens the device
+Per C3, **prefer FD passing.** The control process opens the hypervisor device
 node and hands the FD to the worker as a typed `Resource` field on its
 Mesh config message — the `OsResource` sideband
 ([§10.4](#104-mesh-compatibility)), *after* `apply` — not as a grant
-allowlist entry and not as ambient access. The worker never sees a
-device node in its root, and `MS_NODEV` on every bind mount means it
-could not use one if it did.
+allowlist entry and not as ambient access.
+
+The VM role makes two static exceptions for existing worker-side opens:
+`/dev/sev` (KVM SNP) and `/dev/vfio/vfio` (legacy VFIO container creation).
+These read/write, non-executable single-device binds apply to every VM
+worker, not only workers configured to use those features. Other `/dev`
+nodes remain hidden unless passed as FDs. Ordinary filesystem binds retain
+`NODEV`; device grants preserve inherited host restrictions and permissions.
+On Landlock ABI 5+, explicit device grants include `IOCTL_DEV`.
+
+The VM role also exposes `/sys/bus/pci/devices` and `/sys/devices` read-only
+so PCI aliases and their targets support HostAssigned BAR metadata reads.
+This intentionally exposes broader hardware metadata than the former
+CPU-only grant; it is not filtered to assigned devices. Optional device and
+PCI alias paths are discovered when building the profile. A device node
+created later, for example by loading a module, requires a new worker.
+
+Resolver configuration remains read-only. When `/etc/resolv.conf` escapes
+the `/etc` grant through symlinks, only the referenced file is additionally
+bound, not its containing runtime directory. The bind captures the file at
+startup; replacing it by rename does not update the existing bind.
 
 This avoids a Firecracker-style `mknod` + `chown` pattern, which would
 require `CAP_MKNOD` in a pre-`exec` context that no longer exists once

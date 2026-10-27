@@ -75,12 +75,34 @@ pub fn mount_tmpfs(target: &Path) -> io::Result<()> {
 /// Existing restrictions are preserved, and any failure is returned to the
 /// caller rather than falling back to top-mount-only enforcement.
 ///
-/// The target directory is created if it doesn't already exist.
+/// A directory or file mountpoint matching the source is created if needed.
 pub fn bind_mount(source: &Path, target: &Path, mount_attrs: u64) -> io::Result<()> {
     let c_source = path_to_cstring(source)?;
     let c_target = path_to_cstring(target)?;
 
-    fs_err::create_dir_all(target)?;
+    if fs_err::metadata(source)?.is_dir() {
+        fs_err::create_dir_all(target)?;
+    } else {
+        if let Some(parent) = target.parent() {
+            fs_err::create_dir_all(parent)?;
+        }
+        match fs_err::symlink_metadata(target) {
+            Ok(metadata) if !metadata.is_dir() && !metadata.is_symlink() => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "file bind mount target must not be a directory or symlink",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs_err::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 
     // SAFETY: mount() with valid NUL-terminated C strings; MS_BIND
     // ignores the filesystem-type argument, so passing NULL is
@@ -334,6 +356,26 @@ mod tests {
             }
             umount(&target).expect("failed to unmount bind target");
         }
+
+        let file = source.join("probe");
+        let target = base.join("file");
+        let attributes = baseline | libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOEXEC;
+        bind_mount(&file, &target, attributes).unwrap();
+        bind_mount(&file, &target, attributes).unwrap();
+        assert_eq!(
+            fs_err::read_to_string(&target).unwrap(),
+            "#!/bin/sh\nexit 0\n"
+        );
+        assert!(fs_err::write(&target, "modified").is_err());
+        umount(&target).unwrap();
+        umount(&target).unwrap();
+
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert_eq!(
+            bind_mount(&file, &link, attributes).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput,
+        );
 
         let proc_target = base.join("proc");
         mount_proc(&proc_target).expect("failed to mount proc");

@@ -38,7 +38,10 @@ use crate::unix::hardening;
 use crate::unix::mount_namespace;
 use crate::unix::network_namespace;
 use crate::unix::seccomp;
+use fs_err::os::unix::fs::OpenOptionsExt;
 use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -135,6 +138,12 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     fs_err::create_dir_all(staging).map_err(fs_required)?;
     mount_namespace::mount_tmpfs(staging).map_err(fs_required)?;
 
+    // Install the writable tmpfs before grants so explicit paths beneath
+    // /tmp (such as a resolver symlink target) remain visible.
+    let tmp_target = staging.join("tmp");
+    fs_err::create_dir_all(&tmp_target).map_err(fs_required)?;
+    mount_namespace::mount_tmpfs(&tmp_target).map_err(fs_required)?;
+
     // Bind each grant into the staging root at the same path
     // (source `/bin` => `staging/bin`).
     for grant in grants {
@@ -151,8 +160,34 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
                 ),
             });
         }
+        let device = if grant.access == Access::Device {
+            let device = fs_err::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .open(source)
+                .map_err(fs_required)?;
+            let file_type = device.metadata().map_err(fs_required)?.file_type();
+            if !file_type.is_char_device() && !file_type.is_block_device() {
+                return Err(fs_required(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "device grant source is not a device node: {}",
+                        source.display()
+                    ),
+                )));
+            }
+            Some(device)
+        } else {
+            None
+        };
         let target = join_under(staging, source);
         let attributes = mount_attrs_for_access(grant.access);
+        // Pin a validated device inode so replacement of its pathname cannot
+        // turn a single-device exception into a directory grant.
+        let pinned = device
+            .as_ref()
+            .map(|device| PathBuf::from(format!("/proc/self/fd/{}", device.as_raw_fd())));
+        let source = pinned.as_deref().unwrap_or(source);
         mount_namespace::bind_mount(source, &target, attributes).map_err(fs_required)?;
     }
 
@@ -166,11 +201,6 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
             libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
         );
     }
-
-    // Writable tmpfs at `/tmp` inside the sandbox.
-    let tmp_target = staging.join("tmp");
-    fs_err::create_dir_all(&tmp_target).map_err(fs_required)?;
-    mount_namespace::mount_tmpfs(&tmp_target).map_err(fs_required)?;
 
     // Pivot root: staging becomes `/`, old root moves to `staging/.old_root`.
     let old_root = staging.join(".old_root");
@@ -196,14 +226,15 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 
 /// Translate a policy [`Access`] into `MOUNT_ATTR_*` restrictions.
 ///
-/// `MOUNT_ATTR_NOSUID` and `MOUNT_ATTR_NODEV` are always set — no setuid
-/// execution and no device-node access, regardless of the grant.
+/// All mounts are `NOSUID`; ordinary grants are also `NODEV`.
+/// Only explicit, single-device grants permit device-node access.
 fn mount_attrs_for_access(access: Access) -> u64 {
     const BASE: u64 = libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
     match access {
         Access::Read => BASE | libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOEXEC,
         Access::ReadExec => BASE | libc::MOUNT_ATTR_RDONLY,
         Access::ReadWrite => BASE | libc::MOUNT_ATTR_NOEXEC,
+        Access::Device => libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NOEXEC,
     }
 }
 
@@ -247,6 +278,7 @@ fn apply_landlock(grants: &[FsGrant]) -> io::Result<()> {
             Access::Read => from_read & !AccessFs::Execute,
             Access::ReadExec => from_read,
             Access::ReadWrite => (from_read & !AccessFs::Execute) | from_write,
+            Access::Device => (from_read & !AccessFs::Execute) | from_write | AccessFs::IoctlDev,
         };
         ruleset = ruleset
             .add_rules(path_beneath_rules(&[source], rights))
@@ -466,6 +498,189 @@ mod tests {
                     directory.display(),
                 );
             }
+        }
+    }
+
+    #[test]
+    fn vm_profile_preserves_host_resources() {
+        for scenario in [
+            "resolver",
+            "resolver-chain",
+            "resolver-parent",
+            "resolver-relative",
+            "resolver-tmp",
+            "resolver-local",
+            "resolver-missing",
+            "devices",
+            "invalid-device",
+            "pci",
+        ] {
+            let output = Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::helper_vm_profile_resources",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SANDBOX_RESOURCE_SCENARIO", scenario)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario} helper failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_vm_profile_resources() {
+        let scenario = std::env::var("SANDBOX_RESOURCE_SCENARIO").unwrap();
+        let null = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        // UNSAFETY: an ioctl probe is needed to verify Landlock device rights.
+        #[expect(unsafe_code)]
+        let ioctl_error = |file: &std::fs::File| {
+            // SAFETY: this argument-free probe targets only our /dev/null
+            // fixture, whose driver rejects unsupported commands.
+            assert_eq!(unsafe { libc::ioctl(file.as_raw_fd(), 0x5800, 0) }, -1);
+            io::Error::last_os_error().raw_os_error()
+        };
+        let baseline_ioctl = ioctl_error(&null);
+        mount_namespace::make_root_private().unwrap();
+        for path in ["/etc", "/run", "/sys", "/dev"] {
+            mount_namespace::mount_tmpfs(Path::new(path)).unwrap();
+        }
+        fs_err::create_dir_all("/run/resolve").unwrap();
+        fs_err::write("/run/resolve/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+        fs_err::write("/run/resolve/unrelated", "not granted").unwrap();
+        std::os::unix::fs::symlink("/run/resolve/resolv.conf", "/etc/resolv.conf").unwrap();
+        match scenario.as_str() {
+            "resolver-chain" => {
+                fs_err::rename("/run/resolve/resolv.conf", "/run/resolve/actual.conf").unwrap();
+                std::os::unix::fs::symlink("actual.conf", "/run/resolve/resolv.conf").unwrap();
+            }
+            "resolver-parent" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("/run/resolve", "/etc/resolve").unwrap();
+                std::os::unix::fs::symlink("resolve/resolv.conf", "/etc/resolv.conf").unwrap();
+            }
+            "resolver-relative" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("../../run/resolve/resolv.conf", "/etc/resolv.conf")
+                    .unwrap();
+            }
+            "resolver-tmp" => {
+                fs_err::create_dir("/run/resolver-tmp").unwrap();
+                mount_namespace::mount_tmpfs(Path::new("/run/resolver-tmp")).unwrap();
+                mount_namespace::bind_mount(Path::new("/run/resolver-tmp"), Path::new("/tmp"), 0)
+                    .unwrap();
+                fs_err::write("/tmp/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                std::os::unix::fs::symlink("/tmp/resolv.conf", "/etc/resolv.conf").unwrap();
+            }
+            "resolver-missing" => {
+                fs_err::remove_file("/run/resolve/resolv.conf").unwrap();
+            }
+            "resolver-local" => {
+                fs_err::remove_file("/etc/resolv.conf").unwrap();
+                fs_err::write("/etc/resolv.conf", "nameserver 192.0.2.1\n").unwrap();
+            }
+            _ => {}
+        }
+
+        fs_err::create_dir_all("/sys/devices/system/cpu").unwrap();
+        fs_err::write("/sys/devices/system/cpu/online", "0").unwrap();
+        fs_err::create_dir_all("/sys/devices/pci0000:00/0000:00:01.0").unwrap();
+        fs_err::write(
+            "/sys/devices/pci0000:00/0000:00:01.0/resource",
+            "0x1000 0x1fff 0x200\n",
+        )
+        .unwrap();
+        fs_err::create_dir_all("/sys/bus/pci/devices").unwrap();
+        std::os::unix::fs::symlink(
+            "../../../devices/pci0000:00/0000:00:01.0",
+            "/sys/bus/pci/devices/0000:00:01.0",
+        )
+        .unwrap();
+
+        let mut profile = crate::profiles::vm_worker();
+        if scenario == "devices" {
+            let source = PathBuf::from(format!("/proc/self/fd/{}", null.as_raw_fd()));
+            for path in [
+                "/dev/sev",
+                "/dev/vfio/vfio",
+                "/dev/vfio/1",
+                "/run/ordinary-device",
+            ] {
+                mount_namespace::bind_mount(&source, Path::new(path), 0).unwrap();
+            }
+            profile = crate::profiles::vm_worker().read_write("/run/ordinary-device");
+        }
+        if scenario == "invalid-device" {
+            profile = profile.device("/run/resolve");
+        }
+        let profile = profile.build();
+        hardening::set_no_new_privs().unwrap();
+        if scenario == "invalid-device" {
+            assert!(matches!(
+                apply_filesystem(&profile.inner.fs),
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidInput
+            ));
+            return;
+        }
+        apply_filesystem(&profile.inner.fs).unwrap();
+        apply_landlock(&profile.inner.fs).unwrap();
+        drop_all_capabilities().unwrap();
+
+        match scenario.as_str() {
+            "resolver-missing" => {
+                assert!(!Path::new("/etc/resolv.conf").exists());
+            }
+            scenario if scenario.starts_with("resolver") => {
+                assert_eq!(
+                    fs_err::read_to_string("/etc/resolv.conf").unwrap(),
+                    "nameserver 192.0.2.1\n",
+                );
+                assert!(fs_err::write("/etc/resolv.conf", "modified").is_err());
+                assert!(!Path::new("/run/resolve/unrelated").exists());
+            }
+            "devices" => {
+                for path in ["/dev/sev", "/dev/vfio/vfio"] {
+                    let mut device = std::fs::File::options()
+                        .read(true)
+                        .write(true)
+                        .open(path)
+                        .unwrap();
+                    io::Write::write_all(&mut device, b"probe").unwrap();
+                    assert_eq!(ioctl_error(&device), baseline_ioctl);
+                }
+                assert!(!Path::new("/dev/vfio/1").exists());
+                assert!(
+                    std::fs::File::options()
+                        .read(true)
+                        .write(true)
+                        .open("/run/ordinary-device")
+                        .is_err(),
+                );
+            }
+            "pci" => {
+                let path = "/sys/bus/pci/devices/0000:00:01.0/resource";
+                assert_eq!(
+                    fs_err::read_to_string(path).unwrap(),
+                    "0x1000 0x1fff 0x200\n"
+                );
+                assert!(fs_err::write(path, "modified").is_err());
+            }
+            _ => panic!("unknown resource scenario"),
         }
     }
 }
