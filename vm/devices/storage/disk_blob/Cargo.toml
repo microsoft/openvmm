@@ -30,13 +30,15 @@ thiserror.workspace = true
 zerocopy.workspace = true
 # tokio use is allowed in this crate only.
 # FUTURE: replace this with our own executor
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 disk_vhd1.workspace = true
 pal_async.workspace = true
+parking_lot.workspace = true
 storage_tests.workspace = true
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

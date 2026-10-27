@@ -18,7 +18,7 @@ blob, or a layered composition of multiple backends.
 | VhdmpDisk | `disk_vhdmp` | Windows vhdmp driver | Windows | Dynamic and differencing VHD/VHDX. |
 | VhdxDisk | [`vhdx`](vhdx.md) | VHDX file | Cross-platform | Pure-Rust VHDX parser. Dynamic, fixed, and differencing. |
 | FlatVmdkDisk | [`disk_vmdk`](vmdk.md) | VMDK extents | Cross-platform | Flat and read-only. Supports the `monolithicFlat` and `twoGbMaxExtentFlat` disk types. |
-| BlobDisk | [`disk_blob`](https://openvmm.dev/rustdoc/linux/disk_blob/index.html) | HTTP / Azure Blob | Cross-platform | Read-only. HTTP range requests. |
+| BlobDisk | [`disk_blob`](https://openvmm.dev/rustdoc/linux/disk_blob/index.html) | HTTP / Azure Blob | Cross-platform | Read-only. HTTP range requests, with timeouts. |
 | BlockDeviceDisk | [`disk_blockdevice`](https://openvmm.dev/rustdoc/linux/disk_blockdevice/index.html) | Linux block device or file | Linux | io_uring, resize via uevent, PR passthrough. Default for raw files on Linux in both OpenHCL and OpenVMM. |
 | NvmeDisk | [`disk_nvme`](https://openvmm.dev/rustdoc/linux/disk_nvme/index.html) | Physical NVMe (VFIO) | Linux/Windows | User-mode NVMe driver. Resize via AEN. |
 | StripedDisk | [`disk_striped`](https://openvmm.dev/rustdoc/linux/disk_striped/index.html) | Multiple Disks | Cross-platform | Stripes data across underlying disks. |
