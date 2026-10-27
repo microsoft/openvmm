@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 pub mod backoff;
 pub mod interrupt;
+pub mod iommufd_dma;
 pub mod lockmem;
 pub mod memory;
 pub mod page_allocator;
@@ -91,4 +92,12 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach all previously allocated memory blocks.
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>>;
+
+    /// Returns the noiommu IOAS handle associated with a cdev-based VFIO
+    /// device. Buffers retain their allocator's physical page numbers.
+    /// Legacy clients return `None`.
+    #[cfg(all(feature = "vfio", target_os = "linux"))]
+    fn iommufd_ioas(&self) -> Option<Arc<iommufd_dma::IommufdIoas>> {
+        None
+    }
 }

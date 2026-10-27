@@ -70,6 +70,9 @@ impl NvmeDevice for VfioNvmeDevice {
 pub struct VfioNvmeDriverSpawner {
     pub nvme_always_flr: bool,
     pub is_isolated: bool,
+    /// Use the VFIO cdev + iommufd noiommu interface instead of the legacy
+    /// group + container interface.
+    pub use_iommufd_cdev: bool,
     #[inspect(skip)]
     pub dma_client_spawner: DmaClientSpawner,
 }
@@ -207,18 +210,37 @@ impl VfioNvmeDriverSpawner {
         pci_id: &str,
         save_restore_supported: bool,
     ) -> Result<Arc<OpenhclDmaClient>, NvmeSpawnerError> {
-        self.dma_client_spawner
-            .new_client(DmaClientParameters {
-                device_name: format!("nvme_{}", pci_id),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: if self.is_isolated {
-                    AllocationVisibility::Shared
-                } else {
-                    AllocationVisibility::Private
-                },
-                persistent_allocations: save_restore_supported,
-            })
-            .map_err(NvmeSpawnerError::DmaClient)
+        let params = DmaClientParameters {
+            device_name: format!("nvme_{}", pci_id),
+            lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+            allocation_visibility: if self.is_isolated {
+                AllocationVisibility::Shared
+            } else {
+                AllocationVisibility::Private
+            },
+            persistent_allocations: save_restore_supported,
+        };
+        // When the cdev + iommufd interface is selected, allocate a fresh
+        // noiommu IOAS for this device and back the client with it. The IOAS on
+        // the client is what drives `VfioDevice` onto the cdev path.
+        //
+        // Keep-alive across servicing is only provided by the cdev + iommufd
+        // path (the legacy group keep-alive interface has been removed), so any
+        // persistent (keep-alive) client is forced onto cdev regardless of the
+        // global flag.
+        if self.use_iommufd_cdev || save_restore_supported {
+            let ioas = self
+                .dma_client_spawner
+                .new_iommufd_ioas()
+                .map_err(NvmeSpawnerError::DmaClient)?;
+            self.dma_client_spawner
+                .new_client_with_iommufd_ioas(params, ioas)
+                .map_err(NvmeSpawnerError::DmaClient)
+        } else {
+            self.dma_client_spawner
+                .new_client(params)
+                .map_err(NvmeSpawnerError::DmaClient)
+        }
     }
 
     async fn create_nvme_device(

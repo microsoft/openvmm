@@ -55,6 +55,23 @@ pub struct VfioDeviceBindIommufd {
     pub out_devid: u32,
 }
 
+const VFIO_DEVICE_BIND_FLAG_KEEP_ALIVE: u32 = 1 << 1;
+
+impl VfioDeviceBindIommufd {
+    fn new(iommufd: RawFd, keepalive: bool) -> Self {
+        Self {
+            argsz: size_of::<Self>() as u32,
+            flags: if keepalive {
+                VFIO_DEVICE_BIND_FLAG_KEEP_ALIVE
+            } else {
+                0
+            },
+            iommufd,
+            out_devid: 0,
+        }
+    }
+}
+
 #[repr(C)]
 pub struct VfioDeviceAttachIommufdPt {
     pub argsz: u32,
@@ -92,13 +109,12 @@ impl CdevDevice {
     ///
     /// Returns the kernel-assigned device ID within the iommufd context.
     /// This must be called before any DMA operations.
-    pub fn bind_iommufd(&self, iommufd_fd: RawFd) -> anyhow::Result<u32> {
-        let mut cmd = VfioDeviceBindIommufd {
-            argsz: size_of::<VfioDeviceBindIommufd>() as u32,
-            flags: 0,
-            iommufd: iommufd_fd,
-            out_devid: 0,
-        };
+    ///
+    /// `keepalive` requests a restore-time open without initial bus-master
+    /// clearing or reset. Unsupported kernels reject the flag; callers must
+    /// not retry without it. This does not prevent normal close-time teardown.
+    pub fn bind_iommufd(&self, iommufd_fd: RawFd, keepalive: bool) -> anyhow::Result<u32> {
+        let mut cmd = VfioDeviceBindIommufd::new(iommufd_fd, keepalive);
         // SAFETY: Both fds are valid, struct correctly constructed.
         unsafe {
             ioctl::vfio_device_bind_iommufd(self.file.as_raw_fd(), &mut cmd)
@@ -209,4 +225,27 @@ fn detach_iommufd_pt(device_fd: BorrowedFd<'_>) -> anyhow::Result<()> {
             .context("VFIO_DEVICE_DETACH_IOMMUFD_PT failed")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VfioDeviceBindIommufd;
+
+    #[test]
+    fn normal_bind_has_no_flags() {
+        let cmd = VfioDeviceBindIommufd::new(42, false);
+        assert_eq!(cmd.argsz, 16);
+        assert_eq!(cmd.flags, 0);
+        assert_eq!(cmd.iommufd, 42);
+        assert_eq!(cmd.out_devid, 0);
+    }
+
+    #[test]
+    fn restore_bind_sets_only_keep_alive() {
+        let cmd = VfioDeviceBindIommufd::new(42, true);
+        assert_eq!(cmd.argsz, 16);
+        assert_eq!(cmd.flags, 1 << 1);
+        assert_eq!(cmd.iommufd, 42);
+        assert_eq!(cmd.out_devid, 0);
+    }
 }

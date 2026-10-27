@@ -9798,6 +9798,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "safeatomic",
+ "tempfile",
  "tracing",
  "trycopy",
  "uevent",

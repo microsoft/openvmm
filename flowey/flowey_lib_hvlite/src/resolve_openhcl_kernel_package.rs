@@ -266,7 +266,7 @@ impl FlowNodeWithConfig for Node {
             let file_name = format!(
                 "Microsoft.OHCL.Kernel{}.{}{}-{}.tar.gz",
                 match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "",
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => ".Dev",
                     OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => ".Dev",
                 },
                 version,

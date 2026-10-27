@@ -50,5 +50,8 @@ vfio-bindings = { workspace = true, optional = true }
 vfio_sys = { workspace = true, optional = true }
 vmcore = { workspace = true, optional = true }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

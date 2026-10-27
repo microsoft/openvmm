@@ -838,7 +838,7 @@ impl IoasManager {
 
         // Bind the cdev device to this iommu context's iommufd.
         let devid = cdev
-            .bind_iommufd(self.ctx.as_raw_fd())
+            .bind_iommufd(self.ctx.as_raw_fd(), false)
             .context("failed to bind VFIO cdev to iommufd")?;
 
         // Build nesting objects if requested. For nesting, the device is NOT

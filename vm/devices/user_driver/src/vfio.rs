@@ -22,6 +22,7 @@ use pal_async::task::Task;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,14 +50,53 @@ pub enum VfioDmaClients {
     },
 }
 
+impl VfioDmaClients {
+    /// The client used for the device's primary DMA (the persistent client
+    /// when both are present). Used to determine how the device is opened.
+    fn primary(&self) -> &Arc<dyn DmaClient> {
+        match self {
+            VfioDmaClients::PersistentOnly(client) => client,
+            VfioDmaClients::EphemeralOnly(client) => client,
+            VfioDmaClients::Split { persistent, .. } => persistent,
+        }
+    }
+}
+
+/// The transport used to access an underlying VFIO device, holding the
+/// interface-specific resources alive for the device's lifetime.
+enum VfioTransport {
+    /// Legacy VFIO group + container (noiommu mode). Held only to keep the
+    /// container and group fds alive.
+    Legacy {
+        _container: vfio_sys::Container,
+        _group: vfio_sys::Group,
+    },
+    /// Modern VFIO cdev bound to an iommufd context and attached to an IOAS
+    /// (noiommu mode). Holds the iommufd context alive so its fd stays valid
+    /// for as long as the device is bound to it.
+    Cdev {
+        _iommufd: Arc<vfio_sys::iommufd::IommufdCtx>,
+    },
+}
+
+/// Selects how [`VfioDevice`] opens the underlying device.
+enum VfioDeviceType {
+    /// Legacy VFIO group + container interface in noiommu mode.
+    Legacy,
+    /// Modern VFIO cdev interface bound to the given iommufd context and
+    /// attached to the pre-allocated `ioas_id`, in noiommu mode.
+    Cdev {
+        iommufd: Arc<vfio_sys::iommufd::IommufdCtx>,
+        ioas_id: u32,
+    },
+}
+
 /// A device backend accessed via VFIO.
 #[derive(Inspect)]
 pub struct VfioDevice {
     pci_id: Arc<str>,
     #[inspect(skip)]
-    _container: vfio_sys::Container,
-    #[inspect(skip)]
-    _group: vfio_sys::Group,
+    _transport: VfioTransport,
     #[inspect(skip)]
     device: Arc<vfio_sys::Device>,
     #[inspect(skip)]
@@ -89,6 +129,8 @@ impl Drop for VfioDevice {
 
 impl VfioDevice {
     /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
+    ///
+    /// Selects the transport from the DMA client, as in [`Self::restore`].
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
@@ -97,14 +139,40 @@ impl VfioDevice {
         Self::restore(driver_source, pci_id, false, dma_clients).await
     }
 
-    /// Creates a new VFIO-backed device for the PCI device with `pci_id`.
-    /// or creates a device from the saved state if provided.
+    /// Creates or restores a VFIO-backed device for the PCI device with
+    /// `pci_id`.
+    ///
+    /// The underlying access interface is selected automatically from the DMA
+    /// client: if the client has an associated iommufd noiommu IOAS (see
+    /// [`DmaClient::iommufd_ioas`]), the modern VFIO cdev interface is used and
+    /// the device is bound to that IOAS; otherwise the legacy VFIO group +
+    /// container interface is used. Both operate in noiommu mode.
     pub async fn restore(
         driver_source: &VmTaskDriverSource,
         pci_id: impl AsRef<str>,
         keepalive: bool,
         dma_clients: VfioDmaClients,
     ) -> anyhow::Result<Self> {
+        Self::restore_inner(driver_source, pci_id, keepalive, dma_clients).await
+    }
+
+    async fn restore_inner(
+        driver_source: &VmTaskDriverSource,
+        pci_id: impl AsRef<str>,
+        keepalive: bool,
+        dma_clients: VfioDmaClients,
+    ) -> anyhow::Result<Self> {
+        // Select the access interface from the DMA client: an associated
+        // iommufd noiommu IOAS drives the cdev path (and the device is
+        // attached to that same IOAS); otherwise use the legacy group path.
+        let device_type = match dma_clients.primary().iommufd_ioas() {
+            Some(ioas) => VfioDeviceType::Cdev {
+                iommufd: ioas.ctx(),
+                ioas_id: ioas.ioas_id(),
+            },
+            None => VfioDeviceType::Legacy,
+        };
+
         let pci_id = pci_id.as_ref();
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -127,55 +195,97 @@ impl VfioDevice {
         let driver = driver_source.simple();
         let retry = vfio_sys::VfioRetry::new(&driver, pci_id);
 
-        let is_not_found = |e: &anyhow::Error| {
-            e.chain().any(|cause| {
-                cause
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound)
-            })
-        };
-        let is_enodev = |e: &anyhow::Error| {
-            e.chain().any(|cause| {
-                cause
-                    .downcast_ref::<Errno>()
-                    .is_some_and(|e| *e == Errno::ENODEV)
-            })
-        };
+        let (device, transport) = match device_type {
+            VfioDeviceType::Legacy => {
+                let container = vfio_sys::Container::new()?;
+                let group_id = retry
+                    .retry(
+                        || vfio_sys::Group::find_group_for_device(&path),
+                        &is_not_found,
+                        "find_group_for_device",
+                    )
+                    .await?;
+                let group = retry
+                    .retry(
+                        || vfio_sys::Group::open_noiommu(group_id),
+                        &is_not_found,
+                        "open_noiommu",
+                    )
+                    .await?;
+                group.set_container(&container)?;
+                if !group.status()?.viable() {
+                    anyhow::bail!("group is not viable");
+                }
 
-        let container = vfio_sys::Container::new()?;
-        let group_id = retry
-            .retry(
-                || vfio_sys::Group::find_group_for_device(&path),
-                &is_not_found,
-                "find_group_for_device",
-            )
-            .await?;
-        let group = retry
-            .retry(
-                || vfio_sys::Group::open_noiommu(group_id),
-                &is_not_found,
-                "open_noiommu",
-            )
-            .await?;
-        group.set_container(&container)?;
-        if !group.status()?.viable() {
-            anyhow::bail!("group is not viable");
-        }
-
-        container.set_iommu(IommuType::NoIommu)?;
-        if keepalive {
-            retry
-                .retry(
-                    || group.set_keep_alive(pci_id),
-                    &is_enodev,
-                    "set_keep_alive",
+                container.set_iommu(IommuType::NoIommu)?;
+                if keepalive {
+                    // The legacy VFIO group keep-alive ioctl has been removed.
+                    // Device keep-alive across servicing is now provided
+                    // exclusively by the cdev + iommufd path (which is selected
+                    // automatically whenever keep-alive is requested).
+                    anyhow::bail!(
+                        "keep-alive is only supported on the VFIO cdev + iommufd path; \
+                         the legacy group keep-alive interface has been removed"
+                    );
+                }
+                tracing::debug!(pci_id, "about to open device");
+                let device = retry
+                    .retry(|| group.open_device(pci_id), &is_enodev, "open_device")
+                    .await?;
+                (
+                    device,
+                    VfioTransport::Legacy {
+                        _container: container,
+                        _group: group,
+                    },
                 )
-                .await?;
-        }
-        tracing::debug!(pci_id, "about to open device");
-        let device = retry
-            .retry(|| group.open_device(pci_id), &is_enodev, "open_device")
-            .await?;
+            }
+            VfioDeviceType::Cdev { iommufd, ioas_id } => {
+                let cdev_sysfs = path.join("vfio-dev");
+                let dev_path = retry
+                    .retry(
+                        || find_cdev_node(&cdev_sysfs),
+                        &is_not_found,
+                        "find_cdev_node",
+                    )
+                    .await?;
+                tracing::debug!(pci_id, ?dev_path, "about to open cdev device");
+                let file = retry
+                    .retry(
+                        || {
+                            std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .open(&dev_path)
+                                .with_context(|| format!("failed to open {}", dev_path.display()))
+                        },
+                        is_retryable_cdev_open,
+                        "open_cdev",
+                    )
+                    .await?;
+                let cdev = vfio_sys::cdev::CdevDevice::from_file(file);
+                let devid = retry
+                    .retry(
+                        || cdev.bind_iommufd(iommufd.as_raw_fd(), keepalive),
+                        is_enodev,
+                        "bind_iommufd",
+                    )
+                    .await
+                    .context("failed to bind VFIO cdev to iommufd")?;
+                cdev.attach_ioas(ioas_id)
+                    .context("failed to attach VFIO cdev to IOAS")?;
+                tracing::info!(
+                    pci_id,
+                    devid,
+                    ioas_id,
+                    "VFIO cdev bound to iommufd and attached to IOAS"
+                );
+                (
+                    cdev.into_device(),
+                    VfioTransport::Cdev { _iommufd: iommufd },
+                )
+            }
+        };
         let msix_info = device.irq_info(vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX)?;
         if msix_info.flags.noresize() {
             anyhow::bail!("unsupported: kernel does not support dynamic msix allocation");
@@ -184,8 +294,7 @@ impl VfioDevice {
         let config_space = device.region_info(VFIO_PCI_CONFIG_REGION_INDEX)?;
         let this = Self {
             pci_id: pci_id.into(),
-            _container: container,
-            _group: group,
+            _transport: transport,
             device: Arc::new(device),
             msix_info,
             config_space,
@@ -494,6 +603,52 @@ fn set_irq_affinity(irq: u32, cpu: u32) -> std::io::Result<()> {
     )
 }
 
+/// Find the VFIO cdev device node (`/dev/vfio/devices/vfioN`) for a device,
+/// given its sysfs `vfio-dev` directory (`<pci_sysfs>/vfio-dev`).
+///
+/// The kernel creates exactly one `vfioN` child under the device's `vfio-dev`
+/// sysfs directory whose name matches the character device node under
+/// `/dev/vfio/devices`.
+fn find_cdev_node(vfio_dev_sysfs: &Path) -> anyhow::Result<std::path::PathBuf> {
+    let entry = std::fs::read_dir(vfio_dev_sysfs)
+        .with_context(|| format!("failed to read {}", vfio_dev_sysfs.display()))?
+        .next()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no vfio-dev entry present for device",
+            )
+        })?
+        .context("failed to read vfio-dev directory entry")?;
+    Ok(Path::new("/dev/vfio/devices").join(entry.file_name()))
+}
+
+fn is_enodev(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<Errno>()
+            .is_some_and(|error| *error == Errno::ENODEV)
+    })
+}
+
+fn is_not_found(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+fn is_retryable_cdev_open(error: &anyhow::Error) -> bool {
+    // The cdev can be visible before VFIO completes device registration.
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ENODEV)
+        })
+    })
+}
+
 impl DeviceRegisterIo for vfio_sys::MappedRegion {
     fn len(&self) -> usize {
         self.len()
@@ -632,4 +787,176 @@ pub fn vfio_set_device_reset_method(
         .collect();
     fs_err::write(path, reset_method)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_cdev_node;
+    use super::is_enodev;
+    use super::is_not_found;
+    use super::is_retryable_cdev_open;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io;
+
+    #[test]
+    fn cdev_bind_retry_classifies_ioctl_errors() {
+        for (errno, retryable) in [
+            (nix::errno::Errno::ENODEV, true),
+            (nix::errno::Errno::EINVAL, false),
+            (nix::errno::Errno::EBUSY, false),
+            (nix::errno::Errno::EACCES, false),
+            (nix::errno::Errno::EIO, false),
+        ] {
+            let error = anyhow::Error::new(errno)
+                .context("VFIO_DEVICE_BIND_IOMMUFD failed")
+                .context("failed to bind VFIO cdev to iommufd");
+            assert_eq!(is_enodev(&error), retryable, "errno {errno}");
+        }
+        assert!(!is_enodev(&anyhow::anyhow!("ENODEV")));
+    }
+
+    #[async_test]
+    async fn cdev_bind_enodev_retry_is_bounded(driver: DefaultDriver) {
+        let retry = vfio_sys::VfioRetry::new(&driver, "test-device");
+        for failures in [1, usize::MAX] {
+            let mut attempts = 0;
+            let result = retry
+                .retry(
+                    || {
+                        attempts += 1;
+                        if attempts <= failures {
+                            Err(anyhow::Error::new(nix::errno::Errno::ENODEV)
+                                .context("VFIO_DEVICE_BIND_IOMMUFD failed"))
+                        } else {
+                            Ok(42)
+                        }
+                    },
+                    is_enodev,
+                    "bind_iommufd",
+                )
+                .await;
+            assert_eq!(attempts, 2);
+            if failures == 1 {
+                assert_eq!(result.unwrap(), 42);
+            } else {
+                assert!(is_enodev(&result.unwrap_err()));
+            }
+        }
+    }
+
+    #[async_test]
+    async fn cdev_bind_does_not_retry_invalid_flags(driver: DefaultDriver) {
+        let retry = vfio_sys::VfioRetry::new(&driver, "test-device");
+        let mut attempts = 0;
+        let result: anyhow::Result<()> = retry
+            .retry(
+                || {
+                    attempts += 1;
+                    Err(anyhow::Error::new(nix::errno::Errno::EINVAL)
+                        .context("VFIO_DEVICE_BIND_IOMMUFD failed"))
+                },
+                is_enodev,
+                "bind_iommufd",
+            )
+            .await;
+        assert_eq!(attempts, 1);
+        assert!(!is_enodev(&result.unwrap_err()));
+    }
+
+    #[async_test]
+    async fn cdev_discovery_retries_empty_directory(driver: DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let error = find_cdev_node(directory.path()).unwrap_err();
+        assert!(is_not_found(&error.context("failed to discover VFIO cdev")));
+
+        let retry = vfio_sys::VfioRetry::new(&driver, "test-device");
+        let mut attempts = 0;
+        let result = retry
+            .retry(
+                || {
+                    attempts += 1;
+                    if attempts == 2 {
+                        std::fs::write(directory.path().join("noiommu-vfio7"), [])?;
+                    }
+                    find_cdev_node(directory.path())
+                },
+                is_not_found,
+                "find_cdev_node",
+            )
+            .await
+            .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            result,
+            std::path::Path::new("/dev/vfio/devices/noiommu-vfio7")
+        );
+    }
+
+    #[async_test]
+    async fn cdev_discovery_empty_directory_retry_is_bounded(driver: DefaultDriver) {
+        let directory = tempfile::tempdir().unwrap();
+        let retry = vfio_sys::VfioRetry::new(&driver, "test-device");
+        let mut attempts = 0;
+        let result = retry
+            .retry(
+                || {
+                    attempts += 1;
+                    find_cdev_node(directory.path())
+                },
+                is_not_found,
+                "find_cdev_node",
+            )
+            .await;
+        assert_eq!(attempts, 2);
+        assert!(is_not_found(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn cdev_open_retry_classifies_io_errors() {
+        for (errno, retryable) in [
+            (libc::ENOENT, true),
+            (libc::ENODEV, true),
+            (libc::EACCES, false),
+            (libc::EIO, false),
+            (libc::EINVAL, false),
+            (libc::ENXIO, false),
+        ] {
+            let error = anyhow::Error::new(io::Error::from_raw_os_error(errno))
+                .context("failed to open VFIO cdev")
+                .context("failed to initialize device");
+            assert_eq!(is_retryable_cdev_open(&error), retryable, "errno {errno}");
+        }
+
+        let error = anyhow::Error::new(io::Error::from(io::ErrorKind::NotFound));
+        assert!(is_retryable_cdev_open(&error));
+        assert!(!is_retryable_cdev_open(&anyhow::anyhow!("ENODEV")));
+    }
+
+    #[async_test]
+    async fn cdev_open_enodev_retry_is_bounded(driver: DefaultDriver) {
+        let retry = vfio_sys::VfioRetry::new(&driver, "test-device");
+        for failures in [1, usize::MAX] {
+            let mut attempts = 0;
+            let result = retry
+                .retry(
+                    || {
+                        attempts += 1;
+                        if attempts <= failures {
+                            Err(
+                                anyhow::Error::new(io::Error::from_raw_os_error(libc::ENODEV))
+                                    .context("failed to open VFIO cdev"),
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    },
+                    is_retryable_cdev_open,
+                    "open_cdev",
+                )
+                .await;
+            assert_eq!(attempts, 2);
+            assert_eq!(result.is_ok(), failures == 1);
+        }
+    }
 }
