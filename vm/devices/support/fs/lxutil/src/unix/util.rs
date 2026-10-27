@@ -10,12 +10,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
 
-// libc does not yet expose the generic Linux syscall number on AArch64 musl.
+// libc does not yet expose the generic Linux syscall number on AArch64.
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(all(target_arch = "aarch64", target_env = "musl"))]
+#[cfg(target_arch = "aarch64")]
 const SYS_FCHMODAT2: libc::c_long = 452;
 // xtask-fmt allow-target-arch sys-crate
-#[cfg(not(all(target_arch = "aarch64", target_env = "musl")))]
+#[cfg(not(target_arch = "aarch64"))]
 const SYS_FCHMODAT2: libc::c_long = libc::SYS_fchmodat2;
 
 // Wrapper around a C DIR* used for Unix file enumeration.
