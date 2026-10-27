@@ -1851,11 +1851,45 @@ mod tests {
     #[test]
     #[ignore = "requires permission to create native Windows symlinks"]
     fn no_follow_native_directory_link() {
+        check_no_follow_directory_link(|target, link| {
+            std::os::windows::fs::symlink_dir(target, link).unwrap();
+        });
+    }
+
+    #[test]
+    fn no_follow_directory_junction() {
+        check_no_follow_directory_link(|target, link| {
+            std::fs::create_dir(link).unwrap();
+            let handle = std::fs::OpenOptions::new()
+                .access_mode(Foundation::GENERIC_WRITE.0)
+                .custom_flags(
+                    W32Fs::FILE_FLAG_BACKUP_SEMANTICS.0 | W32Fs::FILE_FLAG_OPEN_REPARSE_POINT.0,
+                )
+                .open(link)
+                .unwrap();
+            let mut substitute = ffi::OsString::from(r"\??\");
+            substitute.push(target);
+            let substitute: Vec<u16> = substitute.encode_wide().collect();
+            let length = u16::try_from(substitute.len() * 2).unwrap();
+            // Mount-point data has four name fields, followed by two terminated names.
+            let mut reparse = Vec::new();
+            reparse.extend_from_slice(&W32Ss::IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+            for value in [8 + length + 4, 0, 0, length, length + 2, 0] {
+                reparse.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in substitute.into_iter().chain([0, 0]) {
+                reparse.extend_from_slice(&value.to_le_bytes());
+            }
+            util::set_reparse_point(&handle.into(), &reparse).unwrap();
+        });
+    }
+
+    fn check_no_follow_directory_link(create_link: impl Fn(&Path, &Path)) {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("file"), b"unchanged").unwrap();
         std::fs::write(root.path().join("source"), b"source").unwrap();
-        std::os::windows::fs::symlink_dir(outside.path(), root.path().join("link")).unwrap();
+        create_link(outside.path(), &root.path().join("link"));
 
         let options = LxVolumeOptions::new();
         let volume = LxVolume::new(root.path(), &options).unwrap();
@@ -1935,7 +1969,7 @@ mod tests {
             .unwrap()
             .unwrap();
         std::fs::rename(root.path().join("dir"), root.path().join("original")).unwrap();
-        std::os::windows::fs::symlink_dir(outside.path(), root.path().join("dir")).unwrap();
+        create_link(outside.path(), &root.path().join("dir"));
         let source = volume
             .open_file(
                 Path::new("source"),
