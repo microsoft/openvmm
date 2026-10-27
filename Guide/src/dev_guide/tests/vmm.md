@@ -286,6 +286,16 @@ Hyper-V Administrators group.
 
 To see all available options: `cargo xflowey vmm-tests-run --help`.
 
+### Copy-only I/O tests
+
+Select `test(virtio_bounce) | test(virtio_blk_bounce)` to test copied device
+I/O. SNP variants require an AMD MSHV host with SNP support. Block-device
+removal tests quiesce the guest driver; they do not cover surprise removal.
+
+Host-block cases require Linux, `losetup`, and permission to create loop
+devices (`CAP_SYS_ADMIN`). Enable them with `PETRI_CAPABILITIES=loop_device`.
+The tests use disposable disks, not existing host disks.
+
 ### Lazy Fetch (Default)
 
 By default, VHD/ISO disk images are streamed on demand via HTTP and cached
