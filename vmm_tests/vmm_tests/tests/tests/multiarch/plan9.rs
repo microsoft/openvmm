@@ -63,6 +63,10 @@ async fn plan9_file_operations(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
         .await?;
 
     assert_eq!(fs_err::read(directory.path().join("file"))?, b"from guest");
+    assert_eq!(
+        fs_err::read_link(directory.path().join("symlink"))?,
+        std::path::Path::new("file")
+    );
     let file = fs_err::metadata(directory.path().join("file"))?;
     let link = fs_err::metadata(directory.path().join("hardlink"))?;
     assert_eq!(file.ino(), link.ino());
