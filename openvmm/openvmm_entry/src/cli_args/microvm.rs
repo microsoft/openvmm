@@ -296,6 +296,18 @@ pub struct MicrovmCli {
     #[clap(long, requires = "restore_snapshot")]
     pub restore_absent_scratch: bool,
 
+    /// Install this restore's network policy in place of the complete
+    /// deny-all policy that a platform snapshot's NIC was captured with.
+    ///
+    /// The NIC keeps its captured identity. The network policy options of
+    /// this restore, which may include `--network-ingress allow`,
+    /// `--host-loopback allow`, and `--host-loopback-forward`, are validated
+    /// as at a cold boot, and the policy is installed before any vCPU runs.
+    /// The snapshot must have been captured with `--network-egress deny` and
+    /// `--host-loopback deny`, without egress rules, a proxy, or ingress.
+    #[clap(long, requires = "restore_snapshot")]
+    pub restore_network_policy: bool,
+
     /// Maximum time allowed for a microVM guest to complete post-restore repair.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
     pub restore_gate_timeout_ms: u64,
@@ -386,7 +398,8 @@ pub struct MicrovmCli {
     /// addresses are not globally reachable. Globally reachable clients are
     /// refused, and so is the host itself unless `--host-loopback allow`
     /// admits it. Replies to admitted traffic pass regardless of the egress
-    /// policy. Snapshots do not support it.
+    /// policy. Snapshot capture does not support it, and a restore supports it
+    /// only with `--restore-network-policy`.
     #[clap(long, value_enum, value_name = "ACTION")]
     pub network_ingress: Option<MicrovmNetworkActionCli>,
 
@@ -416,7 +429,8 @@ pub struct MicrovmCli {
     /// replies to the host pass regardless of the egress policy. With
     /// `--network-ingress allow`, the listeners published to the host's
     /// private networks admit the host instead. Explicit forwards may publish
-    /// further ports. Snapshots do not support explicit `allow`.
+    /// further ports. Snapshot capture does not support explicit `allow`, and
+    /// a restore supports it only with `--restore-network-policy`.
     #[clap(long, value_enum, value_name = "ACTION")]
     pub host_loopback: Option<MicrovmNetworkActionCli>,
 
@@ -741,10 +755,20 @@ impl Options {
         anyhow::ensure!(
             self.machine != MachineProfileCli::Microvm
                 || self.microvm.host_loopback != Some(MicrovmNetworkActionCli::Allow)
-                || (self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none()),
-            "microVM snapshots do not support --host-loopback allow, whose published guest listeners are live host attachments"
+                || self.microvm_admits_live_network_attachments(),
+            "microVM snapshots do not support --host-loopback allow, whose published guest listeners are live host attachments, except at a restore with --restore-network-policy"
         );
         Ok(())
+    }
+
+    /// Returns whether this launch may create live network attachments: the
+    /// guest listeners that ingress and explicit host-loopback access publish,
+    /// and host-loopback forwards. A snapshot cannot capture them, so a launch
+    /// may create them unless it captures one, and a restore only when it
+    /// installs a new policy with `--restore-network-policy`.
+    fn microvm_admits_live_network_attachments(&self) -> bool {
+        self.microvm.snapshot_destination.is_none()
+            && (self.restore_snapshot.is_none() || self.microvm.restore_network_policy)
     }
 
     pub(crate) fn validate_microvm_options(&self) -> anyhow::Result<()> {
@@ -777,13 +801,14 @@ impl Options {
                     && self.microvm.restore_processors.is_none()
                     && self.microvm.restore_memory.is_none()
                     && !self.microvm.restore_absent_scratch
+                    && !self.microvm.restore_network_policy
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.snapshot_block_identity.is_none()
                     && self.microvm.snapshot_generation_id.is_none()
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --restore-network-policy, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -900,10 +925,14 @@ impl Options {
         }
         // Clap's `requires` does not hold when an option that conflicts with
         // --restore-snapshot, such as --kernel, is present, so a cold boot
-        // would otherwise ignore the declaration.
+        // would otherwise ignore these declarations.
         anyhow::ensure!(
             self.restore_snapshot.is_some() || !self.microvm.restore_absent_scratch,
             "--restore-absent-scratch requires --restore-snapshot"
+        );
+        anyhow::ensure!(
+            self.restore_snapshot.is_some() || !self.microvm.restore_network_policy,
+            "--restore-network-policy requires --restore-snapshot"
         );
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
@@ -1241,8 +1270,8 @@ impl Options {
         );
         anyhow::ensure!(
             self.microvm.network_ingress != Some(MicrovmNetworkActionCli::Allow)
-                || (self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none()),
-            "microVM snapshots do not support --network-ingress allow, whose published guest listeners are live host attachments"
+                || self.microvm_admits_live_network_attachments(),
+            "microVM snapshots do not support --network-ingress allow, whose published guest listeners are live host attachments, except at a restore with --restore-network-policy"
         );
         anyhow::ensure!(
             self.microvm.network_egress_allow.len() <= 256
@@ -1259,8 +1288,8 @@ impl Options {
                 "--host-loopback-forward requires explicit --host-loopback allow"
             );
             anyhow::ensure!(
-                self.microvm.snapshot_destination.is_none() && self.restore_snapshot.is_none(),
-                "microVM snapshots do not support live host-loopback port forwards"
+                self.microvm_admits_live_network_attachments(),
+                "microVM snapshots do not support live host-loopback port forwards, except at a restore with --restore-network-policy"
             );
             let mut forwards = self.microvm.host_loopback_forward.clone();
             forwards.sort_unstable();
@@ -1641,6 +1670,66 @@ mod tests {
             "--restore-snapshot",
             "snapshot",
             "--restore-absent-scratch",
+        ])
+        .unwrap();
+        assert!(standard.validate_microvm_options().is_err());
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_restore_network_policy_requires_a_microvm_restore() {
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--network-profile",
+            "portable",
+            "--restore-network-policy",
+        ])
+        .unwrap();
+        restore.validate_microvm_options().unwrap();
+        assert!(restore.microvm.restore_network_policy);
+
+        // A cold boot has no captured policy to replace.
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--restore-network-policy",
+            ])
+            .is_err()
+        );
+        // Clap accepts it when --kernel, which conflicts with --restore-snapshot,
+        // lifts the requirement, so the validation refuses it.
+        let cold_boot = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--kernel",
+            "vmlinux",
+            "--net",
+            "10.0.0.2/24",
+            "--network-profile",
+            "portable",
+            "--restore-network-policy",
+        ])
+        .unwrap();
+        assert_eq!(
+            cold_boot
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string(),
+            "--restore-network-policy requires --restore-snapshot"
+        );
+        // Nor does a standard machine.
+        let standard = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-network-policy",
         ])
         .unwrap();
         assert!(standard.validate_microvm_options().is_err());
@@ -2422,18 +2511,42 @@ mod tests {
             assert_eq!(policy.host_loopback_ingress_action(), EgressAction::Allow);
             assert_eq!(options.microvm_private_network_ingress(), None);
         }
-        // Snapshots cannot carry published listeners.
+        // Snapshots cannot carry published listeners: neither a capture nor a
+        // restore that keeps the captured policy may publish them.
         for extra in [
             vec!["--net", "10.0.0.2/24", "--snapshot-destination", "snapshot"],
             vec!["--restore-snapshot", "snapshot"],
         ] {
             let options = Options::try_parse_from(common.into_iter().chain(extra)).unwrap();
-            let error = options.validate_microvm_options().unwrap_err();
-            assert!(
-                error.to_string().contains("--host-loopback allow"),
-                "{error}"
-            );
+            for error in [
+                options.validate_microvm_host_loopback().unwrap_err(),
+                options.validate_microvm_options().unwrap_err(),
+            ] {
+                assert!(
+                    error.to_string().contains("--host-loopback allow"),
+                    "{error}"
+                );
+            }
         }
+        // A restore that installs a new policy may, as a cold boot may, with
+        // forwards.
+        let replacement = Options::try_parse_from(common.into_iter().chain([
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-network-policy",
+            "--host-loopback-forward",
+            "tcp:3000:8080",
+        ]))
+        .unwrap();
+        replacement.validate_microvm_host_loopback().unwrap();
+        replacement.validate_microvm_options().unwrap();
+        let mut kept = replacement;
+        kept.microvm.restore_network_policy = false;
+        let error = kept.validate_microvm_options().unwrap_err();
+        assert!(
+            error.to_string().contains("--host-loopback allow"),
+            "{error}"
+        );
         // Omitted or denied host loopback publishes nothing.
         for host_loopback in [None, Some("deny")] {
             let options = Options::try_parse_from(
@@ -3185,7 +3298,8 @@ mod tests {
         );
         assert_eq!(denied.microvm_private_network_ingress(), None);
 
-        // Snapshots cannot carry published listeners.
+        // Snapshots cannot carry published listeners: neither a capture nor a
+        // restore that keeps the captured policy may publish them.
         for arguments in [
             [
                 "--net",
@@ -3210,6 +3324,18 @@ mod tests {
                 "{error}"
             );
         }
+        // A restore that installs a new policy may, as a cold boot may.
+        parse(&[
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-network-policy",
+            "--network-ingress",
+            "allow",
+            "--host-loopback",
+            "allow",
+        ])
+        .validate_microvm_options()
+        .unwrap();
     }
 
     #[test]
