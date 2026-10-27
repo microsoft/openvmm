@@ -44,6 +44,8 @@ use crate::Profile;
 use crate::Syscalls;
 
 /// Profile derived from observed worker behavior.
+///
+/// Leaves `mbind` available for host NUMA placement of guest RAM.
 pub fn vm_worker() -> Builder {
     Profile::deny_all()
         .name("vm_worker")

@@ -1265,6 +1265,11 @@ complete per-worker syscall inventories. Update the policy as follows:
 5. Run the affected workers through their full lifecycle, including shutdown
    and error paths.
 
+For example, `mbind` is workload-dependent: VM workers use `MPOL_BIND` with
+flags set to zero for host NUMA placement of guest RAM, so their profile leaves
+it available. TPM workers deny it explicitly. Capability dropping is unchanged;
+the more powerful `MPOL_MF_MOVE_ALL` operation still requires `CAP_SYS_NICE`.
+
 This trades some theoretical syscall minimization for a policy that can remain
 enabled and maintained as worker link sets, libc, allocators, and toolchains
 change.

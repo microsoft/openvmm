@@ -147,11 +147,6 @@ pub(crate) const SYSCALL_DENYLIST_MANDATORY: &[DeniedSyscall] = &[
         reason: Some("Loads a replacement kernel image, enabling complete host takeover."),
     },
     DeniedSyscall {
-        name: "mbind",
-        enforcement: MANDATORY,
-        reason: Some("Changes memory placement policy across NUMA nodes."),
-    },
-    DeniedSyscall {
         name: "migrate_pages",
         enforcement: MANDATORY,
         reason: Some("Moves another process's pages across NUMA nodes."),
@@ -377,6 +372,13 @@ pub(crate) const SYSCALL_DENYLIST_OPTIONAL: &[DeniedSyscall] = &[
         name: "keyctl",
         enforcement: OPTIONAL,
         reason: Some("Accepts attacker-controlled variable-size payloads."),
+    },
+    DeniedSyscall {
+        name: "mbind",
+        enforcement: OPTIONAL,
+        reason: Some(
+            "Exposes NUMA policy and page migration; VM workers require it for host memory placement.",
+        ),
     },
     DeniedSyscall {
         name: "request_key",

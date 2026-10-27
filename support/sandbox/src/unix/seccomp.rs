@@ -511,6 +511,101 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    fn worker_profiles_preserve_numa_binding_policy() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::seccomp::tests::helper_worker_numa_binding",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "NUMA binding helper failed ({}):\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_worker_numa_binding() {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let node: usize = status
+            .lines()
+            .find_map(|line| line.strip_prefix("Mems_allowed_list:"))
+            .unwrap_or("0")
+            .trim()
+            .split([',', '-'])
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let maxnode = node + 2;
+        let word_bits = libc::c_ulong::BITS as usize;
+        let mut nodemask = vec![0 as libc::c_ulong; maxnode.div_ceil(word_bits)];
+        nodemask[node / word_bits] = 1 << (node % word_bits);
+
+        const LEN: usize = 4096;
+        // SAFETY: An anonymous mapping with no requested address or backing fd.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                LEN,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let bind = || {
+            // SAFETY: The mapping and nodemask remain valid throughout the call.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_mbind,
+                    mapping,
+                    LEN,
+                    libc::MPOL_BIND,
+                    nodemask.as_ptr(),
+                    maxnode,
+                    0,
+                )
+            };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error().raw_os_error().unwrap())
+            }
+        };
+
+        caps::clear(None, caps::CapSet::Effective).unwrap();
+        caps::clear(None, caps::CapSet::Permitted).unwrap();
+        let unfiltered = bind();
+        // Use a distinct errno to distinguish our filter from host restrictions
+        // or kernels without NUMA support.
+        assert_ne!(unfiltered, Err(libc::EACCES));
+        crate::unix::hardening::set_no_new_privs().unwrap();
+        for (profile, expected) in [
+            (crate::profiles::vm_worker().build(), unfiltered),
+            (crate::profiles::tpm_worker().build(), Err(libc::EACCES)),
+        ] {
+            let crate::Syscalls::Deny(names) = &profile.inner.syscalls else {
+                panic!("worker must use syscall filtering");
+            };
+            let names = names.iter().map(String::as_str).collect::<Vec<_>>();
+            apply_denylist(&names, SeccompAction::Errno(libc::EACCES as u32)).unwrap();
+            assert_eq!(bind(), expected, "NUMA policy for {}", profile.name());
+        }
+        // SAFETY: Release the mapping obtained above; it is no longer used.
+        assert_eq!(unsafe { libc::munmap(mapping, LEN) }, 0);
+    }
+
+    #[test]
     fn mandatory_filter_denies_executable_replacement() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([

@@ -91,6 +91,7 @@ pub fn tpm_worker() -> Builder {
             "add_key",
             "kcmp",
             "keyctl",
+            "mbind",
             "request_key",
         ]))
         .network(Network::None)
