@@ -582,6 +582,7 @@ impl BounceBufferTracker {
 mod tests {
     use super::*;
     use sparse_mmap::SparseMapping;
+    use test_with_tracing::test;
 
     const SIZE_1MB: usize = 1048576;
 

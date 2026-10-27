@@ -1650,6 +1650,7 @@ dependencies = [
  "scsi_buffers",
  "storage_tests",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -7742,6 +7743,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -10405,8 +10407,10 @@ dependencies = [
  "guestmem",
  "inspect",
  "inspect_counters",
+ "mesh",
  "pal_async",
  "pal_event",
+ "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",
