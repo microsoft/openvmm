@@ -74,7 +74,6 @@ pub(super) use snp::SnpError;
 pub(crate) use snp::SnpLaunchState;
 pub(crate) use snp::SnpPartitionState;
 pub(crate) use snp::SnpVpState;
-pub(crate) use snp::acquire_snp_host_access;
 use snp::prepare_snp_config;
 use snp::snp_cpuid_overrides;
 use snp::snp_hv_cpuid_overrides;
@@ -442,10 +441,21 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self.max_physical_address_size()
     }
 
+    fn guest_memory_io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        match self.isolation {
+            MshvProtoPartitionIsolation::None => guestmem::GuestMemoryIoPolicy::Direct,
+            MshvProtoPartitionIsolation::Snp { .. } => guestmem::GuestMemoryIoPolicy::CopyOnly,
+        }
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        validate_guest_memory_io_policy(
+            self.guest_memory_io_policy(),
+            config.guest_memory.io_policy(),
+        )?;
         let snp_config = match &self.isolation {
             MshvProtoPartitionIsolation::None => None,
             MshvProtoPartitionIsolation::Snp { config, .. } => config.as_deref(),
@@ -612,6 +622,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 
         Ok((partition, vps))
     }
+}
+
+fn validate_guest_memory_io_policy(
+    required: guestmem::GuestMemoryIoPolicy,
+    actual: guestmem::GuestMemoryIoPolicy,
+) -> Result<(), Error> {
+    if required == guestmem::GuestMemoryIoPolicy::CopyOnly && actual != required {
+        return Err(ErrorInner::InvalidConfiguration(
+            "MSHV requires construction-time copy-only guest memory for this mode",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl virt::Partition for MshvPartition {
@@ -1587,6 +1610,24 @@ fn supported_xsave_features() -> hvdef::HvX64PartitionProcessorXsaveFeatures {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn required_copy_only_mode_rejects_direct_guest_memory() {
+        use guestmem::GuestMemoryIoPolicy;
+
+        let direct = GuestMemory::allocate(4096);
+        let copy_only = direct.copy_only_view();
+        assert!(
+            validate_guest_memory_io_policy(GuestMemoryIoPolicy::CopyOnly, direct.io_policy())
+                .is_err()
+        );
+        validate_guest_memory_io_policy(GuestMemoryIoPolicy::CopyOnly, copy_only.io_policy())
+            .unwrap();
+        for memory in [&direct, &copy_only] {
+            validate_guest_memory_io_policy(GuestMemoryIoPolicy::Direct, memory.io_policy())
+                .unwrap();
+        }
+    }
 
     #[test]
     fn can_disable_snp_cpuid_offloads() {
