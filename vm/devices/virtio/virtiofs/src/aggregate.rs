@@ -94,7 +94,8 @@ impl VirtioFs {
     /// Each child carries its own read-only setting (from `mount_options`), so
     /// shares under one aggregate device may differ.
     ///
-    /// Only valid in aggregate mode. Returns:
+    /// Volume setup failures retain their diagnostic context. Configuration failures use
+    /// [`crate::CreateError::Filesystem`] with the following errnos:
     /// - `EINVAL` on a direct-mode file system, or if `name` is empty,
     ///   reserved (`.`/`..`), or contains `/` or `\0`.
     /// - `EAGAIN` if the device has begun tearing down (see
@@ -106,9 +107,9 @@ impl VirtioFs {
         name: &str,
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
-    ) -> lx::Result<()> {
+    ) -> Result<(), crate::CreateError> {
         let Some(aggregate) = self.inner.aggregate() else {
-            return Err(lx::Error::EINVAL);
+            return Err(lx::Error::EINVAL.into());
         };
 
         check_name(name.as_bytes())?;
@@ -125,7 +126,7 @@ impl VirtioFs {
         let mut registry = aggregate.registry.write();
         registry.check_can_add()?;
         if registry.entries.iter().any(|e| e.name == name) {
-            return Err(lx::Error::EEXIST);
+            return Err(lx::Error::EEXIST.into());
         }
 
         let volume_id = registry.next_volume_id;

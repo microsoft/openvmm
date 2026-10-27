@@ -21,7 +21,10 @@ pub struct LxVolume {
 }
 
 impl LxVolume {
-    pub fn new(root_path: &Path, _options: &super::LxVolumeOptions) -> lx::Result<Self> {
+    pub fn new(
+        root_path: &Path,
+        _options: &super::LxVolumeOptions,
+    ) -> Result<Self, super::VolumeError> {
         let path = util::path_to_cstr(root_path)?;
 
         // SAFETY: Calling C API as documented, with no special requirements.
@@ -36,15 +39,8 @@ impl LxVolume {
         };
         // Check the required syscall and resolution flags before exposing the volume.
         // A missing syscall or a seccomp denial must fail setup, not a later guest request.
-        util::openat(&root, Path::new(""), libc::O_PATH | libc::O_DIRECTORY, None).inspect_err(
-            |error| {
-                tracing::error!(
-                    error = %error,
-                    "Linux filesystem volumes require openat2 with RESOLVE_NO_SYMLINKS and \
-                     RESOLVE_BENEATH (Linux 5.6+); check kernel support and seccomp policy"
-                );
-            },
-        )?;
+        util::openat(&root, Path::new(""), libc::O_PATH | libc::O_DIRECTORY, None)
+            .map_err(super::VolumeError::ConstrainedOpen)?;
         Ok(Self { root })
     }
 
@@ -539,10 +535,25 @@ mod tests {
                 ))
                 .unwrap();
             }
-            let error = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new())
-                .err()
-                .expect("volume setup must reject unavailable constrained opens");
-            assert_eq!(error.value(), errno as i32);
+            for result in [
+                super::super::LxVolume::new(root.path()),
+                super::super::LxVolumeOptions::new().new_volume(root.path()),
+            ] {
+                let error = result
+                    .err()
+                    .expect("volume setup must reject unavailable constrained opens");
+                assert!(matches!(
+                    error,
+                    super::super::VolumeError::ConstrainedOpen(_)
+                ));
+                assert!(error.to_string().contains("openat2"));
+                assert!(error.to_string().contains("seccomp"));
+                let cause = std::error::Error::source(&error)
+                    .unwrap()
+                    .downcast_ref::<lx::Error>()
+                    .expect("the setup error must retain its errno source");
+                assert_eq!(cause.value(), errno as i32);
+            }
             return;
         }
 

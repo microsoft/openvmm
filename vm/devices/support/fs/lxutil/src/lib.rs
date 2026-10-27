@@ -26,6 +26,21 @@ use windows as sys;
 pub use path::PathBufExt;
 pub use path::PathExt;
 
+/// An error initializing a host filesystem volume.
+#[derive(Debug, thiserror::Error)]
+pub enum VolumeError {
+    /// Opening or initializing the volume failed.
+    #[error("failed to initialize filesystem volume")]
+    Filesystem(#[from] lx::Error),
+    /// The kernel or host policy could not perform the required constrained open.
+    #[cfg(unix)]
+    #[error(
+        "Linux filesystem volumes require openat2 with RESOLVE_NO_SYMLINKS and \
+         RESOLVE_BENEATH (Linux 5.6+); check kernel support and seccomp policy"
+    )]
+    ConstrainedOpen(#[source] lx::Error),
+}
+
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
 /// it has Unix semantics.
 ///
@@ -67,7 +82,9 @@ pub struct LxVolume {
 // interface.
 impl LxVolume {
     /// Creates a new instance of `LxVolume` using the specified root path.
-    pub fn new(root_path: impl AsRef<Path>) -> lx::Result<Self> {
+    ///
+    /// Setup failures retain host capability diagnostics and their underlying OS error.
+    pub fn new(root_path: impl AsRef<Path>) -> Result<Self, VolumeError> {
         Self::new_with_options(root_path, &LxVolumeOptions::new())
     }
 
@@ -523,7 +540,7 @@ impl LxVolume {
     fn new_with_options(
         root_path: impl AsRef<Path>,
         options: &LxVolumeOptions,
-    ) -> lx::Result<Self> {
+    ) -> Result<Self, VolumeError> {
         Ok(Self {
             inner: sys::LxVolume::new(root_path.as_ref(), options)?,
         })
@@ -918,7 +935,9 @@ impl LxVolumeOptions {
     }
 
     /// Creates a new `LxVolume` with the current options.
-    pub fn new_volume(&self, root_path: impl AsRef<Path>) -> lx::Result<LxVolume> {
+    ///
+    /// Setup failures retain host capability diagnostics and their underlying OS error.
+    pub fn new_volume(&self, root_path: impl AsRef<Path>) -> Result<LxVolume, VolumeError> {
         LxVolume::new_with_options(root_path, self)
     }
 

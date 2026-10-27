@@ -76,10 +76,21 @@ impl VirtioFsInner {
     }
 }
 
+/// An error constructing or configuring a virtio-fs filesystem.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    /// The host filesystem volume could not be initialized.
+    #[error(transparent)]
+    Volume(#[from] lxutil::VolumeError),
+    /// Filesystem metadata or aggregate configuration was invalid or inaccessible.
+    #[error(transparent)]
+    Filesystem(#[from] lx::Error),
+}
+
 fn build_volume(
     root_path: impl AsRef<Path>,
     mount_options: Option<&LxVolumeOptions>,
-) -> lx::Result<(lxutil::LxVolume, bool)> {
+) -> Result<(lxutil::LxVolume, bool), lxutil::VolumeError> {
     let readonly = mount_options.is_some_and(|options| options.is_readonly());
     let options = mount_options.cloned().unwrap_or_default();
     let volume = options.new_volume(root_path)?;
@@ -567,7 +578,7 @@ impl VirtioFs {
     pub fn new(
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
-    ) -> lx::Result<Self> {
+    ) -> Result<Self, CreateError> {
         let (volume, readonly) = build_volume(root_path, mount_options)?;
         let mut inodes = InodeMap::new(false);
         let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly));
