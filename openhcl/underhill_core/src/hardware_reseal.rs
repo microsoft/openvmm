@@ -402,7 +402,7 @@ impl inspect::InspectMut for HardwareReseal {
 }
 
 impl StateUnit for HardwareReseal {
-    async fn start(&mut self) {
+    async fn start(&mut self) -> anyhow::Result<()> {
         // Starting or resuming does not create work or reset retry backoff.
         // Pending notifications and recovery survive a normal stop/start.
         self.schedule.running = true;
@@ -413,6 +413,7 @@ impl StateUnit for HardwareReseal {
             pending_notification = self.notification.pending.load(Ordering::Acquire),
             "hardware reseal worker started"
         );
+        Ok(())
     }
 
     async fn stop(&mut self) {

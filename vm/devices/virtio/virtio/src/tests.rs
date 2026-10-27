@@ -1294,6 +1294,7 @@ type TestDeviceQueueWorkFn =
 #[inspect(skip)]
 struct FailingTestDevice {
     traits: DeviceTraits,
+    supports_save_restore: bool,
 }
 
 impl VirtioDevice for FailingTestDevice {
@@ -1319,6 +1320,10 @@ impl VirtioDevice for FailingTestDevice {
 
     async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
         None
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        self.supports_save_restore
     }
 }
 
@@ -3400,6 +3405,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
                 device_register_length: 0,
                 ..Default::default()
             },
+            supports_save_restore: false,
         }),
         &_driver,
         GuestMemory::empty(),
@@ -3453,6 +3459,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
                 device_register_length: 12,
                 ..Default::default()
             },
+            supports_save_restore: false,
         }),
         &_driver,
         GuestMemory::empty(),
@@ -4825,6 +4832,114 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn pci_fallible_start_reports_queue_restore_failure(driver: DefaultDriver) {
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
+    dev.pci_device.stop().await;
+    let saved = dev.pci_device.save().unwrap();
+
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem);
+    let msi_conn = MsiConnection::new();
+    let mut restored = VirtioPciDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+            supports_save_restore: true,
+        }),
+        &driver,
+        mem,
+        PciInterruptModel::Msix(&msi_conn.target()),
+        Some(doorbell_registration),
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+    restored.restore(saved).unwrap();
+
+    let error = restored.start_fallible().await.unwrap_err();
+    assert!(format!("{error:#}").contains("intentional enable failure"));
+}
+
+#[async_test]
+async fn mmio_fallible_start_reports_queue_restore_failure(driver: DefaultDriver) {
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem.clone());
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
+        )),
+        &driver_source.simple(),
+        mem.clone(),
+        LineInterrupt::detached(),
+        Some(doorbell_registration.clone()),
+        0,
+        1,
+    )
+    .unwrap();
+    guest
+        .setup_chipset_device(&mut dev, guest.queue_features())
+        .await;
+    dev.stop().await;
+    let saved = dev.save().unwrap();
+
+    let mut restored = VirtioMmioDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: VirtioDeviceType::CONSOLE,
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            supports_save_restore: true,
+        }),
+        &driver_source.simple(),
+        mem,
+        LineInterrupt::detached(),
+        Some(doorbell_registration),
+        0,
+        1,
+    )
+    .unwrap();
+    restored.restore(saved).unwrap();
+
+    let error = restored.start_fallible().await.unwrap_err();
+    assert!(format!("{error:#}").contains("intentional enable failure"));
+}
+
+#[async_test]
 async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::save_restore::SaveRestore;
@@ -4883,7 +4998,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
 
     let msi_conn = MsiConnection::new();
 
-    // FailingTestDevice does not override supports_save_restore (default false).
+    // Configure the failing device without save/restore support.
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
@@ -4893,6 +5008,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
                 device_register_length: 0,
                 ..Default::default()
             },
+            supports_save_restore: false,
         }),
         &_driver,
         GuestMemory::empty(),
@@ -4922,6 +5038,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
                 device_register_length: 0,
                 ..Default::default()
             },
+            supports_save_restore: false,
         }),
         &_driver,
         GuestMemory::empty(),
