@@ -8,6 +8,8 @@ use crate::PendingFutures;
 use crate::RxReady;
 use crate::WriteReadyItem;
 use crate::lock_payload_data;
+use crate::payload_buffer;
+use crate::payload_capacity;
 use crate::ring::RingBuffer;
 use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
@@ -224,7 +226,16 @@ impl Connection {
         if self.send_shutdown {
             anyhow::bail!("peer has shutdown write side but sent data");
         }
-
+        let actual_len = data.iter().try_fold(0usize, |len, slice| {
+            len.checked_add(slice.len())
+                .context("vsock data length overflow")
+        })?;
+        anyhow::ensure!(actual_len == data_len, "vsock data length mismatch");
+        let available = TX_BUF_SIZE as usize - self.recv_buf.as_ref().map_or(0, RingBuffer::len);
+        anyhow::ensure!(
+            data_len <= available,
+            "peer sent {data_len} bytes, but only {available} bytes available in buffer"
+        );
         let bytes_sent = if self.is_recv_buf_empty() {
             // The buffer is empty so try to write the data to the socket.
             self.socket
@@ -264,7 +275,10 @@ impl Connection {
 
     /// Write buffered data to the relay socket.
     fn write_from_buffer(&mut self) -> anyhow::Result<Option<WriteReadyItem>> {
-        let ring = self.recv_buf.as_mut().expect("buffer must exist");
+        let ring = self
+            .recv_buf
+            .as_mut()
+            .context("missing vsock receive buffer")?;
         let sent = self
             .socket
             .write_from_ring(ring)
@@ -449,16 +463,17 @@ impl Connection {
         }
 
         tracing::trace!(?self.key, peer_free, "peer buffer credit available");
+        let capacity = payload_capacity(payload, true)?
+            .checked_sub(VSOCK_HEADER_SIZE as u64)
+            .context("guest buffer too small for vsock header")?;
+        let read_len = capacity
+            .min(u64::from(peer_free))
+            .min(u64::from(TX_BUF_SIZE));
+        anyhow::ensure!(read_len != 0, "guest buffer has no space for vsock data");
 
         // Attempt to lock the payload buffers so we can write directly into them.
-        let mut locked = lock_payload_data(
-            mem,
-            payload,
-            peer_free.into(),
-            false,
-            true,
-            LockedIoSliceMut::new(),
-        )?;
+        let mut locked =
+            lock_payload_data(mem, payload, read_len, false, true, LockedIoSliceMut::new())?;
 
         let (bytes_read, temp_buf) = if let Some(locked) = &mut locked {
             // We can read directly into the guest buffer.
@@ -470,16 +485,7 @@ impl Connection {
             (bytes_read, Vec::new())
         } else {
             // A temp bounce buffer is needed since the guest buffer couldn't be locked.
-            let buf_len: usize = payload
-                .iter()
-                .filter_map(|p| p.writeable.then_some(p.length as usize))
-                .sum();
-
-            if buf_len < VSOCK_HEADER_SIZE {
-                anyhow::bail!("guest buffer too small for vsock header");
-            }
-
-            let mut temp_buf = vec![0u8; buf_len - VSOCK_HEADER_SIZE];
+            let mut temp_buf = payload_buffer(read_len as usize)?;
             let bytes_read = self
                 .socket
                 .read(&mut temp_buf)
@@ -494,6 +500,12 @@ impl Connection {
             // No data available (would block).
             return Ok(None);
         };
+        if bytes_read != 0 && mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            tracelimit::info_ratelimited!(
+                bytes = bytes_read,
+                "virtio-vsock RX uses owned stream memory"
+            );
+        }
 
         let packet = if bytes_read == 0 {
             tracing::debug!("host socket shutdown");
@@ -630,7 +642,7 @@ impl Connection {
 
         *bytes_received += self
             .socket
-            .write(buffer)
+            .write(&buffer[*bytes_received..])
             .context("failed to write OK response to host socket")?;
         if *bytes_received != buffer.len() {
             // Not all data was sent, wait until we can send the rest.
@@ -662,7 +674,8 @@ impl Connection {
     /// Calculate the peer's available buffer space based on the advertised buffer allocation, how
     /// much data we've sent, and how much the peer has forwarded from its buffer.
     fn peer_credit_available(&self) -> u32 {
-        (Wrapping(self.peer_buf_alloc) - (self.tx_cnt - Wrapping(self.peer_fwd_cnt))).0
+        self.peer_buf_alloc
+            .saturating_sub((self.tx_cnt - Wrapping(self.peer_fwd_cnt)).0)
     }
 
     /// Set a timeout for this connection and return a future that will fire when the timeout
@@ -723,6 +736,13 @@ impl ConnectionManager {
     /// Removes a connection.
     pub fn remove(&mut self, key: &ConnectionKey) {
         self.remove_connection(key);
+    }
+
+    /// Closes all sockets, including connections with readiness futures pending.
+    pub fn clear(&mut self) {
+        self.conns.clear();
+        self.pending_conns.clear();
+        self.local_ports.clear();
     }
 
     /// Handle a new connection initiated by the host.
@@ -989,6 +1009,7 @@ impl ConnectionManager {
                     ?id,
                     "failed to write buffered data to host socket on write ready"
                 );
+                self.remove_connection(&id.key);
                 PendingFutures::simple_rx(RxReady::SendReset(id.key))
             }
         }
@@ -1090,10 +1111,12 @@ impl ConnectionManager {
                 }
             }
             RxReady::SendReset(key) => {
-                assert!(
-                    !self.conns.contains_key(&key),
-                    "connection should have been removed"
-                );
+                // A queued reset can outlive the connection or a guest can
+                // reuse its ports before it is delivered. Do not reset the
+                // newer connection.
+                if self.conns.contains_key(&key) {
+                    return (None, PendingFutures::NONE);
+                }
 
                 (
                     Some(new_rst_packet(self.guest_cid, key)),
@@ -1285,5 +1308,219 @@ impl SendResetError {
     fn with_remove(mut self, remove: bool) -> Self {
         self.remove = remove;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    #[cfg(unix)]
+    use pal_async::socket::AsSockRef;
+    use std::io::Read;
+    use std::io::Write;
+    use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    fn connected(driver: &DefaultDriver, credit: u32) -> (Connection, UnixStream) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let (socket, peer) = UnixStream::pair().unwrap();
+        let mut conn = Connection::new_guest_initiated(
+            ConnectionKey {
+                local_port: 5000,
+                peer_port: 1024,
+            },
+            0,
+            credit,
+            0,
+            PendingControlPackets::new(),
+            RelaySocket::new(&source.simple(), socket).unwrap(),
+        );
+        conn.state = ConnectionState::Connected;
+        (conn, peer)
+    }
+
+    fn rx_payload(length: u32) -> [VirtioQueuePayload; 1] {
+        [VirtioQueuePayload {
+            address: 0,
+            length,
+            writeable: true,
+        }]
+    }
+
+    #[async_test]
+    async fn complete_write_does_not_allocate_retention_ring(driver: DefaultDriver) {
+        let (mut conn, mut peer) = connected(&driver, TX_BUF_SIZE);
+        let data = b"data";
+        assert!(
+            conn.handle_guest_data(&[IoSlice::new(data)], data.len())
+                .unwrap()
+                .is_none()
+        );
+        assert!(conn.recv_buf.is_none());
+        let mut received = [0; 4];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(&received, data);
+    }
+
+    #[async_test]
+    async fn copy_only_rx_bounds_huge_capacity_by_credit_before_copyback(driver: DefaultDriver) {
+        let (mut conn, mut peer) = connected(&driver, 5);
+        let memory = GuestMemory::allocate(guestmem::PAGE_SIZE).copy_only_view();
+        memory.write_at(0, &[0xa5; 64]).unwrap();
+        peer.write_all(b"abcdefgh").unwrap();
+        let packet = conn
+            .handle_host_data(&memory, &rx_payload(u32::MAX), 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.data, b"abcde");
+        assert_eq!(conn.tx_cnt.0, 5);
+        let mut actual = [0; 64];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(
+            actual, [0xa5; 64],
+            "socket read must not modify guest memory"
+        );
+        memory
+            .write_at(VSOCK_HEADER_SIZE as u64, &packet.data)
+            .unwrap();
+        let mut copied = [0; 5];
+        memory
+            .read_at(VSOCK_HEADER_SIZE as u64, &mut copied)
+            .unwrap();
+        assert_eq!(&copied, b"abcde");
+
+        conn.peer_fwd_cnt = 5;
+        let packet = conn
+            .handle_host_data(&memory, &rx_payload(u32::MAX), 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            packet.data, b"fgh",
+            "credit clamp must not discard stream bytes"
+        );
+        conn.peer_buf_alloc = u32::MAX;
+        peer.write_all(b"more data").unwrap();
+        let packet = conn
+            .handle_host_data(&memory, &rx_payload(u32::MAX), 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.data, b"more data");
+        assert_eq!(packet.data.capacity(), TX_BUF_SIZE as usize);
+    }
+
+    #[async_test]
+    async fn copy_only_rx_short_buffer_would_block_and_eof(driver: DefaultDriver) {
+        let (mut conn, mut peer) = connected(&driver, TX_BUF_SIZE);
+        let memory = GuestMemory::allocate(guestmem::PAGE_SIZE).copy_only_view();
+        let payload = rx_payload(VSOCK_HEADER_SIZE as u32 + 8);
+        assert!(
+            conn.handle_host_data(&memory, &payload, 3)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!conn.local_send_shutdown);
+        peer.write_all(b"data").unwrap();
+        for size in [0, VSOCK_HEADER_SIZE as u32 - 1, VSOCK_HEADER_SIZE as u32] {
+            assert!(
+                conn.handle_host_data(&memory, &rx_payload(size), 3)
+                    .is_err()
+            );
+        }
+        let packet = conn
+            .handle_host_data(&memory, &payload, 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.data, b"data");
+        peer.shutdown(std::net::Shutdown::Write).unwrap();
+        let packet = conn
+            .handle_host_data(&memory, &payload, 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.header.operation(), Operation::SHUTDOWN);
+        assert!(conn.local_send_shutdown);
+    }
+
+    #[async_test]
+    #[cfg(unix)]
+    async fn copy_only_tx_partial_and_would_block_retain_only_unsent_snapshot(
+        driver: DefaultDriver,
+    ) {
+        let (mut conn, mut peer) = connected(&driver, TX_BUF_SIZE);
+        conn.socket
+            .inner_socket_for_test()
+            .as_sock_ref()
+            .set_send_buffer_size(4096)
+            .unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let memory = GuestMemory::allocate(TX_BUF_SIZE as usize).copy_only_view();
+        let expected: Vec<_> = (0..TX_BUF_SIZE).map(|i| (i % 251) as u8).collect();
+        memory.write_at(0, &expected).unwrap();
+        let mut snapshot = payload_buffer(expected.len()).unwrap();
+        memory.read_at(0, &mut snapshot).unwrap();
+        let pending = conn
+            .handle_guest_data(&[IoSlice::new(&snapshot)], snapshot.len())
+            .unwrap();
+        assert!(pending.is_some());
+        assert!(conn.fwd_cnt.0 > 0);
+        assert!(conn.fwd_cnt.0 < TX_BUF_SIZE);
+        let forwarded = conn.fwd_cnt.0;
+        conn.write_from_buffer().unwrap();
+        assert_eq!(
+            conn.fwd_cnt.0, forwarded,
+            "WouldBlock must retain credit progress"
+        );
+        drop(snapshot);
+        memory.write_at(0, &vec![0xff; expected.len()]).unwrap();
+
+        let mut received = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            loop {
+                match peer.read(&mut buffer) {
+                    Ok(0) => panic!("unexpected EOF"),
+                    Ok(n) => received.extend_from_slice(&buffer[..n]),
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(err) => panic!("{err}"),
+                }
+            }
+            if conn.is_recv_buf_empty() {
+                break;
+            }
+            conn.write_from_buffer().unwrap();
+        }
+        assert_eq!(received, expected);
+        assert_eq!(conn.fwd_cnt.0, TX_BUF_SIZE);
+    }
+
+    #[async_test]
+    async fn credit_wrap_and_invalid_forward_count_do_not_grant_excess_credit(
+        driver: DefaultDriver,
+    ) {
+        let (mut conn, _peer) = connected(&driver, 32);
+        conn.tx_cnt = Wrapping(8);
+        conn.peer_fwd_cnt = u32::MAX - 7;
+        assert_eq!(conn.peer_credit_available(), 16);
+        conn.peer_fwd_cnt = 9;
+        assert_eq!(conn.peer_credit_available(), 0);
+    }
+
+    #[async_test]
+    async fn host_connect_ok_response_resumes_after_partial_progress(driver: DefaultDriver) {
+        let (mut conn, mut peer) = connected(&driver, TX_BUF_SIZE);
+        let response = b"OK 5000\n";
+        assert_eq!(conn.socket.write(&response[..3]).unwrap(), 3);
+        conn.state = ConnectionState::HostConnecting {
+            buffer: response.to_vec(),
+            read_write_count: 3,
+            use_guid: Some(false),
+        };
+        conn.complete_host_connection().unwrap();
+        assert_eq!(conn.state, ConnectionState::Connected);
+        let mut received = [0; 8];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(&received, response);
     }
 }

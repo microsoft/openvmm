@@ -13,6 +13,8 @@ use crate::spec::*;
 use core::panic;
 use futures::AsyncWriteExt;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryAccess;
+use guestmem::GuestMemoryBackingError;
 use mesh::CancelContext;
 use mesh::CancelReason;
 use pal_async::DefaultDriver;
@@ -26,6 +28,12 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::path::PathBuf;
+use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::vec;
@@ -92,7 +100,108 @@ async fn yield_now() {
     .await
 }
 
+#[derive(Default)]
+struct MemoryFault {
+    read: AtomicU64,
+    write: AtomicU64,
+    preemptive_locks: AtomicUsize,
+    exports: AtomicUsize,
+    requires_owned: AtomicBool,
+}
+
+struct FaultMemory {
+    memory: GuestMemory,
+    fault: Arc<MemoryFault>,
+}
+
+// SAFETY: This test backing has no exposed mapping. All accesses are checked
+// and copied through the allocated GuestMemory owned by the backing.
+unsafe impl GuestMemoryAccess for FaultMemory {
+    fn mapping(&self) -> Option<NonNull<u8>> {
+        None
+    }
+
+    fn max_address(&self) -> u64 {
+        TOTAL_MEM_SIZE as u64
+    }
+
+    fn io_policy(&self) -> guestmem::GuestMemoryIoPolicy {
+        if self.fault.requires_owned.load(Ordering::SeqCst) {
+            guestmem::GuestMemoryIoPolicy::CopyOnly
+        } else {
+            guestmem::GuestMemoryIoPolicy::Direct
+        }
+    }
+
+    fn subrange(
+        &self,
+        _offset: u64,
+        _len: u64,
+        allow_preemptive_locking: bool,
+    ) -> Result<Option<GuestMemory>, GuestMemoryBackingError> {
+        if allow_preemptive_locking {
+            self.fault.preemptive_locks.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(None)
+    }
+
+    unsafe fn read_fallback(
+        &self,
+        address: u64,
+        dest: *mut u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        if self.fault.read.load(Ordering::SeqCst) == address {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                std::io::Error::other("injected read fault"),
+            ));
+        }
+        // SAFETY: The caller supplies a valid destination for this copy.
+        let dest = unsafe { std::slice::from_raw_parts_mut(dest, len) };
+        self.memory
+            .read_at(address, dest)
+            .map_err(|err| GuestMemoryBackingError::other(address, err))
+    }
+
+    unsafe fn write_fallback(
+        &self,
+        address: u64,
+        src: *const u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        if self.fault.write.load(Ordering::SeqCst) == address {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                std::io::Error::other("injected write fault"),
+            ));
+        }
+        // SAFETY: The caller supplies a valid source for this copy.
+        let src = unsafe { std::slice::from_raw_parts(src, len) };
+        self.memory
+            .write_at(address, src)
+            .map_err(|err| GuestMemoryBackingError::other(address, err))
+    }
+
+    fn expose_va(&self, _address: u64, _len: u64) -> Result<(), GuestMemoryBackingError> {
+        self.fault.exports.fetch_add(1, Ordering::SeqCst);
+        panic!("copy-only vsock must not export guest virtual addresses")
+    }
+
+    fn lock_kernel_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.fault.exports.fetch_add(1, Ordering::SeqCst);
+        panic!("copy-only vsock must not lock guest pages")
+    }
+}
+
 // --- Test Harness ---
+
+fn socket_path(dir: &tempfile::TempDir, name: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    // Relative paths keep Unix sockets usable in deeply nested workspaces.
+    let cwd = std::env::current_dir().unwrap();
+    path.strip_prefix(cwd).unwrap_or(&path).to_owned()
+}
 
 struct TestHarness {
     device: VirtioVsockDevice,
@@ -120,6 +229,154 @@ struct TestHarness {
 }
 
 impl TestHarness {
+    fn with_memory_mode(mut self, mode: TestMemoryMode) -> Self {
+        match mode {
+            TestMemoryMode::Mapped => {}
+            TestMemoryMode::CopyOnly => self.mem = self.mem.copy_only_view(),
+            TestMemoryMode::KernelDenied => self = self.with_kernel_denied_memory().0,
+            TestMemoryMode::SafeFallback => self = self.with_safe_fallback_memory().0,
+        }
+        self
+    }
+
+    fn with_fault_memory(self) -> (Self, Arc<MemoryFault>) {
+        self.with_kernel_denied_memory()
+    }
+
+    fn with_kernel_denied_memory(self) -> (Self, Arc<MemoryFault>) {
+        self.with_fallback_memory(true)
+    }
+
+    fn with_fallback_memory(mut self, copy_only: bool) -> (Self, Arc<MemoryFault>) {
+        let fault = Arc::new(MemoryFault {
+            read: AtomicU64::new(u64::MAX),
+            write: AtomicU64::new(u64::MAX),
+            requires_owned: AtomicBool::new(copy_only),
+            ..Default::default()
+        });
+        self.mem = GuestMemory::new(
+            "vsock fault test",
+            FaultMemory {
+                memory: self.mem,
+                fault: fault.clone(),
+            },
+        );
+        (self, fault)
+    }
+
+    fn with_safe_fallback_memory(self) -> (Self, Arc<MemoryFault>) {
+        self.with_fallback_memory(false)
+    }
+
+    async fn stop_queues(&mut self) -> [virtio::queue::QueueState; 3] {
+        let mut states = Vec::new();
+        states.push(self.device.stop_queue(0).await.unwrap());
+        for index in 1..3 {
+            states.push(self.device.stop_queue(index).await.unwrap());
+        }
+        states.try_into().unwrap()
+    }
+
+    async fn start_queue(
+        &mut self,
+        index: u16,
+        initial_state: Option<virtio::queue::QueueState>,
+    ) -> anyhow::Result<()> {
+        let (desc_addr, avail_addr, used_addr, event, interrupt) = match index {
+            0 => (
+                RX_DESC_ADDR,
+                RX_AVAIL_ADDR,
+                RX_USED_ADDR,
+                &self.rx_queue_event,
+                &self.rx_interrupt_event,
+            ),
+            1 => (
+                TX_DESC_ADDR,
+                TX_AVAIL_ADDR,
+                TX_USED_ADDR,
+                &self.tx_queue_event,
+                &self.tx_interrupt_event,
+            ),
+            2 => (
+                EVENT_DESC_ADDR,
+                EVENT_AVAIL_ADDR,
+                EVENT_USED_ADDR,
+                &self.event_queue_event,
+                &self.tx_interrupt_event,
+            ),
+            _ => unreachable!(),
+        };
+        self.device
+            .start_queue(
+                index,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr,
+                        avail_addr,
+                        used_addr,
+                    },
+                    notify: Interrupt::from_event(interrupt.clone()),
+                    event: event.clone(),
+                    guest_memory: self.mem.clone(),
+                },
+                &VirtioDeviceFeatures::new(),
+                initial_state,
+            )
+            .await
+    }
+
+    fn reset_rings(&mut self) {
+        for (avail, used) in [
+            (RX_AVAIL_ADDR, RX_USED_ADDR),
+            (TX_AVAIL_ADDR, TX_USED_ADDR),
+            (EVENT_AVAIL_ADDR, EVENT_USED_ADDR),
+        ] {
+            init_avail_ring(&self.mem, avail);
+            init_used_ring(&self.mem, used);
+        }
+        self.rx_avail_idx = 0;
+        self.rx_used_idx = 0;
+        self.tx_avail_idx = 0;
+        self.tx_used_idx = 0;
+        self.next_rx_desc = 0;
+        self.next_tx_desc = 0;
+        self.next_data_offset = DATA_BASE;
+    }
+
+    async fn verify_fresh_reset(&mut self, listener: &mut PolledSocket<UnixListener>, port: u32) {
+        use futures::AsyncReadExt;
+
+        self.reset_rings();
+        self.start_queue(0, None).await.unwrap();
+        self.start_queue(1, None).await.unwrap();
+        self.start_queue(2, None).await.unwrap();
+        let stream = self.connect_guest_to_host(listener, 1024, port).await;
+        let mut stream = PolledSocket::new(&self.driver, stream).unwrap();
+        let data = b"fresh stream";
+        self.post_tx_packet(
+            &self.guest_header(1024, port, Operation::RW, data.len() as u32, 0),
+            data,
+        );
+        self.wait_for_tx_used().await;
+        let mut received = [0; 12];
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(stream.read_exact(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&received, data);
+        assert_eq!(
+            virtio::test_helpers::read_used_idx(&self.mem, TX_USED_ADDR),
+            2
+        );
+        for index in 0..3 {
+            self.device.stop_queue(index).await.unwrap();
+        }
+    }
+
     /// Create a harness with a Unix listener at the expected socket path for the
     /// given port, plus a separate listener for host-initiated connections.
     fn new(driver: &DefaultDriver, tmp_dir: tempfile::TempDir) -> Self {
@@ -137,10 +394,10 @@ impl TestHarness {
 
         // Create the host-initiated connection listener (not used by most tests,
         // but required by the constructor).
-        let host_listener_path = tmp_dir.path().join("host_listener.sock");
+        let host_listener_path = socket_path(&tmp_dir, "host_listener.sock");
         let host_listener = UnixListener::bind(&host_listener_path).expect("bind host listener");
 
-        let base_path = tmp_dir.path().join("vsock");
+        let base_path = socket_path(&tmp_dir, "vsock");
         let device = VirtioVsockDevice::new(&driver_source, GUEST_CID, base_path, host_listener)
             .expect("create vsock device");
 
@@ -407,7 +664,7 @@ impl TestHarness {
 
     /// Create a Unix listener at the path the relay will use for a given port.
     fn create_port_listener(&self, port: u32) -> PolledSocket<UnixListener> {
-        let socket_path = self._tmp_dir.path().join(format!("vsock_{port}"));
+        let socket_path = socket_path(&self._tmp_dir, &format!("vsock_{port}"));
         let listener = UnixListener::bind(&socket_path).expect("bind port listener");
         PolledSocket::new(&self.driver, listener).unwrap()
     }
@@ -464,6 +721,432 @@ impl TestHarness {
 }
 
 // --- Tests ---
+
+#[async_test]
+async fn normal_stop_resume_preserves_queue_cursors_without_replay(driver: DefaultDriver) {
+    stop_resume_preserves_queue_cursors_without_replay(driver, TestMemoryMode::Mapped).await;
+}
+
+async fn stop_resume_preserves_queue_cursors_without_replay(
+    driver: DefaultDriver,
+    memory_mode: TestMemoryMode,
+) {
+    use futures::AsyncReadExt;
+
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    harness = harness.with_memory_mode(memory_mode);
+    let mut listener = harness.create_port_listener(5210);
+    harness.enable().await;
+    assert!(!harness.device.supports_save_restore());
+    let _old_stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5210)
+        .await;
+    let mut states = Vec::new();
+    states.push(harness.device.stop_queue(0).await.unwrap());
+    for index in 1..3 {
+        states.push(harness.device.stop_queue(index).await.unwrap());
+    }
+    for (index, state) in states.into_iter().enumerate() {
+        harness
+            .start_queue(index as u16, Some(state))
+            .await
+            .unwrap();
+    }
+    // A replayed REQUEST would consume this response slot and fail the new
+    // handshake before its REQUEST is processed.
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1025, 5210)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    let data = b"new connection after resume";
+    harness.post_tx_packet(
+        &harness.guest_header(1025, 5210, Operation::RW, data.len() as u32, 0),
+        data,
+    );
+    harness.wait_for_tx_used().await;
+    let mut received = vec![0; data.len()];
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(stream.read_exact(&mut received))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(received, data);
+    assert_eq!(
+        virtio::test_helpers::read_used_idx(&harness.mem, TX_USED_ADDR),
+        3
+    );
+    assert!(!harness.device.supports_save_restore());
+    for index in 0..3 {
+        harness.device.stop_queue(index).await.unwrap();
+    }
+}
+
+#[async_test]
+async fn copy_only_stop_resume_preserves_queue_cursors_without_replay(driver: DefaultDriver) {
+    stop_resume_preserves_queue_cursors_without_replay(driver, TestMemoryMode::CopyOnly).await;
+}
+
+#[async_test]
+async fn owned_policy_distinguishes_safe_fallback_from_explicit_denial(driver: DefaultDriver) {
+    for backing_denied in [false, true] {
+        for policy in [
+            guestmem::GuestMemoryIoPolicy::Direct,
+            guestmem::GuestMemoryIoPolicy::CopyOnly,
+        ] {
+            let (mut harness, fault) =
+                TestHarness::new(&driver, tempfile::tempdir_in(".").unwrap())
+                    .with_safe_fallback_memory();
+            fault.requires_owned.store(backing_denied, Ordering::SeqCst);
+            if policy == guestmem::GuestMemoryIoPolicy::CopyOnly {
+                harness.mem = harness.mem.copy_only_view();
+            }
+            let requires_owned =
+                backing_denied || policy == guestmem::GuestMemoryIoPolicy::CopyOnly;
+            assert!(!harness.mem.supports_kernel_lock());
+            assert_eq!(
+                (harness.mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly),
+                requires_owned
+            );
+            harness.enable().await;
+            assert!(!harness.device.supports_save_restore());
+            for index in 0..3 {
+                harness.device.stop_queue(index).await.unwrap();
+            }
+            assert_eq!(fault.exports.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[async_test]
+async fn safe_fallback_does_not_admit_kernel_vhost(driver: DefaultDriver) {
+    let (harness, _fault) =
+        TestHarness::new(&driver, tempfile::tempdir_in(".").unwrap()).with_safe_fallback_memory();
+    assert!(!harness.mem.supports_kernel_lock());
+    assert!(!(harness.mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly));
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let error = vm_resource::ResolveResource::resolve(
+        &crate::resolver::VirtioVsockVhostResolver,
+        virtio_resources::vsock::VirtioVsockVhostHandle {
+            vhost: std::fs::File::open("Cargo.toml").unwrap().into(),
+            guest_cid: 3,
+        },
+        virtio::resolve::VirtioResolveInput {
+            driver_source: &driver_source,
+            guest_memory: Some(&harness.mem),
+        },
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "vhost-vsock requires kernel-lockable guest memory"
+    );
+}
+
+#[async_test]
+async fn backing_copy_only_stop_resume_preserves_queue_cursors_without_replay(
+    driver: DefaultDriver,
+) {
+    stop_resume_preserves_queue_cursors_without_replay(driver, TestMemoryMode::KernelDenied).await;
+}
+
+#[async_test]
+async fn copy_only_rx_copy_faults_close_socket_without_replay(driver: DefaultDriver) {
+    use futures::AsyncReadExt;
+
+    for failure in ["header", "payload", "short"] {
+        let (mut harness, fault) =
+            TestHarness::new(&driver, tempfile::tempdir().unwrap()).with_fault_memory();
+        let mut listener = harness.create_port_listener(5201);
+        harness.enable().await;
+        let stream = harness
+            .connect_guest_to_host(&mut listener, 1024, 5201)
+            .await;
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        let (_, gpa) = harness.post_rx_buffer(if failure == "short" {
+            HDR_SIZE - 1
+        } else {
+            HDR_SIZE + 32
+        });
+        match failure {
+            "header" => fault.write.store(gpa, Ordering::SeqCst),
+            "payload" => fault
+                .write
+                .store(gpa + u64::from(HDR_SIZE), Ordering::SeqCst),
+            "short" => {}
+            _ => unreachable!(),
+        }
+        stream.write_all(b"response").await.unwrap();
+        assert_eq!(harness.wait_for_rx_used().await.1, 0);
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(async {
+                let mut extra = [0; 1];
+                match stream.read(&mut extra).await {
+                    Ok(0) => {}
+                    Err(err)
+                        if failure == "short"
+                            && err.kind() == std::io::ErrorKind::ConnectionReset => {}
+                    result => panic!("expected socket closure, got {result:?}"),
+                }
+            })
+            .await
+            .unwrap();
+        let states = harness.stop_queues().await;
+        assert_eq!(states[0].avail_index, 2);
+        assert_eq!(states[0].used_index, 2);
+        if failure != "short" {
+            assert_eq!(
+                harness.read_header(gpa).operation(),
+                if failure == "header" {
+                    Operation::INVALID
+                } else {
+                    Operation::RW
+                }
+            );
+            assert_eq!(harness.read_rx_data(gpa, 8), vec![0; 8]);
+        }
+        assert_eq!(fault.preemptive_locks.load(Ordering::SeqCst), 0);
+        assert_eq!(fault.exports.load(Ordering::SeqCst), 0);
+        fault.read.store(u64::MAX, Ordering::SeqCst);
+        fault.write.store(u64::MAX, Ordering::SeqCst);
+        harness.verify_fresh_reset(&mut listener, 5201).await;
+    }
+}
+
+#[async_test]
+async fn copy_only_malformed_tx_completes_and_allows_fresh_guest_reset(driver: DefaultDriver) {
+    malformed_tx_allows_fresh_guest_reset(driver).await;
+}
+
+#[async_test]
+async fn direct_malformed_tx_keeps_independent_connection_and_queues(driver: DefaultDriver) {
+    malformed_tx_keeps_independent_connection_and_queues(driver, TestMemoryMode::Mapped).await;
+}
+
+#[async_test]
+async fn copy_only_malformed_tx_keeps_independent_connection_and_queues(driver: DefaultDriver) {
+    malformed_tx_keeps_independent_connection_and_queues(driver, TestMemoryMode::CopyOnly).await;
+}
+
+async fn malformed_tx_keeps_independent_connection_and_queues(
+    driver: DefaultDriver,
+    memory_mode: TestMemoryMode,
+) {
+    use futures::AsyncReadExt;
+
+    for malformed in 0..4 {
+        let mut harness = TestHarness::new(&driver, tempfile::tempdir_in(".").unwrap())
+            .with_memory_mode(memory_mode);
+        let mut listener = harness.create_port_listener(5202);
+        harness.enable().await;
+        let _stream = harness
+            .connect_guest_to_host(&mut listener, 1024, 5202)
+            .await;
+        let stream = harness
+            .connect_guest_to_host(&mut listener, 1025, 5202)
+            .await;
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        let len = if malformed == 0 {
+            crate::TX_BUF_SIZE + 1
+        } else {
+            8
+        };
+        let header = harness.guest_header(1024, 5202, Operation::RW, len, 0);
+        let gpa = harness.next_data_offset;
+        let desc = harness.post_tx_packet(&header, &[]);
+        if malformed == 1 || malformed == 2 {
+            write_descriptor(
+                &harness.mem,
+                TX_DESC_ADDR,
+                desc,
+                if malformed == 2 { u64::MAX - 10 } else { gpa },
+                if malformed == 1 {
+                    HDR_SIZE - 1
+                } else {
+                    HDR_SIZE
+                },
+                DescriptorFlags::new(),
+                0,
+            );
+        }
+        assert_eq!(harness.wait_for_tx_used().await.1, 0);
+        let (_, gpa) = harness.post_rx_buffer(HDR_SIZE + 32);
+        stream.write_all(b"still receiving").await.unwrap();
+        assert_eq!(harness.wait_for_rx_used().await.1, HDR_SIZE + 15);
+        assert_eq!(harness.read_rx_data(gpa, 15), b"still receiving");
+        let data = b"independent stream";
+        harness.post_tx_packet(
+            &harness.guest_header(1025, 5202, Operation::RW, data.len() as u32, 0),
+            data,
+        );
+        harness.wait_for_tx_used().await;
+        let mut received = vec![0; data.len()];
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(stream.read_exact(&mut received))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, data);
+        assert!(!harness.device.supports_save_restore());
+        for index in 0..3 {
+            harness.device.stop_queue(index).await.unwrap();
+        }
+    }
+}
+
+#[async_test]
+async fn direct_rx_packet_error_closes_only_affected_connection(driver: DefaultDriver) {
+    rx_packet_error_closes_only_affected_connection(driver, false).await;
+}
+
+#[async_test]
+async fn copy_only_rx_packet_error_closes_only_affected_connection(driver: DefaultDriver) {
+    rx_packet_error_closes_only_affected_connection(driver, true).await;
+}
+
+async fn rx_packet_error_closes_only_affected_connection(driver: DefaultDriver, copy_only: bool) {
+    use futures::AsyncReadExt;
+
+    for short in [false, true] {
+        let (mut harness, fault) = TestHarness::new(&driver, tempfile::tempdir_in(".").unwrap())
+            .with_fallback_memory(copy_only);
+        let mut listener = harness.create_port_listener(5211);
+        harness.enable().await;
+        let bad = harness
+            .connect_guest_to_host(&mut listener, 1024, 5211)
+            .await;
+        let good = harness
+            .connect_guest_to_host(&mut listener, 1025, 5211)
+            .await;
+        let mut bad = PolledSocket::new(&driver, bad).unwrap();
+        let mut good = PolledSocket::new(&driver, good).unwrap();
+        let (_, gpa) = harness.post_rx_buffer(if short { HDR_SIZE - 1 } else { HDR_SIZE + 32 });
+        if !short {
+            fault.write.store(gpa, Ordering::SeqCst);
+        }
+        bad.write_all(b"discard").await.unwrap();
+        assert_eq!(harness.wait_for_rx_used().await.1, 0);
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(async {
+                let mut byte = [0];
+                match bad.read(&mut byte).await {
+                    Ok(0) => {}
+                    Err(err) if short && err.kind() == std::io::ErrorKind::ConnectionReset => {}
+                    result => panic!("expected connection closure, got {result:?}"),
+                }
+            })
+            .await
+            .unwrap();
+        fault.write.store(u64::MAX, Ordering::SeqCst);
+        let (_, gpa) = harness.post_rx_buffer(HDR_SIZE + 32);
+        good.write_all(b"unaffected").await.unwrap();
+        assert_eq!(harness.wait_for_rx_used().await.1, HDR_SIZE + 10);
+        assert_eq!(harness.read_rx_data(gpa, 10), b"unaffected");
+        assert!(!harness.device.supports_save_restore());
+        for index in 0..3 {
+            harness.device.stop_queue(index).await.unwrap();
+        }
+    }
+}
+
+async fn malformed_tx_allows_fresh_guest_reset(driver: DefaultDriver) {
+    use futures::AsyncReadExt;
+
+    for malformed in 0..4 {
+        let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap())
+            .with_memory_mode(TestMemoryMode::CopyOnly);
+        let mut listener = harness.create_port_listener(5202);
+        harness.enable().await;
+        let stream = harness
+            .connect_guest_to_host(&mut listener, 1024, 5202)
+            .await;
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        let len = if malformed == 0 {
+            crate::TX_BUF_SIZE + 1
+        } else {
+            8
+        };
+        let header = harness.guest_header(1024, 5202, Operation::RW, len, 0);
+        let gpa = harness.next_data_offset;
+        let desc = harness.post_tx_packet(&header, &[]);
+        if malformed == 1 || malformed == 2 {
+            write_descriptor(
+                &harness.mem,
+                TX_DESC_ADDR,
+                desc,
+                if malformed == 2 { u64::MAX - 10 } else { gpa },
+                if malformed == 1 {
+                    HDR_SIZE - 1
+                } else {
+                    HDR_SIZE
+                },
+                DescriptorFlags::new(),
+                0,
+            );
+        }
+        assert_eq!(harness.wait_for_tx_used().await.1, 0);
+        let states = harness.stop_queues().await;
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(async {
+                let mut extra = [0; 1];
+                assert_eq!(stream.read(&mut extra).await.unwrap(), 0);
+            })
+            .await
+            .unwrap();
+        assert_eq!(states[1].avail_index, 2);
+        assert_eq!(states[1].used_index, 2);
+        harness.verify_fresh_reset(&mut listener, 5202).await;
+    }
+}
+
+#[async_test]
+async fn copy_only_reset_closes_socket_with_readiness_pending(driver: DefaultDriver) {
+    use futures::AsyncReadExt;
+
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap())
+        .with_memory_mode(TestMemoryMode::CopyOnly);
+    assert!(!harness.device.supports_save_restore());
+    let mut listener = harness.create_port_listener(5203);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5203)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness.post_tx_packet(&harness.guest_header(1024, 5203, Operation::RST, 0, 0), &[]);
+    harness.wait_for_tx_used().await;
+    let mut byte = [0; 1];
+    assert_eq!(stream.read(&mut byte).await.unwrap(), 0);
+    let (_, gpa) = harness.post_rx_buffer(HDR_SIZE);
+    harness.post_tx_packet(&harness.guest_header(1024, 5203, Operation::RW, 1, 0), b"x");
+    harness.wait_for_tx_used().await;
+    assert_eq!(harness.wait_for_rx_used().await.1, HDR_SIZE);
+    assert_eq!(harness.read_header(gpa).operation(), Operation::RST);
+    // The worker remains usable after a connection reset.
+    let _stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5203)
+        .await;
+    for index in 0..3 {
+        harness.device.stop_queue(index).await.unwrap();
+    }
+    for (avail, used) in [
+        (RX_AVAIL_ADDR, RX_USED_ADDR),
+        (TX_AVAIL_ADDR, TX_USED_ADDR),
+        (EVENT_AVAIL_ADDR, EVENT_USED_ADDR),
+    ] {
+        init_avail_ring(&harness.mem, avail);
+        init_used_ring(&harness.mem, used);
+    }
+    harness.enable().await;
+    for index in 0..3 {
+        harness.device.stop_queue(index).await.unwrap();
+    }
+}
 
 /// Test that the device can be constructed and its config space returns the
 /// correct guest CID.
@@ -856,7 +1539,7 @@ async fn host_connect_to_guest(driver: DefaultDriver) {
     use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
-    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let host_listener_path = socket_path(&tmp_dir, "host_listener.sock");
     let mut harness = TestHarness::new(&driver, tmp_dir);
     harness.enable().await;
 
@@ -976,7 +1659,7 @@ async fn host_connect_to_guest_with_guid(driver: DefaultDriver) {
     use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
-    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let host_listener_path = socket_path(&tmp_dir, "host_listener.sock");
     let mut harness = TestHarness::new(&driver, tmp_dir);
     harness.enable().await;
 
@@ -1065,7 +1748,7 @@ async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver)
     use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
-    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let host_listener_path = socket_path(&tmp_dir, "host_listener.sock");
     let mut harness = TestHarness::new(&driver, tmp_dir);
     harness.enable().await;
 
@@ -1212,8 +1895,62 @@ async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver)
 #[async_test]
 #[cfg_attr(windows, ignore)]
 async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
-    let tmp_dir = tempfile::tempdir().unwrap();
-    let mut harness = TestHarness::new(&driver, tmp_dir);
+    guest_send_exercises_ring_buffer_inner(driver, TestMemoryMode::Mapped).await;
+}
+
+#[async_test]
+#[cfg_attr(windows, ignore)]
+async fn copy_only_tx_snapshot_survives_backpressure(driver: DefaultDriver) {
+    guest_send_exercises_ring_buffer_inner(driver, TestMemoryMode::CopyOnly).await;
+}
+
+#[async_test]
+#[cfg_attr(windows, ignore)]
+async fn automatic_tx_snapshot_survives_backpressure_without_mapping(driver: DefaultDriver) {
+    guest_send_exercises_ring_buffer_inner(driver, TestMemoryMode::KernelDenied).await;
+}
+
+#[async_test]
+#[cfg_attr(windows, ignore)]
+async fn safe_fallback_tx_keeps_direct_mode_without_raw_locks(driver: DefaultDriver) {
+    guest_send_exercises_ring_buffer_inner(driver, TestMemoryMode::SafeFallback).await;
+}
+
+#[derive(Clone, Copy)]
+enum TestMemoryMode {
+    Mapped,
+    CopyOnly,
+    KernelDenied,
+    SafeFallback,
+}
+
+async fn guest_send_exercises_ring_buffer_inner(
+    driver: DefaultDriver,
+    memory_mode: TestMemoryMode,
+) {
+    let tmp_dir = tempfile::tempdir_in(".").unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir).with_memory_mode(memory_mode);
+    if !matches!(memory_mode, TestMemoryMode::Mapped) {
+        assert!(!harness.mem.supports_kernel_lock());
+        assert_eq!(
+            harness.mem.io_policy(),
+            if matches!(
+                memory_mode,
+                TestMemoryMode::CopyOnly | TestMemoryMode::KernelDenied
+            ) {
+                guestmem::GuestMemoryIoPolicy::CopyOnly
+            } else {
+                guestmem::GuestMemoryIoPolicy::Direct
+            }
+        );
+        assert_eq!(
+            (harness.mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly),
+            matches!(
+                memory_mode,
+                TestMemoryMode::CopyOnly | TestMemoryMode::KernelDenied
+            )
+        );
+    }
     let mut listener = harness.create_port_listener(5050);
     harness.enable().await;
 
@@ -1242,6 +1979,12 @@ async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
         // Wait for the tx descriptor to be consumed so the device processes
         // each packet before we queue the next.
         harness.wait_for_tx_used().await;
+        if harness.mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            harness
+                .mem
+                .write_at(DATA_BASE + u64::from(HDR_SIZE), &[0xff; CHUNK_SIZE])
+                .unwrap();
+        }
         sent_bytes.extend_from_slice(&chunk);
     }
 
@@ -1306,8 +2049,37 @@ async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
 /// Host sends data to the guest through an established connection.
 #[async_test]
 async fn host_send_respects_credit(driver: DefaultDriver) {
-    let tmp_dir = tempfile::tempdir().unwrap();
-    let mut harness = TestHarness::new(&driver, tmp_dir);
+    host_send_respects_credit_inner(driver, TestMemoryMode::Mapped).await;
+}
+
+#[async_test]
+async fn copy_only_host_send_respects_credit(driver: DefaultDriver) {
+    host_send_respects_credit_inner(driver, TestMemoryMode::CopyOnly).await;
+}
+
+#[async_test]
+async fn automatic_host_send_respects_credit_without_mapping(driver: DefaultDriver) {
+    host_send_respects_credit_inner(driver, TestMemoryMode::KernelDenied).await;
+}
+
+#[async_test]
+async fn safe_fallback_rx_keeps_direct_mode_without_raw_locks(driver: DefaultDriver) {
+    host_send_respects_credit_inner(driver, TestMemoryMode::SafeFallback).await;
+}
+
+async fn host_send_respects_credit_inner(driver: DefaultDriver, memory_mode: TestMemoryMode) {
+    let tmp_dir = tempfile::tempdir_in(".").unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir).with_memory_mode(memory_mode);
+    if !matches!(memory_mode, TestMemoryMode::Mapped) {
+        assert!(!harness.mem.supports_kernel_lock());
+        assert_eq!(
+            (harness.mem.io_policy() == guestmem::GuestMemoryIoPolicy::CopyOnly),
+            matches!(
+                memory_mode,
+                TestMemoryMode::CopyOnly | TestMemoryMode::KernelDenied
+            )
+        );
+    }
     let mut listener = harness.create_port_listener(5002);
     harness.enable().await;
 

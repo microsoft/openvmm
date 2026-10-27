@@ -18,6 +18,7 @@ struct RxPacket {
     work: VirtioQueueCallbackWork,
     len: u32,
     cap: u32,
+    failed: bool,
 }
 
 /// Holds virtio buffers available for a network backend to send data to the client.
@@ -101,7 +102,12 @@ impl VirtioWorkPool {
             );
             return Err(RxQueueError::TooSmall(work));
         };
-        *packet = Some(RxPacket { len: 0, cap, work });
+        *packet = Some(RxPacket {
+            len: 0,
+            cap,
+            work,
+            failed: false,
+        });
         Ok(RxId(idx.into()))
     }
 
@@ -113,7 +119,7 @@ impl VirtioWorkPool {
         let packet = self.rx_packets[rx_id.0 as usize]
             .take()
             .expect("valid packet index");
-        let payload_len = if packet.len == 0 {
+        let payload_len = if packet.failed || packet.len == 0 {
             // Header was not written, so treat as empty packet.
             tracelimit::warn_ratelimited!("dropping RX buffer: header not written");
             0
@@ -133,10 +139,16 @@ impl BufferAccess for VirtioWorkPool {
         let packet = self.rx_packets[id.0 as usize]
             .as_mut()
             .expect("invalid buffer index");
+        if data.len() > packet.cap as usize {
+            packet.failed = true;
+            tracelimit::warn_ratelimited!("dropping RX packet larger than guest buffer");
+            return;
+        }
         if let Err(err) = packet
             .work
             .write_at_offset(header_size() as u64, &self.mem, data)
         {
+            packet.failed = true;
             tracelimit::warn_ratelimited!(
                 len = data.len(),
                 error = &err as &dyn std::error::Error,
@@ -150,8 +162,17 @@ impl BufferAccess for VirtioWorkPool {
             .as_mut()
             .expect("invalid buffer index");
         let mut offset = header_size() as u64;
+        let length = segments
+            .iter()
+            .try_fold(0usize, |len, segment| len.checked_add(segment.len()));
+        if length.is_none_or(|len| len > packet.cap as usize) {
+            packet.failed = true;
+            tracelimit::warn_ratelimited!("dropping RX packet larger than guest buffer");
+            return;
+        }
         for segment in segments {
             if let Err(err) = packet.work.write_at_offset(offset, &self.mem, segment) {
+                packet.failed = true;
                 tracelimit::warn_ratelimited!(
                     len = segment.len(),
                     error = &err as &dyn std::error::Error,
@@ -188,8 +209,18 @@ impl BufferAccess for VirtioWorkPool {
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
-        assert_eq!(metadata.offset, 0);
-        assert!(metadata.len > 0);
+        let packet = self.rx_packets[id.0 as usize]
+            .as_mut()
+            .expect("invalid buffer index");
+        if packet.failed
+            || metadata.offset != 0
+            || metadata.len == 0
+            || metadata.len > packet.cap as usize
+        {
+            packet.failed = true;
+            tracelimit::warn_ratelimited!("dropping RX packet with invalid length or metadata");
+            return;
+        }
 
         // Map RxMetadata checksum state to virtio-net header flags.
         // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums have
@@ -203,25 +234,17 @@ impl BufferAccess for VirtioWorkPool {
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };
-        let packet = self.rx_packets[id.0 as usize]
-            .as_mut()
-            .expect("invalid buffer index");
         if let Err(err) = packet
             .work
             .write(&self.mem, &virtio_net_header.as_bytes()[..header_size()])
         {
+            packet.failed = true;
             tracelimit::warn_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 "failure writing header"
             );
             return;
         }
-        assert!(
-            metadata.len <= packet.cap as usize,
-            "packet len {} exceeds buffer capacity {}",
-            metadata.len,
-            packet.cap
-        );
         packet.len = metadata.len as u32;
     }
 }
