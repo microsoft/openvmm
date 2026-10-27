@@ -4,6 +4,8 @@
 //! Utility functions for VMM tests that can be shared across multiple test
 //! files.
 
+pub(crate) mod virtio_blk;
+
 use anyhow::Context;
 use guid::Guid;
 use pipette_client::PipetteClient;
