@@ -192,6 +192,34 @@ impl SnpPartitionState {
         state
     }
 
+    pub(crate) fn validate_control_pages(
+        &self,
+        partition: &MshvPartitionInner,
+        addresses: &[u64],
+    ) -> anyhow::Result<()> {
+        if !self.control_operation_ready()? {
+            return Ok(());
+        }
+        let ranges = addresses
+            .iter()
+            .map(|addr| PageRange::new(*addr, hvdef::HV_PAGE_SIZE))
+            .collect::<Result<Vec<_>, _>>()?;
+        let memory = partition.memory.lock();
+        let (ram, mappings) = host_access_ram(partition, &memory)?;
+        for range in ranges {
+            validate_ram(range, true, &ram, &mappings)?;
+        }
+        Ok(())
+    }
+
+    fn control_operation_ready(&self) -> Result<bool, SnpError> {
+        match *self.launch_state.lock() {
+            SnpLaunchState::NotStarted | SnpLaunchState::Started => Ok(false),
+            SnpLaunchState::Finished => Ok(true),
+            SnpLaunchState::Failed => Err(SnpError::LaunchFailed),
+        }
+    }
+
     pub(crate) fn acquire_host_access(
         &self,
         partition: &MshvPartitionInner,
@@ -1468,6 +1496,18 @@ impl MshvProcessor<'_> {
         name: HvX64RegisterName,
         value: u64,
     ) -> Result<(), VpHaltReason> {
+        if name == HvX64RegisterName::SevDoorbellGpa && value & 1 != 0 {
+            if let Some(snp) = self.partition.isolation.snp() {
+                snp.validate_control_pages(self.partition, &[value & !1])
+                    .map_err(|error| {
+                        tracelimit::warn_ratelimited!(
+                            error = &*error,
+                            "SNP doorbell admission failed"
+                        );
+                        VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                    })?
+            }
+        }
         self.runner
             .vcpufd
             .set_hvdef_regs(&[HvRegisterAssoc::from((name, value))])
@@ -1478,7 +1518,8 @@ impl MshvProcessor<'_> {
                     "failed to set SNP VP register"
                 );
                 VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
-            })
+            })?;
+        Ok(())
     }
 
     pub(super) fn sev_get_reg(&self, name: HvX64RegisterName) -> Result<u64, VpHaltReason> {
@@ -1582,6 +1623,18 @@ impl MshvProcessor<'_> {
                 let previous = self.sev_get_reg(HvX64RegisterName::SevGhcbGpa)?;
                 let page_number = ghcb_data;
                 let ghcb_gpa = page_number << GHCB_INFO_BIT_WIDTH;
+                let snp = Self::snp_state(self.partition);
+                if previous & 1 != 0 && previous & !0xfff == ghcb_gpa {
+                    return self.sev_set_reg(
+                        HvX64RegisterName::Ghcb,
+                        GHCB_INFO_REGISTER_RESPONSE as u64 | page_number << GHCB_INFO_BIT_WIDTH,
+                    );
+                }
+                snp.validate_control_pages(self.partition, &[ghcb_gpa])
+                    .map_err(|error| {
+                        tracelimit::warn_ratelimited!(error = &*error, "SNP GHCB admission failed");
+                        VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+                    })?;
                 self.sev_set_reg(HvX64RegisterName::SevGhcbGpa, previous & !1)?;
                 self.sev_set_reg(HvX64RegisterName::SevGhcbGpa, ghcb_gpa | 1)?;
                 self.sev_set_reg(
@@ -1940,6 +1993,12 @@ impl MshvProcessor<'_> {
             req_gpa: request.request_gpa,
             rsp_gpa: request.response_gpa,
         };
+        Self::snp_state(self.partition)
+            .validate_control_pages(self.partition, &[request.req_gpa, request.rsp_gpa])
+            .map_err(|error| {
+                tracelimit::warn_ratelimited!(error = &*error, "SNP PSP admission failed");
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })?;
         if let Err(error) = self.partition.vmfd.psp_issue_guest_request(&request) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
@@ -2048,6 +2107,11 @@ impl MshvProcessor<'_> {
             vp_id: u64::from(target_vp.index()),
             vmsa_gpa: request.vmsa_gpa,
         };
+        snp.validate_control_pages(self.partition, &[request.vmsa_gpa])
+            .map_err(|error| {
+                tracelimit::warn_ratelimited!(error = &*error, "SNP AP VMSA admission failed");
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })?;
         if let Err(error) = self.partition.vmfd.sev_snp_ap_create(&request) {
             tracelimit::error_ratelimited!(
                 error = &error as &dyn std::error::Error,
@@ -2084,6 +2148,22 @@ mod tests {
         assert!(matches!(
             MshvProcessor::validate_attribute_vp(VpIndex::BSP, 1),
             Err(VpHaltReason::BackendError(_))
+        ));
+    }
+
+    #[test]
+    fn runtime_control_validation_requires_completed_launch() {
+        let snp = SnpPartitionState::new(false);
+        for state in [SnpLaunchState::NotStarted, SnpLaunchState::Started] {
+            *snp.launch_state.lock() = state;
+            assert!(!snp.control_operation_ready().unwrap());
+        }
+        *snp.launch_state.lock() = SnpLaunchState::Finished;
+        assert!(snp.control_operation_ready().unwrap());
+        *snp.launch_state.lock() = SnpLaunchState::Failed;
+        assert!(matches!(
+            snp.control_operation_ready(),
+            Err(SnpError::LaunchFailed)
         ));
     }
 

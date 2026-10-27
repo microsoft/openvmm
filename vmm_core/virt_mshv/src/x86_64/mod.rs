@@ -1415,6 +1415,18 @@ impl hv1_hypercall::StartVirtualProcessor<hvdef::hypercall::InitialVpContextX64>
             vmsa_gpa,
         };
         self.partition
+            .isolation
+            .snp()
+            .ok_or(hvdef::HvError::InvalidPartitionId)?
+            .validate_control_pages(self.partition, &[vmsa_gpa])
+            .map_err(|error| {
+                tracelimit::warn_ratelimited!(
+                    error = &*error,
+                    "SNP StartVirtualProcessor VMSA admission failed"
+                );
+                hvdef::HvError::InvalidVpState
+            })?;
+        self.partition
             .vmfd
             .sev_snp_ap_create(&request)
             .map_err(|err| {
