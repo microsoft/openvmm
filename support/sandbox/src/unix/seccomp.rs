@@ -656,11 +656,12 @@ mod tests {
         // SAFETY: As above. AT_EMPTY_PATH exercises execution via a file
         // descriptor; -1 ensures no executable is available without the filter.
         let result = unsafe {
-            libc::execveat(
+            libc::syscall(
+                libc::SYS_execveat,
                 -1,
                 c"".as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null::<*const libc::c_char>(),
+                std::ptr::null::<*const libc::c_char>(),
                 libc::AT_EMPTY_PATH,
             )
         };
