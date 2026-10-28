@@ -70,6 +70,15 @@ hole and the live shared-status page in e820, and leaves the fixed 3-to-4-GiB
 MMIO aperture out of RAM. The loader enters the ELF kernel in long mode with
 `RSI=0x2000`, `CR3=0x4000`, and paging enabled.
 
+The microVM virtio devices may reach only the RAM ranges of this e820 map with
+DMA, which after a restore include the RAM that the restore adds. A device
+refuses a queue whose rings, or a descriptor whose buffer, lies even partly
+outside them, such as in the shared-status page, in the ISA hole, or across the
+aperture: it reads and writes none of it, and its transport sets
+`DEVICE_NEEDS_RESET` in the device status, with a configuration-change
+notification if the driver has set `DRIVER_OK`. A refused ring fails
+`DRIVER_OK`. Resetting the device clears the mark.
+
 ## AArch64 Boot Flow
 
 On AArch64, OpenVMM supports two modes for presenting hardware descriptions to
