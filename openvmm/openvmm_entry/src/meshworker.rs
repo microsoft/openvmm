@@ -17,6 +17,7 @@ use pal_async::task::Task;
 #[cfg(target_os = "linux")]
 use pal_tracer::TraceConfig;
 use sandbox::profiles::SandboxRole;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 const SANDBOX_ROLE_ARG: &str = "--openvmm-sandbox-role=";
@@ -29,27 +30,36 @@ pub(crate) fn run_vmm_mesh_host() -> anyhow::Result<()> {
 }
 
 pub(crate) fn apply_vmm_mesh_host_sandbox() -> anyhow::Result<()> {
-    if let Some(role) = sandbox_role_from_args()? {
+    if let Some(role) = sandbox_role_from_args(std::env::args_os())? {
         sandbox::apply(&role.profile()).context("failed to apply worker host sandbox")?;
     }
     Ok(())
 }
 
-fn sandbox_role_from_args() -> anyhow::Result<Option<SandboxRole>> {
+fn sandbox_role_from_args(
+    args: impl IntoIterator<Item = OsString>,
+) -> anyhow::Result<Option<SandboxRole>> {
     let mut role = None;
-    for arg in std::env::args() {
-        let Some(value) = arg.strip_prefix(SANDBOX_ROLE_ARG) else {
+    for arg in args {
+        let Some(value) = arg
+            .as_encoded_bytes()
+            .strip_prefix(SANDBOX_ROLE_ARG.as_bytes())
+        else {
             continue;
         };
         let parsed = match value {
-            "vm" => SandboxRole::Vm,
-            "tpm" => SandboxRole::Tpm,
-            _ => anyhow::bail!("unknown OpenVMM sandbox role `{value}`"),
+            b"vm" => SandboxRole::Vm,
+            b"tpm" => SandboxRole::Tpm,
+            _ => anyhow::bail!(
+                "unknown OpenVMM sandbox role `{}`",
+                String::from_utf8_lossy(value),
+            ),
         };
         if role.replace(parsed).is_some() {
             anyhow::bail!("OpenVMM sandbox role specified more than once");
         }
     }
+
     Ok(role)
 }
 
@@ -168,6 +178,47 @@ impl VmmMesh {
     pub async fn shutdown(self) {
         if let Some(mesh) = self.mesh {
             mesh.shutdown().await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    #[cfg(unix)]
+    fn sandbox_role_ignores_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = OsString::from_vec(b"/tmp/kernel-\xff".to_vec());
+        for expected in [None, Some("vm"), Some("tpm")] {
+            let mut args = vec![OsString::from("openvmm")];
+            if let Some(role) = expected {
+                args.push(format!("{SANDBOX_ROLE_ARG}{role}").into());
+            }
+            args.extend(["--kernel".into(), path.clone()]);
+            assert_eq!(
+                sandbox_role_from_args(args)
+                    .unwrap()
+                    .map(|role| role.name()),
+                expected,
+            );
+        }
+
+        let mut invalid_role = SANDBOX_ROLE_ARG.as_bytes().to_vec();
+        invalid_role.push(0xff);
+        assert!(sandbox_role_from_args([OsString::from_vec(invalid_role)]).is_err());
+    }
+
+    #[test]
+    fn sandbox_role_rejects_unknown_and_duplicate_roles() {
+        for roles in [vec!["unknown"], vec!["vm", "vm"], vec!["vm", "tpm"]] {
+            let args = roles
+                .into_iter()
+                .map(|role| OsString::from(format!("{SANDBOX_ROLE_ARG}{role}")));
+            assert!(sandbox_role_from_args(args).is_err());
         }
     }
 }
