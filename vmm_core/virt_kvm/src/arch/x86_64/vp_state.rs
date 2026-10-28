@@ -701,10 +701,24 @@ impl AccessVpState for KvmVpStateAccess<'_, '_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(KvmError::NotSupported)
+        // KVM reports a queued PIC interrupt in neither the VP state nor the
+        // nested state, so saving now would lose it.
+        if self.vp.runner.extint_may_be_queued() {
+            return Err(KvmError::ExtintQueued);
+        }
+        // Empty only on a host without KVM_CAP_NESTED_STATE.
+        let data = self.kvm().get_nested_state()?;
+        Ok(vp::NestedState { data })
     }
 
-    fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(KvmError::NotSupported)
+    fn set_nested_state(&mut self, value: &vp::NestedState) -> Result<(), Self::Error> {
+        // An empty blob is the at-reset value, so clear any nested state
+        // rather than leaving the vCPU in nested operation.
+        if value.data.is_empty() {
+            self.kvm().clear_nested_state()?;
+            return Ok(());
+        }
+        self.kvm().set_nested_state(&value.data)?;
+        Ok(())
     }
 }
