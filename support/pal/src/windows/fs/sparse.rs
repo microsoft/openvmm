@@ -8,12 +8,12 @@
 //! overlapped handle.
 
 use crate::windows::Overlapped;
+use pal_event::Event;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
+use std::os::windows::io::AsHandle;
 use std::os::windows::io::AsRawHandle;
-use std::os::windows::io::FromRawHandle;
-use std::os::windows::io::OwnedHandle;
 use std::ptr;
 use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::ERROR_IO_PENDING;
@@ -30,7 +30,6 @@ use windows_sys::Win32::System::Ioctl::FSCTL_DUPLICATE_EXTENTS_TO_FILE;
 use windows_sys::Win32::System::Ioctl::FSCTL_QUERY_ALLOCATED_RANGES;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_ZERO_DATA;
-use windows_sys::Win32::System::Threading::CreateEventW;
 
 // This is aligned to every supported ReFS cluster size and remains below its
 // exclusive 4-GiB block-clone limit.
@@ -53,21 +52,18 @@ unsafe fn device_io_control(
     output: *mut c_void,
     output_size: u32,
 ) -> Result<u32, DeviceIoControlError> {
-    // SAFETY: all CreateEventW pointer arguments are null as documented.
-    let event = unsafe {
-        let event = CreateEventW(null_mut(), true.into(), false.into(), ptr::null());
-        if event.is_null() {
-            return Err(DeviceIoControlError {
-                error: io::Error::last_os_error(),
-                returned: 0,
-            });
-        }
-        OwnedHandle::from_raw_handle(event)
-    };
+    // `GetOverlappedResult` below is the only waiter, so this auto-reset event
+    // cannot lose its completion signal.
+    let event = Event::new();
     let mut overlapped = Overlapped::new();
     // Setting the low bit suppresses an IOCP packet for this internally
     // waited operation. Keep `event` itself untagged so it closes normally.
-    overlapped.set_event(event.as_raw_handle().map_addr(|address| address | 1));
+    overlapped.set_event(
+        event
+            .as_handle()
+            .as_raw_handle()
+            .map_addr(|address| address | 1),
+    );
     let mut returned = 0;
     // SAFETY: the caller guarantees the buffer contracts, and `overlapped`
     // and its event remain live until completion below.
