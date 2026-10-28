@@ -103,6 +103,8 @@ pub struct QueueState {
 pub enum QueueError {
     #[error("error accessing queue memory")]
     Memory(#[source] GuestMemoryError),
+    #[error("a descriptor addresses memory that the device may not access")]
+    BufferNotAdmitted(#[source] GuestMemoryError),
     #[error("an indirect descriptor had the indirect flag set")]
     DoubleIndirect,
     #[error("a descriptor chain is too long or has a cycle")]
@@ -539,6 +541,15 @@ impl QueueCoreGetWork {
         Ok(descriptor)
     }
 
+    /// Fails unless the device memory admits the whole buffer of
+    /// `descriptor`, so that the device reads and writes none of a buffer that
+    /// lies even partly outside it.
+    fn check_admitted(&self, descriptor: &QueueDescriptor) -> Result<(), QueueError> {
+        self.mem
+            .check_admitted(descriptor.address, descriptor.length.into())
+            .map_err(QueueError::BufferNotAdmitted)
+    }
+
     fn size(&self) -> u16 {
         self.queue_size
     }
@@ -696,6 +707,7 @@ impl<'a> DescriptorChain<'a> {
             if self.indirect_queue.is_some() {
                 return Err(QueueError::DoubleIndirect);
             }
+            self.queue.check_admitted(&descriptor)?;
             let indirect_queue = self.indirect_queue.insert(
                 self.queue
                     .mem
@@ -708,6 +720,8 @@ impl<'a> DescriptorChain<'a> {
             self.queue
                 .descriptor(indirect_queue, 0, Some(indirect_len))?
         };
+        // Refuse the chain before the device reads or writes any of it.
+        self.queue.check_admitted(&descriptor)?;
 
         self.num_read += 1;
         self.descriptor_index = descriptor.next;
