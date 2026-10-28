@@ -138,7 +138,6 @@ impl PetriVmConfigOpenVmm {
         if !physical_nvme_devices.is_empty() {
             anyhow::bail!("Physical NVMe devices are only supported with the Hyper-V backend");
         }
-        assert!(guest_shares.is_empty());
 
         if matches!(
             firmware.openhcl_firmware(),
@@ -173,6 +172,7 @@ impl PetriVmConfigOpenVmm {
             mesh: &mesh,
             openvmm_path,
             pipette_rdinit_param: prebuilt_initrd.as_ref().map(|x| x.rdinit_param.clone()),
+            external_pipette: properties.external_pipette,
             enable_serial: properties.enable_serial,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
@@ -203,22 +203,17 @@ impl PetriVmConfigOpenVmm {
 
         let mut load_mode = setup.load_firmware()?;
 
-        // If using pipette-as-init, replace the initrd with the pre-built
-        // one that has pipette injected. run_core() guarantees that
-        // prebuilt_initrd is set when uses_pipette_as_init is true.
-        if properties.uses_pipette_as_init {
-            if let LoadMode::Linux { initrd, .. } = &mut load_mode {
-                let prebuilt = prebuilt_initrd
-                    .as_ref()
-                    .expect("uses_pipette_as_init requires prebuilt_initrd");
-                let file = std::fs::File::open(prebuilt.path.as_ref()).with_context(|| {
-                    format!(
-                        "failed to open prebuilt initrd at {}",
-                        prebuilt.path.as_ref().display()
-                    )
-                })?;
-                *initrd = Some(file);
-            }
+        // A prepared initrd may contain either Petri's agent or a caller's
+        // bootstrap. Use it consistently with the selected rdinit parameter.
+        if let (Some(prebuilt), LoadMode::Linux { initrd, .. }) = (prebuilt_initrd, &mut load_mode)
+        {
+            let file = std::fs::File::open(prebuilt.path.as_ref()).with_context(|| {
+                format!(
+                    "failed to open prebuilt initrd at {}",
+                    prebuilt.path.as_ref().display()
+                )
+            })?;
+            *initrd = Some(file);
         }
 
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
@@ -377,7 +372,9 @@ impl PetriVmConfigOpenVmm {
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
             // on the floor during boot.
-            if matches!(firmware, Firmware::LinuxDirect { .. }) && !properties.uses_pipette_as_init
+            if matches!(firmware, Firmware::LinuxDirect { .. })
+                && prebuilt_initrd.is_none()
+                && !properties.external_pipette
             {
                 chipset = chipset.with_serial_wait_for_rts();
             }
@@ -762,6 +759,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         Ok(Self {
+            guest_shares,
             runtime_config: firmware.into_runtime_config(vmbus_storage_controllers),
             arch,
             host_log_levels,
@@ -814,6 +812,7 @@ struct PetriVmConfigSetupCore<'a> {
     mesh: &'a Mesh,
     openvmm_path: &'a ResolvedArtifact,
     pipette_rdinit_param: Option<String>,
+    external_pipette: bool,
     enable_serial: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
@@ -869,6 +868,7 @@ impl PetriVmConfigSetupCore<'_> {
 
         if self.firmware.is_linux_direct()
             && !self.firmware.is_isolated_without_paravisor()
+            && !self.external_pipette
             && self.pipette_rdinit_param.is_none()
         {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
@@ -940,10 +940,11 @@ impl PetriVmConfigSetupCore<'_> {
                     .context("Failed to open initrd")?
                     .into();
 
-                let init = self
-                    .pipette_rdinit_param
-                    .as_ref()
-                    .map_or("/bin/sh", |s| s.as_str());
+                let rdinit = match self.pipette_rdinit_param.as_deref() {
+                    Some(path) => format!(" rdinit={path}"),
+                    None if self.external_pipette => String::new(),
+                    None => " rdinit=/bin/sh".into(),
+                };
 
                 let serial_args = if self.enable_serial {
                     format!("{console} debug ")
@@ -951,7 +952,7 @@ impl PetriVmConfigSetupCore<'_> {
                     String::new()
                 };
 
-                let cmdline = format!("{serial_args}panic=-1 rdinit={init} {vsock_blacklist}");
+                let cmdline = format!("{serial_args}panic=-1{rdinit} {vsock_blacklist}");
 
                 LoadMode::Linux {
                     kernel,
@@ -1059,22 +1060,19 @@ impl PetriVmConfigSetupCore<'_> {
 
                 append_cmdline(&mut cmdline, "panic=-1 reboot=triple");
 
-                let isolated = match self.firmware {
-                    Firmware::OpenhclLinuxDirect { .. } => {
-                        // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
-                        // until the guest is ready. Otherwise, Linux will drop the input serial
-                        // data on the floor during boot.
-                        append_cmdline(
-                            &mut cmdline,
-                            format!(
-                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {vsock_blacklist}\""
-                            ),
-                        );
-                        false
-                    }
-                    Firmware::OpenhclUefi { isolation, .. } if isolation.is_some() => true,
-                    _ => false,
-                };
+                if matches!(self.firmware, Firmware::OpenhclLinuxDirect { .. }) {
+                    // Set UNDERHILL_SERIAL_WAIT_FOR_RTS=1 so that we don't pull serial data
+                    // until the guest is ready. Otherwise, Linux will drop the input serial
+                    // data on the floor during boot.
+                    append_cmdline(
+                        &mut cmdline,
+                        format!(
+                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {vsock_blacklist}\""
+                        ),
+                    );
+                }
+
+                let isolation = self.firmware.isolation();
 
                 // For certain configurations, we need to override the override
                 // in new_underhill_vm.
@@ -1091,7 +1089,7 @@ impl PetriVmConfigSetupCore<'_> {
                     ..
                 } = self.firmware
                 {
-                    if !isolated
+                    if isolation.is_none()
                         && !secure_boot_enabled
                         && self.tpm_config.is_none()
                         && !default_boot_always_attempt
@@ -1118,16 +1116,21 @@ impl PetriVmConfigSetupCore<'_> {
                 }
 
                 let vtl2_base_address = vtl2_base_address_type.unwrap_or_else(|| {
-                    if isolated {
+                    match isolation {
+                        // bump up the memory on release builds for VBS VMs
+                        // (uses petri build flavor as proxy for igvm file)
+                        #[cfg(not(debug_assertions))]
+                        Some(IsolationType::Vbs) => Vtl2BaseAddressType::Vtl2Allocate {
+                            size: Some(128 * 1024 * 1024),
+                        },
                         // Isolated VMs must load at the location specified by
                         // the file, as they do not support relocation.
-                        Vtl2BaseAddressType::File
-                    } else {
+                        Some(_) => Vtl2BaseAddressType::File,
                         // By default, utilize IGVM relocation and tell OpenVMM
                         // to place VTL2 at 512MB. This tests both relocation
                         // support in OpenVMM, and relocation support within
                         // OpenHCL.
-                        Vtl2BaseAddressType::Absolute(512 * SIZE_1_MB)
+                        None => Vtl2BaseAddressType::Absolute(512 * SIZE_1_MB),
                     }
                 });
 

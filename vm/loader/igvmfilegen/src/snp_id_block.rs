@@ -617,7 +617,7 @@ mod tests {
     /// The uncompressed EC point `0x04 || Qx || Qy` for `key`.
     fn uncompressed_point(key: &crypto::ecdsa::EcdsaKeyPair) -> Vec<u8> {
         let pk = key.public_key_bytes().unwrap();
-        let mut point = vec![0x04u8];
+        let mut point = vec![crypto::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
         point.extend_from_slice(&pk[..SNP_ECC_KEY_SIZE_BYTES]);
         point.extend_from_slice(&pk[SNP_ECC_KEY_SIZE_BYTES..]);
         point

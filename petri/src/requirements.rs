@@ -215,6 +215,16 @@ pub enum TestRequirement {
     Vendor(Vendor),
     /// Hypervisor backend that OpenVMM must select on the host.
     OpenVmmHypervisor(OpenVmmHypervisor),
+    /// A host capability probe evaluated only during runtime host filtering.
+    ///
+    /// Combine this with a backend requirement using [`Self::and`] to avoid
+    /// probing backends that are not available on the host.
+    ///
+    /// The probe runs synchronously before test execution, including when
+    /// listing tests for nextest. Artifact enumeration does not evaluate it.
+    /// Callers should cache expensive probes and report probe errors from the
+    /// test body rather than treating errors as unsupported capabilities.
+    HostCapability(fn() -> bool),
     /// Isolation requirement.
     Isolation(IsolationType),
     /// Requires a named capability advertised by the execution environment or
@@ -268,6 +278,7 @@ impl TestRequirement {
             TestRequirement::OpenVmmHypervisor(hypervisor) => {
                 context.openvmm_hypervisor == Some(*hypervisor)
             }
+            TestRequirement::HostCapability(probe) => probe(),
             TestRequirement::Isolation(isolation_type) => {
                 if let Some(vm_host_info) = &context.vm_host_info {
                     match isolation_type {
@@ -410,8 +421,25 @@ mod tests {
         let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Mshv);
         assert!(requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
         assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Kvm)));
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Whp)));
         let mut without_hypervisor = host_context(OpenVmmHypervisor::Mshv);
         without_hypervisor.openvmm_hypervisor = None;
         assert!(!requirement.is_satisfied(&without_hypervisor));
+    }
+
+    #[test]
+    fn capability_probes_are_short_circuited_by_backend_requirements() {
+        let requirement = TestRequirement::OpenVmmHypervisor(OpenVmmHypervisor::Kvm).and(
+            TestRequirement::HostCapability(|| panic!("unavailable backend must not be probed")),
+        );
+        assert!(!requirement.is_satisfied(&host_context(OpenVmmHypervisor::Mshv)));
+        assert!(
+            !TestRequirement::HostCapability(|| false)
+                .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
+        );
+        assert!(
+            TestRequirement::HostCapability(|| true)
+                .is_satisfied(&host_context(OpenVmmHypervisor::Kvm))
+        );
     }
 }

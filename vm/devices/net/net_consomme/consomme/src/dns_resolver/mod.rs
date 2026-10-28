@@ -14,6 +14,8 @@ use crate::DropReason;
 
 pub mod dns_tcp;
 mod static_records;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use static_records::MAX_DNS_UDP_RESPONSE_LEN;
 pub use static_records::StaticDnsRecord;

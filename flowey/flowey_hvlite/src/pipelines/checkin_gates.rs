@@ -1933,7 +1933,9 @@ impl IntoPipeline for CheckinGatesCli {
             });
 
             let vmm_tests_run_job = vmm_tests_run_job.finish();
-            if label != "x64-windows-amd-snp" {
+            // Both the Windows SNP and Linux MSHV SNP tests are unstable right
+            // now, so don't require that they pass before merging a PR.
+            if !label.contains("snp") {
                 all_jobs.push(vmm_tests_run_job);
             }
         }

@@ -82,6 +82,23 @@ enum VfManagerSaveResult {
     SaveFailed,
 }
 
+fn discard_pending_mana_buffers(dma_clients: &VfioDmaClients) -> anyhow::Result<()> {
+    let persistent = match dma_clients {
+        VfioDmaClients::EphemeralOnly(_) | VfioDmaClients::PersistentOnly(_) => {
+            anyhow::bail!("must have both clients to discard pending MANA buffers")
+        }
+        VfioDmaClients::Split { persistent, .. } => persistent,
+    };
+
+    // Attach pending buffers, then discard them so that they get freed.
+    drop(
+        persistent
+            .attach_pending_buffers()
+            .context("failed to attach pending MANA buffers")?,
+    );
+    Ok(())
+}
+
 async fn create_mana_device(
     driver_source: &VmTaskDriverSource,
     pci_id: &str,
@@ -91,6 +108,7 @@ async fn create_mana_device(
     keepalive_mode: KeepAliveConfig,
     dma_clients: VfioDmaClients,
     mut mana_state: Option<&ManaSavedState>,
+    is_restoring: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let vtl2_vfid = vfid_from_guid(vtl2_vf_instance_id);
     // This guards from situations where we have saved state from keepalive
@@ -101,18 +119,16 @@ async fn create_mana_device(
             vtl2_vfid,
             "have saved state from keepalive but restoring on an unsupported host"
         );
-
-        // Re-attach pending buffers, but discard them so that they get freed.
-        let dma_client = match &dma_clients {
-            VfioDmaClients::EphemeralOnly(_) | VfioDmaClients::PersistentOnly(_) => {
-                anyhow::bail!("must have both clients to free previously attached buffers")
-            }
-            VfioDmaClients::Split { persistent, .. } => persistent,
-        };
-        let _ = dma_client.attach_pending_buffers();
+        discard_pending_mana_buffers(&dma_clients)?;
 
         // Remove the mana saved state so that we don't go through restore path.
         let _ = mana_state.take();
+    }
+
+    // Only servicing restore can leave pending buffers without MANA saved state.
+    if is_restoring && mana_state.is_none() && keepalive_mode.is_enabled() {
+        tracelimit::info_ratelimited!(vtl2_vfid, "missing saved state but keepalive is enabled");
+        discard_pending_mana_buffers(&dma_clients)?;
     }
 
     if keepalive_mode.is_enabled() && mana_state.is_some() {
@@ -994,7 +1010,8 @@ impl HclNetworkVFManagerWorker {
             self.max_sub_channels,
             KeepAliveConfig::Disabled,
             self.dma_clients.clone(),
-            None, // No ManaSavedState
+            None,  // No ManaSavedState
+            false, // Not a restore
         )
         .await
         {
@@ -1884,6 +1901,7 @@ impl HclNetworkVFManager {
             keepalive_mode.clone(),
             dma_clients.clone(),
             mana_state,
+            netvsp_state.is_some(),
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
@@ -2266,3 +2284,6 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

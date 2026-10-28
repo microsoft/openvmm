@@ -13,6 +13,7 @@
 
 use super::X509Error;
 use super::X509PublicKey;
+use super::X509VerifyError;
 use crate::mac::*;
 use der::Decode;
 use der::Encode;
@@ -50,10 +51,6 @@ pub(crate) fn backend_err(e: X509Error) -> crate::BackendError {
 
 fn der_err(e: der::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Der(e, op))
-}
-
-fn rsa_der_err(e: der::Error, op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Der(e, op))
 }
 
 fn null_err(op: &'static str) -> X509Error {
@@ -113,21 +110,19 @@ impl X509CertificateInner {
         Ok(X509PublicKey::Rsa(rsa))
     }
 
-    pub fn verify(
-        &self,
-        issuer_public_key: &crate::rsa::RsaPublicKey,
-    ) -> Result<bool, crate::rsa::RsaError> {
+    pub fn verify(&self, issuer_public_key: &X509PublicKey) -> Result<bool, X509VerifyError> {
+        let X509PublicKey::Rsa(issuer_public_key) = issuer_public_key;
         let oid = self.parsed.signature_algorithm().oid;
-        let hash = crate::HashAlgorithm::try_from(oid)
-            .map_err(|e| rsa_der_err(e, "reading the certificate signature algorithm"))?;
+        let hash = crate::HashAlgorithm::from_rsa_signature_oid(oid)
+            .map_err(|e| der_err(e, "reading the certificate signature algorithm"))?;
 
         let tbs_der = self
             .parsed
             .tbs_certificate()
             .to_der()
-            .map_err(|e| rsa_der_err(e, "encoding the TBS certificate"))?;
+            .map_err(|e| der_err(e, "encoding the TBS certificate"))?;
         let signature = self.parsed.signature().raw_bytes();
-        issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)
+        Ok(issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)?)
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
@@ -233,17 +228,17 @@ impl X509CertificateInner {
 
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
-        key: &crate::rsa::RsaKeyPair,
+        key: super::X509KeyPair<'_>,
         country: &str,
         state: &str,
         locality: &str,
         organization: &str,
         common_name: &str,
     ) -> anyhow::Result<Self> {
-        use super::builder::rsa_keypair_signer::RsaKeyPairSigner;
+        use super::builder::keypair_signer::KeyPairSigner;
         use x509_cert::builder::Builder;
 
-        let (builder, pkcs1_der) = super::builder::self_signed_builder(
+        let (builder, public_key_der) = super::builder::self_signed_builder(
             key,
             country,
             state,
@@ -251,7 +246,10 @@ impl X509CertificateInner {
             organization,
             common_name,
         )?;
-        let cert = builder.build(&RsaKeyPairSigner { key, pkcs1_der })?;
+        let cert = builder.build(&KeyPairSigner {
+            key,
+            public_key_der,
+        })?;
         Ok(Self::from_der(&cert.to_der()?)?)
     }
 }

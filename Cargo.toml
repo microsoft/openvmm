@@ -65,6 +65,9 @@ members = [
   "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  # TDISP
+  # Temporary: remove once a workspace member depends on this crate.
+  "vm/devices/tdisp_lstoraccel",
 ]
 exclude = [
   "xsync",
@@ -76,7 +79,7 @@ rust-version = "1.95"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
-version = "0.2.0"
+version = "0.4.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -119,6 +122,7 @@ vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
 initrd_cpio = { path = "petri/initrd_cpio" }
+mshv_host_boot = { path = "petri/mshv_host_boot" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 
@@ -168,6 +172,7 @@ mesh_tracing = { path = "support/mesh_tracing" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 minircu = { path = "support/minircu" }
 nostd_spin_channel = { path = "support/nostd_spin_channel"}
+otel_tracing = { path = "support/otel_tracing" }
 open_enum = { path = "support/open_enum" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
 openssl_kdf = { path = "support/openssl_kdf" }
@@ -344,6 +349,7 @@ disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_delay = { path = "vm/devices/storage/disk_delay" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
+disk_hook = { path = "vm/devices/storage/disk_hook" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
@@ -401,6 +407,7 @@ virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
+virtio_rtc = { path = "vm/devices/virtio/virtio_rtc" }
 virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
@@ -491,7 +498,14 @@ thiserror = { version = "2", default-features = false }
 # --- Logging / tracing ---
 env_logger = "0.11.7"
 log = "0.4"
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-etw-traces = { version = "0.1.1", default-features = false }
+# The released 0.5.0 processor nests an executor when spans end. Pin the
+# upstream direct processor until it is included in a release.
+opentelemetry-user-events-trace = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib", rev = "07c16a0b1e0aa7b6fcd4dc3031b68b78d3892d9e", default-features = false }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = "0.3.20"
 
 # --- Async / futures ---
@@ -658,6 +672,7 @@ igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2
 kvm-bindings = "0.14.0"
 mshv-bindings = "0.6.8"
 mshv-ioctls = "0.6.8"
+uart_16550 = "0.9.0"
 uefi = "0.41.0"
 vfio-bindings = "0.4.0"
 x86_64 = { version = "0.15.2", default-features = false }

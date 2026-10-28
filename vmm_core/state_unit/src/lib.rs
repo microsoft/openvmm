@@ -48,6 +48,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::fmt::Debug;
@@ -231,8 +232,8 @@ struct Inner {
 struct Unit {
     name: Arc<str>,
     send: Sender<StateRequest>,
-    dependencies: Vec<u64>,
-    dependents: Vec<u64>,
+    dependencies: BTreeSet<u64>,
+    dependents: BTreeSet<u64>,
     state: State,
     inspect_sensitivity: inspect::SensitivityLevel,
 }
@@ -284,8 +285,27 @@ impl UnitHandle {
     fn remove_if(&mut self) {
         if let Some(inner) = self.inner.take().and_then(|inner| inner.upgrade()) {
             let mut inner = inner.lock();
-            inner.units.remove(&self.id.id).expect("unit exists");
+            let id = self.id.id;
+            let unit = inner.units.remove(&id).expect("unit exists");
             inner.names.remove(&self.id.name).expect("unit exists");
+            // The lock keeps the graph consistent while pruning the reverse
+            // edges, so every referenced unit must still exist.
+            for dep in unit.dependencies {
+                inner
+                    .units
+                    .get_mut(&dep)
+                    .expect("dependency exists")
+                    .dependents
+                    .remove(&id);
+            }
+            for dep in unit.dependents {
+                inner
+                    .units
+                    .get_mut(&dep)
+                    .expect("dependent exists")
+                    .dependencies
+                    .remove(&id);
+            }
         }
     }
 }
@@ -318,22 +338,18 @@ impl Inspect for Inner {
                 let mut resp = req.respond();
                 if !unit.dependencies.is_empty() {
                     resp.field_with("dependencies", || {
-                        // Removing a unit leaves stale ids in other units'
-                        // dependency lists (consumers tolerate this via
-                        // `get`), so skip any that no longer resolve.
                         unit.dependencies
                             .iter()
-                            .filter_map(|id| self.units.get(id).map(|u| u.name.as_ref()))
+                            .map(|id| self.units[id].name.as_ref())
                             .collect::<Vec<_>>()
                             .join(",")
                     });
                 }
                 if !unit.dependents.is_empty() {
                     resp.field_with("dependents", || {
-                        // See the note above: skip stale ids for removed units.
                         unit.dependents
                             .iter()
-                            .filter_map(|id| self.units.get(id).map(|u| u.name.as_ref()))
+                            .map(|id| self.units[id].name.as_ref())
                             .collect::<Vec<_>>()
                             .join(",")
                     });
@@ -447,8 +463,8 @@ impl StateUnits {
         UnitBuilder {
             units: self,
             name: name.into(),
-            dependencies: Vec::new(),
-            dependents: Vec::new(),
+            dependencies: BTreeSet::new(),
+            dependents: BTreeSet::new(),
             inspect_sensitivity: inspect::SensitivityLevel::Unspecified,
         }
     }
@@ -478,7 +494,7 @@ impl StateUnits {
             State::Running,
             StateRequest::Start,
             |_, _| Some(()),
-            |unit| &unit.dependencies,
+            |unit| Some(&unit.dependencies),
         )
         .await;
         self.running = true;
@@ -497,7 +513,7 @@ impl StateUnits {
             State::Stopped,
             StateRequest::Stop,
             |_, _| Some(()),
-            |unit| &unit.dependents,
+            |unit| Some(&unit.dependents),
         )
         .await;
         self.running = false;
@@ -519,7 +535,7 @@ impl StateUnits {
                 State::Stopped,
                 StateRequest::Reset,
                 |_, _| Some(()),
-                |unit| &unit.dependencies,
+                |unit| Some(&unit.dependencies),
             )
             .await;
 
@@ -543,7 +559,7 @@ impl StateUnits {
                 State::Stopped,
                 StateRequest::Save,
                 |_, _| Some(()),
-                |_| &[],
+                |_| None,
             )
             .await;
 
@@ -606,7 +622,7 @@ impl StateUnits {
                 State::Stopped,
                 StateRequest::Restore,
                 |id, _| states_by_id.remove(&id).map(|(_, blob)| blob),
-                |unit| &unit.dependencies,
+                |unit| Some(&unit.dependencies),
             )
             .await;
 
@@ -638,7 +654,8 @@ impl StateUnits {
     ///
     /// Each unit waits for its dependencies to complete their state change
     /// operation before proceeding with their own state change. The
-    /// dependencies list is computed for a unit by calling `deps`.
+    /// dependency set is computed for a unit by calling `deps`, with `None`
+    /// indicating no dependencies.
     ///
     /// To perform the state change, the unit is sent a request generated using
     /// `request`, with input generated by `input`. If `input` returns `None`,
@@ -654,7 +671,7 @@ impl StateUnits {
         new_state: State,
         request: impl Copy + FnOnce(Rpc<I, R>) -> StateRequest,
         mut input: impl FnMut(u64, &Unit) -> Option<I>,
-        mut deps: impl FnMut(&Unit) -> &[u64],
+        mut deps: impl FnMut(&Unit) -> Option<&BTreeSet<u64>>,
     ) -> Vec<(Arc<str>, R)> {
         let mut done = Vec::new();
         let ready_set;
@@ -677,7 +694,11 @@ impl StateUnits {
                     let name = unit.name.clone();
                     let input = (input)(id, unit);
                     let ready_set = ready_set.clone();
-                    let deps = deps(unit).to_vec();
+                    let deps = deps(unit)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .collect::<Vec<_>>();
                     let fut = state_change(name.clone(), unit, request, input);
                     let recv = async move {
                         ready_set.wait(op, id, &deps).await;
@@ -831,8 +852,8 @@ fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRe
 pub struct UnitBuilder<'a> {
     units: &'a StateUnits,
     name: Arc<str>,
-    dependencies: Vec<u64>,
-    dependents: Vec<u64>,
+    dependencies: BTreeSet<u64>,
+    dependents: BTreeSet<u64>,
     inspect_sensitivity: inspect::SensitivityLevel,
 }
 
@@ -842,7 +863,7 @@ impl UnitBuilder<'_> {
     /// Operations will be ordered to ensure that a dependency will stop after
     /// its dependants, and that it will reset or restore before its dependants.
     pub fn depends_on(mut self, handle: &UnitHandle) -> Self {
-        self.dependencies.push(self.handle_id(handle));
+        self.dependencies.insert(self.handle_id(handle));
         self
     }
 
@@ -851,7 +872,7 @@ impl UnitBuilder<'_> {
     /// Operations will be ordered to ensure that a dependency will stop after
     /// its dependants, and that it will reset or restore before its dependants.
     pub fn dependency_of(mut self, handle: &UnitHandle) -> Self {
-        self.dependents.push(self.handle_id(handle));
+        self.dependents.insert(self.handle_id(handle));
         self
     }
 
@@ -871,7 +892,7 @@ impl UnitBuilder<'_> {
     }
 
     /// Adds a new state unit sending requests to `send`.
-    pub fn build(mut self, send: Sender<StateRequest>) -> Result<UnitHandle, NameInUse> {
+    pub fn build(self, send: Sender<StateRequest>) -> Result<UnitHandle, NameInUse> {
         let id = {
             let mut inner = self.units.inner.lock();
             let id = inner.next_id;
@@ -881,20 +902,12 @@ impl UnitBuilder<'_> {
             };
             entry.insert(id);
 
-            // Dedup the dependencies and update the dependencies' lists of
-            // dependents.
-            self.dependencies.sort();
-            self.dependencies.dedup();
             for &dep in &self.dependencies {
-                inner.units.get_mut(&dep).unwrap().dependents.push(id);
+                inner.units.get_mut(&dep).unwrap().dependents.insert(id);
             }
 
-            // Dedup the depenedents and update the dependents' lists of
-            // dependencies.
-            self.dependents.sort();
-            self.dependents.dedup();
             for &dep in &self.dependents {
-                inner.units.get_mut(&dep).unwrap().dependencies.push(id);
+                inner.units.get_mut(&dep).unwrap().dependencies.insert(id);
             }
             inner.units.insert(
                 id,
@@ -1192,6 +1205,126 @@ mod tests {
         a_val.store(false, Ordering::Relaxed);
 
         units.restore(state).await.unwrap();
+    }
+
+    /// Asserts every dependency/dependent edge points at a unit that still
+    /// exists in the set.
+    fn assert_no_dangling_edges(inner: &super::Inner) {
+        for unit in inner.units.values() {
+            for id in unit.dependencies.iter().chain(&unit.dependents) {
+                assert!(
+                    inner.units.contains_key(id),
+                    "dangling edge to id {id} from unit {}",
+                    unit.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_duplicate_dependency_edges() {
+        let units = StateUnits::new();
+        let a = units.add("a").build(mesh::channel().0).unwrap();
+        let b = units
+            .add("b")
+            .depends_on(&a)
+            .depends_on(&a)
+            .build(mesh::channel().0)
+            .unwrap();
+        let c = units
+            .add("c")
+            .dependency_of(&a)
+            .dependency_of(&a)
+            .build(mesh::channel().0)
+            .unwrap();
+
+        let inner = units.inner.lock();
+        assert_eq!(
+            inner.units[&a.id.id].dependents,
+            [b.id.id].into_iter().collect()
+        );
+        assert_eq!(
+            inner.units[&a.id.id].dependencies,
+            [c.id.id].into_iter().collect()
+        );
+        assert_eq!(
+            inner.units[&b.id.id].dependencies,
+            [a.id.id].into_iter().collect()
+        );
+        assert_eq!(
+            inner.units[&c.id.id].dependents,
+            [a.id.id].into_iter().collect()
+        );
+        assert_no_dangling_edges(&inner);
+    }
+
+    /// Removing a unit must prune the reverse dependency edges that `build`
+    /// created, so no remaining unit references the removed unit's id.
+    /// Regression test for a panic ("no entry found for key") when inspecting
+    /// or transitioning state after a unit with dependency edges was removed
+    /// (e.g. a surprise NVMe hot-remove).
+    #[async_test]
+    async fn test_remove_prunes_dependency_edges(driver: DefaultDriver) {
+        let mut units = StateUnits::new();
+
+        let a = units
+            .add("a")
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap();
+
+        let b = units
+            .add("b")
+            .depends_on(a.handle())
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap();
+
+        let c = units
+            .add("c")
+            .depends_on(a.handle())
+            .depends_on(b.handle())
+            .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+            .unwrap();
+
+        {
+            let inner = units.inner.lock();
+            assert!(inner.units.values().any(|u| !u.dependents.is_empty()));
+            assert_no_dangling_edges(&inner);
+        }
+
+        // Remove both directions of b's edges without disturbing a -> c.
+        b.remove().await;
+        {
+            let inner = units.inner.lock();
+            assert_no_dangling_edges(&inner);
+            assert_eq!(
+                inner.units[&a.handle().id.id].dependents,
+                [c.handle().id.id].into_iter().collect()
+            );
+            assert_eq!(
+                inner.units[&c.handle().id.id].dependencies,
+                [a.handle().id.id].into_iter().collect()
+            );
+        }
+
+        units.start().await;
+        units.stop().await;
+
+        a.remove().await;
+        {
+            let inner = units.inner.lock();
+            assert_no_dangling_edges(&inner);
+            assert!(inner.units[&c.handle().id.id].dependencies.is_empty());
+        }
+
+        units.start().await;
+        units.stop().await;
+
+        // Removing the remaining unit leaves the set empty.
+        c.remove().await;
+        {
+            let inner = units.inner.lock();
+            assert!(inner.units.is_empty());
+        }
     }
 
     #[async_test]

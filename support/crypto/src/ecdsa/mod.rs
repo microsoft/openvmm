@@ -23,6 +23,9 @@ use symcrypt as sys;
 use crate::HashAlgorithm;
 use thiserror::Error;
 
+/// SEC 1 tag for an uncompressed elliptic-curve point (`0x04 || X || Y`).
+pub const SEC1_UNCOMPRESSED_POINT_TAG: u8 = 0x04;
+
 /// An error for ECDSA operations.
 #[derive(Debug, Error)]
 #[error("ECDSA operation failed")]
@@ -46,7 +49,7 @@ impl EcdsaCurve {
 
 /// An ECDSA private key (key pair).
 #[repr(transparent)] // Needed for the transmute in deref.
-pub struct EcdsaKeyPair(sys::EcdsaKeyPairInner);
+pub struct EcdsaKeyPair(pub(crate) sys::EcdsaKeyPairInner);
 
 impl EcdsaKeyPair {
     /// Generate a new random ECDSA key pair for the given curve.
@@ -297,13 +300,12 @@ mod tests {
         let pk = key.public_key_bytes().unwrap();
 
         // Wrap `Qx || Qy` into an uncompressed point and a P-384 SPKI.
-        let mut point = vec![0x04u8];
+        let mut point = vec![SEC1_UNCOMPRESSED_POINT_TAG];
         point.extend_from_slice(&pk);
         let spki = x509_cert::spki::SubjectPublicKeyInfo {
             algorithm: x509_cert::spki::AlgorithmIdentifier {
-                // id-ecPublicKey / secp384r1
-                oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
-                parameters: Some(der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34")),
+                oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+                parameters: Some(der::oid::db::rfc5912::SECP_384_R_1),
             },
             subject_public_key: der::asn1::BitString::from_bytes(&point).unwrap(),
         };

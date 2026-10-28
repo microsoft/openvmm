@@ -25,7 +25,7 @@ jobs:
   displayName: quick check [fmt, clippy x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -198,7 +198,7 @@ jobs:
   displayName: build openvmm [distribution config, x64-linux-gnu]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -272,7 +272,7 @@ jobs:
   displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -552,7 +552,7 @@ jobs:
   displayName: clippy [macos], unit tests [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -1040,7 +1040,7 @@ jobs:
   displayName: build openhcl (mi-secure) [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -1272,7 +1272,7 @@ jobs:
   displayName: build openhcl [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -1504,7 +1504,7 @@ jobs:
   displayName: build openhcl [aarch64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -1661,7 +1661,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [x64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -2020,7 +2020,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [aarch64-linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -3201,7 +3201,7 @@ jobs:
   displayName: build artifacts (shared VMM tests) [linux]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -3616,7 +3616,7 @@ jobs:
   displayName: run vmm-tests [x64-linux-amd-kvm]
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0
@@ -4764,7 +4764,7 @@ jobs:
   displayName: cargo hack (linux)
   pool:
     demands:
-    - ImageOverride -equals ubuntu2404-amd64
+    - ImageOverride -equals ubuntu2404-amd64-prepped
     name: openvmm-ado-amd-westus2-v6
   dependsOn:
   - job0

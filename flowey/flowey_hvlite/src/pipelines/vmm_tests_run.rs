@@ -643,6 +643,8 @@ pub(crate) enum VmmTestTargetCli {
     WindowsX64,
     /// Linux X64
     LinuxX64,
+    /// Linux X64 with statically linked musl binaries
+    LinuxMuslX64,
 }
 
 /// Resolve a CLI target option to a CommonTriple, defaulting to the host.
@@ -668,6 +670,7 @@ pub(crate) fn resolve_target(
         VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
         VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
         VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
+        VmmTestTargetCli::LinuxMuslX64 => CommonTriple::X86_64_LINUX_MUSL,
     })
 }
 
@@ -844,6 +847,57 @@ mod tests {
     use petri_artifacts_vmm_test::artifacts::openhcl_igvm;
     use petri_artifacts_vmm_test::artifacts::vmfw_dll;
     use test_with_tracing::test;
+
+    #[test]
+    fn linux_targets_resolve() {
+        use clap::ValueEnum;
+
+        for (name, expected) in [
+            ("linux-x64", CommonTriple::X86_64_LINUX_GNU),
+            ("linux-musl-x64", CommonTriple::X86_64_LINUX_MUSL),
+        ] {
+            let target = VmmTestTargetCli::from_str(name, false).unwrap();
+            assert_eq!(
+                resolve_target(Some(target), PipelineBackendHint::Local).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn linux_musl_bundle_selects_musl_artifacts() {
+        use petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL;
+        use petri_artifacts_vmm_test::artifacts::*;
+
+        let target = CommonTriple::X86_64_LINUX_MUSL.as_triple();
+        let mut selections = ResolvedArtifactSelections::new(target.clone(), true).unwrap();
+        for id in [
+            OPENVMM_LINUX_X64_MUSL::GLOBAL_UNIQUE_ID,
+            PIPETTE_LINUX_X64_MUSL::GLOBAL_UNIQUE_ID,
+            snp_igvm::SNP_LINUX_DIRECT_IGVM_X64::GLOBAL_UNIQUE_ID,
+        ] {
+            selections.resolve_artifact(id).unwrap();
+        }
+
+        assert!(selections.build.nextest_vmm_tests_archive_linux_musl_x64);
+        assert!(selections.build.flowey_hvlite_linux_musl_x64);
+        assert!(selections.build.openvmm_linux_musl_x64);
+        assert!(selections.build.pipette_linux_musl_x64);
+        assert!(selections.build.snp_linux_direct_igvm_x64);
+        assert!(!selections.build.nextest_vmm_tests_archive_linux_x64);
+        assert!(!selections.build.flowey_hvlite_linux_x64);
+        assert!(!selections.build.openvmm_linux_x64);
+        assert_eq!(
+            selections.flowey_hvlite_path,
+            Some(host_tools::FLOWEY_HVLITE_LINUX_X64_MUSL::relative_path())
+        );
+        assert_eq!(
+            VmmTestsBuiltArtifactsSelections::default()
+                .require_nextest_vmm_tests_archive_for(ArtifactTarget::Triple(target))
+                .unwrap(),
+            host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL::relative_path()
+        );
+    }
 
     #[test]
     fn cvm_dll_selects_cvm_igvm_and_dll() {

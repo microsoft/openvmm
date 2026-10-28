@@ -65,52 +65,68 @@ impl FlowNode for Node {
 
                 match (platform, target.operating_system) {
                     (FlowPlatform::Linux(_), target_lexicon::OperatingSystem::Linux) => {
-                        let (gcc_pkg, bin): (Option<&str>, String) = match target.architecture {
+                        let (packages, bin): (Vec<&str>, String) = match target.architecture {
                             Architecture::X86_64 => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
-                                    let pkg = match linux_distribution {
+                                    let packages = match linux_distribution {
                                         FlowPlatformLinuxDistro::Fedora => {
-                                            Some("gcc-x86_64-linux-gnu")
+                                            vec!["gcc-x86_64-linux-gnu"]
+                                        }
+                                        FlowPlatformLinuxDistro::Ubuntu
+                                            if matches!(
+                                                target.environment,
+                                                target_lexicon::Environment::Gnu
+                                            ) =>
+                                        {
+                                            vec!["gcc-x86-64-linux-gnu", "libc6-dev-amd64-cross"]
                                         }
                                         FlowPlatformLinuxDistro::Ubuntu => {
-                                            Some("gcc-x86-64-linux-gnu")
+                                            vec!["gcc-x86-64-linux-gnu"]
                                         }
                                         FlowPlatformLinuxDistro::AzureLinux => {
                                             // Azure Linux doesn't have an x86_64 cross-gcc;
                                             // the native `gcc` package is used on x86_64 hosts.
-                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
+                                            match_arch!(host_arch, FlowArch::X86_64, vec!["gcc"])
                                         }
                                         FlowPlatformLinuxDistro::Arch => {
-                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
+                                            match_arch!(host_arch, FlowArch::X86_64, vec!["gcc"])
                                         }
-                                        FlowPlatformLinuxDistro::Nix => None,
+                                        FlowPlatformLinuxDistro::Nix => Vec::new(),
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg, "x86_64-linux-gnu-gcc".to_string())
+                                    (packages, "x86_64-linux-gnu-gcc".to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
                             Architecture::Aarch64(_) => match platform {
                                 FlowPlatform::Linux(linux_distribution) => {
-                                    let pkg = match linux_distribution {
+                                    let packages = match linux_distribution {
+                                        FlowPlatformLinuxDistro::Ubuntu
+                                            if matches!(
+                                                target.environment,
+                                                target_lexicon::Environment::Gnu
+                                            ) =>
+                                        {
+                                            vec!["gcc-aarch64-linux-gnu", "libc6-dev-arm64-cross"]
+                                        }
                                         FlowPlatformLinuxDistro::Fedora
                                         | FlowPlatformLinuxDistro::Ubuntu
                                         | FlowPlatformLinuxDistro::AzureLinux => {
-                                            Some("gcc-aarch64-linux-gnu")
+                                            vec!["gcc-aarch64-linux-gnu"]
                                         }
                                         FlowPlatformLinuxDistro::Arch => match_arch!(
                                             host_arch,
                                             FlowArch::X86_64,
-                                            Some("aarch64-linux-gnu-gcc")
+                                            vec!["aarch64-linux-gnu-gcc"]
                                         ),
-                                        FlowPlatformLinuxDistro::Nix => None,
+                                        FlowPlatformLinuxDistro::Nix => Vec::new(),
                                         FlowPlatformLinuxDistro::Unknown => {
                                             anyhow::bail!("Unknown Linux distribution")
                                         }
                                     };
-                                    (pkg, "aarch64-linux-gnu-gcc".to_string())
+                                    (packages, "aarch64-linux-gnu-gcc".to_string())
                                 }
                                 _ => anyhow::bail!("Unsupported platform"),
                             },
@@ -128,10 +144,10 @@ impl FlowNode for Node {
                         //   `aarch64-unknown-linux-*`.
                         //
                         // Skip package installation for Nix (shell.nix provides cross-compilers)
-                        if let Some(gcc_pkg) = gcc_pkg {
+                        if !packages.is_empty() {
                             pre_build_deps.push(ctx.reqv(|v| {
                                 flowey_lib_common::install_dist_pkg::Request::Install {
-                                    package_names: vec![gcc_pkg.into()],
+                                    package_names: packages.into_iter().map(String::from).collect(),
                                     done: v,
                                 }
                             }));

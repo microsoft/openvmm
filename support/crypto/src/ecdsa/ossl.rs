@@ -5,6 +5,7 @@
 
 use super::EcdsaCurve;
 use super::EcdsaError;
+use super::SEC1_UNCOMPRESSED_POINT_TAG;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError(err, op))
@@ -12,7 +13,7 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
 
 #[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaKeyPairInner {
-    pkey: openssl::pkey::PKey<openssl::pkey::Private>,
+    pub(crate) pkey: openssl::pkey::PKey<openssl::pkey::Private>,
     curve: EcdsaCurve,
 }
 
@@ -64,7 +65,7 @@ impl EcdsaKeyPairInner {
 
 #[repr(C)] // Needed for the transmute in as_pub.
 pub struct EcdsaPublicKeyInner {
-    pkey: openssl::pkey::PKey<openssl::pkey::Public>,
+    pub(crate) pkey: openssl::pkey::PKey<openssl::pkey::Public>,
     curve: EcdsaCurve,
 }
 
@@ -83,7 +84,7 @@ impl EcdsaPublicKeyInner {
         // which rejects a wrong-length input and a point that is not on the
         // curve.
         let mut encoded = Vec::with_capacity(1 + public_key.len());
-        encoded.push(0x04);
+        encoded.push(SEC1_UNCOMPRESSED_POINT_TAG);
         encoded.extend_from_slice(public_key);
         let point = openssl::ec::EcPoint::from_bytes(&group, &encoded, &mut ctx)
             .map_err(|e| err(e, "parsing the EC public key point"))?;

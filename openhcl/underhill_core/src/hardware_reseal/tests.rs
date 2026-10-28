@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use super::*;
-use disk_backend::Disk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::UnmapBehavior;
+use disk_hook::Disk;
+use disk_hook::DiskError;
+use disk_hook::DiskOperation;
+use disk_hook::HookDisk;
 use mesh::rpc::RpcSend;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
@@ -16,7 +16,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::Pin;
 use std::pin::pin;
@@ -333,7 +332,7 @@ struct HardwareGateState {
     released: bool,
 }
 
-// Unlike GatedDisk, this blocks a synchronous hardware call, not an async
+// Unlike the disk hook, this blocks a synchronous hardware call, not an async
 // future. Only call-site metadata is recorded here, never key material.
 struct HardwareGate {
     executor_thread: std::thread::ThreadId,
@@ -532,80 +531,6 @@ impl IoControl {
     }
 }
 
-#[derive(Inspect)]
-struct GatedDisk {
-    disk: Disk,
-    #[inspect(skip)]
-    io: Arc<IoControl>,
-}
-
-impl DiskIo for GatedDisk {
-    fn disk_type(&self) -> &str {
-        "hardware-reseal-test"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.disk.sector_count()
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.disk.sector_size()
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.disk.disk_id()
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.disk.physical_sector_size()
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        self.disk.is_fua_respected()
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.disk.is_read_only()
-    }
-
-    fn unmap_behavior(&self) -> UnmapBehavior {
-        self.disk.unmap_behavior()
-    }
-
-    async fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        self.disk.unmap(sector, count, block_level_only).await
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        self.io.before(Operation::Read).await?;
-        self.disk.read_vectored(buffers, sector).await
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        fua: bool,
-    ) -> Result<(), DiskError> {
-        self.io.before(Operation::Write).await?;
-        self.disk.write_vectored(buffers, sector, fua).await
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        self.io.before(Operation::Flush).await?;
-        self.disk.sync_cache().await
-    }
-}
-
 struct Fixture {
     worker: HardwareReseal,
     hardware: Arc<Hardware>,
@@ -618,11 +543,21 @@ impl Fixture {
     async fn new(driver: &DefaultDriver, existing: bool) -> Self {
         let hardware = Hardware::new();
         let io = Arc::new(IoControl::default());
-        let disk = Disk::new(GatedDisk {
-            disk: disklayer_ram::ram_disk(4 * 1024 * 1024, false).unwrap(),
-            io: io.clone(),
-        })
-        .unwrap();
+        let hook_io = io.clone();
+        let disk = HookDisk::new(4 * 1024 * 1024, 512)
+            .with_async_hook(move |operation| {
+                let io = hook_io.clone();
+                async move {
+                    let operation = match operation {
+                        DiskOperation::Read { .. } => Operation::Read,
+                        DiskOperation::Write { .. } => Operation::Write,
+                        DiskOperation::SyncCache => Operation::Flush,
+                        _ => return Ok(()),
+                    };
+                    io.before(operation).await
+                }
+            })
+            .into_disk();
         let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
         vmgs.update_encryption_key(&DEK, EncryptionAlgorithm::AES_GCM)
             .await

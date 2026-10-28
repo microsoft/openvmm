@@ -113,6 +113,7 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmservice::uefi::initial_variables::SecureBootTemplate;
 
 #[cfg(guest_arch = "aarch64")]
 fn parse_aarch64_topology_overrides(
@@ -714,15 +715,55 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                 anyhow::ensure!(
                     devices.virtiofs_config.is_empty()
                         && devices
-                            .virtio_console
-                            .as_ref()
-                            .is_none_or(|console| console.socket_path.is_empty()),
+                            .virtio_consoles
+                            .iter()
+                            .all(|console| console.socket_path.is_empty()),
                     "legacy virtio-fs and console configuration requires VMBus on this host; use PCIe devices instead"
                 );
             }
         }
     }
     Ok(())
+}
+
+fn build_uefi_manifest(
+    arch: vm_manifest_builder::MachineArch,
+    uefi: vmservice::Uefi,
+) -> anyhow::Result<vm_manifest_builder::UefiManifest> {
+    let initial_variables = uefi.initial_variables.unwrap_or_default();
+    let base_template = match (arch, initial_variables.secure_boot_template()) {
+        (_, SecureBootTemplate::None) => None,
+        (vm_manifest_builder::MachineArch::X86_64, SecureBootTemplate::MicrosoftWindows) => {
+            Some(firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows())
+        }
+        (vm_manifest_builder::MachineArch::Aarch64, SecureBootTemplate::MicrosoftWindows) => {
+            Some(firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_windows())
+        }
+        (
+            vm_manifest_builder::MachineArch::X86_64,
+            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+        ) => Some(firmware_uefi_resources::x64_secure_boot_templates::microsoft_uefi_ca()),
+        (
+            vm_manifest_builder::MachineArch::Aarch64,
+            SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+        ) => Some(firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_uefi_ca()),
+    };
+    let custom_uefi_json = initial_variables
+        .custom_uefi_json_path
+        .map(|path| fs_err::read(&path).context("failed to read custom UEFI JSON file"))
+        .transpose()?
+        .map(Into::into);
+
+    Ok(vm_manifest_builder::UefiManifest::new(
+        arch,
+        base_template,
+        custom_uefi_json,
+        uefi.secure_boot_enabled,
+        firmware_uefi_resources::LogLevel::make_default(),
+        None,
+        EphemeralNonVolatileStoreHandle.into_resource(),
+        None,
+    ))
 }
 
 enum VmLifecycle {
@@ -1079,36 +1120,7 @@ impl VmService {
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
-                let initial_variables = uefi.initial_variables.unwrap_or_default();
-                let base_template = match (arch, initial_variables.secure_boot_template()) {
-                    (_, vmservice::uefi::initial_variables::SecureBootTemplate::None) => {
-                        None
-                    }
-                    (
-                        vm_manifest_builder::MachineArch::X86_64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
-                    ) => Some(
-                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_windows(),
-                    ),
-                    (
-                        vm_manifest_builder::MachineArch::Aarch64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows,
-                    ) => Some(
-                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_windows(),
-                    ),
-                    (
-                        vm_manifest_builder::MachineArch::X86_64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
-                    ) => Some(
-                        firmware_uefi_resources::x64_secure_boot_templates::microsoft_uefi_ca(),
-                    ),
-                    (
-                        vm_manifest_builder::MachineArch::Aarch64,
-                        vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftUefiCertificateAuthority,
-                    ) => Some(
-                        firmware_uefi_resources::aarch64_secure_boot_templates::microsoft_uefi_ca(),
-                    ),
-                };
+                let uefi_manifest = build_uefi_manifest(arch, uefi)?;
                 (
                     LoadMode::Uefi {
                         firmware,
@@ -1141,7 +1153,7 @@ impl VmService {
                         force_firmware_version: false,
                     },
                     vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
-                    Some((base_template, uefi.secure_boot_enabled)),
+                    Some(uefi_manifest),
                     None,
                 )
             }
@@ -1152,23 +1164,15 @@ impl VmService {
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
         }
-        if let Some((base_template, secure_boot_enabled)) = uefi_config {
+        if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
             // runtime services, so it is required for a UEFI boot. The store is
             // ephemeral: with no VMGS file configured there is nowhere to
             // persist boot entries or secure boot state across reboots.
-            chipset_builder = chipset_builder.with_uefi(vm_manifest_builder::UefiManifest::new(
-                arch,
-                base_template,
-                None,
-                secure_boot_enabled,
-                firmware_uefi_resources::LogLevel::make_default(),
-                None,
-                EphemeralNonVolatileStoreHandle.into_resource(),
-                None,
-            ));
+            chipset_builder = chipset_builder.with_uefi(uefi_manifest);
         }
         let layout_config = chipset_builder.layout_config();
+        let layout_config = apply_mmio_overrides(layout_config, req_config.memory_config.as_ref())?;
         let chipset = chipset_builder
             .build()
             .context("failed to build vm configuration")?;
@@ -1245,6 +1249,7 @@ impl VmService {
             hypervisor: HypervisorConfig {
                 with_hv: !req_config.disable_hv,
                 with_isolation: isolation,
+                nested_virt: req_config.nested_virt,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -1351,7 +1356,7 @@ impl VmService {
                 }
             }
 
-            if let Some(virtio_console) = devices_config.virtio_console {
+            for (index, virtio_console) in devices_config.virtio_consoles.into_iter().enumerate() {
                 if !virtio_console.socket_path.is_empty() {
                     let (serial_fn, action) = open_socket_backend(virtio_console.connect);
                     let backend =
@@ -1364,9 +1369,14 @@ impl VmService {
                     let resource: Resource<VirtioDeviceHandle> =
                         virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
                     if cfg!(windows) || cfg!(target_os = "macos") {
+                        // VMBus sorts VPCI offers by instance ID, comparing data1 first.
+                        let instance_id = Guid {
+                            data1: u32::try_from(index).unwrap(),
+                            ..Guid::new_random()
+                        };
                         config.vpci_devices.push(VpciDeviceConfig {
                             vtl: DeviceVtl::Vtl0,
-                            instance_id: Guid::new_random(),
+                            instance_id,
                             resource: VirtioPciDeviceHandle(resource).into_resource(),
                             vnode: None,
                         });
@@ -1990,6 +2000,34 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
     })
 }
 
+/// Applies the MMIO gap sizes from the request's `MemoryConfig` to the
+/// chipset's default layout. A zero-sized request field leaves the chipset
+/// default in place.
+fn apply_mmio_overrides(
+    mut layout: vmm_core_defs::LayoutConfig,
+    memory_config: Option<&vmservice::MemoryConfig>,
+) -> anyhow::Result<vmm_core_defs::LayoutConfig> {
+    const MB: u64 = 0x100000;
+
+    if let Some(memory_config) = memory_config {
+        if memory_config.low_mmio_gap_in_mb != 0 {
+            layout.chipset_low_mmio_size = memory_config
+                .low_mmio_gap_in_mb
+                .checked_mul(MB)
+                .and_then(|v| u32::try_from(v).ok())
+                .context("invalid low MMIO gap size")?;
+        }
+        if memory_config.high_mmio_gap_in_mb != 0 {
+            layout.chipset_high_mmio_size = memory_config
+                .high_mmio_gap_in_mb
+                .checked_mul(MB)
+                .context("invalid high MMIO gap size")?;
+        }
+    }
+
+    Ok(layout)
+}
+
 /// Builds a [`NumaTopology`] from the proto `NumaConfig`, returning the
 /// topology and the total guest memory in bytes (summed across the nodes).
 fn build_numa_topology(numa: vmservice::NumaConfig) -> anyhow::Result<(NumaTopology, u64)> {
@@ -2468,6 +2506,9 @@ async fn build_virtio_device(
         Kind::Rng(vmservice::VirtioRng {}) => {
             virtio_resources::rng::VirtioRngHandle.into_resource()
         }
+        Kind::Rtc(vmservice::VirtioRtc {}) => {
+            virtio_resources::rtc::VirtioRtcHandle.into_resource()
+        }
         Kind::Vsock(vmservice::VirtioVsock {
             socket_path,
             guest_cid,
@@ -2689,6 +2730,96 @@ mod tests {
     use test_with_tracing::test;
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn uefi_initial_variables_defaults() {
+        for arch in [
+            vm_manifest_builder::MachineArch::X86_64,
+            vm_manifest_builder::MachineArch::Aarch64,
+        ] {
+            for initial_variables in [None, Some(Default::default())] {
+                let manifest = build_uefi_manifest(
+                    arch,
+                    vmservice::Uefi {
+                        initial_variables,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                assert!(manifest.config.base_template.is_none());
+                assert!(manifest.config.custom_uefi_json.is_none());
+                assert!(!manifest.config.secure_boot);
+            }
+        }
+    }
+
+    #[test]
+    fn uefi_custom_variables_are_deferred_and_preserved() {
+        use prost::Message;
+        use vmservice::uefi::initial_variables::SecureBootTemplate;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom-uefi.json");
+        for json in [b"not valid JSON\n".as_slice(), b""] {
+            fs_err::write(&path, json).unwrap();
+            for arch in [
+                vm_manifest_builder::MachineArch::X86_64,
+                vm_manifest_builder::MachineArch::Aarch64,
+            ] {
+                for template in [
+                    SecureBootTemplate::None,
+                    SecureBootTemplate::MicrosoftWindows,
+                    SecureBootTemplate::MicrosoftUefiCertificateAuthority,
+                ] {
+                    for secure_boot_enabled in [false, true] {
+                        let uefi = vmservice::Uefi {
+                            initial_variables: Some(vmservice::uefi::InitialVariables {
+                                secure_boot_template: template as i32,
+                                custom_uefi_json_path: Some(path.to_str().unwrap().into()),
+                            }),
+                            secure_boot_enabled,
+                            ..Default::default()
+                        };
+                        let uefi =
+                            vmservice::Uefi::decode(uefi.encode_to_vec().as_slice()).unwrap();
+                        let manifest = build_uefi_manifest(arch, uefi).unwrap();
+                        assert_eq!(
+                            manifest.config.base_template.is_some(),
+                            template != SecureBootTemplate::None
+                        );
+                        assert_eq!(manifest.config.custom_uefi_json.unwrap().as_bytes(), json);
+                        assert_eq!(manifest.config.secure_boot, secure_boot_enabled);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn uefi_custom_variables_file_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.json");
+        for path in [std::path::Path::new(""), missing.as_path(), dir.path()] {
+            let error = build_uefi_manifest(
+                vm_manifest_builder::MachineArch::X86_64,
+                vmservice::Uefi {
+                    initial_variables: Some(vmservice::uefi::InitialVariables {
+                        custom_uefi_json_path: Some(path.to_str().unwrap().into()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .err()
+            .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to read custom UEFI JSON file")
+            );
+            assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        }
+    }
 
     #[test]
     fn platform_config_flags() {
