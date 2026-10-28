@@ -120,6 +120,69 @@ impl<'a> From<&'a crate::ecdsa::EcdsaKeyPair> for X509KeyPair<'a> {
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
 
+/// Parameters for constructing a self-signed test certificate.
+///
+/// Empty name components are omitted. The same name is used for issuer and
+/// subject. Times are ASN.1 UTCTime or GeneralizedTime content strings.
+/// Defaults provide a generic test identity valid from 1970 through 9999.
+#[cfg(any(test, feature = "test_helpers"))]
+pub struct X509SelfSignedOptions<'a> {
+    /// Country name.
+    pub country: &'a str,
+    /// State or province.
+    pub state: &'a str,
+    /// Locality.
+    pub locality: &'a str,
+    /// Organization.
+    pub organization: &'a str,
+    /// Common name.
+    pub common_name: &'a str,
+    /// Inclusive validity start.
+    pub not_before: &'a str,
+    /// Inclusive validity end.
+    pub not_after: &'a str,
+    /// Optional authority key identifier, independent of the signing key.
+    pub authority_key_identifier: Option<&'a [u8]>,
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+impl Default for X509SelfSignedOptions<'_> {
+    fn default() -> Self {
+        Self {
+            country: "US",
+            state: "Washington",
+            locality: "Redmond",
+            organization: "OpenVMM Test",
+            common_name: "test.example.com",
+            not_before: "700101000000Z",
+            not_after: "99991231235959Z",
+            authority_key_identifier: None,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test_helpers"))]
+#[cfg(any(rust, symcrypt, all(native, target_os = "macos")))]
+impl X509SelfSignedOptions<'_> {
+    pub(super) fn validity(&self) -> anyhow::Result<x509_cert::time::Validity> {
+        fn time(value: &str) -> der::Result<x509_cert::time::Time> {
+            let tag = if value.len() == 13 {
+                der::Tag::UtcTime
+            } else {
+                der::Tag::GeneralizedTime
+            };
+            der::asn1::AnyRef::new(tag, value.as_bytes())?.decode_as()
+        }
+        let validity =
+            x509_cert::time::Validity::new(time(self.not_before)?, time(self.not_after)?);
+        anyhow::ensure!(
+            validity.not_before.to_unix_duration() <= validity.not_after.to_unix_duration(),
+            "certificate validity ends before it starts"
+        );
+        Ok(validity)
+    }
+}
+
 impl X509Certificate {
     /// Parse an X.509 certificate from DER-encoded bytes.
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
@@ -154,26 +217,15 @@ impl X509Certificate {
     }
 
     #[cfg(any(test, feature = "test_helpers"))]
-    /// Build a self-signed never-expiring X.509 certificate (for testing).
+    /// Build a self-signed test certificate with explicit name, validity and AKI.
     ///
-    /// Signs with SHA-256 for RSA and SHA-384 for ECDSA.
-    pub fn build_self_signed<'a>(
-        key: X509KeyPair<'a>,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+    /// Signs with SHA-256 for RSA and SHA-384 for ECDSA. The supplied AKI is a
+    /// test value: it need not identify the signing key.
+    pub fn build_self_signed(
+        key: X509KeyPair<'_>,
+        options: &X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
-        sys::X509CertificateInner::build_self_signed(
-            key,
-            country,
-            state,
-            locality,
-            organization,
-            common_name,
-        )
-        .map(Self)
+        sys::X509CertificateInner::build_self_signed(key, options).map(Self)
     }
 
     /// Get the Common Name (CN) from the X.509 certificate's subject name. If
@@ -198,16 +250,70 @@ impl X509Certificate {
 mod tests {
     use super::*;
 
+    #[test]
+    fn configurable_self_signed_metadata() {
+        use der::Decode;
+        use x509_cert::ext::pkix::AuthorityKeyIdentifier;
+
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let name = "Test \"AK\", + issuer = é";
+        let options = X509SelfSignedOptions {
+            common_name: name,
+            not_before: "261009180232Z",
+            not_after: "20561120180232Z",
+            authority_key_identifier: Some(&[0x01, 0xab, 0x00, 0xff]),
+            ..Default::default()
+        };
+        let cert = X509Certificate::build_self_signed((&key).into(), &options).unwrap();
+        assert_eq!(cert.subject_common_name().unwrap().as_deref(), Some(name));
+        let parsed = x509_cert::Certificate::from_der(&cert.to_der().unwrap()).unwrap();
+        let tbs = parsed.tbs_certificate();
+        assert_eq!(tbs.issuer(), tbs.subject());
+        assert_eq!(
+            tbs.validity().not_before.to_date_time(),
+            der::DateTime::new(2026, 10, 9, 18, 2, 32).unwrap()
+        );
+        assert_eq!(
+            tbs.validity().not_after.to_date_time(),
+            der::DateTime::new(2056, 11, 20, 18, 2, 32).unwrap()
+        );
+        assert_eq!(
+            tbs.get_extension::<AuthorityKeyIdentifier>()
+                .unwrap()
+                .unwrap()
+                .1
+                .key_identifier
+                .unwrap()
+                .as_bytes(),
+            &[1, 0xab, 0, 0xff]
+        );
+        assert!(cert.verify(&cert.public_key().unwrap()).unwrap());
+    }
+
+    #[test]
+    fn invalid_self_signed_validity_is_rejected() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        for (not_before, not_after) in [
+            ("not a date", "20561120180232Z"),
+            ("261009180232Z", "20561320180232Z"),
+            ("261009180232Z", "251009180232Z"),
+        ] {
+            assert!(
+                X509Certificate::build_self_signed(
+                    (&key).into(),
+                    &X509SelfSignedOptions {
+                        not_before,
+                        not_after,
+                        ..Default::default()
+                    },
+                )
+                .is_err()
+            );
+        }
+    }
+
     fn build_test_cert<'a>(key: impl Into<X509KeyPair<'a>>) -> X509Certificate {
-        X509Certificate::build_self_signed(
-            key.into(),
-            "US",
-            "Washington",
-            "Redmond",
-            "Test",
-            "test.example.com",
-        )
-        .unwrap()
+        X509Certificate::build_self_signed(key.into(), &Default::default()).unwrap()
     }
 
     #[test]
@@ -303,17 +409,7 @@ mod tests {
         let signing_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let other_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&signing_key);
-        let other_pubkey = X509Certificate::build_self_signed(
-            (&other_key).into(),
-            "US",
-            "Washington",
-            "Redmond",
-            "Other",
-            "other.example.com",
-        )
-        .unwrap()
-        .public_key()
-        .unwrap();
+        let other_pubkey = build_test_cert(&other_key).public_key().unwrap();
         // Invalid signatures must be reported as `Ok(false)`, not `Err`.
         assert!(matches!(cert.verify(&other_pubkey), Ok(false)));
     }

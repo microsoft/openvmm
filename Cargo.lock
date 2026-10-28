@@ -8736,7 +8736,6 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "crypto",
- "der",
  "get_resources",
  "getrandom 0.4.2",
  "inspect",

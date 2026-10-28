@@ -850,17 +850,11 @@ mod tests {
             .unwrap()
             .to_der()
             .unwrap();
-        let cert_der = X509Certificate::build_self_signed(
-            X509KeyPair::Ecdsa(&key),
-            "US",
-            "WA",
-            "Redmond",
-            "Test",
-            "snp-id-block-test",
-        )
-        .unwrap()
-        .to_der()
-        .unwrap();
+        let cert_der =
+            X509Certificate::build_self_signed(X509KeyPair::Ecdsa(&key), &Default::default())
+                .unwrap()
+                .to_der()
+                .unwrap();
         let cert_pem = der::Document::from_der(&cert_der)
             .unwrap()
             .to_pem("CERTIFICATE", der::pem::LineEnding::LF)

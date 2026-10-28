@@ -90,11 +90,7 @@ impl X509CertificateInner {
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: super::X509KeyPair<'_>,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+        options: &super::X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
         let (key, hash) = match key {
             super::X509KeyPair::Rsa(key) => (&key.0.0, openssl::hash::MessageDigest::sha256()),
@@ -106,20 +102,42 @@ impl X509CertificateInner {
         builder.set_serial_number(&serial)?;
         builder.set_pubkey(key)?;
         let mut name = openssl::x509::X509Name::builder()?;
-        name.append_entry_by_text("C", country)?;
-        name.append_entry_by_text("ST", state)?;
-        name.append_entry_by_text("L", locality)?;
-        name.append_entry_by_text("O", organization)?;
-        name.append_entry_by_text("CN", common_name)?;
+        for (nid, value) in [
+            (openssl::nid::Nid::COUNTRYNAME, options.country),
+            (openssl::nid::Nid::STATEORPROVINCENAME, options.state),
+            (openssl::nid::Nid::LOCALITYNAME, options.locality),
+            (openssl::nid::Nid::ORGANIZATIONNAME, options.organization),
+            (openssl::nid::Nid::COMMONNAME, options.common_name),
+        ] {
+            if !value.is_empty() {
+                name.append_entry_by_nid(nid, value)?;
+            }
+        }
         let name = name.build();
         builder.set_subject_name(&name)?;
         builder.set_issuer_name(&name)?;
-        let not_before = openssl::asn1::Asn1Time::from_unix(0)?;
+        let not_before = openssl::asn1::Asn1Time::from_str_x509(options.not_before)?;
         builder.set_not_before(&not_before)?;
-        let not_after = openssl::asn1::Asn1Time::from_unix(i32::MAX.into())?;
+        let not_after = openssl::asn1::Asn1Time::from_str_x509(options.not_after)?;
         builder.set_not_after(&not_after)?;
+        anyhow::ensure!(
+            not_before.compare(&not_after)? != std::cmp::Ordering::Greater,
+            "certificate validity ends before it starts"
+        );
+        if let Some(id) = options.authority_key_identifier {
+            let id: String = id.iter().map(|byte| format!("{byte:02X}")).collect();
+            // The typed AKI builder only supports deriving an ID from an issuer.
+            #[expect(deprecated)]
+            let extension = openssl::x509::X509Extension::new_nid(
+                None,
+                None,
+                openssl::nid::Nid::AUTHORITY_KEY_IDENTIFIER,
+                &format!("ASN1:SEQWRAP,IMPLICIT:0,FORMAT:HEX,OCTETSTRING:{id}"),
+            )?;
+            builder.append_extension(extension)?;
+        }
         builder.sign(key, hash)?;
-        Ok(X509CertificateInner(builder.build()))
+        Ok(Self(builder.build()))
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {

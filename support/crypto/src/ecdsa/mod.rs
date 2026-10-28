@@ -716,10 +716,7 @@ mod tests {
         assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
 
         invalid_spki.subject_public_key = der::asn1::BitString::from_bytes(&point).unwrap();
-        for parameters in [
-            None,
-            Some(der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.35")),
-        ] {
+        for parameters in [None, Some(der::oid::db::rfc5912::SECP_521_R_1)] {
             invalid_spki.algorithm.parameters = parameters;
             assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
         }

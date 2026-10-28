@@ -184,22 +184,10 @@ impl X509CertificateInner {
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: super::X509KeyPair<'_>,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+        options: &super::X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
         use x509_cert::builder::Builder;
-
-        let (builder, _public_key_der) = super::builder::self_signed_builder(
-            key,
-            country,
-            state,
-            locality,
-            organization,
-            common_name,
-        )?;
+        let (builder, _public_key_der) = super::builder::self_signed_builder(key, options)?;
 
         #[cfg(symcrypt)]
         let cert = builder.build(&super::builder::keypair_signer::KeyPairSigner {
