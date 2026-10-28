@@ -90,7 +90,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             VmgsResource::ReprovisionSingle(disk) => (
                 Some(disk.disk),
                 disk.encryption_policy,
-                GuestStateLifetime::ReprovisionSingle,
+                GuestStateLifetime::Reprovision,
             ),
             VmgsResource::Ephemeral => (
                 None,

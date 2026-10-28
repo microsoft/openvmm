@@ -99,7 +99,7 @@ pub enum GuestStateLifetime {
     #[default]
     Default,
     ReprovisionOnFailure,
-    ReprovisionSingle,
+    Reprovision,
     Ephemeral,
 }
 

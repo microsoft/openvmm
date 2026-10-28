@@ -1602,13 +1602,13 @@ async fn new_underhill_vm(
                 GuestStateLifetimeCli::ReprovisionOnFailure => {
                     GuestStateLifetime::ReprovisionOnFailure
                 }
-                GuestStateLifetimeCli::ReprovisionSingle => GuestStateLifetime::ReprovisionSingle,
+                GuestStateLifetimeCli::ReprovisionSingle => GuestStateLifetime::Reprovision,
                 GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
             };
         }
 
         if env_cfg.reformat_vmgs {
-            dps.general.guest_state_lifetime = GuestStateLifetime::ReprovisionSingle;
+            dps.general.guest_state_lifetime = GuestStateLifetime::Reprovision;
         }
 
         if let Some(policy) = env_cfg.guest_state_encryption_policy {
@@ -1885,7 +1885,7 @@ async fn new_underhill_vm(
 
             let vmgs = if matches!(
                 dps.general.guest_state_lifetime,
-                GuestStateLifetime::ReprovisionSingle
+                GuestStateLifetime::Reprovision
             ) {
                 Vmgs::request_format(disk, Some(logger))
                     .instrument(tracing::info_span!("vmgs_format", CVM_ALLOWED))
