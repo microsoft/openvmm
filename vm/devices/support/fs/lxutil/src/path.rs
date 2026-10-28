@@ -6,8 +6,19 @@ use super::unix as sys;
 #[cfg(windows)]
 use super::windows as sys;
 use std::borrow::Cow;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
+
+pub(crate) fn validate_relative_path(path: &Path) -> lx::Result<()> {
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(lx::Error::EINVAL);
+    }
+    Ok(())
+}
 
 /// Extensions to `PathBuf` to convert Unix-style paths to a native path.
 ///

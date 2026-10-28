@@ -66,6 +66,9 @@ pub enum Pkcs7VerifyError {
     /// An X.509 certificate error.
     #[error("failed to process a certificate")]
     X509(#[from] crate::x509::X509Error),
+    /// An X.509 certificate signature verification error.
+    #[error("failed to verify a certificate signature")]
+    X509Verify(#[from] crate::x509::X509VerifyError),
 }
 
 impl Pkcs7SignedData {
@@ -134,6 +137,8 @@ fn verify_inner(
 
 /// Shared UEFI PKCS#7 verification flow.
 ///
+/// Only RSA signer and issuer keys are supported.
+///
 /// 1. Require exactly one signer.
 /// 2. Verify the signer's signature over the detached content.
 /// 3. Walk the chain starting at the signer cert: at each step, succeed
@@ -186,10 +191,9 @@ fn verify_inner(
 
         for trusted in trusted_certs {
             let trusted_id = make_id(trusted)?;
-            // A non-RSA issuer key cannot verify the child's RSA signature.
             let issuer_verifies = trusted.issued(current)?
                 && match trusted.public_key()?.rsa() {
-                    Some(key) => current.verify(&key)?,
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
                     None => false,
                 };
             if trusted_id == current_id || issuer_verifies {
@@ -200,7 +204,7 @@ fn verify_inner(
         for candidate in &embedded {
             let issuer_verifies = candidate.issued(current)?
                 && match candidate.public_key()?.rsa() {
-                    Some(key) => current.verify(&key)?,
+                    Some(key) => current.verify(&crate::x509::X509PublicKey::Rsa(key))?,
                     None => false,
                 };
             if issuer_verifies {
@@ -227,7 +231,7 @@ mod tests {
     fn make_fixture() -> (X509Certificate, Pkcs7SignedData) {
         let key = RsaKeyPair::generate(2048).unwrap();
         let cert = X509Certificate::build_self_signed(
-            &key,
+            (&key).into(),
             "US",
             "WA",
             "Redmond",
@@ -302,7 +306,7 @@ mod tests {
         let (cert, p7) = make_fixture();
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
-            &key,
+            (&key).into(),
             "US",
             "WA",
             "Redmond",
@@ -322,7 +326,7 @@ mod tests {
         let (_cert, p7) = make_fixture();
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
-            &key,
+            (&key).into(),
             "US",
             "WA",
             "Redmond",
@@ -338,7 +342,7 @@ mod tests {
     fn sign_verify_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let cert = X509Certificate::build_self_signed(
-            &key,
+            (&key).into(),
             "US",
             "WA",
             "Redmond",
@@ -357,7 +361,7 @@ mod tests {
     fn sign_verify_rejects_wrong_store() {
         let signer_key = RsaKeyPair::generate(2048).unwrap();
         let signer_cert = X509Certificate::build_self_signed(
-            &signer_key,
+            (&signer_key).into(),
             "US",
             "WA",
             "Redmond",
@@ -367,7 +371,7 @@ mod tests {
         .unwrap();
         let other_key = RsaKeyPair::generate(2048).unwrap();
         let other_cert = X509Certificate::build_self_signed(
-            &other_key,
+            (&other_key).into(),
             "US",
             "WA",
             "Redmond",

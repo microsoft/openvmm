@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Copy this profile outside the checkout and supply absolute local paths.
+[incubator]
+type = "openvmm"
+arch = "x86-64"
+binary = "/path/to/native/openvmm"
+memory = "8G"
+processors = 2
+nested-virt = true
+
+[boot]
+type = "mshv"
+host-boot = "/path/to/mshv_host_boot.efi"
+firmware = "/path/to/MSVM.fd"
+boot-artifacts = "/path/to/public-artifacts"
+# These options are written to text files on the ESP, not compiled into the app.
+kernel-cmdline = "console=ttyS0 panic=-1"
+hypervisor-cmdline = 'MSHV_ROOT=\Windows MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=ROOT MSHV_X2APIC_POLICY=ENABLE MSHV_FORCE_NESTED=TRUE'

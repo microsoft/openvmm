@@ -5,6 +5,8 @@
 
 use super::EcdsaCurve;
 use super::EcdsaError;
+use super::EcdsaPublicKeyComponents;
+use super::EcdsaSignature;
 use crate::win::AlgHandle;
 use crate::win::KeyHandle;
 use std::sync::LazyLock;
@@ -117,7 +119,7 @@ impl EcdsaKeyPairInner {
         Ok(Self { handle, curve })
     }
 
-    pub fn sign_prehash(&self, hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {
+    pub fn sign_prehash(&self, hash: &[u8]) -> Result<EcdsaSignature, EcdsaError> {
         let sig_size = self.curve.key_size() * 2;
         let mut signature = vec![0u8; sig_size];
         let mut bytes_written: u32 = 0;
@@ -136,8 +138,8 @@ impl EcdsaKeyPairInner {
         .ok()
         .map_err(|e| err(e, "signing the message hash"))?;
 
-        signature.truncate(bytes_written as usize);
-        Ok(signature)
+        let s = signature.split_off(self.curve.key_size());
+        Ok(EcdsaSignature { r: signature, s })
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
@@ -154,20 +156,15 @@ pub struct EcdsaPublicKeyInner {
 }
 
 impl EcdsaPublicKeyInner {
-    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+    pub fn from_public_key_bytes(
+        curve: EcdsaCurve,
+        public_key: &EcdsaPublicKeyComponents,
+    ) -> Result<Self, EcdsaError> {
         let alg = alg_handle(curve)?;
         let key_size = curve.key_size();
 
-        // A `BCRYPT_ECCPUBLIC_BLOB` is a `BCRYPT_ECCKEY_BLOB` header followed by
-        // the `Qx || Qy` affine coordinates. `BCryptImportKeyPair` reads exactly
-        // `2 * cbKey` coordinate bytes and silently ignores any trailing bytes,
-        // so it does not reject an over-long `public_key` on its own. Enforce
-        // the exact `Qx || Qy` length here so all backends reject non-canonical
-        // encodings identically.
-        if public_key.len() != key_size * 2 {
-            return Err(invalid_err(
-                "EC public key is not the expected Qx || Qy length",
-            ));
+        if public_key.qx.len() != key_size || public_key.qy.len() != key_size {
+            return Err(invalid_err("unexpected EC public key coordinate lengths"));
         }
 
         let header = BCRYPT_ECCKEY_BLOB {
@@ -176,7 +173,7 @@ impl EcdsaPublicKeyInner {
             },
             cbKey: key_size as u32,
         };
-        let mut blob = Vec::with_capacity(size_of::<BCRYPT_ECCKEY_BLOB>() + public_key.len());
+        let mut blob = Vec::with_capacity(size_of::<BCRYPT_ECCKEY_BLOB>() + key_size * 2);
         // SAFETY: `BCRYPT_ECCKEY_BLOB` is a `repr(C)` plain-old-data struct of
         // two `u32`s, so reading its bytes is well-defined.
         blob.extend_from_slice(unsafe {
@@ -185,7 +182,8 @@ impl EcdsaPublicKeyInner {
                 size_of::<BCRYPT_ECCKEY_BLOB>(),
             )
         });
-        blob.extend_from_slice(public_key);
+        blob.extend_from_slice(&public_key.qx);
+        blob.extend_from_slice(&public_key.qy);
 
         let mut handle = BCRYPT_KEY_HANDLE::default();
         // SAFETY: FFI import with a valid algorithm handle and a public key blob.
@@ -255,15 +253,21 @@ impl EcdsaPublicKeyInner {
         Ok(Self { handle, curve })
     }
 
-    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
-        // A signature must be exactly `r || s`, each `curve.key_size()` bytes.
-        if signature.len() != self.curve.key_size() * 2 {
+    pub fn verify_prehash(
+        &self,
+        hash: &[u8],
+        signature: &EcdsaSignature,
+    ) -> Result<bool, EcdsaError> {
+        let key_size = self.curve.key_size();
+        if signature.r.len() != key_size || signature.s.len() != key_size {
             return Ok(false);
         }
+        let signature = [signature.r.as_slice(), signature.s.as_slice()].concat();
 
         // SAFETY: FFI call with a valid key handle and valid input slices.
-        let status =
-            unsafe { BCryptVerifySignature(self.handle.0, None, hash, signature, BCRYPT_FLAGS(0)) };
+        let status = unsafe {
+            BCryptVerifySignature(self.handle.0, None, hash, &signature, BCRYPT_FLAGS(0))
+        };
 
         // A signature that simply does not match yields STATUS_INVALID_SIGNATURE,
         // which is a valid "not verified" result rather than an operational error.
@@ -276,7 +280,7 @@ impl EcdsaPublicKeyInner {
         Ok(true)
     }
 
-    pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
+    pub fn public_key_bytes(&self) -> Result<EcdsaPublicKeyComponents, EcdsaError> {
         let mut blob_len: u32 = 0;
         // SAFETY: FFI call to query the required buffer size.
         unsafe {
@@ -311,11 +315,9 @@ impl EcdsaPublicKeyInner {
         let header_size = size_of::<BCRYPT_ECCKEY_BLOB>();
         let key_size = self.curve.key_size();
 
-        if (blob_len as usize) < header_size + key_size * 2 {
-            return Err(invalid_err("exported EC public key blob is too small"));
-        }
-
-        // Return just Qx || Qy (skip the BCRYPT_ECCKEY_BLOB header).
-        Ok(blob[header_size..header_size + key_size * 2].to_vec())
+        Ok(EcdsaPublicKeyComponents {
+            qx: blob[header_size..header_size + key_size].to_vec(),
+            qy: blob[header_size + key_size..header_size + key_size * 2].to_vec(),
+        })
     }
 }

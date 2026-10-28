@@ -125,6 +125,11 @@ message UEFI {
 
         // The predefined Secure Boot variable set to use for initialization.
         SecureBootTemplate secure_boot_template = 1;
+
+        // Optional path to a custom UEFI variable delta JSON file on the host.
+        // Applied after the selected template, or without a template when NONE
+        // is selected.
+        optional string custom_uefi_json_path = 2;
     }
 
     // Path to the UEFI firmware image on the host.
@@ -210,7 +215,9 @@ message DevicesConfig {
     // housed.
     repeated WindowsPCIDevice windows_device = 4;
     repeated VirtioFs virtiofs_config = 5;
-    VirtioConsoleConfig virtio_console = 6;
+    // Single-port console devices, enumerated by the guest as hvc0, hvc1, and
+    // so on in list order.
+    repeated VirtioConsoleConfig virtio_consoles = 6;
 }
 
 // An endpoint PCIe device function. Attached behind a port in the topology
@@ -246,6 +253,8 @@ message VirtioDevice {
         VhostUser     vhost_user = 6;
         // Built-in virtio-fs filesystem device.
         VirtioFs       fs        = 7;
+        // virtio-rtc real-time clock device.
+        VirtioRtc      rtc       = 8;
     }
 }
 
@@ -384,6 +393,10 @@ message VhostUserGeneric {
 
 // virtio-rng carries no config beyond the PCIe port it attaches to.
 message VirtioRng {
+}
+
+// virtio-rtc carries no device-specific configuration.
+message VirtioRtc {
 }
 
 // virtio-vsock socket device configuration.
@@ -692,6 +705,8 @@ message VMConfig {
     bool disable_hv = 17;
     // Confidential-computing isolation mode.
     IsolationConfig isolation_config = 19;
+    // Expose hardware virtualization extensions to the guest.
+    bool nested_virt = 20;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

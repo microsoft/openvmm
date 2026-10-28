@@ -36,7 +36,10 @@ pub struct Plan9FileSystem {
 }
 
 impl Plan9FileSystem {
-    pub fn new(root_path: impl AsRef<Path>, debug: bool) -> lx::Result<Plan9FileSystem> {
+    pub fn new(
+        root_path: impl AsRef<Path>,
+        debug: bool,
+    ) -> Result<Plan9FileSystem, lxutil::VolumeError> {
         let root = Arc::new(LxVolume::new(root_path)?);
         Ok(Plan9FileSystem {
             negotiated_size: AtomicU32::new(0),

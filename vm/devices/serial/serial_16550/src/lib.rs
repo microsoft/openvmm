@@ -371,7 +371,14 @@ impl Serial16550 {
             Register::ISR => self.state.read_isr(),
             Register::LCR => self.state.lcr.into(),
             Register::MCR => self.state.mcr.into(),
-            Register::LSR => self.state.read_lsr(),
+            Register::LSR => {
+                if !self.state.tx_buffer.is_empty()
+                    && let Some(waker) = self.poll_waker.clone()
+                {
+                    let _ = self.poll_tx(&mut Context::from_waker(&waker));
+                }
+                self.state.read_lsr()
+            }
             Register::MSR => self.state.read_msr(),
             Register::SPR => self.state.scratch,
             _ => return IoResult::Err(IoError::InvalidRegister),

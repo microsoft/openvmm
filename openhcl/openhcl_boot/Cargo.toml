@@ -37,6 +37,7 @@ safe_intrinsics.workspace = true
 sha2.workspace = true
 static_assertions.workspace = true
 tdcall.workspace = true
+uart_16550.workspace = true
 x86defs.workspace = true
 
 [dev-dependencies]

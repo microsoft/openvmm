@@ -17,7 +17,6 @@ pub mod resolver;
 #[cfg(test)]
 mod tests;
 
-use crate::buffers::RxQueueError;
 use crate::buffers::VirtioWorkPool;
 use anyhow::Context as _;
 use bitfield_struct::bitfield;
@@ -846,8 +845,6 @@ enum WorkerError {
     VirtioQueue(#[source] std::io::Error),
     #[error("endpoint")]
     Endpoint(#[source] anyhow::Error),
-    #[error("guest submitted duplicate descriptor index {0}")]
-    DuplicateDescriptor(u16),
     #[error("cancelled")]
     Cancelled(task_control::Cancelled),
 }
@@ -860,8 +857,6 @@ enum TxPacketError {
     Empty,
     #[error("too many segments")]
     TooManySegments,
-    #[error("descriptor index {0} already in use")]
-    DuplicateIndex(u16),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -963,7 +958,7 @@ impl Worker {
                 else {
                     break;
                 };
-                self.queue_tx_packet(work)?;
+                self.queue_tx_packet(work);
                 did_work = true;
             }
             if self.active_state.data.tx_segments.is_empty() {
@@ -973,7 +968,7 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -984,12 +979,6 @@ impl Worker {
             Err(err) => {
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                if let TxPacketError::DuplicateIndex(idx) = err {
-                    // A duplicate descriptor index cannot be tracked (the pending
-                    // slot is already taken), so treat it as a fatal queue protocol
-                    // violation rather than an out-of-order drop.
-                    return Err(WorkerError::DuplicateDescriptor(idx));
-                }
                 tracelimit::warn_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "dropping TX packet"
@@ -1003,7 +992,6 @@ impl Worker {
                 );
             }
         }
-        Ok(())
     }
 
     /// Build TX segments and offload metadata for a packet.
@@ -1017,9 +1005,10 @@ impl Worker {
         work: &VirtioQueueCallbackWork,
     ) -> Result<u16, TxPacketError> {
         let idx = work.descriptor_index();
-        if self.active_state.pending_tx_packets[idx as usize].is_some() {
-            return Err(TxPacketError::DuplicateIndex(idx));
-        }
+        assert!(
+            self.active_state.pending_tx_packets[idx as usize].is_none(),
+            "TX descriptor {idx} is already tracked"
+        );
 
         let total_readable = work.get_payload_length(false) as usize;
         let packet_len: u32 = total_readable
@@ -1304,7 +1293,7 @@ impl Worker {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(RxQueueError::TooSmall(work)) => {
+                Err(work) => {
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
@@ -1313,14 +1302,6 @@ impl Worker {
                         work.into_completion(),
                         0,
                     );
-                }
-                Err(RxQueueError::DuplicateIndex(work)) => {
-                    // A duplicate descriptor index cannot be tracked (the pool
-                    // slot is already taken), so treat it as a fatal queue
-                    // protocol violation rather than an out-of-order drop.
-                    let idx = work.descriptor_index();
-                    self.active_state.stats.rx_dropped.increment();
-                    return Err(WorkerError::DuplicateDescriptor(idx));
                 }
             }
         }

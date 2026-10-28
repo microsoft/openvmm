@@ -5,6 +5,8 @@
 
 use super::EcdsaCurve;
 use super::EcdsaError;
+use super::EcdsaPublicKeyComponents;
+use super::EcdsaSignature;
 use der::Decode;
 use symcrypt::ecc::CurveType;
 use symcrypt::ecc::EcKey;
@@ -37,10 +39,13 @@ impl EcdsaKeyPairInner {
         Ok(Self(key))
     }
 
-    pub fn sign_prehash(&self, hash: &[u8]) -> Result<Vec<u8>, EcdsaError> {
-        self.0
+    pub fn sign_prehash(&self, hash: &[u8]) -> Result<EcdsaSignature, EcdsaError> {
+        let mut r = self
+            .0
             .ecdsa_sign(hash)
-            .map_err(|e| err(e, "computing the ECDSA signature"))
+            .map_err(|e| err(e, "computing the ECDSA signature"))?;
+        let s = r.split_off(self.0.get_curve_size() as usize);
+        Ok(EcdsaSignature { r, s })
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
@@ -53,24 +58,25 @@ impl EcdsaKeyPairInner {
 pub struct EcdsaPublicKeyInner(EcKey);
 
 impl EcdsaPublicKeyInner {
-    pub fn from_public_key_bytes(curve: EcdsaCurve, public_key: &[u8]) -> Result<Self, EcdsaError> {
+    pub fn from_public_key_bytes(
+        curve: EcdsaCurve,
+        public_key: &EcdsaPublicKeyComponents,
+    ) -> Result<Self, EcdsaError> {
+        let key_size = curve.key_size();
+        if public_key.qx.len() != key_size || public_key.qy.len() != key_size {
+            return Err(invalid_err("unexpected EC public key coordinate lengths"));
+        }
+
         let curve_type = match curve {
             EcdsaCurve::P384 => CurveType::NistP384,
         };
-        // SymCrypt's `set_public_key` validates that `public_key` is exactly the
-        // expected `Qx || Qy` length for the curve (rejecting both short and
-        // long inputs with `InvalidArgument`), so no separate length check is
-        // needed here.
-        let key = EcKey::set_public_key(curve_type, public_key, EcKeyUsage::EcDsa)
+        let public_key = [public_key.qx.as_slice(), public_key.qy.as_slice()].concat();
+        let key = EcKey::set_public_key(curve_type, &public_key, EcKeyUsage::EcDsa)
             .map_err(|e| err(e, "importing the EC public key"))?;
         Ok(Self(key))
     }
 
     pub fn from_public_key_der(spki_der: &[u8]) -> Result<Self, EcdsaError> {
-        /// RFC 5480 named-curve OID for NIST P-384 (secp384r1).
-        const SECP384R1: der::asn1::ObjectIdentifier =
-            der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34");
-
         let spki = x509_cert::spki::SubjectPublicKeyInfoRef::from_der(spki_der)
             .map_err(|e| der_err(e, "parsing the SubjectPublicKeyInfo"))?;
 
@@ -82,25 +88,31 @@ impl EcdsaPublicKeyInner {
             .ok_or_else(|| invalid_err("EC public key has no named curve parameter"))?
             .decode_as::<der::asn1::ObjectIdentifier>()
             .map_err(|e| der_err(e, "decoding the EC curve OID"))?;
-        let curve = if curve_oid == SECP384R1 {
+        let curve = if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
             EcdsaCurve::P384
         } else {
             return Err(invalid_err("public key uses an unsupported EC curve"));
         };
 
-        // The SubjectPublicKey bit string is the uncompressed EC point
-        // `0x04 || Qx || Qy`; strip the `0x04` tag to get `Qx || Qy`.
-        let point = spki.subject_public_key.raw_bytes();
-        if point.len() != 1 + 2 * curve.key_size() || point[0] != 0x04 {
-            return Err(invalid_err(
-                "EC public key is not an uncompressed point (0x04 || Qx || Qy)",
-            ));
-        }
-        Self::from_public_key_bytes(curve, &point[1..])
+        let components =
+            EcdsaPublicKeyComponents::from_uncompressed_point(spki.subject_public_key.raw_bytes())
+                .ok_or_else(|| {
+                    invalid_err("EC public key is not an uncompressed point (0x04 || Qx || Qy)")
+                })?;
+        Self::from_public_key_bytes(curve, &components)
     }
 
-    pub fn verify_prehash(&self, hash: &[u8], signature: &[u8]) -> Result<bool, EcdsaError> {
-        match self.0.ecdsa_verify(signature, hash) {
+    pub fn verify_prehash(
+        &self,
+        hash: &[u8],
+        signature: &EcdsaSignature,
+    ) -> Result<bool, EcdsaError> {
+        let key_size = self.0.get_curve_size() as usize;
+        if signature.r.len() != key_size || signature.s.len() != key_size {
+            return Ok(false);
+        }
+        let signature = [signature.r.as_slice(), signature.s.as_slice()].concat();
+        match self.0.ecdsa_verify(&signature, hash) {
             Ok(()) => Ok(true),
             // `SignatureVerificationFailure` is the expected error for a
             // signature that does not match. `InvalidArgument` occurs when the
@@ -113,9 +125,13 @@ impl EcdsaPublicKeyInner {
         }
     }
 
-    pub fn public_key_bytes(&self) -> Result<Vec<u8>, EcdsaError> {
-        self.0
+    pub fn public_key_bytes(&self) -> Result<EcdsaPublicKeyComponents, EcdsaError> {
+        let mut qx = self
+            .0
             .export_public_key()
-            .map_err(|e| err(e, "exporting the EC public key"))
+            .map_err(|e| err(e, "exporting the EC public key"))?;
+        let key_size = self.0.get_curve_size() as usize;
+        let qy = qx.split_off(key_size);
+        Ok(EcdsaPublicKeyComponents { qx, qy })
     }
 }

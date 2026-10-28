@@ -117,6 +117,7 @@ impl virt::Hypervisor for LinuxMshv {
         };
         let isolation = config.isolation.isolation_type();
         validate_snp_cpuid_offload_config(isolation, self.snp_disable_cpuid_offload)?;
+        validate_nested_virt_config(config.nested_virt, config.hv_config.as_ref())?;
         let snp = isolation == virt::IsolationType::Snp;
         let x2apic = matches!(
             config.processor_topology.apic_mode(),
@@ -125,8 +126,11 @@ impl virt::Hypervisor for LinuxMshv {
         );
         let create_args = partition_create_args(
             &config.isolation,
-            x2apic,
-            config.processor_topology.smt_enabled(),
+            PartitionCreateOptions {
+                x2apic,
+                smt: config.processor_topology.smt_enabled(),
+                nested: config.nested_virt,
+            },
         )?;
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
@@ -135,25 +139,40 @@ impl virt::Hypervisor for LinuxMshv {
         // guest interface is configured. SNP partitions require the smaller
         // early-property feature set accepted by the hypervisor.
         if config.hv_config.is_some() || snp {
-            let synthetic_features = if snp {
-                snp_synthetic_features()
+            let synthetic_features_mask = if snp {
+                u64::from(snp_synthetic_features())
+            } else if config.nested_virt {
+                // Limit the mask to features L0 reports as assignable.
+                self.mshv.make_default_synthetic_features_mask()
             } else {
-                common_synthetic_features()
-                    .with_access_partition_reference_tsc(true)
-                    .with_access_guest_idle_reg(true)
-                    .with_access_frequency_regs(true)
-                    .with_enable_extended_gva_ranges_for_flush_virtual_address_list(true)
+                u64::from(
+                    common_synthetic_features()
+                        .with_access_partition_reference_tsc(true)
+                        .with_access_guest_idle_reg(true)
+                        .with_access_frequency_regs(true)
+                        .with_enable_extended_gva_ranges_for_flush_virtual_address_list(true),
+                )
             };
 
             vmfd.set_partition_property(
                 HvPartitionPropertyCode::SyntheticProcFeatures.0,
-                u64::from(synthetic_features),
+                synthetic_features_mask,
             )
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
         }
 
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
+
+        // Guest hypervisors probe architectural MSRs that L0 may not virtualize.
+        if config.nested_virt {
+            vmfd.set_partition_property(
+                HvPartitionPropertyCode::UnimplementedMsrAction.0,
+                mshv_bindings::hv_unimplemented_msr_action_HV_UNIMPLEMENTED_MSR_ACTION_IGNORE_WRITE_READ_ZERO
+                    as u64,
+            )
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+        }
 
         if snp {
             let snp_policy = igvm_snp_config.as_ref().map_or_else(
@@ -219,12 +238,22 @@ impl virt::Hypervisor for LinuxMshv {
         proto.isolation = isolation;
         Ok(proto)
     }
+
+    fn recognizes_nested_virt(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Default)]
+struct PartitionCreateOptions {
+    x2apic: bool,
+    smt: bool,
+    nested: bool,
 }
 
 fn partition_create_args(
     isolation: &virt::ProtoPartitionIsolation,
-    x2apic: bool,
-    smt: bool,
+    options: PartitionCreateOptions,
 ) -> Result<mshv_bindings::mshv_create_partition_v2, Error> {
     let restricted_injection = match isolation {
         virt::ProtoPartitionIsolation::None => None,
@@ -240,10 +269,10 @@ fn partition_create_args(
     let mut pt_flags =
         1 << mshv_bindings::MSHV_PT_BIT_LAPIC | 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES;
 
-    if snp || x2apic {
+    if snp || options.x2apic {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_X2APIC;
     }
-    if smt {
+    if options.smt {
         pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
     }
     if let Some(restricted_injection) = restricted_injection {
@@ -253,6 +282,9 @@ fn partition_create_args(
             MSHV_PT_SNP_NORMAL_INJECTION
         };
         pt_flags |= injection_policy << MSHV_PT_SNP_INJECTION_POLICY_SHIFT;
+    }
+    if options.nested {
+        pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION;
     }
 
     Ok(mshv_bindings::mshv_create_partition_v2 {
@@ -332,6 +364,16 @@ fn validate_snp_cpuid_offload_config(
             "snp_disable_cpuid_offload requires SNP isolation",
         )
         .into());
+    }
+    Ok(())
+}
+
+fn validate_nested_virt_config(
+    nested_virt: bool,
+    hv_config: Option<&virt::HvConfig>,
+) -> Result<(), Error> {
+    if nested_virt && hv_config.is_none() {
+        return Err(ErrorInner::InvalidConfiguration("nested_virt requires hv_config").into());
     }
     Ok(())
 }
@@ -422,7 +464,7 @@ impl MshvProtoPartition<'_> {
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
             nxe_forced_on: false,
-            nested_virt: false,
+            nested_virt: self.config.nested_virt,
         })
     }
 
@@ -551,6 +593,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 self.config.isolation.isolation_type(),
                 caps.hv1_reference_tsc_page,
             );
+            caps.nested_virt = self.config.nested_virt;
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -723,6 +766,9 @@ impl Hv1 for MshvPartition {
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
+        if self.inner.caps.nested_virt {
+            anyhow::bail!("synic ports are not supported with nested virtualization on MSHV");
+        }
         Ok(self.synic_ports.clone())
     }
 }
@@ -1182,7 +1228,52 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
-        emulate_translate_gva(self, gva, mode)
+        if self.partition.caps.nested_virt {
+            let mut flags =
+                hvdef::hypercall::TranslateGvaControlFlagsX64::new().with_set_page_table_bits(true);
+            match mode {
+                TranslateMode::Read => flags.set_validate_read(true),
+                TranslateMode::Write => {
+                    flags.set_validate_read(true);
+                    flags.set_validate_write(true);
+                }
+                TranslateMode::Execute => flags.set_validate_execute(true),
+            }
+
+            match self.vcpufd.translate_gva(gva, flags.into()) {
+                Ok((gpa, result)) => {
+                    // SAFETY: The kernel initialized the u64 view of this union.
+                    let result =
+                        hvdef::hypercall::TranslateGvaResult::from(unsafe { result.as_uint64 });
+                    let code = hvdef::hypercall::TranslateGvaResultCode(result.result_code());
+                    if code == hvdef::hypercall::TranslateGvaResultCode::SUCCESS {
+                        Ok(EmuTranslateResult {
+                            gpa,
+                            overlay_page: Some(result.overlay_page()),
+                        })
+                    } else {
+                        // TODO: Use HvCallTranslateVirtualAddressEx when Kernel supports it
+                        Err(EmuTranslateError {
+                            code,
+                            event_info: None,
+                        })
+                    }
+                }
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        gva,
+                        "failed to translate nested guest virtual address"
+                    );
+                    Err(EmuTranslateError {
+                        code: hvdef::hypercall::TranslateGvaResultCode::INTERCEPT,
+                        event_info: None,
+                    })
+                }
+            }
+        } else {
+            emulate_translate_gva(self, gva, mode)
+        }
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
@@ -1622,6 +1713,25 @@ mod tests {
     }
 
     #[test]
+    fn nested_virtualization_requires_hv_config() {
+        validate_nested_virt_config(false, None).unwrap();
+        validate_nested_virt_config(
+            true,
+            Some(&virt::HvConfig {
+                allow_device_assignment: false,
+                vtl2: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_nested_virt_config(true, None)
+                .unwrap_err()
+                .to_string(),
+            "invalid MSHV configuration: nested_virt requires hv_config"
+        );
+    }
+
+    #[test]
     fn snp_does_not_report_reference_tsc_page_support() {
         assert!(!hv1_reference_tsc_page_supported(
             true,
@@ -1709,8 +1819,7 @@ mod tests {
             &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                 restricted_injection: true,
             }),
-            false,
-            false,
+            Default::default(),
         )
         .unwrap();
         let pt_isolation = args.pt_isolation;
@@ -1746,8 +1855,14 @@ mod tests {
 
     #[test]
     fn ordinary_partition_creation_keeps_feature_banks() {
-        let args =
-            partition_create_args(&virt::ProtoPartitionIsolation::None, false, true).unwrap();
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                smt: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let pt_isolation = args.pt_isolation;
         let pt_num_cpu_fbanks = args.pt_num_cpu_fbanks;
 
@@ -1762,6 +1877,10 @@ mod tests {
         );
         assert_eq!(args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_X2APIC, 0);
         assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
+        assert_eq!(
+            args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION,
+            0
+        );
         assert_ne!(
             args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
             0
@@ -1769,6 +1888,23 @@ mod tests {
         assert_eq!(
             pt_num_cpu_fbanks,
             mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16
+        );
+    }
+
+    #[test]
+    fn nested_partition_creation_sets_nested_virtualization_flag() {
+        let args = partition_create_args(
+            &virt::ProtoPartitionIsolation::None,
+            PartitionCreateOptions {
+                nested: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_ne!(
+            args.pt_flags & 1 << mshv_bindings::MSHV_PT_BIT_NESTED_VIRTUALIZATION,
+            0
         );
     }
 }

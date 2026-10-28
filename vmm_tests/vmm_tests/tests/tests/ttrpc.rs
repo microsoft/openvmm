@@ -269,7 +269,7 @@ async fn test_ttrpc_interface(
         petri_artifacts_common::tags::MachineArch::Aarch64 => "ttyAMA0",
     };
 
-    let (mut child, client, _stderr_task) =
+    let (mut child, client, stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
 
     let query_props = || {
@@ -341,6 +341,7 @@ async fn test_ttrpc_interface(
         std::fs::File::create(path)?.set_len(1024 * 1024)?;
     }
 
+    let console_markers = ["ttrpc-console-0-marker", "ttrpc-console-1-marker"];
     for i in 0..3 {
         let com1_path = tempdir.path().join(format!("com1-{i}.sock"));
         let console_path = if i == 2 {
@@ -348,6 +349,7 @@ async fn test_ttrpc_interface(
         } else {
             tempdir.path().join(format!("console-{i}.sock"))
         };
+        let second_console_path = tempdir.path().join(format!("console-second-{i}.sock"));
         if i == 2 {
             std::fs::write(&console_path, b"stale console contents")?;
             std::fs::write(&append_console_path, b"stale append contents")?;
@@ -395,11 +397,21 @@ async fn test_ttrpc_interface(
         } else {
             None
         };
-        let console_listener = if use_connect {
-            Some(UnixListener::bind(&console_path).unwrap())
+        let console_paths = if i != 2 {
+            vec![&console_path, &second_console_path]
         } else {
-            None
+            Vec::new()
         };
+        let console_listeners = console_paths
+            .iter()
+            .map(|path| {
+                if use_connect {
+                    UnixListener::bind(path).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
 
         // On iteration 0, exercise the richer CreateVM surface: a NUMA
         // topology (replacing flat memory), an explicit processor topology,
@@ -492,6 +504,14 @@ async fn test_ttrpc_interface(
                     pcie_root_port("rp3", false, Some(attachment_switch(switch))),
                     // Empty hotplug-capable port for AddPcieDevice.
                     pcie_root_port("rphp", true, None),
+                    // virtio-rtc behind a root port.
+                    pcie_root_port(
+                        "rp4",
+                        false,
+                        Some(attachment_device(virtio_device(
+                            vmservice::virtio_device::Kind::Rtc(vmservice::VirtioRtc {}),
+                        ))),
+                    ),
                 ],
                 ..Default::default()
             };
@@ -652,10 +672,13 @@ async fn test_ttrpc_interface(
                                 )),
                                 ..Default::default()
                             }],
-                            virtio_console: (i != 2).then(|| vmservice::VirtioConsoleConfig {
-                                socket_path: console_path.to_string_lossy().into(),
-                                connect: use_connect,
-                            }),
+                            virtio_consoles: console_paths
+                                .iter()
+                                .map(|path| vmservice::VirtioConsoleConfig {
+                                    socket_path: path.to_string_lossy().into(),
+                                    connect: use_connect,
+                                })
+                                .collect(),
                             virtiofs_config: vec![vmservice::VirtioFs {
                                 tag: "testfs".to_string(),
                                 root_path: virtiofs_root.to_string_lossy().into(),
@@ -808,6 +831,31 @@ async fn test_ttrpc_interface(
                     vmservice::Vm::AddPcieDevice,
                     vmservice::AddPcieDeviceRequest {
                         port_name: "rphp".to_string(),
+                        device: Some(virtio_device(vmservice::virtio_device::Kind::Rtc(
+                            vmservice::VirtioRtc {},
+                        ))),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::RemovePcieDevice,
+                    vmservice::RemovePcieDeviceRequest {
+                        port_name: "rphp".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+
+            client
+                .call()
+                .start(
+                    vmservice::Vm::AddPcieDevice,
+                    vmservice::AddPcieDeviceRequest {
+                        port_name: "rphp".to_string(),
                         device: Some(virtio_device(vmservice::virtio_device::Kind::Fs(
                             vmservice::VirtioFs {
                                 tag: "hotplugfs".to_string(),
@@ -868,25 +916,16 @@ async fn test_ttrpc_interface(
             UnixStream::connect(&com1_path).unwrap()
         };
 
-        let _console_task = if i == 2 {
-            None
-        } else {
-            // Get the console connection the same way.
-            let console = if let Some(listener) = console_listener {
-                let (stream, _) = listener.accept().unwrap();
+        let mut consoles = Vec::new();
+        for (path, listener) in console_paths.iter().zip(console_listeners) {
+            let console = if let Some(listener) = listener {
+                let (stream, _) = listener.accept()?;
                 stream
             } else {
-                UnixStream::connect(&console_path).unwrap()
+                UnixStream::connect(path)?
             };
-            Some(driver.spawn(
-                "console",
-                petri::log_task(
-                    params.log_source.log_file("virtio-console").unwrap(),
-                    PolledSocket::new(&driver, console).unwrap(),
-                    "virtio console",
-                ),
-            ))
-        };
+            consoles.push(PolledSocket::new(&driver, console)?);
+        }
 
         let _com1_task = driver.spawn(
             "com1",
@@ -944,6 +983,11 @@ async fn test_ttrpc_interface(
                             .run()
                             .await?;
                     } else {
+                        let sh = agent.unix_shell();
+                        for (index, marker) in console_markers.iter().enumerate() {
+                            let command = format!("printf {marker} > /dev/hvc{index}");
+                            cmd!(sh, "sh -c {command}").run().await?;
+                        }
                         validate_pcie_config(&agent).await?;
                         #[cfg(windows)]
                         {
@@ -979,11 +1023,32 @@ async fn test_ttrpc_interface(
                 );
 
                 if i == 0 {
-                    client
-                        .call()
-                        .start(vmservice::Vm::TeardownVm, ())
+                    if let Err(error) = client.call().start(vmservice::Vm::TeardownVm, ()).await {
+                        return Err(openvmm_rpc_failure(
+                            "TeardownVm",
+                            error,
+                            &mut child,
+                            stderr_task,
+                        )
+                        .await);
+                    }
+
+                    CancelContext::new()
+                        .with_timeout(Duration::from_secs(60))
+                        .until_cancelled(async {
+                            for (console, marker) in consoles.iter_mut().zip(console_markers) {
+                                let mut output = Vec::new();
+                                console.read_to_end(&mut output).await?;
+                                assert_eq!(
+                                    output,
+                                    marker.as_bytes(),
+                                    "virtio console output reached the wrong socket"
+                                );
+                            }
+                            anyhow::Ok(())
+                        })
                         .await
-                        .unwrap();
+                        .context("timed out reading virtio console output")??;
 
                     let props = query_props().await.unwrap();
                     assert_eq!(
@@ -1046,6 +1111,13 @@ async fn test_ttrpc_interface(
 
     let exit_status = child.wait().await?;
 
+    // Wait until the stderr pump reaches EOF before evaluating the exit
+    // status. Otherwise a process abort can lose its final panic diagnostics
+    // when the test returns and drops the task.
+    stderr_task
+        .await
+        .context("failed to drain openvmm stderr after process exit")?;
+
     // Surface the OpenVMM exit status so that abnormal exits (e.g. an abort
     // from a panic — the workspace uses `panic = 'abort'`) are visible in
     // test logs alongside any pidfile/cleanup assertion below.
@@ -1069,6 +1141,45 @@ async fn test_ttrpc_interface(
     );
 
     Ok(())
+}
+
+/// Reports an RPC failure together with the OpenVMM process exit status.
+///
+/// A closed ttrpc channel can be the first observable sign that OpenVMM
+/// aborted. Wait briefly for the process and drain stderr before constructing
+/// the test error so the failure keeps the diagnostics that explain it.
+async fn openvmm_rpc_failure(
+    operation: &str,
+    rpc_error: mesh_rpc::service::Status,
+    child: &mut TestChild,
+    stderr_task: Task<anyhow::Result<()>>,
+) -> anyhow::Error {
+    let wait_result = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(child.wait())
+        .await;
+
+    match wait_result {
+        Ok(Ok(exit_status)) => {
+            let stderr_result = stderr_task.await;
+            match stderr_result {
+                Ok(()) => anyhow::anyhow!(
+                    "{operation} RPC failed: {rpc_error:?}; openvmm exited with {exit_status}"
+                ),
+                Err(stderr_error) => anyhow::anyhow!(
+                    "{operation} RPC failed: {rpc_error:?}; openvmm exited with {exit_status}; \
+                     failed to drain openvmm stderr: {stderr_error:#}"
+                ),
+            }
+        }
+        Ok(Err(wait_error)) => anyhow::anyhow!(
+            "{operation} RPC failed: {rpc_error:?}; failed to wait for openvmm: {wait_error}"
+        ),
+        Err(timeout_error) => anyhow::anyhow!(
+            "{operation} RPC failed: {rpc_error:?}; timed out waiting for openvmm to exit: \
+             {timeout_error}"
+        ),
+    }
 }
 
 petri::test!(test_ttrpc_uefi_boot, |resolver| {
@@ -1133,6 +1244,7 @@ async fn test_ttrpc_uefi_boot(
                                 firmware_path: firmware_path.get().to_string_lossy().to_string(),
                                 initial_variables: Some(vmservice::uefi::InitialVariables {
                                     secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
+                                    ..Default::default()
                                 }),
                                 secure_boot_enabled: false,
                             },

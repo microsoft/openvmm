@@ -2,12 +2,10 @@
 // Licensed under the MIT License.
 
 use super::*;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::UnmapBehavior;
-use inspect::Inspect;
+use disk_hook::DiskError;
+use disk_hook::DiskOperation;
+use disk_hook::HookDisk;
 use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
 
@@ -20,97 +18,17 @@ struct FlushState {
     writes_at_flush: Vec<usize>,
 }
 
-/// Delegate RAM I/O, injecting failures only when explicitly armed by a test.
-#[derive(Inspect)]
-struct FlushFaultDisk {
-    disk: Disk,
-    #[inspect(skip)]
-    state: Arc<Mutex<FlushState>>,
-}
-
-impl DiskIo for FlushFaultDisk {
-    fn disk_type(&self) -> &str {
-        "attestation-flush-fault-test"
+fn record_flush(state: &mut FlushState) -> Result<(), DiskError> {
+    state.flush_count += 1;
+    let write_count = state.write_count;
+    state.writes_at_flush.push(write_count);
+    if state.fail_flush_at == Some(state.flush_count) {
+        state.failed_flush_count += 1;
+        return Err(DiskError::Io(std::io::Error::other(
+            "injected enrollment flush failure",
+        )));
     }
-
-    fn sector_count(&self) -> u64 {
-        self.disk.sector_count()
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.disk.sector_size()
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.disk.disk_id()
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.disk.physical_sector_size()
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        self.disk.is_fua_respected()
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.disk.is_read_only()
-    }
-
-    async fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        self.disk.unmap(sector, count, block_level_only).await
-    }
-
-    fn unmap_behavior(&self) -> UnmapBehavior {
-        self.disk.unmap_behavior()
-    }
-
-    fn optimal_unmap_sectors(&self) -> u32 {
-        self.disk.optimal_unmap_sectors()
-    }
-
-    async fn wait_resize(&self, sector_count: u64) -> u64 {
-        self.disk.wait_resize(sector_count).await
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        self.disk.read_vectored(buffers, sector).await
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        fua: bool,
-    ) -> Result<(), DiskError> {
-        self.state.lock().write_count += 1;
-        self.disk.write_vectored(buffers, sector, fua).await
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        {
-            let mut state = self.state.lock();
-            state.flush_count += 1;
-            let write_count = state.write_count;
-            state.writes_at_flush.push(write_count);
-            if state.fail_flush_at == Some(state.flush_count) {
-                state.failed_flush_count += 1;
-                return Err(DiskError::Io(std::io::Error::other(
-                    "injected enrollment flush failure",
-                )));
-            }
-        }
-        self.disk.sync_cache().await
-    }
+    Ok(())
 }
 
 const ACTIVE_DEK: [u8; AES_GCM_KEY_LENGTH] = [0x33; AES_GCM_KEY_LENGTH];
@@ -118,11 +36,17 @@ const PAYLOAD: &[u8] = b"encrypted state survives enrollment flush failure";
 
 async fn new_flush_fault_vmgs() -> (Vmgs, Disk, Arc<Mutex<FlushState>>) {
     let state = Arc::new(Mutex::new(FlushState::default()));
-    let disk = Disk::new(FlushFaultDisk {
-        disk: new_test_file(),
-        state: state.clone(),
-    })
-    .unwrap();
+    let hook_state = state.clone();
+    let disk = HookDisk::new(4 * ONE_MEGA_BYTE, 512)
+        .with_sync_hook(move |operation| match operation {
+            DiskOperation::Write { .. } => {
+                hook_state.lock().write_count += 1;
+                Ok(())
+            }
+            DiskOperation::SyncCache => record_flush(&mut hook_state.lock()),
+            _ => Ok(()),
+        })
+        .into_disk();
     let vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
     *state.lock() = FlushState::default();
     (vmgs, disk, state)

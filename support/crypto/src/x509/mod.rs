@@ -48,7 +48,22 @@ pub struct X509Error(#[source] pub(crate) super::BackendError);
 #[error("X.509 operation failed while {1}")]
 pub struct X509Error(#[source] pub(crate) der::Error, pub(crate) &'static str);
 
-/// A public key extracted from an X.509 certificate.
+/// An error encountered while verifying an X.509 certificate signature.
+#[derive(Debug, Error)]
+pub enum X509VerifyError {
+    /// A certificate parsing or encoding error.
+    #[error("failed to process the certificate")]
+    X509(#[from] X509Error),
+    /// An RSA signature verification error.
+    #[error("failed to verify the RSA certificate signature")]
+    Rsa(#[from] crate::rsa::RsaError),
+    /// An ECDSA signature verification error.
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    #[error("failed to verify the ECDSA certificate signature")]
+    Ecdsa(#[from] crate::ecdsa::EcdsaError),
+}
+
+/// A public key extracted from a certificate or used to verify its signature.
 pub enum X509PublicKey {
     /// An RSA public key.
     Rsa(crate::rsa::RsaPublicKey),
@@ -79,6 +94,29 @@ impl X509PublicKey {
     }
 }
 
+/// A borrowed key pair used for X.509 operations.
+#[derive(Clone, Copy)]
+pub enum X509KeyPair<'a> {
+    /// An RSA key pair.
+    Rsa(&'a crate::rsa::RsaKeyPair),
+    /// An ECDSA key pair.
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    Ecdsa(&'a crate::ecdsa::EcdsaKeyPair),
+}
+
+impl<'a> From<&'a crate::rsa::RsaKeyPair> for X509KeyPair<'a> {
+    fn from(key: &'a crate::rsa::RsaKeyPair) -> Self {
+        Self::Rsa(key)
+    }
+}
+
+#[cfg(any(openssl, symcrypt, all(native, windows)))]
+impl<'a> From<&'a crate::ecdsa::EcdsaKeyPair> for X509KeyPair<'a> {
+    fn from(key: &'a crate::ecdsa::EcdsaKeyPair) -> Self {
+        Self::Ecdsa(key)
+    }
+}
+
 /// An X.509 certificate.
 pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
 
@@ -94,13 +132,9 @@ impl X509Certificate {
     }
 
     /// Verify the signature of this certificate against the given issuer's
-    /// public key.
-    /// Returns `Ok(true)` if the signature is valid, `Ok(false)` if the
-    /// signature is invalid, or an error for other failures.
-    pub fn verify(
-        &self,
-        issuer_public_key: &crate::rsa::RsaPublicKey,
-    ) -> Result<bool, crate::rsa::RsaError> {
+    /// public key. Returns `Ok(true)` if the signature is valid, `Ok(false)`
+    /// if the signature is invalid, or an error for other failures.
+    pub fn verify(&self, issuer_public_key: &X509PublicKey) -> Result<bool, X509VerifyError> {
         self.0.verify(issuer_public_key)
     }
 
@@ -121,8 +155,10 @@ impl X509Certificate {
 
     #[cfg(any(test, feature = "test_helpers"))]
     /// Build a self-signed never-expiring X.509 certificate (for testing).
-    pub fn build_self_signed(
-        key: &crate::rsa::RsaKeyPair,
+    ///
+    /// Signs with SHA-256 for RSA and SHA-384 for ECDSA.
+    pub fn build_self_signed<'a>(
+        key: X509KeyPair<'a>,
         country: &str,
         state: &str,
         locality: &str,
@@ -162,9 +198,9 @@ impl X509Certificate {
 mod tests {
     use super::*;
 
-    fn build_test_cert(key: &crate::rsa::RsaKeyPair) -> X509Certificate {
+    fn build_test_cert<'a>(key: impl Into<X509KeyPair<'a>>) -> X509Certificate {
         X509Certificate::build_self_signed(
-            key,
+            key.into(),
             "US",
             "Washington",
             "Redmond",
@@ -174,17 +210,54 @@ mod tests {
         .unwrap()
     }
 
-    /// Build a self-signed cert and verify it against its own public key.
-    /// This catches the previously-latent symcrypt bug where the backend
-    /// passed the raw TBS bytes to `pkcs1_verify` instead of the SHA-256
-    /// digest of the TBS bytes — a self-signed cert would have failed to
-    /// verify against its own key.
     #[test]
-    fn self_signed_cert_verifies() {
+    fn rsa_self_signed_cert_verifies() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
-        assert!(cert.verify(&key).unwrap());
+        let public_key = cert.public_key().unwrap();
+        assert!(matches!(&public_key, X509PublicKey::Rsa(_)));
+        assert!(cert.verify(&public_key).unwrap());
         assert!(cert.issued(&cert).unwrap());
+        let reparsed = X509Certificate::from_der(&cert.to_der().unwrap()).unwrap();
+        assert!(reparsed.verify(&public_key).unwrap());
+    }
+
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    #[test]
+    fn ecdsa_self_signed_cert_verifies() {
+        let key = crate::ecdsa::EcdsaKeyPair::generate(crate::ecdsa::EcdsaCurve::P384).unwrap();
+        let cert = build_test_cert(&key);
+        let public_key = cert.public_key().unwrap();
+        assert!(matches!(&public_key, X509PublicKey::Ecdsa(_)));
+        assert!(cert.verify(&public_key).unwrap());
+        assert!(cert.issued(&cert).unwrap());
+        let reparsed = X509Certificate::from_der(&cert.to_der().unwrap()).unwrap();
+        assert!(reparsed.verify(&public_key).unwrap());
+    }
+
+    #[cfg(any(openssl, symcrypt, all(native, windows)))]
+    #[test]
+    fn cert_rejects_wrong_key_type() {
+        let rsa_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let ecdsa_key =
+            crate::ecdsa::EcdsaKeyPair::generate(crate::ecdsa::EcdsaCurve::P384).unwrap();
+        let rsa_cert = build_test_cert(&rsa_key);
+        let ecdsa_cert = build_test_cert(&ecdsa_key);
+        let rsa_public_key = rsa_cert.public_key().unwrap();
+        let ecdsa_public_key = ecdsa_cert.public_key().unwrap();
+
+        assert!(rsa_cert.verify(&rsa_public_key).unwrap());
+        assert!(ecdsa_cert.verify(&ecdsa_public_key).unwrap());
+
+        // Backends may report an algorithm mismatch as an error or an invalid signature.
+        assert!(matches!(
+            rsa_cert.verify(&ecdsa_public_key),
+            Ok(false) | Err(_)
+        ));
+        assert!(matches!(
+            ecdsa_cert.verify(&rsa_public_key),
+            Ok(false) | Err(_)
+        ));
     }
 
     /// A cert signed by one key must NOT verify against an unrelated key.
@@ -194,7 +267,7 @@ mod tests {
         let other_key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&signing_key);
         let other_pubkey = X509Certificate::build_self_signed(
-            &other_key,
+            (&other_key).into(),
             "US",
             "Washington",
             "Redmond",
@@ -203,8 +276,6 @@ mod tests {
         )
         .unwrap()
         .public_key()
-        .unwrap()
-        .rsa()
         .unwrap();
         // Invalid signatures must be reported as `Ok(false)`, not `Err`.
         assert!(matches!(cert.verify(&other_pubkey), Ok(false)));
@@ -217,7 +288,7 @@ mod tests {
         let cert = build_test_cert(&key);
         let der = cert.to_der().unwrap();
         let reparsed = X509Certificate::from_der(&der).unwrap();
-        let pubkey = reparsed.public_key().unwrap().rsa().unwrap();
+        let pubkey = reparsed.public_key().unwrap();
         assert!(reparsed.verify(&pubkey).unwrap());
     }
 

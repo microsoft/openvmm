@@ -810,6 +810,7 @@ async fn vm_config_from_command_line(
                     cidr: None,
                     host_fwd: Vec::new(),
                 },
+                mac_address: None,
                 max_queues: None,
                 underhill: false,
                 pcie_port: None,
@@ -1980,6 +1981,12 @@ async fn vm_config_from_command_line(
         }
     }
 
+    if let Some(rtc) = &opt.virtio_rtc {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rtc::VirtioRtcHandle.into_resource();
+        add_virtio_device(rtc.bus.clone(), resource, &mut pcie_devices);
+    }
+
     if let Some(backend) = virtio_console_backend {
         let resource: Resource<VirtioDeviceHandle> =
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
@@ -2410,9 +2417,11 @@ fn parse_endpoint(
         }
     };
 
-    // Pick a random MAC address.
-    let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-    getrandom::fill(&mut mac_address[3..]).expect("rng failure");
+    let mac_address = cli_cfg.mac_address.unwrap_or_else(|| {
+        let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
+        getrandom::fill(&mut mac_address[3..]).expect("rng failure");
+        mac_address.into()
+    });
 
     // Pick a fixed instance ID based on the index.
     const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
@@ -2426,7 +2435,7 @@ fn parse_endpoint(
         vtl: cli_cfg.vtl,
         instance_id,
         endpoint,
-        mac_address: mac_address.into(),
+        mac_address,
         max_queues: cli_cfg.max_queues,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
@@ -2719,7 +2728,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
-    tracing_init::enable_tracing()?;
+    let _tracing_guard = tracing_init::enable_tracing()?;
 
     // Try to run as a worker host.
     // On success the worker runs to completion and then exits the process (does

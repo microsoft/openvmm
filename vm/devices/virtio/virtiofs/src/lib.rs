@@ -76,20 +76,31 @@ impl VirtioFsInner {
     }
 }
 
+/// An error constructing or configuring a virtio-fs filesystem.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateError {
+    /// The host filesystem volume could not be initialized.
+    #[error(transparent)]
+    Volume(#[from] lxutil::VolumeError),
+    /// Filesystem metadata or aggregate configuration was invalid or inaccessible.
+    #[error(transparent)]
+    Filesystem(#[from] lx::Error),
+}
+
 fn build_volume(
     root_path: impl AsRef<Path>,
     mount_options: Option<&LxVolumeOptions>,
-) -> lx::Result<(lxutil::LxVolume, bool)> {
+) -> Result<(lxutil::LxVolume, bool), lxutil::VolumeError> {
     let readonly = mount_options.is_some_and(|options| options.is_readonly());
-    let volume = if let Some(mount_options) = mount_options {
-        mount_options.new_volume(root_path)
-    } else {
-        lxutil::LxVolume::new(root_path)
-    }?;
+    let options = mount_options.cloned().unwrap_or_default();
+    let volume = options.new_volume(root_path)?;
     Ok((volume, readonly))
 }
 
 /// Implementation of the virtio-fs file system.
+///
+/// Symlinks are exposed without host-side traversal.
+/// Symbolic links are resolved by the guest, in both direct and aggregate mode.
 #[derive(Clone)]
 pub struct VirtioFs {
     inner: Arc<VirtioFsInner>,
@@ -567,7 +578,7 @@ impl VirtioFs {
     pub fn new(
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
-    ) -> lx::Result<Self> {
+    ) -> Result<Self, CreateError> {
         let (volume, readonly) = build_volume(root_path, mount_options)?;
         let mut inodes = InodeMap::new(false);
         let volume = Arc::new(VirtioFsVolume::new(volume, 0, readonly));
@@ -759,9 +770,17 @@ impl InodeMap {
 
     /// Insert an inode into the map, returning its node ID.
     pub fn insert(&mut self, inode: VirtioFsInode) -> (Arc<VirtioFsInode>, u64) {
+        let key = inode.dedup_key();
+        if self
+            .inodes_by_key
+            .get(&key)
+            .is_some_and(|(existing, _)| existing.file_type() != inode.file_type())
+        {
+            self.evict_dedup_key(&key);
+        }
         // Reuse an existing node id for the same host file; see `DedupKey`
         // for how each volume type is keyed.
-        match self.inodes_by_key.entry(inode.dedup_key()) {
+        match self.inodes_by_key.entry(key) {
             Entry::Occupied(entry) => {
                 // Inode found; increment its count and return the existing FUSE node ID.
                 let new_path = inode.clone_path();
@@ -792,14 +811,11 @@ impl InodeMap {
         }
     }
 
-    /// Detach a [`DedupKey::Path`] entry from its current inode so a later
-    /// create at that path gets a fresh node id instead of aliasing the
-    /// removed/renamed file. The inode stays in `inodes_by_node_id` for any
-    /// live fd or watch.
+    /// Detach a dedup entry so a later lookup gets a fresh node id instead of
+    /// aliasing a removed, renamed, or type-replaced file. The inode stays in
+    /// `inodes_by_node_id` for any live fd or watch.
     pub fn evict_dedup_key(&mut self, key: &DedupKey) {
-        if matches!(key, DedupKey::Path(..)) {
-            self.inodes_by_key.remove(key);
-        }
+        self.inodes_by_key.remove(key);
     }
 
     /// Clears the map, preserving the root inode.

@@ -41,14 +41,17 @@ pub(crate) struct VirtioFsVolume {
     volume: Arc<LxVolume>,
     id: u32,
     readonly: bool,
+    stable_file_ids: bool,
 }
 
 impl VirtioFsVolume {
     pub(crate) fn new(volume: LxVolume, id: u32, readonly: bool) -> Self {
+        let stable_file_ids = volume.supports_stable_file_id();
         Self {
             volume: Arc::new(volume),
             id,
             readonly,
+            stable_file_ids,
         }
     }
 
@@ -58,6 +61,10 @@ impl VirtioFsVolume {
 
     pub(crate) fn readonly(&self) -> bool {
         self.readonly
+    }
+
+    pub(crate) fn supports_stable_file_id(&self) -> bool {
+        self.stable_file_ids
     }
 
     pub(crate) fn map_inode(&self, raw: lx::ino_t) -> lx::ino_t {
@@ -79,8 +86,8 @@ impl Deref for VirtioFsVolume {
 /// Volumes that report stable inode numbers key by `(volume_id, inode_nr)`.
 /// Volumes that recycle inode numbers (FAT/exFAT) cannot trust the inode
 /// number as an identity, so they key by `(volume_id, path)` instead — a given
-/// path then maps to one node id across lookups even though the host inode
-/// number is not reliable.
+/// path then maps to one node id across lookups while its file type is unchanged,
+/// even though the host inode number is not reliable.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) enum DedupKey {
     /// `(volume_id, host_inode_number)`, for stable-id volumes.
@@ -95,6 +102,7 @@ pub struct VirtioFsInode {
     path: RwLock<PathBuf>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
+    file_type: lx::mode_t,
     /// This inode's number as reported to the guest: its namespaced inode
     /// number under the shared superblock.
     guest_inode_nr: lx::ino_t,
@@ -116,6 +124,7 @@ impl VirtioFsInode {
             path: RwLock::new(path),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
+            file_type: stat.mode & lx::S_IFMT,
             guest_inode_nr,
         }
     }
@@ -125,6 +134,11 @@ impl VirtioFsInode {
     /// N.B. This may be different from its FUSE node ID.
     pub fn inode_nr(&self) -> lx::ino_t {
         self.inode_nr
+    }
+
+    /// Returns this inode's file type, without permission bits.
+    pub(crate) fn file_type(&self) -> lx::mode_t {
+        self.file_type
     }
 
     /// Return the identifier of the aggregated volume this inode belongs to.
@@ -405,7 +419,7 @@ impl VirtioFsInode {
     ///
     /// Stable-id volumes key by `(volume_id, inode_nr)`. Volumes that recycle
     /// inode numbers (FAT/exFAT) key by `(volume_id, path)` instead, so a given
-    /// path maps to a single, stable FUSE node id across lookups. This includes
+    /// path maps to a stable FUSE node id while its file type is unchanged. This includes
     /// the empty path of a volume root, so an aggregate child root keeps one
     /// stable node id across repeated lookups rather than allocating a fresh one
     /// each time.
@@ -428,6 +442,9 @@ impl VirtioFsInode {
 
     /// Appends a child name to this inode's path.
     fn child_path(&self, name: &LxStr) -> lx::Result<PathBuf> {
+        if !lx::s_isdir(self.file_type) {
+            return Err(lx::Error::ENOTDIR);
+        }
         // Defense in depth: the FUSE request parser already validates names,
         // but assert here to catch any bypass.
         assert!(!name.is_empty(), "empty child name");
@@ -442,5 +459,132 @@ impl VirtioFsInode {
     /// Locks the path and returns the value.
     fn get_path(&self) -> parking_lot::RwLockReadGuard<'_, PathBuf> {
         self.path.read()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InodeMap;
+    use test_with_tracing::test;
+
+    fn path_keyed_volume(root: &std::path::Path, id: u32) -> Arc<VirtioFsVolume> {
+        let mut volume = VirtioFsVolume::new(LxVolume::new(root).unwrap(), id, false);
+        volume.stable_file_ids = false;
+        Arc::new(volume)
+    }
+
+    #[test]
+    fn stable_inode_key_file_to_directory() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            std::fs::create_dir(tmp.path().join("replacement")).unwrap();
+            std::fs::write(tmp.path().join("replacement").join("child"), b"child").unwrap();
+            let volume = Arc::new(VirtioFsVolume::new(
+                LxVolume::new(tmp.path()).unwrap(),
+                u32::from(aggregate),
+                false,
+            ));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root);
+
+            let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert!(matches!(file.dedup_key(), DedupKey::Ino(..)));
+            let (old, old_id) = inodes.insert(file);
+
+            let mut replacement_stat = volume.lstat(PathBuf::from("replacement")).unwrap();
+            replacement_stat.inode_nr = old.inode_nr();
+            assert!(lx::s_isdir(replacement_stat.mode));
+
+            let replacement = VirtioFsInode::with_attr(
+                Arc::clone(&volume),
+                PathBuf::from("replacement"),
+                &replacement_stat,
+            );
+            let (current, current_id) = inodes.insert(replacement);
+
+            assert_ne!(current_id, old_id);
+            assert!(lx::s_isdir(current.file_type()));
+            assert!(lx::s_isreg(
+                current.lookup_child("child".as_ref()).unwrap().1.mode
+            ));
+            assert_eq!(
+                old.lookup_child("child".as_ref()).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+
+            assert_eq!(old.forget(old_id, 1), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+        }
+    }
+
+    #[test]
+    fn path_keyed_file_to_directory() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root);
+            let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert!(matches!(file.dedup_key(), DedupKey::Path(..)));
+            let (old, old_id) = inodes.insert(file);
+            let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert_eq!(inodes.insert(same).1, old_id);
+
+            std::fs::remove_file(tmp.path().join("entry")).unwrap();
+            std::fs::create_dir(tmp.path().join("entry")).unwrap();
+            std::fs::write(tmp.path().join("entry").join("child"), b"child").unwrap();
+            let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
+            assert!(lx::s_isdir(attr.mode));
+            let (current, current_id) = inodes.insert(replacement);
+            let (_, child_attr) = current.lookup_child("child".as_ref()).unwrap();
+            assert!(lx::s_isreg(child_attr.mode));
+            assert_ne!(current_id, old_id);
+            assert_eq!(
+                old.lookup_child("child".as_ref()).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+
+            assert_eq!(old.forget(old_id, 2), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+            let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert_eq!(inodes.insert(same).1, current_id);
+        }
+    }
+
+    #[test]
+    fn path_keyed_directory_to_file() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("entry")).unwrap();
+            let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root);
+            let (directory, _) = root.lookup_child("entry".as_ref()).unwrap();
+            let (old, old_id) = inodes.insert(directory);
+
+            std::fs::remove_dir(tmp.path().join("entry")).unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
+            assert!(lx::s_isreg(attr.mode));
+            let (current, current_id) = inodes.insert(replacement);
+            assert_ne!(current_id, old_id);
+            assert_eq!(
+                current.lookup_child("child".as_ref()).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(old.forget(old_id, 1), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+            let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert_eq!(inodes.insert(same).1, current_id);
+        }
     }
 }

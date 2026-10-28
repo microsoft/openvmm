@@ -5,6 +5,7 @@
 
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
+use anyhow::Context as _;
 use lxutil::LxVolumeOptions;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
@@ -67,11 +68,10 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                         &child.root_path,
                         Some(&LxVolumeOptions::from_option_string(&child.mount_options)),
                     )
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to add virtiofs aggregate child '{}' (root_path='{}'): {e}",
-                            child.name,
-                            child.root_path
+                    .with_context(|| {
+                        format!(
+                            "failed to add virtiofs aggregate child '{}' (root_path='{}')",
+                            child.name, child.root_path
                         )
                     })?;
                 }
