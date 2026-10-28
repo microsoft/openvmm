@@ -15,14 +15,14 @@
 //! 1. [`prepare`] — runs in the *control* process, just before it spawns the
 //!    worker. It returns a plain-data [`SandboxProcessConfig`] describing the
 //!    child's launch environment (which Linux namespaces to create, which
-//!    handles stay inheritable, the child's identity, and — on Windows — the
+//!    handles stay inheritable, whether to self-map IDs, and — on Windows — the
 //!    LPAC construction data). The caller passes that prepared configuration
 //!    intact to the platform process builder, which performs the spawn.
 //!    This crate deliberately depends on neither `mesh` nor `pal`: it decides
 //!    *what* the launch environment must be; PAL decides *how* to apply it.
 //! 2. [`apply`] — the **first statement of the worker's `main()`**. On Linux the
 //!    worker configures the namespaces it was cloned into, then applies
-//!    `pivot_root`, credential drop, hardening, `no_new_privs`, and optional
+//!    `pivot_root`, capability drop, hardening, `no_new_privs`, and optional
 //!    seccomp. It must run before any thread is spawned, any async runtime
 //!    starts, or any resource is opened.
 //! 3. [`tighten`] — an optional, additive-only ratchet a worker calls once it

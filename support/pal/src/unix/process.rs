@@ -236,6 +236,9 @@ impl<'a> Builder<'a> {
     }
 
     /// Applies prepared sandbox launch requirements to the new process.
+    ///
+    /// With user namespace self-mapping, explicit [`Self::setuid`] or
+    /// [`Self::setgid`] requests are unsupported and cause spawning to fail.
     #[cfg(target_os = "linux")]
     pub fn apply_sandbox(
         &mut self,
@@ -479,6 +482,44 @@ mod tests {
         // SAFETY: child.id() names the live process spawned above.
         assert_eq!(unsafe { libc::kill(child.id(), libc::SIGKILL) }, 0);
         child.wait().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_user_namespace_self_map_rejects_explicit_identity() {
+        for (uid, gid) in [
+            (Some(0), None),
+            (None, Some(0)),
+            (Some(1000), None),
+            (None, Some(1000)),
+            (Some(1000), Some(1000)),
+        ] {
+            let mut cmd = Builder::new("/usr/bin/true");
+            if let Some(uid) = uid {
+                cmd.setuid(uid);
+            }
+            if let Some(gid) = gid {
+                cmd.setgid(gid);
+            }
+            cmd.apply_sandbox(sandbox::SandboxProcessConfig {
+                clone_flags: libc::CLONE_NEWUSER as u64,
+                map_current_user: true,
+                ..Default::default()
+            })
+            .unwrap();
+            let error = cmd.spawn().expect_err("explicit identity was accepted");
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_explicit_identity_without_user_namespace() {
+        // SAFETY: geteuid and getegid have no safety requirements.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let mut cmd = Builder::new("/usr/bin/true");
+        cmd.setuid(uid).setgid(gid);
+        assert!(cmd.spawn().unwrap().wait().unwrap().success());
     }
 
     #[test]

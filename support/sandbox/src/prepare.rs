@@ -43,17 +43,17 @@ pub struct RawHandle(pub u64);
 
 /// Per-spawn identity for the worker.
 ///
-/// Every field is optional; a default `Identity` means "inherit the control
-/// process's identity", the single-process / dev path. Applying a non-default
-/// identity is the *caller's* responsibility via
-/// [`SandboxProcessConfig::uid`] / [`SandboxProcessConfig::gid`] (only a
-/// privileged control process can set another uid/gid on the child), and via
-/// [`WindowsPreparation`] on Windows.
+/// A default `Identity` retains the control process's host UID/GID. On Linux,
+/// namespace UID/GID 0 map to the spawning process's effective UID/GID.
+/// Custom Unix host identities are not implemented: [`prepare`] rejects any
+/// explicit UID/GID, including 0, even when the debug sandbox escape hatch is
+/// active. These fields are reserved for future host identity provisioning.
+/// Windows AppContainer configuration is reflected in [`WindowsPreparation`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Identity {
-    /// The Unix user id the worker should run as.
+    /// Reserved host-side Unix user ID. Must be `None` until supported.
     pub uid: Option<u32>,
-    /// The Unix group id the worker should run as.
+    /// Reserved host-side Unix group ID. Must be `None` until supported.
     pub gid: Option<u32>,
     /// The Windows AppContainer moniker the worker should run under.
     pub app_container: Option<String>,
@@ -82,11 +82,6 @@ pub struct SandboxProcessConfig {
     /// descriptor *not* listed here, or configured as standard I/O by the
     /// process builder, must be closed before the child is reached.
     pub inherit_handles: Vec<(HandleTag, RawHandle)>,
-    /// The uid the child should be launched as, if the identity requested one.
-    /// Only a privileged control process can honor this.
-    pub uid: Option<u32>,
-    /// The gid the child should be launched as, if the identity requested one.
-    pub gid: Option<u32>,
     /// Windows LPAC construction data, present only when preparing on Windows.
     /// The caller turns this into an AppContainer SID, a capability SID array,
     /// and a `STARTUPINFOEX` attribute list. `None` on non-Windows hosts.
@@ -135,8 +130,9 @@ pub struct WindowsPreparation {
 ///   bits are consulted here (the worker self-applies the rest in
 ///   [`apply`](crate::apply)); on Windows its entire LPAC portion is reflected
 ///   into [`WindowsPreparation`].
-/// * `identity` — the per-spawn identity; its uid/gid are echoed into the
-///   [`SandboxProcessConfig`] for the platform process builder to set.
+/// * `identity` — the per-spawn identity. Unix UID/GID requests are unsupported
+///   and return [`Error::RequiredPrimitiveUnavailable`]; Windows AppContainer
+///   configuration is reflected in [`WindowsPreparation`].
 /// * `handles` — the tagged handles to keep inheritable. They are echoed into
 ///   [`SandboxProcessConfig::inherit_handles`]; the platform process builder
 ///   closes every other descriptor except its configured standard I/O.
@@ -145,12 +141,16 @@ pub fn prepare(
     identity: &Identity,
     handles: &[(HandleTag, RawHandle)],
 ) -> Result<SandboxProcessConfig, Error> {
+    if identity.uid.is_some() || identity.gid.is_some() {
+        return Err(Error::RequiredPrimitiveUnavailable(
+            "custom host UID/GID identities are not supported",
+        ));
+    }
+
     let mut preparation = SandboxProcessConfig {
         clone_flags: 0,
         map_current_user: false,
         inherit_handles: handles.to_vec(),
-        uid: identity.uid,
-        gid: identity.gid,
         windows: None,
     };
 
@@ -207,19 +207,34 @@ mod tests {
     use crate::profile::Capability;
 
     #[test]
-    fn prepare_echoes_handles_and_identity() {
+    fn prepare_rejects_explicit_unix_identities() {
         let profile = Profile::deny_all().build();
-        let identity = Identity {
-            uid: Some(1000),
-            gid: Some(1000),
-            app_container: None,
-        };
+        for (uid, gid) in [
+            (Some(0), None),
+            (None, Some(0)),
+            (Some(1000), None),
+            (None, Some(1000)),
+            (Some(1000), Some(1000)),
+        ] {
+            let identity = Identity {
+                uid,
+                gid,
+                ..Default::default()
+            };
+            assert!(matches!(
+                prepare(&profile, &identity, &[]),
+                Err(Error::RequiredPrimitiveUnavailable(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn prepare_preserves_handles_and_self_maps() {
+        let profile = Profile::deny_all().build();
         let handles = [(HandleTag(1), RawHandle(3)), (HandleTag(2), RawHandle(7))];
 
-        let prep = prepare(&profile, &identity, &handles).unwrap();
+        let prep = prepare(&profile, &Identity::default(), &handles).unwrap();
 
-        assert_eq!(prep.uid, Some(1000));
-        assert_eq!(prep.gid, Some(1000));
         assert_eq!(prep.inherit_handles, handles);
         #[cfg(target_os = "linux")]
         {
@@ -229,15 +244,6 @@ mod tests {
             );
             assert!(prep.map_current_user);
         }
-    }
-
-    #[test]
-    fn default_identity_leaves_uid_gid_unset() {
-        let profile = Profile::deny_all().build();
-        let prep = prepare(&profile, &Identity::default(), &[]).unwrap();
-        assert_eq!(prep.uid, None);
-        assert_eq!(prep.gid, None);
-        assert!(prep.inherit_handles.is_empty());
     }
 
     #[cfg(target_os = "linux")]
