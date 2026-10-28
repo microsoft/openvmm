@@ -287,7 +287,7 @@ pub(crate) enum CapabilityKind {
 /// ratchet is *unrepresentable*.
 #[derive(Debug, Clone)]
 pub struct Restrictions {
-    #[cfg_attr(windows, expect(dead_code))]
+    #[cfg_attr(all(not(target_os = "linux"), not(test)), expect(dead_code))]
     pub(crate) inner: RestrictionsInner,
 }
 
@@ -364,7 +364,7 @@ impl Default for ProfileInner {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(windows, expect(dead_code))]
+#[cfg_attr(not(target_os = "linux"), expect(dead_code))]
 pub(crate) struct FsGrant {
     pub(crate) path: PathBuf,
     pub(crate) access: Access,
