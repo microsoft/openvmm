@@ -587,4 +587,38 @@ mod tests {
             assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
     }
+
+    #[test]
+    fn path_keyed_reserved_insert_file_to_directory() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root).unwrap();
+            let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
+            let (old, old_id) = inodes.insert(file).unwrap();
+
+            // The host removes the file without the guest noticing, and the
+            // guest then creates a directory at the same path.
+            std::fs::remove_file(tmp.path().join("entry")).unwrap();
+            let reservation = inodes.reserve().unwrap();
+            let (directory, attr) = root.mkdir("entry".as_ref(), 0o755, 0, 0).unwrap();
+            assert!(lx::s_isdir(attr.mode));
+            let (current, current_id) = inodes.insert_reserved(&reservation, directory).unwrap();
+            assert_eq!(current_id, reservation.handle);
+            assert_ne!(current_id, old_id);
+            assert!(lx::s_isdir(current.file_type()));
+            std::fs::write(tmp.path().join("entry").join("child"), b"child").unwrap();
+            let (_, child_attr) = current.lookup_child("child".as_ref()).unwrap();
+            assert!(lx::s_isreg(child_attr.mode));
+
+            assert_eq!(old.forget(old_id, 1), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+            let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
+        }
+    }
 }
