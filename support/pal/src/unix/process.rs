@@ -485,6 +485,100 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn test_sandbox_ipc_namespace_isolation() {
+        // A private fixture namespace ensures the kernel cleans up all IPC
+        // objects even if a test assertion fails.
+        let output = std::process::Command::new("unshare")
+            .args(["--user", "--map-root-user", "--ipc"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::process::tests::helper_sandbox_ipc_parent",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove(sandbox::DISABLE_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "IPC namespace helper failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn helper_sandbox_ipc_parent() {
+        use sandbox::profiles::SandboxRole;
+
+        let objects = sysv_ipc_objects(libc::IPC_CREAT | libc::IPC_EXCL | 0o600)
+            .map(|result| result.unwrap());
+        for role in [SandboxRole::Vm, SandboxRole::Tpm] {
+            for vfork in [true, false] {
+                let preparation =
+                    sandbox::prepare(&role.profile(), &sandbox::Identity::default(), &[]).unwrap();
+                let mut cmd = Builder::new(std::env::current_exe().unwrap());
+                cmd.args([
+                    "--exact",
+                    "unix::process::tests::helper_sandbox_ipc_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .set_vfork(vfork)
+                .apply_sandbox(preparation)
+                .unwrap();
+                assert!(
+                    cmd.spawn().unwrap().wait().unwrap().success(),
+                    "{} worker launch (vfork={vfork}) failed",
+                    role.name(),
+                );
+                assert_eq!(
+                    sysv_ipc_objects(0).map(|result| result.unwrap()),
+                    objects,
+                    "worker changed the parent's IPC objects",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn helper_sandbox_ipc_child() {
+        for (name, result) in ["shared memory", "semaphore", "message queue"]
+            .into_iter()
+            .zip(sysv_ipc_objects(0))
+        {
+            let error = result.expect_err("parent IPC object is visible");
+            assert_eq!(error.raw_os_error(), Some(libc::ENOENT), "{name}: {error}");
+        }
+        for result in sysv_ipc_objects(libc::IPC_CREAT | libc::IPC_EXCL | 0o600) {
+            result.unwrap();
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn sysv_ipc_objects(flags: libc::c_int) -> [std::io::Result<libc::c_int>; 3] {
+        use crate::sys::SyscallResult;
+
+        const KEY: libc::key_t = 0x5342;
+        // SAFETY: these calls take only integer arguments. The fixed key is
+        // used inside a private fixture or worker IPC namespace.
+        unsafe {
+            [
+                libc::shmget(KEY, 4096, flags).syscall_result(),
+                libc::semget(KEY, 1, flags).syscall_result(),
+                libc::msgget(KEY, flags).syscall_result(),
+            ]
+        }
+        .map(|result| result.map_err(Into::into))
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn test_user_namespace_self_map_rejects_explicit_identity() {
         for (uid, gid) in [

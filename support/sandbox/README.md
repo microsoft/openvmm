@@ -29,6 +29,13 @@ Sandboxing happens in three named, ordered stages:
    has finished initializing, to shed its init-only authority. It takes
    `Restrictions`, a type that can only ever *narrow*.
 
+Confined Linux launches require fresh user, mount, and IPC namespaces. The
+IPC namespace isolates SysV shared memory, semaphores, and message queues
+from the control process and other workers. A fresh network namespace is
+also required unless the profile uses `Network::Unrestricted`; this does
+not disable IPC isolation. Namespace creation failures abort the launch
+without retrying with weaker isolation.
+
 ## Authoring a policy
 
 OpenVMM's default worker profiles live in dedicated modules under

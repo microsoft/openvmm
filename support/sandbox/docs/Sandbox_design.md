@@ -157,7 +157,7 @@ them.
 | **D13** | **Seccomp is opt-in per worker class**, composed additively from library-contributed requirements plus explicit additions. Derived profiles union their syscall denials with the base profile and cannot remove an existing denial. `RET_KILL_PROCESS` in production. |
 | **D14** | **Sandbox setup fails closed.** A requested namespace or required confinement primitive that cannot be applied aborts the worker launch; there is no retry with a weaker namespace set. |
 | **D15** | **Namespace UID/GID 0 map to the spawning process's effective UID/GID.** Explicit `Identity.uid/gid` requests are rejected. Distinct outer host identities are deferred until the control process has an explicit identity allocator. |
-| **D16** | **No PID namespace in the initial integration.** User, mount, and (unless networking is unrestricted) network namespaces are created at clone time. |
+| **D16** | **No PID namespace in the initial integration.** User, mount, and IPC namespaces are required at clone time, plus a network namespace unless networking is unrestricted. |
 
 ### 3.2 Additional design rationale
 
@@ -543,7 +543,8 @@ alternatives most likely to be reconsidered.
 | **`PR_SET_NO_NEW_PRIVS`** | Prerequisite for unprivileged seccomp and Landlock. | 3.5+ | Set in **`apply`**, right before the filters it enables. Survives `execve` and cannot be cleared. |
 | **seccomp-bpf** | **Dangerous syscall denial** (R-S8), **opt-in per worker class** (D13, R-S13). | Universal | Current profiles use a default-allow denylist to avoid maintaining each worker's complete link-set-dependent syscall inventory. The authoritative platform policy catalog classifies mandatory baseline denials and workload-dependent optional denials; profiles may add further role-specific denials. `RET_KILL_PROCESS` in production and `EPERM` in debug builds. Filters stack, which makes `tighten` monotonic. Blind to io_uring SQE opcodes — see below. |
 | **Landlock** | **Supplementary FS restriction** (D11), applied opportunistically with ABI-aware degradation (D16). | 5.13+ | Explicitly *not* the primary FS mechanism. On the OpenVMM-host baseline it is ABI 1 only: no `FS_REFER`, no `FS_TRUNCATE`, so it cannot fully restrict cross-directory rename or `O_TRUNC`. Applied *before* seccomp (C7) so the final filter can deny the Landlock syscalls. |
-| **IPC / UTS / cgroup NS** | Cheap defense-in-depth name hiding. Default-on wherever mount NS is on. | Universal | Not boundaries on their own. |
+| **IPC NS (`CLONE_NEWIPC`)** | Isolates SysV shared memory, semaphores, and message queues from the control process and other workers. | 2.6.19+ | Required at clone time, including for unrestricted-network profiles. Failure aborts launch; there is no weaker retry. |
+| **UTS / cgroup NS** | Not currently enabled. | — | Worker hostname and cgroup views are not virtualized. |
 | **PID NS** | **Omitted** (C2). | — | `unshare(CLONE_NEWPID)` moves only future children; `execve` does not move the caller. R-S6 is met by other means — see the supporting controls below. |
 
 **Supporting controls — all mandatory unless noted:**
@@ -579,7 +580,7 @@ callback; `apply` = worker startup, single-threaded and freshly execve'd;
 | Create source FDs with `O_CLOEXEC` or an equivalent atomic flag | normal operation | R | At FD creation; defense in depth against every spawn path |
 | Compute the fixed child-FD allowlist | `prepare` | R | Before spawn |
 | `setrlimit` bundle | `apply` | R | Early; before the capability drop |
-| `clone(CLONE_NEWUSER\|CLONE_NEWNS[\|CLONE_NEWNET])` | `clone` | R | Namespace set is fixed by the linked profile; no weaker retry |
+| `clone(CLONE_NEWUSER\|CLONE_NEWNS\|CLONE_NEWIPC[\|CLONE_NEWNET])` | `clone` | R | Namespace set is fixed by the linked profile; no weaker retry |
 | write `/proc/self/setgroups` = `deny` | `clone` | R | libc-only callback, before `gid_map` |
 | write `/proc/self/uid_map`, `gid_map` | `clone` | R | Preformatted `0 <effective-id> 1` mappings, before `execve` |
 | `mount(NULL, "/", NULL, MS_REC\|MS_PRIVATE, NULL)` | `apply` | R | Before any bind mount |
@@ -603,11 +604,12 @@ Three ordering constraints are load-bearing and non-obvious. Getting
 any of them wrong produces a sandbox that silently does less than it
 appears to.
 
-1. **`CLONE_NEWUSER` must be first and alone.** It is what grants
-   `CAP_SYS_ADMIN` inside the new namespace, and every subsequent
-   `unshare` requires that. The uid/gid map writes must happen in the
-   window after entering the new user namespace but before any map has
-   been written — the kernel permits exactly one write.
+1. **The kernel creates the user namespace first.** When `CLONE_NEWUSER`
+   is combined with other namespace flags in one `clone` call, the kernel
+   creates the user namespace before the mount, IPC, and optional network
+   namespaces. This supplies the capabilities needed to create those
+   namespaces without host privileges. PAL then writes the fixed uid/gid
+   maps before `execve`; the kernel permits only one write to each map.
 
 2. **Capability drops come after mounts, and `DUMPABLE`
    is cleared in the fresh worker image.** Mount setup may need `CAP_SYS_ADMIN` in
@@ -735,6 +737,7 @@ Three supported surfaces (R-P5):
 | **Who** | OpenHCL VTL2; OpenVMM-host on a dedicated machine | OpenVMM-host in a container | OpenVMM-host in a hardened cluster |
 | `clone(CLONE_NEWUSER)` | ✅ | Deployment profile must permit it | Deployment profile must permit it |
 | `clone(CLONE_NEWNS)` | ✅ | ✅ with the new user namespace | ✅ with the new user namespace |
+| `clone(CLONE_NEWIPC)` | ✅ | Deployment profile must permit it | Deployment profile must permit it |
 | `mount`, `pivot_root` | ✅ | ✅ inside the user NS | ✅ inside the user NS |
 | `clone(CLONE_NEWNET)` | ✅ | ✅ with the new user namespace | ✅ with the new user namespace |
 | Capability drop | ✅ | ✅ | ✅ (already forced to drop) |
@@ -749,12 +752,12 @@ user-namespace creation without a matching profile, and RHEL ≤ 7 and
 older distros disable it via `user.max_user_namespaces=0` or
 `kernel.unprivileged_userns_clone=0`. On those systems, S2 and S3
 cannot create the user namespace, and therefore cannot create the
-mount or network namespace either.
+mount, IPC, or network namespace either.
 
 **Failure behavior.** Per D14 and C11, namespace setup is required. On
 such a system the worker does not launch, and the control process
 reports the failed sandbox primitive. There is no automatic retry
-without mount or network isolation. The operator must enable the
+without the required namespace isolation. The operator must enable the
 required user-namespace policy, for example with an AppArmor profile
 addition or `sysctl kernel.unprivileged_userns_clone=1`, or explicitly
 select a future weaker profile if one is designed and reviewed.
@@ -1074,7 +1077,7 @@ is `apply`; on Windows launch-only work is `prepare` and the rest is
 
 | Policy dimension | Linux backend | Linux stage | Windows LPAC backend | Win stage |
 |---|---|---|---|---|
-| `NamespaceIsolation` | `clone(CLONE_NEWUSER\|CLONE_NEWNS[\|CLONE_NEWNET])`, then self-map UID/GID 0. **No `CLONE_NEWPID`** (C2) | **`clone`** | Inherent to AppContainer | `prepare` (inherent) |
+| `NamespaceIsolation` | `clone(CLONE_NEWUSER\|CLONE_NEWNS\|CLONE_NEWIPC[\|CLONE_NEWNET])`, then self-map UID/GID 0. **No `CLONE_NEWPID`** (C2) | **`clone`** | Inherent to AppContainer | `prepare` (inherent) |
 | `Filesystem::Rootfs(binds)` | `MS_REC\|MS_PRIVATE` → bind mounts → `MS_REMOUNT` flag fixups → `pivot_root` → `umount2(MNT_DETACH)` | **`apply`** | LPAC opt-out makes the FS default-deny; per-container FS area | `prepare` (inherent) |
 | `Filesystem::LandlockSupplement` | ABI probe → ruleset → `landlock_restrict_self`. **Before seccomp** (C7) | **`apply`** | N/A | — |
 | `NetworkAccess::None` | Empty netns + optional seccomp `EAFNOSUPPORT` on `socket()` | `clone` + **`apply`** | **Omit** `internetClient`, `internetClientServer`, `privateNetworkClientServer` capability SIDs | **`prepare`** |
