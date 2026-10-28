@@ -73,6 +73,12 @@ execution and executable mappings for shared libraries, and `.read_write(...)`
 allows reads and writes but not execution. On Linux, `.read(...)` mounts are
 read-only and `noexec`; they do not remove directory search permission bits.
 
+On Linux, overlapping filesystem grants combine independently of declaration
+order. Ancestors are mounted before descendants, and duplicate or descendant
+grants retain permissions already granted for that path. Profiles requiring
+both write and execute access to the same path or subtree are rejected rather
+than creating writable executable mounts.
+
 `Syscalls::deny` installs a curated **default-allow** seccomp filter: it always
 blocks the built-in dangerous-syscall baseline (namespace-escape and kernel-CVE
 vectors such as `mount`, `unshare`, `pivot_root`, and `bpf`, documented in

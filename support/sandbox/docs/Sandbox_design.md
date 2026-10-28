@@ -447,6 +447,11 @@ crate boundary.
 Profiles are linked into the binary. `profiles::SandboxRole` selects the
 OpenVMM worker policy from its dedicated module and returns a finished `Profile`.
 
+Linux combines overlapping filesystem grants before mounting ancestors ahead
+of descendants. Duplicate and descendant grants retain existing permissions,
+independent of builder-call order. Overlapping write and execute grants fail
+startup rather than introduce writable executable mounts.
+
 > **Current limitation:** Linux `tighten` currently supports stacked seccomp
 > denials only. `revoke_path` is reserved in the API but returns
 > `RequiredPrimitiveUnavailable`; implementing an additional Landlock layer
