@@ -5558,6 +5558,66 @@ async fn in_order_rejects_reuse_until_published(driver: DefaultDriver) {
     }
 }
 
+#[async_test]
+async fn in_order_packed_reuse_after_publication_and_wrap(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    for buffered in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+
+        for wrap in [true, false, true] {
+            let mut work = Vec::new();
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                write_packed_descriptor(
+                    &mem,
+                    index,
+                    BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                    BOUND_TEST_QUEUE_SIZE - 1 - index,
+                    DescriptorFlags::new()
+                        .with_write(true)
+                        .with_available(wrap)
+                        .with_used(!wrap),
+                );
+                work.push(in_order.try_next(&mut queue).unwrap().unwrap());
+            }
+            assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+            assert_eq!(queue.queue_state().avail_index, u16::from(!wrap) << 15);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                let index = work.descriptor_index();
+                in_order.complete(&mut queue, work.into_completion(), u32::from(index) + 1);
+                if buffered && index != 0 {
+                    assert_eq!(queue.queue_state().used_index, u16::from(wrap) << 15);
+                    assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+                }
+            }
+            assert_eq!(in_order.outstanding(), 0);
+            assert_eq!(queue.queue_state().used_index, u16::from(!wrap) << 15);
+
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                let descriptor = mem
+                    .read_plain::<PackedDescriptor>(
+                        BOUND_TEST_DESC_ADDR
+                            + u64::from(index) * size_of::<PackedDescriptor>() as u64,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    descriptor.buffer_id.get(),
+                    BOUND_TEST_QUEUE_SIZE - 1 - index
+                );
+                assert_eq!(descriptor.length.get(), u32::from(index) + 1);
+                assert_eq!(descriptor.flags().available(), wrap);
+                assert_eq!(descriptor.flags().used(), wrap);
+            }
+            assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        }
+    }
+}
+
 /// Completing the same descriptor twice while it is still outstanding is an
 /// internal invariant violation (`try_next` rejects guest-induced duplicates),
 /// so the in-order helper must fail fast rather than silently
