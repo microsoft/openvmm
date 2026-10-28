@@ -461,6 +461,34 @@ mod tests {
         assert_eq!(b.as_slice(), b"abc");
     }
 
+    /// A read that finds the pipe empty must be woken by the data that arrives later. On
+    /// older Windows 10 the pipe event registration used to be skipped silently for an
+    /// overlapped server pipe, so such a read never completed.
+    #[async_test]
+    async fn read_wakes_when_data_arrives_after_an_empty_read(driver: DefaultDriver) {
+        let mut path = [0; 16];
+        getrandom::fill(&mut path).unwrap();
+        let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
+        let server = NamedPipeServer::create(&path).unwrap();
+        let mut accept = server.accept(&driver).unwrap();
+        assert!(futures::poll!(&mut accept).is_pending());
+        let c = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let s = accept.await.unwrap();
+        let mut s = PolledPipe::new(&driver, s).unwrap();
+        let mut c = PolledPipe::new(&driver, c).unwrap();
+
+        let mut buf = [0u8; 3];
+        let mut read = Box::pin(s.read(&mut buf));
+        assert!(futures::poll!(&mut read).is_pending());
+        c.write_all(b"abc").await.unwrap();
+        assert_eq!(read.await.unwrap(), 3);
+        assert_eq!(&buf, b"abc");
+    }
+
     #[async_test]
     async fn half_open(driver: DefaultDriver) {
         let (p1, p2) = pal::windows::pipe::bidirectional_pair(false).unwrap();
