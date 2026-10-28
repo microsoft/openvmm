@@ -275,6 +275,9 @@ impl<'a> Builder<'a> {
     /// Stops the child before installing a tracing seccomp filter and
     /// executing the new image so a ptrace supervisor can attach.
     ///
+    /// The filter is compiled in the parent when spawning. Compilation failure
+    /// returns an error without creating a child.
+    ///
     /// This disables `vfork` because a stopped `vfork` child would indefinitely
     /// block the spawning thread.
     #[cfg(target_os = "linux")]
