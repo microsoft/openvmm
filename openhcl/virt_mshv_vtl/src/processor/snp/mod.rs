@@ -1674,6 +1674,9 @@ impl UhProcessor<'_, SnpBacked> {
             .run()
             .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
+        // A successful run can return VMSA state without a SynIC message.
+        has_intercept &= self.runner.exit_message().header.typ != HvMessageType::HvMessageTypeNone;
+
         let entered_from_vtl = next_vtl;
 
         self.shared
