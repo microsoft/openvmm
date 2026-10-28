@@ -7693,6 +7693,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sandbox"
+version = "0.0.0"
+dependencies = [
+ "caps",
+ "fs-err",
+ "landlock",
+ "libc",
+ "seccompiler",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
 name = "save_restore_derive"
 version = "0.0.0"
 dependencies = [
