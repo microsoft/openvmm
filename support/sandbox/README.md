@@ -82,9 +82,6 @@ extra names you list, and allows everything else. A worker's full set of
 sandboxed worker never legitimately needs rather than trying to allowlist what
 it does.
 
-The standalone launcher loads its additional syscall denials from the
-platform configuration returned by `sandbox::platform_syscall_denylist()`.
-
 Every builder call widens the default-deny profile only as requested:
 filesystem and network methods grant exactly what is listed, and `syscalls`
 installs the selected deny policy. Use `Network::Unrestricted` only for workers

@@ -7508,15 +7508,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox_test_launcher"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "nix 0.30.1",
- "sandbox",
-]
-
-[[package]]
 name = "save_restore_derive"
 version = "0.0.0"
 dependencies = [

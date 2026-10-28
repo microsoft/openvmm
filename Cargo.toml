@@ -55,7 +55,6 @@ members = [
   "petri/incubator",
   "petri/make_imc_hive",
   "petri/petri-tool",
-  "support/sandbox_test_launcher",
   "support/sandbox_profiler",
   "vm/devices/get/test_igvm_agent_rpc_server",
   "vm/devices/storage/openvmm-img",
