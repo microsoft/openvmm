@@ -291,7 +291,11 @@ impl File {
 impl Fid for File {
     fn stat_fs(&self) -> lx::Result<lx::StatFs> {
         let state = self.state.read();
-        state.root.stat_fs(&state.path)
+        if let Some(file) = &state.file {
+            file.stat_fs()
+        } else {
+            state.root.stat_fs(&state.path)
+        }
     }
 
     fn fsync(&self, data_only: bool) -> lx::Result<()> {
@@ -417,6 +421,28 @@ impl Fid for File {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn stat_fs_after_unlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"retained").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (root, _) = File::new(Arc::clone(&volume), 0).unwrap();
+        let fid = root.fid_clone();
+        fid.walk("file".as_ref()).unwrap();
+        let before = fid.stat_fs().unwrap();
+        fid.open(lx::O_RDONLY as u32).unwrap();
+        root.unlink_at("file".as_ref(), 0).unwrap();
+        assert_eq!(volume.lstat("file").unwrap_err(), lx::Error::ENOENT);
+
+        let after = fid.stat_fs().unwrap();
+        assert_eq!(after.file_system_id, before.file_system_id);
+        assert_eq!(after.fs_type, before.fs_type);
+        assert_eq!(after.block_size, before.block_size);
+        let mut buffer = [0; 8];
+        assert_eq!(fid.read(0, &mut buffer).unwrap(), 8);
+        assert_eq!(&buffer, b"retained");
+    }
 
     #[test]
     fn non_directory_fids_reject_children() {

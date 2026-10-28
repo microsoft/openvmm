@@ -139,10 +139,17 @@ pub unsafe fn set_errno(error: i32) {
     }
 }
 
-pub fn libc_stat_fs_to_lx_stat_fs(stat_fs: libc::statfs) -> lx::StatFs {
+pub fn stat_fs(file: &std::fs::File) -> lx::Result<lx::StatFs> {
+    // SAFETY: Calling C API as documented, with no special requirements.
+    let stat_fs = unsafe {
+        let mut stat_fs = mem::zeroed();
+        check_lx_errno(libc::fstatfs(file.as_raw_fd(), &mut stat_fs))?;
+        stat_fs
+    };
+
     // SAFETY: lx::StatFs is identical to libc's version, and padding bytes are not exposed, so just transmute it.
     // N.B. This call won't compile if the two aren't the same size.
-    unsafe { mem::transmute(stat_fs) }
+    Ok(unsafe { mem::transmute::<libc::statfs, lx::StatFs>(stat_fs) })
 }
 
 #[repr(C)]

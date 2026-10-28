@@ -555,6 +555,11 @@ pub struct LxFile {
 }
 
 impl LxFile {
+    /// Retrieves attributes of the file system containing this open file.
+    pub fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        self.inner.stat_fs()
+    }
+
     /// Retrieves the attributes of the file.
     pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         self.inner.fstat()

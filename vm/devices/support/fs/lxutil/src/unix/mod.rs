@@ -296,15 +296,7 @@ impl LxVolume {
             Some(util::openat(&self.root, path, libc::O_PATH, None)?)
         };
         let file = file.as_ref().unwrap_or(&self.root);
-
-        // SAFETY: Calling C API as documented, with no special requirements.
-        let stat_fs = unsafe {
-            let mut stat_fs = std::mem::zeroed();
-            util::check_lx_errno(libc::fstatfs(file.as_raw_fd(), &mut stat_fs))?;
-            stat_fs
-        };
-
-        Ok(util::libc_stat_fs_to_lx_stat_fs(stat_fs))
+        util::stat_fs(file)
     }
 
     pub fn set_xattr(
@@ -405,6 +397,10 @@ pub struct LxFile {
 }
 
 impl LxFile {
+    pub fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        util::stat_fs(&self.fd)
+    }
+
     pub fn fstat(&self) -> lx::Result<StatEx> {
         util::stat_at(&self.fd, Path::new(""))
     }

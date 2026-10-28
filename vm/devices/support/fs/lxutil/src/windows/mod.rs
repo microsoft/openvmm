@@ -1233,6 +1233,10 @@ pub struct LxFile {
 }
 
 impl LxFile {
+    pub fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        fs::get_lx_file_system_attributes(&self.handle, 0)
+    }
+
     pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         let mut info = self.state.get_attributes_by_handle(&self.handle)?;
         *self.is_app_exec_alias.lock() = info.is_app_execution_alias;
