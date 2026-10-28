@@ -170,6 +170,8 @@ fn partition_create_args(processor_features: [u64; 2]) -> mshv_bindings::mshv_cr
         pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
         pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
         // The ioctl takes disabled features, while the host reports enabled ones.
+        // TODO: Limit enabled features to those with known save/restore support
+        // so new host features do not implicitly affect live migration.
         pt_cpu_fbanks: processor_features.map(|features| !features),
         ..Default::default()
     }
