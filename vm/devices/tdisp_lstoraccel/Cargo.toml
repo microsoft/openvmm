@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tdisp_lstoraccel"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+nvme_spec.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+tdisp.workspace = true
+
+[lints]
+workspace = true

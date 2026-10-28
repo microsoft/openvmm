@@ -151,6 +151,23 @@ qemu-img convert -f vpc -O vhdx dynamic.vhd converted.vhdx
 Fixed VHD1 images require cached I/O on every host. VHDX images also require
 cached I/O on Linux.
 
+OpenVMM currently supports only the read-only `monolithicFlat` and
+`twoGbMaxExtentFlat`
+[VMDK disk types](../../reference/backends/vmdk.md). Sparse and parent-backed
+VMDKs, writes, and direct I/O are not supported. Multi-process mesh messages
+can carry at most 64 file handles, so VMDKs with more than 64 distinct
+regular-file `FLAT` sources require `--single-process`. See the VMDK support
+page for additional transport considerations.
+
+When attaching a VMDK as a file disk, pass the `ro` flag because file disks are
+writable by default:
+
+```bash
+cargo run -- --uefi \
+  --vmbus-scsi id=scsi0 \
+  --disk file:path/to/disk.vmdk,ro,on=scsi0
+```
+
 Also, note the use of `memdiff`, which creates a memory-backed "differencing
 disk" shim between the VMM and the backing disk image, which ensures that any
 writes the VM makes to the VHD are not persisted between runs. This is very

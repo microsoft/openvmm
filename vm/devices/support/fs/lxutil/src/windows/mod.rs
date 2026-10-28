@@ -96,9 +96,11 @@ impl LxVolume {
             root_path,
             util::MINIMUM_PERMISSIONS,
             FileSystem::FILE_OPEN,
-            W32Fs::FILE_ATTRIBUTE_DIRECTORY,
-            FileSystem::FILE_DIRECTORY_FILE,
-            None,
+            util::OpenOptions {
+                file_attributes: W32Fs::FILE_ATTRIBUTE_DIRECTORY,
+                create_options: FileSystem::FILE_DIRECTORY_FILE,
+                ..Default::default()
+            },
         )?;
 
         // Determine the capabilities of the file system.
@@ -177,16 +179,23 @@ impl LxVolume {
                     return Err(lx::Error::EACCES);
                 }
             };
-            if information.FileAttributes
+            self.check_sandbox_attributes(information.FileAttributes)?;
+        }
+
+        Ok(())
+    }
+
+    fn check_sandbox_attributes(&self, attributes: u32) -> lx::Result<()> {
+        if self.state.options.sandbox
+            && attributes
                 & (W32Fs::FILE_ATTRIBUTE_HIDDEN
                     | W32Fs::FILE_ATTRIBUTE_SYSTEM
                     | W32Fs::FILE_ATTRIBUTE_OFFLINE
                     | W32Fs::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
                     .0
                 != 0
-            {
-                return Err(lx::Error::EACCES);
-            }
+        {
+            return Err(lx::Error::EACCES);
         }
 
         Ok(())
@@ -404,33 +413,51 @@ impl LxVolume {
             W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
             Default::default(),
         )?;
+        let parent = self.open_parent(new_path)?;
+        let (target_parent, target_path) = match &parent {
+            Some((parent, name)) => (parent, *name),
+            None => (&self.root, new_path),
+        };
+        self.rename_file(path, new_path, &handle, target_parent, target_path)
+    }
 
-        // Emulate Linux rename semantics that NTFS enforces natively but FAT/exFAT does not.
-        if !self
+    fn rename_file(
+        &self,
+        path: &Path,
+        new_path: &Path,
+        handle: &OwnedHandle,
+        target_parent: &OwnedHandle,
+        target_path: &Path,
+    ) -> lx::Result<()> {
+        let supports_posix_rename = self
             .state
             .fs_context
             .compatibility_flags
-            .supports_posix_unlink_rename()
-        {
-            let is_dir = |h: &OwnedHandle| -> lx::Result<bool> {
-                Ok(
-                    util::query_information_file::<FileSystem::FILE_BASIC_INFORMATION>(h)?
-                        .FileAttributes
-                        & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0
-                        != 0,
-                )
-            };
-            let source_is_dir = is_dir(&handle)?;
-
-            // Reject renaming a directory into its own descendant (EINVAL).
-            if source_is_dir && new_path != path && new_path.starts_with(path) {
-                return Err(lx::Error::EINVAL);
-            }
-
-            // Reject cross-type replacement: file-over-directory (ENOTDIR) or directory-over-file (EISDIR).
-            match self.open_file(new_path, W32Fs::FILE_READ_ATTRIBUTES, Default::default()) {
-                Ok(target_handle) => {
-                    let target_is_dir = is_dir(&target_handle)?;
+            .supports_posix_unlink_rename();
+        let source_is_dir = if supports_posix_rename {
+            None
+        } else {
+            let info: FileSystem::FILE_BASIC_INFORMATION = util::query_information_file(handle)?;
+            Some(info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0)
+        };
+        let open_target = |desired_access| -> lx::Result<OwnedHandle> {
+            let (target, _) = util::open_relative_file(
+                Some(target_parent),
+                target_path,
+                desired_access,
+                FileSystem::FILE_OPEN,
+                util::OpenOptions {
+                    create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                    ..Default::default()
+                },
+            )?;
+            if self.state.options.sandbox || source_is_dir.is_some() {
+                let info: FileSystem::FILE_BASIC_INFORMATION =
+                    util::query_information_file(&target)?;
+                self.check_sandbox_attributes(info.FileAttributes)?;
+                if let Some(source_is_dir) = source_is_dir {
+                    let target_is_dir =
+                        info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0;
                     if source_is_dir && !target_is_dir {
                         return Err(lx::Error::ENOTDIR);
                     }
@@ -438,6 +465,20 @@ impl LxVolume {
                         return Err(lx::Error::EISDIR);
                     }
                 }
+            }
+            Ok(target)
+        };
+
+        // Emulate Linux rename semantics that NTFS enforces natively but FAT/exFAT does not.
+        if let Some(source_is_dir) = source_is_dir {
+            // Reject renaming a directory into its own descendant (EINVAL).
+            if source_is_dir && new_path != path && new_path.starts_with(path) {
+                return Err(lx::Error::EINVAL);
+            }
+
+            // Reject cross-type replacement: file-over-directory (ENOTDIR) or directory-over-file (EISDIR).
+            match open_target(W32Fs::FILE_READ_ATTRIBUTES) {
+                Ok(_) => {}
                 // A missing target is fine; the rename creates it.
                 Err(err) if err.value() == lx::ENOENT => {}
                 Err(err) => return Err(err),
@@ -445,7 +486,13 @@ impl LxVolume {
         }
 
         let flags = fs::RenameFlags::default();
-        let error = match fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags) {
+        let error = match fs::rename(
+            handle,
+            target_parent,
+            target_path,
+            &self.state.fs_context,
+            flags,
+        ) {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
@@ -458,17 +505,9 @@ impl LxVolume {
         if (error.value() == lx::EPERM
             || error.value() == lx::EACCES
             || error.value() == lx::EEXIST)
-            && !self
-                .state
-                .fs_context
-                .compatibility_flags
-                .supports_posix_unlink_rename()
+            && !supports_posix_rename
         {
-            match self.open_file(
-                new_path,
-                W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
-                Default::default(),
-            ) {
+            match open_target(W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE) {
                 Ok(target_handle) => self.delete_file(&target_handle)?,
                 Err(err) => {
                     // ENOENT means the rename can proceed.
@@ -479,7 +518,13 @@ impl LxVolume {
             }
 
             // Retry the rename.
-            fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags)?;
+            fs::rename(
+                handle,
+                target_parent,
+                target_path,
+                &self.state.fs_context,
+                flags,
+            )?;
         } else {
             return Err(error);
         }
@@ -834,7 +879,12 @@ impl LxVolume {
             Default::default(),
         )?;
 
-        util::create_link(&handle, &self.root, new_path)?;
+        let parent = self.open_parent(new_path)?;
+        let (target_parent, target_path) = match &parent {
+            Some((parent, name)) => (parent, *name),
+            None => (&self.root, new_path),
+        };
+        util::create_link(&handle, target_parent, target_path)?;
         Ok(handle)
     }
 
@@ -987,10 +1037,40 @@ impl LxVolume {
             path,
             desired_access,
             disposition,
-            file_attributes,
-            create_options,
-            ea,
+            util::OpenOptions {
+                file_attributes,
+                create_options,
+                ea_buffer: ea,
+            },
         )
+    }
+
+    /// Resolves namespace-operation destinations without following reparse points.
+    fn open_parent<'a>(&self, path: &'a Path) -> lx::Result<Option<(OwnedHandle, &'a Path)>> {
+        crate::path::validate_relative_path(path)?;
+        let parent_path = path.parent().ok_or(lx::Error::EINVAL)?;
+        let name = Path::new(path.file_name().ok_or(lx::Error::EINVAL)?);
+        if parent_path.as_os_str().is_empty() {
+            return Ok(None);
+        }
+        let (parent, _) = util::open_relative_file(
+            Some(&self.root),
+            parent_path,
+            W32Fs::FILE_ACCESS_RIGHTS(0),
+            FileSystem::FILE_OPEN,
+            util::OpenOptions {
+                create_options: FileSystem::FILE_DIRECTORY_FILE,
+                ..Default::default()
+            },
+        )
+        .map_err(|err| {
+            if err == lx::Error::ELOOP {
+                lx::Error::ENOTDIR
+            } else {
+                err
+            }
+        })?;
+        Ok(Some((parent, name)))
     }
 
     /// Helper to open existing files using a relative path from the root of this volume.
@@ -1423,4 +1503,580 @@ impl LxFile {
 pub enum SymlinkType {
     Lx,
     Nt(bool), // True for directory links; false for file links.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::LxCreateOptions;
+    use crate::LxVolumeOptions;
+    use test_with_tracing::test;
+
+    fn deny_read_ea(handle: &impl AsRawHandle) {
+        deny_access(handle, W32Fs::FILE_READ_EA);
+    }
+
+    fn deny_access(handle: &impl AsRawHandle, access: W32Fs::FILE_ACCESS_RIGHTS) {
+        let descriptor: pal::windows::security::LocalSecurityDescriptor =
+            format!("D:P(D;;0x{:x};;;WD)(A;;FA;;;WD)", access.0)
+                .parse()
+                .unwrap();
+        // SAFETY: The handle and security descriptor remain valid throughout the call.
+        unsafe {
+            windows::Win32::Security::SetKernelObjectSecurity(
+                Foundation::HANDLE(handle.as_raw_handle()),
+                windows::Win32::Security::DACL_SECURITY_INFORMATION,
+                windows::Win32::Security::PSECURITY_DESCRIPTOR(descriptor.as_ptr()),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn namespace_destinations_without_parent_read_attributes() {
+        for force_legacy_rename in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("dir")).unwrap();
+            std::fs::write(root.path().join("source"), b"data").unwrap();
+            let mut options = LxVolumeOptions::new();
+            options.sandbox(false);
+            let mut volume = LxVolume::new(root.path(), &options).unwrap();
+            if force_legacy_rename {
+                Arc::get_mut(&mut volume.state)
+                    .unwrap()
+                    .fs_context
+                    .compatibility_flags
+                    .set_supports_posix_unlink_rename(false);
+            }
+            let open_directory = |path: &Path| {
+                std::fs::OpenOptions::new()
+                    .access_mode(W32Fs::WRITE_DAC.0)
+                    .custom_flags(W32Fs::FILE_FLAG_BACKUP_SEMANTICS.0)
+                    .open(path)
+                    .unwrap()
+            };
+            let root_handle = open_directory(root.path());
+            let parent_handle = open_directory(&root.path().join("dir"));
+            deny_access(&parent_handle, W32Fs::FILE_READ_ATTRIBUTES);
+            // Listing the root can otherwise permit reading its child's attributes.
+            deny_access(&root_handle, W32Fs::FILE_LIST_DIRECTORY);
+
+            let attribute_error = volume
+                .open_file(
+                    Path::new("dir"),
+                    W32Fs::FILE_READ_ATTRIBUTES,
+                    FileSystem::FILE_DIRECTORY_FILE,
+                )
+                .err();
+            let link_result = volume.link(Path::new("source"), Path::new(r"dir\linked"));
+            let rename_result = volume.rename(Path::new("source"), Path::new(r"dir\renamed"), 0);
+            deny_access(&parent_handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+            deny_access(&root_handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+
+            assert_eq!(attribute_error, Some(lx::Error::EACCES));
+            link_result.unwrap();
+            rename_result.unwrap();
+            for name in ["linked", "renamed"] {
+                assert_eq!(
+                    std::fs::read(root.path().join("dir").join(name)).unwrap(),
+                    b"data"
+                );
+            }
+            assert!(!root.path().join("source").exists());
+        }
+    }
+
+    #[test]
+    fn metadata_query_does_not_open_a_synchronous_handle() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(W32Fs::WRITE_DAC.0)
+            .open(root.path().join("file"))
+            .unwrap();
+        deny_access(&handle, W32Fs::SYNCHRONIZE);
+        let open_error = volume
+            .open_file(
+                Path::new("file"),
+                W32Fs::FILE_READ_ATTRIBUTES,
+                Default::default(),
+            )
+            .err();
+        let stat = volume.lstat(Path::new("file"));
+        deny_access(&handle, W32Fs::FILE_ACCESS_RIGHTS(0));
+        assert_eq!(open_error, Some(lx::Error::EACCES));
+        assert_eq!(stat.unwrap().file_size, 4);
+    }
+
+    #[test]
+    fn no_follow_stat_without_read_ea() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        let relative_path = Path::new(r"dir\file");
+        let mut options = LxVolumeOptions::new();
+        options.metadata(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        volume
+            .open(
+                relative_path,
+                lx::O_CREAT | lx::O_WRONLY,
+                Some(LxCreateOptions::new(0o640, 123, 456)),
+            )
+            .unwrap()
+            .pwrite(b"data", 0, 0)
+            .unwrap();
+        let path = root.path().join(relative_path);
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(W32Fs::WRITE_DAC.0)
+            .open(&path)
+            .unwrap();
+        deny_read_ea(&handle);
+
+        for metadata in [false, true] {
+            let mut options = LxVolumeOptions::new();
+            options.metadata(metadata);
+            let volume = LxVolume::new(root.path(), &options).unwrap();
+            assert_eq!(
+                volume
+                    .open_file(relative_path, W32Fs::FILE_READ_EA, Default::default())
+                    .err()
+                    .unwrap(),
+                lx::Error::EACCES
+            );
+            let stat = volume.lstat(relative_path).unwrap();
+            assert_eq!(stat.file_size, 4);
+            assert!(lx::s_isreg(stat.mode.into()));
+            if metadata {
+                assert_eq!(stat.mode, (lx::S_IFREG | 0o640) as u16);
+                assert_eq!(stat.uid, 123);
+                assert_eq!(stat.gid, 456);
+            }
+        }
+    }
+
+    #[test]
+    fn no_follow_symlink_stat_without_read_ea() {
+        let root = tempfile::tempdir().unwrap();
+        let mut options = LxVolumeOptions::new();
+        options.metadata(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let path = Path::new("link");
+        let target = "missing";
+        volume
+            .symlink(path, target.as_ref(), LxCreateOptions::new(0o777, 0, 0))
+            .unwrap();
+        let handle = volume
+            .open_file(path, W32Fs::WRITE_DAC, Default::default())
+            .unwrap();
+        deny_read_ea(&handle);
+        assert_eq!(
+            volume
+                .open_file(path, W32Fs::FILE_READ_EA, Default::default())
+                .err()
+                .unwrap(),
+            lx::Error::EACCES
+        );
+
+        let stat = volume.lstat(path).unwrap();
+        assert!(lx::s_islnk(stat.mode.into()));
+        assert_eq!(stat.file_size, target.len() as u64);
+        assert_eq!(volume.read_link(path).unwrap(), target);
+    }
+
+    #[test]
+    fn no_follow_stat_fallbacks() {
+        for (query_by_name, stat_info) in [(true, true), (false, true), (false, false)] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir(root.path().join("dir")).unwrap();
+            std::fs::write(root.path().join(r"dir\file"), b"data").unwrap();
+            let options = LxVolumeOptions::new();
+            let mut volume = LxVolume::new(root.path(), &options).unwrap();
+            let flags = &mut Arc::get_mut(&mut volume.state)
+                .unwrap()
+                .fs_context
+                .compatibility_flags;
+            if !query_by_name {
+                flags.set_supports_query_by_name(false);
+            }
+            if !stat_info {
+                flags.set_supports_stat_info(false);
+                flags.set_supports_stat_lx_info(false);
+            }
+
+            let stat = volume.lstat(Path::new(r"dir\file")).unwrap();
+            assert_eq!(stat.file_size, 4);
+            assert!(lx::s_isreg(stat.mode.into()));
+            assert!(lx::s_isdir(
+                volume.lstat(Path::new("dir")).unwrap().mode.into()
+            ));
+        }
+    }
+
+    #[test]
+    fn no_follow_normal_operations() {
+        let root = tempfile::tempdir().unwrap();
+        let mut options = LxVolumeOptions::new();
+        options.metadata(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let create = || LxCreateOptions::new(0o777, 0, 0);
+        volume.mkdir(Path::new("dir"), create()).unwrap();
+        volume.mkdir(Path::new(r"dir\child"), create()).unwrap();
+        volume
+            .open(
+                Path::new(r"dir\file"),
+                lx::O_CREAT | lx::O_RDWR,
+                Some(create()),
+            )
+            .unwrap()
+            .pwrite(b"data", 0, 0)
+            .unwrap();
+        assert_eq!(volume.lstat(Path::new(r"dir\file")).unwrap().file_size, 4);
+        volume
+            .link(Path::new(r"dir\file"), Path::new(r"dir\child\link"))
+            .unwrap();
+        volume
+            .rename(Path::new(r"dir\child\link"), Path::new("renamed"), 0)
+            .unwrap();
+        assert_eq!(std::fs::read(root.path().join("renamed")).unwrap(), b"data");
+        volume
+            .symlink(Path::new("symlink"), "missing".as_ref(), create())
+            .unwrap();
+        assert!(lx::s_islnk(
+            volume.lstat(Path::new("symlink")).unwrap().mode.into()
+        ));
+        assert_eq!(volume.read_link(Path::new("symlink")).unwrap(), "missing");
+        volume
+            .rename(Path::new("symlink"), Path::new(r"dir\symlink"), 0)
+            .unwrap();
+        volume.unlink(Path::new(r"dir\symlink"), 0).unwrap();
+        volume.unlink(Path::new("renamed"), 0).unwrap();
+
+        for path in [r"..\file", r"dir\..\file", r".\file"] {
+            assert_eq!(
+                volume.lstat(Path::new(path)).unwrap_err(),
+                lx::Error::EINVAL
+            );
+        }
+    }
+
+    #[test]
+    fn rename_fallback_uses_captured_parent() {
+        for sandbox in [false, true] {
+            for replacement_is_dir in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                std::fs::create_dir(root.path().join("dir")).unwrap();
+                std::fs::write(root.path().join("source"), b"source").unwrap();
+                let original_target = root.path().join(r"dir\target");
+                std::fs::write(&original_target, b"original").unwrap();
+                let mut permissions = std::fs::metadata(&original_target).unwrap().permissions();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(&original_target, permissions).unwrap();
+
+                let mut options = LxVolumeOptions::new();
+                options.sandbox(sandbox);
+                let mut volume = LxVolume::new(root.path(), &options).unwrap();
+                Arc::get_mut(&mut volume.state)
+                    .unwrap()
+                    .fs_context
+                    .compatibility_flags
+                    .set_supports_posix_unlink_rename(false);
+                let source = volume
+                    .open_file(
+                        Path::new("source"),
+                        W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
+                        Default::default(),
+                    )
+                    .unwrap();
+                let (parent, name) = volume
+                    .open_parent(Path::new(r"dir\target"))
+                    .unwrap()
+                    .unwrap();
+                let error = fs::rename(
+                    &source,
+                    &parent,
+                    name,
+                    &volume.state.fs_context,
+                    fs::RenameFlags::default(),
+                )
+                .unwrap_err();
+                assert!(matches!(error.value(), lx::EPERM | lx::EACCES | lx::EEXIST));
+
+                std::fs::rename(root.path().join("dir"), root.path().join("original")).unwrap();
+                std::fs::create_dir(root.path().join("dir")).unwrap();
+                let replacement_target = root.path().join(r"dir\target");
+                let replacement_file = if replacement_is_dir {
+                    std::fs::create_dir(&replacement_target).unwrap();
+                    replacement_target.join("child")
+                } else {
+                    replacement_target
+                };
+                std::fs::write(&replacement_file, b"replacement").unwrap();
+
+                volume
+                    .rename_file(
+                        Path::new("source"),
+                        Path::new(r"dir\target"),
+                        &source,
+                        &parent,
+                        name,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    std::fs::read(root.path().join(r"original\target")).unwrap(),
+                    b"source"
+                );
+                assert_eq!(std::fs::read(replacement_file).unwrap(), b"replacement");
+                assert!(!root.path().join("source").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn rename_checks_captured_target_attributes() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        std::fs::write(root.path().join("source"), b"source").unwrap();
+        std::fs::write(root.path().join(r"dir\target"), b"original").unwrap();
+        let mut options = LxVolumeOptions::new();
+        options.sandbox(true);
+        let mut volume = LxVolume::new(root.path(), &options).unwrap();
+        Arc::get_mut(&mut volume.state)
+            .unwrap()
+            .fs_context
+            .compatibility_flags
+            .set_supports_posix_unlink_rename(false);
+        let source = volume
+            .open_file(
+                Path::new("source"),
+                W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
+                Default::default(),
+            )
+            .unwrap();
+        let (parent, name) = volume
+            .open_parent(Path::new(r"dir\target"))
+            .unwrap()
+            .unwrap();
+        std::fs::rename(root.path().join("dir"), root.path().join("original")).unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        std::fs::write(root.path().join(r"dir\target"), b"replacement").unwrap();
+        let (target, _) = util::open_relative_file(
+            Some(&parent),
+            name,
+            W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_WRITE_ATTRIBUTES,
+            FileSystem::FILE_OPEN,
+            util::OpenOptions {
+                create_options: FileSystem::FILE_OPEN_REPARSE_POINT,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut info: FileSystem::FILE_BASIC_INFORMATION =
+            util::query_information_file(&target).unwrap();
+        info.FileAttributes |= W32Fs::FILE_ATTRIBUTE_HIDDEN.0;
+        util::set_information_file(&target, &info).unwrap();
+
+        assert_eq!(
+            volume
+                .rename_file(
+                    Path::new("source"),
+                    Path::new(r"dir\target"),
+                    &source,
+                    &parent,
+                    name,
+                )
+                .unwrap_err(),
+            lx::Error::EACCES
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"source"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(r"original\target")).unwrap(),
+            b"original"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(r"dir\target")).unwrap(),
+            b"replacement"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires permission to create native Windows symlinks"]
+    fn no_follow_native_directory_link() {
+        check_no_follow_directory_link(|target, link| {
+            std::os::windows::fs::symlink_dir(target, link).unwrap();
+        });
+    }
+
+    #[test]
+    fn no_follow_directory_junction() {
+        check_no_follow_directory_link(|target, link| {
+            std::fs::create_dir(link).unwrap();
+            let handle = std::fs::OpenOptions::new()
+                .access_mode(Foundation::GENERIC_WRITE.0)
+                .custom_flags(
+                    W32Fs::FILE_FLAG_BACKUP_SEMANTICS.0 | W32Fs::FILE_FLAG_OPEN_REPARSE_POINT.0,
+                )
+                .open(link)
+                .unwrap();
+            let mut substitute = ffi::OsString::from(r"\??\");
+            substitute.push(target);
+            let substitute: Vec<u16> = substitute.encode_wide().collect();
+            let length = u16::try_from(substitute.len() * 2).unwrap();
+            // Mount-point data has four name fields, followed by two terminated names.
+            let mut reparse = Vec::new();
+            reparse.extend_from_slice(&W32Ss::IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+            for value in [8 + length + 4, 0, 0, length, length + 2, 0] {
+                reparse.extend_from_slice(&value.to_le_bytes());
+            }
+            for value in substitute.into_iter().chain([0, 0]) {
+                reparse.extend_from_slice(&value.to_le_bytes());
+            }
+            util::set_reparse_point(&handle.into(), &reparse).unwrap();
+        });
+    }
+
+    fn check_no_follow_directory_link(create_link: impl Fn(&Path, &Path)) {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("file"), b"unchanged").unwrap();
+        std::fs::write(root.path().join("source"), b"source").unwrap();
+        create_link(outside.path(), &root.path().join("link"));
+
+        let options = LxVolumeOptions::new();
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let path = Path::new(r"link\file");
+        let create = || LxCreateOptions::new(0o777, 0, 0);
+        assert!(lx::s_islnk(
+            volume.lstat(Path::new("link")).unwrap().mode.into()
+        ));
+        assert_eq!(volume.lstat(path).unwrap_err(), lx::Error::ELOOP);
+        assert_eq!(
+            volume
+                .open(
+                    path,
+                    lx::O_CREAT | lx::O_TRUNC | lx::O_WRONLY | lx::O_NOFOLLOW,
+                    Some(create())
+                )
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(volume.mkdir(path, create()).unwrap_err(), lx::Error::ELOOP);
+        assert_eq!(
+            volume
+                .mknod(path, LxCreateOptions::new(lx::S_IFREG | 0o666, 0, 0), 0)
+                .unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            volume
+                .symlink(path, "source".as_ref(), create())
+                .unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(volume.unlink(path, 0).unwrap_err(), lx::Error::ELOOP);
+        assert_eq!(
+            volume.rename(path, Path::new("target"), 0).unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            volume.rename(Path::new("source"), path, 0).unwrap_err(),
+            lx::Error::ENOTDIR
+        );
+        assert_eq!(
+            volume.link(Path::new("source"), path).unwrap_err(),
+            lx::Error::ENOTDIR
+        );
+        assert_eq!(
+            volume.set_attr(path, SetAttributes::default()).unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(volume.stat_fs(path).unwrap_err(), lx::Error::ELOOP);
+
+        assert_eq!(
+            volume.read_link(Path::new("link")).unwrap_err(),
+            lx::Error::EPERM
+        );
+        volume
+            .rename(Path::new("link"), Path::new("moved"), 0)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_link(root.path().join("moved")).unwrap(),
+            outside.path()
+        );
+        volume.unlink(Path::new("moved"), 0).unwrap();
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"source"
+        );
+
+        volume.mkdir(Path::new("dir"), create()).unwrap();
+        let (parent, name) = volume
+            .open_parent(Path::new(r"dir\target"))
+            .unwrap()
+            .unwrap();
+        std::fs::rename(root.path().join("dir"), root.path().join("original")).unwrap();
+        create_link(outside.path(), &root.path().join("dir"));
+        let source = volume
+            .open_file(
+                Path::new("source"),
+                W32Fs::DELETE | W32Fs::FILE_WRITE_ATTRIBUTES,
+                Default::default(),
+            )
+            .unwrap();
+        fs::rename(
+            &source,
+            &parent,
+            name,
+            &volume.state.fs_context,
+            fs::RenameFlags::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(r"original\target")).unwrap(),
+            b"source"
+        );
+        assert!(!outside.path().join("target").exists());
+        util::create_link(&source, &parent, Path::new("hard_link")).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(r"original\hard_link")).unwrap(),
+            b"source"
+        );
+        assert!(!outside.path().join("hard_link").exists());
+    }
+
+    #[test]
+    #[ignore = "requires native Windows symlink creation privilege"]
+    fn no_follow_preserves_native_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let options = LxVolumeOptions::new();
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let create = || LxCreateOptions::new(0o777, 0, 0);
+        volume.mkdir(Path::new("dir"), create()).unwrap();
+        volume
+            .symlink(Path::new("link"), "dir".as_ref(), create())
+            .unwrap();
+        let handle = volume
+            .open_file(
+                Path::new("link"),
+                W32Fs::FILE_READ_ATTRIBUTES,
+                Default::default(),
+            )
+            .unwrap();
+        let tag: SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION =
+            util::query_information_file(&handle).unwrap();
+        assert_eq!(tag.ReparseTag, W32Ss::IO_REPARSE_TAG_SYMLINK);
+        assert_eq!(volume.read_link(Path::new("link")).unwrap(), "dir");
+        volume
+            .rename(Path::new("link"), Path::new(r"dir\link"), 0)
+            .unwrap();
+        assert_eq!(volume.read_link(Path::new(r"dir\link")).unwrap(), "dir");
+    }
 }

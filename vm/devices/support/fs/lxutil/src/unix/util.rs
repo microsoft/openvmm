@@ -10,6 +10,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
 
+// libc does not yet expose the generic Linux syscall number on AArch64.
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(target_arch = "aarch64")]
+const SYS_FCHMODAT2: libc::c_long = 452;
+// xtask-fmt allow-target-arch sys-crate
+#[cfg(not(target_arch = "aarch64"))]
+const SYS_FCHMODAT2: libc::c_long = libc::SYS_fchmodat2;
+
 // Wrapper around a C DIR* used for Unix file enumeration.
 pub struct DirectoryEnumerator {
     dir: ptr::NonNull<libc::DIR>,
@@ -137,57 +145,145 @@ pub fn libc_stat_fs_to_lx_stat_fs(stat_fs: libc::statfs) -> lx::StatFs {
     unsafe { mem::transmute(stat_fs) }
 }
 
-// Wrapper around openat that allows reopening file descriptors by specifying an empty path.
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+
+// An empty path denotes the already captured volume root.
 pub fn openat(
     dirfd: &std::fs::File,
     path: &Path,
     flags: i32,
     options: Option<crate::LxCreateOptions>,
 ) -> lx::Result<std::fs::File> {
-    if path.as_os_str().is_empty() {
-        return reopen(dirfd, flags);
-    }
-
-    let mode = options.unwrap_or_default().mode;
-    let path = path_to_cstr(path)?;
-
-    // SAFETY: Calling C API as documented, with no special requirements.
-    unsafe {
-        let fd = check_lx_errno(libc::openat(dirfd.as_raw_fd(), path.as_ptr(), flags, mode))?;
-
-        Ok(std::fs::File::from_raw_fd(fd))
-    }
-}
-
-// Reopen an existing file descriptor with new flags.
-pub fn reopen(fd: &std::fs::File, flags: i32) -> lx::Result<std::fs::File> {
-    // If O_NOFOLLOW is not set, open the /proc/self/fd link directly. Otherwise, resolve the
-    // target and open that.
-    let path = if flags & lx::O_NOFOLLOW != 0 {
-        get_fd_path(fd)?
+    crate::path::validate_relative_path(path)?;
+    let path = if path.as_os_str().is_empty() {
+        Path::new(".")
     } else {
-        get_proc_fd_path(fd)
+        path
+    };
+    let path = path_to_cstr(path)?;
+    let creating = flags & libc::O_CREAT != 0 || flags & libc::O_TMPFILE == libc::O_TMPFILE;
+    let how = OpenHow {
+        flags: (flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32 as u64,
+        mode: if creating {
+            u64::from(options.unwrap_or_default().mode & 0o7777)
+        } else {
+            0
+        },
+        // RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH.
+        resolve: 0x04 | 0x08,
     };
 
-    let path = path_to_cstr(&path)?;
-
-    // SAFETY: Calling C API as documented, with no special requirements.
+    // SAFETY: The pathname and open_how buffer remain valid throughout the syscall.
     unsafe {
-        let fd = check_lx_errno(libc::open(path.as_ptr(), flags))?;
+        let fd = check_lx_errno(libc::syscall(
+            libc::SYS_openat2,
+            dirfd.as_raw_fd(),
+            path.as_ptr(),
+            &how,
+            size_of::<OpenHow>(),
+        ))? as libc::c_int;
         Ok(std::fs::File::from_raw_fd(fd))
     }
 }
 
-// Get the path opened by a file descriptor.
-pub fn get_fd_path(fd: &std::fs::File) -> lx::Result<PathBuf> {
-    let fd_path = get_proc_fd_path(fd);
-    let target = std::fs::read_link(fd_path)?;
-    Ok(target)
+pub struct Parent<'a> {
+    root: &'a std::fs::File,
+    directory: Option<std::fs::File>,
+    pub name: &'a Path,
+}
+
+impl<'a> Parent<'a> {
+    pub fn new(root: &'a std::fs::File, path: &'a Path) -> lx::Result<Self> {
+        crate::path::validate_relative_path(path)?;
+        let parent = path.parent().unwrap_or(Path::new(""));
+        let name = path.file_name().map(Path::new).unwrap_or(Path::new(""));
+        let directory = if parent.as_os_str().is_empty() {
+            None
+        } else {
+            Some(openat(
+                root,
+                parent,
+                libc::O_PATH | libc::O_DIRECTORY,
+                None,
+            )?)
+        };
+        Ok(Self {
+            root,
+            directory,
+            name,
+        })
+    }
+
+    pub fn directory(&self) -> &std::fs::File {
+        self.directory.as_ref().unwrap_or(self.root)
+    }
+
+    pub fn proc_path(&self) -> lx::Result<ffi::CString> {
+        let name = if self.name.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            self.name
+        };
+        path_to_cstr(&get_proc_fd_path(self.directory()).join(name))
+    }
 }
 
 // Get the path to a file descriptor in /proc/self/fd.
 fn get_proc_fd_path(fd: &std::fs::File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+}
+
+pub fn stat_at(fd: &std::fs::File, path: &Path) -> lx::Result<lx::StatEx> {
+    let path = path_to_cstr(path)?;
+    // SAFETY: The output buffer has the Linux statx layout and remains valid throughout the call.
+    unsafe {
+        let mut stat: lx::StatEx = mem::zeroed();
+        check_lx_errno(libc::syscall(
+            libc::SYS_statx,
+            fd.as_raw_fd(),
+            path.as_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH,
+            0x000007ff | 0x00000800, // STATX_BASIC_STATS | STATX_BTIME.
+            &mut stat,
+        ))?;
+        Ok(stat)
+    }
+}
+
+fn chmod_at(fd: &std::fs::File, path: &Path, mode: lx::mode_t) -> lx::Result<()> {
+    let cpath = path_to_cstr(path)?;
+    // SAFETY: Calling the no-follow chmod syscall with a valid pathname.
+    let result = unsafe {
+        libc::syscall(
+            SYS_FCHMODAT2,
+            fd.as_raw_fd(),
+            cpath.as_ptr(),
+            mode,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 && lx::Error::last_os_error() == lx::Error::ENOSYS {
+        return chmod_at_fallback(fd, path, mode);
+    }
+    check_lx_errno(result)?;
+    Ok(())
+}
+
+fn chmod_at_fallback(fd: &std::fs::File, path: &Path, mode: lx::mode_t) -> lx::Result<()> {
+    let file = openat(fd, path, libc::O_PATH, None)?;
+    if lx::s_islnk(stat_at(&file, Path::new(""))?.mode.into()) {
+        return Err(lx::Error::ENOTSUP);
+    }
+    // Follow only the trusted procfs link to the pinned, non-symlink object.
+    let path = path_to_cstr(&get_proc_fd_path(&file))?;
+    // SAFETY: The descriptor and pathname remain valid until chmod completes.
+    unsafe { check_lx_errno(libc::chmod(path.as_ptr(), mode))? };
+    Ok(())
 }
 
 /// Apply attributes either to the fd, or to a subpath of the fd.
@@ -219,14 +315,10 @@ pub fn set_attr(fd: &std::fs::File, path: Option<&Path>, attr: &SetAttributes) -
         };
 
         if let Some(mode) = attr.mode {
-            if path.is_none() {
-                check_lx_errno(libc::fchmod(fd.as_raw_fd(), mode))?;
+            if let Some(path) = path {
+                chmod_at(fd, path, mode)?;
             } else {
-                // TODO: This will follow symlinks, but AT_SYMLINK_NOFOLLOW isn't supported.
-                // There isn't a good way around this. Fchmod doesn't work on files opened with O_PATH,
-                // so opening the file would require permissions that are normally not needed for chmod.
-                // Checking whether it's a symlink beforehand is still susceptible to TOCTOU attack.
-                check_lx_errno(libc::fchmodat(fd.as_raw_fd(), cpath.as_ptr(), mode, 0))?;
+                check_lx_errno(libc::fchmod(fd.as_raw_fd(), mode))?;
             }
 
             need_ctime_update = false;
@@ -311,5 +403,35 @@ fn set_time_to_timespec(time: &SetTime) -> libc::timespec {
             tv_sec: 0,
             tv_nsec: libc::UTIME_NOW,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use test_with_tracing::test;
+
+    #[test]
+    fn chmod_fallback_preserves_no_follow_and_needs_no_read_access() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, b"unchanged").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o0)).unwrap();
+        std::os::unix::fs::symlink("file", root.path().join("link")).unwrap();
+        let directory = std::fs::File::open(root.path()).unwrap();
+        chmod_at_fallback(&directory, Path::new("file"), 0o640).unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(
+            chmod_at_fallback(&directory, Path::new("link"), 0o777).unwrap_err(),
+            lx::Error::ENOTSUP
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 }

@@ -65,6 +65,9 @@ members = [
   "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  # TDISP
+  # Temporary: remove once a workspace member depends on this crate.
+  "vm/devices/tdisp_lstoraccel",
 ]
 exclude = [
   "xsync",
@@ -76,7 +79,7 @@ rust-version = "1.95"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
-version = "0.3.0"
+version = "0.4.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -119,6 +122,7 @@ vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
 initrd_cpio = { path = "petri/initrd_cpio" }
+mshv_host_boot = { path = "petri/mshv_host_boot" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 
@@ -347,6 +351,7 @@ disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
 disk_hook = { path = "vm/devices/storage/disk_hook" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
+disk_vmdk = { path = "vm/devices/storage/disk_vmdk" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }

@@ -29,6 +29,7 @@ use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 // --- Constants ---
@@ -532,4 +533,158 @@ async fn init_negotiates_direct_io_allow_mmap(driver: DefaultDriver) {
         0,
         "VirtioFs should request FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 when kernel advertises it"
     );
+}
+
+#[test]
+fn child_operations_require_directory_parents() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"data").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (file, _) = root.lookup_child("file".as_ref()).unwrap();
+        let (symlink, _) = root
+            .symlink("link".as_ref(), "file".as_ref(), 0, 0)
+            .unwrap();
+        for parent in [&file, &symlink] {
+            let name = "child".as_ref();
+            assert_eq!(parent.lookup_child(name).err().unwrap(), lx::Error::ENOTDIR);
+            assert_eq!(
+                parent
+                    .create(name, lx::O_WRONLY as u32, 0o666, 0, 0)
+                    .err()
+                    .unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent.mkdir(name, 0o777, 0, 0).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent
+                    .mknod(name, lx::S_IFREG | 0o666, 0, 0, 0)
+                    .err()
+                    .unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                parent.symlink(name, "file".as_ref(), 0, 0).err().unwrap(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(parent.link(name, &file).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(parent.unlink(name, 0).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(
+                parent.rename(name, &root, name, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                root.rename("file".as_ref(), parent, name, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+        }
+        assert_eq!(std::fs::read(tmp.path().join("file")).unwrap(), b"data");
+        assert!(!tmp.path().join("child").exists());
+    }
+}
+
+#[async_test]
+async fn fuse_create_rejects_symlink_parent(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_SYMLINK,
+        FUSE_ROOT_ID,
+        b"link\0missing\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+    let mut create = fuse_create_in::new_zeroed();
+    create.flags = (lx::O_WRONLY | lx::O_TRUNC) as u32;
+    create.mode = 0o666;
+    let mut args = create.as_bytes().to_vec();
+    args.extend_from_slice(b"child\0");
+    let (unique, response) = harness.post_fuse_request(
+        4,
+        FUSE_CREATE,
+        entry.nodeid,
+        &args,
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32 + size_of::<fuse_open_out>() as u32,
+    );
+    let (_, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, OUT_HEADER_SIZE);
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, -lx::ENOTDIR);
+    assert!(!harness.tmpdir_path().join("child").exists());
+}
+
+#[test]
+#[cfg_attr(
+    windows,
+    ignore = "requires permission to create native Windows symlinks"
+)]
+fn stale_directory_paths_do_not_follow_native_links() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("parent")).unwrap();
+        std::fs::write(tmp.path().join("parent").join("file"), b"inside").unwrap();
+        std::fs::write(outside.path().join("file"), b"outside").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (parent, _) = root.lookup_child("parent".as_ref()).unwrap();
+        let (file, _) = parent.lookup_child("file".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("parent"), tmp.path().join("old")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(outside.path(), tmp.path().join("parent")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("parent")).unwrap();
+        assert_eq!(
+            parent
+                .create(
+                    "file".as_ref(),
+                    (lx::O_WRONLY | lx::O_TRUNC) as u32,
+                    0o666,
+                    0,
+                    0
+                )
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            std::sync::Arc::new(file)
+                .open(lx::O_WRONLY as u32)
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
+        let error = root
+            .rename("old".as_ref(), &parent, "renamed".as_ref(), 0)
+            .unwrap_err();
+        assert!(matches!(error, lx::Error::ENOTDIR | lx::Error::ELOOP));
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside"
+        );
+        assert!(!outside.path().join("renamed").exists());
+    }
 }

@@ -2261,7 +2261,8 @@ impl UhProcessor<'_, SnpBacked> {
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
                     self.handle_synic_deliverable_exit();
                 }
-                HvMessageType::HvMessageTypeX64Halt
+                HvMessageType::HvMessageTypeNone
+                | HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
                     // Ignore. Note: it is possible to get the ExceptionIntercept
                     // message for reflect #VC.

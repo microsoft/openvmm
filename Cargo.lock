@@ -931,6 +931,7 @@ dependencies = [
  "slab",
  "smoltcp",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -1155,7 +1156,6 @@ dependencies = [
  "signature",
  "symcrypt",
  "thiserror 2.0.16",
- "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "x509-cert",
@@ -1804,6 +1804,30 @@ dependencies = [
  "vm_resource",
  "windows-sys 0.61.0",
  "zerocopy",
+]
+
+[[package]]
+name = "disk_vmdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "blocking",
+ "disk_backend",
+ "disk_backend_resources",
+ "futures",
+ "guestmem",
+ "inspect",
+ "io-uring",
+ "libc",
+ "pal_async",
+ "parking_lot",
+ "scsi_buffers",
+ "storage_tests",
+ "tempfile",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracing",
+ "vm_resource",
 ]
 
 [[package]]
@@ -4598,6 +4622,7 @@ dependencies = [
  "static_assertions",
  "tempfile",
  "test_with_tracing",
+ "thiserror 2.0.16",
  "tracing",
  "widestring",
  "windows 0.62.0",
@@ -5065,6 +5090,13 @@ dependencies = [
  "mshv-bindings",
  "thiserror 2.0.16",
  "vmm-sys-util",
+]
+
+[[package]]
+name = "mshv_host_boot"
+version = "0.0.0"
+dependencies = [
+ "uefi",
 ]
 
 [[package]]
@@ -5986,7 +6018,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "crypto",
  "embed-resource",
@@ -6018,7 +6050,7 @@ dependencies = [
 
 [[package]]
 name = "openvmm_build_info"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "test_with_tracing",
 ]
@@ -6309,6 +6341,7 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "disk_vmdk",
  "disklayer_vhdx",
  "fs-err",
  "get_resources",
@@ -6316,6 +6349,7 @@ dependencies = [
  "libc",
  "mesh",
  "openvmm_defs",
+ "pal_async",
  "sparse_mmap",
  "tempfile",
  "tracing",
@@ -6366,6 +6400,7 @@ dependencies = [
  "disk_prwrap",
  "disk_vhd1",
  "disk_vhdmp",
+ "disk_vmdk",
  "disklayer_ram",
  "disklayer_sqlite",
  "disklayer_vhdx",
@@ -6846,6 +6881,7 @@ dependencies = [
  "mesh",
  "mesh_process",
  "mesh_worker",
+ "mshv_host_boot",
  "net_backend_resources",
  "netvsp_resources",
  "nvme_resources",
@@ -7080,6 +7116,8 @@ dependencies = [
  "lx",
  "lxutil",
  "parking_lot",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
 ]
 
@@ -8286,6 +8324,7 @@ dependencies = [
  "libc",
  "pal",
  "parking_lot",
+ "tempfile",
  "thiserror 2.0.16",
  "trycopy",
  "windows-sys 0.61.0",
@@ -8614,6 +8653,16 @@ dependencies = [
  "static_assertions",
  "tdisp_proto",
  "tracing",
+ "zerocopy",
+]
+
+[[package]]
+name = "tdisp_lstoraccel"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "nvme_spec",
+ "tdisp",
  "zerocopy",
 ]
 
@@ -10572,6 +10621,7 @@ dependencies = [
  "task_control",
  "tempfile",
  "test_with_tracing",
+ "thiserror 2.0.16",
  "tracing",
  "virtio",
  "virtio_resources",
@@ -11259,6 +11309,7 @@ dependencies = [
  "disk_backend",
  "disk_backend_resources",
  "disk_vhd1",
+ "disk_vmdk",
  "fs-err",
  "futures",
  "get_resources",

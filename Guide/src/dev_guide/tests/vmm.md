@@ -250,6 +250,7 @@ build for a different platform. The supported targets are:
 | `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
 | `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
 | `linux-x64` | Linux x86_64 |
+| `linux-musl-x64` | Linux x86_64 with statically linked musl binaries |
 
 **Cross-compiling for Windows from WSL2** is fully supported, you can build
 and run Windows VMM tests directly from your WSL2 shell. This requires the

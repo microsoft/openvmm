@@ -42,12 +42,14 @@ compatibility, and build a static guest agent:
 ```bash
 cargo build -p openvmm -p incubator
 cargo build -p pipette --target x86_64-unknown-linux-musl
+cargo build -p mshv_host_boot --target x86_64-unknown-uefi
 ```
 
 Copy `petri/incubator/profiles/x86_64-mshv.toml` outside the checkout and set
-absolute paths for `binary`, `firmware`, and `boot-artifacts`. This environment
-requires `nested-virt = true`, a compatible mshv root kernel, and the
-[boot artifacts below](#mshv-boot-artifacts-and-kernel).
+absolute paths for `binary`, `host-boot`, `firmware`, and `boot-artifacts`. Set
+`host-boot` to the built `target/x86_64-unknown-uefi/debug/mshv_host_boot.efi`.
+This environment requires `nested-virt = true`, a compatible mshv root kernel,
+and the [boot artifacts below](#mshv-boot-artifacts-and-kernel).
 
 ```bash
 target/debug/incubator \
@@ -85,20 +87,14 @@ The artifact directory must contain:
 
 ```text
 boot/
-  EFI/BOOT/bootx64.efi    shim
-  EFI/BOOT/grubx64.efi    GRUB
   HvLoader.efi
   lxhvloader.dll
   Windows/System32/...   complete matching runtime
 ```
 
-Both `hvix64.exe` and `hvax64.exe` must be present. Use x64 shim configured to
-load the adjacent `grubx64.efi`, and a prebuilt GRUB with embedded FAT/GPT,
-Linux, chain, normal, and boot support and prefix `/boot/grub2`. Retain shim:
-HvLoader requires its verification protocol even with Secure Boot disabled.
-
-The validated Azure Linux 3 recipe uses shim 15.8-6, GRUB 2.06-27,
-edk2-hvloader 20240524git3e722403cd16-20, and matching `mshv` /
+Both `hvix64.exe` and `hvax64.exe` must be present. Shim and GRUB are not used.
+The validated Azure Linux 3 payload recipe uses
+edk2-hvloader 20240524git3e722403cd16-20 and matching `mshv` /
 `mshv-bootloader-lx` 26100.9444.2609032029.1-1 payloads. The composer does not
 verify provenance, signatures, architecture, or compatibility.
 
@@ -117,18 +113,46 @@ these do not guarantee compatibility with other kernel or hypervisor versions.
 To compose an image without launching it:
 
 ```bash
+hypervisor_cmdline='MSHV_ROOT=\Windows MSHV_ENABLE=TRUE'
+hypervisor_cmdline+=' MSHV_SCHEDULER_TYPE=ROOT MSHV_X2APIC_POLICY=ENABLE'
+hypervisor_cmdline+=' MSHV_FORCE_NESTED=TRUE'
+
 cargo run -p incubator --bin incubator-mshv-image -- \
-  --shim path/to/artifacts/boot/EFI/BOOT/bootx64.efi \
-  --grub path/to/artifacts/boot/EFI/BOOT/grubx64.efi \
+  --host-boot target/x86_64-unknown-uefi/debug/mshv_host_boot.efi \
   --payload path/to/artifacts/boot \
   --kernel path/to/bzImage --initrd path/to/initrd \
   --kernel-cmdline 'console=ttyS0 rdinit=/init' \
+  --hypervisor-cmdline "$hypervisor_cmdline" \
   --output path/to/new-mshv.img
 ```
 
 The output parent must exist; existing output is never overwritten. Payload
-files must be regular files with ASCII FAT-compatible names. Kernel arguments
-cannot contain quotes, control characters, or space-containing option values.
+files must be regular files with ASCII FAT-compatible names.
+
+### Boot command lines
+
+The host boot application uses the EFI Simple File System protocol to read two
+UTF-8 files at the ESP root. They contain literal load options, not shell or
+GRUB code:
+
+| File | Contents |
+|------|----------|
+| `linux.cmdline` | `initrd=\initramfs.cpio` followed by Linux options |
+| `hvloader.cmdline` | `\lxhvloader.dll` followed by hypervisor options |
+
+Incubator requires both `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`;
+Petri appends the prepared initrd's required `rdinit`. The standalone image
+composer likewise requires both `--kernel-cmdline` and `--hypervisor-cmdline`.
+Neither path supplies default command lines. Both write these files when
+composing media. You can also edit the files on an existing ESP without
+rebuilding the host boot application, kernel, or hypervisor.
+
+Each file is limited to 16 KiB and a single UCS-2-compatible line, with an
+optional final LF or CRLF. Quotes, spaces, backslashes, and shell metacharacters
+are passed literally. Missing or malformed configuration fails the boot rather
+than selecting hidden defaults. The host boot application initializes HvLoader,
+then enters Linux's EFI stub; the modified kernel retains responsibility for
+launching the hypervisor.
 
 ## Sharing and guest trust
 
@@ -136,6 +160,10 @@ cannot contain quotes, control characters, or space-containing option values.
 The host share is writable. Incubator is a trusted development environment,
 not a sandbox for untrusted guest programs.
 ```
+
+The mshv host boot is development-only and refuses Secure Boot mode. Its
+`SHIM_LOCK` verification callback deliberately accepts every image; it does not
+authenticate signatures or implement shim's measurements.
 
 All environments copy the host CA bundle into the temporary initrd and export
 `SSL_CERT_FILE=/incubator-ca-certificates.crt` for guest TLS clients. A nonempty

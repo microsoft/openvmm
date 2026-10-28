@@ -63,6 +63,8 @@ mod tpm138;
 mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
+/// Tests for VMDK disk functionality.
+mod vmdk;
 /// Tests involving VMGS functionality
 mod vmgs;
 
