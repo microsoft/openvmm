@@ -599,6 +599,11 @@ async fn test_ttrpc_interface(
                             nic_config: vec![vmservice::NicConfig {
                                 nic_id: consomme_nic_id.clone(),
                                 mac_address: "00-15-5D-12-12-12".to_string(),
+                                frontend: if i == 1 {
+                                    vmservice::NicFrontend::Virtio as i32
+                                } else {
+                                    vmservice::NicFrontend::Vmbus as i32
+                                },
                                 backend: Some(vmservice::nic_config::Backend::Consomme(
                                     vmservice::ConsommeBackend {
                                         cidr: String::new(),

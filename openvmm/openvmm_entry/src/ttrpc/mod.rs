@@ -1265,7 +1265,7 @@ impl VmService {
                                 vnode: None,
                             });
                         } else {
-                            config.virtio_devices.push((VirtioBus::Pci, resource));
+                            config.virtio_devices.push((VirtioBus::Mmio, resource));
                         }
                     }
                 }
