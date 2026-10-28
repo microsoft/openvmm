@@ -910,7 +910,6 @@ enum ErrorInner {
     InvalidSnpVmsaImport,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
-    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get partition property")]
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]

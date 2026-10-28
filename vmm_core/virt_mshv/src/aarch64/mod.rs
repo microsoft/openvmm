@@ -75,11 +75,17 @@ impl virt::Hypervisor for LinuxMshv {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
 
-        let create_args = mshv_bindings::mshv_create_partition_v2 {
-            pt_flags: 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
-            pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
-            ..Default::default()
-        };
+        let mut processor_features = [0; 2];
+        for (features, property) in processor_features.iter_mut().zip([
+            HvPartitionPropertyCode::ProcessorFeatures0,
+            HvPartitionPropertyCode::ProcessorFeatures1,
+        ]) {
+            *features = self
+                .mshv
+                .get_host_partition_property(property.0)
+                .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+        }
+        let create_args = partition_create_args(processor_features);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
@@ -154,6 +160,18 @@ impl virt::Hypervisor for LinuxMshv {
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
         MshvProtoPartition::new(config, vmfd)
+    }
+}
+
+fn partition_create_args(processor_features: [u64; 2]) -> mshv_bindings::mshv_create_partition_v2 {
+    mshv_bindings::mshv_create_partition_v2 {
+        pt_flags: (1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES)
+            | (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
+        pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+        pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
+        // The ioctl takes disabled features, while the host reports enabled ones.
+        pt_cpu_fbanks: processor_features.map(|features| !features),
+        ..Default::default()
     }
 }
 
@@ -725,5 +743,26 @@ impl hv1_hypercall::Arm64RegisterState for MshvHypercallHandler<'_> {
     fn set_x(&mut self, n: u8, v: u64) {
         self.x[n as usize] = v;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn partition_creation_uses_explicit_host_features() {
+        let host_features = [0x1234_5678_9abc_def0, 0xfedc_ba98_7654_3210];
+        let args = partition_create_args(host_features);
+        let num_banks = args.pt_num_cpu_fbanks;
+        let disabled_features = args.pt_cpu_fbanks;
+
+        assert_ne!(
+            args.pt_flags & (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
+            0
+        );
+        assert_eq!(num_banks, 2);
+        assert_eq!(disabled_features, host_features.map(|features| !features));
     }
 }
