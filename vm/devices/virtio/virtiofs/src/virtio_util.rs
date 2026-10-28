@@ -154,10 +154,7 @@ impl fuse::RequestReader for VirtioPayloadReader<'_, '_> {
     }
 
     fn read_count(&mut self, count: usize) -> lx::Result<Box<[u8]>> {
-        if count > crate::MAX_GUEST_BUFFER_SIZE {
-            return Err(lx::Error::E2BIG);
-        }
-        let mut buffer = crate::guest_buffer(count as u32)?;
+        let mut buffer = crate::guest_buffer(count, crate::MAX_GUEST_BUFFER_SIZE)?;
         self.read_exact(&mut buffer)?;
         Ok(buffer.into_boxed_slice())
     }

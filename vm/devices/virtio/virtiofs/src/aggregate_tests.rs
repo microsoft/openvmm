@@ -235,15 +235,15 @@ fn synthetic_root_readdir_payload_is_bounded() {
     let fs = VirtioFs::new_aggregate();
 
     for plus in [false, true] {
-        assert!(
-            !fs.read_synthetic_root_dir(0, MAX_GUEST_BUFFER_SIZE as u32, plus)
-                .unwrap()
-                .is_empty()
-        );
-        assert_eq!(
-            fs.read_synthetic_root_dir(0, MAX_GUEST_BUFFER_SIZE as u32 + 1, plus)
-                .unwrap_err(),
-            lx::Error::E2BIG
-        );
+        let entries = fs
+            .read_synthetic_root_dir(0, MAX_GUEST_BUFFER_SIZE as u32, plus)
+            .unwrap();
+        assert!(!entries.is_empty());
+        // Larger directory reads are truncated rather than rejected.
+        for size in [MAX_GUEST_BUFFER_SIZE as u32 + 1, u32::MAX] {
+            let buffer = fs.read_synthetic_root_dir(0, size, plus).unwrap();
+            assert_eq!(buffer, entries);
+            assert!(buffer.capacity() <= MAX_GUEST_BUFFER_SIZE);
+        }
     }
 }

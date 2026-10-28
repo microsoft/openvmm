@@ -47,7 +47,22 @@ const ATTRIBUTE_TIMEOUT: Duration = Duration::from_millis(1);
 // update the path.
 const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
+/// Upper bound for guest-sized buffers other than file reads.
+///
+/// This is also the `max_write` advertised during FUSE_INIT. Larger directory reads are
+/// truncated rather than rejected, since they may return less data than requested.
 const MAX_GUEST_BUFFER_SIZE: usize = 1024 * 1024;
+
+/// The largest page size a guest may use.
+const MAX_GUEST_PAGE_SIZE: usize = 64 * 1024;
+
+/// Upper bound for a single file read.
+///
+/// Linux bounds reads by the `max_pages` advertised during FUSE_INIT rather than by
+/// `max_write`, and counts those pages in its own page size. The FUSE session derives
+/// `max_pages` from `max_write` using 4 KiB pages, so a guest with 64 KiB pages can
+/// legitimately request 16 times `MAX_GUEST_BUFFER_SIZE`.
+const MAX_READ_SIZE: usize = MAX_GUEST_BUFFER_SIZE / 4096 * MAX_GUEST_PAGE_SIZE;
 
 /// Shared mutable state behind a [`VirtioFs`] handle.
 struct VirtioFsInner {
@@ -127,6 +142,10 @@ impl Fuse for VirtioFs {
         if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
+
+        // Advertise the write limit enforced on parsed payloads. The session derives the
+        // advertised `max_pages`, which bounds reads, from this value; see `MAX_READ_SIZE`.
+        info.max_write = MAX_GUEST_BUFFER_SIZE as u32;
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -354,7 +373,7 @@ impl Fuse for VirtioFs {
 
     fn read(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
         let file = self.get_file(arg.fh)?;
-        let mut buffer = guest_buffer(arg.size)?;
+        let mut buffer = guest_buffer(arg.size as usize, MAX_READ_SIZE)?;
         let size = file.read(&mut buffer, arg.offset)?;
         buffer.truncate(size);
         Ok(buffer)
@@ -470,7 +489,7 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::ENODATA);
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut value = guest_buffer(size)?;
+        let mut value = guest_buffer(size as usize, MAX_GUEST_BUFFER_SIZE)?;
         let size = inode.get_xattr(name, Some(&mut value))?;
         value.truncate(size);
         Ok(value)
@@ -509,7 +528,7 @@ impl Fuse for VirtioFs {
             return Ok(Vec::new());
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut list = guest_buffer(size)?;
+        let mut list = guest_buffer(size as usize, MAX_GUEST_BUFFER_SIZE)?;
         let size = inode.list_xattr(Some(&mut list))?;
         list.truncate(size);
         Ok(list)
@@ -683,20 +702,28 @@ impl VirtioFs {
     }
 }
 
-fn guest_buffer(size: u32) -> lx::Result<Vec<u8>> {
-    let mut buffer = guest_buffer_with_capacity(size)?;
-    buffer.resize(size as usize, 0);
+/// Allocates a zeroed, guest-sized buffer, failing with `E2BIG` if `size` exceeds `limit`.
+fn guest_buffer(size: usize, limit: usize) -> lx::Result<Vec<u8>> {
+    if size > limit {
+        return Err(lx::Error::E2BIG);
+    }
+    let mut buffer = reserve_buffer(size)?;
+    buffer.resize(size, 0);
     Ok(buffer)
 }
 
-fn guest_buffer_with_capacity(size: u32) -> lx::Result<Vec<u8>> {
-    let size = size as usize;
-    if size > MAX_GUEST_BUFFER_SIZE {
-        return Err(lx::Error::E2BIG);
-    }
+/// Allocates an empty buffer for a directory read of up to `size` bytes.
+///
+/// The directory entry writers fill the buffer up to its capacity, which is capped at
+/// `MAX_GUEST_BUFFER_SIZE` because a directory read may return less than requested.
+fn dir_buffer(size: u32) -> lx::Result<Vec<u8>> {
+    reserve_buffer((size as usize).min(MAX_GUEST_BUFFER_SIZE))
+}
+
+fn reserve_buffer(capacity: usize) -> lx::Result<Vec<u8>> {
     let mut buffer = Vec::new();
     buffer
-        .try_reserve_exact(size)
+        .try_reserve_exact(capacity)
         .map_err(|_| lx::Error::ENOMEM)?;
     Ok(buffer)
 }
