@@ -6,6 +6,7 @@
 #![expect(unsafe_code)]
 #![cfg(test)]
 
+mod dma;
 mod interrupt;
 mod saved_state;
 
