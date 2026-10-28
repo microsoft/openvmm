@@ -6613,6 +6613,7 @@ dependencies = [
 name = "pal_tracer"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
  "fs-err",
  "futures",
  "libc",
