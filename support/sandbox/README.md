@@ -73,6 +73,12 @@ execution and executable mappings for shared libraries, and `.read_write(...)`
 allows reads and writes but not execution. On Linux, `.read(...)` mounts are
 read-only and `noexec`; they do not remove directory search permission bits.
 
+The VM and TPM profiles grant individual configuration files under `/etc`,
+not the directory tree. The VM profile includes loader and resolver/NSS files;
+the TPM profile includes loader and OpenSSL configuration. Missing optional
+files are skipped when building the profile. Nonstandard configuration paths
+and additional OpenSSL include files require explicit grants.
+
 On Linux, overlapping filesystem grants combine independently of declaration
 order. Ancestors are mounted before descendants, and duplicate or descendant
 grants retain permissions already granted for that path. Profiles requiring

@@ -40,14 +40,21 @@ use crate::Profile;
 use crate::Syscalls;
 
 /// Profile derived from observed worker behavior.
+///
+/// Includes individual loader and OpenSSL configuration files when present,
+/// without exposing the rest of `/etc`.
 pub fn tpm_worker() -> Builder {
-    let mut profile = Profile::deny_all()
-        .name("tpm_worker")
-        .read("/etc")
-        .read_exec("/usr/lib");
+    let mut profile = Profile::deny_all().name("tpm_worker").read_exec("/usr/lib");
 
-    if std::path::Path::new("/usr/local/ssl").exists() {
-        profile = profile.read("/usr/local/ssl");
+    for path in [
+        "/etc/ld.so.cache",
+        "/etc/ssl/openssl.cnf",
+        "/etc/pki/tls/openssl.cnf",
+        "/usr/local/ssl/openssl.cnf",
+    ] {
+        if std::path::Path::new(path).exists() {
+            profile = profile.read(path);
+        }
     }
 
     profile

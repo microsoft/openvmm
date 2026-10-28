@@ -804,10 +804,22 @@ CPU-only grant; it is not filtered to assigned devices. Optional device and
 PCI alias paths are discovered when building the profile. A device node
 created later, for example by loading a module, requires a new worker.
 
-Resolver configuration remains read-only. When `/etc/resolv.conf` escapes
-the `/etc` grant through symlinks, only the referenced file is additionally
-bound, not its containing runtime directory. The bind captures the file at
-startup; replacing it by rename does not update the existing bind.
+The VM and TPM roles do not grant the `/etc` directory tree. Both expose the
+existing `/etc/ld.so.cache` file read-only. The VM role also grants individual
+resolver/NSS files (`hosts`, `host.conf`, `gai.conf`, `nsswitch.conf`, and
+`resolv.conf`). The TPM role grants existing OpenSSL configuration files at
+`/etc/ssl/openssl.cnf`, `/etc/pki/tls/openssl.cnf`, and
+`/usr/local/ssl/openssl.cnf`, not their parent directories or private-key
+subdirectories. This also prevents an `/usr/local/ssl` alias from exposing
+the `/etc/ssl` tree. Missing optional files are skipped when building the
+profile. Nonstandard configuration paths and additional OpenSSL include files
+require explicit grants.
+
+Each file bind follows host-side symlinks and exposes the resolved file at
+the granted path inside the sandbox. In particular, `/etc/resolv.conf` needs
+no additional grant for its runtime target or containing directory. The bind
+captures the file at startup; replacing it by rename does not update the
+existing bind.
 
 This avoids a Firecracker-style `mknod` + `chown` pattern, which would
 require `CAP_MKNOD` in a pre-`exec` context that no longer exists once

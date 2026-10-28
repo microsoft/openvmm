@@ -416,6 +416,7 @@ fn fs_required(source: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::ToSocketAddrs;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixDatagram;
     use std::os::unix::process::ExitStatusExt;
@@ -656,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn vm_profile_preserves_host_resources() {
+    fn worker_profiles_preserve_host_resources() {
         for scenario in [
             "resolver",
             "resolver-chain",
@@ -668,13 +669,17 @@ mod tests {
             "devices",
             "invalid-device",
             "pci",
+            "etc",
+            "etc-missing",
+            "tpm-etc",
+            "tpm-etc-missing",
         ] {
             let output = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--mount"])
                 .arg(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "linux::tests::helper_vm_profile_resources",
+                    "linux::tests::helper_worker_profile_resources",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -692,7 +697,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn helper_vm_profile_resources() {
+    fn helper_worker_profile_resources() {
         let scenario = std::env::var("SANDBOX_RESOURCE_SCENARIO").unwrap();
         let null = std::fs::File::options()
             .read(true)
@@ -750,6 +755,41 @@ mod tests {
             _ => {}
         }
 
+        let configuration_files = [
+            ("/etc/ld.so.cache", "cache fixture\n"),
+            ("/etc/hosts", "192.0.2.2 sandbox.invalid\n"),
+            ("/etc/host.conf", "multi on\n"),
+            ("/etc/gai.conf", "# configuration fixture\n"),
+            ("/etc/nsswitch.conf", "hosts: files dns\n"),
+            ("/etc/ssl/openssl.cnf", "# OpenSSL fixture\n"),
+            ("/etc/pki/tls/openssl.cnf", "# OpenSSL fixture\n"),
+        ];
+        let private_files = [
+            "/etc/shadow",
+            "/etc/ssh/ssh_host_ed25519_key",
+            "/etc/ssl/private/key.pem",
+            "/etc/pki/tls/private/key.pem",
+        ];
+        if scenario.contains("etc") {
+            if !scenario.ends_with("-missing") {
+                for (path, contents) in configuration_files {
+                    fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                    fs_err::write(path, contents).unwrap();
+                }
+            }
+            for path in private_files {
+                fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                fs_err::write(path, "private fixture\n").unwrap();
+                fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(fs_err::read_to_string(path).unwrap(), "private fixture\n");
+            }
+        }
+        let local_ssl_alias = scenario.contains("etc") && Path::new("/usr/local").is_dir();
+        if local_ssl_alias {
+            mount_namespace::mount_tmpfs(Path::new("/usr/local")).unwrap();
+            std::os::unix::fs::symlink("/etc/ssl", "/usr/local/ssl").unwrap();
+        }
+
         fs_err::create_dir_all("/sys/devices/system/cpu").unwrap();
         fs_err::write("/sys/devices/system/cpu/online", "0").unwrap();
         fs_err::create_dir_all("/sys/devices/pci0000:00/0000:00:01.0").unwrap();
@@ -765,7 +805,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut profile = crate::profiles::vm_worker();
+        let mut profile = if scenario.starts_with("tpm-") {
+            crate::profiles::tpm_worker()
+        } else {
+            crate::profiles::vm_worker()
+        };
         if scenario == "devices" {
             let source = PathBuf::from(format!("/proc/self/fd/{}", null.as_raw_fd()));
             for path in [
@@ -798,6 +842,53 @@ mod tests {
         drop_all_capabilities().unwrap();
 
         match scenario.as_str() {
+            "etc" | "etc-missing" | "tpm-etc" | "tpm-etc-missing" => {
+                if local_ssl_alias {
+                    assert!(
+                        fs_err::read("/usr/local/ssl/private/key.pem").is_err(),
+                        "private keys should not be exposed through /usr/local/ssl",
+                    );
+                    let config = fs_err::read_to_string("/usr/local/ssl/openssl.cnf");
+                    if scenario == "tpm-etc" {
+                        assert_eq!(config.unwrap(), "# OpenSSL fixture\n");
+                        assert!(fs_err::write("/usr/local/ssl/openssl.cnf", "modified").is_err());
+                    } else {
+                        assert!(config.is_err());
+                    }
+                }
+                for (path, contents) in configuration_files {
+                    let tpm_configuration = path.ends_with("/openssl.cnf");
+                    let allowed = !scenario.ends_with("-missing")
+                        && (path == "/etc/ld.so.cache"
+                            || tpm_configuration == scenario.starts_with("tpm-"));
+                    if allowed {
+                        assert_eq!(fs_err::read_to_string(path).unwrap(), contents);
+                        assert!(fs_err::write(path, "modified").is_err());
+                    } else {
+                        assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                    }
+                }
+                for path in private_files {
+                    assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                }
+                if scenario.starts_with("tpm-") {
+                    assert!(fs_err::read("/etc/resolv.conf").is_err());
+                } else {
+                    assert_eq!(
+                        fs_err::read_to_string("/etc/resolv.conf").unwrap(),
+                        "nameserver 192.0.2.1\n",
+                    );
+                    if scenario == "etc" {
+                        assert!(
+                            ("sandbox.invalid", 0)
+                                .to_socket_addrs()
+                                .unwrap()
+                                .any(|address| address.ip()
+                                    == std::net::IpAddr::from([192, 0, 2, 2]))
+                        );
+                    }
+                }
+            }
             "resolver-missing" => {
                 assert!(!Path::new("/etc/resolv.conf").exists());
             }
@@ -807,6 +898,7 @@ mod tests {
                     "nameserver 192.0.2.1\n",
                 );
                 assert!(fs_err::write("/etc/resolv.conf", "modified").is_err());
+                assert!(!Path::new("/run/resolve/resolv.conf").exists());
                 assert!(!Path::new("/run/resolve/unrelated").exists());
             }
             "devices" => {

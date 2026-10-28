@@ -46,12 +46,12 @@ use crate::Syscalls;
 /// Profile derived from observed worker behavior.
 ///
 /// Leaves `mbind` available for host NUMA placement of guest RAM.
-/// On Linux, includes existing resolver targets and the SEV and legacy VFIO
-/// container nodes. Optional paths must exist when the profile is built.
+/// On Linux, includes individual loader and resolver configuration files and
+/// the SEV and legacy VFIO container nodes. Optional paths must exist when the
+/// profile is built.
 pub fn vm_worker() -> Builder {
     let profile = Profile::deny_all()
         .name("vm_worker")
-        .read("/etc")
         .read("/sys/devices")
         .read_exec("/usr/lib")
         .syscalls(Syscalls::deny([
@@ -101,8 +101,17 @@ pub fn vm_worker() -> Builder {
     #[cfg(target_os = "linux")]
     let profile = {
         let mut profile = profile;
-        if let Some(target) = resolver_target() {
-            profile = profile.read(target);
+        for path in [
+            "/etc/ld.so.cache",
+            "/etc/hosts",
+            "/etc/host.conf",
+            "/etc/gai.conf",
+            "/etc/nsswitch.conf",
+            "/etc/resolv.conf",
+        ] {
+            if std::path::Path::new(path).exists() {
+                profile = profile.read(path);
+            }
         }
         if std::path::Path::new("/sys/bus/pci/devices").exists() {
             profile = profile.read("/sys/bus/pci/devices");
@@ -116,45 +125,6 @@ pub fn vm_worker() -> Builder {
     };
 
     profile
-}
-
-#[cfg(target_os = "linux")]
-fn resolver_target() -> Option<std::path::PathBuf> {
-    use std::path::Component;
-    use std::path::PathBuf;
-
-    let mut path = PathBuf::from("/etc/resolv.conf");
-    std::fs::metadata(&path).ok()?;
-    for _ in 0..40 {
-        let (prefix, target) = path
-            .ancestors()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .find_map(|prefix| {
-                std::fs::read_link(prefix)
-                    .ok()
-                    .map(|target| (prefix.to_path_buf(), target))
-            })?;
-        let target = prefix
-            .parent()?
-            .join(target)
-            .join(path.strip_prefix(&prefix).ok()?);
-        path.clear();
-        for component in target.components() {
-            if component == Component::ParentDir {
-                path.pop();
-            } else {
-                path.push(component);
-            }
-        }
-        // Bind the first path outside /etc, not just its canonical target:
-        // /etc's symlinks may name aliases such as /var/run or another link.
-        if !path.starts_with("/etc") {
-            return Some(path);
-        }
-    }
-    None
 }
 
 #[cfg(all(test, target_os = "linux"))]
