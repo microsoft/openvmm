@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+mod flush;
+
 use pal::unix::SyscallResult;
 use std::ffi::c_void;
 use std::fs::File;
