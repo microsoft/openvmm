@@ -1341,7 +1341,7 @@ impl VpciChannel {
                 command &= !mmio;
             }
             let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
-            pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
+            pci.pci_cfg_write_for_device_power(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
         match result {
             IoResult::Ok => (),
