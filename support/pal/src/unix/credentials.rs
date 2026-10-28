@@ -56,23 +56,22 @@ pub fn unix_socket_peer_user_id(socket: BorrowedFd<'_>) -> io::Result<u32> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::SocketAddr;
     use std::os::unix::net::UnixDatagram;
     use test_with_tracing::test;
 
     #[test]
-    fn pathname_datagram_without_peer_credentials_is_rejected() {
-        let path = std::env::current_dir()
-            .unwrap()
-            .join(format!(".pal-peer-credentials-{}", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let server = UnixDatagram::bind(&path).unwrap();
+    fn connected_datagram_without_peer_credentials_is_rejected() {
+        // Use an abstract address so that the test does not depend on the
+        // filesystem or on the length limit of Unix socket pathnames.
+        let name = format!("pal-peer-credentials-{}", std::process::id());
+        let address = SocketAddr::from_abstract_name(name).unwrap();
+        let _server = UnixDatagram::bind_addr(&address).unwrap();
         let client = UnixDatagram::unbound().unwrap();
-        client.connect(&path).unwrap();
+        client.connect_addr(&address).unwrap();
 
         let error = unix_socket_peer_user_id(client.as_fd()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-
-        drop(server);
-        std::fs::remove_file(path).unwrap();
     }
 }
