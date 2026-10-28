@@ -953,7 +953,9 @@ pub(crate) fn microvm_filesystem_slot_from_snapshot(
 
 /// Returns the effective filesystem that `request` attaches. A restore must
 /// supply exactly the snapshot's filesystem, unless the snapshot's slot is
-/// dormant, in which case one `--mount` may bind a new filesystem to it.
+/// dormant, in which case the restore may bind a new filesystem to it, which
+/// it validates as a cold boot does: one `--mount`, or, at the restore of a
+/// platform snapshot, which `prepare_restore` checks, an aggregate.
 pub(super) fn effective_microvm_filesystem(
     request: Option<MicrovmFilesystemRequest<'_>>,
     policy: MicrovmFilesystemPolicyPaths<'_>,
@@ -987,11 +989,9 @@ pub(super) fn effective_microvm_filesystem(
                 == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
             "snapshot does not support restore-time microVM filesystem attachment"
         );
-        // Only the dormant slot exists in the snapshot's machine.
-        anyhow::ensure!(
-            matches!(request, MicrovmFilesystemRequest::Single(_)),
-            "a dormant-slot snapshot can attach only a --mount on restore"
-        );
+        // The snapshot's machine has only the dormant slot, whose device and
+        // command line stay as captured whatever the restore binds to it, so
+        // the restore builds the filesystem as a cold boot does.
         return microvm_filesystem_from_request(request, policy, owner).map(Some);
     };
     let request =
@@ -2006,30 +2006,223 @@ mod tests {
     }
 
     #[test]
-    fn restore_attaches_an_aggregate_only_where_the_snapshot_did() {
+    fn restore_attaches_an_aggregate_only_to_a_dormant_slot() {
         let workspace = tempfile::tempdir().unwrap();
         let toolcache = tempfile::tempdir().unwrap();
         let children = workspace_and_toolcache(workspace.path(), toolcache.path(), "ro");
-        let restore = ["--restore-snapshot", "snapshot"];
+        let options = aggregate_options(&children, &["--restore-snapshot", "snapshot"]);
 
-        // A dormant slot binds only a single directory on restore.
-        let error = options_filesystem(
-            &aggregate_options(&children, &restore),
-            Some(&dormant_filesystem_contract()),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("only a --mount"), "{error:#}");
+        // A dormant slot binds the aggregate.
+        let filesystem =
+            options_filesystem(&options, Some(&dormant_filesystem_contract())).unwrap();
+        assert!(filesystem.config.is_aggregate());
+
+        // A snapshot that predates the dormant slot binds no filesystem.
+        let error = options_filesystem(&options, Some(&network_contract())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not support restore-time microVM filesystem attachment"),
+            "{error:#}"
+        );
 
         // A snapshot of a single directory requires that directory.
-        let error = options_filesystem(
-            &aggregate_options(&children, &restore),
-            Some(&filesystem_contract(workspace.path())),
-        )
-        .unwrap_err();
+        let error =
+            options_filesystem(&options, Some(&filesystem_contract(workspace.path()))).unwrap_err();
         assert!(
             error.to_string().contains("requires the --mount"),
             "{error:#}"
         );
+    }
+
+    /// Resolves the aggregate that `children` and the access-policy options
+    /// `policy` request with `owner`, at a cold boot and at a restore that
+    /// binds it to a dormant slot.
+    fn cold_and_dormant_aggregates(
+        children: &[String],
+        policy: &[&str],
+        owner: openvmm_defs::microvm::MicrovmFilesystemOwner,
+    ) -> [anyhow::Result<EffectiveMicrovmFilesystem>; 2] {
+        let mut restore = policy.to_vec();
+        restore.extend(["--restore-snapshot", "snapshot"]);
+        let dormant = dormant_filesystem_contract();
+        [
+            (aggregate_options(children, policy), None),
+            (aggregate_options(children, &restore), Some(&dormant)),
+        ]
+        .map(|(options, contract)| {
+            effective_microvm_filesystem(
+                MicrovmFilesystemRequest::from_options(&options),
+                MicrovmFilesystemPolicyPaths {
+                    denied: &options.microvm.microvm_mount_deny,
+                    allowed: &options.microvm.microvm_mount_allow,
+                    writable: &options.microvm.microvm_mount_write,
+                },
+                owner,
+                contract,
+            )
+            .and_then(|filesystem| filesystem.context("the options request no filesystem"))
+        })
+    }
+
+    #[test]
+    fn dormant_slot_restore_attaches_an_aggregate_as_a_cold_boot_does() {
+        use openvmm_defs::microvm::MicrovmFilesystemAccess::ReadOnly;
+        use openvmm_defs::microvm::MicrovmFilesystemAccess::ReadWrite;
+        use openvmm_defs::microvm::MicrovmFilesystemChildKind::Directory;
+        use openvmm_defs::microvm::MicrovmFilesystemChildKind::File;
+
+        let workspace = policy_share();
+        let toolcache = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let settings = files.path().join("settings.json");
+        let output = files.path().join("output.txt");
+        fs_err::write(&settings, b"{}").unwrap();
+        fs_err::write(&output, b"").unwrap();
+        let children = [
+            format!("work,{},rw", workspace.path().display()),
+            format!("tools,{},ro", toolcache.path().display()),
+            format!("settings,{},ro,file", settings.display()),
+            format!("output,{},rw,file", output.display()),
+        ];
+        let path = |relative: &str| workspace.path().join(relative).display().to_string();
+        let (logs, payloads, out, log) = (
+            path("logs"),
+            path("logs/payloads"),
+            path("out"),
+            path("build.log"),
+        );
+        let policy = [
+            "--mount-deny",
+            &logs,
+            "--mount-allow",
+            &payloads,
+            "--mount-write",
+            &out,
+            "--mount-write",
+            &log,
+        ];
+        let [cold, restored] = cold_and_dormant_aggregates(&children, &policy, VMM);
+        let (cold, restored) = (cold.unwrap(), restored.unwrap());
+        assert_eq!(
+            restored
+                .config
+                .children
+                .iter()
+                .map(|child| (child.name.as_str(), child.kind, child.access))
+                .collect::<Vec<_>>(),
+            [
+                ("work", Directory, ReadWrite),
+                ("tools", Directory, ReadOnly),
+                ("settings", File, ReadOnly),
+                ("output", File, ReadWrite),
+            ]
+        );
+        let work = &restored.config.children[0];
+        assert_eq!(work.denied_paths, ["logs"]);
+        assert_eq!(work.allowed_paths, ["logs/payloads"]);
+        assert_eq!(work.writable_paths, ["build.log", "out"]);
+        // The restore resolves the roots, identities, and policy of the cold
+        // boot.
+        assert_eq!(restored.config, cold.config);
+        assert_eq!(restored.attachment, cold.attachment);
+        assert_eq!(restored.children, cold.children);
+    }
+
+    #[test]
+    fn dormant_slot_restore_refuses_the_aggregates_that_a_cold_boot_refuses() {
+        let parent = tempfile::tempdir().unwrap();
+        let work = parent.path().join("work");
+        let nested = work.join("nested");
+        fs_err::create_dir_all(&nested).unwrap();
+        let settings = parent.path().join("settings.json");
+        fs_err::write(&settings, b"{}").unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let directory = |name: &str, path: &Path| format!("{name},{},rw", path.display());
+        let file = |name: &str, path: &Path| format!("{name},{},ro,file", path.display());
+        let settings_path = settings.display().to_string();
+        let outside_path = outside.path().display().to_string();
+        for (children, policy, expected) in [
+            // Host paths that overlap.
+            (
+                vec![directory("work", &work), directory("nested", &nested)],
+                vec![],
+                "must not overlap",
+            ),
+            (
+                vec![
+                    directory("parent", parent.path()),
+                    file("settings", &settings),
+                ],
+                vec![],
+                "must not overlap",
+            ),
+            // Host objects of another kind than the child's.
+            (
+                vec![format!("work,{},rw,file", work.display())],
+                vec![],
+                "not a regular file",
+            ),
+            (
+                vec![format!("settings,{},ro", settings.display())],
+                vec![],
+                "not a plain directory",
+            ),
+            // A repeated name.
+            (
+                vec![directory("same", &work), directory("same", other.path())],
+                vec![],
+                "not unique",
+            ),
+            // Policy paths that no child takes.
+            (
+                vec![file("settings", &settings)],
+                vec!["--mount-deny", settings_path.as_str()],
+                "exposes the file",
+            ),
+            (
+                vec![directory("work", &work)],
+                vec!["--mount-deny", outside_path.as_str()],
+                "outside the filesystem export roots",
+            ),
+            (
+                vec![directory("work", &work)],
+                vec!["--mount-deny", "nested"],
+                "absolute host path",
+            ),
+        ] {
+            let [cold, restored] = cold_and_dormant_aggregates(&children, &policy, VMM);
+            let (cold, restored) = (cold.unwrap_err(), restored.unwrap_err());
+            assert!(format!("{cold:#}").contains(expected), "{cold:#}");
+            assert_eq!(format!("{restored:#}"), format!("{cold:#}"));
+        }
+    }
+
+    #[test]
+    fn dormant_slot_restore_applies_the_owner_of_a_cold_boot() {
+        let work = tempfile::tempdir().unwrap();
+        let children = [format!("work,{},rw", work.path().display())];
+        let [cold, restored] = cold_and_dormant_aggregates(
+            &children,
+            &[],
+            openvmm_defs::microvm::MicrovmFilesystemOwner::Caller,
+        );
+        // Caller ownership needs a Linux host and roots that root does not
+        // own, so a cold boot may refuse it here; the restore must then refuse
+        // it too.
+        match (cold, restored) {
+            (Ok(cold), Ok(restored)) => {
+                assert!(restored.config.owner.is_caller());
+                assert_eq!(restored.config, cold.config);
+            }
+            (Err(cold), Err(restored)) => {
+                assert_eq!(format!("{restored:#}"), format!("{cold:#}"));
+            }
+            (cold, restored) => {
+                panic!("the cold boot and the restore disagree: {cold:?} and {restored:?}")
+            }
+        }
     }
 
     #[test]

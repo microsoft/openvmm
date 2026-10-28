@@ -438,6 +438,78 @@ mod tests {
     }
 
     #[async_test]
+    async fn microvm_dormant_state_restores_into_aggregate_attachment(driver: DefaultDriver) {
+        use crate::microvm::saved_state::SAVED_DIRECTORY_CHILD;
+        use crate::microvm::saved_state::SAVED_FILE_CHILD;
+        use crate::profile::microvm_file_identity;
+
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let mut source = VirtioFsDevice::new_microvm_dormant(
+            &driver_source,
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            None,
+        )
+        .unwrap();
+        source.quiesce_input().await.unwrap();
+        let state = source.save_device().unwrap().unwrap();
+
+        // The slot that a capture left dormant takes an aggregate of a
+        // read-write directory and a read-only file, as a cold boot's would.
+        let work = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let settings = files.path().join("settings.json");
+        std::fs::write(&settings, b"{}").unwrap();
+        let mut destination = VirtioFsDevice::new_microvm_aggregate(
+            &driver_source,
+            MICROVM_ATTACHMENT_ID.to_owned(),
+            vec![
+                MicroVmAggregateChild::new(
+                    "work".to_owned(),
+                    microvm_root_identity(work.path()).unwrap(),
+                    false,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                )
+                .unwrap(),
+                MicroVmAggregateChild::new_file(
+                    "settings".to_owned(),
+                    microvm_file_identity(&settings).unwrap(),
+                    true,
+                )
+                .unwrap(),
+            ],
+            MicroVmOwnerMode::Vmm,
+            &[work.path(), settings.as_path()],
+            None,
+        )
+        .unwrap();
+        destination.restore_device(Some(state)).unwrap();
+
+        // From then on, the device saves the aggregate rather than the
+        // dormant slot.
+        destination.quiesce_input().await.unwrap();
+        let saved = destination
+            .save_device()
+            .unwrap()
+            .unwrap()
+            .parse::<SavedState>()
+            .unwrap();
+        assert!(!saved.dormant);
+        assert_eq!(
+            saved
+                .aggregate_children
+                .iter()
+                .map(|child| (child.name.as_str(), child.kind, child.access_mode))
+                .collect::<Vec<_>>(),
+            [
+                ("work", SAVED_DIRECTORY_CHILD, 2),
+                ("settings", SAVED_FILE_CHILD, 1),
+            ]
+        );
+    }
+
+    #[async_test]
     async fn microvm_active_state_rejects_dormant_destination(driver: DefaultDriver) {
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let root = tempfile::tempdir().unwrap();
