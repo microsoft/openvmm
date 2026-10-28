@@ -2777,10 +2777,12 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
                     unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
                 // This is a local launch
+                let (exit_code_send, exit_code_recv) = mesh::oneshot();
                 let mut handle =
                     mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
                         listener,
                         transport,
+                        exit_code: exit_code_send,
                     })
                     .await?;
 
@@ -2791,7 +2793,9 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
                 handle.join().await?;
 
-                Ok(0)
+                exit_code_recv
+                    .await
+                    .context("RPC worker did not report an exit code")
             });
         }
     }

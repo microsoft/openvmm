@@ -649,6 +649,8 @@ message VMConfig {
         RESTART = 1;
         // Leave the virtual machine halted.
         HALT = 2;
+        // Exit the VMM process with the event's exit code (default 0).
+        EXIT = 3;
     }
 
     // Actions for the VMM to take on guest power events.
@@ -661,6 +663,12 @@ message VMConfig {
         GuestPowerAction crash = 3;
         // The guest's watchdog timer expired. Defaults to RESTART.
         GuestPowerAction watchdog = 4;
+        // Exit codes (0-255). Only used when the corresponding action is EXIT.
+        // Each omitted code defaults to 0.
+        optional uint32 shutdown_exit_code = 5;
+        optional uint32 reset_exit_code = 6;
+        optional uint32 crash_exit_code = 7;
+        optional uint32 watchdog_exit_code = 8;
     }
 
     MemoryConfig memory_config = 1;

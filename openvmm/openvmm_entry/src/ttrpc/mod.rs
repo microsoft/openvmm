@@ -163,6 +163,7 @@ fn parse_arch_topology_overrides(
 pub struct Parameters {
     pub listener: UnixListener,
     pub transport: RpcTransport,
+    pub exit_code: mesh::OneshotSender<i32>,
 }
 
 #[derive(Copy, Clone, mesh::MeshPayload)]
@@ -337,6 +338,7 @@ mod dispatch {
 pub struct TtrpcWorker {
     listener: UnixListener,
     transport: ResolvedTransport,
+    exit_code: mesh::OneshotSender<i32>,
 }
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
@@ -349,6 +351,7 @@ impl Worker for TtrpcWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         Ok(Self {
             listener: parameters.listener,
+            exit_code: parameters.exit_code,
             transport: match parameters.transport {
                 #[cfg(feature = "ttrpc")]
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
@@ -380,7 +383,8 @@ impl Worker for TtrpcWorker {
                 transport: self.transport,
                 registry: FdRegistry::default(),
             };
-            service.run(self.listener, recv).await?;
+            let code = service.run(self.listener, recv).await?;
+            self.exit_code.send(code);
             Ok(())
         })
     }
@@ -391,7 +395,7 @@ impl VmService {
         &mut self,
         listener: UnixListener,
         mut recv: mesh::Receiver<WorkerRpc<()>>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i32> {
         let mut server = mesh_rpc::Server::new();
         let mut vm_service_recv = server.add_service::<vmservice::Vm>();
         let mut inspect_service_recv = server.add_service::<InspectService>();
@@ -493,7 +497,11 @@ impl VmService {
                     break false;
                 }
                 Action::ControllerEvent(Some(event)) => {
-                    self.handle_controller_event(event);
+                    if let Some(code) = self.handle_controller_event(event) {
+                        // Like the CLI exit path, do not wait for parked VM
+                        // workers or in-flight RPCs to finish teardown.
+                        return Ok(code);
+                    }
                 }
                 Action::ControllerEvent(None) => {} // handled above
                 Action::WaitVmCancelled(reason) => {
@@ -526,7 +534,8 @@ impl VmService {
             let _ = Arc::try_unwrap(vm).ok().expect("no more VM references");
         }
         drop(cancel_send);
-        server_task.await
+        server_task.await?;
+        Ok(0)
     }
 
     fn start_rpc<F, R>(
@@ -1182,26 +1191,7 @@ impl VmService {
             rtc_delta_milliseconds: 0,
         };
 
-        let guest_power_actions = {
-            use vmservice::vm_config::GuestPowerAction as ProtoAction;
-
-            let requested = req_config.guest_power_actions.unwrap_or_default();
-            let defaults = GuestPowerActions::default();
-            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
-                Ok(match ProtoAction::from_i32(value) {
-                    Some(ProtoAction::Default) => default,
-                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
-                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
-                    None => bail!("unknown guest power action {value}"),
-                })
-            };
-            GuestPowerActions {
-                shutdown: action(requested.shutdown, defaults.shutdown)?,
-                reset: action(requested.reset, defaults.reset)?,
-                crash: action(requested.crash, defaults.crash)?,
-                watchdog: action(requested.watchdog, defaults.watchdog)?,
-            }
-        };
+        let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;
 
         let mut scsi_rpc = None;
         let mut consomme_rpc = None;
@@ -1466,7 +1456,7 @@ impl VmService {
         Ok(())
     }
 
-    fn handle_controller_event(&mut self, event: VmControllerEvent) {
+    fn handle_controller_event(&mut self, event: VmControllerEvent) -> Option<i32> {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
@@ -1476,10 +1466,8 @@ impl VmService {
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The protocol has no `exit` power action, so this should not
-                // occur in ttrpc/grpc mode; log rather than exiting the server
-                // out from under its clients.
-                tracing::warn!(code, "unexpected exit request in server mode");
+                tracing::info!(code, "exiting on guest power event");
+                return Some(code);
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -1507,6 +1495,7 @@ impl VmService {
                 }
             }
         }
+        None
     }
 
     fn add_pcie_device(
@@ -1705,6 +1694,42 @@ fn open_socket_backend(
     } else {
         (bind_serial, "bind")
     }
+}
+
+fn guest_power_actions_from_proto(
+    requested: Option<vmservice::vm_config::GuestPowerActions>,
+) -> anyhow::Result<GuestPowerActions> {
+    use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+    let requested = requested.unwrap_or_default();
+    let defaults = GuestPowerActions::default();
+    let action =
+        |value: i32, exit_code: Option<u32>, default| -> anyhow::Result<GuestPowerAction> {
+            Ok(match ProtoAction::from_i32(value) {
+                Some(ProtoAction::Default) => default,
+                Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                Some(ProtoAction::Exit) => GuestPowerAction::Exit(
+                    u8::try_from(exit_code.unwrap_or(0))
+                        .context("invalid guest power exit code (expected 0-255)")?,
+                ),
+                None => bail!("unknown guest power action {value}"),
+            })
+        };
+    Ok(GuestPowerActions {
+        shutdown: action(
+            requested.shutdown,
+            requested.shutdown_exit_code,
+            defaults.shutdown,
+        )?,
+        reset: action(requested.reset, requested.reset_exit_code, defaults.reset)?,
+        crash: action(requested.crash, requested.crash_exit_code, defaults.crash)?,
+        watchdog: action(
+            requested.watchdog,
+            requested.watchdog_exit_code,
+            defaults.watchdog,
+        )?,
+    })
 }
 
 /// Convert the proto `SMBIOSConfig` (untrusted input) into the loader's
@@ -2617,6 +2642,165 @@ mod tests {
     use test_with_tracing::test;
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn guest_power_actions_defaults() {
+        assert_eq!(
+            guest_power_actions_from_proto(None).unwrap(),
+            GuestPowerActions::default()
+        );
+        assert_eq!(
+            guest_power_actions_from_proto(Some(Default::default())).unwrap(),
+            GuestPowerActions::default()
+        );
+    }
+
+    #[test]
+    fn guest_power_actions_exit_codes() {
+        use prost::Message;
+        use vmservice::vm_config::GuestPowerAction as Action;
+        use vmservice::vm_config::GuestPowerActions as Actions;
+
+        for code in [None, Some(0), Some(5), Some(255), Some(256), Some(u32::MAX)] {
+            for event in 0..4 {
+                let mut requested = Actions::default();
+                let (action, exit_code) = match event {
+                    0 => (&mut requested.shutdown, &mut requested.shutdown_exit_code),
+                    1 => (&mut requested.reset, &mut requested.reset_exit_code),
+                    2 => (&mut requested.crash, &mut requested.crash_exit_code),
+                    _ => (&mut requested.watchdog, &mut requested.watchdog_exit_code),
+                };
+                *action = Action::Exit as i32;
+                *exit_code = code;
+                let requested = Actions::decode(requested.encode_to_vec().as_slice()).unwrap();
+                let result = guest_power_actions_from_proto(Some(requested));
+                if code.is_some_and(|code| code > 255) {
+                    assert!(result.unwrap_err().to_string().contains("expected 0-255"));
+                } else {
+                    let mut expected = GuestPowerActions::default();
+                    let action = GuestPowerAction::Exit(code.unwrap_or(0) as u8);
+                    match event {
+                        0 => expected.shutdown = action,
+                        1 => expected.reset = action,
+                        2 => expected.crash = action,
+                        _ => expected.watchdog = action,
+                    }
+                    assert_eq!(result.unwrap(), expected);
+                }
+            }
+        }
+
+        assert_eq!(
+            guest_power_actions_from_proto(Some(Actions {
+                shutdown: Action::Exit as i32,
+                reset: Action::Exit as i32,
+                crash: Action::Exit as i32,
+                watchdog: Action::Exit as i32,
+                shutdown_exit_code: Some(1),
+                reset_exit_code: Some(2),
+                crash_exit_code: Some(3),
+                watchdog_exit_code: Some(4),
+            }))
+            .unwrap(),
+            GuestPowerActions {
+                shutdown: GuestPowerAction::Exit(1),
+                reset: GuestPowerAction::Exit(2),
+                crash: GuestPowerAction::Exit(3),
+                watchdog: GuestPowerAction::Exit(4),
+            }
+        );
+    }
+
+    #[test]
+    fn guest_power_actions_existing_and_unknown_actions() {
+        use vmservice::vm_config::GuestPowerAction as Action;
+        use vmservice::vm_config::GuestPowerActions as Actions;
+
+        for value in [
+            Action::Default as i32,
+            Action::Restart as i32,
+            Action::Halt as i32,
+            -1,
+            4,
+        ] {
+            for event in 0..4 {
+                let mut requested = Actions::default();
+                let action = match event {
+                    0 => &mut requested.shutdown,
+                    1 => &mut requested.reset,
+                    2 => &mut requested.crash,
+                    _ => &mut requested.watchdog,
+                };
+                *action = value;
+                let result = guest_power_actions_from_proto(Some(requested));
+                let expected = match Action::from_i32(value) {
+                    Some(Action::Default) => GuestPowerActions::default(),
+                    Some(Action::Restart) => GuestPowerActions {
+                        shutdown: if event == 0 {
+                            GuestPowerAction::Reset
+                        } else {
+                            GuestPowerAction::Halt
+                        },
+                        crash: if event == 2 {
+                            GuestPowerAction::Reset
+                        } else {
+                            GuestPowerAction::Halt
+                        },
+                        ..GuestPowerActions::default()
+                    },
+                    Some(Action::Halt) => GuestPowerActions {
+                        reset: if event == 1 {
+                            GuestPowerAction::Halt
+                        } else {
+                            GuestPowerAction::Reset
+                        },
+                        watchdog: if event == 3 {
+                            GuestPowerAction::Halt
+                        } else {
+                            GuestPowerAction::Reset
+                        },
+                        ..GuestPowerActions::default()
+                    },
+                    _ => {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("unknown guest power action")
+                        );
+                        continue;
+                    }
+                };
+                assert_eq!(result.unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn guest_power_exit_stops_rpc_server() {
+        DefaultPool::run_with(async |driver| {
+            for code in [0, 5, 255] {
+                let dir = tempfile::tempdir().unwrap();
+                let listener = UnixListener::bind(dir.path().join("rpc.sock")).unwrap();
+                let (event_send, event_recv) = mesh::channel();
+                let (_worker_send, worker_recv) = mesh::channel();
+                let mut service = VmService {
+                    driver: driver.clone(),
+                    vm: None,
+                    vm_controller: None,
+                    vm_controller_events: Some(event_recv),
+                    controller_task: None,
+                    wait_vm_response: None,
+                    lifecycle: VmLifecycle::Running,
+                    rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
+                    transport: ResolvedTransport::Auto,
+                    registry: FdRegistry::default(),
+                };
+                event_send.send(VmControllerEvent::ExitRequested { code });
+                assert_eq!(service.run(listener, worker_recv).await.unwrap(), code);
+            }
+        });
+    }
 
     #[test]
     fn uefi_initial_variables_defaults() {
