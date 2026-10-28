@@ -88,6 +88,12 @@ impl Builder<'_> {
                 "user namespace self-mapping requires CLONE_NEWUSER",
             ));
         }
+        if map_current_user && (self.uid.is_some() || self.gid.is_some()) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "explicit UID/GID changes are not supported with user namespace self-mapping",
+            ));
+        }
 
         // Build the null-terminated arrays for exec.
         let argv = super::c_slice_to_pointers(&self.argv);
@@ -98,10 +104,6 @@ impl Builder<'_> {
             .map(fd_close_ranges)
             .transpose()?
             .unwrap_or_default();
-        let sandbox_uid = sandbox.and_then(|config| config.uid);
-        let sandbox_gid = sandbox.and_then(|config| config.gid);
-        let uid = merge_identity(self.uid, sandbox_uid, "user")?;
-        let gid = merge_identity(self.gid, sandbox_gid, "group")?;
 
         let mut context = CloneContext {
             executable: &self.executable,
@@ -117,8 +119,8 @@ impl Builder<'_> {
                 (IdMap::new(uid), IdMap::new(gid))
             }),
             fd_close_ranges: &fd_close_ranges,
-            uid,
-            gid,
+            uid: self.uid,
+            gid: self.gid,
             trace_seccomp_filter: self.linux_builder.trace_seccomp_filter.clone(),
         };
 
@@ -224,20 +226,6 @@ fn inherited_fds(config: &sandbox::SandboxProcessConfig) -> io::Result<Vec<i32>>
     fds.sort_unstable();
     fds.dedup();
     Ok(fds)
-}
-
-fn merge_identity<T: Copy + Eq>(
-    builder: Option<T>,
-    sandbox: Option<T>,
-    identity: &str,
-) -> io::Result<Option<T>> {
-    if builder.is_some() && sandbox.is_some() && builder != sandbox {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("conflicting process and sandbox {identity} IDs"),
-        ));
-    }
-    Ok(sandbox.or(builder))
 }
 
 struct ChildStackGuard(*mut libc::c_void, usize);

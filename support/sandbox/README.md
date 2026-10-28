@@ -15,14 +15,14 @@ Sandboxing happens in three named, ordered stages:
 1. **`prepare`** — runs in the *control* process, just before it spawns the
    worker. It returns a plain-data `SandboxProcessConfig` describing the
    child's launch environment (which Linux `CLONE_NEW*` flags to use, which
-   handles stay inheritable, the child's identity, and — on Windows — the LPAC
+   handles stay inheritable, whether to self-map IDs, and — on Windows — the LPAC
    construction data). The caller passes that prepared configuration intact to
    the platform process builder, which performs the spawn. This crate depends
    on neither `mesh` nor `pal`: it decides *what* the launch environment must
    be; PAL decides *how* to apply it.
 2. **`apply`** — the **first statement of the worker's `main()`**. On Linux the
    worker configures the namespaces it was cloned into, then applies
-   `pivot_root`, credential drop, hardening, `no_new_privs`, and optional
+   `pivot_root`, capability drop, hardening, `no_new_privs`, and optional
    seccomp. It must run before any thread is spawned, any async runtime starts,
    or any resource is opened.
 3. **`tighten`** — an optional, additive-only ratchet a worker calls once it
@@ -113,10 +113,17 @@ let preparation = sandbox::prepare(
 
 // Merge `preparation` into your own process builder: keep
 // `preparation.inherit_handles` inheritable, clone with
-// `preparation.clone_flags`, honor `preparation.map_current_user`, set
-// `preparation.uid` / `.gid`, and (on Windows) build the LPAC token from
+// `preparation.clone_flags`, honor `preparation.map_current_user`,
+// and (on Windows) build the LPAC token from
 // `preparation.windows`. Then exec the child.
 ```
+
+Linux maps namespace UID/GID 0 to the controller's effective host UID/GID;
+there is no host UID/GID switch or per-worker host identity isolation.
+`Identity.uid/gid` are reserved for future host-side identity provisioning.
+Any explicit value, including 0, is rejected by `prepare`, even with the debug
+sandbox escape hatch active. PAL also rejects explicit process-builder UID/GID
+changes when user namespace self-mapping is requested.
 
 Handle hygiene is the caller's job: there is no grant envelope and no
 descriptor sweep inside this crate. `prepare` reports exactly which tagged

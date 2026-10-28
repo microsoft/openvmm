@@ -156,7 +156,7 @@ them.
 | **D12** | **Empty network namespace is the primary Linux network restriction.** Landlock network needs ABI 4 / kernel 6.7, above both baselines. |
 | **D13** | **Seccomp is opt-in per worker class**, composed additively from library-contributed requirements plus explicit additions. Derived profiles union their syscall denials with the base profile and cannot remove an existing denial. `RET_KILL_PROCESS` in production. |
 | **D14** | **Sandbox setup fails closed.** A requested namespace or required confinement primitive that cannot be applied aborts the worker launch; there is no retry with a weaker namespace set. |
-| **D15** | **Namespace UID/GID 0 map to the spawning process's effective UID/GID.** Distinct outer host identities are deferred until the control process has an explicit identity allocator. |
+| **D15** | **Namespace UID/GID 0 map to the spawning process's effective UID/GID.** Explicit `Identity.uid/gid` requests are rejected. Distinct outer host identities are deferred until the control process has an explicit identity allocator. |
 | **D16** | **No PID namespace in the initial integration.** User, mount, and (unless networking is unrestricted) network namespaces are created at clone time. |
 
 ### 3.2 Additional design rationale
@@ -172,7 +172,7 @@ accidentally weakening the design.
 | **C4** | **The investigation includes the intended shape of Windows sandboxing, but implementation has not been scheduled.** | Preserves the feasibility work without representing an unmade stakeholder or delivery commitment. |
 | **C5** | **Workers build concrete profiles from `Profile::deny_all()` in their owning crate.** Policy is linked, not sent, and `support/sandbox` does not enumerate worker classes. | Adding a worker does not require editing the sandbox crate. The deny-all base guarantees R-S1 by construction; an inventory test provides centralized audit visibility ([§12](#12-testing--ci-strategy)). |
 | **C7** | **Apply Landlock before installing seccomp last.** | Installing seccomp first would require permanently permitting the Landlock setup syscalls. |
-| **C8** | **Set `PR_SET_DUMPABLE=0` in `apply`, after the credential drop.** | `execve` and effective-UID changes reset the dumpable state. |
+| **C8** | **Set `PR_SET_DUMPABLE=0` in `apply`, after `execve`.** | `execve` resets the dumpable state. The sandbox does not change UID/GID; any future effective-UID changes must precede clearing dumpable because they also reset it. |
 | **C10** | **Always apply the supporting controls listed in [§7.2](#72-primitive--stage--apply-point-matrix).** | Locked securebits, credential hardening, mount flags, limits, and related controls are cheap and high-value. |
 | **C11** | **Fail hard for every requested namespace and required confinement primitive.** | Retrying with fewer boundaries silently changes the security contract. Any fallback must be an explicit, reviewed profile. |
 | **C15** | **Handle tags are opaque and caller-defined.** `support/sandbox` never interprets their meaning. | Keeps the crate free of OpenVMM domain concepts and reusable across consumers. |
@@ -270,7 +270,7 @@ mitigations that must be self-applied. This asymmetry is inherent and
 is discussed in [§8.6](#86-asymmetries-with-linux).
 
 `apply` performs one-shot setup that consumes privilege, including namespace
-configuration, mount assembly, and credential dropping. `tighten` is limited
+configuration, mount assembly, and capability dropping. `tighten` is limited
 to restrictions that can safely stack after initialization and cannot restore
 authority. A separate additive-only `Restrictions` type makes widening
 unrepresentable. Linux currently supports stacked seccomp denials; other
@@ -284,13 +284,13 @@ lines below show investigated design rather than implemented behavior.
 ```mermaid
 graph TB
     subgraph CTRL["STAGE 1 · prepare — control process (trusted · full ambient authority)"]
-        PL["<b>Linux</b><br/>compute SandboxProcessConfig<br/>clone flags · identity · inherited handles"]
+        PL["<b>Linux</b><br/>compute SandboxProcessConfig<br/>clone flags · self-mapping · inherited handles"]
         PW["<b>Windows design only</b><br/>compute WindowsPreparation<br/>AppContainer · capabilities · mitigation intent"]
     end
 
     subgraph CHILD["Child process — trusted bootstrap until confinement; untrusted role code afterward"]
         AP["<b>apply()</b> · FIRST STATEMENT of main()<br/>trusted-computing-base phase until declared confinement is complete"]
-        APL["<b>Linux</b> — pre-exec PAL callback maps allowed FDs<br/>and closes all others; apply then establishes<br/>namespaces · bind mounts · pivot_root<br/>caps=∅ + locked securebits · setgid/setuid<br/>NO_NEW_PRIVS · Landlock · seccomp"]
+        APL["<b>Linux</b> — pre-exec PAL callback maps allowed FDs<br/>and closes all others; apply then establishes<br/>namespaces · bind mounts · pivot_root<br/>caps=∅ + locked securebits<br/>NO_NEW_PRIVS · Landlock · seccomp"]
         APW["<b>Windows design only — not implemented</b><br/>Job Object · post-launch mitigations<br/>privilege strip · deny-only groups · integrity level"]
         SETUP["SANDBOX BOUNDARY IS NOW ACTIVE<br/>&lt;worker process setup&gt;<br/>attach Mesh · receive granted FDs + OsResources<br/>map guest memory · spawn worker threads"]
         TI["<b>tighten()</b> · optional · after setup"]
@@ -439,10 +439,19 @@ crate boundary.
 |---|---|
 | `Profile` / `Builder` | A linked, immutable policy built from `Profile::deny_all()`. The widening-only builder grants filesystem paths, network scope, optional syscall filtering, and platform capabilities. Syscall deny lists compose by union, so deriving a profile cannot remove a base denial. |
 | `Restrictions` | Additive-only post-initialization narrowing. Linux currently implements stacked seccomp denials. |
-| `Identity` | Optional requested UID/GID and Windows AppContainer moniker. |
+| `Identity` | Reserved host-side Unix UID/GID requests (currently rejected) and an optional Windows AppContainer moniker. |
 | `HandleTag` / `RawHandle` | Describe child-visible handles that the process builder must preserve. The sandbox crate does not interpret their meaning. |
 | `SandboxProcessConfig` | Inert launch configuration returned by `prepare` for the process builder to realize. |
 | `WindowsPreparation` | The investigated Windows launch-policy shape. It is not a complete Windows backend. |
+
+Linux workers retain the controller's effective host UID/GID, appearing as
+UID/GID 0 inside their user namespace (D15). They do not receive distinct
+per-worker host identities. `Identity.uid/gid` refer to future host-side
+identities, not namespace-local numbers. `prepare` rejects any explicit value,
+including 0, even when the debug sandbox escape hatch is active.
+`SandboxProcessConfig` carries no requested UID/GID, and PAL rejects explicit
+process-builder UID/GID changes when self-mapping is requested. Neither the
+sandbox launch path nor `apply` performs a UID/GID switch.
 
 Profiles are linked into the binary. `profiles::SandboxRole` selects the
 OpenVMM worker policy from its dedicated module and returns a finished `Profile`.
@@ -569,7 +578,7 @@ callback; `apply` = worker startup, single-threaded and freshly execve'd;
 |---|---|---|---|
 | Create source FDs with `O_CLOEXEC` or an equivalent atomic flag | normal operation | R | At FD creation; defense in depth against every spawn path |
 | Compute the fixed child-FD allowlist | `prepare` | R | Before spawn |
-| `setrlimit` bundle | `apply` | R | Early; before the credential drop |
+| `setrlimit` bundle | `apply` | R | Early; before the capability drop |
 | `clone(CLONE_NEWUSER\|CLONE_NEWNS[\|CLONE_NEWNET])` | `clone` | R | Namespace set is fixed by the linked profile; no weaker retry |
 | write `/proc/self/setgroups` = `deny` | `clone` | R | libc-only callback, before `gid_map` |
 | write `/proc/self/uid_map`, `gid_map` | `clone` | R | Preformatted `0 <effective-id> 1` mappings, before `execve` |
@@ -581,8 +590,7 @@ callback; `apply` = worker startup, single-threaded and freshly execve'd;
 | `keyctl(KEYCTL_JOIN_SESSION_KEYRING, NULL)` | `apply` | O | — |
 | Clear ambient caps → `capset` zero → `PR_CAPBSET_DROP` all | `apply` | R | **After** mounts, which may need `CAP_SYS_ADMIN` |
 | `prctl(PR_SET_SECUREBITS, ...LOCKED)` | `apply` | R | Immediately after the capability drop |
-| `setgroups([])` → `setgid` → `setuid` | `apply` | R | **In that order.** `setuid` last, or the later calls lose privilege |
-| `prctl(PR_SET_DUMPABLE, 0)` | `apply` | R | **After `setuid`** — the credential change resets it (C8) |
+| `prctl(PR_SET_DUMPABLE, 0)` | `apply` | R | In the fresh worker image, after `execve` resets it (C8); no UID/GID switch |
 | `prctl(PR_SET_NO_NEW_PRIVS, 1)` | `apply` | R | Before Landlock and seccomp, the primitives it enables |
 | Landlock ABI probe + ruleset apply | `apply` | O | After mounts (paths must exist); **before** seccomp (C7) |
 | seccomp filter install | `apply` | O (per D13) | **Last.** Least reversible, and it can now deny the Landlock syscalls |
@@ -601,14 +609,12 @@ appears to.
    window after entering the new user namespace but before any map has
    been written — the kernel permits exactly one write.
 
-2. **Credential drops come after mounts, and `DUMPABLE`
-   comes after credentials.** Mount setup may need `CAP_SYS_ADMIN` in
+2. **Capability drops come after mounts, and `DUMPABLE`
+   is cleared in the fresh worker image.** Mount setup may need `CAP_SYS_ADMIN` in
    the new user namespace, so capabilities cannot be dropped first.
-   And changing the effective UID resets the dumpable flag to
-   `/proc/sys/fs/suid_dumpable`, so it must be re-established afterwards.
-   This is C8, and
-   it is the most commonly-missed sequencing bug in this class of
-   code.
+   `execve` resets the dumpable state, so `apply` must clear it before
+   untrusted worker code runs (C8). There is no UID/GID switch today;
+   future effective-UID changes must also precede clearing dumpable.
 
 3. **Landlock before seccomp** (C7). Both are one-way ratchets, so
    the order determines what the *final* filter must permit. Applying
@@ -660,8 +666,7 @@ sequenceDiagram
         W->>K: keyctl(JOIN_SESSION_KEYRING, NULL)
         W->>K: clear ambient; capset zero; PR_CAPBSET_DROP all
         W->>K: prctl(PR_SET_SECUREBITS, ...LOCKED)
-        W->>K: setgroups([]); setgid; setuid
-        W->>K: prctl(PR_SET_DUMPABLE, 0)        [after setuid]
+        W->>K: prctl(PR_SET_DUMPABLE, 0)        [in fresh worker image]
         W->>K: prctl(PR_SET_NO_NEW_PRIVS, 1)
         W->>K: landlock: probe ABI, build ruleset, restrict_self
         W->>K: seccomp(SET_MODE_FILTER, initial)   [last]
@@ -1065,7 +1070,7 @@ is `apply`; on Windows launch-only work is `prepare` and the rest is
 | `NetworkAccess::Unrestricted` | Preserve the caller's network namespace | **`prepare`** | Not yet implemented | — |
 | Launch handles: allowlist only | Atomic `O_CLOEXEC` at creation + fixed target mapping and `close_range` in PAL's pre-exec child callback | `prepare` + **`clone`** | `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` (mandatory) + parent `HANDLE_FLAG_INHERIT` sweep | **`prepare`** |
 | `Privileges::DropAll` | clear ambient → `capset` zero → `PR_CAPBSET_DROP` all → locked securebits | **`apply`** | `AdjustTokenPrivileges(SE_PRIVILEGE_REMOVED)` | **`apply`** |
-| `Credentials::Uid(uid)/Gid(gid)` | uid_map/gid_map then `setgroups([])`→`setgid`→`setuid` | **`apply`** | AppContainer SID *is* the identity; `AdjustTokenGroups(SE_GROUP_USE_FOR_DENY_ONLY)` for residual groups | `prepare` + `apply` |
+| `Identity.uid/gid` (reserved host IDs) | Explicit requests rejected; only the controller self-map is supported (D15) | **`prepare`** | Unix identity fields are unsupported; AppContainer identity is separate | `prepare` |
 | `NoNewPrivs` | `prctl(PR_SET_NO_NEW_PRIVS, 1)` — before the filters it enables | **`apply`** | Analogous LPAC token behavior | `prepare` (inherent) |
 | `Subprocess::Deny` | seccomp requires `CLONE_THREAD` and rejects `CLONE_NEW*` for `clone`; `clone3` returns `ENOSYS` for libc thread fallback; `fork`/`vfork` (where present), `execve`, and `execveat` are denied | **`apply`** | `ProcessChildProcessPolicy` + Job Object `ACTIVE_PROCESS = 1` | **`apply`** |
 | `DynamicCode::Deny` | seccomp filter on `mprotect(PROT_EXEC)` / `mmap(PROT_EXEC)` | **`apply`** | `ProcessDynamicCodePolicy` | **`apply`** |
@@ -1073,7 +1078,7 @@ is `apply`; on Windows launch-only work is `prepare` and the rest is
 | `UserInterface::Deny` | Inherent — headless netns, no display socket bound in | (inherent) | `ProcessSystemCallDisablePolicy` (Win32k lockdown) + no UI capability SIDs | `prepare` + **`apply`** |
 | `ExtensionPoints::Deny` | N/A | — | `ProcessExtensionPointDisablePolicy` | **`apply`** |
 | `IntegrityLevel::Low` | N/A | — | `SetTokenInformation(TokenIntegrityLevel, ...)` | **`apply`** |
-| `Debuggability::Deny` | `prctl(PR_SET_DUMPABLE, 0)` **after `setuid`** (C8) + `/proc` `hidepid=2,subset=pid` + seccomp `ptrace` deny | **`apply`** | Restrictive DACL on the process and token objects | **`apply`** |
+| `Debuggability::Deny` | `prctl(PR_SET_DUMPABLE, 0)` in the fresh worker image (C8) + `/proc` `hidepid=2,subset=pid` + seccomp `ptrace` deny | **`apply`** | Restrictive DACL on the process and token objects | **`apply`** |
 | `SyscallFilter(name)` | `seccomp(SET_MODE_FILTER, ...)` — **last** in `apply` (C7) | **`apply`** | Win32k lockdown covers the analogous surface | — |
 | `LpacCapability(name)` | N/A | — | Add the named capability SID — only when the worker genuinely needs the API surface | **`prepare`** |
 | `IoUring::Restricted` | `IORING_REGISTER_RESTRICTIONS` per ring; or seccomp-deny `io_uring_*` entirely if unused | `apply` / worker | N/A | — |
@@ -1343,7 +1348,7 @@ are future work with a documented trigger for revisiting.
 | # | Question | Owner / trigger | Notes |
 |---|---|---|---|
 | 1 | **Confirm the Windows baseline.** This document assumes Windows 10 1809 / Server 2019. | Before implementation | Chosen to cover LPAC (1703+), the post-launch mitigation policy set, and nested Job Objects. Not inherited from either source document — needs an explicit product decision. |
-| 2 | **Per-VM identity** — ephemeral per-spawn UIDs (Linux) and per-VM AppContainer names (Windows). | When multi-tenant hosting is a requirement | Linux currently uses per-worker-class identity (D15); the proposed Windows design uses the same model ([§8.5](#85-appcontainer-profile-lifecycle--naming)). The hardened variant costs identity provisioning and cleanup on both sides. |
+| 2 | **Distinct host identities** — per-worker or per-VM UIDs/GIDs (Linux) and per-VM AppContainer names (Windows). | When identity provisioning is available and host-side separation is required | Linux currently inherits the controller's host identity (D15); the proposed Windows design uses per-worker-class AppContainers ([§8.5](#85-appcontainer-profile-lifecycle--naming)). Distinct Unix identities need an allocator and privileged mapping setup; neither is implemented. |
 | 3 | **Which passed handles are powerful enough to need proxying?** A `/dev/kvm` or VFIO FD carries a large `ioctl` surface. | During per-class profile authoring | Enumerate per worker class; decide raw FD vs. Mesh protocol object vs. seccomp `ioctl` argument filtering. |
 | 4 | **Workers that cannot enumerate their resource needs up front.** | If such a worker appears | The seccomp user-notify broker is the answer and the kernel support is present on both baselines; it is deferred only because nothing needs it. |
 | 5 | **Periodic residual-syscall-surface re-review.** | Each release, per profile | Review new kernel interfaces and worker functionality for syscalls that should join the mandatory or role-specific deny sets. Requires the per-entry rationale from [§12.3](#123-profile-development-workflow). |
@@ -1465,8 +1470,8 @@ message Grant {
 }
 
 message Identity {
-  optional uint32 uid           = 1;  // Unix
-  optional uint32 gid           = 2;  // Unix
+  optional uint32 uid           = 1;  // Host-side Unix ID (deferred)
+  optional uint32 gid           = 2;  // Host-side Unix ID (deferred)
   optional string app_container = 3;  // Windows AppContainer moniker
 }
 
