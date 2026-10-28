@@ -388,6 +388,8 @@ pub enum PmuGsivConfig {
 /// MSI controller selection for aarch64 PCIe interrupt delivery.
 #[derive(Debug, Protobuf, Default, Clone)]
 pub enum GicMsiConfig {
+    /// Disable GIC MSI
+    Disabled,
     /// Automatically select the best available MSI controller:
     /// ITS when the hypervisor supports it, otherwise GICv2m.
     #[default]

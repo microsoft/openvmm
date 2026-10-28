@@ -59,8 +59,15 @@ pub struct KernelConfig<'a> {
 #[derive(Debug, Clone, Copy)]
 pub enum KernelIsolationConfig {
     None,
+    #[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
+    Cca(CcaKernelConfig),
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     Snp(SnpKernelConfig),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CcaKernelConfig {
+    pub shared_gpa_bit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,14 +76,15 @@ pub struct SnpKernelConfig {
     pub restricted_injection: bool,
 }
 
-// Bring-up hack for SNP Linux direct boot. Without a bootshim or firmware to
+// Bring-up hack for CVM Linux direct boot. Without a bootshim or firmware to
 // accept memory after launch, every RAM page must be added to the initial SNP
 // launch context. This makes launch extremely slow and should be removed once
-// SNP boots exclusively through IGVM, or direct boot can accept the remaining
-// RAM after launch instead of pre-accepting it here.
-fn complete_snp_direct_ram_imports(
+// SNP/CCA boots exclusively through IGVM, or direct boot can accept the
+// remaining RAM after launch instead of pre-accepting it here.
+fn complete_linux_direct_cvm_ram_imports(
     page_imports: &mut Vec<virt::InitialPageImport>,
     ram_ranges: impl IntoIterator<Item = MemoryRange>,
+    import_type: virt::InitialPageImportType,
 ) {
     let mut imported_ranges: Vec<_> = page_imports.iter().map(|page| page.range).collect();
     imported_ranges.sort_by_key(|range| (range.start(), range.end()));
@@ -92,8 +100,8 @@ fn complete_snp_direct_ram_imports(
             if cursor < start {
                 page_imports.push(virt::InitialPageImport {
                     range: MemoryRange::new(cursor..start),
-                    import_type: virt::InitialPageImportType::Normal,
-                    tag: "linux-snp-direct-ram",
+                    import_type,
+                    tag: "linux-direct-cvm-ram",
                 });
             }
             cursor = cursor.max(end);
@@ -101,8 +109,8 @@ fn complete_snp_direct_ram_imports(
         if cursor < ram_range.end() {
             page_imports.push(virt::InitialPageImport {
                 range: MemoryRange::new(cursor..ram_range.end()),
-                import_type: virt::InitialPageImportType::Normal,
-                tag: "linux-snp-direct-ram",
+                import_type,
+                tag: "linux-direct-cvm-ram",
             });
         }
     }
@@ -195,6 +203,7 @@ pub fn load_linux_x86(
     let cmdline = CString::new(cfg.cmdline).unwrap();
     let snp = match cfg.isolation {
         KernelIsolationConfig::None => None,
+        KernelIsolationConfig::Cca(_) => unreachable!(),
         KernelIsolationConfig::Snp(snp) => Some(snp),
     };
     let snp_boot = snp.map(|snp| loader::linux::SnpBootConfig { c_bit: snp.c_bit });
@@ -232,9 +241,10 @@ pub fn load_linux_x86(
         mut page_imports,
     } = loader.initial_regs_and_page_imports();
     if snp.is_some() {
-        complete_snp_direct_ram_imports(
+        complete_linux_direct_cvm_ram_imports(
             &mut page_imports,
             cfg.mem_layout.ram().iter().map(|range| range.range),
+            virt::InitialPageImportType::Normal,
         );
     }
 
@@ -597,6 +607,7 @@ pub fn load_linux_arm64(
                 high_mmio: chipset_mmio.high,
                 initrd: Some((initrd_start, initrd_end)),
                 smmus: smmu_configs,
+                isolation: &cfg.isolation,
             }),
         )
         .with_command_line(cfg.cmdline)
@@ -625,7 +636,18 @@ pub fn load_linux_arm64(
     loader::linux::set_direct_boot_registers_arm64(&mut loader, &load_info)
         .map_err(Error::Loader)?;
 
-    Ok(loader.initial_regs_and_page_imports())
+    let InitialLoad {
+        regs,
+        mut page_imports,
+    } = loader.initial_regs_and_page_imports();
+    if matches!(cfg.isolation, KernelIsolationConfig::Cca { .. }) {
+        complete_linux_direct_cvm_ram_imports(
+            &mut page_imports,
+            cfg.mem_layout.ram().iter().map(|range| range.range),
+            virt::InitialPageImportType::NormalUnmeasured,
+        );
+    }
+    Ok(InitialLoad { regs, page_imports })
 }
 
 #[cfg(test)]
@@ -641,12 +663,13 @@ mod tests {
             tag: "loader",
         }];
 
-        complete_snp_direct_ram_imports(
+        complete_linux_direct_cvm_ram_imports(
             &mut page_imports,
             [
                 MemoryRange::new(0x1000..0x5000),
                 MemoryRange::new(0x8000..0xa000),
             ],
+            virt::InitialPageImportType::Normal,
         );
 
         let completed_ranges: Vec<_> = page_imports

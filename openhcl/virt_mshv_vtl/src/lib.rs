@@ -2034,6 +2034,7 @@ impl<'a> UhProtoPartition<'a> {
             isolation: params.isolation,
             vendor: Vendor::ARM,
             supports_aarch32_el0: false,
+            shared_gpa_bit: None,
         };
 
         #[cfg(guest_arch = "x86_64")]

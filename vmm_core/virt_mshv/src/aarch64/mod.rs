@@ -3,6 +3,8 @@
 
 //! aarch64-specific implementation of the mshv hypervisor backend.
 
+mod cca;
+
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
@@ -17,6 +19,7 @@ use crate::VcpuFdExt;
 use crate::common_synthetic_features;
 use crate::create_vm_with_retry;
 
+use crate::MshvProtoPartitionIsolation;
 use aarch64defs::EsrEl2;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
@@ -38,6 +41,7 @@ use virt::Hv1;
 use virt::PartitionConfig;
 use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
+use virt::ProtoPartitionIsolation;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::aarch64::Aarch64PartitionCapabilities;
@@ -48,6 +52,10 @@ use virt::irqcon::MsiRequest;
 use virt::state::HvRegisterState;
 use vmcore::reference_time::ReferenceTimeSource;
 use zerocopy::FromZeros;
+
+use crate::MshvIsolationTypeState;
+pub(super) use cca::CcaError;
+pub(super) use cca::CcaPartitionState;
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -71,17 +79,26 @@ impl virt::Hypervisor for LinuxMshv {
         if self.snp_disable_cpuid_offload {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
-        if config.isolation.is_isolated() {
-            return Err(ErrorInner::IsolationNotSupported.into());
-        }
+
+        // TODO: use mshv_bindings value once the crate is updated
+        const MSHV_PT_ISOLATION_RME: u64 = 2;
 
         let create_args = mshv_bindings::mshv_create_partition_v2 {
             pt_flags: 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
-            pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+            pt_isolation: match config.isolation {
+                ProtoPartitionIsolation::None => mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+                ProtoPartitionIsolation::Cca => MSHV_PT_ISOLATION_RME,
+                _ => return Err(ErrorInner::IsolationNotSupported.into()),
+            },
             ..Default::default()
         };
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
+
+        let cca = matches!(config.isolation, ProtoPartitionIsolation::Cca);
+        if cca {
+            cca::set_disabled_processor_features(&vmfd)?;
+        }
 
         // Set synthetic processor features before initialization when the
         // guest interface is configured.
@@ -153,7 +170,37 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
             .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
-        MshvProtoPartition::new(config, vmfd)
+        let isolation = match config.isolation {
+            ProtoPartitionIsolation::None => MshvProtoPartitionIsolation::None,
+            ProtoPartitionIsolation::Cca => {
+                let physical_address_width = vmfd
+                    .get_partition_property(HvPartitionPropertyCode::PhysicalAddressWidth.0)
+                    .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+                let shared_gpa_bit = 1 << (physical_address_width - 1);
+                MshvProtoPartitionIsolation::Cca { shared_gpa_bit }
+            }
+            _ => return Err(ErrorInner::IsolationNotSupported.into()),
+        };
+
+        let partition = MshvProtoPartition::new(config, vmfd, isolation)?;
+        if cca {
+            let vp = partition.config.processor_topology.vp_arch(VpIndex::BSP);
+            let mut regs = vec![HvRegisterAssoc::from((
+                HvArm64RegisterName::MpidrEl1,
+                u64::from(vp.mpidr),
+            ))];
+            if let Some(gicr) = vp.gicr {
+                regs.push(HvRegisterAssoc::from((
+                    HvArm64RegisterName::GicrBaseGpa,
+                    gicr,
+                )));
+            }
+            partition
+                .bsp
+                .set_hvdef_regs(&regs)
+                .map_err(ErrorInner::Register)?;
+        }
+        Ok(partition)
     }
 }
 
@@ -168,14 +215,33 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .expect("failed to get physical address width") as u8
     }
 
+    fn shared_gpa_bit(&self) -> Option<u64> {
+        match self.isolation {
+            MshvProtoPartitionIsolation::None => None,
+            MshvProtoPartitionIsolation::Cca { shared_gpa_bit } => Some(shared_gpa_bit),
+        }
+    }
+
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        let (isolation_cap, isolation_state, shared_gpa_bit) = match self.isolation {
+            MshvProtoPartitionIsolation::None => (virt::IsolationType::None, None, None),
+            MshvProtoPartitionIsolation::Cca { shared_gpa_bit } => (
+                virt::IsolationType::Cca,
+                Some(MshvIsolationState::new(MshvIsolationTypeState::Cca(
+                    CcaPartitionState::new(),
+                ))),
+                Some(shared_gpa_bit),
+            ),
+        };
+
         let caps = Aarch64PartitionCapabilities {
-            isolation: virt::IsolationType::None,
+            isolation: isolation_cap,
             supports_aarch32_el0: false,
             vendor: Vendor::ARM,
+            shared_gpa_bit,
         };
 
         let inner = Arc::new(MshvPartitionInner {
@@ -187,7 +253,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
-            isolation: MshvIsolationState::None,
+            isolation: isolation_state,
             time_frozen: true.into(),
             reset_with_scrub: false.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
@@ -227,6 +293,12 @@ impl virt::Partition for MshvPartition {
 
     fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
         Some(self)
+    }
+
+    fn supports_initial_page_acceptance(
+        &self,
+    ) -> Option<&dyn virt::AcceptInitialPages<Error = Error>> {
+        self.inner.isolation.is_some().then_some(self)
     }
 
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
@@ -317,6 +389,20 @@ impl virt::irqcon::ControlGic for MshvPartitionInner {
                 error = &e as &dyn std::error::Error,
                 "failed to assert SPI"
             );
+        }
+    }
+}
+
+impl MshvPartitionInner {
+    /// Removes the CCA shared-address bit before routing an MMIO access.
+    ///
+    /// Realm guests use the shared bit to select the host-visible alias of a
+    /// device address, while routing entries contain the underlying IPA.
+    fn mmio_address(&self, address: u64) -> u64 {
+        if let Some(shared_bit) = self.caps.shared_gpa_bit {
+            address & (shared_bit - 1)
+        } else {
+            address
         }
     }
 }
@@ -465,11 +551,20 @@ impl MshvProcessor<'_> {
 
                 if iss.wnr() {
                     let value = self.get_x(reg);
-                    dev.write_mmio(self.vpindex, gpa, &value.to_ne_bytes()[..len])
-                        .await;
+                    dev.write_mmio(
+                        self.vpindex,
+                        self.partition.mmio_address(gpa),
+                        &value.to_ne_bytes()[..len],
+                    )
+                    .await;
                 } else {
                     let mut data = [0u8; 8];
-                    dev.read_mmio(self.vpindex, gpa, &mut data[..len]).await;
+                    dev.read_mmio(
+                        self.vpindex,
+                        self.partition.mmio_address(gpa),
+                        &mut data[..len],
+                    )
+                    .await;
                     let value = if iss.sse() {
                         match len {
                             1 => data[0] as i8 as i64 as u64,
@@ -598,6 +693,15 @@ impl MshvProcessor<'_> {
 
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
 
+        if let Some(cca) = self.partition.cca()
+            && cca.defer_registers(
+                &self.partition.isolation.as_ref().unwrap().launch_state,
+                &assoc,
+            )
+        {
+            return Ok(());
+        }
+
         self.runner
             .vcpufd
             .set_hvdef_regs(&assoc[..])
@@ -615,7 +719,9 @@ impl MshvProcessor<'_> {
             HvMessageType::HvMessageTypeUnrecoverableException => {
                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
             }
-            HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
+            HvMessageType::HvMessageTypeUnmappedGpa
+            | HvMessageType::HvMessageTypeGpaIntercept
+            | HvMessageType::HvMessageTypeMmioIntercept => {
                 self.handle_memory_intercept(exit, dev).await?;
             }
             HvMessageType::HvMessageTypeSynicSintDeliverable => {

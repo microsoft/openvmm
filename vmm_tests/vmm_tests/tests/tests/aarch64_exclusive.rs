@@ -150,7 +150,7 @@ async fn boot_acpi_aarch64_tcg(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
     openvmm,
     requires(test_disk),
     configs(nested(
-        (vm_host_with_disk, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_with_disk, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     )),
 )]
@@ -263,7 +263,7 @@ async fn boot_no_vmbus_pcie(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
     openvmm,
     requires(test_disk),
     configs(nested(
-        (vm_host_with_disk, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_with_disk, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     )),
 )]
@@ -504,7 +504,7 @@ fn emulator_vfio_bdf(name: &str) -> anyhow::Result<String> {
     openvmm,
     requires(edu_initiator, ivshmem_target),
     configs(nested(
-        (vm_host_with_disk_edu_ivshmem, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_with_disk_edu_ivshmem, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     )),
 )]
@@ -728,7 +728,7 @@ async fn assigned_device_peer_to_peer_dma(
     openvmm,
     requires(edu_initiator),
     configs(nested(
-        (vm_host_with_edu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_with_edu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     )),
 )]
@@ -923,7 +923,7 @@ async fn assigned_device_smmu_accel_fault(
 /// to be a separate non-SMT configuration from [`smt_topology`].
 #[openvmm_test(
     nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     ),
 )]
@@ -1037,7 +1037,7 @@ async fn mpidr_affinity_rollover_heavy(
 /// configured topology instead of the affinity fields.
 #[openvmm_test(
     nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
+        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "aarch64_exclusive", linux_direct_aarch64),
     ),
 )]
