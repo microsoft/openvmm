@@ -7,6 +7,7 @@
 
 use crate::windows::ObjectAttributes;
 use crate::windows::UnicodeString;
+use crate::windows::UnicodeStringRef;
 use crate::windows::chk_status;
 use std::cell::UnsafeCell;
 use std::fs;
@@ -29,6 +30,7 @@ use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_WRITE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ID_INFO;
+use windows_sys::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -269,14 +271,47 @@ pub fn hard_link_relative(
     Ok(())
 }
 
-/// Enumerates names relative to an opened directory handle.
+/// Opens a new synchronous file object for the directory that `directory`
+/// refers to. The empty name relative to `directory` involves no path lookup,
+/// so a rename cannot redirect it, and `FILE_OPEN_REPARSE_POINT` keeps a
+/// directory reparse point from being followed.
+fn reopen_directory_for_listing(directory: &fs::File) -> io::Result<fs::File> {
+    let name = UnicodeStringRef::empty();
+    let mut attributes = ObjectAttributes::new();
+    attributes.name(&name).root(directory.as_handle());
+    let mut handle = null_mut();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: the attributes, name, and output pointers are valid for this
+    // synchronous call.
+    let status = unsafe {
+        ntioapi::NtOpenFile(
+            &mut handle,
+            FILE_LIST_DIRECTORY | SYNCHRONIZE,
+            attributes.as_ptr(),
+            &mut io_status,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            ntioapi::FILE_DIRECTORY_FILE
+                | ntioapi::FILE_OPEN_REPARSE_POINT
+                | ntioapi::FILE_SYNCHRONOUS_IO_NONALERT,
+        )
+    };
+    chk_status(status)?;
+    // SAFETY: the successful open returned a new handle owned by the caller.
+    Ok(unsafe { fs::File::from_raw_handle(handle) })
+}
+
+/// Enumerates the entry names of an opened directory.
 ///
-/// The directory must have been opened for synchronous I/O.
+/// The names are read through a new synchronous file object opened relative
+/// to `directory` with an empty name, which refers to the same directory
+/// without following reparse points. The result therefore does not depend on
+/// the I/O mode, search expression, or scan position of `directory`'s own file
+/// object, and none of them change.
 pub fn directory_entry_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
     const BUFFER_SIZE: usize = 4096;
     const BUFFER_WORDS: usize = BUFFER_SIZE / size_of::<u64>();
 
-    ensure_synchronous(directory)?;
+    let directory = reopen_directory_for_listing(directory)?;
     let mut names = Vec::new();
     let mut restart_scan = true;
     loop {
@@ -427,6 +462,49 @@ mod tests {
             .unwrap()
     }
 
+    /// Returns the next name from a query issued directly on `directory`.
+    fn query_next_name(
+        directory: &fs::File,
+        filter: Option<&str>,
+        restart_scan: bool,
+    ) -> Option<String> {
+        let filter = filter.map(|filter| UnicodeString::try_from(filter).unwrap());
+        let mut buffer = [0_u64; 512];
+        let mut io_status = IO_STATUS_BLOCK::default();
+        // SAFETY: `directory` was opened for synchronous I/O, so the query
+        // completes before the buffers go out of scope.
+        let status = unsafe {
+            ntioapi::NtQueryDirectoryFile(
+                directory.as_raw_handle(),
+                null_mut(),
+                None,
+                ptr::null(),
+                &mut io_status,
+                buffer.as_mut_ptr().cast(),
+                size_of_val(&buffer) as u32,
+                ntioapi::FileNamesInformation,
+                true,
+                filter
+                    .as_ref()
+                    .map_or(ptr::null(), |filter| filter.as_ptr()),
+                restart_scan,
+            )
+        };
+        if status == STATUS_NO_MORE_FILES {
+            return None;
+        }
+        chk_status(status).unwrap();
+        let entry = buffer.as_ptr().cast::<ntioapi::FILE_NAMES_INFORMATION>();
+        // SAFETY: the successful query stored one complete entry in `buffer`.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                (&raw const (*entry).FileName).cast::<u16>(),
+                (*entry).FileNameLength as usize / size_of::<u16>(),
+            )
+        };
+        Some(String::from_utf16(name).unwrap())
+    }
+
     #[test]
     fn relative_name_must_be_one_non_special_component() {
         for name in [
@@ -490,7 +568,6 @@ mod tests {
     fn pending_native_operations_are_rejected() {
         let root = TestDirectory::new();
         let directory = open_directory(root.path(), false);
-        let asynchronous_directory = open_directory(root.path(), true);
         let asynchronous_source = OpenOptions::new()
             .read(true)
             .write(true)
@@ -505,11 +582,49 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
-        assert_eq!(
-            directory_entry_names(&asynchronous_directory)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::InvalidInput
-        );
+    }
+
+    #[test]
+    fn directory_entry_names_is_anchored_to_the_handle() {
+        let root = TestDirectory::new();
+        let original = root.path().join("original");
+        fs::create_dir(&original).unwrap();
+        // Listing issues no I/O on this handle, so it may be asynchronous.
+        let directory = open_directory(&original, true);
+
+        // Rename while empty: an open child, even a transient one from a
+        // scanner, would make NTFS deny the rename.
+        let renamed = root.path().join("renamed");
+        fs::rename(&original, &renamed).unwrap();
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("decoy"), b"").unwrap();
+        fs::write(renamed.join("file"), b"").unwrap();
+        assert_eq!(directory_entry_names(&directory).unwrap(), ["file"]);
+    }
+
+    #[test]
+    fn directory_entry_names_ignores_previous_query_filter() {
+        let root = TestDirectory::new();
+        for name in ["first.bin", "second.bin", "other.txt"] {
+            fs::write(root.path().join(name), b"").unwrap();
+        }
+        let directory = open_directory(root.path(), false);
+
+        // The first query on a file object captures its search expression.
+        let first = query_next_name(&directory, Some("*.bin"), true).unwrap();
+        assert!(first.ends_with(".bin"), "{first:?}");
+
+        let mut names: Vec<_> = directory_entry_names(&directory)
+            .unwrap()
+            .into_iter()
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["first.bin", "other.txt", "second.bin"]);
+
+        // The caller's filtered scan continues where it left off.
+        let second = query_next_name(&directory, None, false).unwrap();
+        assert!(second.ends_with(".bin") && second != first, "{second:?}");
+        assert_eq!(query_next_name(&directory, None, false), None);
     }
 }
