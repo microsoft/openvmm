@@ -2504,6 +2504,9 @@ async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Opt
                 )
             })?;
     let provision = match provision_condition {
+        vmservice::vmgs_config::ProvisionCondition::Unspecified => {
+            bail!("missing VMGS provision condition")
+        }
         vmservice::vmgs_config::ProvisionCondition::OnEmpty => ProvisionCondition::OnEmpty,
         vmservice::vmgs_config::ProvisionCondition::OnFailure => ProvisionCondition::OnFailure,
         vmservice::vmgs_config::ProvisionCondition::Single => ProvisionCondition::Single,
@@ -2676,6 +2679,35 @@ mod tests {
         futures::executor::block_on(async {
             assert!(build_vmgs(None).await.unwrap().is_none());
             assert!(vmservice::VmConfig::default().vmgs.is_none());
+            assert_eq!(
+                vmservice::VmgsConfig::default().provision_condition,
+                vmservice::vmgs_config::ProvisionCondition::Unspecified as i32
+            );
+            for (condition, value, name) in [
+                (
+                    vmservice::vmgs_config::ProvisionCondition::Unspecified,
+                    0,
+                    "PROVISION_CONDITION_UNSPECIFIED",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                    1,
+                    "PROVISION_CONDITION_ON_EMPTY",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::OnFailure,
+                    2,
+                    "PROVISION_CONDITION_ON_FAILURE",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::Single,
+                    3,
+                    "PROVISION_CONDITION_SINGLE",
+                ),
+            ] {
+                assert_eq!(condition as i32, value);
+                assert_eq!(condition.as_str_name(), name);
+            }
             for provision_condition in [
                 vmservice::vmgs_config::ProvisionCondition::OnEmpty,
                 vmservice::vmgs_config::ProvisionCondition::OnFailure,
@@ -2715,11 +2747,26 @@ mod tests {
     fn vmgs_rejects_invalid_configuration() {
         futures::executor::block_on(async {
             for (config, expected) in [
-                (vmservice::VmgsConfig::default(), "missing VMGS backend"),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(memory_disk()),
+                        ..Default::default()
+                    },
+                    "missing VMGS provision condition",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
+                        ..Default::default()
+                    },
+                    "missing VMGS backend",
+                ),
                 (
                     vmservice::VmgsConfig {
                         backend: Some(Default::default()),
-                        ..Default::default()
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
                     },
                     "missing disk backend kind",
                 ),
@@ -2735,7 +2782,8 @@ mod tests {
                         backend: Some(vmservice::DiskBackend {
                             kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::default())),
                         }),
-                        ..Default::default()
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
                     },
                     "missing memory diff lower disk",
                 ),
@@ -2748,7 +2796,8 @@ mod tests {
                                 },
                             ))),
                         }),
-                        ..Default::default()
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
                     },
                     "missing disk backend kind",
                 ),
@@ -2775,7 +2824,7 @@ mod tests {
                 backend: Some(vmservice::DiskBackend {
                     kind: Some(vmservice::disk_backend::Kind::File(file)),
                 }),
-                ..Default::default()
+                provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty as i32,
             };
             let error = build_vmgs(Some(config(backend.clone()))).await.unwrap_err();
             assert!(format!("{error:#}").contains("failed to open VMGS disk"));

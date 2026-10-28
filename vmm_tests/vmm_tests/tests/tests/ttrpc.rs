@@ -1273,7 +1273,7 @@ async fn test_ttrpc_uefi_boot(
                                     },
                                 )),
                             }),
-                            ..Default::default()
+                            provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty as i32,
                         }),
                         // The UEFI watchdog that ends `guest_test_uefi` reports
                         // a reset on aarch64 but a triple fault on x64, so halt
