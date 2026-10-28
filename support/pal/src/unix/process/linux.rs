@@ -8,7 +8,7 @@ use super::Child;
 use super::FdOp;
 use crate::unix::SyscallResult;
 use crate::unix::errno;
-use seccompiler::SeccompFilter;
+use seccompiler::BpfProgram;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::io;
@@ -60,7 +60,7 @@ struct CloneContext<'a> {
     fd_close_ranges: &'a [(u32, u32)],
     uid: Option<libc::uid_t>,
     gid: Option<libc::uid_t>,
-    trace_seccomp_filter: Option<SeccompFilter>,
+    trace_seccomp_program: Option<&'a BpfProgram>,
 }
 
 impl Builder<'_> {
@@ -105,6 +105,21 @@ impl Builder<'_> {
             .transpose()?
             .unwrap_or_default();
 
+        // The clone callback must not compile or drop heap-owned filter state.
+        let trace_seccomp_program = self
+            .linux_builder
+            .trace_seccomp_filter
+            .as_ref()
+            .map(|filter| {
+                BpfProgram::try_from(filter.clone()).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("failed to compile tracing seccomp filter: {error}"),
+                    )
+                })
+            })
+            .transpose()?;
+
         let mut context = CloneContext {
             executable: &self.executable,
             argv: &argv,
@@ -121,7 +136,7 @@ impl Builder<'_> {
             fd_close_ranges: &fd_close_ranges,
             uid: self.uid,
             gid: self.gid,
-            trace_seccomp_filter: self.linux_builder.trace_seccomp_filter.clone(),
+            trace_seccomp_program: trace_seccomp_program.as_ref(),
         };
 
         // Use CLONE_VM and CLONE_VFORK so that the new process will share the
@@ -134,8 +149,7 @@ impl Builder<'_> {
         // Tracing stops the child before exec so the parent can attach ptrace.
         // Using vfork would deadlock: the parent waits for exec while the child
         // waits for the parent to resume it.
-        let using_vfork =
-            self.linux_builder.vfork && self.linux_builder.trace_seccomp_filter.is_none();
+        let using_vfork = self.linux_builder.vfork && trace_seccomp_program.is_none();
         if using_vfork {
             flags |= libc::CLONE_VM | libc::CLONE_VFORK;
         }
@@ -365,18 +379,16 @@ extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
 
     // Stop before installing the tracing filter and executing the worker so the
     // parent can attach ptrace and capture syscalls from the start of execution.
-    if context.trace_seccomp_filter.is_some() {
+    if context.trace_seccomp_program.is_some() {
         // SAFETY: raise has no memory-safety requirements.
         if unsafe { libc::raise(libc::SIGSTOP) } < 0 {
             return errno().0;
         }
     }
 
-    if let Some(seccomp_filter) = context.trace_seccomp_filter.take() {
-        if let Ok(bpf_program) = TryInto::<seccompiler::BpfProgram>::try_into(seccomp_filter) {
-            if seccompiler::apply_filter(&bpf_program).is_err() {
-                return libc::ENOTSUP;
-            }
+    if let Some(bpf_program) = context.trace_seccomp_program {
+        if seccompiler::apply_filter(bpf_program).is_err() {
+            return libc::ENOTSUP;
         }
     }
 
@@ -464,9 +476,42 @@ impl AsFd for Child {
 
 #[cfg(test)]
 mod tests {
+    use super::Builder;
     use super::IdMap;
     use super::fd_close_ranges;
     use super::inherited_fds;
+    use seccompiler::SeccompAction;
+    use seccompiler::SeccompFilter;
+    use seccompiler::TargetArch;
+
+    #[test]
+    fn rejects_uncompilable_trace_filter_before_spawning() {
+        #[cfg(target_arch = "x86_64")]
+        let arch = TargetArch::x86_64;
+        #[cfg(target_arch = "aarch64")]
+        let arch = TargetArch::aarch64;
+
+        // The rules expand beyond seccomp's 4096-instruction limit.
+        let filter = SeccompFilter::new(
+            (0..4096).map(|nr| (nr, Vec::new())).collect(),
+            SeccompAction::Allow,
+            SeccompAction::Trace(0),
+            arch,
+        )
+        .unwrap();
+        let mut command = Builder::new("/usr/bin/true");
+        command.set_trace_seccomp_filter(filter);
+        let error = match command.spawn() {
+            Err(error) => error,
+            Ok(mut child) => {
+                // SAFETY: child.id() names the process spawned above.
+                assert_eq!(unsafe { libc::kill(child.id(), libc::SIGKILL) }, 0);
+                child.wait().unwrap();
+                panic!("uncompilable tracing filter spawned a child");
+            }
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn computes_fd_close_ranges() {

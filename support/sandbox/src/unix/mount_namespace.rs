@@ -6,8 +6,24 @@
 
 use crate::unix::SyscallResult;
 use std::ffi::CString;
+use std::ffi::OsStr;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::path::PathBuf;
+
+/// Atomically create a unique, owner-only staging directory under `/tmp`.
+pub fn create_staging_dir() -> io::Result<PathBuf> {
+    let mut template = b"/tmp/.sandbox-root-XXXXXX\0".to_vec();
+    // SAFETY: mkdtemp receives a writable, NUL-terminated template ending
+    // in six Xs and creates the directory with owner-only permissions.
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(PathBuf::from(OsStr::from_bytes(
+        &template[..template.len() - 1],
+    )))
+}
 
 /// Detach the current mount namespace from its parent's propagation.
 ///
@@ -206,7 +222,6 @@ fn path_to_cstring(path: &Path) -> io::Result<CString> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
     use std::process::Command;
     use test_with_tracing::test;
 

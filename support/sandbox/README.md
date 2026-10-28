@@ -29,6 +29,13 @@ Sandboxing happens in three named, ordered stages:
    has finished initializing, to shed its init-only authority. It takes
    `Restrictions`, a type that can only ever *narrow*.
 
+Confined Linux launches require fresh user, mount, and IPC namespaces. The
+IPC namespace isolates SysV shared memory, semaphores, and message queues
+from the control process and other workers. A fresh network namespace is
+also required unless the profile uses `Network::Unrestricted`; this does
+not disable IPC isolation. Namespace creation failures abort the launch
+without retrying with weaker isolation.
+
 ## Authoring a policy
 
 OpenVMM's default worker profiles live in dedicated modules under
@@ -72,6 +79,12 @@ reads and directory traversal but not execution, `.read_exec(...)` also allows
 execution and executable mappings for shared libraries, and `.read_write(...)`
 allows reads and writes but not execution. On Linux, `.read(...)` mounts are
 read-only and `noexec`; they do not remove directory search permission bits.
+
+The VM and TPM profiles grant individual configuration files under `/etc`,
+not the directory tree. The VM profile includes loader and resolver/NSS files;
+the TPM profile includes loader and OpenSSL configuration. Missing optional
+files are skipped when building the profile. Nonstandard configuration paths
+and additional OpenSSL include files require explicit grants.
 
 On Linux, overlapping filesystem grants combine independently of declaration
 order. Ancestors are mounted before descendants, and duplicate or descendant

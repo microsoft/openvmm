@@ -254,11 +254,8 @@ fn trace_process(
             handle_ptrace_event(&mut output, root_pid, tid, event, &mut tasks)?;
             resume_task(tid, tasks.get(&tid).is_some_and(Option::is_some), 0)?;
         } else {
-            let deliver = if signal == libc::SIGSTOP || signal == libc::SIGTRAP {
-                0
-            } else {
-                signal
-            };
+            // Synthetic SIGTRAP stops were handled above; deliver real traps.
+            let deliver = if signal == libc::SIGSTOP { 0 } else { signal };
             resume_task(tid, tasks.get(&tid).is_some_and(Option::is_some), deliver)?;
         }
     }
@@ -791,5 +788,33 @@ mod tests {
                 })
         );
         assert!(events.iter().any(|event| event["event"] == "task_exit"));
+    }
+
+    #[test]
+    fn delivers_sigtrap_to_handler() {
+        let status = trace_shell("trap 'exit 42' TRAP; kill -TRAP $$; exit 0");
+        assert_eq!(status.code(), Some(42), "{status}");
+    }
+
+    #[test]
+    fn preserves_unhandled_sigtrap() {
+        let status = trace_shell("ulimit -c 0; trap - TRAP; kill -TRAP $$; exit 0");
+        assert_eq!(status.signal(), Some(libc::SIGTRAP), "{status}");
+    }
+
+    fn trace_shell(script: &str) -> ExitStatus {
+        let dir = tempfile::tempdir().unwrap();
+        let config = TraceConfig::new(
+            dir.path().to_path_buf(),
+            "worker",
+            BTreeMap::from([(libc::SYS_openat, "openat".to_string())]),
+        );
+        let mut command = pal::unix::process::Builder::new("/bin/sh");
+        command
+            .args(["-c", script])
+            .set_trace_seccomp_filter(build_seccomp_filter(&config).unwrap());
+        let child = command.spawn().unwrap();
+        let mut traced = TracedChild::start(child, "test-worker", config).unwrap();
+        futures::executor::block_on(traced.wait()).unwrap()
     }
 }

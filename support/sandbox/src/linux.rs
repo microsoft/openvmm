@@ -45,12 +45,6 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Staging path for the tmpfs that becomes `/` after `pivot_root`.
-///
-/// It exists only inside our fresh mount namespace, so it can never collide
-/// with another process's view of the filesystem.
-const STAGING_ROOT: &str = "/tmp/.sandbox-root";
-
 /// Apply `profile` to the current process. See the module docs for ordering
 /// and failure policy.
 pub fn apply(profile: &Profile) -> Result<(), Error> {
@@ -134,9 +128,41 @@ fn apply_network(scope: Network) -> Result<(), Error> {
 /// `pivot_root`, old-root cleanup, and layered Landlock enforcement.
 fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     let grants = filesystem_mount_plan(grants)?;
-    let staging = Path::new(STAGING_ROOT);
+    let staging = mount_namespace::create_staging_dir().map_err(fs_required)?;
+    if let Err(error) = mount_and_pivot_filesystem(&grants, &staging) {
+        // A `/` grant can stack mounts here. Detach every layer before
+        // removing only the empty backing directory, never bind contents.
+        while mount_namespace::umount(&staging).is_ok() {}
+        if let Err(cleanup_error) = fs_err::remove_dir(&staging) {
+            tracing::warn!(
+                error = &cleanup_error as &dyn std::error::Error,
+                "could not remove sandbox staging directory",
+            );
+        }
+        return Err(error);
+    }
 
-    fs_err::create_dir_all(staging).map_err(fs_required)?;
+    // pivot_root moved the staging mount to `/`, exposing its empty backing
+    // directory through the old root. Remove it before detaching that root.
+    fs_err::remove_dir(join_under(Path::new("/.old_root"), &staging)).map_err(fs_required)?;
+    std::env::set_current_dir("/").map_err(fs_required)?;
+    mount_namespace::umount(Path::new("/.old_root")).map_err(fs_required)?;
+    let _ = fs_err::remove_dir("/.old_root");
+
+    // Landlock is a supplementary, opportunistic layer (design D11/D16): a
+    // failure degrades rather than aborts.
+    if let Err(e) = apply_landlock(&grants) {
+        tracing::warn!(
+            error = &e as &dyn std::error::Error,
+            "could not apply Landlock ruleset; relying on mount namespace only",
+        );
+    }
+
+    Ok(())
+}
+
+/// Populate the staging filesystem and return immediately after `pivot_root`.
+fn mount_and_pivot_filesystem(grants: &[FsGrant], staging: &Path) -> Result<(), Error> {
     mount_namespace::mount_tmpfs(staging).map_err(fs_required)?;
 
     // Install the writable tmpfs before grants so explicit paths beneath
@@ -147,7 +173,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 
     // Bind each grant into the staging root at the same path
     // (source `/bin` => `staging/bin`).
-    for grant in &grants {
+    for grant in grants {
         let source = grant.path.as_path();
         if !source.exists() {
             return Err(Error::ApplyFailed {
@@ -206,23 +232,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     // Pivot root: staging becomes `/`, old root moves to `staging/.old_root`.
     let old_root = staging.join(".old_root");
     fs_err::create_dir_all(&old_root).map_err(fs_required)?;
-    mount_namespace::pivot_root(staging, &old_root).map_err(fs_required)?;
-    std::env::set_current_dir("/").map_err(fs_required)?;
-
-    // Detach and remove the old root so nothing leaks through.
-    mount_namespace::umount(Path::new("/.old_root")).map_err(fs_required)?;
-    let _ = fs_err::remove_dir("/.old_root");
-
-    // Landlock is a supplementary, opportunistic layer (design D11/D16): a
-    // failure degrades rather than aborts.
-    if let Err(e) = apply_landlock(&grants) {
-        tracing::warn!(
-            error = &e as &dyn std::error::Error,
-            "could not apply Landlock ruleset; relying on mount namespace only",
-        );
-    }
-
-    Ok(())
+    mount_namespace::pivot_root(staging, &old_root).map_err(fs_required)
 }
 
 fn filesystem_mount_plan(grants: &[FsGrant]) -> Result<Vec<FsGrant>, Error> {
@@ -416,6 +426,7 @@ fn fs_required(source: io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::ToSocketAddrs;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixDatagram;
     use std::os::unix::process::ExitStatusExt;
@@ -518,6 +529,113 @@ mod tests {
         assert_eq!(
             fs_err::read_to_string("/proc/self/comm").unwrap(),
             "sandbox-proc\n",
+        );
+    }
+
+    #[test]
+    fn filesystem_staging_is_cleaned_up() {
+        for scenario in [
+            "file",
+            "symlink",
+            "empty",
+            "missing-grant",
+            "mount-failure",
+            "root-grant",
+        ] {
+            let output = Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::helper_filesystem_staging",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SANDBOX_STAGING_SCENARIO", scenario)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario} staging helper failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_filesystem_staging() {
+        mount_namespace::make_root_private().unwrap();
+        for path in ["/tmp", "/run"] {
+            mount_namespace::mount_tmpfs(Path::new(path)).unwrap();
+        }
+        fs_err::create_dir("/run/grant").unwrap();
+        fs_err::write("/run/grant/marker", "preserved").unwrap();
+        let scenario = std::env::var("SANDBOX_STAGING_SCENARIO").unwrap();
+        match scenario.as_str() {
+            "file" => fs_err::write("/tmp/.sandbox-root", "unrelated").unwrap(),
+            "symlink" => {
+                fs_err::create_dir("/tmp/target").unwrap();
+                std::os::unix::fs::symlink("/tmp/target", "/tmp/.sandbox-root").unwrap();
+            }
+            _ => {}
+        }
+        let staging = [
+            mount_namespace::create_staging_dir().unwrap(),
+            mount_namespace::create_staging_dir().unwrap(),
+        ];
+        assert_ne!(staging[0], staging[1]);
+        for path in staging {
+            assert_eq!(
+                fs_err::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            fs_err::remove_dir(path).unwrap();
+        }
+        let mut expected = fs_err::read_dir("/tmp")
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        expected.sort();
+        // Keep the backing directory open across pivot_root and Landlock.
+        let entries = fs_err::read_dir("/tmp").unwrap();
+        let mut profile = Profile::deny_all().read_write("/run/grant");
+        if matches!(scenario.as_str(), "missing-grant" | "root-grant") {
+            profile = profile.read("/run/missing");
+        }
+        if scenario == "root-grant" {
+            profile = profile.read("/");
+        }
+        if scenario == "mount-failure" {
+            drop_all_capabilities().unwrap();
+        }
+        hardening::set_no_new_privs().unwrap();
+        let result = apply_filesystem(&profile.build().inner.fs);
+        match scenario.as_str() {
+            "missing-grant" | "root-grant" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound
+            )),
+            "mount-failure" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::PermissionDenied
+            )),
+            _ => result.unwrap(),
+        }
+        let mut actual = entries
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "staging directory leaked or replaced a fixture"
+        );
+        assert_eq!(
+            fs_err::read_to_string("/run/grant/marker").unwrap(),
+            "preserved",
         );
     }
 
@@ -656,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn vm_profile_preserves_host_resources() {
+    fn worker_profiles_preserve_host_resources() {
         for scenario in [
             "resolver",
             "resolver-chain",
@@ -668,13 +786,17 @@ mod tests {
             "devices",
             "invalid-device",
             "pci",
+            "etc",
+            "etc-missing",
+            "tpm-etc",
+            "tpm-etc-missing",
         ] {
             let output = Command::new("unshare")
                 .args(["--user", "--map-root-user", "--mount"])
                 .arg(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "linux::tests::helper_vm_profile_resources",
+                    "linux::tests::helper_worker_profile_resources",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -692,7 +814,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn helper_vm_profile_resources() {
+    fn helper_worker_profile_resources() {
         let scenario = std::env::var("SANDBOX_RESOURCE_SCENARIO").unwrap();
         let null = std::fs::File::options()
             .read(true)
@@ -750,6 +872,41 @@ mod tests {
             _ => {}
         }
 
+        let configuration_files = [
+            ("/etc/ld.so.cache", "cache fixture\n"),
+            ("/etc/hosts", "192.0.2.2 sandbox.invalid\n"),
+            ("/etc/host.conf", "multi on\n"),
+            ("/etc/gai.conf", "# configuration fixture\n"),
+            ("/etc/nsswitch.conf", "hosts: files dns\n"),
+            ("/etc/ssl/openssl.cnf", "# OpenSSL fixture\n"),
+            ("/etc/pki/tls/openssl.cnf", "# OpenSSL fixture\n"),
+        ];
+        let private_files = [
+            "/etc/shadow",
+            "/etc/ssh/ssh_host_ed25519_key",
+            "/etc/ssl/private/key.pem",
+            "/etc/pki/tls/private/key.pem",
+        ];
+        if scenario.contains("etc") {
+            if !scenario.ends_with("-missing") {
+                for (path, contents) in configuration_files {
+                    fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                    fs_err::write(path, contents).unwrap();
+                }
+            }
+            for path in private_files {
+                fs_err::create_dir_all(Path::new(path).parent().unwrap()).unwrap();
+                fs_err::write(path, "private fixture\n").unwrap();
+                fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                assert_eq!(fs_err::read_to_string(path).unwrap(), "private fixture\n");
+            }
+        }
+        let local_ssl_alias = scenario.contains("etc") && Path::new("/usr/local").is_dir();
+        if local_ssl_alias {
+            mount_namespace::mount_tmpfs(Path::new("/usr/local")).unwrap();
+            std::os::unix::fs::symlink("/etc/ssl", "/usr/local/ssl").unwrap();
+        }
+
         fs_err::create_dir_all("/sys/devices/system/cpu").unwrap();
         fs_err::write("/sys/devices/system/cpu/online", "0").unwrap();
         fs_err::create_dir_all("/sys/devices/pci0000:00/0000:00:01.0").unwrap();
@@ -765,7 +922,11 @@ mod tests {
         )
         .unwrap();
 
-        let mut profile = crate::profiles::vm_worker();
+        let mut profile = if scenario.starts_with("tpm-") {
+            crate::profiles::tpm_worker()
+        } else {
+            crate::profiles::vm_worker()
+        };
         if scenario == "devices" {
             let source = PathBuf::from(format!("/proc/self/fd/{}", null.as_raw_fd()));
             for path in [
@@ -798,6 +959,53 @@ mod tests {
         drop_all_capabilities().unwrap();
 
         match scenario.as_str() {
+            "etc" | "etc-missing" | "tpm-etc" | "tpm-etc-missing" => {
+                if local_ssl_alias {
+                    assert!(
+                        fs_err::read("/usr/local/ssl/private/key.pem").is_err(),
+                        "private keys should not be exposed through /usr/local/ssl",
+                    );
+                    let config = fs_err::read_to_string("/usr/local/ssl/openssl.cnf");
+                    if scenario == "tpm-etc" {
+                        assert_eq!(config.unwrap(), "# OpenSSL fixture\n");
+                        assert!(fs_err::write("/usr/local/ssl/openssl.cnf", "modified").is_err());
+                    } else {
+                        assert!(config.is_err());
+                    }
+                }
+                for (path, contents) in configuration_files {
+                    let tpm_configuration = path.ends_with("/openssl.cnf");
+                    let allowed = !scenario.ends_with("-missing")
+                        && (path == "/etc/ld.so.cache"
+                            || tpm_configuration == scenario.starts_with("tpm-"));
+                    if allowed {
+                        assert_eq!(fs_err::read_to_string(path).unwrap(), contents);
+                        assert!(fs_err::write(path, "modified").is_err());
+                    } else {
+                        assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                    }
+                }
+                for path in private_files {
+                    assert!(fs_err::read(path).is_err(), "{path} should not be exposed");
+                }
+                if scenario.starts_with("tpm-") {
+                    assert!(fs_err::read("/etc/resolv.conf").is_err());
+                } else {
+                    assert_eq!(
+                        fs_err::read_to_string("/etc/resolv.conf").unwrap(),
+                        "nameserver 192.0.2.1\n",
+                    );
+                    if scenario == "etc" {
+                        assert!(
+                            ("sandbox.invalid", 0)
+                                .to_socket_addrs()
+                                .unwrap()
+                                .any(|address| address.ip()
+                                    == std::net::IpAddr::from([192, 0, 2, 2]))
+                        );
+                    }
+                }
+            }
             "resolver-missing" => {
                 assert!(!Path::new("/etc/resolv.conf").exists());
             }
@@ -807,6 +1015,7 @@ mod tests {
                     "nameserver 192.0.2.1\n",
                 );
                 assert!(fs_err::write("/etc/resolv.conf", "modified").is_err());
+                assert!(!Path::new("/run/resolve/resolv.conf").exists());
                 assert!(!Path::new("/run/resolve/unrelated").exists());
             }
             "devices" => {

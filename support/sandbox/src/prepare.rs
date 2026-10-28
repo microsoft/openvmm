@@ -74,6 +74,8 @@ pub struct SandboxProcessConfig {
     /// Namespace creation must happen as part of cloning the child so the
     /// worker starts inside its namespaces. The platform process builder also
     /// establishes the child user namespace's uid/gid mappings before exec.
+    /// Confined Linux launches require user, mount, and IPC namespaces, plus
+    /// a network namespace unless the profile allows unrestricted networking.
     pub clone_flags: u64,
     /// Map user and group ID 0 in the Linux user namespace to the spawning
     /// process's effective user and group IDs.
@@ -169,7 +171,7 @@ pub fn prepare(
 
 #[cfg(target_os = "linux")]
 fn linux_clone_flags(profile: &Profile) -> u64 {
-    let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
+    let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC;
     if profile.inner.network != crate::Network::Unrestricted {
         flags |= libc::CLONE_NEWNET;
     }
@@ -240,7 +242,8 @@ mod tests {
         {
             assert_eq!(
                 prep.clone_flags,
-                (libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWNET) as u64
+                (libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWNET)
+                    as u64
             );
             assert!(prep.map_current_user);
         }
@@ -253,7 +256,8 @@ mod tests {
 
         assert_eq!(
             linux_clone_flags(&profile),
-            (libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWNS) as u64
+            (libc::CLONE_NEWUSER | libc::CLONE_NEWNET | libc::CLONE_NEWNS | libc::CLONE_NEWIPC)
+                as u64
         );
     }
 
@@ -266,7 +270,7 @@ mod tests {
 
         assert_eq!(
             linux_clone_flags(&profile),
-            (libc::CLONE_NEWUSER | libc::CLONE_NEWNS) as u64
+            (libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC) as u64
         );
     }
 
@@ -280,7 +284,7 @@ mod tests {
 
         assert_eq!(
             linux_clone_flags(&profile),
-            (libc::CLONE_NEWUSER | libc::CLONE_NEWNS) as u64
+            (libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWIPC) as u64
         );
     }
 
