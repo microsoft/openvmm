@@ -6,9 +6,13 @@
 #[cfg(target_os = "linux")]
 use crate::aarch64_exclusive::vm_host_emu;
 use crate::nested::vm_host;
+use crate::utils::ExpectedGuestDevice;
+use crate::utils::get_device_paths;
 use anyhow::Context;
 use futures::StreamExt;
 use guid::Guid;
+use petri::Disk;
+use petri::Drive;
 use petri::EfiDiagnosticsLogLevel;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
@@ -17,6 +21,8 @@ use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
+use petri::VmbusStorageType;
+use petri::Vtl;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
@@ -124,6 +130,104 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     let (vm, agent) = config.run().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Writes to a memdiff disk must not alter its backing image or another overlay.
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
+async fn memdiff_disk_isolation(
+    mut config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const SECTOR_SIZE: usize = 512;
+    const DISK_SIZE: usize = 1024 * 1024;
+    const WRITE_SECTOR: usize = 3;
+    const WRITE_SECTORS: usize = 17;
+
+    let original: Vec<u8> = (0..DISK_SIZE)
+        .map(|offset| (offset / SECTOR_SIZE % 251 + 1) as u8)
+        .collect();
+    let backing_path = tempfile::Builder::new()
+        .suffix(".img")
+        .tempfile()?
+        .into_temp_path();
+    fs_err::write(&backing_path, &original)?;
+
+    let controller_id = Guid::new_random();
+    config = config.add_vmbus_storage_controller(&controller_id, Vtl::Vtl0, VmbusStorageType::Scsi);
+    for lun in 0..2 {
+        config = config.add_vmbus_drive(
+            Drive::new(
+                Some(Disk::Differencing(backing_path.to_path_buf().into())),
+                false,
+            ),
+            &controller_id,
+            Some(lun),
+        );
+    }
+
+    let (vm, agent) = config.run().await?;
+    let sh = agent.unix_shell();
+    let expected_devices: Vec<_> = (0..2)
+        .map(|lun| ExpectedGuestDevice {
+            lun,
+            disk_size_sectors: DISK_SIZE / SECTOR_SIZE,
+            friendly_name: format!("memdiff overlay {lun}"),
+        })
+        .collect();
+    let mut attempts = 0;
+    let devices = loop {
+        match get_device_paths(&agent, controller_id, expected_devices.clone()).await {
+            Ok(devices) => break devices,
+            Err(error) if attempts < 19 => {
+                tracing::info!(?error, "waiting for memdiff disks");
+                cmd!(sh, "sleep 1").run().await?;
+                attempts += 1;
+            }
+            Err(error) => return Err(error).context("failed to discover memdiff disks"),
+        }
+    };
+    let disk = &devices[0];
+    let sector = WRITE_SECTOR.to_string();
+    let count = WRITE_SECTORS.to_string();
+
+    // Cross page boundaries while leaving sectors on both sides in the base.
+    cmd!(
+        sh,
+        "dd if=/dev/zero of={disk} bs=512 seek={sector} count={count} oflag=direct conv=notrunc,fsync"
+    )
+    .run()
+    .await
+    .context("failed to write memdiff disk")?;
+
+    let mut modified = original.clone();
+    modified[WRITE_SECTOR * SECTOR_SIZE..(WRITE_SECTOR + WRITE_SECTORS) * SECTOR_SIZE].fill(0);
+    for (device, expected) in devices.iter().zip([&modified, &original]) {
+        // Bypass the guest page cache so both overlay and fall-through reads
+        // reach the disk backend.
+        cmd!(
+            sh,
+            "dd if={device} of=/tmp/cow-readback bs=4096 iflag=direct,fullblock"
+        )
+        .run()
+        .await
+        .with_context(|| format!("failed to read memdiff disk {device}"))?;
+        anyhow::ensure!(
+            agent.read_file("/tmp/cow-readback").await? == *expected,
+            "unexpected contents in memdiff disk {device}"
+        );
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    anyhow::ensure!(
+        fs_err::metadata(&backing_path)?.len() == DISK_SIZE as u64,
+        "memdiff changed the backing image size"
+    );
+    anyhow::ensure!(
+        fs_err::read(&backing_path)? == original,
+        "memdiff modified the backing image"
+    );
     Ok(())
 }
 
