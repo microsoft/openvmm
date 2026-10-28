@@ -5,6 +5,9 @@
 //! response.
 use crate::igvm_attest::Error as CommonError;
 use crate::igvm_attest::parse_response_header;
+use const_oid::ObjectIdentifier;
+use const_oid::db::rfc4519::COMMON_NAME;
+use const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER;
 use der::Decode;
 use der::Reader;
 use der::SliceReader;
@@ -16,14 +19,11 @@ use der::asn1::BitStringRef;
 use der::asn1::BmpString;
 use der::asn1::GeneralizedTime;
 use der::asn1::IntRef;
-use der::asn1::ObjectIdentifier;
 use der::asn1::OctetStringRef;
 use der::asn1::PrintableStringRef;
 use der::asn1::TeletexStringRef;
 use der::asn1::UtcTime;
 use der::asn1::Utf8StringRef;
-use der::oid::db::rfc4519::COMMON_NAME;
-use der::oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata;
 use thiserror::Error;
 use zerocopy::FromBytes;
@@ -351,9 +351,9 @@ pub fn parse_response(response: &[u8]) -> Result<AkCertResponse, AkCertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use const_oid::db::rfc4519::ORGANIZATION_NAME;
+    use const_oid::db::rfc5280::ID_CE_POLICY_CONSTRAINTS;
     use der::Encode;
-    use der::oid::db::rfc4519::ORGANIZATION_NAME;
-    use der::oid::db::rfc5280::ID_CE_POLICY_CONSTRAINTS;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;

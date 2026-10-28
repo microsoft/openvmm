@@ -114,13 +114,14 @@ pub fn authenticate_variable(
 }
 
 mod pkcs7_details {
+    use const_oid::ObjectIdentifier;
+    use const_oid::db::rfc5911::ID_SIGNED_DATA;
     use der::Encode;
     use der::Sequence;
     use der::TagMode;
     use der::TagNumber;
     use der::asn1::AnyRef;
     use der::asn1::ContextSpecific;
-    use der::asn1::ObjectIdentifier;
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
     struct ContentInfo<'a> {
@@ -141,7 +142,7 @@ mod pkcs7_details {
     /// ```
     pub fn encapsulate_in_content_info(content: &[u8]) -> der::Result<Vec<u8>> {
         let content_info = ContentInfo {
-            content_type: der::oid::db::rfc5911::ID_SIGNED_DATA,
+            content_type: ID_SIGNED_DATA,
             content: ContextSpecific {
                 tag_number: TagNumber(0),
                 value: AnyRef::try_from(content)?,

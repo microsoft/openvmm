@@ -1144,6 +1144,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cms",
+ "const-oid",
  "der",
  "getrandom 0.4.2",
  "hex",
@@ -2249,6 +2250,7 @@ dependencies = [
  "chipset_device",
  "chipset_device_resources",
  "chipset_resources",
+ "const-oid",
  "crypto",
  "cvm_tracing",
  "der",
@@ -9432,6 +9434,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "const-oid",
  "constant_time_eq",
  "crypto",
  "cvm_tracing",

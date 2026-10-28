@@ -47,8 +47,8 @@ pub(super) fn self_signed_builder(
     key: super::X509KeyPair<'_>,
     options: &super::X509SelfSignedOptions<'_>,
 ) -> anyhow::Result<(CertificateBuilder<SelfSignedProfile>, Vec<u8>)> {
-    use der::oid::db::rfc2256::STATE_OR_PROVINCE_NAME;
-    use der::oid::db::rfc4519::{COMMON_NAME, COUNTRY_NAME, LOCALITY_NAME, ORGANIZATION_NAME};
+    use const_oid::db::rfc2256::STATE_OR_PROVINCE_NAME;
+    use const_oid::db::rfc4519::{COMMON_NAME, COUNTRY_NAME, LOCALITY_NAME, ORGANIZATION_NAME};
     let mut rdns = x509_cert::name::RdnSequence::default();
     for (oid, value, tag) in [
         (COUNTRY_NAME, options.country, der::Tag::PrintableString),
@@ -138,12 +138,12 @@ pub(super) mod keypair_signer {
         ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
             Ok(match self.key {
                 super::super::X509KeyPair::Rsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+                    oid: const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
                     parameters: Some(der::Any::null()),
                 },
                 #[cfg(symcrypt)]
                 super::super::X509KeyPair::Ecdsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::oid::db::rfc5912::ECDSA_WITH_SHA_384,
+                    oid: const_oid::db::rfc5912::ECDSA_WITH_SHA_384,
                     parameters: None,
                 },
             })

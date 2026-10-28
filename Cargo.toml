@@ -576,6 +576,7 @@ flate2 = "1.1"
 # --- Cryptography & secure computing ---
 constant_time_eq = "0.5"
 cms = { version = "0.3.0-pre.2", default-features = false }
+const-oid = { version = "0.10", features = ["db"] }
 der = "0.8"
 getrandom = "0.4"
 openssl = "0.10.79"

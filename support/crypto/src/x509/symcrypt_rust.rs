@@ -66,7 +66,7 @@ impl X509CertificateInner {
         // On the `symcrypt` backend we can also extract ECDSA keys; the `rust`
         // backend has no ECDSA support, so any non-RSA key is rejected below.
         #[cfg(symcrypt)]
-        if spki.algorithm.oid == der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+        if spki.algorithm.oid == const_oid::db::rfc5912::ID_EC_PUBLIC_KEY {
             let key = crate::ecdsa::symcrypt::EcdsaPublicKeyInner::from_public_key_info(
                 &spki.owned_to_ref(),
             )

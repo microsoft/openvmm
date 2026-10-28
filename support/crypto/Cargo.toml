@@ -74,6 +74,7 @@ signature = { workspace = true, optional = true, features = ["alloc"] }
 x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
+const-oid.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
