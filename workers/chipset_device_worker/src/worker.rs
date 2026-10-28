@@ -319,10 +319,18 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             self.handle_write_result(id, result);
                         }
                         DeviceRequest::Save(rpc) => {
-                            rpc.handle_failable_sync(|()| self.device.save())
+                            rpc.handle_failable(async |()| {
+                                self.device.prepare_save().await?;
+                                self.device.save()
+                            })
+                            .await
                         }
                         DeviceRequest::Restore(rpc) => {
-                            rpc.handle_failable_sync(|state| self.device.restore(state))
+                            rpc.handle_failable(async |state| {
+                                self.device.restore(state)?;
+                                self.device.finish_restore().await
+                            })
+                            .await
                         }
                     },
                 }

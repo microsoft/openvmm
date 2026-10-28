@@ -94,6 +94,8 @@ trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
+    async fn prepare_save(&mut self) -> Result<(), vmcore::save_restore::SaveError>;
+    async fn finish_restore(&mut self) -> Result<(), vmcore::save_restore::RestoreError>;
 }
 
 #[async_trait]
@@ -108,6 +110,12 @@ impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> Dy
     }
     async fn reset(&mut self) {
         self.reset().await
+    }
+    async fn prepare_save(&mut self) -> Result<(), vmcore::save_restore::SaveError> {
+        ChangeDeviceState::prepare_save(self).await
+    }
+    async fn finish_restore(&mut self) -> Result<(), vmcore::save_restore::RestoreError> {
+        ChangeDeviceState::finish_restore(self).await
     }
 }
 
@@ -138,6 +146,14 @@ impl ChangeDeviceState for ErasedChipsetDevice {
 
     async fn reset(&mut self) {
         self.0.reset().await
+    }
+
+    async fn prepare_save(&mut self) -> Result<(), vmcore::save_restore::SaveError> {
+        self.0.prepare_save().await
+    }
+
+    async fn finish_restore(&mut self) -> Result<(), vmcore::save_restore::RestoreError> {
+        self.0.finish_restore().await
     }
 }
 
