@@ -5,9 +5,15 @@
 
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::openvmm::OpenVmmPetriBackend;
 
-pub(crate) async fn vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_nested_virt().run().await?;
+pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_nested_virt()
+        .with_no_vmbus()
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
+        .run()
+        .await?;
 
     vm.run_nested_test(&agent, Default::default()).await?;
     agent.power_off().await?;
