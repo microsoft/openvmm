@@ -487,6 +487,7 @@ async fn test_ttrpc_interface(
                         Some(attachment_device(virtio_device(
                             vmservice::virtio_device::Kind::Net(vmservice::VirtioNet {
                                 max_queues: None,
+                                enable_rx_gso: false,
                                 mac_address: "00-15-5D-12-12-13".to_string(),
                                 backend: Some(vmservice::NicBackend {
                                     kind: Some(vmservice::nic_backend::Kind::Consomme(
