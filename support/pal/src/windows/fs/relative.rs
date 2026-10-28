@@ -422,7 +422,9 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use test_with_tracing::test;
+    use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
     struct TestDirectory(PathBuf);
@@ -460,6 +462,27 @@ mod tests {
             .custom_flags(flags)
             .open(path)
             .unwrap()
+    }
+
+    /// Creates a symbolic link, or returns `false` if this process lacks the
+    /// privilege to do so.
+    fn create_symbolic_link(original: &Path, link: &Path, directory: bool) -> bool {
+        let result = if directory {
+            std::os::windows::fs::symlink_dir(original, link)
+        } else {
+            std::os::windows::fs::symlink_file(original, link)
+        };
+        match result {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(ERROR_PRIVILEGE_NOT_HELD as i32) => {
+                println!(
+                    "Test case skipped (creating symbolic links requires \
+                     SeCreateSymbolicLinkPrivilege or Developer Mode)"
+                );
+                false
+            }
+            Err(error) => panic!("failed to create symbolic link: {error}"),
+        }
     }
 
     /// Returns the next name from a query issued directly on `directory`.
@@ -626,5 +649,56 @@ mod tests {
         let second = query_next_name(&directory, None, false).unwrap();
         assert!(second.ends_with(".bin") && second != first, "{second:?}");
         assert_eq!(query_next_name(&directory, None, false), None);
+    }
+
+    #[test]
+    fn relative_access_does_not_follow_symbolic_links() {
+        let root = TestDirectory::new();
+        let outside = root.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel");
+        fs::write(&sentinel, b"sentinel").unwrap();
+        let opened = root.path().join("opened");
+        fs::create_dir(&opened).unwrap();
+        let link = opened.join("link");
+        let directory_link = root.path().join("directory-link");
+        if !create_symbolic_link(&sentinel, &link, false)
+            || !create_symbolic_link(&outside, &directory_link, true)
+        {
+            return;
+        }
+
+        let sentinel_identity = file_identity(&fs::File::open(&sentinel).unwrap()).unwrap();
+        let link_identity = file_identity(
+            &OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(&link)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_ne!(link_identity.file_id, sentinel_identity.file_id);
+
+        let directory = open_directory(&opened, false);
+        let identity_file = open_relative_for_identity(&directory, "link".as_ref()).unwrap();
+        assert_eq!(file_identity(&identity_file).unwrap(), link_identity);
+
+        let mut read_only = open_relative_read_only(&directory, "link".as_ref()).unwrap();
+        assert_eq!(file_identity(&read_only).unwrap(), link_identity);
+        let mut contents = Vec::new();
+        read_only.read_to_end(&mut contents).unwrap();
+        assert!(contents.is_empty(), "{contents:?}");
+
+        // Enumerating a directory link opened as itself must not list the
+        // target's entries.
+        let directory_link = OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(&directory_link)
+            .unwrap();
+        assert_eq!(
+            directory_entry_names(&directory_link).unwrap(),
+            Vec::<std::ffi::OsString>::new()
+        );
     }
 }
