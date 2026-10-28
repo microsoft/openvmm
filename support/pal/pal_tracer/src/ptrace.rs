@@ -115,7 +115,7 @@ fn target_arch() -> TargetArch {
 /// performs the blocking ptrace work. [`TracedChild::wait`] receives the
 /// status sent by that thread after tracing finishes.
 pub struct TracedChild {
-    completion: Option<futures::channel::oneshot::Receiver<io::Result<ExitStatus>>>,
+    completion: Option<async_channel::Receiver<io::Result<ExitStatus>>>,
 }
 
 impl TracedChild {
@@ -127,14 +127,14 @@ impl TracedChild {
     ) -> io::Result<Self> {
         let pid = child.id();
         let process_name = process_name.to_owned();
-        let (send, recv) = futures::channel::oneshot::channel();
+        let (send, recv) = async_channel::bounded(1);
         // ptrace is driven by blocking waitpid calls. Keep that state machine
         // on a dedicated thread and expose only its completion asynchronously.
         std::thread::Builder::new()
             .name(format!("ptrace-{process_name}-{pid}"))
             .spawn(move || {
                 let result = trace_process(child, &process_name, &config);
-                let _ = send.send(result);
+                let _ = send.send_blocking(result);
             })?;
         Ok(Self {
             completion: Some(recv),
@@ -146,6 +146,7 @@ impl TracedChild {
         self.completion
             .take()
             .expect("traced child waited more than once")
+            .recv()
             .await
             .map_err(|_| io::Error::other("process tracer exited without reporting status"))?
     }
