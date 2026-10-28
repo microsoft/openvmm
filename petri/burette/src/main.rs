@@ -116,6 +116,10 @@ struct RunArgs {
     #[arg(long, default_value = "2048")]
     mem_mb: u64,
 
+    /// Virtual processors per guest for the boot-time benchmark.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..))]
+    boot_vps: u32,
+
     /// Print guest dmesg and /proc/uptime after the first boot for
     /// diagnostics. Does not affect measurements.
     #[arg(long)]
@@ -284,6 +288,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     args.profile,
                     args.diag,
                     args.mem_mb,
+                    args.boot_vps,
                     &resolver,
                 )
                 .context("boot_time prep")?;

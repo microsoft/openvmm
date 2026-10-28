@@ -122,6 +122,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                 })
                 .with_processor_topology(petri::ProcessorTopology {
                     vp_count: profile.processors,
+                    enable_smt: profile.enable_smt,
                     ..Default::default()
                 })
                 .with_external_pipette()
