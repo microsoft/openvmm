@@ -133,6 +133,7 @@ fn apply_network(scope: Network) -> Result<(), Error> {
 /// Real filesystem setup: tmpfs staging root, per-grant bind mounts,
 /// `pivot_root`, old-root cleanup, and layered Landlock enforcement.
 fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
+    let grants = filesystem_mount_plan(grants)?;
     let staging = Path::new(STAGING_ROOT);
 
     fs_err::create_dir_all(staging).map_err(fs_required)?;
@@ -146,7 +147,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 
     // Bind each grant into the staging root at the same path
     // (source `/bin` => `staging/bin`).
-    for grant in grants {
+    for grant in &grants {
         let source = grant.path.as_path();
         if !source.exists() {
             return Err(Error::ApplyFailed {
@@ -214,7 +215,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 
     // Landlock is a supplementary, opportunistic layer (design D11/D16): a
     // failure degrades rather than aborts.
-    if let Err(e) = apply_landlock(grants) {
+    if let Err(e) = apply_landlock(&grants) {
         tracing::warn!(
             error = &e as &dyn std::error::Error,
             "could not apply Landlock ruleset; relying on mount namespace only",
@@ -222,6 +223,44 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+fn filesystem_mount_plan(grants: &[FsGrant]) -> Result<Vec<FsGrant>, Error> {
+    let mut ordered = grants.to_vec();
+    ordered.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut plan: Vec<FsGrant> = Vec::new();
+    for mut grant in ordered {
+        // Path ordering puts ancestors first. Preserve their permissions in
+        // descendant mounts and combine repeated grants before mounting.
+        for parent in &plan {
+            if grant.path.starts_with(&parent.path) {
+                grant.access = match (parent.access, grant.access) {
+                    (Access::Read, access) | (access, Access::Read) => access,
+                    (Access::ReadExec, Access::ReadExec) => Access::ReadExec,
+                    (Access::ReadWrite, Access::ReadWrite) => Access::ReadWrite,
+                    (Access::Device, Access::Device | Access::ReadWrite)
+                    | (Access::ReadWrite, Access::Device) => Access::Device,
+                    _ => {
+                        return Err(fs_required(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "overlapping filesystem grants require both write and execute access: {} and {}",
+                                parent.path.display(),
+                                grant.path.display(),
+                            ),
+                        )));
+                    }
+                };
+            }
+        }
+        if let Some(previous) = plan.last_mut().filter(|last| last.path == grant.path) {
+            previous.access = grant.access;
+        } else {
+            plan.push(grant);
+        }
+    }
+    Ok(plan)
 }
 
 /// Translate a policy [`Access`] into `MOUNT_ATTR_*` restrictions.
@@ -422,23 +461,26 @@ mod tests {
 
     #[test]
     fn filesystem_grants_enforce_access_modes() {
-        let output = Command::new("unshare")
-            .args(["--user", "--map-root-user", "--mount"])
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "linux::tests::helper_filesystem_grants",
-                "--ignored",
-                "--nocapture",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "filesystem grant helper failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+        for order in ["child-first", "parent-first"] {
+            let output = Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::helper_filesystem_grants",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SANDBOX_GRANT_ORDER", order)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{order} filesystem grant helper failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
     }
 
     #[test]
@@ -447,11 +489,27 @@ mod tests {
         mount_namespace::make_root_private().unwrap();
         mount_namespace::mount_tmpfs(Path::new("/run")).unwrap();
 
-        let mut profile = Profile::deny_all()
-            .read("/run/read")
-            .read_exec("/run/read-exec")
-            .read_write("/run/read-write")
+        let parent_first = std::env::var("SANDBOX_GRANT_ORDER").unwrap() == "parent-first";
+        let mut profile = Profile::deny_all();
+        if parent_first {
+            profile = profile
+                .read("/run/grants")
+                .read("/run/grants/read-write")
+                .read("/run/grants/read-exec");
+        }
+        profile = profile
+            .read("/run/grants/read")
+            .read_exec("/run/grants/read-exec")
+            .read_write("/run/grants/read-write")
+            .read("/run/grants/read-write/nested")
+            .read("/run/grants/read-exec/nested")
             .read("/sys/devices/system/cpu");
+        if !parent_first {
+            profile = profile
+                .read("/run/grants/read-write")
+                .read("/run/grants/read-exec")
+                .read("/run/grants");
+        }
         for path in ["/bin", "/lib", "/lib64", "/usr/lib"] {
             if Path::new(path).exists() {
                 profile = profile.read_exec(path);
@@ -459,12 +517,15 @@ mod tests {
         }
         let script = "#!/bin/sh\nexit 0\n";
         let cases = [
-            ("/run/read", false, false),
-            ("/run/read-exec", false, true),
-            ("/run/read-write", true, false),
+            ("/run/grants/read-write", true, false),
+            ("/run/grants/read-write/nested", true, false),
+            ("/run/grants/read-exec", false, true),
+            ("/run/grants/read-exec/nested", false, true),
+            ("/run/grants/read", false, false),
+            ("/run/grants", false, false),
         ];
         for (directory, _, _) in cases {
-            fs_err::create_dir(directory).unwrap();
+            fs_err::create_dir_all(directory).unwrap();
             let path = Path::new(directory).join("probe");
             fs_err::write(&path, script).unwrap();
             fs_err::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -497,6 +558,37 @@ mod tests {
                     "execution was not denied on {}",
                     directory.display(),
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn filesystem_grants_reject_write_execute_overlaps() {
+        for child in ["/run/grants", "/run/grants/child"] {
+            for (parent_access, child_access) in [
+                (Access::ReadWrite, Access::ReadExec),
+                (Access::ReadExec, Access::ReadWrite),
+            ] {
+                for reverse in [false, true] {
+                    let mut grants = vec![
+                        FsGrant {
+                            path: PathBuf::from("/run/grants"),
+                            access: parent_access,
+                        },
+                        FsGrant {
+                            path: PathBuf::from(child),
+                            access: child_access,
+                        },
+                    ];
+                    if reverse {
+                        grants.reverse();
+                    }
+                    assert!(matches!(
+                        filesystem_mount_plan(&grants),
+                        Err(Error::ApplyFailed { source, .. })
+                            if source.kind() == io::ErrorKind::InvalidInput
+                    ));
+                }
             }
         }
     }
@@ -622,7 +714,9 @@ mod tests {
             ] {
                 mount_namespace::bind_mount(&source, Path::new(path), 0).unwrap();
             }
-            profile = crate::profiles::vm_worker().read_write("/run/ordinary-device");
+            profile = crate::profiles::vm_worker()
+                .read("/dev/sev")
+                .read_write("/run/ordinary-device");
         }
         if scenario == "invalid-device" {
             profile = profile.device("/run/resolve");
