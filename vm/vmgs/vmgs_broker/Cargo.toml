@@ -28,10 +28,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-disk_backend.workspace = true
-disklayer_ram.workspace = true
+disk_hook.workspace = true
 parking_lot.workspace = true
-scsi_buffers.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+mod mshv;
 mod runtime;
 mod start;
 
@@ -86,11 +87,21 @@ pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
+impl OpenVmmPetriBackend {
+    /// Launch a separately supplied, protocol-compatible native executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            openvmm_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
     const SUPPORTS_VMBUS: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
@@ -124,10 +135,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         Ok(None) // TODO #2403
     }
 
-    fn build_custom_init_script(
-        _pipette_path: &str,
-        _mount_shares: Vec<(String, String)>,
-    ) -> Option<String> {
+    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
         None
     }
 
@@ -161,6 +169,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
+    guest_shares: std::collections::HashMap<String, crate::GuestShare>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,

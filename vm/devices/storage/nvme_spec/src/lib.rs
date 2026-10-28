@@ -6,6 +6,8 @@
 //! Provides bitfield structs, command/completion queue entry formats, status
 //! codes, and register definitions. The [`nvm`] submodule defines the NVM
 //! command set (read, write, flush, DSM, reservations, namespace identification).
+//! The [`tdisp`] submodule defines the NVMe TDISP reporting structure from
+//! PCIe Transport 1.4.
 //!
 //! Base 2.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-2.0c-2022.10.04-Ratified.pdf>
 //! PCIe transport 1.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-PCIe-Transport-Specification-1.0c-2022.10.03-Ratified.pdf>
@@ -15,6 +17,7 @@
 #![no_std]
 
 pub mod nvm;
+pub mod tdisp;
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;

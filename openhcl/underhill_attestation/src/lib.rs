@@ -2118,8 +2118,8 @@ mod tests {
 
     use super::*;
     use crate::test_utils::MockTeeCallNoGetDerivedKey;
-    use disk_backend::Disk;
-    use disklayer_ram::ram_disk;
+    use disk_hook::Disk;
+    use disk_hook::HookDisk;
     use get_protocol::GSP_CLEARTEXT_MAX;
     use get_protocol::GspExtendedStatusFlags;
     use guest_emulation_device::IgvmAgentAction;
@@ -2305,7 +2305,7 @@ mod tests {
     }
 
     fn new_test_file() -> Disk {
-        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+        HookDisk::new(4 * ONE_MEGA_BYTE, 512).into_disk()
     }
 
     /// Supplies exactly one trusted report per unlock attempt, while retaining

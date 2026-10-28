@@ -22,6 +22,7 @@ default = [
 ]
 
 gdb = ["openvmm_resources/gdb"]
+otel = ["openvmm_entry/otel"]
 vendored_crypto = ["crypto/vendored"]
 tpm = [
   "openvmm_resources/tpm",

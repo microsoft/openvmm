@@ -29,7 +29,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -287,7 +287,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -602,7 +602,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -890,7 +890,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1244,7 +1244,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1643,7 +1643,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job17-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1852,7 +1852,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -3997,7 +3997,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job27-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5270,7 +5270,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6279,7 +6279,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read

@@ -8,22 +8,17 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
-use disk_backend::Disk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
+use disk_hook::Disk;
+use disk_hook::HookDisk;
 use futures::future::Either;
 use futures::future::select;
 use guestmem::GuestMemory;
-use guestmem::MemoryRead;
-use guestmem::MemoryWrite;
-use inspect::Inspect;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
-use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::pin;
 use std::time::Duration;
@@ -529,7 +524,9 @@ impl TestHarness {
 // --- Tests ---
 
 fn ram_disk(size: u64, read_only: bool) -> Disk {
-    disklayer_ram::ram_disk(size, read_only).unwrap()
+    HookDisk::new(size, 512)
+        .with_read_only(read_only)
+        .into_disk()
 }
 
 /// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
@@ -684,8 +681,11 @@ async fn get_id_returns_identifier(driver: DefaultDriver) {
 
 #[async_test]
 async fn get_id_returns_disk_id(driver: DefaultDriver) {
-    let disk =
-        Disk::new(TestDisk4K::new(64 * 1024, 512).with_disk_id(*b"backing-disk-id!")).unwrap();
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_disk_id(*b"backing-disk-id!")
+        .with_fua_respected(false)
+        .with_unmap_behavior(UnmapBehavior::Ignored)
+        .into_disk();
     let mut harness = TestHarness::new(&driver, disk, false);
     harness.enable().await;
 
@@ -701,8 +701,11 @@ async fn get_id_returns_disk_id(driver: DefaultDriver) {
 
 #[async_test]
 async fn get_id_returns_configured_serial(driver: DefaultDriver) {
-    let disk =
-        Disk::new(TestDisk4K::new(64 * 1024, 512).with_disk_id(*b"backing-disk-id!")).unwrap();
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_disk_id(*b"backing-disk-id!")
+        .with_fua_respected(false)
+        .with_unmap_behavior(UnmapBehavior::Ignored)
+        .into_disk();
     let mut serial = [0; VIRTIO_BLK_ID_BYTES];
     serial[..13].copy_from_slice(b"custom-serial");
     let mut harness = TestHarness::with_device_driver(
@@ -838,125 +841,6 @@ async fn sector_offset_correctness(driver: DefaultDriver) {
     assert!(buf.iter().all(|&b| b == 0), "sector 9 should be zeroes");
 }
 
-// --- 4K-sector test disk ---
-
-/// A simple in-memory disk with configurable sector size, used to test the
-/// sector shift conversion path with non-512-byte sectors.
-#[derive(Inspect)]
-struct TestDisk4K {
-    sector_size: u32,
-    disk_id: Option<[u8; 16]>,
-    #[inspect(skip)]
-    storage: Mutex<Vec<u8>>,
-    #[inspect(skip)]
-    supports_discard: bool,
-}
-
-impl TestDisk4K {
-    fn new(total_bytes: usize, sector_size: u32) -> Self {
-        assert!(sector_size.is_power_of_two() && sector_size >= 512);
-        assert_eq!(total_bytes % sector_size as usize, 0);
-        Self {
-            sector_size,
-            disk_id: None,
-            storage: Mutex::new(vec![0u8; total_bytes]),
-            supports_discard: false,
-        }
-    }
-
-    fn with_disk_id(mut self, disk_id: [u8; 16]) -> Self {
-        self.disk_id = Some(disk_id);
-        self
-    }
-
-    fn with_discard(mut self) -> Self {
-        self.supports_discard = true;
-        self
-    }
-}
-
-impl DiskIo for TestDisk4K {
-    fn disk_type(&self) -> &str {
-        "test-4k"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.storage.lock().len() as u64 / self.sector_size as u64
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.sector_size
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.disk_id
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.sector_size
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        false
-    }
-
-    fn is_read_only(&self) -> bool {
-        false
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        let offset = sector as usize * self.sector_size as usize;
-        let end = offset + buffers.len();
-        let storage = self.storage.lock();
-        if end > storage.len() {
-            return Err(DiskError::IllegalBlock);
-        }
-        buffers.writer().write(&storage[offset..end])?;
-        Ok(())
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        _fua: bool,
-    ) -> Result<(), DiskError> {
-        let offset = sector as usize * self.sector_size as usize;
-        let end = offset + buffers.len();
-        let mut storage = self.storage.lock();
-        if end > storage.len() {
-            return Err(DiskError::IllegalBlock);
-        }
-        buffers.reader().read(&mut storage[offset..end])?;
-        Ok(())
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        Ok(())
-    }
-
-    async fn unmap(
-        &self,
-        _sector: u64,
-        _count: u64,
-        _block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        Ok(())
-    }
-
-    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        if self.supports_discard {
-            disk_backend::UnmapBehavior::Unspecified
-        } else {
-            disk_backend::UnmapBehavior::Ignored
-        }
-    }
-}
-
 // --- Sector shift regression tests ---
 
 /// Write and read via a 4096-byte-sector disk to exercise the sector shift
@@ -971,7 +855,10 @@ impl DiskIo for TestDisk4K {
 #[async_test]
 async fn write_read_4k_sector_disk(driver: DefaultDriver) {
     // 64 KiB disk with 4096-byte sectors → 16 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(64 * 1024, 4096)).unwrap();
+    let disk = HookDisk::new(64 * 1024, 4096)
+        .with_fua_respected(false)
+        .with_unmap_behavior(UnmapBehavior::Ignored)
+        .into_disk();
     let mut harness = TestHarness::new(&driver, disk, false);
     harness.enable().await;
 
@@ -1009,7 +896,10 @@ async fn write_read_4k_sector_disk(driver: DefaultDriver) {
 #[async_test]
 async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
     // 128 KiB disk with 4096-byte sectors → 32 disk sectors.
-    let disk = Disk::new(TestDisk4K::new(128 * 1024, 4096)).unwrap();
+    let disk = HookDisk::new(128 * 1024, 4096)
+        .with_fua_respected(false)
+        .with_unmap_behavior(UnmapBehavior::Ignored)
+        .into_disk();
     let mut harness = TestHarness::new(&driver, disk, false);
     harness.enable().await;
 
@@ -1072,7 +962,10 @@ async fn check_discard(
 }
 
 fn test_disk_4k_discard() -> Disk {
-    Disk::new(TestDisk4K::new(64 * 1024, 4096).with_discard()).unwrap()
+    HookDisk::new(64 * 1024, 4096)
+        .with_fua_respected(false)
+        .with_unmap_behavior(UnmapBehavior::Unspecified)
+        .into_disk()
 }
 
 /// Discard with properly aligned sector and num_sectors on a 4K disk

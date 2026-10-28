@@ -26,11 +26,28 @@ use windows as sys;
 pub use path::PathBufExt;
 pub use path::PathExt;
 
+/// An error initializing a host filesystem volume.
+#[derive(Debug, thiserror::Error)]
+pub enum VolumeError {
+    /// Opening or initializing the volume failed.
+    #[error("failed to initialize filesystem volume")]
+    Filesystem(#[from] lx::Error),
+    /// The kernel or host policy could not perform the required constrained open.
+    #[cfg(unix)]
+    #[error(
+        "Linux filesystem volumes require openat2 with RESOLVE_NO_SYMLINKS and \
+         RESOLVE_BENEATH (Linux 5.6+); check kernel support and seccomp policy"
+    )]
+    ConstrainedOpen(#[source] lx::Error),
+}
+
 /// A platform-independent abstraction that allows you to treat an area of the file system as if
 /// it has Unix semantics.
 ///
-/// N.B.: all methods take relative paths, but do not attempt to make sure the path does not escape
-///       the root of the `LxVolume`, and therefore should not be relied upon for security.
+/// Paths beneath the captured volume root must contain only normal relative components.
+/// Intermediate symlinks are never followed; final symlinks can be accessed as links.
+/// The trusted root path itself may contain symlinks. Mount crossings and existing hard links
+/// are not restricted, so this is not a general-purpose filesystem sandbox.
 ///
 /// Use `PathExt` and `PathBufExt` to write cross-platform code that deals only with Unix-style
 /// paths.
@@ -53,7 +70,8 @@ pub use path::PathExt;
 ///
 /// # Unix
 ///
-/// All calls pass through directly to their libc equivalent. Attributes like mode are always
+/// Paths are resolved relative to captured directory descriptors without following symlinks.
+/// Linux 5.6 or later is required for `openat2`. Attributes like mode are always
 /// enabled if the file system supports them. `LxVolumeOptions` is entirely ignored, as are the
 /// `uid` and `gid` fields of `LxCreateOptions`.
 pub struct LxVolume {
@@ -64,7 +82,9 @@ pub struct LxVolume {
 // interface.
 impl LxVolume {
     /// Creates a new instance of `LxVolume` using the specified root path.
-    pub fn new(root_path: impl AsRef<Path>) -> lx::Result<Self> {
+    ///
+    /// Setup failures retain host capability diagnostics and their underlying OS error.
+    pub fn new(root_path: impl AsRef<Path>) -> Result<Self, VolumeError> {
         Self::new_with_options(root_path, &LxVolumeOptions::new())
     }
 
@@ -115,8 +135,8 @@ impl LxVolume {
     ///
     /// # Unix
     ///
-    /// Symlinks are followed for chmod, because the `fchmodat` syscall does not offer a way to not
-    /// follow symlinks.
+    /// Chmod does not follow symlinks. On kernels without `fchmodat2`, it uses a captured
+    /// file descriptor through `/proc/self/fd` and requires procfs.
     ///
     /// The `SetAttributes::thread_uid` field is ignored, and the thread's actual capabilities are
     /// are used.
@@ -181,8 +201,7 @@ impl LxVolume {
     ///
     /// # Unix
     ///
-    /// Symlinks are followed for chmod, because the `fchmodat` syscall does not offer a way to not
-    /// follow symlinks.
+    /// Symlinks are not followed. Changing a symlink's mode may return `ENOTSUP`.
     pub fn chmod(&self, path: impl AsRef<Path>, mode: lx::mode_t) -> lx::Result<()> {
         let mut attr = SetAttributes::default();
         attr.mode = Some(mode);
@@ -224,6 +243,8 @@ impl LxVolume {
     }
 
     /// Opens or creates a file.
+    ///
+    /// Symlinks are never followed, even if `O_NOFOLLOW` is omitted.
     ///
     /// # Windows
     ///
@@ -519,7 +540,7 @@ impl LxVolume {
     fn new_with_options(
         root_path: impl AsRef<Path>,
         options: &LxVolumeOptions,
-    ) -> lx::Result<Self> {
+    ) -> Result<Self, VolumeError> {
         Ok(Self {
             inner: sys::LxVolume::new(root_path.as_ref(), options)?,
         })
@@ -823,7 +844,7 @@ impl LxVolumeOptions {
                 }
                 "umask" => {
                     if let Some(value) = value {
-                        if let Ok(umask) = value.parse::<u32>() {
+                        if let Ok(umask) = u32::from_str_radix(value, 8) {
                             if (umask & !0o777) == 0 {
                                 options.umask(umask);
                             } else {
@@ -838,7 +859,7 @@ impl LxVolumeOptions {
                 }
                 "dmask" => {
                     if let Some(value) = value {
-                        if let Ok(dmask) = value.parse::<u32>() {
+                        if let Ok(dmask) = u32::from_str_radix(value, 8) {
                             if (dmask & !0o777) == 0 {
                                 options.dmask(dmask);
                             } else {
@@ -853,7 +874,7 @@ impl LxVolumeOptions {
                 }
                 "fmask" => {
                     if let Some(value) = value {
-                        if let Ok(fmask) = value.parse::<u32>() {
+                        if let Ok(fmask) = u32::from_str_radix(value, 8) {
                             if (fmask & !0o777) == 0 {
                                 options.fmask(fmask);
                             } else {
@@ -914,7 +935,9 @@ impl LxVolumeOptions {
     }
 
     /// Creates a new `LxVolume` with the current options.
-    pub fn new_volume(&self, root_path: impl AsRef<Path>) -> lx::Result<LxVolume> {
+    ///
+    /// Setup failures retain host capability diagnostics and their underlying OS error.
+    pub fn new_volume(&self, root_path: impl AsRef<Path>) -> Result<LxVolume, VolumeError> {
         LxVolume::new_with_options(root_path, self)
     }
 
@@ -1150,6 +1173,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
     use tempfile::TempDir;
+    use test_with_tracing::test;
 
     #[test]
     fn lstat() {
@@ -1610,6 +1634,157 @@ mod tests {
                 .unwrap_err()
                 .value(),
             lx::EINVAL
+        );
+    }
+
+    #[test]
+    fn symlink_ancestors_are_not_walked() {
+        fn expect_traversal_error<T>(result: lx::Result<T>) {
+            let error = result.err().expect("symlink traversal must be rejected");
+            if matches!(error, lx::Error::ELOOP | lx::Error::ENOTDIR) {
+                return;
+            }
+            // Unhandled LX reparse tags can be rejected by the filesystem itself.
+            #[cfg(windows)]
+            if error == lx::Error::ENXIO {
+                return;
+            }
+            panic!("expected a traversal error, got {error}");
+        }
+
+        let env = TestEnv::new();
+        env.create_file("target/file", "unchanged");
+        env.create_file("source", "source");
+        let target = Path::from_lx("target/file").unwrap();
+        env.volume.chmod(&target, 0o600).unwrap();
+        let initial_mode = env.volume.lstat(&target).unwrap().mode;
+        env.volume
+            .set_xattr(&target, "user.test", b"original", lx::XATTR_CREATE)
+            .unwrap();
+        let mut value = [0; 32];
+        let size = env
+            .volume
+            .get_xattr(&target, "user.test", Some(&mut value))
+            .unwrap();
+        assert_eq!(&value[..size], b"original");
+        let mut names = [0; 512];
+        let size = env.volume.list_xattr(&target, Some(&mut names)).unwrap();
+        assert!(
+            names[..size]
+                .split(|&c| c == 0)
+                .any(|name| name == b"user.test")
+        );
+        env.volume
+            .symlink(
+                Path::from_lx("target/childlink").unwrap(),
+                "file",
+                LxCreateOptions::default(),
+            )
+            .unwrap();
+        env.volume
+            .symlink("link", "target", LxCreateOptions::default())
+            .unwrap();
+        let file = Path::from_lx("link/file").unwrap();
+        let new = Path::from_lx("link/new").unwrap();
+        expect_traversal_error(env.volume.lstat(&file));
+        expect_traversal_error(env.volume.statx(&file));
+        expect_traversal_error(env.volume.open(&file, lx::O_RDONLY, None));
+        expect_traversal_error(env.volume.open(
+            &file,
+            lx::O_WRONLY | lx::O_CREAT | lx::O_TRUNC,
+            Some(LxCreateOptions::default()),
+        ));
+        expect_traversal_error(env.volume.mkdir_stat(&new, LxCreateOptions::default()));
+        expect_traversal_error(env.volume.mknod_stat(
+            &new,
+            LxCreateOptions::new(lx::S_IFREG | 0o600, 0, 0),
+            0,
+        ));
+        expect_traversal_error(
+            env.volume
+                .symlink_stat(&new, "file", LxCreateOptions::default()),
+        );
+        expect_traversal_error(
+            env.volume
+                .read_link(Path::from_lx("link/childlink").unwrap()),
+        );
+        expect_traversal_error(env.volume.unlink(&file, 0));
+        expect_traversal_error(env.volume.rename("source", &new, 0));
+        expect_traversal_error(env.volume.rename(&file, "renamed", 0));
+        expect_traversal_error(env.volume.link("source", &new));
+        expect_traversal_error(env.volume.link(&file, "hardlink"));
+        expect_traversal_error(env.volume.truncate(&file, 0, 0));
+        expect_traversal_error(env.volume.chmod(&file, 0o400));
+        expect_traversal_error(env.volume.stat_fs(&file));
+        expect_traversal_error(env.volume.set_xattr(
+            &file,
+            "user.test",
+            b"value",
+            lx::XATTR_REPLACE,
+        ));
+        expect_traversal_error(env.volume.get_xattr(&file, "user.test", Some(&mut value)));
+        expect_traversal_error(env.volume.list_xattr(&file, Some(&mut names)));
+        expect_traversal_error(env.volume.remove_xattr(&file, "user.test"));
+        let size = env
+            .volume
+            .get_xattr(&target, "user.test", Some(&mut value))
+            .unwrap();
+        assert_eq!(&value[..size], b"original");
+        assert_eq!(env.volume.lstat(&target).unwrap().mode, initial_mode);
+        assert_eq!(
+            fs::read(env.root_dir.path().join("target/file")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            fs::read(env.root_dir.path().join("source")).unwrap(),
+            b"source"
+        );
+        assert!(!env.root_dir.path().join("target/new").exists());
+        assert!(!env.root_dir.path().join("hardlink").exists());
+    }
+
+    #[test]
+    fn final_symlinks_remain_operable() {
+        let env = TestEnv::new();
+        env.create_file("target/file", "unchanged");
+        env.volume
+            .symlink("link", "target/file", LxCreateOptions::default())
+            .unwrap();
+        assert!(lx::s_islnk(env.volume.lstat("link").unwrap().mode));
+        assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
+        assert!(
+            env.volume
+                .open("link", lx::O_WRONLY | lx::O_TRUNC, None)
+                .is_err()
+        );
+        env.volume.rename("link", "renamed", 0).unwrap();
+        assert_eq!(env.volume.read_link("renamed").unwrap(), "target/file");
+        env.volume.unlink("renamed", 0).unwrap();
+        assert_eq!(
+            fs::read(env.root_dir.path().join("target/file")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
+    fn paths_cannot_escape_the_volume() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        for path in ["../file", "./file", "dir/../file"] {
+            let path = Path::from_lx(path).unwrap();
+            assert_eq!(env.volume.lstat(&path).unwrap_err(), lx::Error::EINVAL);
+            assert_eq!(
+                env.volume
+                    .open(&path, lx::O_WRONLY | lx::O_TRUNC, None)
+                    .err()
+                    .unwrap(),
+                lx::Error::EINVAL
+            );
+            assert_eq!(env.volume.unlink(&path, 0).unwrap_err(), lx::Error::EINVAL);
+        }
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
         );
     }
 
@@ -2276,6 +2451,76 @@ mod tests {
             .unwrap();
 
         assert_ne!(stat1.inode_nr, stat2.inode_nr);
+    }
+
+    #[test]
+    fn permission_mask_options() {
+        for (value, mask) in [
+            ("0", 0u32),
+            ("022", 0o022),
+            ("22", 0o022),
+            ("111", 0o111),
+            ("0777", 0o777),
+            ("777", 0o777),
+            ("", 0),
+            ("8", 0),
+            ("18", 0),
+            ("1000", 0),
+        ] {
+            let options = LxVolumeOptions::from_option_string(&format!(
+                "umask={value};dmask={value};fmask={value}"
+            ));
+            assert_eq!(options.umask, !mask, "umask={value}");
+            assert_eq!(options.dmask, !mask, "dmask={value}");
+            assert_eq!(options.fmask, !mask, "fmask={value}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn permission_masks_apply_by_file_type() {
+        let env = TestEnv::new();
+        env.create_file("testdir/testfile", "test");
+
+        for metadata in [false, true] {
+            for (umask, dmask, fmask) in [
+                (0, 0, 0),
+                (0o022, 0, 0),
+                (0, 0o022, 0),
+                (0, 0, 0o111),
+                (0o022, 0, 0o111),
+                (0o022, 0o022, 0o111),
+            ] {
+                let volume = LxVolumeOptions::new()
+                    .metadata(metadata)
+                    .umask(umask)
+                    .dmask(dmask)
+                    .fmask(fmask)
+                    .new_volume(env.root_dir.path())
+                    .unwrap();
+
+                for (path, mask, flags) in [
+                    ("", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("testdir", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("testdir/testfile", fmask, lx::O_RDONLY),
+                ] {
+                    let path = Path::from_lx(path).unwrap();
+                    let expected = env.volume.lstat(&path).unwrap().mode & !(umask | mask);
+                    assert_eq!(
+                        volume.lstat(&path).unwrap().mode,
+                        expected,
+                        "lstat({path:?}), metadata={metadata}, umask={umask:o}, dmask={dmask:o}, fmask={fmask:o}"
+                    );
+
+                    let file = volume.open(&path, flags, None).unwrap();
+                    assert_eq!(
+                        u32::from(file.fstat().unwrap().mode),
+                        expected,
+                        "fstat({path:?}), metadata={metadata}, umask={umask:o}, dmask={dmask:o}, fmask={fmask:o}"
+                    );
+                }
+            }
+        }
     }
 
     fn check_symlink(volume: &LxVolume, path: impl AsRef<Path>, target: &str) {
