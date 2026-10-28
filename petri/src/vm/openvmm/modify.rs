@@ -571,8 +571,8 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    pub(super) fn with_guest_shares(mut self) -> Self {
-        if self.guest_shares.is_empty() {
+    pub(super) fn with_private_virtio_devices(mut self) -> Self {
+        if self.guest_shares.is_empty() && self.private_virtio_devices.is_empty() {
             return self;
         }
         if self.config.pcie_root_complexes.is_empty() {
@@ -599,15 +599,26 @@ impl PetriVmConfigOpenVmm {
             .collect::<Vec<_>>();
         shares.sort_by(|a, b| a.0.cmp(&b.0));
         for (tag, share) in shares {
-            let port_name = (0..)
-                .map(|i| format!("petri-share-{i}"))
-                .find(|name| port_names.insert(name.clone()))
-                .unwrap();
             let root_path = share
                 .host_path
                 .into_os_string()
                 .into_string()
                 .expect("guest share path must be UTF-8");
+            self.private_virtio_devices.push((
+                "petri-share-",
+                virtio_resources::p9::VirtioPlan9Handle {
+                    tag,
+                    root_path,
+                    debug: false,
+                }
+                .into_resource(),
+            ));
+        }
+        for (prefix, resource) in std::mem::take(&mut self.private_virtio_devices) {
+            let port_name = (0..)
+                .map(|i| format!("{prefix}{i}"))
+                .find(|name| port_names.insert(name.clone()))
+                .unwrap();
             self.config.pcie_root_complexes[root_index]
                 .ports
                 .push(PciePortConfig {
@@ -620,15 +631,7 @@ impl PetriVmConfigOpenVmm {
                 });
             self.config.pcie_devices.push(PcieDeviceConfig {
                 port_name,
-                resource: virtio_resources::VirtioPciDeviceHandle(
-                    virtio_resources::p9::VirtioPlan9Handle {
-                        tag,
-                        root_path,
-                        debug: false,
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
+                resource: virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
             });
         }
         self

@@ -72,6 +72,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 
@@ -85,6 +86,26 @@ pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12,
 #[derive(Debug)]
 pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
+}
+
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Add a single-port Linux virtio console, captured in `hvc0.log`.
+    ///
+    /// Linux-direct boot selects `console=hvc0` and requires initrd-owned agent
+    /// startup. UEFI guests select their console through their boot configuration.
+    /// The firmware UART is unchanged.
+    pub fn with_virtio_console(mut self) -> Self {
+        assert!(
+            matches!(
+                self.config.firmware,
+                Firmware::LinuxDirect { .. } | Firmware::Uefi { .. }
+            ) && self.config.firmware.os_flavor() == petri_artifacts_common::tags::OsFlavor::Linux
+                && self.config.firmware.isolation().is_none(),
+            "virtio-console requires Linux-direct or non-isolated Linux UEFI"
+        );
+        self.use_virtio_console = true;
+        self
+    }
 }
 
 impl OpenVmmPetriBackend {
@@ -170,6 +191,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
     guest_shares: std::collections::HashMap<String, crate::GuestShare>,
+    private_virtio_devices: Vec<(&'static str, Resource<VirtioDeviceHandle>)>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,

@@ -40,7 +40,8 @@ Build the native launcher and Incubator from the same checkout for protocol
 compatibility, and build a static guest agent:
 
 ```bash
-cargo build -p openvmm -p incubator
+cargo build -p openvmm
+cargo build -p incubator --profile light
 cargo build -p pipette --target x86_64-unknown-linux-musl
 cargo build -p mshv_host_boot --target x86_64-unknown-uefi
 ```
@@ -52,7 +53,7 @@ This environment requires `nested-virt = true`, a compatible mshv root kernel,
 and the [boot artifacts below](#mshv-boot-artifacts-and-kernel).
 
 ```bash
-target/debug/incubator \
+target/light/incubator \
   --profile path/to/mshv-profile.toml \
   --kernel path/to/mshv/bzImage \
   --initrd path/to/test/initrd \
@@ -70,6 +71,16 @@ Incubator supplies Petri with a `UefiGuest::Mshv` boot recipe: resolved kernel
 and payload paths plus an owned, prepared initrd. Petri composes and owns the
 temporary boot disk during VM preparation; the separate mshv platform preset
 configures nested virtualization and the required devices.
+
+OpenVMM guests use virtio-console (`console=hvc0`) for Linux output and
+guest-initiated virtio-vsock for Pipette. The host listener exists before boot;
+agent connection does not poll TCP readiness. The network remains available for
+guest workloads. UEFI/host-boot/HvLoader output stays on the 16550 UART. The
+mshv default disables Linux UART initialization with `8250.nr_uarts=0`; this
+does not affect firmware output. For early Linux UART diagnostics, select
+`console=ttyS0` and replace that option with `8250.nr_uarts=2` in the mshv
+kernel options. Selecting both consoles duplicates Linux output. QEMU keeps its
+existing TCP agent transport.
 
 For OpenVMM **without mshv**, use
 `petri/incubator/profiles/x86_64-openvmm.toml` with a native executable path,
@@ -102,6 +113,9 @@ The root kernel needs the mshv EFI-launch patches, `CONFIG_EFI_STUB=y`,
 `CONFIG_MSHV_ROOT=y`, and built-in PCIe, virtio-blk, virtio-net, virtio-9p,
 devtmpfs, and initramfs support. Disable modules and reuse the OpenVMM test
 initrd. A stock upstream test kernel cannot launch this environment.
+Build virtio-console and virtio-vsock into the root kernel as well. Petri
+selects the matching vsock initcall blacklist for both Linux-direct and mshv
+UEFI boot, preventing the competing Hyper-V socket driver from claiming it.
 
 The public `rolling-lts/kata/6.18.34.mshv2` kernel needs corrections for root
 IRQ mapping lifecycle and the build-26100 two-bank `CreatePartition` ABI.
@@ -141,11 +155,11 @@ GRUB code:
 | `hvloader.cmdline` | `\lxhvloader.dll` followed by hypervisor options |
 
 Incubator requires both `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`;
-Petri appends the prepared initrd's required `rdinit`. The standalone image
-composer likewise requires both `--kernel-cmdline` and `--hypervisor-cmdline`.
-Neither path supplies default command lines. Both write these files when
-composing media. You can also edit the files on an existing ESP without
-rebuilding the host boot application, kernel, or hypervisor.
+Petri appends the prepared initrd's required `rdinit` and vsock driver selection.
+The standalone image composer likewise requires both `--kernel-cmdline` and
+`--hypervisor-cmdline`. Neither path supplies default command lines. Both write
+these files when composing media. You can also edit the files on an existing
+ESP without rebuilding the host boot application, kernel, or hypervisor.
 
 Each file is limited to 16 KiB and a single UCS-2-compatible line, with an
 optional final LF or CRLF. Quotes, spaces, backslashes, and shell metacharacters
@@ -175,7 +189,8 @@ disabling verification. Its clock is initialized from the host.
 ## Output and failures
 
 Each invocation creates an `incubator-*` directory beneath `--output-dir`, with
-serial logs (`uefi.log` or `guest.log`), VMM logs (`openvmm.log` or `qemu.log`),
+console logs (`hvc0.log` for OpenVMM Linux, `uefi.log` for firmware/early UART,
+or `guest.log` for QEMU), VMM logs (`openvmm.log` or `qemu.log`),
 and `petri.jsonl`. Guest stdout/stderr remain separate from runner diagnostics.
 Use `--guest-env` or `INCUBATOR_ENV` for guest environment overrides.
 

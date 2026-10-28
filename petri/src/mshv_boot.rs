@@ -24,7 +24,7 @@ pub struct MshvBoot {
     pub initrd: PetriInitrd,
     /// Extracted artifact directory containing `boot/`.
     pub boot_artifacts: ResolvedArtifact,
-    /// Linux options; Petri appends the prepared initrd's entry point.
+    /// Linux options; Petri appends the initrd entry point and vsock driver selection.
     pub kernel_cmdline: String,
     /// Hypervisor options for HvLoader, without the loader DLL path.
     pub hypervisor_cmdline: String,
@@ -35,7 +35,7 @@ impl MshvBoot {
     ///
     /// Copies the prepared initrd unchanged. This neither prepares the guest
     /// userspace nor selects its agent, network, or trust store.
-    pub(crate) fn build(&self) -> anyhow::Result<Disk> {
+    pub(crate) fn build(&self, use_virtio_vsock: bool) -> anyhow::Result<Disk> {
         let image = tempfile::NamedTempFile::new()?.into_temp_path();
         fs_err::remove_file(&image)?;
         let boot = self.boot_artifacts.get().join("boot");
@@ -45,8 +45,10 @@ impl MshvBoot {
             kernel: self.kernel.get(),
             initrd: self.initrd.path.as_ref(),
             kernel_cmdline: &format!(
-                "{} rdinit={}",
-                self.kernel_cmdline, self.initrd.rdinit_param
+                "{} {} rdinit={}",
+                self.kernel_cmdline,
+                crate::vm::linux_vsock_blacklist(use_virtio_vsock),
+                self.initrd.rdinit_param
             ),
             hypervisor_cmdline: &self.hypervisor_cmdline,
         }
@@ -92,7 +94,7 @@ mod tests {
             kernel_cmdline: "test_option=caller".into(),
             hypervisor_cmdline: "MSHV_SCHEDULER_TYPE=ROOT".into(),
         }
-        .build()?;
+        .build(true)?;
         let Disk::Temporary(path) = &disk else {
             panic!("expected owned temporary disk")
         };
@@ -121,7 +123,7 @@ mod tests {
             .read_to_string(&mut config)?;
         assert_eq!(
             config,
-            "initrd=\\initramfs.cpio test_option=caller rdinit=/caller-init\n"
+            "initrd=\\initramfs.cpio test_option=caller initcall_blacklist=hv_sock_init rdinit=/caller-init\n"
         );
         config.clear();
         fs.root_dir()

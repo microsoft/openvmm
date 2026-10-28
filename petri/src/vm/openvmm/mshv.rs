@@ -12,7 +12,7 @@ use petri_artifacts_common::tags::MachineArch;
 
 impl PetriVmBuilder<OpenVmmPetriBackend> {
     /// Add the mshv platform to a UEFI guest: nested virtualization, PCIe on
-    /// segment 1, TCP Pipette, and 9p shares, without VMBus or virtio-vsock.
+    /// segment 1, virtio-console, virtio-vsock Pipette, and 9p shares, without VMBus.
     ///
     /// This does not build or replace guest media. It appends a root complex
     /// rather than changing existing ones, and composes with backend modifiers
@@ -29,7 +29,8 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             "mshv platform requires UEFI firmware"
         );
         self.with_no_vmbus()
-            .with_virtio_vsock(false)
+            .with_virtio_vsock(true)
+            .with_virtio_console()
             .with_nested_virt()
             .with_serial_output()
             .with_boot_device_type(BootDeviceType::PcieVirtioBlk)
@@ -37,7 +38,7 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
             .modify_backend(|backend| {
                 backend
                     .with_pcie_root_topology_at(1, 1, 1, 2)
-                    .with_tcp_pipette_nic("s1rc0rp1", NIC_MAC_ADDRESS)
+                    .with_virtio_nic("s1rc0rp1", NIC_MAC_ADDRESS)
             })
     }
 }
@@ -55,7 +56,6 @@ mod tests {
     use crate::mshv_boot::MshvBoot;
     use petri_artifacts_common::tags::OsFlavor;
     use test_with_tracing::test;
-    #[cfg(any(windows, target_os = "linux"))]
     use vm_resource::IntoResource;
 
     fn builder_with_guest(
@@ -231,7 +231,7 @@ mod tests {
             Some(modify) => modify.0(config),
             None => config,
         };
-        Ok(config.with_guest_shares())
+        Ok(config.with_private_virtio_devices())
     }
 
     #[test]
@@ -381,6 +381,57 @@ mod tests {
     }
 
     #[test]
+    fn virtio_console_keeps_external_linux_direct_initrd_and_uses_vsock() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let logs = PetriLogSource::file_only(temp.path())?;
+        let base = temp.path().join("base-initrd");
+        fs_err::write(&base, b"external guest bootstrap")?;
+        pal_async::DefaultPool::run_with(async |driver| {
+            let builder = PetriVmBuilder::minimal(
+                "virtio-console",
+                &logs,
+                PetriVmArtifacts {
+                    backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                    firmware: Firmware::LinuxDirect {
+                        kernel: ResolvedArtifact::from_local_path(base.clone()),
+                        initrd: ResolvedArtifact::from_local_path(base.clone()),
+                    },
+                    arch: MachineArch::X86_64,
+                    agent_image: None,
+                    openhcl_agent_image: None,
+                    pipette_binary: None,
+                    nested_test: None,
+                },
+                &driver,
+            )?
+            .with_external_pipette()
+            .with_virtio_console()
+            .with_no_vmbus();
+            let mut backend = configure(builder).await?;
+            assert!(backend.resources.linux_direct_serial_agent.is_none());
+            assert!(backend.resources.tcp_pipette_port.is_none());
+            assert!(backend.config.vmbus.is_none());
+            assert_eq!(backend.config.pcie_devices.len(), 2);
+            let openvmm_defs::config::LoadMode::Linux {
+                cmdline,
+                initrd: Some(ref mut file),
+                ..
+            } = backend.config.load_mode
+            else {
+                panic!("expected Linux direct")
+            };
+            assert!(cmdline.contains("console=hvc0"));
+            assert!(!cmdline.contains("console=ttyS0"));
+            assert!(cmdline.contains("initcall_blacklist=hv_sock_init"));
+            assert!(!cmdline.contains("rdinit="));
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(file, &mut bytes)?;
+            assert_eq!(bytes, b"external guest bootstrap");
+            Ok(())
+        })
+    }
+
+    #[test]
     fn isolated_agent_is_external_only_when_requested() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
         let logs = PetriLogSource::file_only(temp.path())?;
@@ -440,7 +491,25 @@ mod tests {
             .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
             .with_mshv_platform()
             .with_shared_directory("data", temp.path(), "/mounted elsewhere")
-            .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1));
+            .modify_backend(|b| {
+                b.with_pcie_root_topology(1, 1, 2).with_custom_config(|c| {
+                    let root = c.pcie_root_complexes.last_mut().unwrap();
+                    for (port, name) in root
+                        .ports
+                        .iter_mut()
+                        .zip(["petri-console-0", "petri-vsock-0"])
+                    {
+                        port.name = name.into();
+                        c.pcie_devices.push(openvmm_defs::config::PcieDeviceConfig {
+                            port_name: name.into(),
+                            resource: virtio_resources::VirtioPciDeviceHandle(
+                                virtio_resources::rng::VirtioRngHandle.into_resource(),
+                            )
+                            .into_resource(),
+                        });
+                    }
+                })
+            });
             assert!(matches!(
                 builder.config.firmware,
                 Firmware::Uefi {
@@ -454,7 +523,8 @@ mod tests {
             ));
             assert!(!builder.properties().is_linux_direct);
             assert!(builder.properties().no_vmbus);
-            assert!(!builder.properties().use_virtio_vsock);
+            assert!(builder.properties().use_virtio_vsock);
+            assert!(builder.properties().use_virtio_console);
             let backend = configure(builder).await?;
             assert_eq!(
                 backend
@@ -470,14 +540,27 @@ mod tests {
                 "s0rc0rp0"
             );
             assert_eq!(backend.config.pcie_root_complexes[1].name, "s1rc0");
-            assert_eq!(backend.config.pcie_root_complexes[1].ports.len(), 3);
-            for port in ["s1rc0rp0", "s1rc0rp1", "petri-share-0"] {
+            assert_eq!(backend.config.pcie_root_complexes[1].ports.len(), 5);
+            assert!(backend.resources.tcp_pipette_port.is_none());
+            for port in [
+                "s1rc0rp0",
+                "s1rc0rp1",
+                "petri-console-1",
+                "petri-vsock-1",
+                "petri-share-0",
+            ] {
                 assert!(
                     backend
                         .config
                         .pcie_devices
                         .iter()
                         .any(|d| d.port_name == port)
+                );
+                assert!(
+                    backend.config.pcie_root_complexes[1]
+                        .ports
+                        .iter()
+                        .any(|p| p.name == port)
                 );
             }
             assert!(backend.guest_shares.is_empty());
