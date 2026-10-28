@@ -1483,8 +1483,7 @@ fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
         .with_enable_vtl_protection(!hardware_isolated)
         .with_zero_memory_on_reset(!hardware_isolated)
         .with_intercept_cpuid_unimplemented(!hardware_isolated)
-        // Hardware-isolated VMs do not register a VP assist page for intercept delivery.
-        .with_intercept_page(caps.intercept_page_available() && !hardware_isolated)
+        .with_intercept_page(caps.intercept_page_available())
         .with_intercept_unrecoverable_exception(true)
         .with_intercept_not_present(caps.intercept_not_present_available() && !isolated)
         .with_intercept_acceptance(isolated)
