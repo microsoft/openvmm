@@ -19,14 +19,20 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::VirtioDeviceStatus;
 use chipset_device::io::deferred::DeferredWrite;
+use futures::task::AtomicWaker;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
+use guestmem::RefusalHook;
+use guestmem::RestrictError;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::RestoreError;
@@ -64,6 +70,31 @@ pub(crate) trait TransportOps: Send {
     fn doorbell_region(&mut self) -> Option<(u64, u32)>;
 }
 
+/// Latches a device access that the device memory refused, until the
+/// transport marks the device as needing reset.
+#[derive(Default)]
+struct DmaRefusal {
+    refused: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl DmaRefusal {
+    fn refuse(&self, gpa: u64, len: u64) {
+        if !self.refused.swap(true, Ordering::SeqCst) {
+            tracelimit::warn_ratelimited!(
+                gpa,
+                len,
+                "virtio device addressed memory outside its DMA ranges, marking it as needing reset"
+            );
+            self.waker.wake();
+        }
+    }
+
+    fn take(&self) -> bool {
+        self.refused.swap(false, Ordering::SeqCst)
+    }
+}
+
 /// State shared by both the PCI and MMIO virtio transports.
 #[derive(Inspect)]
 pub(crate) struct VirtioTransportCore {
@@ -93,6 +124,10 @@ pub(crate) struct VirtioTransportCore {
     pub restore: restore::TransportRestore,
     #[inspect(skip)]
     pub guest_memory: GuestMemory,
+    /// The refusals of the device memory, when [`Self::restrict_dma`]
+    /// restricted it.
+    #[inspect(rename = "dma_restricted", with = "Option::is_some")]
+    dma_refusal: Option<Arc<DmaRefusal>>,
     #[inspect(with = "Option::is_some")]
     pub pending_status_deferred: Option<DeferredWrite>,
     #[inspect(with = "Vec::len")]
@@ -159,9 +194,55 @@ impl VirtioTransportCore {
             supports_save_restore,
             restore,
             guest_memory,
+            dma_refusal: None,
             pending_status_deferred: None,
             stalled_io: Vec::new(),
         })
+    }
+
+    /// Restricts the DMA of the device to `ranges` of guest memory.
+    ///
+    /// The device memory then refuses a queue whose rings, or a descriptor
+    /// whose buffer, does not lie wholly inside the ranges: the device reads
+    /// and writes none of it, and the transport marks the device as needing
+    /// reset, sending a configuration-change notification if the driver has
+    /// set `DRIVER_OK`. A refused ring fails `DRIVER_OK` and leaves only
+    /// `DEVICE_NEEDS_RESET` set. Resetting the device clears the mark.
+    ///
+    /// The transport itself keeps the unrestricted memory, so the ranges need
+    /// not hold transport structures such as a shared interrupt-status word.
+    /// Call this before the guest starts the device.
+    pub fn restrict_dma(
+        &mut self,
+        ranges: impl IntoIterator<Item = Range<u64>>,
+    ) -> Result<(), RestrictError> {
+        let refusal = Arc::new(DmaRefusal::default());
+        let on_refused: RefusalHook = {
+            let refusal = refusal.clone();
+            Arc::new(move |gpa, len| refusal.refuse(gpa, len))
+        };
+        self.guest_memory = self.guest_memory.restrict(ranges, Some(on_refused))?;
+        self.dma_refusal = Some(refusal);
+        Ok(())
+    }
+
+    /// Takes the latched refusal of the device memory, if any.
+    fn take_dma_refusal(&self) -> bool {
+        self.dma_refusal
+            .as_ref()
+            .is_some_and(|refusal| refusal.take())
+    }
+
+    /// Sets `DEVICE_NEEDS_RESET`, notifying a driver that has set
+    /// `DRIVER_OK`, as virtio 1.2 section 2.1.2 requires.
+    fn mark_needs_reset(&mut self, ops: &mut dyn TransportOps) {
+        if self.device_status.device_needs_reset() {
+            return;
+        }
+        self.device_status.set_device_needs_reset(true);
+        if self.device_status.driver_ok() {
+            ops.signal_config_change();
+        }
     }
 
     /// Bump config_generation and signal a config-change interrupt if
@@ -208,6 +289,7 @@ impl VirtioTransportCore {
             stalled_io,
 
             // Reset below.
+            dma_refusal,
             doorbells,
             device_status,
             config_generation,
@@ -223,6 +305,11 @@ impl VirtioTransportCore {
         stalled_io.clear();
         restore.reset();
 
+        // The device no longer accesses memory, so a refusal latched before
+        // the reset does not carry over.
+        if let Some(refusal) = dma_refusal {
+            refusal.take();
+        }
         doorbells.clear();
         *device_status = VirtioDeviceStatus::new();
         *config_generation = 0;
@@ -262,7 +349,16 @@ impl VirtioTransportCore {
             TransportStateResult::EnableComplete(true) => {
                 self.device_status.set_driver_ok(true);
             }
-            TransportStateResult::EnableComplete(false) | TransportStateResult::DisableComplete => {
+            TransportStateResult::EnableComplete(false) => {
+                // A refused ring fails the enable. Keep the refusal visible
+                // after the reset that the failure entails.
+                let refused = self.take_dma_refusal();
+                self.reset_status(ops);
+                if refused {
+                    self.mark_needs_reset(ops);
+                }
+            }
+            TransportStateResult::DisableComplete => {
                 self.reset_status(ops);
             }
         }
@@ -365,6 +461,15 @@ impl VirtioTransportCore {
                 deferred.complete();
             }
             self.apply_transport_result(ops, result);
+        }
+
+        if let Some(refusal) = &self.dma_refusal {
+            refusal.waker.register(cx.waker());
+            // An enable or disable in flight applies a refusal when it
+            // completes.
+            if !self.state.is_busy() && self.take_dma_refusal() {
+                self.mark_needs_reset(ops);
+            }
         }
     }
 
@@ -546,6 +651,7 @@ impl VirtioTransportCore {
         // Verify ephemeral runtime state.
         assert!(!self.state.is_busy());
         self.poll_waker = None;
+        self.take_dma_refusal();
 
         // Reinstall doorbells.
         self.doorbells.clear();
