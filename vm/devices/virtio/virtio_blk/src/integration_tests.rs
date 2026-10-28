@@ -8,29 +8,25 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
 use disk_hook::Disk;
+use disk_hook::DiskOperation;
 use disk_hook::HookDisk;
 use futures::future::Either;
 use futures::future::select;
 use guestmem::GuestMemory;
-use guestmem::MemoryRead;
-use guestmem::MemoryWrite;
-use inspect::Inspect;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
-use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -546,136 +542,19 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
         .into_disk()
 }
 
+/// Queue state that lets a disk hook post descriptor chain 0 again from
+/// inside the worker's poll, so the worker always finds more work ready.
 struct RequeueResources {
     mem: GuestMemory,
     queue_event: Event,
-    avail_idx: u16,
+    avail_idx: AtomicU16,
 }
 
-struct RequeueWrites {
-    resources: Arc<Mutex<Option<RequeueResources>>>,
-    keep_requeueing: Arc<AtomicBool>,
-}
-
-impl RequeueWrites {
+impl RequeueResources {
     fn make_ready(&self) {
-        if self.keep_requeueing.load(Ordering::SeqCst) {
-            let mut resources = self.resources.lock();
-            let resources = resources.as_mut().expect("queue resources are installed");
-            make_available(
-                &resources.mem,
-                AVAIL_ADDR,
-                QUEUE_SIZE,
-                0,
-                &mut resources.avail_idx,
-            );
-            resources.queue_event.signal();
-        }
-    }
-}
-
-#[derive(Inspect)]
-struct BlockingWriteDisk {
-    #[inspect(skip)]
-    storage: Mutex<Vec<u8>>,
-    #[inspect(skip)]
-    write_calls: Arc<AtomicUsize>,
-    #[inspect(skip)]
-    write_started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
-    #[inspect(skip)]
-    release_write: Mutex<Option<async_channel::Receiver<()>>>,
-    #[inspect(skip)]
-    requeue: Option<RequeueWrites>,
-}
-
-impl DiskIo for BlockingWriteDisk {
-    fn disk_type(&self) -> &str {
-        "blocking-write-test"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.storage.lock().len() as u64 / 512
-    }
-
-    fn sector_size(&self) -> u32 {
-        512
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        None
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        512
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        false
-    }
-
-    fn is_read_only(&self) -> bool {
-        false
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        let offset = sector as usize * 512;
-        let end = offset + buffers.len();
-        let storage = self.storage.lock();
-        if end > storage.len() {
-            return Err(DiskError::IllegalBlock);
-        }
-        buffers.writer().write(&storage[offset..end])?;
-        Ok(())
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        _fua: bool,
-    ) -> Result<(), DiskError> {
-        self.write_calls.fetch_add(1, Ordering::SeqCst);
-        if let Some(started) = self.write_started.lock().take() {
-            started.send(()).unwrap();
-        }
-        let release = self.release_write.lock().take();
-        if let Some(release) = release {
-            release.recv().await.unwrap();
-        }
-
-        let offset = sector as usize * 512;
-        let end = offset + buffers.len();
-        let mut storage = self.storage.lock();
-        if end > storage.len() {
-            return Err(DiskError::IllegalBlock);
-        }
-        buffers.reader().read(&mut storage[offset..end])?;
-        drop(storage);
-        if let Some(requeue) = &self.requeue {
-            requeue.make_ready();
-        }
-        Ok(())
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        Ok(())
-    }
-
-    async fn unmap(
-        &self,
-        _sector: u64,
-        _count: u64,
-        _block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        Ok(())
-    }
-
-    fn unmap_behavior(&self) -> UnmapBehavior {
-        UnmapBehavior::Ignored
+        let mut avail_idx = self.avail_idx.fetch_add(1, Ordering::SeqCst);
+        make_available(&self.mem, AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail_idx);
+        self.queue_event.signal();
     }
 }
 
@@ -699,14 +578,27 @@ async fn stop_drains_one_accepted_write_exactly_once(driver: DefaultDriver) {
     let write_calls = Arc::new(AtomicUsize::new(0));
     let (write_started, write_started_recv) = std::sync::mpsc::channel();
     let (release_write, release_write_recv) = async_channel::bounded(1);
-    let disk = Disk::new(BlockingWriteDisk {
-        storage: Mutex::new(vec![0_u8; 64 * 1024]),
-        write_calls: write_calls.clone(),
-        write_started: Mutex::new(Some(write_started)),
-        release_write: Mutex::new(Some(release_write_recv)),
-        requeue: None,
-    })
-    .unwrap();
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_async_hook({
+            let write_calls = write_calls.clone();
+            move |op| {
+                // Count every write, but hold only the first one until the
+                // test releases it.
+                let hold = matches!(op, DiskOperation::Write { .. })
+                    && write_calls.fetch_add(1, Ordering::SeqCst) == 0;
+                if hold {
+                    write_started.send(()).unwrap();
+                }
+                let release_write = release_write_recv.clone();
+                async move {
+                    if hold {
+                        release_write.recv().await.unwrap();
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .into_disk();
     let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false, None);
     harness.enable().await;
 
@@ -744,26 +636,39 @@ async fn stop_drains_one_accepted_write_exactly_once(driver: DefaultDriver) {
 #[async_test]
 async fn stop_preempts_continuously_ready_queue(driver: DefaultDriver) {
     let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-ready");
-    let resources = Arc::new(Mutex::new(None));
+    let resources = Arc::new(OnceLock::<RequeueResources>::new());
     let keep_requeueing = Arc::new(AtomicBool::new(true));
     let (first_write_started, first_write_started_recv) = std::sync::mpsc::channel();
-    let disk = Disk::new(BlockingWriteDisk {
-        storage: Mutex::new(vec![0_u8; 64 * 1024]),
-        write_calls: Arc::new(AtomicUsize::new(0)),
-        write_started: Mutex::new(Some(first_write_started)),
-        release_write: Mutex::new(None),
-        requeue: Some(RequeueWrites {
-            resources: resources.clone(),
-            keep_requeueing: keep_requeueing.clone(),
-        }),
-    })
-    .unwrap();
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_sync_hook({
+            let resources = resources.clone();
+            let keep_requeueing = keep_requeueing.clone();
+            let write_calls = AtomicUsize::new(0);
+            move |op| {
+                if matches!(op, DiskOperation::Write { .. }) {
+                    if write_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        first_write_started.send(()).unwrap();
+                    }
+                    // Post the next write before this one completes, so the
+                    // worker always has a completion or new work ready.
+                    if keep_requeueing.load(Ordering::SeqCst) {
+                        resources
+                            .get()
+                            .expect("queue resources are installed")
+                            .make_ready();
+                    }
+                }
+                Ok(())
+            }
+        })
+        .into_disk();
     let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false, None);
-    *resources.lock() = Some(RequeueResources {
+    let installed = resources.set(RequeueResources {
         mem: harness.mem.clone(),
         queue_event: harness.queue_event.clone(),
-        avail_idx: 1,
+        avail_idx: AtomicU16::new(1),
     });
+    assert!(installed.is_ok(), "queue resources were already installed");
     harness.enable().await;
 
     harness.post_write_request(0, 0, &[0xa5; 512]);
