@@ -10,8 +10,10 @@
 //!
 //! # Integration status and limits
 //!
-//! This crate is not yet integrated into OpenVMM worker launch. Adding it does
-//! not change existing worker behavior.
+//! PAL supports prepared Linux sandbox launches, and Mesh accepts optional
+//! sandbox profiles. Existing OpenVMM workers are not yet enabled: they still
+//! use ordinary launches and do not call the required early worker-side
+//! [`apply`]. Tracing and profiling are separate changes.
 //!
 //! On Linux, self-mapped workers retain their host UID/GID and PID visibility.
 //! Cross-process signaling is not yet restricted, so this is not a complete

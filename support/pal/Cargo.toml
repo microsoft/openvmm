@@ -6,6 +6,9 @@ name = "pal"
 edition.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+sandbox.workspace = true
+
 [features]
 # Disable tests that do not pass in the CI environment.
 ci = []
@@ -83,12 +86,8 @@ features = [
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-caps.workspace = true
-seccompiler.workspace = true
-landlock.workspace = true
 fs-err.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 getrandom.workspace = true

@@ -10,9 +10,11 @@ implemented (it fails loud rather than running unconfined).
 
 ## Integration status and limits
 
-This crate is not yet integrated into OpenVMM worker launch. Adding it does not
-change existing worker behavior; process-launch integration and worker enablement
-are separate changes.
+PAL supports prepared Linux sandbox launches through `Builder::apply_sandbox`,
+and Mesh exposes optional profiles through `ProcessConfig::new_with_sandbox`.
+Existing workers still use ordinary launches: worker enablement and the required
+early worker-side `apply` calls are separate changes. Tracing and profiling are
+not included.
 
 On Linux, self-mapped workers retain their host UID/GID and PID visibility.
 Cross-process signaling is not yet restricted, so this is not a complete
@@ -127,26 +129,35 @@ it, `apply` aborts rather than running with weaker confinement.
 
 ```rust
 use sandbox::{HandleTag, Identity, RawHandle};
+use std::os::fd::AsFd;
 
+const LOG_FD: i32 = 3;
 let preparation = sandbox::prepare(
     &vtpm_profile(),
     &Identity::default(),
-    &[(HandleTag(0), RawHandle(log_fd as u64))],
+    &[(HandleTag(0), RawHandle(LOG_FD as u64))],
 )?;
 
-// Merge `preparation` into your own process builder: keep
-// `preparation.inherit_handles` inheritable, clone with
-// `preparation.clone_flags`, honor `preparation.map_current_user`,
-// and (on Windows) build the LPAC token from
-// `preparation.windows`. Then exec the child.
+let mut command = pal::unix::process::Builder::new(worker_executable);
+command.dup_fd(log_file.as_fd(), LOG_FD);
+command.apply_sandbox(preparation)?;
+let child = command.spawn()?;
 ```
+
+PAL applies the prepared clone flags, self-maps IDs when requested, and closes
+descriptors other than standard I/O and the prepared inherited-handle allowlist.
+Use `dup_fd` to place inherited handles at their prepared descriptor numbers and
+clear close-on-exec.
+The child must still call `sandbox::apply` with the same profile before
+initializing. Sandboxed launch on Windows and macOS returns `Unsupported`;
+ordinary launches are unchanged.
 
 Linux maps namespace UID/GID 0 to the controller's effective host UID/GID;
 there is no host UID/GID switch or per-worker host identity isolation.
 `Identity.uid/gid` are reserved for future host-side identity provisioning.
 Any explicit value, including 0, is rejected by `prepare`, even with the debug
-sandbox escape hatch active. Launchers must also reject explicit UID/GID changes
-when user namespace self-mapping is requested.
+sandbox escape hatch active. PAL also rejects explicit process-builder UID/GID
+changes when user namespace self-mapping is requested.
 
 Handle hygiene is the caller's job: there is no grant envelope and no
 descriptor sweep inside this crate. `prepare` reports exactly which tagged
