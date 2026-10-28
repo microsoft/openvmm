@@ -155,7 +155,6 @@ fn survival_syscall_nrs() -> [i64; 4] {
 /// (`openat` not `open`, `ppoll` not `poll`, `dup3` not `dup2`, `newfstatat`
 /// not `stat`). Legacy aliases can be added behind an architecture `cfg` when a
 /// worker genuinely needs them.
-#[allow(deprecated)]
 pub fn nr_for_name(name: &str) -> Option<i64> {
     let nr = match name {
         // Process lifecycle
@@ -267,6 +266,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "clock_adjtime" => libc::SYS_clock_adjtime,
         "clock_settime" => libc::SYS_clock_settime,
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[expect(deprecated, reason = "Recognize obsolete syscalls in deny policies.")]
         "create_module" => libc::SYS_create_module,
         "delete_module" => libc::SYS_delete_module,
         "fanotify_init" => libc::SYS_fanotify_init,
@@ -738,8 +738,8 @@ mod tests {
             let result = unsafe { libc::clone(child, stack_top, flags, std::ptr::null_mut()) };
             let error = io::Error::last_os_error().raw_os_error();
             if result > 0 {
-                // SAFETY: Reap only the child just created by this helper.
                 assert_eq!(
+                    // SAFETY: Reap only the child just created by this helper.
                     unsafe { libc::waitpid(result, std::ptr::null_mut(), 0) },
                     result
                 );
