@@ -353,10 +353,18 @@ access, such as a handle open for writing on a file that a guest caller owns.
 OpenVMM releases that predate `--mount-owner` reject the device state of a
 `caller` attachment rather than restore it as `vmm`.
 
-A snapshot captured without `--mount` records the slot as dormant. It may
-restore without an attachment, or bind one new `--mount` attachment to the
-slot, but not an aggregate. Because execution resumes after the cold-boot
-mount hook, the guest must mount the newly attached backend explicitly:
+A snapshot captured without `--mount` or `--mount-aggregate` records the slot
+as dormant. It may restore without an attachment, or bind one new `--mount`
+attachment to the slot. A platform snapshot may instead bind a new aggregate,
+with `--mount-aggregate` and its `--mount-child` options, policy paths, and
+`--mount-owner` mode, which OpenVMM validates as at a cold boot, before any
+vCPU runs; snapshots of other tiers, and untiered snapshots, cannot. Either
+attachment keeps the slot's device, whose stable ID, tag, MMIO range,
+interrupt, features, and queues the snapshot fixes, and the captured kernel
+command line, which has no `virtfs_*` tokens, so OpenVMM tells the guest
+nothing about the new attachment. Because execution resumes after the
+cold-boot mount hook, the guest must learn the attachment from its host and
+mount the newly attached backend explicitly:
 
 ```bash
 mkdir -p /mnt/share
