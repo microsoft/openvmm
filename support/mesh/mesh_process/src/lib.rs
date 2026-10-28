@@ -283,9 +283,9 @@ pub struct ProcessConfig {
     process_args: Vec<OsString>,
     stderr: Option<File>,
     skip_worker_arg: bool,
-    sandbox_profile: Option<sandbox::Profile>,
+    sandbox_profile: Option<Box<sandbox::Profile>>,
     env_vars: Vec<(OsString, OsString)>,
-    trace_config: Option<TraceConfig>,
+    trace_config: Option<Box<TraceConfig>>,
 }
 
 impl ProcessConfig {
@@ -313,7 +313,7 @@ impl ProcessConfig {
             process_args: Vec::new(),
             stderr: None,
             skip_worker_arg: false,
-            sandbox_profile: Some(sandbox_profile),
+            sandbox_profile: Some(Box::new(sandbox_profile)),
             env_vars: Vec::new(),
             trace_config: None,
         }
@@ -364,7 +364,7 @@ impl ProcessConfig {
 
     /// Enables structured syscall tracing for this process on Linux.
     pub fn trace(mut self, trace_config: TraceConfig) -> Self {
-        self.trace_config = Some(trace_config);
+        self.trace_config = Some(Box::new(trace_config));
         self
     }
 }
@@ -971,7 +971,7 @@ impl MeshInner {
             #[cfg(target_os = "linux")]
             if let Some(trace_config) = config.trace_config {
                 UnixMeshChild::Traced(
-                    pal_tracer::TracedChild::start(child, &name, trace_config)
+                    pal_tracer::TracedChild::start(child, &name, *trace_config)
                         .context("failed to start worker tracer")?,
                 )
             } else {
