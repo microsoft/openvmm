@@ -10,6 +10,7 @@ use super::X509PublicKey;
 use super::X509VerifyError;
 use crate::win::KeyHandle;
 use crate::win::decode_object;
+#[cfg(any(test, feature = "test_helpers"))]
 use crate::win::encode_object;
 use std::ffi::c_void;
 use std::ptr::NonNull;
