@@ -62,6 +62,11 @@ impl EcdsaPublicKeyInner {
         curve: EcdsaCurve,
         public_key: &EcdsaPublicKeyComponents,
     ) -> Result<Self, EcdsaError> {
+        let key_size = curve.key_size();
+        if public_key.qx.len() != key_size || public_key.qy.len() != key_size {
+            return Err(invalid_err("unexpected EC public key coordinate lengths"));
+        }
+
         let curve_type = match curve {
             EcdsaCurve::P384 => CurveType::NistP384,
         };

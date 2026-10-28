@@ -72,6 +72,14 @@ impl EcdsaPublicKeyInner {
         curve: EcdsaCurve,
         public_key: &EcdsaPublicKeyComponents,
     ) -> Result<Self, EcdsaError> {
+        let key_size = curve.key_size();
+        if public_key.qx.len() != key_size || public_key.qy.len() != key_size {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking EC public key coordinate lengths",
+            ));
+        }
+
         let nid = match curve {
             EcdsaCurve::P384 => openssl::nid::Nid::SECP384R1,
         };
@@ -128,6 +136,11 @@ impl EcdsaPublicKeyInner {
         hash: &[u8],
         signature: &EcdsaSignature,
     ) -> Result<bool, EcdsaError> {
+        let key_size = self.curve.key_size();
+        if signature.r.len() != key_size || signature.s.len() != key_size {
+            return Ok(false);
+        }
+
         let ec_key = self
             .pkey
             .ec_key()

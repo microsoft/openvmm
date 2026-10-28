@@ -358,6 +358,20 @@ mod tests {
             );
         }
 
+        // Leading zeroes preserve the scalar values, but not their required widths.
+        for pad_r in [true, false] {
+            let mut invalid = signature.clone();
+            if pad_r {
+                invalid.r.insert(0, 0);
+            } else {
+                invalid.s.insert(0, 0);
+            }
+            assert!(
+                !key.verify(message, &invalid, HashAlgorithm::Sha384)
+                    .unwrap()
+            );
+        }
+
         // Moving the boundary preserves r || s, but not the component widths.
         let mut invalid = signature;
         invalid.s.insert(0, invalid.r.pop().unwrap());
