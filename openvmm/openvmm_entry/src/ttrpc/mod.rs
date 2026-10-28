@@ -2383,6 +2383,7 @@ async fn build_virtio_device(
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
                     .transpose()?,
+                enable_rx_gso: false,
                 mac_address: mac_address
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,

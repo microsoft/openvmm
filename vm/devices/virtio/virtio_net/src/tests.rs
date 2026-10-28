@@ -545,6 +545,7 @@ impl TestHarness {
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
         let device = Device::builder()
+            .enable_rx_gso(true)
             .build(&driver_source, Box::new(endpoint), mac)
             .unwrap();
 
@@ -2334,7 +2335,7 @@ fn guest_tso_requires_guest_csum() {
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
 /// when the endpoint supports TCP/UDP/TSO/USO offloads.
 #[async_test]
-async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
+async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
@@ -2355,6 +2356,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     };
 
     let device = Device::builder()
+        .enable_rx_gso(true)
         .build(&driver_source, Box::new(endpoint), mac)
         .unwrap();
     let traits = device.traits();
@@ -2394,6 +2396,35 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     assert_eq!(device.registers.mtu, 1500);
     assert_eq!(device.registers.speed, 10_000);
     assert_eq!(device.registers.duplex, 0xff);
+}
+
+/// Receive GSO is opt-in until virtio-net supports mergeable receive buffers.
+#[async_test]
+async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
+
+    let endpoint = MockEndpointWithOffloads {
+        offloads: TxOffloadSupport::default(),
+        rx_offloads: RxOffloadSupport {
+            checksum: true,
+            tcpv4_gso: true,
+            tcpv6_gso: true,
+        },
+        link_speed: 10_000 * BITS_PER_MEGABIT,
+    };
+
+    let device = Device::builder()
+        .build(&driver_source, Box::new(endpoint), mac)
+        .unwrap();
+    let bank0 = NetworkFeaturesBank0::from(device.traits().device_features.bank(0));
+
+    assert!(
+        bank0.guest_csum(),
+        "checksum receive offload remains available"
+    );
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
 }
 
 /// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order

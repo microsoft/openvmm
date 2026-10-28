@@ -54,7 +54,6 @@ use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::in_order::InOrderCompletion;
-use virtio::in_order::InOrderError;
 use virtio::queue::QueueCompletion;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
@@ -541,11 +540,19 @@ struct PendingTxPacket {
 
 pub struct NicBuilder {
     max_queue_pairs: u16,
+    enable_rx_gso: bool,
 }
 
 impl NicBuilder {
     pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
         self.max_queue_pairs = max_queue_pairs;
+        self
+    }
+
+    /// Enables advertising guest TCP segmentation offload when supported by
+    /// the network backend.
+    pub fn enable_rx_gso(mut self, enable: bool) -> Self {
+        self.enable_rx_gso = enable;
         self
     }
 
@@ -579,7 +586,11 @@ impl NicBuilder {
 
         let driver = driver_source.simple();
         let tx_offload_support = endpoint.tx_offload_support();
-        let rx_offload_support = endpoint.rx_offload_support();
+        let mut rx_offload_support = endpoint.rx_offload_support();
+        if !self.enable_rx_gso {
+            rx_offload_support.tcpv4_gso = false;
+            rx_offload_support.tcpv6_gso = false;
+        }
         let speed = u32::try_from(endpoint.link_speed() / BITS_PER_MEGABIT)
             .ok()
             .filter(|speed| *speed <= i32::MAX as u32)
@@ -635,6 +646,7 @@ impl Device {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             max_queue_pairs: !0,
+            enable_rx_gso: false,
         }
     }
 }
@@ -884,15 +896,6 @@ impl From<task_control::Cancelled> for WorkerError {
     }
 }
 
-impl From<InOrderError> for WorkerError {
-    fn from(value: InOrderError) -> Self {
-        match value {
-            InOrderError::Queue(err) => Self::VirtioQueue(err),
-            InOrderError::DuplicateDescriptor(idx) => Self::DuplicateDescriptor(idx),
-        }
-    }
-}
-
 #[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
@@ -982,7 +985,7 @@ impl Worker {
                     .virtio_state
                     .tx_in_order
                     .try_next(&mut self.virtio_state.tx_queue)
-                    .map_err(WorkerError::from)?
+                    .map_err(WorkerError::VirtioQueue)?
                 else {
                     break;
                 };
@@ -1316,7 +1319,7 @@ impl Worker {
             .virtio_state
             .rx_in_order
             .try_next(&mut self.virtio_state.rx_queue)
-            .map_err(WorkerError::from)?
+            .map_err(WorkerError::VirtioQueue)?
         {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {

@@ -150,12 +150,19 @@ read is followed by a read that reaches `EAGAIN`; an initial asynchronous
 `Pending` does not prove that the queue drained. Steady-state and other vnet
 metadata violations still fail fast.
 
-Receive GSO is advertised to a guest only when the selected backend reports
-that it can produce coalesced receive packets. This keeps backends that always
-return ordinary frames from forcing virtio-net guests without mergeable receive
-buffers to allocate large fragmented buffers. TCP GSO also requires guest
+Virtio-net receive GSO is disabled by default. Advertising guest TCP
+segmentation offload without mergeable receive buffers causes Linux guests to
+allocate receive buffers large enough for a complete coalesced packet, commonly
+64 KiB per descriptor. OpenVMM can opt in with the `rx_gso:` prefix on a
+`--virtio-net` argument when testing or when that allocation tradeoff is
+acceptable.
+
+When enabled, receive GSO is advertised only when the selected backend reports
+that it can produce coalesced receive packets. TCP GSO also requires guest
 checksum support; a guest that selects TCP GSO without checksum support does not
-cause the backend to request an invalid TAP offload configuration.
+cause the backend to request an invalid TAP offload configuration. Receive GSO
+can become the default after virtio-net supports distributing one packet across
+multiple mergeable receive buffers.
 
 Frontends must also publish a receive completion only after the packet
 payload and frontend-specific header have both been written successfully.
