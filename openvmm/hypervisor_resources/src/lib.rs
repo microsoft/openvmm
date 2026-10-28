@@ -193,3 +193,23 @@ macro_rules! register_hypervisor_probes {
         )*
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn mshv_handle_preserves_cpuid_offload_setting() {
+        for snp_disable_cpuid_offload in [false, true] {
+            let original = MshvHandle {
+                mshv: std::fs::File::open(std::env::current_exe().unwrap()).unwrap(),
+                snp_disable_cpuid_offload,
+            };
+            let message = mesh::OwnedMessage::new(original).serialize();
+            let handle: MshvHandle = mesh::OwnedMessage::serialized(message).parse().unwrap();
+            assert_eq!(handle.snp_disable_cpuid_offload, snp_disable_cpuid_offload);
+            assert!(handle.mshv.metadata().unwrap().is_file());
+        }
+    }
+}

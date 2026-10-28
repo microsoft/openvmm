@@ -576,7 +576,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(true)?;
             locked.io_vecs()
@@ -638,7 +638,7 @@ impl DiskIo for BlockDevice {
         // fall back to bounce buffering in that case.
         let should_bounce = self.always_bounce
             || !buffers.is_aligned(self.sector_size() as usize)
-            || !buffers.guest_memory().supports_locking();
+            || !buffers.guest_memory().supports_kernel_lock();
         let io_vecs = if !should_bounce {
             locked = buffers.lock(false)?;
             locked.io_vecs()
@@ -1047,10 +1047,15 @@ mod tests {
         storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
     }
 
-    async fn run_async_disk_io(fua: bool) {
+    async fn run_async_disk_io(fua: bool, copy_only: bool) {
         let disk = get_block_device_or_skip!();
 
         let test_guest_mem = GuestMemory::allocate(0x8000);
+        let test_guest_mem = if copy_only {
+            test_guest_mem.copy_only_view()
+        } else {
+            test_guest_mem
+        };
         test_guest_mem
             .write_at(0, &(0..0x8000).map(|x| x as u8).collect::<Vec<_>>())
             .unwrap();
@@ -1080,12 +1085,18 @@ mod tests {
 
     #[async_test]
     async fn test_async_disk_io() {
-        run_async_disk_io(false).await;
+        run_async_disk_io(false, false).await;
     }
 
     #[async_test]
     async fn test_async_disk_io_fua() {
-        run_async_disk_io(true).await;
+        run_async_disk_io(true, false).await;
+    }
+
+    #[async_test]
+    async fn test_async_disk_io_copy_only_regular_file() {
+        run_async_disk_io(false, true).await;
+        run_async_disk_io(true, true).await;
     }
 
     async fn run_async_disk_io_unaligned(fua: bool) {

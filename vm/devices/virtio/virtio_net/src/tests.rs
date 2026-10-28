@@ -84,10 +84,10 @@ const NET_HEADER_SIZE: u32 = header_size() as u32;
 struct TxSegmentInfo {
     is_head: bool,
     tx_id: Option<u32>,
-    #[expect(dead_code)]
     gpa: u64,
     len: u32,
     metadata: Option<net_backend::TxMetadata>,
+    data: Vec<u8>,
 }
 
 // --- TxAvailBehavior ---
@@ -172,7 +172,7 @@ impl net_backend::Queue for MockQueue {
 
     fn tx_avail(
         &mut self,
-        _pool: &mut dyn net_backend::BufferAccess,
+        pool: &mut dyn net_backend::BufferAccess,
         segments: &[TxSegment],
     ) -> anyhow::Result<(bool, usize)> {
         // Log the segments
@@ -183,12 +183,15 @@ impl net_backend::Queue for MockQueue {
                     TxSegmentType::Head(meta) => (true, Some(meta.id.0), Some(meta.clone())),
                     TxSegmentType::Tail => (false, None, None),
                 };
+                let mut data = vec![0; seg.len as usize];
+                pool.guest_memory().read_at(seg.gpa, &mut data).unwrap();
                 TxSegmentInfo {
                     is_head,
                     tx_id,
                     gpa: seg.gpa,
                     len: seg.len,
                     metadata,
+                    data,
                 }
             })
             .collect();
@@ -363,6 +366,7 @@ fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
 struct MockEndpoint {
     queue_tx: mesh::Sender<MockQueueHandle>,
     is_ordered: bool,
+    endpoint_type: &'static str,
 }
 
 impl InspectMut for MockEndpoint {
@@ -374,7 +378,7 @@ impl InspectMut for MockEndpoint {
 #[async_trait]
 impl Endpoint for MockEndpoint {
     fn endpoint_type(&self) -> &'static str {
-        "mock"
+        self.endpoint_type
     }
 
     async fn get_queues(
@@ -472,6 +476,10 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(driver: &DefaultDriver) -> Self {
+        Self::new_with_endpoint_type(driver, "mock")
+    }
+
+    fn new_with_endpoint_type(driver: &DefaultDriver, endpoint_type: &'static str) -> Self {
         let mem = GuestMemory::allocate(TOTAL_MEM_SIZE);
 
         // Initialize RX queue rings
@@ -487,6 +495,7 @@ impl TestHarness {
         let endpoint = MockEndpoint {
             queue_tx,
             is_ordered: true,
+            endpoint_type,
         };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
@@ -728,6 +737,113 @@ impl TestHarness {
 
 use futures::StreamExt;
 
+#[async_test]
+async fn copy_only_software_tx_rx(driver: DefaultDriver) {
+    for sync in [true, false] {
+        let mut harness = TestHarness::new(&driver);
+        harness.mem = harness.mem.copy_only_view();
+        assert!(harness.mem.full_mapping().is_none());
+        assert!(harness.device.supports_save_restore());
+        let mut handle = harness.enable_and_get_handle().await;
+        handle.tx_avail_behavior.lock().sync = sync;
+
+        harness.post_tx_and_signal(0, 100);
+        handle.wait_for_tx_avail().await;
+        let log = handle.take_tx_avail_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].len(), 1);
+        assert_eq!(log[0][0].gpa, DATA_BASE + NET_HEADER_SIZE as u64);
+        assert_eq!(log[0][0].data, [0xAB; 100]);
+        assert_eq!(log[0][0].tx_id, Some(0));
+        if !sync {
+            assert_eq!(harness.try_read_tx_used(), None);
+            handle.complete_tx(vec![TxId(0)]);
+        }
+        assert_eq!(harness.wait_for_used().await, (0, 0));
+
+        let gpa = harness.post_rx_buffer_and_signal(0, 1500);
+        handle.wait_for_rx_pending().await;
+        let payload = b"copy-only software RX";
+        handle.inject_rx_packet(payload);
+        assert_eq!(
+            harness.wait_for_rx_used().await,
+            (0, NET_HEADER_SIZE + payload.len() as u32)
+        );
+        let mut readback = [0; 21];
+        harness
+            .mem
+            .read_at(gpa + NET_HEADER_SIZE as u64, &mut readback)
+            .unwrap();
+        assert_eq!(&readback, payload);
+        harness.disable().await;
+    }
+}
+
+#[async_test]
+async fn short_rx_buffers_drop_packets_without_panicking(driver: DefaultDriver) {
+    for copy_only in [false, true] {
+        for capacity in [0, 1] {
+            let mut harness = TestHarness::new(&driver);
+            if copy_only {
+                harness.mem = harness.mem.copy_only_view();
+            }
+            let mut handle = harness.enable_and_get_handle().await;
+            harness.post_rx_buffer_and_signal(0, NET_HEADER_SIZE + capacity);
+            handle.wait_for_rx_pending().await;
+            handle.inject_rx_packet(b"larger than the posted RX buffer");
+            assert_eq!(harness.wait_for_rx_used().await, (0, 0));
+            harness.post_rx_buffer_and_signal(1, NET_HEADER_SIZE + 64);
+            handle.wait_for_rx_pending().await;
+            handle.inject_rx_packet(b"next packet");
+            assert_eq!(harness.wait_for_rx_used().await, (1, NET_HEADER_SIZE + 11));
+            harness.disable().await;
+        }
+    }
+}
+
+#[async_test]
+async fn copy_only_rejects_unsupported_endpoint_at_activation(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_with_endpoint_type(&driver, "hardware");
+    harness.mem = harness.mem.copy_only_view();
+    for idx in [0, 1] {
+        let (desc_addr, avail_addr, used_addr) = if idx == 0 {
+            (RX_DESC_ADDR, RX_AVAIL_ADDR, RX_USED_ADDR)
+        } else {
+            (TX_DESC_ADDR, TX_AVAIL_ADDR, TX_USED_ADDR)
+        };
+        let error = harness
+            .device
+            .start_queue(
+                idx,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr,
+                        avail_addr,
+                        used_addr,
+                    },
+                    notify: Interrupt::from_event(Event::new()),
+                    event: Event::new(),
+                    guest_memory: harness.mem.clone(),
+                },
+                &VirtioDeviceFeatures::new(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("copy-only guest memory requires a software network endpoint")
+        );
+        assert!(matches!(
+            harness.device.pairs[0],
+            crate::QueuePairState::Empty
+        ));
+    }
+}
+
 /// Post 1 TX packet. tx_avail returns (sync: true, all segments consumed).
 /// Verify segments logged and used ring updated.
 #[async_test]
@@ -871,6 +987,7 @@ async fn unordered_backend_rejected(driver: DefaultDriver) {
     let endpoint = MockEndpoint {
         queue_tx,
         is_ordered: false,
+        endpoint_type: "mock",
     };
 
     let err = Device::builder()

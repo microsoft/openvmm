@@ -692,6 +692,7 @@ impl PetriVmConfigOpenVmm {
                     _ => anyhow::bail!("unsupported isolation type"),
                 },
                 nested_virt: nested_virt_enabled,
+                force_guest_memory_bounce: false,
             },
             vmbus: if properties.no_vmbus {
                 None

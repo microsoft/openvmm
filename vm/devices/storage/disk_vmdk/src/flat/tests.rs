@@ -721,6 +721,39 @@ async fn failed_read_returns_buffer_to_cache() {
 
 #[cfg(target_os = "linux")]
 #[async_test]
+async fn copy_only_reads_with_native_driver(driver: pal_async::DefaultDriver) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut expected = [0x5a; 1024];
+    expected[512..].fill(0xa5);
+    std::fs::write(directory.path().join("source.bin"), expected).unwrap();
+
+    for extents in [
+        "RW 2 FLAT \"source.bin\" 0",
+        "RW 1 FLAT \"source.bin\" 0\nRW 1 FLAT \"source.bin\" 1",
+    ] {
+        let path = write_descriptor(&directory, &descriptor("twoGbMaxExtentFlat", extents));
+        let backend = FlatVmdkDisk::new(
+            open_flat_vmdk(&path, true).unwrap(),
+            Some(Box::new(driver.clone())),
+        )
+        .unwrap();
+        assert!(backend.driver.is_some());
+        let memory = GuestMemory::allocate(expected.len()).copy_only_view();
+        backend
+            .read_vectored(
+                &OwnedRequestBuffers::linear(0, expected.len(), true).buffer(&memory),
+                0,
+            )
+            .await
+            .unwrap();
+        let mut actual = [0; 1024];
+        memory.read_at(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[async_test]
 async fn unsupported_driver_uses_blocking_reads(driver: pal_async::DefaultDriver) {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("source.bin"), [0xa5; 512]).unwrap();

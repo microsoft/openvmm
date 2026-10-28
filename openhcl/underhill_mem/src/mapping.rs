@@ -267,7 +267,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryView {
         }
     }
 
-    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+    fn lock_kernel_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
         if let Some(protector) = self.protector.as_ref() {
             protector.lock_gpns(self.vtl, gpns)?;
             Ok(true)

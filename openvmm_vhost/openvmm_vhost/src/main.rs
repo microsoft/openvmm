@@ -116,6 +116,7 @@ mod linux {
                             Resource::new(virtio_handle),
                             VirtioResolveInput {
                                 driver_source: &driver_source,
+                                guest_memory: None,
                             },
                         )
                         .await

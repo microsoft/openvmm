@@ -1651,6 +1651,7 @@ dependencies = [
  "scsi_buffers",
  "storage_tests",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
 ]
@@ -3330,8 +3331,11 @@ dependencies = [
  "inspect",
  "minircu",
  "pal_event",
+ "parking_lot",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "trycopy",
  "zerocopy",
 ]
@@ -3854,6 +3858,7 @@ dependencies = [
  "anyhow",
  "linkme",
  "mesh",
+ "test_with_tracing",
  "vm_resource",
 ]
 
@@ -4194,6 +4199,7 @@ dependencies = [
  "guestmem",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
 ]
 
@@ -4703,6 +4709,7 @@ dependencies = [
  "range_map_vec",
  "slab",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "virt",
@@ -6343,14 +6350,17 @@ dependencies = [
  "disk_vmdk",
  "disklayer_vhdx",
  "fs-err",
+ "futures",
  "get_resources",
  "hypervisor_resources",
  "libc",
  "mesh",
+ "nix 0.30.1",
  "openvmm_defs",
  "pal_async",
  "sparse_mmap",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "vm_resource",
 ]
@@ -7737,6 +7747,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -10121,6 +10132,7 @@ dependencies = [
  "memory_range",
  "open_enum",
  "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -10340,6 +10352,7 @@ dependencies = [
  "pci_core",
  "range_map_vec",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -10398,8 +10411,10 @@ dependencies = [
  "guestmem",
  "inspect",
  "inspect_counters",
+ "mesh",
  "pal_async",
  "pal_event",
+ "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",

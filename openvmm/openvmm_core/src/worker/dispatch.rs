@@ -1452,6 +1452,11 @@ impl InitializedVm {
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
+            .io_policy(if cfg.hypervisor.force_guest_memory_bounce {
+                guestmem::GuestMemoryIoPolicy::CopyOnly
+            } else {
+                proto.guest_memory_io_policy()
+            })
             .vtl0_alias_map(vtl0_alias_map)
             .supports_memory_fault_resolution(supports_memory_fault_resolution)
             .x86_legacy_support(
@@ -2528,8 +2533,10 @@ impl InitializedVm {
         // Register the VFIO resolver, which spawns a container manager task
         // internally to share containers across assigned devices.
         #[cfg(target_os = "linux")]
-        let (vfio_inspect, vfio_cdev_inspect) = {
-            let dma_mapper_client = memory_manager.dma_mapper_client();
+        let (vfio_inspect, vfio_cdev_inspect) = 'vfio: {
+            let Some(dma_mapper_client) = memory_manager.dma_mapper_client() else {
+                break 'vfio (None, None);
+            };
             let vfio_resolver = vfio_assigned_device::resolver::VfioDeviceResolver::new(
                 driver_source.builder().build("vfio-container-mgr"),
                 dma_mapper_client.clone(),
@@ -3059,6 +3066,7 @@ impl InitializedVm {
                     device,
                     VirtioResolveInput {
                         driver_source: &driver_source,
+                        guest_memory: Some(&gm),
                     },
                 )
                 .await?;

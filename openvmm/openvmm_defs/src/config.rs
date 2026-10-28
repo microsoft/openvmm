@@ -552,6 +552,9 @@ pub struct HypervisorConfig {
     /// rejects it rather than silently ignoring it (see
     /// `virt::Hypervisor::recognizes_nested_virt`).
     pub nested_virt: bool,
+    /// Deny kernel I/O exports from guest-origin memory, leaving owned scratch
+    /// allocations accessible to I/O backends.
+    pub force_guest_memory_bounce: bool,
 }
 
 #[derive(Debug, MeshPayload)]

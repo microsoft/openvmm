@@ -46,6 +46,19 @@ pub async fn open_disk_type(
     path: &Path,
     options: OpenDiskOptions,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        let metadata =
+            std::fs::metadata(path).with_context(|| disk_open_error(path, "failed to inspect"))?;
+        anyhow::ensure!(
+            metadata.is_file() || metadata.file_type().is_block_device(),
+            "disk backing must be a regular file or block device"
+        );
+        if metadata.file_type().is_block_device() {
+            return open_raw_disk(path, options, None);
+        }
+    }
     let read_only = options.read_only;
     let ensure_no_direct = |ext| {
         if options.direct {
@@ -60,11 +73,14 @@ pub async fn open_disk_type(
                 .with_context(|| disk_open_error(path, "failed to open"))?
         }
         Some("vhd") => {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(!read_only)
-                .open(path)
-                .with_context(|| disk_open_error(path, "failed to open"))?;
+            let file = open_disk_file(
+                path,
+                OpenDiskOptions {
+                    direct: false,
+                    ..options
+                },
+                None,
+            )?;
 
             match disk_vhd1::Vhd1Disk::open_fixed(file, read_only) {
                 Ok(vhd) => {
@@ -114,11 +130,7 @@ pub async fn open_disk_type(
             ensure_no_direct(".vmgs")?;
             // VMGS files are fixed VHD1s. Don't bother to validate the footer
             // here; let the resource resolver do that later.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(!read_only)
-                .open(path)
-                .with_context(|| disk_open_error(path, "failed to open"))?;
+            let file = open_disk_file(path, options, None)?;
 
             Resource::new(disk_backend_resources::FixedVhd1DiskHandle(file))
         }
@@ -169,6 +181,24 @@ fn open_raw_disk(
     options: OpenDiskOptions,
     size: Option<u64>,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
+    let file = open_disk_file(path, options, size)?;
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Resource::new(
+            disk_backend_resources::BlockDeviceDiskHandle { file },
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(Resource::new(disk_backend_resources::FileDiskHandle(file)))
+    }
+}
+
+fn open_disk_file(
+    path: &Path,
+    options: OpenDiskOptions,
+    size: Option<u64>,
+) -> anyhow::Result<std::fs::File> {
     if options.direct && !cfg!(target_os = "linux") {
         anyhow::bail!("direct I/O is only supported on Linux");
     }
@@ -181,9 +211,9 @@ fn open_raw_disk(
     }
 
     #[cfg(target_os = "linux")]
-    if options.direct {
+    {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.custom_flags(libc::O_DIRECT);
+        opts.custom_flags(libc::O_NONBLOCK);
     }
 
     let verb = if create {
@@ -195,19 +225,128 @@ fn open_raw_disk(
         .open(path)
         .with_context(|| disk_open_error(path, verb))?;
 
+    #[cfg(target_os = "linux")]
+    {
+        use nix::fcntl::FcntlArg;
+        use nix::fcntl::OFlag;
+        use nix::fcntl::fcntl;
+        use std::os::unix::fs::FileTypeExt;
+        let metadata = file
+            .metadata()
+            .with_context(|| disk_open_error(path, "failed to inspect opened disk"))?;
+        anyhow::ensure!(
+            metadata.is_file() || metadata.file_type().is_block_device(),
+            "disk backing must be a regular file or block device"
+        );
+        let mut flags = OFlag::from_bits_retain(
+            fcntl(&file, FcntlArg::F_GETFL)
+                .with_context(|| disk_open_error(path, "failed to read disk I/O flags"))?,
+        );
+        flags.remove(OFlag::O_NONBLOCK);
+        flags.set(OFlag::O_DIRECT, options.direct);
+        fcntl(&file, FcntlArg::F_SETFL(flags))
+            .with_context(|| disk_open_error(path, "failed to set disk I/O flags"))?;
+    }
     if let Some(size) = size {
         file.set_len(size)?;
     }
+    Ok(file)
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        Ok(Resource::new(
-            disk_backend_resources::BlockDeviceDiskHandle { file },
-        ))
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+    use futures::executor::block_on;
+    use nix::fcntl::FcntlArg;
+    use nix::fcntl::OFlag;
+    use nix::fcntl::fcntl;
+    use test_with_tracing::test;
+
+    #[test]
+    fn raw_file_open_preserves_access_and_direct_flags() {
+        let backing = tempfile::NamedTempFile::new().unwrap();
+        backing.as_file().set_len(4096).unwrap();
+        for direct in [false, true] {
+            for read_only in [false, true] {
+                let file =
+                    open_disk_file(backing.path(), OpenDiskOptions { direct, read_only }, None)
+                        .unwrap();
+                let flags = OFlag::from_bits_retain(fcntl(&file, FcntlArg::F_GETFL).unwrap());
+                assert_eq!(flags.contains(OFlag::O_DIRECT), direct);
+                assert!(!flags.contains(OFlag::O_NONBLOCK));
+                assert_eq!(
+                    flags & OFlag::O_ACCMODE,
+                    if read_only {
+                        OFlag::O_RDONLY
+                    } else {
+                        OFlag::O_RDWR
+                    }
+                );
+            }
+        }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(Resource::new(disk_backend_resources::FileDiskHandle(file)))
+
+    #[test]
+    fn rejects_non_disk_paths_before_opening() {
+        use nix::sys::stat::Mode;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("fifo.vhdx");
+        nix::unistd::mkfifo(&fifo, Mode::S_IRUSR | Mode::S_IWUSR).unwrap();
+        for path in [directory.path(), fifo.as_path(), Path::new("/dev/null")] {
+            for read_only in [false, true] {
+                let error = block_on(open_disk_type(
+                    path,
+                    OpenDiskOptions {
+                        direct: false,
+                        read_only,
+                    },
+                ))
+                .unwrap_err();
+                assert!(error.to_string().contains("regular file"), "{error:#}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a disposable device-mapper fixture in OPENVMM_BOUNCE_TEST_BLOCK_PATH"]
+    fn block_devices_ignore_image_suffixes_and_preserve_flags() {
+        use std::os::unix::fs::FileTypeExt;
+
+        let path = std::env::var("OPENVMM_BOUNCE_TEST_BLOCK_PATH").unwrap();
+        assert!(
+            Path::new(&path)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("openvmm-bounce-test-")
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let alias = directory.path().join("mapped-disk.vhdx");
+        std::os::unix::fs::symlink(&path, &alias).unwrap();
+        for direct in [false, true] {
+            for read_only in [false, true] {
+                let options = OpenDiskOptions { direct, read_only };
+                let file = open_disk_file(&alias, options, None).unwrap();
+                assert!(file.metadata().unwrap().file_type().is_block_device());
+                let flags = OFlag::from_bits_retain(fcntl(&file, FcntlArg::F_GETFL).unwrap());
+                assert_eq!(flags.contains(OFlag::O_DIRECT), direct);
+                assert!(!flags.contains(OFlag::O_NONBLOCK));
+                assert_eq!(
+                    flags & OFlag::O_ACCMODE,
+                    if read_only {
+                        OFlag::O_RDONLY
+                    } else {
+                        OFlag::O_RDWR
+                    }
+                );
+                assert_eq!(
+                    block_on(open_disk_type(&alias, options)).unwrap().id(),
+                    "block"
+                );
+            }
+        }
     }
 }
 

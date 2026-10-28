@@ -4937,6 +4937,47 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn transport_save_defers_to_device_capability_without_kernel_locks(driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    for policy in [
+        guestmem::GuestMemoryIoPolicy::Direct,
+        guestmem::GuestMemoryIoPolicy::CopyOnly,
+    ] {
+        let memory = GuestMemory::allocate(4096);
+        let memory = if policy == guestmem::GuestMemoryIoPolicy::CopyOnly {
+            memory.copy_only_view()
+        } else {
+            memory
+        };
+        assert_eq!(
+            memory.supports_kernel_lock(),
+            policy == guestmem::GuestMemoryIoPolicy::Direct
+        );
+        let mut device = VirtioMmioDevice::new(
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+            &driver,
+            memory,
+            LineInterrupt::detached(),
+            None,
+            0,
+            1,
+        )
+        .unwrap();
+        assert!(device.save().is_ok());
+    }
+}
+
+#[async_test]
 async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     use vmcore::save_restore::SaveRestore;
 

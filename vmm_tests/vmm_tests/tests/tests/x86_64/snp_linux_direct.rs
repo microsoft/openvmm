@@ -32,6 +32,7 @@ async fn boot_with_vps(
         })
         .with_memory(MemoryConfig {
             startup_bytes: 160 * petri::SIZE_1_MB,
+            transparent_hugepages: false,
             ..Default::default()
         })
         .modify_backend(|b| {

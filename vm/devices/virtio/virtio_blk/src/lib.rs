@@ -637,7 +637,14 @@ fn copy_regions(
     let mut linear_offset: usize = 0;
     for region in regions {
         let len = region.len as usize;
-        let buf = &mut bounce_buf[linear_offset..linear_offset + len];
+        region
+            .addr
+            .checked_add(region.len)
+            .ok_or(VIRTIO_BLK_S_IOERR)?;
+        let end = linear_offset.checked_add(len).ok_or(VIRTIO_BLK_S_IOERR)?;
+        let buf = bounce_buf
+            .get_mut(linear_offset..end)
+            .ok_or(VIRTIO_BLK_S_IOERR)?;
         if to_bounce {
             guest_mem
                 .read_at(region.addr, buf)
@@ -647,7 +654,7 @@ fn copy_regions(
                 .write_at(region.addr, buf)
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
         }
-        linear_offset += len;
+        linear_offset = end;
     }
     Ok(())
 }
@@ -676,11 +683,9 @@ async fn do_io(
     } else {
         0
     };
-    let data_len = if is_read {
-        total_payload.saturating_sub(1)
-    } else {
-        total_payload.saturating_sub(skip_bytes)
-    };
+    let data_len = total_payload
+        .checked_sub(if is_read { 1 } else { skip_bytes })
+        .ok_or(VIRTIO_BLK_S_IOERR)?;
 
     if data_len == 0 {
         return Ok((0, false));
@@ -701,6 +706,13 @@ async fn do_io(
     }
 
     let regions: Vec<_> = data_regions(&work.payload, writable, skip_bytes, data_len).collect();
+    let described_len = regions.iter().try_fold(0u64, |total, region| {
+        region.addr.checked_add(region.len)?;
+        total.checked_add(region.len)
+    });
+    if described_len != Some(data_len) {
+        return Err(VIRTIO_BLK_S_IOERR);
+    }
 
     let (mut io_mem, io_range, bounced) =
         if let Some((gpns, offset, len)) = try_build_gpn_list(&regions) {
@@ -716,7 +728,7 @@ async fn do_io(
             let gpns: Vec<u64> = (0..num_pages as u64).collect();
 
             if !is_read {
-                let buf = bounce_mem.inner_buf_mut().unwrap();
+                let buf = bounce_mem.inner_buf_mut().ok_or(VIRTIO_BLK_S_IOERR)?;
                 copy_regions(buf, mem, &regions, true)?;
             }
 
@@ -747,7 +759,10 @@ async fn do_io(
     }
 
     if bounced && is_read {
-        let buf = io_mem.as_mut().unwrap().inner_buf_mut().unwrap();
+        let buf = io_mem
+            .as_mut()
+            .and_then(GuestMemory::inner_buf_mut)
+            .ok_or(VIRTIO_BLK_S_IOERR)?;
         copy_regions(buf, mem, &regions, false)?;
     }
 
@@ -770,8 +785,34 @@ fn write_status_byte(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     // ---- copy_regions tests ----
+
+    #[test]
+    fn copy_regions_rejects_invalid_lengths() {
+        let guest = GuestMemory::allocate(4096).copy_only_view();
+        let mut bounce = [0; 512];
+        for region in [
+            DataRegion { addr: 0, len: 513 },
+            DataRegion {
+                addr: u64::MAX - 255,
+                len: 512,
+            },
+        ] {
+            for to_bounce in [false, true] {
+                assert_eq!(
+                    copy_regions(
+                        &mut bounce,
+                        &guest,
+                        std::slice::from_ref(&region),
+                        to_bounce
+                    ),
+                    Err(VIRTIO_BLK_S_IOERR)
+                );
+            }
+        }
+    }
 
     #[test]
     fn copy_regions_roundtrip() {

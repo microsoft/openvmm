@@ -66,6 +66,11 @@ pub struct RelaySocket {
 }
 
 impl RelaySocket {
+    #[cfg(all(test, unix))]
+    pub(crate) fn inner_socket_for_test(&self) -> &UnixStream {
+        &self.inner.socket
+    }
+
     /// Creates a new RelaySocket for the supplied UnixStream.
     pub fn new(driver: &VmTaskDriver, stream: UnixStream) -> io::Result<Self> {
         let sock_ref = stream.as_sock_ref();
