@@ -556,7 +556,7 @@ impl IntoPipeline for CheckinGatesCli {
         shared_linux_job = shared_linux_job.publish(pub_incubator, |incubator| {
             flowey_lib_hvlite::build_incubator::Request {
                 target: CommonTriple::X86_64_LINUX_GNU,
-                profile: CommonProfile::from_release(release),
+                profile: CommonProfile::from_release(release).into(),
                 incubator,
             }
         });
