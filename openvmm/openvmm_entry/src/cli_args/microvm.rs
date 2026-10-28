@@ -483,7 +483,11 @@ pub struct MicrovmCli {
     /// enter it, and it lists one directory or regular file per
     /// `--mount-child`, which has its own access mode. The guest mounts the
     /// `microvm` tag at GUEST_TARGET with `virtfs_aggregate=1` on its command
-    /// line, and is expected to bind-mount each child where it is needed.
+    /// line, and is expected to bind-mount each child where it is needed. A
+    /// platform snapshot's dormant slot may bind an aggregate on restore,
+    /// validated as at a cold boot; the resumed guest keeps its captured
+    /// command line, so it must learn of the aggregate from its host and
+    /// mount the `microvm` tag explicitly.
     #[clap(
         long = "mount-aggregate",
         value_name = "GUEST_TARGET",
@@ -503,7 +507,8 @@ pub struct MicrovmCli {
     /// A file child's mode applies to the whole file, which no
     /// `--mount-deny`, `--mount-allow`, or `--mount-write` path may name.
     /// Host paths must not overlap: a file must not lie inside a directory
-    /// child. A restore requires the same children, in the same order.
+    /// child. A snapshot that attached an aggregate requires the same
+    /// children, in the same order, on restore.
     #[clap(
         long = "mount-child",
         value_name = "NAME,HOST_PATH[,ro|rw][,file]",

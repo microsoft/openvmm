@@ -432,7 +432,9 @@ host paths, kinds, target, and modes, the same
 `--mount-deny`, `--mount-allow`, and `--mount-write` paths, and the same
 `--mount-owner` mode. OpenVMM independently validates the roots and every
 saved object identity before starting a vCPU. A dormant-slot snapshot may
-restore without an attachment or bind one new `--mount` to the slot.
+restore without an attachment or bind one new `--mount` to the slot, and a
+platform snapshot may instead bind a new `--mount-aggregate`, which OpenVMM
+validates as at a cold boot.
 For a new attachment, the resumed guest explicitly mounts tag `microvm`; the
 cold-boot mount hook does not run again.
 

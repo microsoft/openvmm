@@ -352,9 +352,14 @@ describes the source definitions.
   same guest target and the same `--mount-child` options, in the same order,
   with the same canonical host paths, kinds, modes, and policy paths.
   A snapshot captured without a filesystem may remain dormant or bind one new
-  `--mount` to the slot. The resumed
-  guest must then explicitly run `mount -t virtiofs microvm <GUEST_TARGET>`
-  because its cold-boot mount hook has already completed.
+  `--mount` to the slot; a platform snapshot may instead bind a new
+  `--mount-aggregate` with its `--mount-child`, `--mount-deny`,
+  `--mount-allow`, `--mount-write`, and `--mount-owner` options, which
+  OpenVMM validates as it would at a cold boot. Either keeps the slot's device
+  and the captured command line, which has no `virtfs_*` token, so the resumed
+  guest must learn the guest target from its host and explicitly run
+  `mount -t virtiofs microvm <GUEST_TARGET>`, because its cold-boot mount hook
+  has already completed.
   See [virtio-fs](../../devices/virtio/virtio-fs.md).
 * `--snapshot-destination <DIR>`: Publish a microVM snapshot when the guest
   writes to PMIO port `0x605`. The destination must not exist and its parent
@@ -447,8 +452,9 @@ describes the source definitions.
   options in the same order. It must reproduce the manifest's exact canonical
   host paths, guest target, and `ro`/`rw` modes while also supplying live
   roots with the same saved identities. A snapshot advertising the dormant
-  slot may instead accept one new `--mount`; snapshots without that
-  capability reject additive attachment.
+  slot may instead accept one new `--mount`, and a platform snapshot also a
+  new `--mount-aggregate`; snapshots without that capability reject additive
+  attachment.
 
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress
