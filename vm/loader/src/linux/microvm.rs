@@ -448,6 +448,20 @@ where
     Ok(load_info)
 }
 
+/// Returns the RAM ranges of the e820 map that [`load_x86_mptable`] builds for
+/// `mem_layout` and `reserved_memory_ranges`: the RAM of the layout, less the
+/// ISA hole and the reserved ranges.
+pub fn mptable_ram_ranges(
+    mem_layout: &MemoryLayout,
+    reserved_memory_ranges: &[MemoryRange],
+) -> Result<Vec<MemoryRange>, Error> {
+    Ok(build_mptable_e820(mem_layout, reserved_memory_ranges)?
+        .into_iter()
+        .filter(|entry| entry.entry_type == defs::E820_RAM)
+        .map(|entry| MemoryRange::new(entry.start..entry.end))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,6 +818,28 @@ mod tests {
                     end: 9 * GB,
                     entry_type: defs::E820_RAM,
                 },
+            ]
+        );
+    }
+
+    #[test]
+    fn mptable_ram_ranges_exclude_status_page_isa_hole_and_mmio_gap() {
+        let status_page = [MemoryRange::new(0x3_0000..0x3_1000)];
+        assert_eq!(
+            mptable_ram_ranges(&make_mptable_layout(8 * GB), &status_page).unwrap(),
+            [
+                MemoryRange::new(0..0x3_0000),
+                MemoryRange::new(0x3_1000..MPTABLE_ISA_HOLE_BASE),
+                MemoryRange::new(MPTABLE_ISA_HOLE_END..MPTABLE_MMIO_GAP_BASE),
+                MemoryRange::new(MPTABLE_MMIO_GAP_END..9 * GB),
+            ]
+        );
+        assert_eq!(
+            mptable_ram_ranges(&make_mptable_layout(256 * MB), &status_page).unwrap(),
+            [
+                MemoryRange::new(0..0x3_0000),
+                MemoryRange::new(0x3_1000..MPTABLE_ISA_HOLE_BASE),
+                MemoryRange::new(MPTABLE_ISA_HOLE_END..256 * MB),
             ]
         );
     }
