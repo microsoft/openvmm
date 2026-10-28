@@ -380,7 +380,7 @@ async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> 
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
             VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => {
+        PetriVmgsResource::ReprovisionSingle(disk) => {
             VmgsResource::ReprovisionSingle(convert_disk(disk).await?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,

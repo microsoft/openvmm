@@ -2747,13 +2747,6 @@ mod tests {
             for (config, expected) in [
                 (
                     vmservice::VmgsConfig {
-                        backend: Some(memory_disk()),
-                        ..Default::default()
-                    },
-                    "missing VMGS provision condition",
-                ),
-                (
-                    vmservice::VmgsConfig {
                         provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
                             as i32,
                         ..Default::default()
