@@ -4,6 +4,7 @@
 //! Nested vm host definitions
 
 use petri::PetriVmBuilder;
+#[cfg(target_os = "linux")]
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 

@@ -1252,6 +1252,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
                             overlay_page: Some(result.overlay_page()),
                         })
                     } else {
+                        // TODO: Use HvCallTranslateVirtualAddressEx when Kernel supports it
                         Err(EmuTranslateError {
                             code,
                             event_info: None,
