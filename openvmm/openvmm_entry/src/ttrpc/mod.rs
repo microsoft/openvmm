@@ -1706,7 +1706,7 @@ fn guest_power_actions_from_proto(
     let action =
         |value: i32, exit_code: Option<u32>, default| -> anyhow::Result<GuestPowerAction> {
             Ok(match ProtoAction::from_i32(value) {
-                Some(ProtoAction::Default) => default,
+                Some(ProtoAction::Unspecified) => default,
                 Some(ProtoAction::Restart) => GuestPowerAction::Reset,
                 Some(ProtoAction::Halt) => GuestPowerAction::Halt,
                 Some(ProtoAction::Exit) => GuestPowerAction::Exit(
@@ -2645,6 +2645,17 @@ mod tests {
 
     #[test]
     fn guest_power_actions_defaults() {
+        use vmservice::vm_config::GuestPowerAction as Action;
+
+        for (action, value, name) in [
+            (Action::Unspecified, 0, "GUEST_POWER_ACTION_UNSPECIFIED"),
+            (Action::Restart, 1, "GUEST_POWER_ACTION_RESTART"),
+            (Action::Halt, 2, "GUEST_POWER_ACTION_HALT"),
+            (Action::Exit, 3, "GUEST_POWER_ACTION_EXIT"),
+        ] {
+            assert_eq!(action as i32, value);
+            assert_eq!(action.as_str_name(), name);
+        }
         assert_eq!(
             guest_power_actions_from_proto(None).unwrap(),
             GuestPowerActions::default()
@@ -2717,7 +2728,7 @@ mod tests {
         use vmservice::vm_config::GuestPowerActions as Actions;
 
         for value in [
-            Action::Default as i32,
+            Action::Unspecified as i32,
             Action::Restart as i32,
             Action::Halt as i32,
             -1,
@@ -2734,7 +2745,7 @@ mod tests {
                 *action = value;
                 let result = guest_power_actions_from_proto(Some(requested));
                 let expected = match Action::from_i32(value) {
-                    Some(Action::Default) => GuestPowerActions::default(),
+                    Some(Action::Unspecified) => GuestPowerActions::default(),
                     Some(Action::Restart) => GuestPowerActions {
                         shutdown: if event == 0 {
                             GuestPowerAction::Reset
