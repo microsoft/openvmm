@@ -284,11 +284,11 @@ fn join_under(root: &Path, path: &Path) -> PathBuf {
     root.join(stripped)
 }
 
-/// Install a Landlock ruleset covering every grant, then `restrict_self`.
+/// Install a Landlock ruleset covering grants and implicit filesystem access.
 ///
 /// Requests the highest known Landlock ABI and lets the `landlock` crate
 /// downgrade automatically on older kernels.
-fn apply_landlock(grants: &[FsGrant]) -> io::Result<()> {
+fn apply_landlock(grants: &[FsGrant]) -> io::Result<landlock::RestrictionStatus> {
     use landlock::ABI;
     use landlock::Access as _;
     use landlock::AccessFs;
@@ -324,6 +324,24 @@ fn apply_landlock(grants: &[FsGrant]) -> io::Result<()> {
             .map_err(landlock_err)?;
     }
 
+    for (path, rights) in [
+        ("/proc/self/maps", AccessFs::ReadFile.into()),
+        (
+            "/proc/self/comm",
+            // fs::write uses O_TRUNC when setting the worker name.
+            AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::Truncate,
+        ),
+        ("/proc/sys/vm/overcommit_memory", AccessFs::ReadFile.into()),
+    ] {
+        let path = Path::new(path);
+        if !path.exists() {
+            continue;
+        }
+        ruleset = ruleset
+            .add_rules(path_beneath_rules(&[path], rights))
+            .map_err(landlock_err)?;
+    }
+
     let tmp_rights = (from_read & !AccessFs::Execute) | from_write;
     ruleset = ruleset
         .add_rules(path_beneath_rules(&[Path::new("/tmp")], tmp_rights))
@@ -335,7 +353,7 @@ fn apply_landlock(grants: &[FsGrant]) -> io::Result<()> {
         no_new_privs = status.no_new_privs,
         "applied Landlock ruleset",
     );
-    Ok(())
+    Ok(status)
 }
 
 fn landlock_err(e: landlock::RulesetError) -> io::Error {
@@ -457,6 +475,50 @@ mod tests {
         crate::tighten(&restrictions).unwrap();
         tightened_tx.send(()).unwrap();
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn landlock_allows_implicit_proc_access() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "linux::tests::helper_implicit_proc_access",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "implicit proc helper failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_implicit_proc_access() {
+        fs_err::read("/proc/self/status").unwrap();
+        hardening::set_no_new_privs().unwrap();
+        let status = apply_landlock(&[]).unwrap();
+        println!("Landlock enforcement: {:?}", status.ruleset);
+        if status.ruleset == landlock::RulesetStatus::NotEnforced {
+            return;
+        }
+
+        assert_eq!(
+            fs_err::read("/proc/self/status").unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied,
+        );
+        for path in ["/proc/self/maps", "/proc/sys/vm/overcommit_memory"] {
+            assert!(!fs_err::read(path).unwrap().is_empty());
+        }
+        fs_err::write("/proc/self/comm", "sandbox-proc").unwrap();
+        assert_eq!(
+            fs_err::read_to_string("/proc/self/comm").unwrap(),
+            "sandbox-proc\n",
+        );
     }
 
     #[test]

@@ -79,6 +79,11 @@ grants retain permissions already granted for that path. Profiles requiring
 both write and execute access to the same path or subtree are rejected rather
 than creating writable executable mounts.
 
+Linux implicitly provides `/tmp` and mounts `/proc`. With Landlock enforced,
+implicit proc permissions allow reading `/proc/self/maps` and
+`/proc/sys/vm/overcommit_memory`, and reading and writing `/proc/self/comm` for
+worker naming. Other proc files require explicit grants.
+
 `Syscalls::deny` installs a curated **default-allow** seccomp filter: it always
 blocks the built-in dangerous-syscall baseline (namespace-escape and kernel-CVE
 vectors such as `mount`, `unshare`, `pivot_root`, and `bpf`, documented in
