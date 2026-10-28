@@ -201,7 +201,8 @@ pub(crate) fn restore_packet_base(
 /// platform snapshot's `distro` block keeps its captured capacity, whatever
 /// the length of the image that the restore attaches to it, and
 /// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
-/// platform snapshot admits `--restore-network-policy`.
+/// platform snapshot admits `--restore-network-policy`, and `--mount-aggregate`
+/// on the filesystem slot that it left dormant.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
@@ -244,6 +245,11 @@ pub(crate) fn prepare_restore(
         validate_network_policy_restore(
             &manifest.snapshot_tier,
             opt.microvm.restore_network_policy,
+        )?;
+        validate_filesystem_aggregate_restore(
+            &manifest.snapshot_tier,
+            contract.microvm_filesystem.is_some(),
+            opt.microvm.microvm_mount_aggregate.is_some(),
         )?;
         if let Some(restore_processors) = opt.microvm.restore_processors {
             openvmm_helpers::snapshot::microvm::validate_restore_online_vp_count(
@@ -411,6 +417,29 @@ fn validate_network_policy_restore(
         !restore_network_policy
             || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
         "--restore-network-policy requires a platform snapshot"
+    );
+    Ok(())
+}
+
+/// Rejects `--mount-aggregate`, which `aggregate` reports, on the filesystem
+/// slot that a snapshot of a tier other than the platform tier left dormant,
+/// which `captured_filesystem` reports when false.
+///
+/// A platform snapshot is captured before any tenant input, so its restore
+/// may attach the filesystem that a cold boot would. Later tiers, and
+/// untiered snapshots, keep what their dormant slot admitted before, one
+/// `--mount` directory, and a snapshot that captured a filesystem requires it
+/// again, whatever its tier.
+fn validate_filesystem_aggregate_restore(
+    snapshot_tier: &str,
+    captured_filesystem: bool,
+    aggregate: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        captured_filesystem
+            || !aggregate
+            || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
+        "--mount-aggregate on a dormant filesystem slot requires a platform snapshot"
     );
     Ok(())
 }
@@ -900,6 +929,37 @@ pub(crate) mod tests {
                 assert_eq!(
                     replaced.unwrap_err().to_string(),
                     "--restore-network-policy requires a platform snapshot"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_platform_restore_attaches_an_aggregate_to_a_dormant_slot() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        for tier in [
+            SNAPSHOT_TIER_PLATFORM,
+            SNAPSHOT_TIER_WORKLOAD_START,
+            SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
+            "",
+        ] {
+            // A dormant slot may stay dormant or bind a --mount, and a slot
+            // that the snapshot attached requires what it captured, at every
+            // tier.
+            for (captured_filesystem, aggregate) in [(false, false), (true, false), (true, true)] {
+                validate_filesystem_aggregate_restore(tier, captured_filesystem, aggregate)
+                    .unwrap();
+            }
+            let attached = validate_filesystem_aggregate_restore(tier, false, true);
+            if tier == SNAPSHOT_TIER_PLATFORM {
+                attached.unwrap();
+            } else {
+                assert_eq!(
+                    attached.unwrap_err().to_string(),
+                    "--mount-aggregate on a dormant filesystem slot requires a platform snapshot"
                 );
             }
         }
