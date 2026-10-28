@@ -39,6 +39,7 @@ use virtio::VirtioMmioInterruptMode;
 use virtio::resolve::ResolvedVirtioDevice;
 #[cfg(guest_arch = "x86_64")]
 use vm_loader::InitialLoad;
+use vm_topology::memory::MemoryLayout;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmm_core::partition_unit::StopGuard;
 
@@ -172,11 +173,7 @@ pub(super) fn load_linux_x86_mptable(
         .vps_arch()
         .map(|vp| vp.apic_id)
         .collect::<Vec<_>>();
-    let reserved_memory_ranges = [MemoryRange::new(
-        openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
-            ..openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
-                + openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
-    )];
+    let reserved_memory_ranges = reserved_memory_ranges();
     let kernel_config = crate::worker::vm_loaders::linux::KernelConfig {
         kernel,
         initrd,
@@ -539,6 +536,16 @@ fn virtio_mmio_config(
     Ok((start, len, irq, disabled_features, interrupt_mode))
 }
 
+/// The guest memory that the microVM e820 map reserves inside RAM besides the
+/// ISA hole: the shared virtio interrupt-status page.
+fn reserved_memory_ranges() -> [MemoryRange; 1] {
+    [MemoryRange::new(
+        openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+            ..openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+                + openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE,
+    )]
+}
+
 /// Assigns the fixed virtio-mmio slots of the microVM profile to devices, in
 /// device order.
 pub(super) struct VirtioMmioSlots<'a> {
@@ -546,22 +553,46 @@ pub(super) struct VirtioMmioSlots<'a> {
     sandbox_block_index: usize,
     filesystem_index: usize,
     chipset_mmio: ChipsetMmioRanges,
+    mem_layout: &'a MemoryLayout,
+    /// The RAM ranges of the e820 map, computed for the first device.
+    dma_ranges: Option<Vec<MemoryRange>>,
 }
 
 impl<'a> VirtioMmioSlots<'a> {
     pub(super) fn new(
         sandbox_blocks: &'a [openvmm_defs::microvm::MicrovmSandboxBlockConfig],
         chipset_mmio: ChipsetMmioRanges,
+        mem_layout: &'a MemoryLayout,
     ) -> Self {
         Self {
             sandbox_blocks,
             sandbox_block_index: 0,
             filesystem_index: 0,
             chipset_mmio,
+            mem_layout,
+            dma_ranges: None,
         }
     }
 
-    /// Adds a virtio-mmio device at its fixed microVM slot.
+    /// Returns the guest memory that a microVM device may access with DMA:
+    /// the RAM ranges of the e820 map, which leave out the shared
+    /// interrupt-status page, the ISA hole, and the MMIO aperture. After a
+    /// restore, they include the RAM that the restore adds.
+    fn dma_ranges(&mut self) -> anyhow::Result<&[MemoryRange]> {
+        if self.dma_ranges.is_none() {
+            self.dma_ranges = Some(
+                loader::linux::microvm::mptable_ram_ranges(
+                    self.mem_layout,
+                    &reserved_memory_ranges(),
+                )
+                .context("failed to find the RAM ranges of the microVM e820 map")?,
+            );
+        }
+        Ok(self.dma_ranges.as_deref().unwrap_or_default())
+    }
+
+    /// Adds a virtio-mmio device at its fixed microVM slot, restricting its
+    /// DMA to the RAM ranges of the e820 map.
     pub(super) fn add_device(
         &mut self,
         chipset_builder: &vmotherboard::ChipsetBuilder<'_>,
@@ -578,10 +609,15 @@ impl<'a> VirtioMmioSlots<'a> {
             &mut self.filesystem_index,
             self.chipset_mmio,
         )?;
+        let dma_ranges = self
+            .dma_ranges()?
+            .iter()
+            .map(|range| range.start()..range.end())
+            .collect::<Vec<_>>();
         let id = format!("{id}-{mmio_start}");
         let gm = gm.clone();
         chipset_builder.arc_mutex_device(id).try_add(|services| {
-            VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
+            let mut device = VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
                 device.0,
                 &driver_source.simple(),
                 gm,
@@ -592,6 +628,11 @@ impl<'a> VirtioMmioSlots<'a> {
                 disabled_features,
                 interrupt_mode,
             )
+            .context("failed to create the virtio-mmio transport")?;
+            device
+                .restrict_dma(dma_ranges)
+                .context("failed to restrict device DMA to RAM")?;
+            anyhow::Ok(device)
         })?;
         Ok(())
     }
