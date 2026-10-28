@@ -501,7 +501,7 @@ pub fn dos_to_nt_path(
     Ok(path)
 }
 
-// Convert Linux open flags o a Windows access mask.
+// Convert Linux open flags to a Windows access mask.
 pub fn open_flags_to_access_mask(flags: i32) -> W32Fs::FILE_ACCESS_RIGHTS {
     let mut mask = MINIMUM_PERMISSIONS;
     mask |= match flags & lx::O_ACCESS_MASK {
@@ -532,17 +532,13 @@ pub fn open_flags_to_attributes_options(
     FileSystem::NTCREATEFILE_CREATE_OPTIONS,
 ) {
     let mut file_attributes = Default::default();
-    let mut create_options = Default::default();
+    let mut create_options = FileSystem::FILE_OPEN_REPARSE_POINT;
 
     if flags & lx::O_DIRECTORY != 0 {
         file_attributes |= W32Fs::FILE_ATTRIBUTE_DIRECTORY;
         create_options |= FileSystem::FILE_DIRECTORY_FILE;
     } else {
         file_attributes |= W32Fs::FILE_ATTRIBUTE_NORMAL;
-    }
-
-    if flags & lx::O_NOFOLLOW != 0 {
-        create_options |= FileSystem::FILE_OPEN_REPARSE_POINT;
     }
 
     (file_attributes, create_options)

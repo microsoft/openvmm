@@ -4,6 +4,9 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
+//!
+//! Filesystem operations take native host paths. Use [`PathExt`] or [`PathBufExt`]
+//! to convert Linux paths before passing them to a volume. The volume root is a host path.
 
 #![cfg(any(windows, target_os = "linux"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
@@ -242,23 +245,42 @@ impl LxVolume {
         self.set_attr(path, attr)
     }
 
-    /// Opens or creates a file.
+    /// Opens or creates a file, rejecting final symlinks with `ELOOP`.
     ///
-    /// Symlinks are never followed, even if `O_NOFOLLOW` is omitted.
+    /// Symlinks are never followed, handles are non-inheritable, and opens never
+    /// acquire a controlling terminal. Creation requires `LxCreateOptions`.
+    /// Flags use the platform's Linux `O_*` definitions from [`lx`].
+    /// Unsupported bits, including caller-selectable host safety flags, return `EINVAL`.
+    ///
+    /// # Unix
+    ///
+    /// Host data opens always use `O_NONBLOCK` to avoid waiting for a FIFO peer.
+    /// This does not make regular-file I/O asynchronous.
     ///
     /// # Windows
     ///
-    /// Not all open flags are supported. In particular, only the flags present in the `lx` module
-    /// are supported. Unknown flags are ignored.
-    ///
-    /// The `O_NOFOLLOW` flag will successfully open a symbolic link, whereas on Unix it will fail
-    /// without the `O_PATH` flag (the O_PATH flag is ignored on Windows).
+    /// Alternate data streams are not supported. Use [`PathExt`] to convert Linux filenames.
+    /// Nonblocking, direct I/O, no-atime, and synchronization flags are ignored on Windows.
     pub fn open(
         &self,
         path: impl AsRef<Path>,
         flags: i32,
         options: Option<LxCreateOptions>,
     ) -> lx::Result<LxFile> {
+        let supported = lx::O_ACCESS_MASK
+            | lx::O_CREAT
+            | lx::O_EXCL
+            | lx::O_TRUNC
+            | lx::O_APPEND
+            | lx::O_NONBLOCK
+            | lx::O_DSYNC
+            | lx::O_DIRECT
+            | lx::O_DIRECTORY
+            | lx::O_NOATIME
+            | lx::O_SYNC;
+        if flags & !supported != 0 || (flags & lx::O_CREAT != 0 && options.is_none()) {
+            return Err(lx::Error::EINVAL);
+        }
         Ok(LxFile {
             inner: self.inner.open(path.as_ref(), flags, options)?,
         })
@@ -1085,7 +1107,7 @@ impl Default for LxVolumeOptions {
 ///
 /// The user ID and group ID are only used on Windows; on Unix platforms, set the thread's effective
 /// user ID and group ID to change the owner of a newly created file.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct LxCreateOptions {
     mode: lx::mode_t,
     #[cfg_attr(not(windows), expect(dead_code))]
@@ -1181,6 +1203,53 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    fn unsupported_open_flags_do_not_change_files() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        for unsupported in [
+            lx::O_PATH,
+            lx::O_NOCTTY,
+            lx::O_CLOEXEC,
+            lx::O_LARGEFILE,
+            lx::O_NOFOLLOW,
+            0x2000,
+            0x400000,
+            i32::MIN,
+        ] {
+            for name in ["file", "new"] {
+                let result = env.volume.open(
+                    name,
+                    unsupported | lx::O_WRONLY | lx::O_TRUNC | lx::O_CREAT,
+                    Some(LxCreateOptions::default()),
+                );
+                assert_eq!(result.err().unwrap(), lx::Error::EINVAL);
+            }
+        }
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!env.root_dir.path().join("new").exists());
+    }
+
+    #[test]
+    fn directory_only_open_rejects_regular_files() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        assert_eq!(
+            env.volume
+                .open("file", lx::O_DIRECTORY, None)
+                .err()
+                .unwrap(),
+            lx::Error::ENOTDIR
+        );
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
     fn lstat() {
         let env = TestEnv::new();
         env.create_file("testfile", "test");
@@ -1214,10 +1283,7 @@ mod tests {
         assert_eq!(stat, fstat);
 
         let stat = env.volume.lstat("").unwrap();
-        let file = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let file = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
@@ -1227,6 +1293,14 @@ mod tests {
     #[test]
     fn read_write() {
         let env = TestEnv::new();
+        assert_eq!(
+            env.volume
+                .open("testfile", lx::O_WRONLY | lx::O_CREAT, None)
+                .err()
+                .unwrap(),
+            lx::Error::EINVAL
+        );
+        assert!(!env.root_dir.path().join("testfile").exists());
         let file = env
             .volume
             .open(
@@ -1328,10 +1402,7 @@ mod tests {
             assert!(map.insert(name, false).is_none());
         }
 
-        let mut dir = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let mut dir = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         let mut count = 0;
         let mut next_offset = 0;
@@ -1423,10 +1494,7 @@ mod tests {
     fn read_dir_panic() {
         let env = TestEnv::new();
         env.create_file("testfile", "test");
-        let mut dir = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let mut dir = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         // Make sure the closure can safely panic even when invoked through the C callback on
         // Windows.
@@ -1757,11 +1825,20 @@ mod tests {
             .unwrap();
         assert!(lx::s_islnk(env.volume.lstat("link").unwrap().mode));
         assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
-        assert!(
-            env.volume
-                .open("link", lx::O_WRONLY | lx::O_TRUNC, None)
-                .is_err()
-        );
+        for flags in [
+            lx::O_RDONLY,
+            lx::O_RDWR,
+            lx::O_WRONLY | lx::O_TRUNC,
+            lx::O_CREAT | lx::O_RDONLY,
+            lx::O_CREAT | lx::O_WRONLY | lx::O_TRUNC,
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(LxCreateOptions::default);
+            assert_eq!(
+                env.volume.open("link", flags, options).err().unwrap(),
+                lx::Error::ELOOP
+            );
+            assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
+        }
         env.volume.rename("link", "renamed", 0).unwrap();
         assert_eq!(env.volume.read_link("renamed").unwrap(), "target/file");
         env.volume.unlink("renamed", 0).unwrap();
@@ -2505,8 +2582,8 @@ mod tests {
                     .unwrap();
 
                 for (path, mask, flags) in [
-                    ("", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
-                    ("testdir", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("", dmask, lx::O_DIRECTORY),
+                    ("testdir", dmask, lx::O_DIRECTORY),
                     ("testdir/testfile", fmask, lx::O_RDONLY),
                 ] {
                     let path = Path::from_lx(path).unwrap();

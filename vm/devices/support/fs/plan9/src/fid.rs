@@ -123,8 +123,8 @@ impl FileState {
     fn open(&mut self, flags: u32) -> lx::Result<Qid> {
         self.check_not_open()?;
 
-        let flags = Self::open_flags_to_o_flags(flags) | lx::O_NOFOLLOW;
-        let file = self.root.open(&self.path, flags, None)?;
+        let options = Self::open_options(flags)?;
+        let file = self.root.open(&self.path, options, None)?;
         self.file = Some(file);
         Ok(self.qid)
     }
@@ -138,10 +138,11 @@ impl FileState {
     ) -> lx::Result<Qid> {
         self.check_not_open()?;
 
-        let flags = Self::open_flags_to_o_flags(flags) | lx::O_CREAT | lx::O_NOFOLLOW;
+        let open_options = Self::open_options(flags)?;
+        let open_options = open_options | lx::O_CREAT;
         let child_path = self.child_path(name)?;
 
-        let file = self.root.open(&child_path, flags, Some(options))?;
+        let file = self.root.open(&child_path, open_options, Some(options))?;
         let (qid, _) = Self::get_file_attributes(&file)?;
         self.path = child_path;
         self.file = Some(file);
@@ -230,16 +231,40 @@ impl FileState {
         }
     }
 
-    // Convert the Tlopen flags to Linux open flags.
-    fn open_flags_to_o_flags(flags: u32) -> i32 {
-        let mut result = (flags & !OPEN_FLAG_DIRECTORY) as i32;
-
-        // O_DIRECTORY may not match OPEN_FLAG_DIRECTORY depending on the architecture.
-        if flags & OPEN_FLAG_DIRECTORY != 0 {
-            result |= lx::O_DIRECTORY;
+    fn open_options(flags: u32) -> lx::Result<i32> {
+        let mut result = match flags & OPEN_FLAG_ACCESS_MASK {
+            OPEN_FLAG_RDONLY => lx::O_RDONLY,
+            OPEN_FLAG_WRONLY => lx::O_WRONLY,
+            OPEN_FLAG_RDWR => lx::O_RDWR,
+            OPEN_FLAG_NOACCESS => lx::O_NOACCESS,
+            _ => return Err(lx::Error::EINVAL),
+        };
+        let mut supported = OPEN_FLAG_ACCESS_MASK
+            | OPEN_FLAG_LARGEFILE
+            | OPEN_FLAG_NOFOLLOW
+            | OPEN_FLAG_NOCTTY
+            | OPEN_FLAG_CLOEXEC;
+        for (source, target) in [
+            (OPEN_FLAG_CREAT, lx::O_CREAT),
+            (OPEN_FLAG_EXCL, lx::O_EXCL),
+            (OPEN_FLAG_TRUNC, lx::O_TRUNC),
+            (OPEN_FLAG_APPEND, lx::O_APPEND),
+            (OPEN_FLAG_NONBLOCK, lx::O_NONBLOCK),
+            (OPEN_FLAG_DSYNC, lx::O_DSYNC),
+            (OPEN_FLAG_SYNC, lx::O_SYNC),
+            (OPEN_FLAG_DIRECT, lx::O_DIRECT),
+            (OPEN_FLAG_DIRECTORY, lx::O_DIRECTORY),
+            (OPEN_FLAG_NOATIME, lx::O_NOATIME),
+        ] {
+            supported |= source;
+            if flags & source != 0 {
+                result |= target;
+            }
         }
-
-        result
+        if flags & !supported != 0 {
+            return Err(lx::Error::EINVAL);
+        }
+        Ok(result)
     }
 
     // Return an error if the file is already open.
@@ -445,6 +470,53 @@ mod tests {
     }
 
     #[test]
+    fn open_flags_use_the_9p_wire_values() {
+        for (wire, expected) in [
+            (0o40000, lx::O_DIRECT),
+            (0o100000, lx::O_RDONLY),
+            (0o200000, lx::O_DIRECTORY),
+            (0o400000, lx::O_RDONLY),
+            (0o4000000, lx::O_SYNC),
+            (0o10000, lx::O_DSYNC),
+            (0o3, lx::O_NOACCESS),
+            (0o400, lx::O_RDONLY),
+            (0o2000000, lx::O_RDONLY),
+        ] {
+            assert_eq!(FileState::open_options(wire).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn unsupported_open_flags_do_not_change_files_or_fids() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"unchanged").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (root, root_qid) = File::new(Arc::clone(&volume), 0).unwrap();
+        let (file, _) = File::new(volume, 0).unwrap();
+        file.walk("file".as_ref()).unwrap();
+        for unsupported in [0x200000, 0x2000, 0x400000, 1 << 31] {
+            let flags = unsupported | OPEN_FLAG_WRONLY | OPEN_FLAG_TRUNC;
+            assert_eq!(file.open(flags).unwrap_err(), lx::Error::EINVAL);
+            assert!(file.state.read().file.is_none());
+            for name in ["file", "new"] {
+                assert_eq!(
+                    root.create(name.as_ref(), flags, 0o666, 0).unwrap_err(),
+                    lx::Error::EINVAL
+                );
+                let state = root.state.read();
+                assert!(state.file.is_none());
+                assert!(state.path.as_os_str().is_empty());
+                assert_eq!(state.qid.path, root_qid.path);
+            }
+        }
+        assert_eq!(
+            std::fs::read(tmp.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!tmp.path().join("new").exists());
+    }
+
+    #[test]
     fn non_directory_fids_reject_children() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("file"), b"unchanged").unwrap();
@@ -477,6 +549,75 @@ mod tests {
         assert!(!tmp.path().join("dir/child").exists());
     }
 
+    #[test]
+    fn final_symlinks_are_not_opened_or_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("target"), b"unchanged").unwrap();
+        std::fs::write(tmp.path().join("stale"), b"original").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        volume
+            .symlink("link", "target", LxCreateOptions::default())
+            .unwrap();
+        let (stale, _) = File::new(Arc::clone(&volume), 0).unwrap();
+        assert_eq!(
+            stale.walk("stale".as_ref()).unwrap().qid_type,
+            QID_TYPE_FILE
+        );
+        std::fs::rename(tmp.path().join("stale"), tmp.path().join("original")).unwrap();
+        volume
+            .symlink("stale", "target", LxCreateOptions::default())
+            .unwrap();
+        let (link, _) = File::new(Arc::clone(&volume), 0).unwrap();
+        assert_eq!(
+            link.walk("link".as_ref()).unwrap().qid_type,
+            QID_TYPE_SYMLINK
+        );
+        for fid in [&link, &stale] {
+            for flags in [
+                OPEN_FLAG_RDONLY,
+                OPEN_FLAG_WRONLY,
+                OPEN_FLAG_RDWR,
+                OPEN_FLAG_WRONLY | OPEN_FLAG_TRUNC,
+            ] {
+                assert_eq!(fid.open(flags).unwrap_err(), lx::Error::ELOOP);
+                assert!(fid.state.read().file.is_none());
+            }
+        }
+        let (root, root_qid) = File::new(Arc::clone(&volume), 0).unwrap();
+        for name in ["link", "stale"] {
+            for flags in [OPEN_FLAG_RDONLY, OPEN_FLAG_WRONLY | OPEN_FLAG_TRUNC] {
+                assert_eq!(
+                    root.create(name.as_ref(), flags, 0o666, 0).unwrap_err(),
+                    lx::Error::ELOOP
+                );
+                let state = root.state.read();
+                assert!(state.file.is_none());
+                assert!(state.path.as_os_str().is_empty());
+                assert_eq!(state.qid.path, root_qid.path);
+                assert_eq!(state.qid.qid_type, root_qid.qid_type);
+            }
+            assert_eq!(volume.read_link(name).unwrap(), "target");
+        }
+        let (file, _) = File::new(Arc::clone(&volume), 0).unwrap();
+        file.walk("target".as_ref()).unwrap();
+        file.open(OPEN_FLAG_RDONLY).unwrap();
+        let mut data = [0; 9];
+        assert_eq!(file.read(0, &mut data).unwrap(), data.len() as u32);
+        assert_eq!(&data, b"unchanged");
+        root.create("new".as_ref(), OPEN_FLAG_WRONLY, 0o666, 0)
+            .unwrap();
+        assert_eq!(root.write(0, b"new").unwrap(), 3);
+        assert_eq!(std::fs::read(tmp.path().join("new")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(tmp.path().join("target")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("original")).unwrap(),
+            b"original"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn stale_directory_fid_rejects_replacement_symlink() {
@@ -494,7 +635,7 @@ mod tests {
             lx::Error::ELOOP | lx::Error::ENOTDIR
         ));
         assert_eq!(
-            fid.create("new".as_ref(), lx::O_WRONLY as u32, 0o600, 0)
+            fid.create("new".as_ref(), OPEN_FLAG_WRONLY, 0o600, 0)
                 .unwrap_err(),
             lx::Error::ELOOP
         );
