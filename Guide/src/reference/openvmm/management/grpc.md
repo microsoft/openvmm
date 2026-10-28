@@ -158,4 +158,9 @@ cannot exceed the physical SMMU's width with acceleration. SMMU configuration
 cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
 SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
 
+## Extending the API
+
+When editing `vmservice.proto`, follow the
+[Protocol Buffers enum conventions](../../../dev_guide/contrib/code.md#protocol-buffers-enums).
+
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto
