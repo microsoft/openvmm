@@ -302,13 +302,18 @@ message DiskBackend {
         // A memory-backed disk.
         MemoryDisk memory = 2;
         // A memory-backed writable overlay over a read-only lower disk.
-        DiskBackend memory_diff = 3;
+        MemoryDiffDisk memory_diff = 3;
     }
 }
 
 message MemoryDisk {
     // Disk size in bytes.
     uint64 size_bytes = 1;
+}
+
+message MemoryDiffDisk {
+    // Read-only lower disk.
+    DiskBackend lower = 1;
 }
 
 // A disk backed by a host file.
@@ -324,7 +329,7 @@ message FileDisk {
 
 // Virtual machine guest state storage, equivalent to --vmgs.
 message VmgsConfig {
-    enum Provisioning {
+    enum ProvisionCondition {
         // Open existing VMGS data, formatting only an empty disk.
         ON_EMPTY = 0;
         // Reformat if the existing VMGS data cannot be opened (--vmgs ...,fmt-on-fail).
@@ -333,13 +338,13 @@ message VmgsConfig {
         // the VMGS reprovisioned marker is already set. Opening without a
         // reprovision request clears the marker, allowing a later request
         // to format again.
-        REPROVISION = 2;
+        SINGLE = 2;
     }
 
     // Required writable backing disk. VMGS files must already exist unless
     // FileDisk.create_size_bytes is specified.
     DiskBackend backend = 1;
-    Provisioning provisioning = 2;
+    ProvisionCondition provision_condition = 2;
 }
 
 // virtio-blk block device configuration.

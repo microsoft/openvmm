@@ -11308,6 +11308,7 @@ dependencies = [
  "vm_topology",
  "vmcore",
  "vmgs",
+ "vmgs_format",
  "vmgs_resources",
  "vmm_test_igvm_agent",
  "vmm_test_macros",

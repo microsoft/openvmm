@@ -58,6 +58,7 @@ pal_async.workspace = true
 unix_socket.workspace = true
 vmgs_resources.workspace = true
 vmgs.workspace = true
+vmgs_format.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true

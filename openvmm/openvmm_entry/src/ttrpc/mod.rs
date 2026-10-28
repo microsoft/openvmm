@@ -21,7 +21,7 @@ struct FdRegistry {}
 
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
-use crate::cli_args::ProvisionVmgs;
+use crate::cli_args::ProvisionCondition;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -2485,9 +2485,9 @@ fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<Di
         vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
             DiskCliKind::Memory(size_bytes)
         }
-        vmservice::disk_backend::Kind::MemoryDiff(lower) => {
-            DiskCliKind::MemoryDiff(Box::new(disk_backend_from_proto(*lower)?))
-        }
+        vmservice::disk_backend::Kind::MemoryDiff(overlay) => DiskCliKind::MemoryDiff(Box::new(
+            disk_backend_from_proto(*overlay.lower.context("missing memory diff lower disk")?)?,
+        )),
     })
 }
 
@@ -2495,12 +2495,18 @@ async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Opt
     let Some(config) = config else {
         return Ok(None);
     };
-    let provisioning = vmservice::vmgs_config::Provisioning::from_i32(config.provisioning)
-        .with_context(|| format!("unknown VMGS provisioning policy {}", config.provisioning))?;
-    let provision = match provisioning {
-        vmservice::vmgs_config::Provisioning::OnEmpty => ProvisionVmgs::OnEmpty,
-        vmservice::vmgs_config::Provisioning::OnFailure => ProvisionVmgs::OnFailure,
-        vmservice::vmgs_config::Provisioning::Reprovision => ProvisionVmgs::True,
+    let provision_condition =
+        vmservice::vmgs_config::ProvisionCondition::from_i32(config.provision_condition)
+            .with_context(|| {
+                format!(
+                    "unknown VMGS provision condition {}",
+                    config.provision_condition
+                )
+            })?;
+    let provision = match provision_condition {
+        vmservice::vmgs_config::ProvisionCondition::OnEmpty => ProvisionCondition::OnEmpty,
+        vmservice::vmgs_config::ProvisionCondition::OnFailure => ProvisionCondition::OnFailure,
+        vmservice::vmgs_config::ProvisionCondition::Single => ProvisionCondition::Single,
     };
     let kind = disk_backend_from_proto(config.backend.context("missing VMGS backend")?)
         .context("failed to open VMGS disk")?;
@@ -2670,27 +2676,30 @@ mod tests {
         futures::executor::block_on(async {
             assert!(build_vmgs(None).await.unwrap().is_none());
             assert!(vmservice::VmConfig::default().vmgs.is_none());
-            for provisioning in [
-                vmservice::vmgs_config::Provisioning::OnEmpty,
-                vmservice::vmgs_config::Provisioning::OnFailure,
-                vmservice::vmgs_config::Provisioning::Reprovision,
+            for provision_condition in [
+                vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                vmservice::vmgs_config::ProvisionCondition::OnFailure,
+                vmservice::vmgs_config::ProvisionCondition::Single,
             ] {
                 let resource = build_vmgs(Some(vmservice::VmgsConfig {
                     backend: Some(memory_disk()),
-                    provisioning: provisioning as i32,
+                    provision_condition: provision_condition as i32,
                 }))
                 .await
                 .unwrap()
                 .unwrap();
-                let disk = match (provisioning, resource) {
-                    (vmservice::vmgs_config::Provisioning::OnEmpty, VmgsResource::Disk(disk))
+                let disk = match (provision_condition, resource) {
+                    (
+                        vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                        VmgsResource::Disk(disk),
+                    )
                     | (
-                        vmservice::vmgs_config::Provisioning::OnFailure,
+                        vmservice::vmgs_config::ProvisionCondition::OnFailure,
                         VmgsResource::ReprovisionOnFailure(disk),
                     )
                     | (
-                        vmservice::vmgs_config::Provisioning::Reprovision,
-                        VmgsResource::Reprovision(disk),
+                        vmservice::vmgs_config::ProvisionCondition::Single,
+                        VmgsResource::ReprovisionSingle(disk),
                     ) => disk,
                     other => panic!("incorrect VMGS provisioning: {other:?}"),
                 };
@@ -2717,14 +2726,27 @@ mod tests {
                 (
                     vmservice::VmgsConfig {
                         backend: Some(memory_disk()),
-                        provisioning: i32::MAX,
+                        provision_condition: i32::MAX,
                     },
-                    "unknown VMGS provisioning policy",
+                    "unknown VMGS provision condition",
                 ),
                 (
                     vmservice::VmgsConfig {
                         backend: Some(vmservice::DiskBackend {
                             kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::default())),
+                        }),
+                        ..Default::default()
+                    },
+                    "missing memory diff lower disk",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(vmservice::DiskBackend {
+                            kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                                vmservice::MemoryDiffDisk {
+                                    lower: Some(Box::default()),
+                                },
+                            ))),
                         }),
                         ..Default::default()
                     },
@@ -2794,11 +2816,15 @@ mod tests {
             (
                 vmservice::DiskBackend {
                     kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
-                        vmservice::DiskBackend {
-                            kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
-                                path: "guest.vmgs".into(),
-                                create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                                ..Default::default()
+                        vmservice::MemoryDiffDisk {
+                            lower: Some(Box::new(vmservice::DiskBackend {
+                                kind: Some(vmservice::disk_backend::Kind::File(
+                                    vmservice::FileDisk {
+                                        path: "guest.vmgs".into(),
+                                        create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                                        ..Default::default()
+                                    },
+                                )),
                             })),
                         },
                     ))),

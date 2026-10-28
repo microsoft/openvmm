@@ -33,7 +33,7 @@ use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
-use cli_args::ProvisionVmgs;
+use cli_args::ProvisionCondition;
 use cli_args::SerialConfigCli;
 use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
@@ -2456,7 +2456,7 @@ fn non_volatile_store_resource(
 
 async fn open_vmgs(
     kind: &DiskCliKind,
-    provision: ProvisionVmgs,
+    provision: ProvisionCondition,
     encryption_policy: GuestStateEncryptionPolicy,
 ) -> anyhow::Result<VmgsResource> {
     let disk = VmgsDisk {
@@ -2464,9 +2464,9 @@ async fn open_vmgs(
         encryption_policy,
     };
     Ok(match provision {
-        ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
-        ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
-        ProvisionVmgs::True => VmgsResource::Reprovision(disk),
+        ProvisionCondition::OnEmpty => VmgsResource::Disk(disk),
+        ProvisionCondition::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+        ProvisionCondition::Single => VmgsResource::ReprovisionSingle(disk),
     })
 }
 
@@ -3223,9 +3223,9 @@ mod tests {
     fn opens_vmgs_with_provisioning_and_encryption_policy() {
         block_on(async {
             for provision in [
-                ProvisionVmgs::OnEmpty,
-                ProvisionVmgs::OnFailure,
-                ProvisionVmgs::True,
+                ProvisionCondition::OnEmpty,
+                ProvisionCondition::OnFailure,
+                ProvisionCondition::Single,
             ] {
                 for encryption_policy in [
                     GuestStateEncryptionPolicy::None(true),
@@ -3239,9 +3239,14 @@ mod tests {
                     .await
                     .unwrap();
                     let disk = match (provision, vmgs) {
-                        (ProvisionVmgs::OnEmpty, VmgsResource::Disk(disk))
-                        | (ProvisionVmgs::OnFailure, VmgsResource::ReprovisionOnFailure(disk))
-                        | (ProvisionVmgs::True, VmgsResource::Reprovision(disk)) => disk,
+                        (ProvisionCondition::OnEmpty, VmgsResource::Disk(disk))
+                        | (
+                            ProvisionCondition::OnFailure,
+                            VmgsResource::ReprovisionOnFailure(disk),
+                        )
+                        | (ProvisionCondition::Single, VmgsResource::ReprovisionSingle(disk)) => {
+                            disk
+                        }
                         _ => panic!("incorrect VMGS provisioning"),
                     };
                     assert!(matches!(
