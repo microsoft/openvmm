@@ -45,12 +45,6 @@ use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Staging path for the tmpfs that becomes `/` after `pivot_root`.
-///
-/// It exists only inside our fresh mount namespace, so it can never collide
-/// with another process's view of the filesystem.
-const STAGING_ROOT: &str = "/tmp/.sandbox-root";
-
 /// Apply `profile` to the current process. See the module docs for ordering
 /// and failure policy.
 pub fn apply(profile: &Profile) -> Result<(), Error> {
@@ -134,9 +128,41 @@ fn apply_network(scope: Network) -> Result<(), Error> {
 /// `pivot_root`, old-root cleanup, and layered Landlock enforcement.
 fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     let grants = filesystem_mount_plan(grants)?;
-    let staging = Path::new(STAGING_ROOT);
+    let staging = mount_namespace::create_staging_dir().map_err(fs_required)?;
+    if let Err(error) = mount_and_pivot_filesystem(&grants, &staging) {
+        // A `/` grant can stack mounts here. Detach every layer before
+        // removing only the empty backing directory, never bind contents.
+        while mount_namespace::umount(&staging).is_ok() {}
+        if let Err(cleanup_error) = fs_err::remove_dir(&staging) {
+            tracing::warn!(
+                error = &cleanup_error as &dyn std::error::Error,
+                "could not remove sandbox staging directory",
+            );
+        }
+        return Err(error);
+    }
 
-    fs_err::create_dir_all(staging).map_err(fs_required)?;
+    // pivot_root moved the staging mount to `/`, exposing its empty backing
+    // directory through the old root. Remove it before detaching that root.
+    fs_err::remove_dir(join_under(Path::new("/.old_root"), &staging)).map_err(fs_required)?;
+    std::env::set_current_dir("/").map_err(fs_required)?;
+    mount_namespace::umount(Path::new("/.old_root")).map_err(fs_required)?;
+    let _ = fs_err::remove_dir("/.old_root");
+
+    // Landlock is a supplementary, opportunistic layer (design D11/D16): a
+    // failure degrades rather than aborts.
+    if let Err(e) = apply_landlock(&grants) {
+        tracing::warn!(
+            error = &e as &dyn std::error::Error,
+            "could not apply Landlock ruleset; relying on mount namespace only",
+        );
+    }
+
+    Ok(())
+}
+
+/// Populate the staging filesystem and return immediately after `pivot_root`.
+fn mount_and_pivot_filesystem(grants: &[FsGrant], staging: &Path) -> Result<(), Error> {
     mount_namespace::mount_tmpfs(staging).map_err(fs_required)?;
 
     // Install the writable tmpfs before grants so explicit paths beneath
@@ -147,7 +173,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
 
     // Bind each grant into the staging root at the same path
     // (source `/bin` => `staging/bin`).
-    for grant in &grants {
+    for grant in grants {
         let source = grant.path.as_path();
         if !source.exists() {
             return Err(Error::ApplyFailed {
@@ -206,23 +232,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     // Pivot root: staging becomes `/`, old root moves to `staging/.old_root`.
     let old_root = staging.join(".old_root");
     fs_err::create_dir_all(&old_root).map_err(fs_required)?;
-    mount_namespace::pivot_root(staging, &old_root).map_err(fs_required)?;
-    std::env::set_current_dir("/").map_err(fs_required)?;
-
-    // Detach and remove the old root so nothing leaks through.
-    mount_namespace::umount(Path::new("/.old_root")).map_err(fs_required)?;
-    let _ = fs_err::remove_dir("/.old_root");
-
-    // Landlock is a supplementary, opportunistic layer (design D11/D16): a
-    // failure degrades rather than aborts.
-    if let Err(e) = apply_landlock(&grants) {
-        tracing::warn!(
-            error = &e as &dyn std::error::Error,
-            "could not apply Landlock ruleset; relying on mount namespace only",
-        );
-    }
-
-    Ok(())
+    mount_namespace::pivot_root(staging, &old_root).map_err(fs_required)
 }
 
 fn filesystem_mount_plan(grants: &[FsGrant]) -> Result<Vec<FsGrant>, Error> {
@@ -519,6 +529,113 @@ mod tests {
         assert_eq!(
             fs_err::read_to_string("/proc/self/comm").unwrap(),
             "sandbox-proc\n",
+        );
+    }
+
+    #[test]
+    fn filesystem_staging_is_cleaned_up() {
+        for scenario in [
+            "file",
+            "symlink",
+            "empty",
+            "missing-grant",
+            "mount-failure",
+            "root-grant",
+        ] {
+            let output = Command::new("unshare")
+                .args(["--user", "--map-root-user", "--mount"])
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::helper_filesystem_staging",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SANDBOX_STAGING_SCENARIO", scenario)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{scenario} staging helper failed:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn helper_filesystem_staging() {
+        mount_namespace::make_root_private().unwrap();
+        for path in ["/tmp", "/run"] {
+            mount_namespace::mount_tmpfs(Path::new(path)).unwrap();
+        }
+        fs_err::create_dir("/run/grant").unwrap();
+        fs_err::write("/run/grant/marker", "preserved").unwrap();
+        let scenario = std::env::var("SANDBOX_STAGING_SCENARIO").unwrap();
+        match scenario.as_str() {
+            "file" => fs_err::write("/tmp/.sandbox-root", "unrelated").unwrap(),
+            "symlink" => {
+                fs_err::create_dir("/tmp/target").unwrap();
+                std::os::unix::fs::symlink("/tmp/target", "/tmp/.sandbox-root").unwrap();
+            }
+            _ => {}
+        }
+        let staging = [
+            mount_namespace::create_staging_dir().unwrap(),
+            mount_namespace::create_staging_dir().unwrap(),
+        ];
+        assert_ne!(staging[0], staging[1]);
+        for path in staging {
+            assert_eq!(
+                fs_err::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            fs_err::remove_dir(path).unwrap();
+        }
+        let mut expected = fs_err::read_dir("/tmp")
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        expected.sort();
+        // Keep the backing directory open across pivot_root and Landlock.
+        let entries = fs_err::read_dir("/tmp").unwrap();
+        let mut profile = Profile::deny_all().read_write("/run/grant");
+        if matches!(scenario.as_str(), "missing-grant" | "root-grant") {
+            profile = profile.read("/run/missing");
+        }
+        if scenario == "root-grant" {
+            profile = profile.read("/");
+        }
+        if scenario == "mount-failure" {
+            drop_all_capabilities().unwrap();
+        }
+        hardening::set_no_new_privs().unwrap();
+        let result = apply_filesystem(&profile.build().inner.fs);
+        match scenario.as_str() {
+            "missing-grant" | "root-grant" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound
+            )),
+            "mount-failure" => assert!(matches!(
+                result,
+                Err(Error::ApplyFailed { source, .. })
+                    if source.kind() == io::ErrorKind::PermissionDenied
+            )),
+            _ => result.unwrap(),
+        }
+        let mut actual = entries
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        actual.sort();
+        assert_eq!(
+            actual, expected,
+            "staging directory leaked or replaced a fixture"
+        );
+        assert_eq!(
+            fs_err::read_to_string("/run/grant/marker").unwrap(),
+            "preserved",
         );
     }
 

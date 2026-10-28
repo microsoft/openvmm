@@ -461,6 +461,11 @@ of descendants. Duplicate and descendant grants retain existing permissions,
 independent of builder-call order. Overlapping write and execute grants fail
 startup rather than introduce writable executable mounts.
 
+The Linux root is built on a unique, owner-only directory allocated atomically
+under `/tmp`. Its backing directory is removed through the old root after
+`pivot_root`, or after detaching staging mounts if setup fails. Cleanup never
+recursively deletes through filesystem grants.
+
 > **Current limitation:** Linux `tighten` currently supports stacked seccomp
 > denials only. `revoke_path` is reserved in the API but returns
 > `RequiredPrimitiveUnavailable`; implementing an additional Landlock layer
