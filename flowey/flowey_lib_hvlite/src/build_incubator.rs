@@ -3,8 +3,8 @@
 
 //! Build the `incubator` binary
 
-use crate::common::CommonProfile;
 use crate::common::CommonTriple;
+use crate::run_cargo_build::BuildProfile;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
@@ -20,7 +20,7 @@ impl Artifact for IncubatorOutput {}
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
-        pub profile: CommonProfile,
+        pub profile: BuildProfile,
         pub incubator: WriteVar<IncubatorOutput>,
     }
 }
@@ -45,7 +45,7 @@ impl SimpleFlowNode for Node {
             crate_name: "incubator".into(),
             out_name: "incubator".into(),
             crate_type: flowey_lib_common::run_cargo_build::CargoCrateType::Bin,
-            profile: profile.into(),
+            profile,
             features: Default::default(),
             target: target.as_triple(),
             no_split_dbg_info: false,
