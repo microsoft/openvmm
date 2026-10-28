@@ -91,7 +91,7 @@ impl VirtioFsFile {
         plus: bool,
         mut lookup: impl FnMut(&lx::LxStr) -> lx::Result<fuse_entry_out>,
     ) -> lx::Result<Vec<u8>> {
-        let mut buffer = crate::guest_buffer_with_capacity(size)?;
+        let mut buffer = crate::dir_buffer(size)?;
         let mut file = self.file.write();
         let check_sandbox = !plus && self.inode.volume.is_sandbox();
         let check_children = check_sandbox && !self.inode.volume.supports_stable_file_id();
