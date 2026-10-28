@@ -3305,7 +3305,7 @@ impl InitializedVm {
         let mut pci_device_number = 10;
         let mut virtio_mmio_index = 0;
         let mut microvm_virtio_slots =
-            microvm::VirtioMmioSlots::new(&cfg.microvm.sandbox_blocks, chipset_mmio);
+            microvm::VirtioMmioSlots::new(&cfg.microvm.sandbox_blocks, chipset_mmio, &mem_layout);
 
         // Avoid an ISA interrupt to avoid conflicts and to avoid needing to
         // configure the line as level-triggered in the MADT (necessary for

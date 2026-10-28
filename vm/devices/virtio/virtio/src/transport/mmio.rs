@@ -174,6 +174,20 @@ impl VirtioMmioDevice {
         })
     }
 
+    /// Restricts the DMA of the device to `ranges` of guest memory.
+    ///
+    /// The device refuses a queue whose rings, or a descriptor whose buffer,
+    /// does not lie wholly inside the ranges: it reads and writes none of it,
+    /// and the transport marks it as needing reset. The shared
+    /// interrupt-status word, which the transport updates, need not lie inside
+    /// the ranges. Call this before the guest starts the device.
+    pub fn restrict_dma(
+        &mut self,
+        ranges: impl IntoIterator<Item = std::ops::Range<u64>>,
+    ) -> Result<(), guestmem::RestrictError> {
+        self.core.restrict_dma(ranges)
+    }
+
     /// Synchronous transport register read for tests.
     #[cfg(test)]
     pub(crate) fn read_u32(&mut self, address: u64) -> u32 {

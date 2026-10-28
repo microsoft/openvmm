@@ -83,7 +83,7 @@ const VIRTIO_ACKNOWLEDGE: u32 = 1;
 const VIRTIO_DRIVER: u32 = 2;
 const VIRTIO_DRIVER_OK: u32 = 4;
 const VIRTIO_FEATURES_OK: u32 = 8;
-const _VIRTIO_DEVICE_NEEDS_RESET: u32 = 0x40;
+const VIRTIO_DEVICE_NEEDS_RESET: u32 = 0x40;
 const _VIRTIO_FAILED: u32 = 0x80;
 
 async fn must_recv_in_timeout<T: 'static + Send>(
