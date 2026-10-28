@@ -6,10 +6,92 @@
 use super::EcdsaCurve;
 use super::EcdsaError;
 use super::EcdsaPublicKeyComponents;
-use super::EcdsaSignature;
+use super::EcdsaSignatureComponents;
 
 fn err(err: openssl::error::ErrorStack, op: &'static str) -> EcdsaError {
     EcdsaError(crate::BackendError(err, op))
+}
+
+pub struct EcdsaSignatureInner {
+    sig: openssl::ecdsa::EcdsaSig,
+    curve: EcdsaCurve,
+}
+
+impl EcdsaSignatureInner {
+    pub fn from_der(curve: EcdsaCurve, der: &[u8]) -> Result<Self, EcdsaError> {
+        let sig = openssl::ecdsa::EcdsaSig::from_der(der)
+            .map_err(|e| err(e, "parsing the DER-encoded ECDSA signature"))?;
+        // OpenSSL validated the header and length, so these accesses are in bounds.
+        let mut header_len = 2;
+        let mut content_len = usize::from(der[1]);
+        if content_len & 0x80 != 0 {
+            header_len += content_len & 0x7f;
+            content_len = der[2..header_len]
+                .iter()
+                .fold(0, |len, &byte| (len << 8) | usize::from(byte));
+        }
+        if content_len != der.len() - header_len {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking for trailing ECDSA signature data",
+            ));
+        }
+        if sig.r().is_negative() || sig.s().is_negative() {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking the ECDSA signature's unsigned DER encoding",
+            ));
+        }
+        if sig.r().num_bytes() as usize > curve.key_size()
+            || sig.s().num_bytes() as usize > curve.key_size()
+        {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking the ECDSA signature component sizes",
+            ));
+        }
+        Ok(Self { sig, curve })
+    }
+
+    pub fn from_components(
+        curve: EcdsaCurve,
+        components: &EcdsaSignatureComponents,
+    ) -> Result<Self, EcdsaError> {
+        if components.r.len() != curve.key_size() || components.s.len() != curve.key_size() {
+            return Err(err(
+                openssl::error::ErrorStack::get(),
+                "checking the ECDSA signature component lengths",
+            ));
+        }
+        let r = openssl::bn::BigNum::from_slice(&components.r)
+            .map_err(|e| err(e, "parsing the signature r component"))?;
+        let s = openssl::bn::BigNum::from_slice(&components.s)
+            .map_err(|e| err(e, "parsing the signature s component"))?;
+        let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
+            .map_err(|e| err(e, "constructing the ECDSA signature"))?;
+        Ok(Self { sig, curve })
+    }
+
+    pub fn to_components(&self) -> Result<EcdsaSignatureComponents, EcdsaError> {
+        let key_size = self.curve.key_size();
+        let r = self
+            .sig
+            .r()
+            .to_vec_padded(key_size as i32)
+            .map_err(|e| err(e, "encoding the signature r component"))?;
+        let s = self
+            .sig
+            .s()
+            .to_vec_padded(key_size as i32)
+            .map_err(|e| err(e, "encoding the signature s component"))?;
+        Ok(EcdsaSignatureComponents { r, s })
+    }
+
+    pub fn to_der(&self) -> Result<Vec<u8>, EcdsaError> {
+        self.sig
+            .to_der()
+            .map_err(|e| err(e, "encoding the ECDSA signature as DER"))
+    }
 }
 
 #[repr(C)] // Needed for the transmute in as_pub.
@@ -32,7 +114,7 @@ impl EcdsaKeyPairInner {
         Ok(Self { pkey, curve })
     }
 
-    pub fn sign_prehash(&self, hash: &[u8]) -> Result<EcdsaSignature, EcdsaError> {
+    pub fn sign_prehash(&self, hash: &[u8]) -> Result<EcdsaSignatureInner, EcdsaError> {
         let ec_key = self
             .pkey
             .ec_key()
@@ -40,17 +122,10 @@ impl EcdsaKeyPairInner {
         let sig = openssl::ecdsa::EcdsaSig::sign(hash, &ec_key)
             .map_err(|e| err(e, "computing the ECDSA signature"))?;
 
-        let key_size = self.curve.key_size();
-        let r = sig
-            .r()
-            .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "encoding the signature r component"))?;
-        let s = sig
-            .s()
-            .to_vec_padded(key_size as i32)
-            .map_err(|e| err(e, "encoding the signature s component"))?;
-
-        Ok(EcdsaSignature { r, s })
+        Ok(EcdsaSignatureInner {
+            sig,
+            curve: self.curve,
+        })
     }
 
     pub(crate) fn as_pub(&self) -> &EcdsaPublicKeyInner {
@@ -105,6 +180,12 @@ impl EcdsaPublicKeyInner {
         Self::from_pkey(pkey)
     }
 
+    pub fn to_public_key_der(&self) -> Result<Vec<u8>, EcdsaError> {
+        self.pkey
+            .public_key_to_der()
+            .map_err(|e| err(e, "encoding the SubjectPublicKeyInfo"))
+    }
+
     /// Wrap an already-parsed OpenSSL public key as an ECDSA public key,
     /// determining the curve from the key and validating it. Fails if the key
     /// is not an EC key on a supported curve.
@@ -134,10 +215,9 @@ impl EcdsaPublicKeyInner {
     pub fn verify_prehash(
         &self,
         hash: &[u8],
-        signature: &EcdsaSignature,
+        signature: &EcdsaSignatureInner,
     ) -> Result<bool, EcdsaError> {
-        let key_size = self.curve.key_size();
-        if signature.r.len() != key_size || signature.s.len() != key_size {
+        if signature.curve != self.curve {
             return Ok(false);
         }
 
@@ -146,14 +226,9 @@ impl EcdsaPublicKeyInner {
             .ec_key()
             .map_err(|e| err(e, "extracting the EC key from the PKey"))?;
 
-        let r = openssl::bn::BigNum::from_slice(&signature.r)
-            .map_err(|e| err(e, "parsing the signature r component"))?;
-        let s = openssl::bn::BigNum::from_slice(&signature.s)
-            .map_err(|e| err(e, "parsing the signature s component"))?;
-        let sig = openssl::ecdsa::EcdsaSig::from_private_components(r, s)
-            .map_err(|e| err(e, "constructing the ECDSA signature"))?;
-
-        sig.verify(hash, &ec_key)
+        signature
+            .sig
+            .verify(hash, &ec_key)
             .map_err(|e| err(e, "verifying the ECDSA signature"))
     }
 

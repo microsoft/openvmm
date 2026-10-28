@@ -31,7 +31,7 @@ impl X509CertificateInner {
             )))
         } else if pkey.ec_key().is_ok() {
             let inner = crate::ecdsa::ossl::EcdsaPublicKeyInner::from_pkey(pkey)
-                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+                .map_err(|e| X509Error(e.0))?;
             Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
         } else {
             Err(err(

@@ -233,6 +233,43 @@ mod tests {
         assert!(cert.issued(&cert).unwrap());
         let reparsed = X509Certificate::from_der(&cert.to_der().unwrap()).unwrap();
         assert!(reparsed.verify(&public_key).unwrap());
+        let public_key = reparsed.public_key().unwrap().ecdsa().unwrap();
+        assert_eq!(
+            public_key.to_public_key_der().unwrap(),
+            key.to_public_key_der().unwrap()
+        );
+    }
+
+    #[cfg(any(symcrypt, all(native, windows)))]
+    #[test]
+    fn ecdsa_cert_propagates_signature_decoding_errors() {
+        use der::Decode;
+        use der::Encode;
+
+        #[derive(der::Sequence)]
+        struct EncodedCertificate<'a> {
+            tbs_certificate: der::AnyRef<'a>,
+            signature_algorithm: der::AnyRef<'a>,
+            signature: der::asn1::BitStringRef<'a>,
+        }
+
+        let key = crate::ecdsa::EcdsaKeyPair::generate(crate::ecdsa::EcdsaCurve::P384).unwrap();
+        let cert = build_test_cert(&key);
+        let public_key = cert.public_key().unwrap();
+        let encoded = cert.to_der().unwrap();
+        let mut cert = EncodedCertificate::from_der(&encoded).unwrap();
+
+        let mut oversized = vec![0x30, 54, 2, 49];
+        oversized.extend_from_slice(&[1; 49]);
+        oversized.extend_from_slice(&[2, 1, 1]);
+        for signature in [&[0x30, 0][..], oversized.as_slice()] {
+            cert.signature = der::asn1::BitStringRef::from_bytes(signature).unwrap();
+            let cert = X509Certificate::from_der(&cert.to_der().unwrap()).unwrap();
+            assert!(matches!(
+                cert.verify(&public_key),
+                Err(X509VerifyError::Ecdsa(_))
+            ));
+        }
     }
 
     #[cfg(any(openssl, symcrypt, all(native, windows)))]

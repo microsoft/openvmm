@@ -16,7 +16,7 @@ pub(crate) mod win;
 use win as sys;
 
 #[cfg(symcrypt)]
-mod symcrypt;
+pub(crate) mod symcrypt;
 #[cfg(symcrypt)]
 use symcrypt as sys;
 
@@ -24,7 +24,7 @@ use crate::HashAlgorithm;
 use thiserror::Error;
 
 /// An error for ECDSA operations.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 #[error("ECDSA operation failed")]
 pub struct EcdsaError(#[source] pub(crate) super::BackendError);
 
@@ -44,16 +44,53 @@ impl EcdsaCurve {
     }
 }
 
-/// An ECDSA signature with separate unsigned big-endian scalar components.
+/// An ECDSA signature.
+pub struct EcdsaSignature(sys::EcdsaSignatureInner);
+
+/// The unsigned big-endian scalar components of an ECDSA signature.
 ///
 /// Each component must be exactly [`EcdsaCurve::key_size`] bytes, including
 /// leading zero padding.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EcdsaSignature {
+pub struct EcdsaSignatureComponents {
     /// The signature's `r` component.
     pub r: Vec<u8>,
     /// The signature's `s` component.
     pub s: Vec<u8>,
+}
+
+impl EcdsaSignature {
+    /// Decode a DER-encoded ECDSA signature (`SEQUENCE { INTEGER r, INTEGER s }`).
+    ///
+    /// Malformed encodings, trailing data, negative integers, and components
+    /// that do not fit the curve's key size are rejected.
+    /// Scalar range and signature validity are checked by [`EcdsaPublicKey::verify`].
+    pub fn from_der(curve: EcdsaCurve, der: &[u8]) -> Result<Self, EcdsaError> {
+        sys::EcdsaSignatureInner::from_der(curve, der).map(Self)
+    }
+
+    /// Import unsigned big-endian scalar components, each exactly
+    /// [`EcdsaCurve::key_size`] bytes. Scalar ranges are not checked.
+    pub fn from_components(
+        curve: EcdsaCurve,
+        components: &EcdsaSignatureComponents,
+    ) -> Result<Self, EcdsaError> {
+        sys::EcdsaSignatureInner::from_components(curve, components).map(Self)
+    }
+
+    /// Export unsigned big-endian `r` and `s` components, each padded to
+    /// [`EcdsaCurve::key_size`] bytes.
+    pub fn to_components(&self) -> Result<EcdsaSignatureComponents, EcdsaError> {
+        self.0.to_components()
+    }
+
+    /// Encode as a DER `SEQUENCE { INTEGER r, INTEGER s }`.
+    ///
+    /// Leading zero padding is removed and sign padding is added as needed.
+    /// Scalar ranges are not checked.
+    pub fn to_der(&self) -> Result<Vec<u8>, EcdsaError> {
+        self.0.to_der()
+    }
 }
 
 /// An ECDSA private key (key pair).
@@ -67,15 +104,14 @@ impl EcdsaKeyPair {
     }
 
     /// Hash `data` with `hash_algorithm` and sign the resulting digest.
-    /// Returns the signature with separate big-endian `r` and `s` components,
-    /// each padded to `curve.key_size()` bytes.
+    /// Export the signature's scalar components with [`EcdsaSignature::to_components`].
     pub fn sign(
         &self,
         data: &[u8],
         hash_algorithm: HashAlgorithm,
     ) -> Result<EcdsaSignature, EcdsaError> {
         let hash = hash_algorithm.hash(data);
-        self.0.sign_prehash(&hash)
+        self.0.sign_prehash(&hash).map(EcdsaSignature)
     }
 }
 
@@ -148,11 +184,15 @@ impl EcdsaPublicKey {
         sys::EcdsaPublicKeyInner::from_public_key_der(spki_der).map(Self)
     }
 
+    /// Export the public key as a DER-encoded `SubjectPublicKeyInfo`,
+    /// including its named curve (the `PUBLIC KEY` PEM type).
+    pub fn to_public_key_der(&self) -> Result<Vec<u8>, EcdsaError> {
+        self.0.to_public_key_der()
+    }
+
     /// Hash `message` with `hash_algorithm` and verify `signature` against this
-    /// public key. Each signature component must be `curve.key_size()` bytes
-    /// (i.e. the format produced by [`EcdsaKeyPair::sign`]). Returns `Ok(true)`
-    /// if the signature is valid, `Ok(false)` if it is invalid (including
-    /// incorrectly sized components), or an error for other failures.
+    /// public key. Returns `Ok(true)` if the signature is valid, `Ok(false)`
+    /// if it is invalid, or an error for other failures.
     pub fn verify(
         &self,
         message: &[u8],
@@ -160,7 +200,7 @@ impl EcdsaPublicKey {
         hash_algorithm: HashAlgorithm,
     ) -> Result<bool, EcdsaError> {
         let hash = hash_algorithm.hash(message);
-        self.0.verify_prehash(&hash, signature)
+        self.0.verify_prehash(&hash, &signature.0)
     }
 
     /// Export the public key as separate big-endian `Qx` and `Qy` coordinates,
@@ -184,6 +224,149 @@ impl std::ops::Deref for EcdsaKeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signature_from_der_roundtrip() {
+        let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        let message = b"DER signature roundtrip";
+        let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
+        let encoded = signature.to_der().unwrap();
+        let decoded = EcdsaSignature::from_der(EcdsaCurve::P384, &encoded).unwrap();
+        let components = signature.to_components().unwrap();
+        assert_eq!(decoded.to_components().unwrap(), components);
+        let imported = EcdsaSignature::from_components(EcdsaCurve::P384, &components).unwrap();
+        assert_eq!(imported.to_der().unwrap(), encoded);
+        assert_eq!(imported.to_components().unwrap(), components);
+        for signature in [&decoded, &imported] {
+            assert!(
+                key.verify(message, signature, HashAlgorithm::Sha384)
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn signature_from_der_pads_components() {
+        for (encoded, r, s) in [
+            (&[0x30, 6, 2, 1, 1, 2, 1, 2][..], 1, 2),
+            (&[0x30, 8, 2, 2, 0, 0x80, 2, 2, 0, 0xff], 0x80, 0xff),
+            (&[0x30, 6, 2, 1, 0, 2, 1, 0], 0, 0),
+        ] {
+            let signature = EcdsaSignature::from_der(EcdsaCurve::P384, encoded).unwrap();
+            let mut expected = EcdsaSignatureComponents {
+                r: vec![0; EcdsaCurve::P384.key_size()],
+                s: vec![0; EcdsaCurve::P384.key_size()],
+            };
+            *expected.r.last_mut().unwrap() = r;
+            *expected.s.last_mut().unwrap() = s;
+            assert_eq!(signature.to_components().unwrap(), expected);
+            assert_eq!(signature.to_der().unwrap(), encoded);
+            assert_eq!(
+                EcdsaSignature::from_components(EcdsaCurve::P384, &expected)
+                    .unwrap()
+                    .to_der()
+                    .unwrap(),
+                encoded
+            );
+        }
+
+        // Full-width scalars require a DER sign-padding byte when the high bit is set.
+        let mut encoded = vec![0x30, 102, 2, 49, 0];
+        encoded.extend_from_slice(&[0x80; 48]);
+        encoded.extend_from_slice(&[2, 49, 0]);
+        encoded.extend_from_slice(&[0xff; 48]);
+        let signature = EcdsaSignature::from_der(EcdsaCurve::P384, &encoded).unwrap();
+        let components = signature.to_components().unwrap();
+        assert_eq!(components.r, [0x80; 48]);
+        assert_eq!(components.s, [0xff; 48]);
+        assert_eq!(signature.to_der().unwrap(), encoded);
+        assert_eq!(
+            EcdsaSignature::from_components(EcdsaCurve::P384, &components)
+                .unwrap()
+                .to_der()
+                .unwrap(),
+            encoded
+        );
+    }
+
+    #[test]
+    fn signature_from_components_rejects_empty_components() {
+        for (r, s) in [(vec![], vec![1]), (vec![1], vec![]), (vec![], vec![])] {
+            assert!(
+                EcdsaSignature::from_components(
+                    EcdsaCurve::P384,
+                    &EcdsaSignatureComponents { r, s }
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn signature_from_der_rejects_malformed_encodings() {
+        let valid = [0x30, 6, 2, 1, 1, 2, 1, 2];
+        for len in 0..valid.len() {
+            assert!(EcdsaSignature::from_der(EcdsaCurve::P384, &valid[..len]).is_err());
+        }
+        for invalid in [
+            &[0x30, 6, 2, 1, 0x80, 2, 1, 2][..],   // Negative r.
+            &[0x30, 6, 2, 1, 1, 2, 1, 0xff],       // Negative s.
+            &[0x30, 5, 2, 0, 2, 1, 2],             // Empty integer.
+            &[0x30, 6, 4, 1, 1, 2, 1, 2],          // Wrong component tag.
+            &[0x30, 6, 2, 1, 1, 2, 1, 2, 0],       // Trailing data.
+            &[0x30, 9, 2, 1, 1, 2, 1, 2, 2, 1, 3], // Extra component.
+        ] {
+            assert!(
+                EcdsaSignature::from_der(EcdsaCurve::P384, invalid).is_err(),
+                "accepted invalid DER: {invalid:x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signature_from_der_rejects_trailing_data() {
+        let valid = [0x30, 6, 2, 1, 1, 2, 1, 2];
+        for trailing in [&[0][..], &[0xff], &valid] {
+            let mut encoded = valid.to_vec();
+            encoded.extend_from_slice(trailing);
+            assert!(EcdsaSignature::from_der(EcdsaCurve::P384, &encoded).is_err());
+        }
+    }
+
+    #[cfg(openssl)]
+    #[test]
+    fn signature_from_der_accepts_nonminimal_sequence_length() {
+        for length in [&[0x81, 6][..], &[0x82, 0, 6]] {
+            let mut encoded = vec![0x30];
+            encoded.extend_from_slice(length);
+            encoded.extend_from_slice(&[2, 1, 1, 2, 1, 2]);
+            let signature = EcdsaSignature::from_der(EcdsaCurve::P384, &encoded).unwrap();
+            assert_eq!(signature.to_der().unwrap(), [0x30, 6, 2, 1, 1, 2, 1, 2]);
+            for trailing in [&[0][..], &[0xff], &[0x30, 6, 2, 1, 1, 2, 1, 2]] {
+                let mut with_trailing = encoded.clone();
+                with_trailing.extend_from_slice(trailing);
+                assert!(EcdsaSignature::from_der(EcdsaCurve::P384, &with_trailing).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn signature_from_der_rejects_oversized_components() {
+        for oversized_r in [true, false] {
+            let mut encoded = vec![0x30, 54];
+            let oversized = [1; 49];
+            let small = [1];
+            for component in if oversized_r {
+                [&oversized[..], &small[..]]
+            } else {
+                [&small[..], &oversized[..]]
+            } {
+                encoded.extend_from_slice(&[2, component.len() as u8]);
+                encoded.extend_from_slice(component);
+            }
+            assert!(EcdsaSignature::from_der(EcdsaCurve::P384, &encoded).is_err());
+        }
+    }
 
     #[test]
     fn generate_p384_key_pair() {
@@ -228,6 +411,7 @@ mod tests {
     fn sign_p384_produces_correct_size() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let sig = key.sign(b"message to sign", HashAlgorithm::Sha384).unwrap();
+        let sig = sig.to_components().unwrap();
         assert_eq!(sig.r.len(), EcdsaCurve::P384.key_size());
         assert_eq!(sig.s.len(), EcdsaCurve::P384.key_size());
     }
@@ -239,7 +423,7 @@ mod tests {
         let sig2 = key.sign(b"message to sign", HashAlgorithm::Sha384).unwrap();
         // ECDSA uses a random nonce, so two signatures of the same message
         // should differ (with overwhelming probability).
-        assert_ne!(sig1, sig2);
+        assert_ne!(sig1.to_components().unwrap(), sig2.to_components().unwrap());
     }
 
     #[test]
@@ -267,6 +451,7 @@ mod tests {
     fn signature_components_are_valid() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let sig = key.sign(b"data to sign", HashAlgorithm::Sha384).unwrap();
+        let sig = sig.to_components().unwrap();
 
         let r = sig.r.as_slice();
         let s = sig.s.as_slice();
@@ -316,13 +501,15 @@ mod tests {
 
         // A tampered signature does not verify.
         for tamper_r in [true, false] {
-            let mut bad_signature = signature.clone();
+            let mut bad_signature = signature.to_components().unwrap();
             let component = if tamper_r {
                 &mut bad_signature.r
             } else {
                 &mut bad_signature.s
             };
             *component.last_mut().unwrap() ^= 0x01;
+            let bad_signature =
+                EcdsaSignature::from_components(EcdsaCurve::P384, &bad_signature).unwrap();
             assert!(
                 !public_key
                     .verify(message, &bad_signature, HashAlgorithm::Sha384)
@@ -332,10 +519,11 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_wrong_component_lengths() {
+    fn signature_from_components_rejects_wrong_lengths() {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let message = b"component length test";
         let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
+        let signature = signature.to_components().unwrap();
         let size = EcdsaCurve::P384.key_size();
 
         for (r_len, s_len) in [
@@ -352,8 +540,7 @@ mod tests {
             invalid.r.resize(r_len, 0);
             invalid.s.resize(s_len, 0);
             assert!(
-                !key.verify(message, &invalid, HashAlgorithm::Sha384)
-                    .unwrap(),
+                EcdsaSignature::from_components(EcdsaCurve::P384, &invalid).is_err(),
                 "accepted component lengths r={r_len}, s={s_len}"
             );
         }
@@ -366,19 +553,13 @@ mod tests {
             } else {
                 invalid.s.insert(0, 0);
             }
-            assert!(
-                !key.verify(message, &invalid, HashAlgorithm::Sha384)
-                    .unwrap()
-            );
+            assert!(EcdsaSignature::from_components(EcdsaCurve::P384, &invalid).is_err());
         }
 
         // Moving the boundary preserves r || s, but not the component widths.
         let mut invalid = signature;
         invalid.s.insert(0, invalid.r.pop().unwrap());
-        assert!(
-            !key.verify(message, &invalid, HashAlgorithm::Sha384)
-                .unwrap()
-        );
+        assert!(EcdsaSignature::from_components(EcdsaCurve::P384, &invalid).is_err());
     }
 
     #[test]
@@ -386,6 +567,7 @@ mod tests {
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
         let message = b"component range test";
         let signature = key.sign(message, HashAlgorithm::Sha384).unwrap();
+        let signature = signature.to_components().unwrap();
 
         for value in [0, 0xff] {
             for invalid_r in [true, false] {
@@ -395,6 +577,7 @@ mod tests {
                 } else {
                     invalid.s.fill(value);
                 }
+                let invalid = EcdsaSignature::from_components(EcdsaCurve::P384, &invalid).unwrap();
                 assert!(
                     !key.verify(message, &invalid, HashAlgorithm::Sha384)
                         .unwrap()
@@ -510,8 +693,10 @@ mod tests {
             subject_public_key: der::asn1::BitString::from_bytes(&point).unwrap(),
         };
         let spki_der = spki.to_der().unwrap();
+        assert_eq!(key.to_public_key_der().unwrap(), spki_der);
 
         let public_key = EcdsaPublicKey::from_public_key_der(&spki_der).unwrap();
+        assert_eq!(public_key.to_public_key_der().unwrap(), spki_der);
         assert_eq!(public_key.public_key_bytes().unwrap(), pk);
         assert!(
             public_key
@@ -538,5 +723,9 @@ mod tests {
             invalid_spki.algorithm.parameters = parameters;
             assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
         }
+
+        invalid_spki.algorithm.parameters = Some(der::oid::db::rfc5912::SECP_384_R_1);
+        invalid_spki.algorithm.oid = pkcs1::ALGORITHM_OID;
+        assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
     }
 }

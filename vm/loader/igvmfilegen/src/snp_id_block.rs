@@ -27,7 +27,7 @@
 //! valid. Its presence signals the IGVM loader to set `id_block_en = 1`.
 
 use anyhow::Context;
-use der::Decode;
+use crypto::sha_384::SHA_384_OUTPUT_SIZE_BYTES;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmInitializationHeader;
@@ -53,10 +53,8 @@ pub const SNP_FAMILY_ID: [u8; 16] = [
 /// SNP image identifier for OpenHCL guests.
 pub const SNP_IMAGE_ID: [u8; 16] = *b"openhcl\0\0\0\0\0\0\0\0\0";
 
-const SHA_384_OUTPUT_SIZE_BYTES: usize = 48;
 const SNP_ID_KEY_ALGORITHM_ECDSA_P384_SHA384: u32 = 1;
 const SNP_ECDSA_CURVE_P384: u32 = 2;
-const SNP_ECC_KEY_SIZE_BYTES: usize = 48;
 const SNP_ECC_COMPONENT_SIZE_BYTES: usize = 72;
 
 /// Identity fields included in an SNP ID block.
@@ -303,35 +301,6 @@ fn parse_signing_payload(bytes: &[u8]) -> anyhow::Result<SnpPspIdBlock> {
     Ok(id_block)
 }
 
-/// Left-pad a big-endian ECC scalar/coordinate to 48 bytes.
-fn left_pad_be(field: &str, be: &[u8]) -> anyhow::Result<[u8; SNP_ECC_KEY_SIZE_BYTES]> {
-    anyhow::ensure!(
-        be.len() <= SNP_ECC_KEY_SIZE_BYTES,
-        "{field} is {} bytes, exceeds {SNP_ECC_KEY_SIZE_BYTES}",
-        be.len()
-    );
-    let mut out = [0u8; SNP_ECC_KEY_SIZE_BYTES];
-    out[SNP_ECC_KEY_SIZE_BYTES - be.len()..].copy_from_slice(be);
-    Ok(out)
-}
-
-/// Parse a DER-encoded ECDSA signature (`SEQUENCE { INTEGER r, INTEGER s }`)
-/// into its big-endian 48-byte P-384 `(r, s)` components.
-fn parse_der_ecdsa_p384(
-    der_sig: &[u8],
-) -> anyhow::Result<([u8; SNP_ECC_KEY_SIZE_BYTES], [u8; SNP_ECC_KEY_SIZE_BYTES])> {
-    #[derive(der::Sequence)]
-    struct EcdsaSigDer<'a> {
-        r: der::asn1::UintRef<'a>,
-        s: der::asn1::UintRef<'a>,
-    }
-    let sig = EcdsaSigDer::from_der(der_sig).context("parsing DER-encoded ECDSA signature")?;
-    Ok((
-        left_pad_be("signature r", sig.r.as_bytes())?,
-        left_pad_be("signature s", sig.s.as_bytes())?,
-    ))
-}
-
 /// Extract the signer's ECDSA P-384 public key from a supplied public key.
 ///
 /// Accepts an X.509 certificate or a bare `SubjectPublicKeyInfo`, in PEM or
@@ -391,13 +360,10 @@ fn signature_and_verify(
     IGVM_VHS_SNP_ID_BLOCK_SIGNATURE,
     IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY,
 )> {
-    let (r, s) = parse_der_ecdsa_p384(signature_der)?;
+    let sig =
+        crypto::ecdsa::EcdsaSignature::from_der(crypto::ecdsa::EcdsaCurve::P384, signature_der)
+            .context("parsing DER-encoded ECDSA signature")?;
     let public_key = parse_p384_public_key(public_key_pem)?;
-
-    let sig = crypto::ecdsa::EcdsaSignature {
-        r: r.to_vec(),
-        s: s.to_vec(),
-    };
 
     // Verify the signature over the SHA-384 of the signed content.
     let valid = public_key
@@ -414,11 +380,14 @@ fn signature_and_verify(
     let coordinates = public_key
         .public_key_bytes()
         .context("exporting SNP ID block public key")?;
+    let signature = sig
+        .to_components()
+        .context("exporting SNP ID block signature")?;
 
     Ok((
         IGVM_VHS_SNP_ID_BLOCK_SIGNATURE {
-            r_comp: padded_le_component(&r),
-            s_comp: padded_le_component(&s),
+            r_comp: padded_le_component(&signature.r),
+            s_comp: padded_le_component(&signature.s),
         },
         IGVM_VHS_SNP_ID_BLOCK_PUBLIC_KEY {
             curve: SNP_ECDSA_CURVE_P384,
@@ -501,10 +470,12 @@ fn sign_id_block_with_temp_key(
     tracing::info!("Using Temporary Signing Key");
 
     // Sign the ID block bytes; `EcdsaKeyPair::sign` hashes them with SHA-384
-    // internally. Returns big-endian r and s, each 48 bytes for P-384.
+    // internally. Export big-endian r and s, each 48 bytes for P-384.
     let signature = key
         .sign(id_block.as_bytes(), crypto::HashAlgorithm::Sha384)
-        .context("signing SNP ID block")?;
+        .context("signing SNP ID block")?
+        .to_components()
+        .context("exporting temporary SNP signature")?;
 
     let id_key_signature = IGVM_VHS_SNP_ID_BLOCK_SIGNATURE {
         r_comp: padded_le_component(&signature.r),
@@ -534,6 +505,7 @@ fn sign_id_block_with_temp_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use der::Decode;
     use igvm::IgvmPlatformHeader;
     use igvm::IgvmRevision;
     use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
@@ -591,50 +563,10 @@ mod tests {
         let signature = key
             .sign(signing_payload, crypto::HashAlgorithm::Sha384)
             .unwrap();
-        (ecdsa_to_der(&signature), spki_der(&key))
-    }
-
-    /// DER-encode `key`'s public key as a `SubjectPublicKeyInfo` (the bare
-    /// `PUBLIC KEY` form).
-    fn spki_der(key: &crypto::ecdsa::EcdsaKeyPair) -> Vec<u8> {
-        use der::Encode;
-
-        let spki = x509_cert::spki::SubjectPublicKeyInfo {
-            algorithm: x509_cert::spki::AlgorithmIdentifier {
-                oid: der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.2.1"),
-                parameters: Some(der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.34")),
-            },
-            subject_public_key: der::asn1::BitString::from_bytes(
-                &key.public_key_bytes().unwrap().to_uncompressed_point(),
-            )
-            .unwrap(),
-        };
-        spki.to_der().unwrap()
-    }
-
-    /// DER-encode an ECDSA signature as a `SEQUENCE { r INTEGER, s INTEGER }` -- the form emitted
-    /// by e.g. `openssl dgst -sha384 -sign`.
-    fn ecdsa_to_der(signature: &crypto::ecdsa::EcdsaSignature) -> Vec<u8> {
-        use der::Encode;
-
-        fn strip_lz(b: &[u8]) -> &[u8] {
-            let mut i = 0;
-            while i + 1 < b.len() && b[i] == 0 {
-                i += 1;
-            }
-            &b[i..]
-        }
-        #[derive(der::Sequence)]
-        struct EcdsaSigDer<'a> {
-            r: der::asn1::UintRef<'a>,
-            s: der::asn1::UintRef<'a>,
-        }
-        EcdsaSigDer {
-            r: der::asn1::UintRef::new(strip_lz(&signature.r)).unwrap(),
-            s: der::asn1::UintRef::new(strip_lz(&signature.s)).unwrap(),
-        }
-        .to_der()
-        .unwrap()
+        (
+            signature.to_der().unwrap(),
+            key.to_public_key_der().unwrap(),
+        )
     }
 
     /// Pin the SNP ID block identity constants to their exact byte values.
@@ -675,8 +607,9 @@ mod tests {
         assert_eq!(pubkey.qy.len(), SNP_ECC_COMPONENT_SIZE_BYTES);
         // The top (most-significant) bytes beyond the 48-byte component must
         // be zero padding.
-        assert!(sig.r_comp[SNP_ECC_KEY_SIZE_BYTES..].iter().all(|&b| b == 0));
-        assert!(pubkey.qx[SNP_ECC_KEY_SIZE_BYTES..].iter().all(|&b| b == 0));
+        let key_size = crypto::ecdsa::EcdsaCurve::P384.key_size();
+        assert!(sig.r_comp[key_size..].iter().all(|&b| b == 0));
+        assert!(pubkey.qx[key_size..].iter().all(|&b| b == 0));
     }
 
     /// End-to-end: adding an ID block yields a valid file with exactly one
@@ -912,10 +845,11 @@ mod tests {
         // Sign the payload and wrap the signer's public key in a self-signed
         // P-384 certificate, using the same key for both.
         let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
-        let sig_der = ecdsa_to_der(
-            &key.sign(&signing_payload, crypto::HashAlgorithm::Sha384)
-                .unwrap(),
-        );
+        let sig_der = key
+            .sign(&signing_payload, crypto::HashAlgorithm::Sha384)
+            .unwrap()
+            .to_der()
+            .unwrap();
         let cert_der = X509Certificate::build_self_signed(
             X509KeyPair::Ecdsa(&key),
             "US",

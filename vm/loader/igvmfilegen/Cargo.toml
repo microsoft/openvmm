@@ -25,7 +25,7 @@ bitfield-struct.workspace = true
 clap = { workspace = true, features = ["derive"] }
 corim.workspace = true
 crypto = { workspace = true, features = ["native", "vendored"] }
-der = { workspace = true, features = ["derive", "pem", "alloc"] }
+der = { workspace = true, features = ["pem", "alloc"] }
 fs-err.workspace = true
 hex = { workspace = true, features = ["serde"] }
 igvm = { workspace = true, features = ["corim"] }
@@ -41,7 +41,6 @@ zerocopy.workspace = true
 [dev-dependencies]
 crypto = { workspace = true, features = ["test_helpers"] }
 test_with_tracing.workspace = true
-x509-cert.workspace = true
 
 [lints]
 workspace = true

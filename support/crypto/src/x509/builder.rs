@@ -71,16 +71,7 @@ pub(super) fn self_signed_builder(
             }
         }
         #[cfg(symcrypt)]
-        super::X509KeyPair::Ecdsa(key) => {
-            let point = key.public_key_bytes()?.to_uncompressed_point();
-            x509_cert::spki::SubjectPublicKeyInfoOwned {
-                algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
-                    parameters: Some(der::oid::db::rfc5912::SECP_384_R_1.into()),
-                },
-                subject_public_key: der::asn1::BitString::from_bytes(&point)?,
-            }
-        }
+        super::X509KeyPair::Ecdsa(key) => key.0.as_pub().to_public_key_info()?,
     };
     let public_key_der = spki.to_der()?;
 
@@ -101,8 +92,6 @@ pub(super) fn self_signed_builder(
 #[cfg(any(all(native, target_os = "macos"), symcrypt))]
 pub(super) mod keypair_signer {
     use der::Decode;
-    #[cfg(symcrypt)]
-    use der::Encode;
 
     pub struct KeyPairSigner<'a> {
         pub key: super::super::X509KeyPair<'a>,
@@ -148,17 +137,10 @@ pub(super) mod keypair_signer {
                     .map_err(signature::Error::from_source)?,
                 #[cfg(symcrypt)]
                 super::super::X509KeyPair::Ecdsa(key) => {
-                    use der::asn1::UintRef;
-
                     let signature = key
                         .sign(msg, crate::HashAlgorithm::Sha384)
                         .map_err(signature::Error::from_source)?;
-                    [
-                        UintRef::new(&signature.r).map_err(signature::Error::from_source)?,
-                        UintRef::new(&signature.s).map_err(signature::Error::from_source)?,
-                    ]
-                    .to_der()
-                    .map_err(signature::Error::from_source)?
+                    signature.to_der().map_err(signature::Error::from_source)?
                 }
             };
             Ok(KeyPairSignature(bytes))
