@@ -2504,9 +2504,7 @@ async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Opt
                 )
             })?;
     let provision = match provision_condition {
-        vmservice::vmgs_config::ProvisionCondition::Unspecified => {
-            bail!("missing VMGS provision condition")
-        }
+        vmservice::vmgs_config::ProvisionCondition::Unspecified => ProvisionCondition::OnEmpty,
         vmservice::vmgs_config::ProvisionCondition::OnEmpty => ProvisionCondition::OnEmpty,
         vmservice::vmgs_config::ProvisionCondition::OnFailure => ProvisionCondition::OnFailure,
         vmservice::vmgs_config::ProvisionCondition::Single => ProvisionCondition::Single,
