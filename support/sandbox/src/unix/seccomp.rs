@@ -14,6 +14,12 @@ use std::io;
 
 // ---- Local constants (not exposed by `libc`) ----
 
+/// AArch64 syscall number from Linux `asm-generic/unistd.h`, missing in musl bindings.
+#[cfg(all(target_arch = "aarch64", target_env = "musl"))]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = 294;
+#[cfg(not(all(target_arch = "aarch64", target_env = "musl")))]
+const SYS_KEXEC_FILE_LOAD: libc::c_long = libc::SYS_kexec_file_load;
+
 /// `TIOCLINUX` ioctl request code. See `include/uapi/linux/tiocl.h`.
 const TIOCLINUX: u64 = 0x541C;
 
@@ -289,7 +295,7 @@ pub fn nr_for_name(name: &str) -> Option<i64> {
         "iopl" => libc::SYS_iopl,
         "ioprio_set" => libc::SYS_ioprio_set,
         "kcmp" => libc::SYS_kcmp,
-        "kexec_file_load" => libc::SYS_kexec_file_load,
+        "kexec_file_load" => SYS_KEXEC_FILE_LOAD,
         "kexec_load" => libc::SYS_kexec_load,
         "keyctl" => libc::SYS_keyctl,
         "mbind" => libc::SYS_mbind,
