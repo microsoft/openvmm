@@ -66,6 +66,10 @@ struct NotMapped;
 #[error("page inaccessible in bitmap")]
 struct BitmapFailure;
 
+#[derive(Debug, Error)]
+#[error("address outside the ranges that this view admits")]
+struct NotAdmitted;
+
 /// A trait for a guest memory backing that is fully available via a virtual
 /// address mapping, as opposed to the fallback functions such as
 /// [`GuestMemoryAccess::read_fallback`].
@@ -906,6 +910,142 @@ fn create_memory_subrange(
     ))
 }
 
+/// A hook that a [restricted](GuestMemory::restrict) view calls with the
+/// address and length of each access that it refuses.
+pub type RefusalHook = Arc<dyn Fn(u64, u64) + Send + Sync>;
+
+/// An error returned by [`GuestMemory::restrict`].
+#[derive(Debug, Error)]
+pub enum RestrictError {
+    /// A range does not begin and end on page boundaries.
+    #[error("range {0:#x?} does not begin and end on page boundaries")]
+    Unaligned(Range<u64>),
+    /// The memory is already a restricted view.
+    #[error("the memory is already a restricted view")]
+    AlreadyRestricted,
+}
+
+/// The ranges that a restricted view admits.
+struct Restriction {
+    /// Sorted, disjoint, nonadjacent, nonempty, page-aligned ranges.
+    ranges: Box<[Range<u64>]>,
+    on_refused: Option<RefusalHook>,
+}
+
+impl Restriction {
+    fn admits(&self, gpa: u64, len: u64) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let Some(end) = gpa.checked_add(len) else {
+            return false;
+        };
+        // Only the last range that begins at or below `gpa` can hold the
+        // access.
+        let i = self.ranges.partition_point(|range| range.start <= gpa);
+        i > 0 && end <= self.ranges[i - 1].end
+    }
+
+    fn check(&self, gpa: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
+        if self.admits(gpa, len) {
+            return Ok(());
+        }
+        if let Some(on_refused) = &self.on_refused {
+            on_refused(gpa, len);
+        }
+        Err(GuestMemoryBackingError::new(
+            GuestMemoryErrorKind::OutOfRange,
+            gpa,
+            NotAdmitted,
+        ))
+    }
+}
+
+/// The backing of a restricted view, which is the backing of the memory that
+/// it restricts.
+///
+/// The view shares that memory's regions, and so its mappings, and keeps the
+/// memory alive. [`GuestMemoryInner::region`] applies the restriction before
+/// an access reaches a mapping or this backing.
+struct RestrictedAccess {
+    base: Arc<GuestMemoryInner>,
+}
+
+impl DynGuestMemoryAccess for RestrictedAccess {
+    fn subrange(
+        &self,
+        _offset: u64,
+        _len: u64,
+        _allow_preemptive_locking: bool,
+    ) -> Result<Option<GuestMemory>, GuestMemoryBackingError> {
+        // The default subrange applies the restriction, which a subrange of
+        // the base memory would bypass.
+        Ok(None)
+    }
+
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction {
+        self.base
+            .imp
+            .page_fault(address, len, write, bitmap_failure)
+    }
+
+    unsafe fn read_fallback(
+        &self,
+        addr: u64,
+        dest: *mut u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        // SAFETY: guaranteed by caller.
+        unsafe { self.base.imp.read_fallback(addr, dest, len) }
+    }
+
+    unsafe fn write_fallback(
+        &self,
+        addr: u64,
+        src: *const u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        // SAFETY: guaranteed by caller.
+        unsafe { self.base.imp.write_fallback(addr, src, len) }
+    }
+
+    fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError> {
+        self.base.imp.fill_fallback(addr, val, len)
+    }
+
+    fn compare_exchange_fallback(
+        &self,
+        addr: u64,
+        current: &mut [u8],
+        new: &[u8],
+    ) -> Result<bool, GuestMemoryBackingError> {
+        self.base.imp.compare_exchange_fallback(addr, current, new)
+    }
+
+    fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
+        self.base.imp.expose_va(address, len)
+    }
+
+    fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+        self.base.imp.lock_gpns(gpns)
+    }
+
+    fn unlock_gpns(&self, gpns: &[u64]) {
+        self.base.imp.unlock_gpns(gpns)
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        // Sharing would expose all of the base memory.
+        None
+    }
+}
+
 struct MultiRegionGuestMemoryAccess<T> {
     imps: Vec<Option<T>>,
     region_def: RegionDefinition,
@@ -1040,6 +1180,8 @@ struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     /// Cached result of [`GuestMemoryAccess::supports_locking`], since it is
     /// queried on hot zero-copy paths and never changes for a given backing.
     supports_locking: bool,
+    /// The ranges that a [restricted](GuestMemory::restrict) view admits.
+    restriction: Option<Restriction>,
     imp: T,
 }
 
@@ -1048,6 +1190,13 @@ impl<T: ?Sized> Debug for GuestMemoryInner<T> {
         f.debug_struct("GuestMemoryInner")
             .field("region_def", &self.region_def)
             .field("regions", &self.regions)
+            .field(
+                "admitted",
+                &self
+                    .restriction
+                    .as_ref()
+                    .map(|restriction| &restriction.ranges),
+            )
             .finish()
     }
 }
@@ -1251,6 +1400,7 @@ impl GuestMemory {
                 regions,
                 allocated,
                 supports_locking,
+                restriction: None,
             }),
         }
     }
@@ -1335,6 +1485,7 @@ impl GuestMemory {
             imp,
             allocated: false,
             supports_locking,
+            restriction: None,
         };
 
         Ok(Self {
@@ -1456,11 +1607,88 @@ impl GuestMemory {
         self.subrange(offset, len, true)
     }
 
+    /// Returns a view of this memory that admits only the accesses that lie
+    /// wholly inside one of `ranges`.
+    ///
+    /// The view refuses any other access before it touches memory: the access
+    /// fails with [`GuestMemoryErrorKind::OutOfRange`], and the view calls
+    /// `on_refused`, if set, with the address and length of the access. Every
+    /// access path of the view and of its subranges applies the restriction,
+    /// including page locks, so a holder of the view reaches no memory outside
+    /// `ranges`. The view shares the mappings of this memory, so an admitted
+    /// access takes the same path that it takes through this memory.
+    ///
+    /// The view admits the union of `ranges`, which may be unsorted, overlap,
+    /// or abut. Each range must begin and end on a page boundary, because a
+    /// page lock admits a page by its first byte. Empty ranges are ignored.
+    pub fn restrict(
+        &self,
+        ranges: impl IntoIterator<Item = Range<u64>>,
+        on_refused: Option<RefusalHook>,
+    ) -> Result<GuestMemory, RestrictError> {
+        if self.inner.restriction.is_some() {
+            return Err(RestrictError::AlreadyRestricted);
+        }
+        let mut ranges: Vec<_> = ranges
+            .into_iter()
+            .filter(|range| !range.is_empty())
+            .collect();
+        if let Some(range) = ranges
+            .iter()
+            .find(|range| (range.start | range.end) % PAGE_SIZE64 != 0)
+        {
+            return Err(RestrictError::Unaligned(range.clone()));
+        }
+        ranges.sort_unstable_by_key(|range| range.start);
+        let mut admitted: Vec<Range<u64>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            match admitted.last_mut() {
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => admitted.push(range),
+            }
+        }
+
+        let base = &self.inner;
+        Ok(GuestMemory {
+            inner: Arc::new(GuestMemoryInner {
+                region_def: base.region_def,
+                regions: base.regions.clone(),
+                debug_name: base.debug_name.clone(),
+                allocated: false,
+                supports_locking: base.supports_locking,
+                restriction: Some(Restriction {
+                    ranges: admitted.into(),
+                    on_refused,
+                }),
+                imp: RestrictedAccess { base: base.clone() },
+            }),
+        })
+    }
+
+    /// Checks that this memory admits an access to `gpa..gpa + len`, without
+    /// touching memory.
+    ///
+    /// Only a [restricted](Self::restrict) view refuses a range, as it would
+    /// refuse an access to it, including the call to its refusal hook. The
+    /// check does not tell whether memory backs the range, which the access
+    /// itself checks.
+    pub fn check_admitted(&self, gpa: u64, len: u64) -> Result<(), GuestMemoryError> {
+        let Some(restriction) = &self.inner.restriction else {
+            return Ok(());
+        };
+        self.with_op(Some((gpa, len)), GuestMemoryOperation::Probe, || {
+            restriction.check(gpa, len)
+        })
+    }
+
     /// Returns the mapping for all of guest memory.
     ///
-    /// Returns `None` if there is more than one region or if the memory is not
-    /// mapped.
+    /// Returns `None` if there is more than one region, if the memory is not
+    /// mapped, or if the memory is a [restricted](Self::restrict) view.
     pub fn full_mapping(&self) -> Option<(*mut u8, usize)> {
+        if self.inner.restriction.is_some() {
+            return None;
+        }
         if let [region] = self.inner.regions.as_slice() {
             #[cfg(feature = "bitmap")]
             if region.bitmaps.is_some() {
@@ -2206,6 +2434,9 @@ impl GuestMemoryInner {
         gpa: u64,
         len: u64,
     ) -> Result<(&MemoryRegion, u64, usize), GuestMemoryBackingError> {
+        if let Some(restriction) = &self.restriction {
+            restriction.check(gpa, len)?;
+        }
         let (index, offset) = self.region_def.region(gpa, len)?;
         let region = &self.regions[index];
         if offset + len > region.len {
@@ -2707,5 +2938,104 @@ mod tests {
         )
         .unwrap();
         assert!(!gm.supports_locking());
+    }
+
+    #[test]
+    fn test_restrict() {
+        const P: u64 = PAGE_SIZE64;
+        let gm = GuestMemory::allocate(8 * PAGE_SIZE);
+        gm.fill_at(0, 0xaa, 8 * PAGE_SIZE).unwrap();
+        let (refusals, refused) = std::sync::mpsc::channel();
+        let on_refused: crate::RefusalHook =
+            Arc::new(move |gpa, len| refusals.send((gpa, len)).unwrap());
+        // Pages 0, 1, 3, 6, and 7, with pages 0 and 1 given as abutting
+        // ranges and pages 6 and 7 as overlapping ones.
+        let view = gm
+            .restrict(
+                [6 * P..8 * P, P..2 * P, 3 * P..4 * P, 0..P, 6 * P..7 * P],
+                Some(on_refused),
+            )
+            .unwrap();
+
+        // An access inside an admitted range, even one that spans abutting
+        // ranges, takes the mapping of the memory.
+        view.write_at(0, &[1; 2 * PAGE_SIZE]).unwrap();
+        view.read_plain::<u8>(3 * P).unwrap();
+        view.fill_at(6 * P, 2, 2 * PAGE_SIZE).unwrap();
+        assert_eq!(gm.read_plain::<u8>(2 * P - 1).unwrap(), 1);
+        assert_eq!(gm.read_plain::<u8>(8 * P - 1).unwrap(), 2);
+        assert!(refused.try_recv().is_err());
+
+        // An access that lies in or crosses into a page outside the ranges
+        // fails without touching memory, not even its admitted part.
+        view.write_at(P, &[3; 2 * PAGE_SIZE]).unwrap_err();
+        view.read_plain::<u8>(2 * P).unwrap_err();
+        view.write_plain::<u8>(4 * P, &3).unwrap_err();
+        view.compare_exchange(5 * P, 0xaau8, 3).unwrap_err();
+        view.fill_at(3 * P, 3, 2 * PAGE_SIZE).unwrap_err();
+        assert_eq!(gm.read_plain::<u8>(P).unwrap(), 1);
+        assert_eq!(gm.read_plain::<u8>(2 * P).unwrap(), 0xaa);
+        assert_eq!(gm.read_plain::<u8>(3 * P).unwrap(), 0xaa);
+        assert_eq!(gm.read_plain::<u8>(4 * P).unwrap(), 0xaa);
+        assert_eq!(gm.read_plain::<u8>(5 * P).unwrap(), 0xaa);
+
+        // Page locks, subranges, and checks apply the restriction too.
+        view.lock_gpns(crate::AccessType::Read, false, &[0, 1, 3])
+            .unwrap();
+        view.lock_gpns(crate::AccessType::Write, false, &[1, 2])
+            .unwrap_err();
+        view.subrange(P, 2 * P, false).unwrap_err();
+        let subrange = view.subrange(6 * P, 2 * P, false).unwrap();
+        subrange.write_at(0, &[4; 2 * PAGE_SIZE]).unwrap();
+        subrange.read_plain::<u8>(2 * P).unwrap_err();
+        assert_eq!(gm.read_plain::<u8>(6 * P).unwrap(), 4);
+        view.check_admitted(3 * P, P).unwrap();
+        view.check_admitted(2 * P, 0).unwrap();
+        view.check_admitted(3 * P, P + 1).unwrap_err();
+        view.check_admitted(u64::MAX, 2).unwrap_err();
+        assert_eq!(
+            refused.try_iter().collect::<Vec<_>>(),
+            [
+                (P, 2 * P),
+                (2 * P, 1),
+                (4 * P, 1),
+                (5 * P, 1),
+                (3 * P, 2 * P),
+                (2 * P, 1),
+                (P, 2 * P),
+                (3 * P, P + 1),
+                (u64::MAX, 2),
+            ]
+        );
+
+        // The view exposes no whole mapping or sharing, while the memory that
+        // it restricts still admits everything.
+        assert!(view.full_mapping().is_none());
+        assert!(view.sharing().is_none());
+        assert!(gm.full_mapping().is_some());
+        gm.check_admitted(2 * P, P).unwrap();
+        gm.write_plain::<u8>(2 * P, &5).unwrap();
+    }
+
+    #[test]
+    fn test_restrict_rejects_invalid_restrictions() {
+        let gm = GuestMemory::allocate(4 * PAGE_SIZE);
+        assert!(matches!(
+            gm.restrict([0..PAGE_SIZE64 + 1], None),
+            Err(crate::RestrictError::Unaligned(_))
+        ));
+        assert!(matches!(
+            gm.restrict([1..PAGE_SIZE64], None),
+            Err(crate::RestrictError::Unaligned(_))
+        ));
+        let view = gm.restrict([0..PAGE_SIZE64], None).unwrap();
+        assert!(matches!(
+            view.restrict([0..PAGE_SIZE64], None),
+            Err(crate::RestrictError::AlreadyRestricted)
+        ));
+
+        // A view without ranges admits nothing.
+        let view = gm.restrict([], None).unwrap();
+        view.read_plain::<u8>(0).unwrap_err();
     }
 }
