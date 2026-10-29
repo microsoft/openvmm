@@ -31,6 +31,26 @@ Here are the principles you must maintain when adding new save & restore code:
     * Enum: if you need to add an enum, add it as `Option<MyEnum>` instead.
 4. **Be particularly careful when updating saved state**: See below.
 
+### Synchronous and asynchronous implementations
+
+Implement `vmcore::save_restore::SaveRestore` when your state can be saved and
+restored synchronously. If either operation must await a task or I/O, implement
+`AsyncSaveRestore` instead. Both traits use an associated `SavedState` type;
+asynchronous devices do not need to encode or decode protobuf blobs themselves.
+
+Chipset lifecycle callers use the object-safe `AsyncProtobufSaveRestore` trait.
+Blanket implementations adapt `SaveRestore` to `AsyncSaveRestore`, then adapt
+`AsyncSaveRestore` to `AsyncProtobufSaveRestore`. Existing synchronous devices
+therefore need no changes, provided the device and saved state satisfy the
+adapters' `Send` and protobuf bounds. Nested synchronous helpers can continue
+using `SaveRestore` and `ProtobufSaveRestore`.
+
+To convert an existing device to native async save/restore, replace its
+`SaveRestore` implementation with `AsyncSaveRestore`; a type cannot implement
+both because of the blanket adapter. Keep the saved state type and protobuf
+fields unchanged. Each async operation must complete its work, including any
+fallible task communication, before returning.
+
 ### Updating (Extending) Saved State
 
 Since saved state is just Protocol Buffers, use the [guide to updating Protocol

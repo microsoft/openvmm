@@ -4700,7 +4700,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
 
@@ -4715,7 +4715,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     dev.pci_device.stop().await;
 
     // Save state.
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
     // Verify saved state has expected values.
     assert_eq!(
@@ -4735,6 +4735,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
     // Verify stop is a no-op — restore must not start queues.
@@ -4827,7 +4828,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let mem = GuestMemory::new("test", test_mem.clone());
@@ -4842,7 +4843,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     guest.setup_pci_device(&mut dev, driver_features).await;
 
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
     // Confirm saved state includes the device-specific feature bit.
     assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
@@ -4870,7 +4871,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev2.restore(saved);
+    let result = dev2.restore(saved).await;
     assert!(
         result.is_err(),
         "restore should fail with incompatible features"
@@ -4879,7 +4880,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_save_not_supported_device(_driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let msi_conn = MsiConnection::new();
 
@@ -4903,7 +4904,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev.save();
+    let result = dev.save().await;
     assert!(result.is_err(), "save should fail for unsupported device");
 }
 
@@ -4938,7 +4939,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const QUEUE_COUNT: u16 = 2;
     // What `setup_pci_device` programs BAR0 to.
@@ -4973,7 +4974,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     );
 
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
     // Drop the saved device before restoring, so what the assertions below see
     // can only be the RESTORED device's doorbells and not the original's.
@@ -4994,6 +4995,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
     assert_eq!(
