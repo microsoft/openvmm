@@ -917,9 +917,6 @@ enum ErrorInner {
     #[error(transparent)]
     Snp(#[from] arch::SnpError),
     #[cfg(guest_arch = "x86_64")]
-    #[error("guest memory is not attached")]
-    GuestMemoryNotAttached,
-    #[cfg(guest_arch = "x86_64")]
     #[error("partition memory has not been finalized")]
     PartitionNotFinalized,
     #[cfg(guest_arch = "x86_64")]

@@ -3,9 +3,12 @@
 
 //! Partition finalization after guest memory is attached.
 //!
-//! On x86_64 the BSP is created only after all guest memory is attached. The
-//! partition capabilities are then discovered from the BSP, so they are not
-//! available before [`MshvPartitionInner::finalize_memory`] completes.
+//! On x86_64 the BSP is created when partition memory is finalized, which the
+//! VMM does after it attaches all guest memory. The partition capabilities are
+//! then discovered from the BSP, so they are not available before
+//! [`MshvPartitionInner::finalize_memory`] completes. A partition without
+//! guest memory, such as a backend test fixture, can be finalized too; its BSP
+//! is then created before any memory is registered.
 //!
 //! For a non-isolated partition, attached memory is already registered with
 //! MSHV, so the BSP is created after registration. An SNP partition instead
@@ -64,15 +67,11 @@ fn finalized_partition<T>(finalized: &OnceLock<T>) -> Result<&T, Error> {
 fn finalize_memory_once<T>(
     finalized: &OnceLock<T>,
     finalize_lock: &Mutex<()>,
-    memory_attached: bool,
     initialize: impl FnOnce() -> Result<T, Error>,
 ) -> Result<(), Error> {
     let _guard = finalize_lock.lock();
     if finalized.get().is_some() {
         return Err(ErrorInner::PartitionAlreadyFinalized.into());
-    }
-    if !memory_attached {
-        return Err(ErrorInner::GuestMemoryNotAttached.into());
     }
 
     finalized
@@ -101,32 +100,30 @@ impl MshvPartitionInner {
         }
     }
 
-    /// Creates the BSP and discovers the partition capabilities, once guest
-    /// memory is attached.
+    /// Creates the BSP and discovers the partition capabilities.
+    ///
+    /// The VMM calls this after attaching guest memory, so that MSHV creates
+    /// the BSP after that memory is registered.
     pub(super) fn finalize_memory(&self) -> Result<(), Error> {
-        let memory_attached = self.memory.lock().guest_memory_attached();
+        let guest_memory_attached = self.memory.lock().guest_memory_attached();
 
-        finalize_memory_once(
-            &self.finalized,
-            &self.finalize_lock,
-            memory_attached,
-            || {
-                let _span = tracing::info_span!("mshv create BSP", vp_index = 0).entered();
-                let started = std::time::Instant::now();
-                let result = self.vmfd.create_vcpu(0);
-                tracing::info!(
-                    elapsed_us = started.elapsed().as_micros() as u64,
-                    success = result.is_ok(),
-                    "MSHV_CREATE_VCPU completed"
-                );
-                let bsp_vcpufd = result.map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
-                if self.isolation.snp().is_some() && self.config.hv_configured {
-                    self.install_snp_hv_max_leaf_override(&bsp_vcpufd)?;
-                }
-                let caps = self.build_caps(&bsp_vcpufd)?;
-                Ok(MshvFinalizedPartition { bsp_vcpufd, caps })
-            },
-        )
+        finalize_memory_once(&self.finalized, &self.finalize_lock, || {
+            let _span = tracing::info_span!("mshv create BSP", vp_index = 0).entered();
+            let started = std::time::Instant::now();
+            let result = self.vmfd.create_vcpu(0);
+            tracing::info!(
+                elapsed_us = started.elapsed().as_micros() as u64,
+                success = result.is_ok(),
+                guest_memory_attached,
+                "MSHV_CREATE_VCPU completed"
+            );
+            let bsp_vcpufd = result.map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
+            if self.isolation.snp().is_some() && self.config.hv_configured {
+                self.install_snp_hv_max_leaf_override(&bsp_vcpufd)?;
+            }
+            let caps = self.build_caps(&bsp_vcpufd)?;
+            Ok(MshvFinalizedPartition { bsp_vcpufd, caps })
+        })
     }
 
     fn install_snp_hv_max_leaf_override(&self, bsp: &VcpuFd) -> Result<(), Error> {
@@ -205,7 +202,7 @@ impl MshvPartitionInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::Cell;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::sync::atomic::AtomicUsize;
@@ -213,38 +210,27 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
-    fn finalization_requires_attached_memory_and_runs_once() {
+    fn finalization_runs_once() {
         let finalized = OnceLock::new();
         let finalize_lock = Mutex::new(());
-        let events = RefCell::new(Vec::new());
+        let initialize_count = Cell::new(0);
 
-        let result = finalize_memory_once(&finalized, &finalize_lock, false, || {
-            events.borrow_mut().push("backend initialized");
-            Ok(42)
-        });
-        assert!(matches!(
-            result,
-            Err(Error(ErrorInner::GuestMemoryNotAttached))
-        ));
-        assert!(events.borrow().is_empty());
-
-        events.borrow_mut().push("memory attached");
-        finalize_memory_once(&finalized, &finalize_lock, true, || {
-            events.borrow_mut().push("backend initialized");
+        finalize_memory_once(&finalized, &finalize_lock, || {
+            initialize_count.set(initialize_count.get() + 1);
             Ok(42)
         })
         .unwrap();
-        assert_eq!(
-            events.into_inner(),
-            ["memory attached", "backend initialized"]
-        );
         assert_eq!(finalized_partition(&finalized).unwrap(), &42);
 
-        let result = finalize_memory_once(&finalized, &finalize_lock, true, || Ok(43));
+        let result = finalize_memory_once(&finalized, &finalize_lock, || {
+            initialize_count.set(initialize_count.get() + 1);
+            Ok(43)
+        });
         assert!(matches!(
             result,
             Err(Error(ErrorInner::PartitionAlreadyFinalized))
         ));
+        assert_eq!(initialize_count.get(), 1);
         assert_eq!(finalized_partition(&finalized).unwrap(), &42);
     }
 
@@ -253,7 +239,7 @@ mod tests {
         let finalized = OnceLock::<()>::new();
         let finalize_lock = Mutex::new(());
 
-        let result = finalize_memory_once(&finalized, &finalize_lock, true, || {
+        let result = finalize_memory_once(&finalized, &finalize_lock, || {
             Err(ErrorInner::NotSupported.into())
         });
 
@@ -277,7 +263,7 @@ mod tests {
                 let initialize_count = initialize_count.clone();
                 std::thread::spawn(move || {
                     ready.wait();
-                    finalize_memory_once(&finalized, &finalize_lock, true, || {
+                    finalize_memory_once(&finalized, &finalize_lock, || {
                         initialize_count.fetch_add(1, Ordering::Relaxed);
                         std::thread::sleep(std::time::Duration::from_millis(20));
                         Ok(42)
