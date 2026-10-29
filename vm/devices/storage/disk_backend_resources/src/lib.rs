@@ -61,6 +61,43 @@ impl ResourceId<DiskHandleKind> for DelayDiskHandle {
     const ID: &'static str = "delay";
 }
 
+/// Disk handle for a host-managed zoned disk emulator.
+#[derive(MeshPayload)]
+pub struct ZoneEmulationDiskHandle {
+    /// The ordinary disk used to store guest data and emulated zone metadata.
+    pub disk: Resource<DiskHandleKind>,
+    /// Parameters controlling the emulated zoned media.
+    pub parameters: ZoneEmulationParameters,
+}
+
+impl ResourceId<DiskHandleKind> for ZoneEmulationDiskHandle {
+    const ID: &'static str = "zone_emu";
+}
+
+/// Parameters for a host-managed zoned block device emulator.
+#[derive(Debug, Clone, MeshPayload)]
+pub struct ZoneEmulationParameters {
+    /// Zone size in bytes.
+    pub zone_size_bytes: u64,
+    /// Number of conventional zones at the beginning of the disk.
+    pub conventional_zone_count: u32,
+    /// Maximum number of sequential-write-required zones that may be open.
+    pub max_open_zones: u32,
+    /// Whether reads of unwritten blocks and reads across zone boundaries are supported.
+    pub unrestricted_read: bool,
+}
+
+impl Default for ZoneEmulationParameters {
+    fn default() -> Self {
+        Self {
+            zone_size_bytes: 256 * 1024 * 1024,
+            conventional_zone_count: 1,
+            max_open_zones: 32,
+            unrestricted_read: true,
+        }
+    }
+}
+
 /// Disk handle for a fixed VHD1 disk.
 #[derive(MeshPayload)]
 pub struct FixedVhd1DiskHandle(pub std::fs::File);

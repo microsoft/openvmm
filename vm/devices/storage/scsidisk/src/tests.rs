@@ -4,3 +4,4 @@
 mod basic_tests;
 mod pr_tests;
 mod test_helpers;
+mod zoned_tests;

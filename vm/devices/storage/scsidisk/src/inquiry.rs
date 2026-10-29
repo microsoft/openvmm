@@ -86,11 +86,12 @@ pub const INQUIRY_DATA_TEMPLATE: scsi::InquiryData = scsi::InquiryData {
 fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
     external_data: &RequestBuffers<'_>,
     allocation_length: usize,
+    device_type: u8,
     page_code: u8,
     page_data: &T,
 ) -> Result<usize, ScsiError> {
     let header = scsi::VpdPageHeader {
-        device_type: scsi::DIRECT_ACCESS_DEVICE,
+        device_type,
         page_code,
         reserved: 0,
         page_length: size_of_val(page_data).try_into().unwrap(),
@@ -114,6 +115,14 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
 }
 
 impl SimpleScsiDisk {
+    fn device_type(&self) -> u8 {
+        if self.disk.zoned().is_some() {
+            scsi::HOST_MANAGED_ZONED_BLOCK_DEVICE
+        } else {
+            scsi::DIRECT_ACCESS_DEVICE
+        }
+    }
+
     fn handle_vpd_supported_pages(
         &self,
         external_data: &RequestBuffers<'_>,
@@ -137,16 +146,25 @@ impl SimpleScsiDisk {
                 scsi::VPD_LOGICAL_BLOCK_PROVISIONING,
             ]);
         }
+        if self.disk.zoned().is_some() {
+            supported_pages.extend([
+                scsi::VPD_BLOCK_LIMITS,
+                scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS,
+                scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS,
+            ]);
+        }
 
         if !self.scsi_parameters.serial_number.is_empty() {
             supported_pages.push(scsi::VPD_SERIAL_NUMBER);
         }
 
         supported_pages.sort_unstable();
+        supported_pages.dedup();
 
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_SUPPORTED_PAGES,
             supported_pages.as_slice(),
         )
@@ -160,6 +178,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_SERIAL_NUMBER,
             self.scsi_parameters.serial_number.as_slice(),
         )
@@ -227,6 +246,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_DEVICE_IDENTIFIERS,
             &page,
         )
@@ -241,32 +261,35 @@ impl SimpleScsiDisk {
             .min(VHDMP_MAX_WRITE_SAME_LENGTH_BYTES)
             >> self.sector_shift;
 
-        // Since we are only here if unmap is supported, ensure the reported
-        // granularity is non-zero (or the guest will think that unmap is not
-        // supported).
-        let optimal_unmap_granularity = self.scsi_parameters.optimal_unmap_sectors.max(1);
-
-        let page = scsi::VpdBlockLimitsDescriptor {
+        let mut page = scsi::VpdBlockLimitsDescriptor {
             reserved0: 0x00,
             max_compare_and_write_length: 0, // don't support compare_and_write
-            max_unmap_lba_count: u32::MAX.into(),
-            max_unmap_block_descriptor_count: u32::from(UNMAP_RANGE_DESCRIPTOR_COUNT_MAX).into(),
-            optimal_unmap_granularity: optimal_unmap_granularity.into(),
-            unmap_granularity_alignment: [0x80, 0x00, 0x00, 0x00], // UGAValid = 1
             max_write_same_length: max_write_same_length.into(),
             ..FromZeros::new_zeroed()
         };
 
-        tracing::debug!(
-            max_lba_count = page.max_unmap_lba_count.get(), // TODO: didn't update?
-            max_block_descriptor_count = page.max_unmap_block_descriptor_count.get(),
-            optimal_unmap_granularity,
-            "handle_vpd_block_limits unmap properties",
-        );
+        if self.scsi_parameters.support_unmap {
+            // Ensure the reported granularity is non-zero (or the guest will
+            // think that unmap is not supported).
+            let optimal_unmap_granularity = self.scsi_parameters.optimal_unmap_sectors.max(1);
+            page.max_unmap_lba_count = u32::MAX.into();
+            page.max_unmap_block_descriptor_count =
+                u32::from(UNMAP_RANGE_DESCRIPTOR_COUNT_MAX).into();
+            page.optimal_unmap_granularity = optimal_unmap_granularity.into();
+            page.unmap_granularity_alignment = [0x80, 0x00, 0x00, 0x00];
+
+            tracing::debug!(
+                max_lba_count = page.max_unmap_lba_count.get(),
+                max_block_descriptor_count = page.max_unmap_block_descriptor_count.get(),
+                optimal_unmap_granularity,
+                "handle_vpd_block_limits unmap properties",
+            );
+        }
 
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_BLOCK_LIMITS,
             &page,
         )
@@ -285,7 +308,44 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS,
+            &page,
+        )
+    }
+
+    fn handle_vpd_zoned_block_device_characteristics(
+        &self,
+        external_data: &RequestBuffers<'_>,
+        allocation_length: usize,
+    ) -> Result<usize, ScsiError> {
+        let zoned = self.disk.zoned().ok_or(ScsiError::UnsupportedVpdPageCode(
+            scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS,
+        ))?;
+        let info = zoned.info();
+        let page = scsi::VpdZonedBlockDeviceCharacteristicsPage {
+            flags: if info.unrestricted_read {
+                scsi::VPD_ZONED_URSWRZ
+            } else {
+                0
+            },
+            optimal_open_sequential_write_preferred_zones: info
+                .optimal_open_sequential_write_preferred_zones
+                .into(),
+            optimal_nonsequential_sequential_write_preferred_zones: info
+                .optimal_nonsequential_sequential_write_preferred_zones
+                .into(),
+            max_open_sequential_write_required_zones: info
+                .max_open_sequential_write_required_zones
+                .into(),
+            ..FromZeros::new_zeroed()
+        };
+
+        write_vpd_page(
+            external_data,
+            allocation_length,
+            self.device_type(),
+            scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS,
             &page,
         )
     }
@@ -349,6 +409,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_THIRD_PARTY_COPY,
             &page,
         )
@@ -372,6 +433,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_MSFT_VIRTUAL_DEVICE_PROPERTIES,
             &page,
         )
@@ -391,6 +453,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_MSFT_PAGING_EXTENT_PROPERTIES,
             &page,
         )
@@ -428,6 +491,7 @@ impl SimpleScsiDisk {
         write_vpd_page(
             external_data,
             allocation_length,
+            self.device_type(),
             scsi::VPD_LOGICAL_BLOCK_PROVISIONING,
             &page,
         )
@@ -447,6 +511,10 @@ impl SimpleScsiDisk {
         }
 
         let page = scsi::InquiryData {
+            header: scsi::InquiryDataHeader {
+                device_type: self.device_type(),
+                ..INQUIRY_DATA_TEMPLATE.header
+            },
             misc: 0x02, // CommandQueue = 1
             vendor_id: self.scsi_parameters.identity.vendor_id.into(),
             product_id: self.scsi_parameters.identity.product_id.into(),
@@ -504,12 +572,21 @@ impl SimpleScsiDisk {
                 scsi::VPD_DEVICE_IDENTIFIERS => {
                     self.handle_vpd_device_identifiers(external_data, allocation_length)
                 }
-                scsi::VPD_BLOCK_LIMITS if self.scsi_parameters.support_unmap => {
+                scsi::VPD_BLOCK_LIMITS
+                    if self.scsi_parameters.support_unmap || self.disk.zoned().is_some() =>
+                {
                     self.handle_vpd_block_limits(external_data, allocation_length)
                 }
-                scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS if self.scsi_parameters.support_unmap => {
+                scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS
+                    if self.scsi_parameters.support_unmap || self.disk.zoned().is_some() =>
+                {
                     self.handle_vpd_block_device_characteristics(external_data, allocation_length)
                 }
+                scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS if self.disk.zoned().is_some() => self
+                    .handle_vpd_zoned_block_device_characteristics(
+                        external_data,
+                        allocation_length,
+                    ),
                 scsi::VPD_LOGICAL_BLOCK_PROVISIONING if self.scsi_parameters.support_unmap => self
                     .handle_vpd_logical_block_provisioning(
                         external_data,

@@ -95,6 +95,10 @@ impl DiskIo for CryptDisk {
         self.inner.pr()
     }
 
+    fn zoned(&self) -> Option<&dyn disk_backend::zoned::ZonedDisk> {
+        self.inner.zoned()
+    }
+
     async fn read_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
