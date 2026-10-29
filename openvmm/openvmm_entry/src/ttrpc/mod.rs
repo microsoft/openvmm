@@ -3130,66 +3130,6 @@ mod shutdown_tests {
             );
         });
     }
-
-    #[cfg(feature = "ttrpc")]
-    #[test]
-    fn shutdown_disconnect_over_ttrpc() {
-        DefaultPool::run_with(async |driver| {
-            for before_dispatch in [true, false] {
-                mesh::CancelContext::new()
-                    .with_timeout(Duration::from_secs(5))
-                    .until_cancelled(async {
-                        let (client_socket, server_socket) =
-                            unix_socket::UnixStream::pair().unwrap();
-                        let mut server = mesh_rpc::Server::new();
-                        let mut requests = server.add_service::<vmservice::Vm>();
-                        let server_driver = driver.clone();
-                        let server_task = driver.spawn("shutdown-test-server", async move {
-                            server.run_single(&server_driver, server_socket).await
-                        });
-                        let client = mesh_rpc::Client::new(
-                            &driver,
-                            mesh_rpc::client::ExistingConnection::new(
-                                pal_async::socket::PolledSocket::new(&driver, client_socket)
-                                    .unwrap(),
-                            ),
-                        );
-                        let (send, mut recv) = mesh::channel();
-                        let mut service = service(driver.clone(), Some(send));
-                        let _request = client.call().start(
-                            vmservice::Vm::ShutdownVm,
-                            vmservice::ShutdownVmRequest::default(),
-                        );
-                        let (ctx, rpc) = requests.next().await.unwrap();
-                        let mut rpc = Some(rpc);
-                        assert!(ctx.deadline().is_none());
-                        let mut cancellation = ctx.clone();
-                        let pending_rpc = if before_dispatch {
-                            None
-                        } else {
-                            service.handle(ctx.clone(), rpc.take().unwrap()).await;
-                            Some(recv.next().await.unwrap())
-                        };
-
-                        client.shutdown().await;
-                        assert_eq!(cancellation.cancelled().await, CancelReason::Cancelled);
-                        if before_dispatch {
-                            service.handle(ctx, rpc.take().unwrap()).await;
-                        }
-                        service.rpc_tasks.pop().unwrap().await;
-                        assert!(
-                            recv.next().now_or_never().is_none(),
-                            "disconnected request must not dispatch another shutdown"
-                        );
-                        assert!(matches!(service.lifecycle, VmLifecycle::Running));
-                        drop(pending_rpc);
-                        let _ = server_task.cancel().await;
-                    })
-                    .await
-                    .expect("disconnect did not cancel the shutdown request");
-            }
-        });
-    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

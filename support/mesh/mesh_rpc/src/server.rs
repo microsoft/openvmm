@@ -168,9 +168,8 @@ impl Server {
     ) -> anyhow::Result<()> {
         let (mut reader, mut writer) = stream.split();
         let (stream_send, mut stream_recv) = mesh::channel();
-        let (ctx, cancel) = CancelContext::new().with_cancel();
+        let ctx = CancelContext::new();
         let recv_task = async {
-            let _cancel = cancel;
             let stream_send = stream_send; // move into this task
             while let Some(message) = read_message(&mut reader).await? {
                 let (send, recv) = mesh::oneshot::<Result<Vec<u8>, Status>>();
@@ -338,45 +337,6 @@ mod grpc {
         }
     }
 
-    pub(super) struct Wrap<T>(pub(super) T);
-
-    impl<T: AsSockRef + Read> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<std::io::Result<()>> {
-            let n =
-                ready!(Pin::new(&mut self.get_mut().0).poll_read(cx, buf.initialize_unfilled()))?;
-            buf.advance(n);
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-
-    impl<T: AsSockRef + Write> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<Result<usize, std::io::Error>> {
-            Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
-        }
-
-        fn poll_flush(
-            self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), std::io::Error>> {
-            Pin::new(&mut self.get_mut().0).poll_flush(cx)
-        }
-
-        fn poll_shutdown(
-            self: Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), std::io::Error>> {
-            Pin::new(&mut self.get_mut().0).poll_close(cx)
-        }
-    }
-
     impl Server {
         /// Runs the server using the gRPC transport, listening on `listener` and servicing connections until
         /// `cancel`.
@@ -419,6 +379,46 @@ mod grpc {
             &self,
             stream: PolledSocket<impl AsSockRef + Read + Write>,
         ) -> anyhow::Result<()> {
+            struct Wrap<T>(T);
+
+            impl<T: AsSockRef + Read> tokio::io::AsyncRead for Wrap<PolledSocket<T>> {
+                fn poll_read(
+                    self: Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                    buf: &mut tokio::io::ReadBuf<'_>,
+                ) -> std::task::Poll<std::io::Result<()>> {
+                    let n = ready!(
+                        Pin::new(&mut self.get_mut().0).poll_read(cx, buf.initialize_unfilled())
+                    )?;
+                    buf.advance(n);
+                    std::task::Poll::Ready(Ok(()))
+                }
+            }
+
+            impl<T: AsSockRef + Write> tokio::io::AsyncWrite for Wrap<PolledSocket<T>> {
+                fn poll_write(
+                    self: Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                    buf: &[u8],
+                ) -> std::task::Poll<Result<usize, std::io::Error>> {
+                    Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+                }
+
+                fn poll_flush(
+                    self: Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<Result<(), std::io::Error>> {
+                    Pin::new(&mut self.get_mut().0).poll_flush(cx)
+                }
+
+                fn poll_shutdown(
+                    self: Pin<&mut Self>,
+                    cx: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<Result<(), std::io::Error>> {
+                    Pin::new(&mut self.get_mut().0).poll_close(cx)
+                }
+            }
+
             let mut conn = h2::server::handshake(Wrap(stream))
                 .await
                 .context("failed http2 handshake")?;
@@ -456,10 +456,6 @@ mod grpc {
                                 http::Response::builder().status(status).body(())?,
                                 true,
                             )?;
-                            Ok(())
-                        }
-                        Err(RequestError::H2(err)) if err.is_reset() => {
-                            tracing::debug!(error = &err as &dyn std::error::Error, "stream reset");
                             Ok(())
                         }
                         r => r,
@@ -516,7 +512,6 @@ mod grpc {
                 CancelContext::new()
             };
 
-            let (ctx, _cancel) = ctx.with_cancel();
             let (head, body) = req.into_parts();
             let path = head.uri.path();
             let path = path.strip_prefix('/').ok_or(http::StatusCode::NOT_FOUND)?;
@@ -525,18 +520,7 @@ mod grpc {
             // No returning HTTP status code errors after this point.
             let mut resp = resp.send_response(response.body(())?, false)?;
 
-            let result = {
-                let mut rpc = std::pin::pin!(self.invoke_rpc(service, method, body, ctx).fuse());
-                let mut reset =
-                    std::pin::pin!(std::future::poll_fn(|cx| resp.poll_reset(cx)).fuse());
-                futures::select_biased! {
-                    reason = reset => {
-                        tracing::debug!(reason = ?reason?, "stream reset");
-                        return Ok(());
-                    }
-                    result = rpc => result?,
-                }
-            };
+            let result = self.invoke_rpc(service, method, body, ctx).await?;
 
             let mut trailers = HeaderMap::new();
             match result {
@@ -717,116 +701,5 @@ mod tests {
 
         client_thread.join().unwrap();
         server_thread.join().unwrap().unwrap();
-    }
-
-    #[cfg(feature = "grpc")]
-    fn grpc_cancellation(reset_stream: bool) {
-        use super::grpc::Wrap;
-        use mesh::CancelContext;
-        use mesh::CancelReason;
-        use pal_async::task::Spawn;
-        use prost::bytes::Bytes;
-        use std::time::Duration;
-
-        DefaultPool::run_with(async |driver| {
-            for before_dispatch in [true, false] {
-                CancelContext::new()
-                    .with_timeout(Duration::from_secs(5))
-                    .until_cancelled(async {
-                        let (client_socket, server_socket) =
-                            unix_socket::UnixStream::pair().unwrap();
-                        let mut server = Server::new();
-                        let mut requests = server.add_service::<items::Example>();
-                        let server_socket = PolledSocket::new(&driver, server_socket).unwrap();
-                        let server_task = driver.spawn("grpc-test-server", async move {
-                            server.serve_connection_grpc(server_socket).await
-                        });
-                        let (mut client, connection) = h2::client::handshake(Wrap(
-                            PolledSocket::new(&driver, client_socket).unwrap(),
-                        ))
-                        .await
-                        .unwrap();
-                        let mut connection_task =
-                            Some(driver.spawn("grpc-test-client", connection));
-                        let request = || {
-                            http::Request::builder()
-                                .method(http::Method::POST)
-                                .uri(format!("http://localhost/{}/Method1", items::Example::NAME))
-                                .header("content-type", "application/grpc")
-                                .body(())
-                                .unwrap()
-                        };
-                        let (_response, mut stream) =
-                            client.send_request(request(), false).unwrap();
-                        stream.send_data(Bytes::from_static(&[0; 5]), true).unwrap();
-                        let (mut ctx, _rpc) = requests.next().await.unwrap();
-                        assert!(ctx.deadline().is_none());
-
-                        let (other_response, mut other_stream) =
-                            client.send_request(request(), false).unwrap();
-                        other_stream
-                            .send_data(Bytes::from_static(&[0; 5]), true)
-                            .unwrap();
-                        let (mut other_ctx, other_rpc) = requests.next().await.unwrap();
-
-                        let handler = if before_dispatch {
-                            None
-                        } else {
-                            let mut ctx = ctx.clone();
-                            let (started_send, started_recv) = mesh::oneshot();
-                            let task = driver.spawn("grpc-test-handler", async move {
-                                started_send.send(());
-                                ctx.until_cancelled(std::future::pending::<()>()).await
-                            });
-                            started_recv.await.unwrap();
-                            Some(task)
-                        };
-                        if reset_stream {
-                            stream.send_reset(h2::Reason::CANCEL);
-                        } else {
-                            let _ = connection_task.take().unwrap().cancel().await;
-                        }
-                        assert_eq!(ctx.cancelled().await, CancelReason::Cancelled);
-                        if let Some(handler) = handler {
-                            assert_eq!(handler.await, Err(CancelReason::Cancelled));
-                        }
-
-                        if reset_stream {
-                            assert!(!other_ctx.is_cancelled());
-                            let items::Example::Method1(_, response) = other_rpc else {
-                                panic!("expected Method1");
-                            };
-                            response.send(Ok(Default::default()));
-                            let mut body = other_response.await.unwrap().into_body();
-                            while let Some(data) = body.data().await {
-                                let data = data.unwrap();
-                                body.flow_control().release_capacity(data.len()).unwrap();
-                            }
-                            let trailers = body.trailers().await.unwrap().unwrap();
-                            assert_eq!(trailers["grpc-status"], "0");
-                        } else {
-                            assert_eq!(other_ctx.cancelled().await, CancelReason::Cancelled);
-                        }
-                        if let Some(task) = connection_task {
-                            let _ = task.cancel().await;
-                        }
-                        let _ = server_task.cancel().await;
-                    })
-                    .await
-                    .expect("transport did not cancel the queued or in-flight gRPC request");
-            }
-        });
-    }
-
-    #[cfg(feature = "grpc")]
-    #[test]
-    fn grpc_stream_reset_cancels_request() {
-        grpc_cancellation(true);
-    }
-
-    #[cfg(feature = "grpc")]
-    #[test]
-    fn grpc_disconnect_cancels_requests() {
-        grpc_cancellation(false);
     }
 }

@@ -134,8 +134,8 @@ would not imply a guest acknowledgement or guarantee that the guest's
 power-button policy initiates shutdown.
 
 The caller controls the acknowledgement deadline; there is no server-imposed
-timeout. Without a deadline, the request waits for acknowledgement,
-cancellation, or a channel error. Callers should set an RPC timeout on the
+timeout. Without a deadline, the request waits for acknowledgement or a channel
+error. Callers should set an RPC timeout on the
 client, not in `ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can
 limit the acknowledgement wait to five seconds. This example assumes an
 initialized `client` in an async context and
@@ -155,22 +155,17 @@ let result = client
 For gRPC clients, set the call's deadline/timeout using the client library.
 This limits waiting for the shutdown request response, not completion of the
 guest's shutdown sequence. Give `WaitVM` its own deadline for that wait.
-Closing the client connection cancels its pending requests. For gRPC,
-resetting a stream also cancels that request without affecting other streams.
-The ttrpc protocol has no per-request cancellation message: dropping the
-Rust call future alone does not notify the server. Use a deadline to bound
-an individual ttrpc request without closing the shared connection.
-Cancellation observed before dispatch prevents the IC request from being sent.
-Cancelling or timing out does not undo a request already delivered to the
-guest and never triggers a fallback to another mechanism or hard power-off.
+Disconnecting or dropping the client call does not guarantee that the server
+stops waiting for acknowledgement. Use a deadline to bound that wait.
+Deadline expiry observed before dispatch prevents the IC request from being
+sent. Timing out does not undo a request already delivered to the guest and
+never triggers a fallback to another mechanism or hard power-off.
 
 With the current Hyper-V IC implementation, a missing, paused, or halted VM,
 disabled Hyper-V/VMBus, or an IC that reports not-ready returns
 `FAILED_PRECONDITION`. An IC request already in progress returns
 `ALREADY_EXISTS`; a guest rejection returns `INTERNAL` with the guest status
-code. Cancellation and deadline expiry map to `CANCELLED` and
-`DEADLINE_EXCEEDED`; a disconnected client or reset stream cannot receive
-the cancellation response.
+code. Deadline expiry maps to `DEADLINE_EXCEEDED`.
 
 ## VPCI hotplug
 
