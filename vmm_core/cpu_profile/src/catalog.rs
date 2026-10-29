@@ -37,14 +37,37 @@ pub const AUTO: &str = "auto";
 pub const HOST: &str = "host";
 
 /// Each pinned profile, built from its static data on first use, so that a
-/// cold boot or a restore builds only its own.
+/// cold boot or a restore builds only the profiles that it considers: the one
+/// that it names, or those that cover its host.
 static PROFILES: [OnceLock<CpuProfile>; PINNED.len()] = [const { OnceLock::new() }; PINNED.len()];
 
-/// Returns the pinned profile at `index` in [`PINNED`], building it from its
-/// constants on first use: no parsing, no validation, and no hashing, which
-/// the tests do for every pinned profile instead.
-fn load(index: usize) -> &'static CpuProfile {
+/// Whether each pinned profile is valid, verified on its first use through
+/// [`load`], so that a process verifies each profile that it uses once.
+static VERIFIED: [OnceLock<Result<(), ProfileError>>; PINNED.len()] =
+    [const { OnceLock::new() }; PINNED.len()];
+
+/// Returns the pinned profile at `index` in [`PINNED`], copied from its
+/// constants on first use, without verifying it. Only [`select_auto`] reads
+/// it, for the ID and generation by which it selects among the revisions
+/// that cover the host, and it then [`load`]s the one that it selects; like
+/// [`covers`], it takes them from the constants either way.
+fn build(index: usize) -> &'static CpuProfile {
     PROFILES[index].get_or_init(|| PINNED[index].to_profile())
+}
+
+/// Returns the pinned profile at `index` in [`PINNED`], built from its
+/// constants and verified on first use ([`PinnedProfile::verify`]): no JSON
+/// parsing and no hashing, but an encoding, once per profile and process, so
+/// that a stale or malformed `pinned_data.rs` fails with `E_PROFILE_DIGEST`
+/// before any partition uses the profile.
+///
+/// [`PinnedProfile::verify`]: crate::pinned::PinnedProfile::verify
+fn load(index: usize) -> Result<&'static CpuProfile, ProfileError> {
+    let profile = build(index);
+    VERIFIED[index]
+        .get_or_init(|| PINNED[index].verify(profile))
+        .clone()?;
+    Ok(profile)
 }
 
 /// Returns the index in [`PINNED`] of the profile `id`.
@@ -53,24 +76,36 @@ fn position(id: &str) -> Option<usize> {
 }
 
 /// Returns every pinned profile. Selecting by ID with [`pinned`] or
-/// [`pinned_for_restore`] builds only that profile.
+/// [`pinned_for_restore`] builds and verifies only that profile.
 ///
-/// Offline only: this builds every profile, for tools and tests. A cold boot
-/// or restore selects its one profile with [`select`] or
-/// [`pinned_for_restore`].
+/// Offline only: this builds and verifies every profile, for tools and tests,
+/// and panics if one is invalid. A cold boot or restore selects its one
+/// profile with [`select`] or [`pinned_for_restore`].
 pub fn pinned_profiles() -> &'static [CpuProfile] {
     static ALL: OnceLock<Vec<CpuProfile>> = OnceLock::new();
-    ALL.get_or_init(|| (0..PINNED.len()).map(|index| load(index).clone()).collect())
+    ALL.get_or_init(|| {
+        (0..PINNED.len())
+            .map(|index| match load(index) {
+                Ok(profile) => profile.clone(),
+                Err(error) => panic!("{error}"),
+            })
+            .collect()
+    })
 }
 
-/// Returns the pinned profile `id`.
-pub fn pinned(id: &str) -> Option<&'static CpuProfile> {
-    position(id).map(load)
+/// Returns the pinned profile `id`, verified.
+///
+/// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin `id`, and
+/// with `E_PROFILE_DIGEST` when its pinned profile is invalid.
+pub fn pinned(id: &str) -> Result<&'static CpuProfile, ProfileError> {
+    load(position(id).ok_or_else(|| unknown(id))?)
 }
 
 /// Returns the precomputed record of the pinned profile `id`: its canonical
 /// encoding and digest, constants that a snapshot's CPU profile record
 /// copies at capture and that the restore preflight compares byte for byte.
+/// It does not verify the profile, which [`select`] and
+/// [`pinned_for_restore`] do first.
 pub fn pinned_record(id: &str) -> Option<PinnedRecord<'static>> {
     position(id).map(|index| PINNED[index].record())
 }
@@ -98,17 +133,21 @@ pub struct PartitionProfile(Source);
 
 #[derive(Clone)]
 enum Source {
-    /// The pinned profile at this index in [`PINNED`].
-    Pinned(usize),
+    /// The pinned profile at this index in [`PINNED`], which [`load`]
+    /// verified.
+    Pinned(usize, &'static CpuProfile),
     /// A host profile.
     Host(Arc<HostProfile>),
 }
 
 impl PartitionProfile {
-    /// Returns the partition profile of the pinned profile `id`, if this
-    /// OpenVMM pins it.
-    pub fn pinned(id: &str) -> Option<Self> {
-        position(id).map(|index| Self(Source::Pinned(index)))
+    /// Returns the partition profile of the pinned profile `id`, verified.
+    ///
+    /// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin `id`, and
+    /// with `E_PROFILE_DIGEST` when its pinned profile is invalid.
+    pub fn pinned(id: &str) -> Result<Self, ProfileError> {
+        let index = position(id).ok_or_else(|| unknown(id))?;
+        Ok(Self(Source::Pinned(index, load(index)?)))
     }
 
     /// Returns the partition profile of `profile`, a host profile, and
@@ -142,7 +181,7 @@ impl PartitionProfile {
     /// encoding and digest, computed when it was selected.
     pub fn record(&self) -> PinnedRecord<'_> {
         match &self.0 {
-            Source::Pinned(index) => PINNED[*index].record(),
+            Source::Pinned(index, _) => PINNED[*index].record(),
             Source::Host(host) => PinnedRecord {
                 id: host.profile.id(),
                 encoding: &host.encoding,
@@ -157,7 +196,7 @@ impl Deref for PartitionProfile {
 
     fn deref(&self) -> &CpuProfile {
         match &self.0 {
-            Source::Pinned(index) => load(*index),
+            Source::Pinned(_, profile) => profile,
             Source::Host(host) => &host.profile,
         }
     }
@@ -245,17 +284,19 @@ pub fn pinned_profile_serves(host: &HostCpuSignature) -> bool {
 }
 
 /// Selects the profile of the host CPU's generation: its latest pinned
-/// revision. Only the profiles whose generation covers the host are built.
+/// revision. Only the profiles whose generation covers the host are built,
+/// and only the selected one is verified ([`pinned`]).
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN` when no pinned profile serves the
 /// host, or when profiles of more than one generation do; there is no host
-/// CPUID passthrough.
+/// CPUID passthrough. Fails with `E_PROFILE_DIGEST` when the selected
+/// profile is invalid.
 pub fn select_auto(host: &HostCpuSignature) -> Result<&'static CpuProfile, ProfileError> {
     let candidates = (0..PINNED.len())
         .filter(|&index| covers(PINNED[index].generation, host))
-        .map(load)
+        .map(build)
         .collect::<Vec<_>>();
-    select_auto_in(&candidates, host, pinned_ids)
+    pinned(select_auto_in(&candidates, host, pinned_ids)?.id())
 }
 
 /// Returns whether `generation` covers the host CPU, as
@@ -316,20 +357,21 @@ fn select_auto_in<'a>(
 }
 
 /// Selects the pinned profile for `--cpu-profile spec`, [`AUTO`] or a pinned
-/// ID, and checks that the host CPU is in its generation. A host profile has
-/// no ID to select it by: the VM worker derives it for [`HOST`], and for
-/// [`AUTO`] on a CPU that no pinned profile serves, or takes a restored
-/// snapshot's ([`PartitionProfile::host`]).
+/// ID, verifies it, and checks that the host CPU is in its generation. A host
+/// profile has no ID to select it by: the VM worker derives it for [`HOST`],
+/// and for [`AUTO`] on a CPU that no pinned profile serves, or takes a
+/// restored snapshot's ([`PartitionProfile::host`]).
 ///
 /// Fails with `E_PROFILE_HOST_UNKNOWN`, `E_PROFILE_UNKNOWN` for an ID that is
-/// not pinned, or `E_CPU_GENERATION`.
+/// not pinned, `E_PROFILE_DIGEST` for a pinned profile that is invalid, or
+/// `E_CPU_GENERATION`.
 pub fn select(spec: &str, host: &HostCpuSignature) -> Result<PartitionProfile, ProfileError> {
     let id = if spec == AUTO {
         select_auto(host)?.id()
     } else {
         spec
     };
-    let profile = PartitionProfile::pinned(id).ok_or_else(|| unknown(spec))?;
+    let profile = PartitionProfile::pinned(id)?;
     check_generation(&profile, host)?;
     Ok(profile)
 }
@@ -351,16 +393,19 @@ pub fn check_generation(profile: &CpuProfile, host: &HostCpuSignature) -> Result
     }
 }
 
-/// Returns the pinned profile that a snapshot recorded by ID and SHA-256.
+/// Returns the pinned profile that a snapshot recorded by ID and SHA-256,
+/// verified.
 ///
 /// Fails with `E_PROFILE_UNKNOWN` when this OpenVMM does not pin the ID, and
-/// with `E_PROFILE_DIGEST` when its pinned profile has another digest. The
-/// pinned profile's digest is a constant, which the catalog's tests check, so
-/// a restore encodes and hashes nothing here. The restore preflight also
-/// compares the recorded document with [`pinned_record`]'s encoding, and
-/// checks the destination host with [`check_generation`].
+/// with `E_PROFILE_DIGEST` when its pinned profile is invalid or has another
+/// digest. The pinned profile's digest is a constant, which the catalog's
+/// tests check, so a restore hashes nothing here. The restore preflight also
+/// compares the recorded document with [`pinned_record`]'s encoding, which
+/// the profile's verification checks, and checks the destination host with
+/// [`check_generation`].
 pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile, ProfileError> {
     let index = position(id).ok_or_else(|| unknown(id))?;
+    let profile = load(index)?;
     let golden = &PINNED[index].digest;
     if sha256 != golden {
         return Err(ProfileError::new(
@@ -371,7 +416,7 @@ pub fn pinned_for_restore(id: &str, sha256: &[u8]) -> Result<&'static CpuProfile
             ),
         ));
     }
-    Ok(load(index))
+    Ok(profile)
 }
 
 fn unknown(id: &str) -> ProfileError {
@@ -402,7 +447,9 @@ fn revision(id: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CpuidLeafValue;
     use crate::derive;
+    use crate::pinned::PinnedProfile;
     use crate::test_support::fingerprint;
     use crate::test_support::profile;
     use test_with_tracing::test;
@@ -480,10 +527,11 @@ mod tests {
         ),
     ];
 
-    /// The checks that an OpenVMM start skips: every pinned file is a valid
-    /// profile in pretty canonical form with its golden digest, and the static
-    /// data generated from it holds the same profile, canonical encoding,
-    /// digest, and generation.
+    /// The checks that an OpenVMM start leaves to the tests: every pinned
+    /// file is a valid profile in pretty canonical form with its golden
+    /// digest, and the static data generated from it holds the same profile,
+    /// canonical encoding, digest, and generation. A start verifies only that
+    /// the static data is a valid profile in its own canonical encoding.
     #[test]
     fn the_static_data_is_the_pinned_files() {
         assert_eq!(PINNED.len(), FILES.len());
@@ -493,7 +541,9 @@ mod tests {
             assert_eq!(profile.digest_string(), golden, "{id}");
             assert_eq!(pinned.id, id);
             assert_eq!(&pinned.to_profile(), &profile, "{id}");
-            assert_eq!(load(index), &profile, "{id}");
+            pinned.verify(&profile).unwrap();
+            assert_eq!(load(index).unwrap(), &profile, "{id}");
+            assert_eq!(VERIFIED[index].get(), Some(&Ok(())), "{id}");
             assert_eq!(pinned.encoding.as_bytes(), profile.encode(), "{id}");
             assert_eq!(canonical::format_digest(&pinned.digest), golden, "{id}");
             assert_eq!(
@@ -513,9 +563,13 @@ mod tests {
             );
             assert!(std::ptr::eq(
                 pinned_for_restore(id, &profile.digest()).unwrap(),
-                load(index)
+                load(index).unwrap()
             ));
         }
+        assert_eq!(
+            code(pinned("intel.icelake-sp.v2")),
+            ProfileErrorCode::ProfileUnknown
+        );
         assert_eq!(pinned_record("intel.icelake-sp.v2"), None);
         assert_eq!(
             pinned_profiles()
@@ -524,6 +578,89 @@ mod tests {
                 .collect::<Vec<_>>(),
             FILES.map(|(id, ..)| id)
         );
+    }
+
+    /// A start refuses static data that is not a valid profile in its own
+    /// canonical encoding, as a stale or malformed `pinned_data.rs` would
+    /// hold, and names what is wrong.
+    #[test]
+    fn verification_rejects_stale_or_malformed_static_data() {
+        fn edited(
+            pinned: &PinnedProfile,
+            edit: impl FnOnce(&mut Vec<CpuidLeafValue>),
+        ) -> &'static [CpuidLeafValue] {
+            let mut cpuid = pinned.cpuid.to_vec();
+            edit(&mut cpuid);
+            cpuid.leak()
+        }
+        fn leaf(cpuid: &mut [CpuidLeafValue], key: (u32, Option<u32>)) -> &mut CpuidLeafValue {
+            cpuid.iter_mut().find(|entry| entry.key() == key).unwrap()
+        }
+        fn refusal(edited: PinnedProfile) -> String {
+            let error = edited.verify(&edited.to_profile()).unwrap_err();
+            assert_eq!(error.code, ProfileErrorCode::ProfileDigest, "{error}");
+            error.message
+        }
+
+        let pinned = &PINNED[position("intel.icelake-sp.v1").unwrap()];
+        pinned.verify(&pinned.to_profile()).unwrap();
+        let invalid = "pinned CPU profile intel.icelake-sp.v1 is invalid: ";
+
+        // Values that violate the CPU time bits: a TSC-deadline timer.
+        let cpuid = edited(pinned, |cpuid| leaf(cpuid, (1, None)).value[2].0 |= 1 << 24);
+        assert_eq!(
+            refusal(PinnedProfile { cpuid, ..*pinned }),
+            format!("{invalid}it violates the CPU time bits: CPUID 0x1 ECX bit 24 is set")
+        );
+        // A missing leaf.
+        let cpuid = edited(pinned, |cpuid| cpuid.retain(|entry| entry.leaf.0 != 3));
+        assert_eq!(
+            refusal(PinnedProfile { cpuid, ..*pinned }),
+            format!("{invalid}CPUID 0x3 lists subleaves [], expected [None]")
+        );
+        // A VM-owned field that the profile pins.
+        let cpuid = edited(pinned, |cpuid| leaf(cpuid, (1, None)).mask[1].0 = !0);
+        let message = refusal(PinnedProfile { cpuid, ..*pinned });
+        assert!(
+            message.starts_with(&format!("{invalid}CPUID 0x1 has mask")),
+            "{message}"
+        );
+        // Another generation.
+        let generation = derive::known_generation("skylake-sp").unwrap();
+        assert_eq!(
+            refusal(PinnedProfile {
+                generation,
+                ..*pinned
+            }),
+            format!("{invalid}ID \"intel.icelake-sp.v1\" is not intel.skylake-sp.v<revision>")
+        );
+
+        // Valid values that the encoding does not hold, and another profile's
+        // encoding.
+        let stale = "pinned CPU profile intel.icelake-sp.v1 differs from its constant \
+                     canonical encoding";
+        assert_eq!(
+            refusal(PinnedProfile {
+                description: "Another description",
+                ..*pinned
+            }),
+            stale
+        );
+        assert_eq!(
+            refusal(PinnedProfile {
+                encoding: PINNED[position("intel.skylake-sp.v1").unwrap()].encoding,
+                ..*pinned
+            }),
+            stale
+        );
+
+        // A digest that is not the encoding's: a start hashes nothing, and
+        // leaves the digest to the tests, which check it against the golden
+        // digest.
+        let mut digest = pinned.digest;
+        digest[0] ^= 1;
+        let stale_digest = PinnedProfile { digest, ..*pinned };
+        stale_digest.verify(&stale_digest.to_profile()).unwrap();
     }
 
     #[test]
@@ -649,7 +786,7 @@ mod tests {
     #[test]
     fn the_static_generations_cover_what_the_profiles_do() {
         for (index, pinned) in PINNED.iter().enumerate() {
-            let profile = load(index);
+            let profile = load(index).unwrap();
             for vendor in [*b"GenuineIntel", *b"AuthenticAMD"] {
                 for (family, model) in [
                     (6u32, 85u32),
@@ -839,7 +976,10 @@ mod tests {
             pinned.record(),
             pinned_record("intel.icelake-sp.v1").unwrap()
         );
-        assert!(PartitionProfile::pinned("intel.host.v1").is_none());
+        assert_eq!(
+            code(PartitionProfile::pinned("intel.host.v1")),
+            ProfileErrorCode::ProfileUnknown
+        );
 
         let host = host_profile();
         let selected = PartitionProfile::host(host.clone()).unwrap();
@@ -932,6 +1072,29 @@ mod tests {
                 &pretty
             )),
             ProfileErrorCode::ProfileDigest
+        );
+        // A canonical document, with its own digest, of a profile that
+        // violates the CPU time bits: a TSC-deadline timer.
+        let mut deadline = host.clone();
+        let leaf1 = deadline
+            .cpuid
+            .iter_mut()
+            .find(|entry| entry.key() == (1, None))
+            .unwrap();
+        leaf1.value[2].0 |= 1 << 24;
+        let encoding_with_deadline = deadline.encode();
+        let error = host_profile_for_restore(
+            host.id(),
+            &canonical::sha256(&encoding_with_deadline),
+            &encoding_with_deadline,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileDigest);
+        assert!(
+            error
+                .message
+                .contains("violates the CPU time bits: CPUID 0x1 ECX bit 24 is set"),
+            "{error}"
         );
         // A pinned profile's document under a host profile's ID.
         let pinned = pinned_record("intel.icelake-sp.v1").unwrap();
