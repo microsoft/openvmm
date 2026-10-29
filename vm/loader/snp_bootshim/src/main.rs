@@ -46,6 +46,7 @@ mod vc;
 
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
@@ -141,6 +142,7 @@ fn validate_params(
 enum PlatformError {
     InvalidMagic,
     UnsupportedVersion,
+    UnknownFlags,
     InvalidCBit,
     /// A region is missing, unaligned, overflows, or lies outside RAM.
     InvalidRegion(&'static str),
@@ -168,6 +170,9 @@ fn validate_platform(
     }
     if platform.version != SNP_BOOT_SHIM_PLATFORM_VERSION {
         return Err(PlatformError::UnsupportedVersion);
+    }
+    if platform.flags & !SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY != 0 {
+        return Err(PlatformError::UnknownFlags);
     }
     if !platform.c_bit_mask.is_power_of_two() {
         return Err(PlatformError::InvalidCBit);
@@ -588,12 +593,20 @@ extern "C" fn start(params_gpa: u64) -> ! {
     let Ok(mut map) = efi::build_memory_map(&layout) else {
         terminate(Failure::MemoryMap)
     };
-    for (range, ty) in efi::initial_acceptance(&layout) {
-        match map.accept(range, ty, &mut accept) {
-            Ok(()) => {}
-            Err(memory_map::Error::Accept) => terminate(Failure::Accept),
-            Err(_) => terminate(Failure::MemoryMap),
-        }
+    let accept_all = platform.flags & SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY != 0;
+    let result = efi::initial_acceptance(&layout)
+        .try_for_each(|(range, ty)| map.accept(range, ty, &mut accept))
+        .and_then(|()| {
+            if accept_all {
+                map.accept_all(&mut accept)
+            } else {
+                Ok(())
+            }
+        });
+    match result {
+        Ok(()) => {}
+        Err(memory_map::Error::Accept) => terminate(Failure::Accept),
+        Err(_) => terminate(Failure::MemoryMap),
     }
 
     install_platform_acpi(platform, &devices);
@@ -875,6 +888,13 @@ mod tests {
                     ..valid_platform()
                 },
                 PlatformError::UnsupportedVersion,
+            ),
+            (
+                SnpBootShimPlatformParams {
+                    flags: 1 << 31,
+                    ..valid_platform()
+                },
+                PlatformError::UnknownFlags,
             ),
             (
                 SnpBootShimPlatformParams {

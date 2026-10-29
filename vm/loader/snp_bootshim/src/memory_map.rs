@@ -207,6 +207,19 @@ impl MemoryMap {
         self.set_entry(range, ty, allocated)
     }
 
+    /// Accepts all unaccepted memory as conventional memory.
+    pub fn accept_all(&mut self, accept: &mut dyn FnMut(MemoryRange) -> bool) -> Result<(), Error> {
+        while let Some(range) = self
+            .entries
+            .iter()
+            .find(|entry| entry.ty == EfiMemoryType::EFI_UNACCEPTED_MEMORY_TYPE)
+            .map(|entry| entry.range)
+        {
+            self.accept(range, EfiMemoryType::EFI_CONVENTIONAL_MEMORY, accept)?;
+        }
+        Ok(())
+    }
+
     /// Allocates `pages` pages of type `ty`.
     pub fn allocate(
         &mut self,
@@ -389,6 +402,30 @@ mod tests {
                 (0, MB, BS_DATA),
                 (4 * MB, 5 * MB, UNACCEPTED),
                 (8 * MB, 9 * MB, CONVENTIONAL),
+            ]
+        );
+    }
+
+    #[test]
+    fn accept_all_accepts_every_unaccepted_range() {
+        let mut map = test_map();
+        map.set(range(128 * MB, 192 * MB), UNACCEPTED).unwrap();
+        let mut accepted = Vec::new();
+        map.accept_all(&mut |range| {
+            accepted.push(range);
+            true
+        })
+        .unwrap();
+        assert_eq!(
+            accepted,
+            [range(32 * MB, 64 * MB), range(128 * MB, 192 * MB)]
+        );
+        assert_eq!(
+            layout(&map),
+            [
+                (0, 16 * MB, BS_DATA),
+                (16 * MB, 64 * MB, CONVENTIONAL),
+                (128 * MB, 192 * MB, CONVENTIONAL),
             ]
         );
     }
