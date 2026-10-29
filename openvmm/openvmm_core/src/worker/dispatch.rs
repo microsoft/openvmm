@@ -2052,18 +2052,40 @@ impl InitializedVm {
                     }),
                     &parameters.hooks,
                 )?;
+                // The portb device takes the host fields of its time samples
+                // from the clock, which pairs host UTC with the guest TSC
+                // through the offset that the unit measures.
+                let clock = Arc::new(time_abi::TimeAbiClock::new(
+                    msrs.clone(),
+                    &report,
+                    &parameters.hooks,
+                ));
+                resolver.add_resolver(time_abi::TimeSampleSourceResolver(clock.clone()));
+                let measure_offset: time_abi::MeasureOffset = {
+                    let partition = partition.clone();
+                    let hypervisor = hypervisor.clone();
+                    Box::new(move || time_abi::guest_tsc_offset(partition.as_ref(), &hypervisor))
+                };
                 let unit = state_units
                     .add(time_abi::TIME_ABI_UNIT)
                     .spawn(driver_source.simple(), {
                         let msrs = msrs.clone();
                         let report = report.clone();
                         move |recv| {
-                            state_unit::run_unit(time_abi::TimeAbiUnit { msrs, report }, recv)
+                            state_unit::run_unit(
+                                time_abi::TimeAbiUnit {
+                                    msrs,
+                                    report,
+                                    clock,
+                                    measure_offset,
+                                },
+                                recv,
+                            )
                         }
                     })
                     .unwrap();
                 Some(time_abi::TimeAbiState {
-                    _unit: unit,
+                    unit,
                     msrs,
                     profile,
                     effective_cpuid,
@@ -3376,12 +3398,20 @@ impl InitializedVm {
         // create a new channel to intercept guest resets
         let (halt_send, halt_recv) = mesh::channel();
 
+        let partition_unit_builder = state_units
+            .add("partition")
+            .depends_on(devices.chipset_unit())
+            .depends_on(vmtime.handle());
+        // The time ABI unit measures the guest TSC's offset for the time
+        // samples at every start, before any VP runs.
+        #[cfg(guest_arch = "x86_64")]
+        let partition_unit_builder = match &time_abi_state {
+            Some(time_abi) => partition_unit_builder.depends_on(time_abi.unit.handle()),
+            None => partition_unit_builder,
+        };
         let (partition_unit, vp_runners) = PartitionUnit::new(
             driver_source.simple(),
-            state_units
-                .add("partition")
-                .depends_on(devices.chipset_unit())
-                .depends_on(vmtime.handle()),
+            partition_unit_builder,
             partition.clone().into_vm_partition(),
             PartitionUnitParams {
                 processor_topology: &processor_topology,

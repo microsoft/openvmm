@@ -1816,8 +1816,8 @@ pub struct MicrovmConfig {
     pub snapshot_memory_ranges: Vec<MemoryRange>,
     /// Fresh private GPA ranges selected for this restore launch.
     pub restore_memory_ranges: Vec<MemoryRange>,
-    /// The NVX time ABI v1 parameters. Every microVM uses the time ABI, so
-    /// the microVM profile requires them.
+    /// The NVX time ABI parameters. Every microVM uses the time ABI, so the
+    /// microVM profile requires them.
     pub time_abi: Option<crate::time_abi::TimeAbiParameters>,
 }
 

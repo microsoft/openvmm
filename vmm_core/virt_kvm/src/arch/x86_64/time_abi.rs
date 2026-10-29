@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The NVX time ABI v1 on KVM.
+//! The NVX time ABI on KVM.
 //!
 //! Active only for partitions built with
 //! [`ProtoPartitionConfig::time_abi`](virt::ProtoPartitionConfig::time_abi).

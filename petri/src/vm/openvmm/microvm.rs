@@ -399,7 +399,6 @@ pub(super) fn attach_chipset_devices(
                 output_drain: None,
                 time_abi: MicrovmPortbTimeAbi {
                     generation: 0,
-                    utc_offset_ms: 0,
                     sample_delay_us: 0,
                     test_hooks: false,
                     restore: None,
