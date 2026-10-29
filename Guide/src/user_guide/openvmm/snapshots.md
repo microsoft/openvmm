@@ -344,7 +344,10 @@ Every profile, pinned or host, fixes the CPU time bits that the time ABI
 requires: the hypervisor, TSC, RDTSCP, ARAT, and invariant-TSC bits set, and
 no TSC-deadline timer, `IA32_TSC_ADJUST`, PDCM, performance monitoring leaf
 `0xa`, or rate leaves `0x15` and `0x16`; OpenVMM refuses a profile that
-violates them (`E_PROFILE_DIGEST`).
+violates them (`E_PROFILE_DIGEST`). Before a partition uses a pinned profile,
+OpenVMM verifies the profile's built-in data, once per process: a valid
+profile, CPU time bits included, whose built-in encoding, which snapshots
+embed, is its canonical encoding (`E_PROFILE_DIGEST`).
 Every boot checks that the backend
 supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
 effective CPUID (`E_CPU_SURFACE`); where `auto` fell back, such a failure
