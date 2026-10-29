@@ -56,6 +56,8 @@ use std::sync::OnceLock;
 /// and receiver ends.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     fn channel_core(vtable: &'static ElementVtable) -> (SenderCore, ReceiverCore) {
+        // Count the initial sender up front to avoid the extra lock acquisition
+        // in SenderCore::new.
         let receiver = ReceiverCore::new(vtable, 1);
         let sender = SenderCore(ManuallyDrop::new(receiver.queue.0.clone()));
         (sender, receiver)
@@ -223,7 +225,7 @@ impl SenderCore {
             SenderCore(ManuallyDrop::new(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
                     remote: true,
-                    ..LocalQueue::new(vtable)
+                    ..LocalQueue::new(vtable, 0)
                 }),
                 remote: OnceLock::from(RemoteQueueState { port, send }),
                 receiver: Default::default(),
@@ -511,10 +513,7 @@ impl ReceiverCore {
     fn new(vtable: &'static ElementVtable, senders: usize) -> Self {
         Self {
             queue: ReceiverQueue(Arc::new(Queue {
-                local: Mutex::new(LocalQueue {
-                    senders,
-                    ..LocalQueue::new(vtable)
-                }),
+                local: Mutex::new(LocalQueue::new(vtable, senders)),
                 remote: OnceLock::new(),
                 receiver: SyncUnsafeCell::new(ManuallyDrop::new(ReceiverState {
                     ports: PortHandlerList::default(),
@@ -683,7 +682,7 @@ impl ReceiverCore {
                 local: Mutex::new(LocalQueue {
                     ports: vec![port],
                     new_handler,
-                    ..LocalQueue::new(vtable)
+                    ..LocalQueue::new(vtable, 0)
                 }),
                 remote: OnceLock::new(),
                 receiver: Default::default(),
@@ -833,9 +832,9 @@ struct LocalQueue {
 type NewHandlerFn = unsafe fn(Arc<Queue>) -> RemotePortHandler;
 
 impl LocalQueue {
-    fn new(vtable: &'static ElementVtable) -> Self {
+    fn new(vtable: &'static ElementVtable, senders: usize) -> Self {
         Self {
-            senders: 0,
+            senders,
             messages: ErasedVecDeque::new(vtable),
             ports: Vec::new(),
             waker: None,
