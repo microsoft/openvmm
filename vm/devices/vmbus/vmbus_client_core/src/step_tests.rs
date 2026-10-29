@@ -280,7 +280,7 @@ fn host_reject_walks_ladder_and_reposts() {
             request_id: RequestId(1),
             params: connect_params(),
         },
-        &mut sink,
+        &mut sink as &mut dyn ActionSink,
     );
     // Initial PostMessage for Copper.
     assert_eq!(sink.actions.len(), 1);
@@ -1858,9 +1858,7 @@ fn teardown_coalesces_multiple_racing_requests() {
             _ => None,
         })
         .collect();
-    assert_eq!(completed.len(), 2);
-    assert!(completed.contains(&RequestId(1301)));
-    assert!(completed.contains(&RequestId(1302)));
+    assert_eq!(completed, [RequestId(1301), RequestId(1302)]);
 }
 
 #[test]
@@ -2713,7 +2711,7 @@ fn post_restore_replays_deferred_channel_releases() {
     .unwrap();
 
     let mut sink = Recording::default();
-    core.post_restore(&mut sink);
+    core.post_restore(&mut sink as &mut dyn ActionSink);
 
     assert_eq!(
         expect_post(&sink.actions[0]),

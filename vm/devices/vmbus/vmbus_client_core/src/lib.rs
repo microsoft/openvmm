@@ -132,6 +132,14 @@ impl ClientPhase {
             Self::Disconnected | Self::Connecting { .. } => None,
         }
     }
+
+    fn saved_version(&self) -> Option<VersionInfo> {
+        match self {
+            Self::Disconnected => None,
+            Self::Connected { version } => Some(*version),
+            _ => panic!("cannot save while a client request is in flight"),
+        }
+    }
 }
 
 // -- Per-channel and per-gpadl state ---------------------------------------
@@ -959,64 +967,88 @@ impl ClientCore {
             self.hvsock_pending.is_empty(),
             "cannot save while an hvsock connection is in flight"
         );
-        let version = match self.phase {
-            ClientPhase::Disconnected => None,
-            ClientPhase::Connected { version } => Some(version),
-            _ => panic!("cannot save while a client request is in flight"),
-        };
-
-        let mut channels = alloc::vec::Vec::new();
-        let mut released_channel_ids = self.released_channel_ids.clone();
-        for (&channel_id, entry) in &self.channels {
-            assert!(
-                entry.modify_request_id.is_none(),
-                "cannot save a channel that is being modified"
-            );
-            let phase = match entry.phase {
-                ChannelPhase::Offered => SavedChannelPhase::Offered,
-                ChannelPhase::Restored | ChannelPhase::Opened { .. } => SavedChannelPhase::Opened,
-                ChannelPhase::Opening { .. } => {
-                    panic!("cannot save a channel that is being opened")
-                }
-                ChannelPhase::Revoked => {
-                    assert!(
-                        entry
-                            .gpadls
-                            .values()
-                            .all(|phase| matches!(phase, GpadlPhase::Created)),
-                        "revoked channel has a pending GPADL request"
-                    );
-                    released_channel_ids.push(channel_id);
-                    continue;
-                }
-            };
-            let gpadls = entry
-                .gpadls
-                .iter()
-                .map(|(&id, phase)| SavedGpadl {
-                    id,
-                    phase: match phase {
-                        GpadlPhase::Created => SavedGpadlPhase::Created,
-                        GpadlPhase::TearingDown { .. } => SavedGpadlPhase::TearingDown {
-                            queued: self.teardown_gpadls.get(&id) != Some(&channel_id),
-                        },
-                        GpadlPhase::Offered { .. } => {
-                            panic!("cannot save a GPADL that is being established")
-                        }
-                    },
-                })
-                .collect();
-            channels.push(SavedChannel {
-                offer: entry.offer,
-                phase,
-                gpadls,
-            });
-        }
+        let version = self.phase.saved_version();
+        let (channels, released_channel_ids) = Self::save_channels(
+            &self.channels,
+            &self.teardown_gpadls,
+            self.released_channel_ids.clone(),
+        );
         SavedState {
             version,
             channels,
             released_channel_ids,
         }
+    }
+
+    fn save_channels(
+        entries: &alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry>,
+        teardown_gpadls: &alloc::collections::BTreeMap<
+            vmbus_core::protocol::GpadlId,
+            vmbus_core::protocol::ChannelId,
+        >,
+        mut released_channel_ids: alloc::vec::Vec<vmbus_core::protocol::ChannelId>,
+    ) -> (
+        alloc::vec::Vec<SavedChannel>,
+        alloc::vec::Vec<vmbus_core::protocol::ChannelId>,
+    ) {
+        let mut channels = alloc::vec::Vec::new();
+        for (&channel_id, entry) in entries {
+            if let Some(channel) = Self::save_channel(channel_id, entry, teardown_gpadls) {
+                channels.push(channel);
+            } else {
+                released_channel_ids.push(channel_id);
+            }
+        }
+        (channels, released_channel_ids)
+    }
+
+    fn save_channel(
+        channel_id: vmbus_core::protocol::ChannelId,
+        entry: &ChannelEntry,
+        teardown_gpadls: &alloc::collections::BTreeMap<
+            vmbus_core::protocol::GpadlId,
+            vmbus_core::protocol::ChannelId,
+        >,
+    ) -> Option<SavedChannel> {
+        assert!(
+            entry.modify_request_id.is_none(),
+            "cannot save a channel that is being modified"
+        );
+        let phase = match entry.phase {
+            ChannelPhase::Offered => SavedChannelPhase::Offered,
+            ChannelPhase::Restored | ChannelPhase::Opened { .. } => SavedChannelPhase::Opened,
+            ChannelPhase::Opening { .. } => {
+                panic!("cannot save a channel that is being opened")
+            }
+            ChannelPhase::Revoked => {
+                assert!(
+                    entry
+                        .gpadls
+                        .values()
+                        .all(|phase| matches!(phase, GpadlPhase::Created)),
+                    "revoked channel has a pending GPADL request"
+                );
+                return None;
+            }
+        };
+        let mut gpadls = alloc::vec::Vec::with_capacity(entry.gpadls.len());
+        for (&id, phase) in &entry.gpadls {
+            let phase = match phase {
+                GpadlPhase::Created => SavedGpadlPhase::Created,
+                GpadlPhase::TearingDown { .. } => SavedGpadlPhase::TearingDown {
+                    queued: teardown_gpadls.get(&id) != Some(&channel_id),
+                },
+                GpadlPhase::Offered { .. } => {
+                    panic!("cannot save a GPADL that is being established")
+                }
+            };
+            gpadls.push(SavedGpadl { id, phase });
+        }
+        Some(SavedChannel {
+            offer: entry.offer,
+            phase,
+            gpadls,
+        })
     }
 
     /// Replace the protocol state with a previously captured snapshot.
@@ -1134,9 +1166,9 @@ impl ClientCore {
     }
 
     /// Close restored channels that were not reclaimed and tear down their GPADLs.
-    pub fn post_restore(&mut self, sink: &mut dyn ActionSink) {
+    pub fn post_restore<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
         for channel_id in core::mem::take(&mut self.released_channel_ids) {
-            self.post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
+            Self::post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
         }
 
         let restored = self
@@ -1148,7 +1180,7 @@ impl ClientCore {
             .collect::<alloc::vec::Vec<_>>();
 
         for channel_id in restored {
-            self.post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
+            Self::post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
             let gpadls = {
                 let entry = self.channels.get_mut(&channel_id).expect("collected above");
                 entry.phase = ChannelPhase::Offered;
@@ -1176,7 +1208,7 @@ impl ClientCore {
                     self.teardown_gpadls.entry(gpadl_id)
                 {
                     entry.insert(channel_id);
-                    self.post_message(
+                    Self::post_message(
                         &vmbus_core::protocol::GpadlTeardown {
                             channel_id,
                             gpadl_id,
@@ -1202,7 +1234,7 @@ impl ClientCore {
     /// [`vmbus_core::protocol::Message::parse`]. Phase 4b-ii adds
     /// [`Event::Connect`] and the version-response ladder; later
     /// stages fill in offers, per-channel, and per-gpadl handling.
-    pub fn step(&mut self, event: Event<'_>, sink: &mut dyn ActionSink) {
+    pub fn step<S: ActionSink + ?Sized>(&mut self, event: Event<'_>, sink: &mut S) {
         match event {
             Event::Start => {
                 self.running = true;
@@ -1309,7 +1341,7 @@ impl ClientCore {
     /// Parse errors are dropped and counted: they represent malformed
     /// input from the host, and the client never trusts host framing
     /// enough to panic.
-    fn dispatch_host_message(&mut self, bytes: &[u8], sink: &mut dyn ActionSink) {
+    fn dispatch_host_message<S: ActionSink + ?Sized>(&mut self, bytes: &[u8], sink: &mut S) {
         use vmbus_core::protocol::Message;
 
         let version = self.phase.version();
@@ -1373,12 +1405,9 @@ impl ClientCore {
 
     /// Encode a vmbus channel-manager message and emit an
     /// [`Action::PostMessage`] carrying its wire bytes.
-    fn post_message<T>(&self, message: &T, sink: &mut dyn ActionSink)
+    fn post_message<T, S: ActionSink + ?Sized>(message: &T, sink: &mut S)
     where
-        T: zerocopy::IntoBytes
-            + zerocopy::Immutable
-            + zerocopy::KnownLayout
-            + vmbus_core::protocol::VmbusMessage,
+        T: zerocopy::IntoBytes + zerocopy::Immutable + vmbus_core::protocol::VmbusMessage,
     {
         let outgoing = vmbus_core::OutgoingMessage::new(message);
         sink.emit(Action::PostMessage(outgoing.data().to_vec()));
@@ -1386,12 +1415,9 @@ impl ClientCore {
 
     /// Encode a vmbus channel-manager message with a trailing data
     /// blob (used by GPADL header/body).
-    fn post_message_with_data<T>(&self, message: &T, data: &[u8], sink: &mut dyn ActionSink)
+    fn post_message_with_data<T, S: ActionSink + ?Sized>(message: &T, data: &[u8], sink: &mut S)
     where
-        T: zerocopy::IntoBytes
-            + zerocopy::Immutable
-            + zerocopy::KnownLayout
-            + vmbus_core::protocol::VmbusMessage,
+        T: zerocopy::IntoBytes + zerocopy::Immutable + vmbus_core::protocol::VmbusMessage,
     {
         let outgoing = vmbus_core::OutgoingMessage::with_data(message, data);
         sink.emit(Action::PostMessage(outgoing.data().to_vec()));
@@ -1402,23 +1428,44 @@ impl ClientCore {
     /// [`ConnectParams`]. Called by [`Self::handle_connect`] and by
     /// [`Self::handle_version_response`] when walking the fallthrough
     /// ladder.
-    fn send_initiate_contact(
+    fn send_initiate_contact<S: ActionSink + ?Sized>(
         &self,
         version: Version,
         params: &ConnectParams,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
+        let msg = Self::initiate_contact_message(
+            version,
+            *params,
+            self.config.sint,
+            self.config.vtl,
+            self.config.supported_feature_flags,
+        );
+        if version < Version::Copper {
+            Self::post_message(&msg.initiate_contact, sink);
+        } else {
+            Self::post_message(&msg, sink);
+        }
+    }
+
+    fn initiate_contact_message(
+        version: Version,
+        params: ConnectParams,
+        sint: u8,
+        vtl: u8,
+        supported_feature_flags: FeatureFlags,
+    ) -> vmbus_core::protocol::InitiateContact2 {
         let feature_flags = if version >= Version::Copper {
-            self.config.supported_feature_flags
+            supported_feature_flags
         } else {
             FeatureFlags::new()
         };
         let target_info = vmbus_core::protocol::TargetInfo::new()
-            .with_sint(self.config.sint)
-            .with_vtl(self.config.vtl)
+            .with_sint(sint)
+            .with_vtl(vtl)
             .with_feature_flags(feature_flags.into());
         let monitor_page = params.monitor_page.unwrap_or_default();
-        let msg = vmbus_core::protocol::InitiateContact2 {
+        vmbus_core::protocol::InitiateContact2 {
             initiate_contact: vmbus_core::protocol::InitiateContact {
                 version_requested: version as u32,
                 target_message_vp: params.target_message_vp,
@@ -1427,22 +1474,17 @@ impl ClientCore {
                 child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
             },
             client_id: params.client_id,
-        };
-        if version < Version::Copper {
-            self.post_message(&msg.initiate_contact, sink);
-        } else {
-            self.post_message(&msg, sink);
         }
     }
 
     /// Handle [`Event::Connect`] — validate current phase, transition
     /// to `Connecting`, and post the initial `InitiateContact[2]`
     /// with the highest supported version.
-    fn handle_connect(
+    fn handle_connect<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         params: ConnectParams,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         if !matches!(self.phase, ClientPhase::Disconnected) {
             sink.emit(Action::Complete {
@@ -1472,10 +1514,10 @@ impl ClientCore {
 
     /// Handle a `VersionResponse[2|3]` — either finish the caller's
     /// [`Event::Connect`] or walk down the negotiation ladder.
-    fn handle_version_response(
+    fn handle_version_response<S: ActionSink + ?Sized>(
         &mut self,
         msg: vmbus_core::protocol::VersionResponse2,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         // Take current Connecting phase; leaving Disconnected as the
         // interim value means a stale response can't corrupt state.
@@ -1560,7 +1602,11 @@ impl ClientCore {
 
     /// Handle [`Event::RequestOffers`] — validate phase, post a
     /// `RequestOffers` message, and transition to `RequestingOffers`.
-    fn handle_request_offers(&mut self, request_id: RequestId, sink: &mut dyn ActionSink) {
+    fn handle_request_offers<S: ActionSink + ?Sized>(
+        &mut self,
+        request_id: RequestId,
+        sink: &mut S,
+    ) {
         let ClientPhase::Connected { version } = *self.phase() else {
             sink.emit(Action::Complete {
                 request_id,
@@ -1575,7 +1621,7 @@ impl ClientCore {
             request_id,
             offer_count: 0,
         };
-        self.post_message(&vmbus_core::protocol::RequestOffers {}, sink);
+        Self::post_message(&vmbus_core::protocol::RequestOffers {}, sink);
     }
 
     /// Handle a host-originated `OfferChannel` — record the channel
@@ -1583,10 +1629,10 @@ impl ClientCore {
     /// regular offer or as the completion of a pending
     /// [`Event::HvsockConnect`] when the offer matches a tracked
     /// hvsock service.
-    fn handle_offer(
+    fn handle_offer<S: ActionSink + ?Sized>(
         &mut self,
         offer: vmbus_core::protocol::OfferChannel,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         // Duplicate offer for a live channel is a host protocol
         // violation; drop it rather than panicking.
@@ -1668,7 +1714,7 @@ impl ClientCore {
     /// Handle `AllOffersDelivered` — complete the outstanding
     /// [`Event::RequestOffers`] and transition back to
     /// [`ClientPhase::Connected`].
-    fn handle_offers_delivered(&mut self, sink: &mut dyn ActionSink) {
+    fn handle_offers_delivered<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
         let old_phase = core::mem::replace(&mut self.phase, ClientPhase::Disconnected);
         let ClientPhase::RequestingOffers {
             version,
@@ -1702,10 +1748,10 @@ impl ClientCore {
     /// and event-flag-cleanup logic in phase 4b-iii-b, along with
     /// the caller-side `OpenChannel` flow that puts the channel in
     /// those states in the first place.
-    fn handle_rescind(
+    fn handle_rescind<S: ActionSink + ?Sized>(
         &mut self,
         rescind: vmbus_core::protocol::RescindChannelOffer,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let channel_id = rescind.channel_id;
         let Some(entry) = self.channels.get_mut(&channel_id) else {
@@ -1750,12 +1796,12 @@ impl ClientCore {
     /// [`ChannelPhase::Opening`]. On failure the caller-supplied
     /// (pre-allocated) `redirected_event_flag` is freed via
     /// [`Action::FreeEventFlag`].
-    fn handle_open_channel(
+    fn handle_open_channel<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         params: OpenChannelParams,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Some(entry) = self.channels.get(&channel_id) else {
             self.reject_open(
@@ -1836,7 +1882,7 @@ impl ClientCore {
         }
         let event_flag = params.redirected_event_flag.unwrap_or(params.event_flag);
         if supports_redirection {
-            self.post_message(
+            Self::post_message(
                 &vmbus_core::protocol::OpenChannel2 {
                     open_channel,
                     connection_id: params.connection_id,
@@ -1846,7 +1892,7 @@ impl ClientCore {
                 sink,
             );
         } else {
-            self.post_message(&open_channel, sink);
+            Self::post_message(&open_channel, sink);
         }
 
         let entry = self.channels.get_mut(&channel_id).expect("validated above");
@@ -1861,12 +1907,12 @@ impl ClientCore {
 
     /// Complete a pending [`Event::OpenChannel`] with an error and
     /// free any caller-supplied event flag.
-    fn reject_open(
+    fn reject_open<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         redirected_event_flag: Option<u16>,
         error: OpenChannelError,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         if let Some(flag) = redirected_event_flag {
             self.free_event_flag_and_notify(flag, sink);
@@ -1881,10 +1927,10 @@ impl ClientCore {
     /// [`Event::OpenChannel`] with success or failure, and emit the
     /// per-channel observables for the wrapper's Arc<AtomicU32>
     /// tracking.
-    fn handle_open_result(
+    fn handle_open_result<S: ActionSink + ?Sized>(
         &mut self,
         result: vmbus_core::protocol::OpenResult,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let channel_id = result.channel_id;
         let Some(entry) = self.channels.get_mut(&channel_id) else {
@@ -1947,17 +1993,18 @@ impl ClientCore {
     /// event flag / connection id, transition to
     /// [`ChannelPhase::Opened`]. Emits its completion synchronously
     /// (no wire message).
-    fn handle_restore_channel(
+    fn handle_restore_channel<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         params: RestoreChannelParams,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
-        if !matches!(
-            self.channels.get(&channel_id).map(|entry| &entry.phase),
-            Some(ChannelPhase::Restored)
-        ) {
+        if !self
+            .channels
+            .get(&channel_id)
+            .is_some_and(|entry| matches!(entry.phase, ChannelPhase::Restored))
+        {
             self.reject_open(
                 request_id,
                 params.redirected_event_flag,
@@ -1992,10 +2039,10 @@ impl ClientCore {
     /// [`ChannelPhase::Offered`], frees any redirected event flag,
     /// and posts `CloseChannel`. No-op if the channel is already
     /// [`ChannelPhase::Revoked`] (host has already dropped it).
-    fn handle_close_channel(
+    fn handle_close_channel<S: ActionSink + ?Sized>(
         &mut self,
         channel_id: vmbus_core::protocol::ChannelId,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             return;
@@ -2010,7 +2057,7 @@ impl ClientCore {
                 let entry = self.channels.get_mut(&channel_id).expect("validated above");
                 entry.phase = ChannelPhase::Offered;
                 entry.connection_id = 0;
-                self.post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
+                Self::post_message(&vmbus_core::protocol::CloseChannel { channel_id }, sink);
                 sink.emit(Action::ChannelObservable {
                     channel_id,
                     event: ChannelObservable::ConnectionIdCleared,
@@ -2034,12 +2081,12 @@ impl ClientCore {
     /// Handle [`Event::ModifyChannel`] — post a `ModifyChannel` wire
     /// message and stash the request id. Duplicates on the same
     /// channel are rejected with a synthetic non-zero status.
-    fn handle_modify_channel(
+    fn handle_modify_channel<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         request: ModifyRequest,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         if !matches!(
             self.phase,
@@ -2070,7 +2117,7 @@ impl ClientCore {
             .insert(request_id, PendingRequest::ModifyChannel { channel_id });
         match request {
             ModifyRequest::TargetVp { target_vp } => {
-                self.post_message(
+                Self::post_message(
                     &vmbus_core::protocol::ModifyChannel {
                         channel_id,
                         target_vp,
@@ -2083,10 +2130,10 @@ impl ClientCore {
 
     /// Handle host-originated `ModifyChannelResponse` — complete the
     /// outstanding [`Event::ModifyChannel`] for this channel.
-    fn handle_modify_channel_response(
+    fn handle_modify_channel_response<S: ActionSink + ?Sized>(
         &mut self,
         response: vmbus_core::protocol::ModifyChannelResponse,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let channel_id = response.channel_id;
         let Some(entry) = self.channels.get_mut(&channel_id) else {
@@ -2107,10 +2154,10 @@ impl ClientCore {
     /// as caller-released. If it's already `Revoked` with no
     /// outstanding requests, [`Self::try_release_channel`] will
     /// post `RelIdReleased` and drop the entry.
-    fn handle_release_channel(
+    fn handle_release_channel<S: ActionSink + ?Sized>(
         &mut self,
         channel_id: vmbus_core::protocol::ChannelId,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         // If the caller drops a still-Opened channel, close it
         // implicitly (matches vmbus_client's handle_device_removal).
@@ -2128,10 +2175,10 @@ impl ClientCore {
     /// If the channel is caller-released, host-revoked, and has no
     /// outstanding requests, post `RelIdReleased` and drop the entry.
     /// Matches `vmbus_client`'s `Channel::try_release` semantics.
-    fn try_release_channel(
+    fn try_release_channel<S: ActionSink + ?Sized>(
         &mut self,
         channel_id: vmbus_core::protocol::ChannelId,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Some(entry) = self.channels.get(&channel_id) else {
             return;
@@ -2143,7 +2190,7 @@ impl ClientCore {
                 .values()
                 .any(|g| !matches!(g, GpadlPhase::Created));
         if entry.is_client_released && is_revoked && !has_pending {
-            self.post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
+            Self::post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
             self.channels.remove(&channel_id);
         }
     }
@@ -2156,7 +2203,7 @@ impl ClientCore {
     /// callers are expected to have obtained `flag` from a paired
     /// [`Self::allocate_event_flag`] call and never emit
     /// `FreeEventFlag` twice for the same flag.
-    fn free_event_flag_and_notify(&mut self, flag: u16, sink: &mut dyn ActionSink) {
+    fn free_event_flag_and_notify<S: ActionSink + ?Sized>(&mut self, flag: u16, sink: &mut S) {
         self.flag_allocator.free(flag);
         sink.emit(Action::FreeEventFlag(flag));
     }
@@ -2170,13 +2217,13 @@ impl ClientCore {
     /// A duplicate gpadl id on the same channel — protocol
     /// violation from the caller side — is completed with an error
     /// and the request is not sent.
-    fn handle_establish_gpadl(
+    fn handle_establish_gpadl<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         gpadl_id: vmbus_core::protocol::GpadlId,
         request: GpadlRequest,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Ok(len_bytes) = size_of_val(request.buf.as_slice()).try_into() else {
             sink.emit(Action::Complete {
@@ -2233,20 +2280,20 @@ impl ClientCore {
         };
         // SAFETY: the wire types are IntoBytes + Immutable; casting
         // &[u64] to &[u8] via zerocopy is the sanctioned pattern.
-        self.post_message_with_data(&header, zerocopy::IntoBytes::as_bytes(first), sink);
+        Self::post_message_with_data(&header, zerocopy::IntoBytes::as_bytes(first), sink);
 
         let body = vmbus_core::protocol::GpadlBody { rsvd: 0, gpadl_id };
         for chunk in remaining.chunks(vmbus_core::protocol::GpadlBody::MAX_DATA_VALUES) {
-            self.post_message_with_data(&body, zerocopy::IntoBytes::as_bytes(chunk), sink);
+            Self::post_message_with_data(&body, zerocopy::IntoBytes::as_bytes(chunk), sink);
         }
     }
 
     /// Handle host-originated `GpadlCreated` — complete the pending
     /// [`Event::EstablishGpadl`] with success or failure.
-    fn handle_gpadl_created(
+    fn handle_gpadl_created<S: ActionSink + ?Sized>(
         &mut self,
         created: vmbus_core::protocol::GpadlCreated,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let channel_id = created.channel_id;
         let gpadl_id = created.gpadl_id;
@@ -2285,7 +2332,7 @@ impl ClientCore {
                     self.teardown_gpadls.entry(gpadl_id)
             {
                 entry.insert(channel_id);
-                self.post_message(
+                Self::post_message(
                     &vmbus_core::protocol::GpadlTeardown {
                         channel_id,
                         gpadl_id,
@@ -2317,12 +2364,12 @@ impl ClientCore {
     /// if a teardown is already in flight; complete immediately with
     /// no-op on unknown gpadls. If establishment is still in flight,
     /// retain the request until the host accepts or rejects the GPADL.
-    fn handle_teardown_gpadl(
+    fn handle_teardown_gpadl<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         channel_id: vmbus_core::protocol::ChannelId,
         gpadl_id: vmbus_core::protocol::GpadlId,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             sink.emit(Action::Complete {
@@ -2368,7 +2415,7 @@ impl ClientCore {
                     self.teardown_gpadls.entry(gpadl_id)
                 {
                     entry.insert(channel_id);
-                    self.post_message(
+                    Self::post_message(
                         &vmbus_core::protocol::GpadlTeardown {
                             channel_id,
                             gpadl_id,
@@ -2395,10 +2442,10 @@ impl ClientCore {
     /// Handle host-originated `GpadlTorndown` — remove the gpadl
     /// entry and complete every teardown request that was coalesced
     /// onto it.
-    fn handle_gpadl_torndown(
+    fn handle_gpadl_torndown<S: ActionSink + ?Sized>(
         &mut self,
         torndown: vmbus_core::protocol::GpadlTorndown,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let gpadl_id = torndown.gpadl_id;
         let channel_id = match self.teardown_gpadls.get(&gpadl_id).copied() {
@@ -2408,17 +2455,14 @@ impl ClientCore {
         let Some(entry) = self.channels.get_mut(&channel_id) else {
             return;
         };
-        if !matches!(
-            entry.gpadls.get(&gpadl_id),
-            Some(GpadlPhase::TearingDown { .. })
-        ) {
+        let Some(gpadl) = entry.gpadls.get_mut(&gpadl_id) else {
             return;
-        }
-        let GpadlPhase::TearingDown { request_ids } =
-            entry.gpadls.remove(&gpadl_id).expect("validated above")
-        else {
-            unreachable!("validated above")
         };
+        let GpadlPhase::TearingDown { request_ids } = gpadl else {
+            return;
+        };
+        let request_ids = core::mem::take(request_ids);
+        entry.gpadls.remove(&gpadl_id);
         self.teardown_gpadls.remove(&gpadl_id);
         for request_id in request_ids {
             self.outstanding.remove(&request_id);
@@ -2431,21 +2475,18 @@ impl ClientCore {
         self.try_release_channel(channel_id, sink);
     }
 
-    fn start_next_gpadl_teardown(
+    fn start_next_gpadl_teardown<S: ActionSink + ?Sized>(
         &mut self,
         gpadl_id: vmbus_core::protocol::GpadlId,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let next_channel_id = self.channels.iter().find_map(|(&channel_id, entry)| {
-            matches!(
-                entry.gpadls.get(&gpadl_id),
-                Some(GpadlPhase::TearingDown { .. })
-            )
-            .then_some(channel_id)
+            let phase = entry.gpadls.get(&gpadl_id)?;
+            matches!(phase, GpadlPhase::TearingDown { .. }).then_some(channel_id)
         });
         if let Some(channel_id) = next_channel_id {
             self.teardown_gpadls.insert(gpadl_id, channel_id);
-            self.post_message(
+            Self::post_message(
                 &vmbus_core::protocol::GpadlTeardown {
                     channel_id,
                     gpadl_id,
@@ -2459,7 +2500,7 @@ impl ClientCore {
     /// [`ClientPhase::Disconnecting`]. If offer enumeration is still
     /// in progress, cancel it before unloading so its caller is not
     /// left pending.
-    fn handle_unload(&mut self, request_id: RequestId, sink: &mut dyn ActionSink) {
+    fn handle_unload<S: ActionSink + ?Sized>(&mut self, request_id: RequestId, sink: &mut S) {
         let version = match self.phase {
             ClientPhase::Connected { version } => version,
             ClientPhase::RequestingOffers {
@@ -2488,12 +2529,12 @@ impl ClientCore {
             version,
             request_id,
         };
-        self.post_message(&vmbus_core::protocol::Unload {}, sink);
+        Self::post_message(&vmbus_core::protocol::Unload {}, sink);
     }
 
     /// Handle `UnloadComplete` — finish the caller's Unload and
     /// transition back to [`ClientPhase::Disconnected`].
-    fn handle_unload_complete(&mut self, sink: &mut dyn ActionSink) {
+    fn handle_unload_complete<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
         let old = core::mem::replace(&mut self.phase, ClientPhase::Disconnected);
         let ClientPhase::Disconnecting { request_id, .. } = old else {
             self.phase = old;
@@ -2510,11 +2551,11 @@ impl ClientCore {
     /// with new monitor page GPAs. Rejects if not connected, if the
     /// negotiated feature flags don't include `modify_connection`,
     /// or if another `ModifyConnection` is already in flight.
-    fn handle_modify_connection(
+    fn handle_modify_connection<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         monitor_page: MonitorPageGpas,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let supported = matches!(
             self.phase,
@@ -2541,7 +2582,7 @@ impl ClientCore {
         self.modify_connection_request_id = Some(request_id);
         self.outstanding
             .insert(request_id, PendingRequest::ModifyConnection);
-        self.post_message(
+        Self::post_message(
             &vmbus_core::protocol::ModifyConnection {
                 parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
                 child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
@@ -2553,10 +2594,10 @@ impl ClientCore {
     /// Handle `ModifyConnectionResponse` — complete the outstanding
     /// [`Event::ModifyConnection`] with the host-supplied connection
     /// state.
-    fn handle_modify_connection_response(
+    fn handle_modify_connection_response<S: ActionSink + ?Sized>(
         &mut self,
         response: vmbus_core::protocol::ModifyConnectionResponse,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         let Some(request_id) = self.modify_connection_request_id.take() else {
             return;
@@ -2573,11 +2614,11 @@ impl ClientCore {
     /// The host may respond either with a matching `OfferChannel`
     /// (success — handled in [`Self::handle_offer`]) or with
     /// `TlConnectResult` carrying a failure status.
-    fn handle_hvsock_connect(
+    fn handle_hvsock_connect<S: ActionSink + ?Sized>(
         &mut self,
         request_id: RequestId,
         request: HvsockConnectRequest,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         if !matches!(
             self.phase.version(),
@@ -2607,17 +2648,17 @@ impl ClientCore {
                 service_id: request.service_id,
             },
         );
-        self.post_message(&msg, sink);
+        Self::post_message(&msg, sink);
     }
 
     /// Handle `TlConnectResult` — the host reports a failure (any
     /// success is signalled by an `OfferChannel`, never by
     /// `TlConnectResult`). Completes the pending hvsock request
     /// with `None`.
-    fn handle_tl_connect_result(
+    fn handle_tl_connect_result<S: ActionSink + ?Sized>(
         &mut self,
         result: vmbus_core::protocol::TlConnectResult,
-        sink: &mut dyn ActionSink,
+        sink: &mut S,
     ) {
         // Only failures arrive here; a non-negative status is a
         // protocol violation.
@@ -2644,7 +2685,7 @@ impl ClientCore {
         request_id
     }
 
-    fn handle_prepare_save(&mut self, sink: &mut dyn ActionSink) {
+    fn handle_prepare_save<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
         if let Some(request_id) = self.modify_connection_request_id.take() {
             self.outstanding.remove(&request_id);
             sink.emit(Action::Complete {
@@ -2670,20 +2711,20 @@ impl ClientCore {
     /// meaningful when the negotiated feature set includes
     /// `pause_resume`; on older versions the message is a no-op on
     /// the host side and will be silently discarded.
-    fn handle_pause(&mut self, sink: &mut dyn ActionSink) {
-        self.post_message(&vmbus_core::protocol::Pause, sink);
+    fn handle_pause<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
+        Self::post_message(&vmbus_core::protocol::Pause, sink);
     }
 
     /// Handle [`Event::Resume`] — post `Resume`.
-    fn handle_resume(&mut self, sink: &mut dyn ActionSink) {
-        self.post_message(&vmbus_core::protocol::Resume, sink);
+    fn handle_resume<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
+        Self::post_message(&vmbus_core::protocol::Resume, sink);
     }
 
     /// Handle `PauseResponse` — signal acknowledged. Currently no
     /// per-request tracking; the wrapper uses this as a hint to
     /// stop draining its incoming-message queue until the next
     /// [`Event::Resume`].
-    fn handle_pause_response(&mut self, sink: &mut dyn ActionSink) {
+    fn handle_pause_response<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
         sink.emit(Action::PauseComplete);
     }
 }
