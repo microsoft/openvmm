@@ -5,6 +5,16 @@ description: "Run, optimize, and debug OpenVMM fuzzers. Covers cargo-fuzz target
 
 # OpenVMM Fuzzer Guide
 
+## Scope and resource limits
+
+Reproduce a supplied crash once before expanding the investigation. For
+exploratory fuzzing, use explicit time and worker limits. Before a multi-target
+campaign, establish a total CPU and time budget; do not assume the machine's
+full capacity is available.
+
+Keep runs attached by default. Follow the execution environment's process
+management rules, and choose output paths appropriate to that environment.
+
 ## Prerequisites
 
 - **Linux only** — libfuzzer-sys doesn't support Windows.
@@ -22,14 +32,23 @@ binary. Find all targets:
 cargo xtask fuzz list
 ```
 
+For a crate without a `fuzz/` directory, create a harness from a template:
+
+```bash
+cargo xtask fuzz init <PACKAGE_NAME> basic
+```
+
+The command also adds the generated fuzz crate to the workspace members.
+Use the `chipset-device` template for `ChipsetDevice` harnesses.
+
 ## Running a fuzzer
 
 ```bash
-# Continuous fuzzing (finds new crashes)
-cargo xtask fuzz run fuzz_ide
-
 # Reproduce a specific crash artifact
 cargo xtask fuzz run fuzz_ide path/to/crash-artifact
+
+# Explore for 60 seconds with one worker
+cargo xtask fuzz run fuzz_ide -- -- -fork=1 -max_total_time=60
 ```
 
 The xtask wrapper sets `XTASK_FUZZ_REPRO=1` automatically when an artifact
@@ -98,10 +117,11 @@ quit
 ```bash
 lldb -b -s scratch/lldb_fuzz.cmd \
   -- ./target/<triple>/release/fuzz_ide \
-  path/to/crash-artifact 2>&1 | tail -80
+  path/to/crash-artifact
 ```
 
-The `| tail -80` trims libfuzzer startup noise. Adjust as needed.
+Keep the full debugger output so that startup errors and crash details remain
+visible.
 
 ### Using rust-lldb
 
@@ -111,7 +131,7 @@ lldb to be installed. Usage is the same but replace `lldb` with `rust-lldb`:
 ```bash
 rust-lldb -b -s scratch/lldb_fuzz.cmd \
   -- ./target/<triple>/release/fuzz_ide \
-  path/to/crash-artifact 2>&1 | tail -80
+  path/to/crash-artifact
 ```
 
 ### Debug builds for variable inspection
@@ -220,26 +240,21 @@ Every byte of fuzzer input should drive meaningful behavior. Common wastes:
 
 ## Multi-target parallel fuzzing
 
-Run multiple fuzzers across available CPUs for extended campaigns:
+Choose the targets, total worker count, and duration before starting a
+campaign. Each target's workers count toward the total CPU budget. For example,
+this command gives one selected target one worker for 60 seconds:
 
 ```bash
-# 6-hour campaign across 112 cores, 7 fuzzers
-# Each runs with -fork=N, survives crashes/timeouts/OOMs
-nohup bash -c 'RUSTFLAGS="-Ctarget-feature=+lse,+neon" \
-  cargo xtask fuzz run fuzz_storvsp -- -- \
-  -fork=20 -max_total_time=21600 \
-  -ignore_crashes=1 -ignore_timeouts=1 -ignore_ooms=1 \
-  -print_final_stats=1' > /tmp/fuzz_storvsp.log 2>&1 &
+cargo xtask fuzz run fuzz_storvsp -- -- \
+  -fork=1 -max_total_time=60 -print_final_stats=1
 ```
 
-Allocate cores based on fuzzer complexity:
-- Heavy fuzzers (storvsp, ide, nvme, nvram): 20 cores each
-- Medium fuzzers (cmos_rtc): 15 cores
-- Light fuzzers (diagnostics, scsi_buffers): 7–10 cores
+Repeat the bounded command for other selected targets within the agreed budget.
+Apply the aarch64 flags from the prerequisites only on aarch64. Keep each run's
+full output, or save it to a caller-selected log path.
 
-Monitor progress: `tail -1 /tmp/fuzz_*.log`
-
-After the run, collect coverage on each fuzzer for gap analysis.
+Collect coverage afterward when the task includes gap analysis. Do not extend
+the campaign beyond its budget without confirming the new scope.
 
 ## Code coverage
 
@@ -285,32 +300,36 @@ Use `llvm-cov report` with source path filtering:
 
 ```bash
 # Find the llvm-cov binary from the toolchain
-LLVM_COV=$(find $(rustc --print sysroot) -name "llvm-cov" -type f | head -1)
+SYSROOT=$(rustc --print sysroot)
+HOST=$(rustc -vV | awk '/^host:/ { print $2 }')
+LLVM_COV="$SYSROOT/lib/rustlib/$HOST/bin/llvm-cov"
 
 # Full per-file report, excluding third-party code
-$LLVM_COV report \
+"$LLVM_COV" report \
   -instr-profile <crate>/fuzz/coverage/<target>/coverage.profdata \
   -object target/<triple>/coverage/<triple>/release/<target> \
   --ignore-filename-regex='(rustc|\.cargo|registry)' 2>&1 \
   | grep 'vm/devices/storage/ide/src/'
 ```
 
-For lcov-based per-file analysis, export to lcov and extract per-file stats:
+For lcov-based per-file analysis, choose an output path in a writable directory,
+then export to lcov and extract per-file stats:
 
 ```bash
-$LLVM_COV export \
+COVERAGE_LCOV=path/to/coverage.lcov
+"$LLVM_COV" export \
   -instr-profile <crate>/fuzz/coverage/<target>/coverage.profdata \
   -object target/<triple>/coverage/<triple>/release/<target> \
   --ignore-filename-regex='(rustc|\.cargo|registry)' \
-  -format=lcov > /tmp/coverage.lcov
+  -format=lcov > "$COVERAGE_LCOV"
 
 # Per-file function/line summary from lcov
-awk '/SF:.*ide\/src\/lib\.rs$/,/end_of_record/' /tmp/coverage.lcov \
+awk '/SF:.*ide\/src\/lib\.rs$/,/end_of_record/' "$COVERAGE_LCOV" \
   | grep -E '^(FNF|FNH|LF|LH):'
 # FNF/FNH = functions found/hit, LF/LH = lines found/hit
 
 # Find uncovered line numbers
-awk '/SF:.*ide\/src\/lib\.rs$/,/end_of_record/' /tmp/coverage.lcov \
+awk '/SF:.*ide\/src\/lib\.rs$/,/end_of_record/' "$COVERAGE_LCOV" \
   | grep '^DA:' | grep ',0$' | cut -d: -f2 | cut -d, -f1
 ```
 
@@ -346,10 +365,9 @@ improvements should focus on primary scope first.
    exercised incidentally. Don't optimize the fuzzer to improve their coverage
    — those crates deserve their own fuzzers if coverage matters.
 
-4. **Save/restore and resolver code is structurally unreachable.** Functions
-   like `save_restore.rs`, `resolver.rs` won't be hit by fuzzing because
-   the fuzzer doesn't exercise serialization or resource resolution paths.
-   Don't count them against coverage targets.
+4. **Check the harness before excluding save/restore or resolver code.** If the
+   harness does not exercise serialization or resource resolution, exclude
+   those paths from its coverage target. Do not assume every harness omits them.
 
 5. **Inspect (`InspectMut`) implementations are low-value.** These debug/
    diagnostics paths aren't part of the attack surface. Low coverage is
@@ -372,7 +390,7 @@ cargo xtask fuzz coverage <target> --with-html-report
 Look at the HTML report or extract uncovered lines:
 
 ```bash
-awk '/SF:.*<crate>\/src\/lib\.rs$/,/end_of_record/' /tmp/coverage.lcov \
+awk '/SF:.*<crate>\/src\/lib\.rs$/,/end_of_record/' "$COVERAGE_LCOV" \
   | grep '^DA:' | grep ',0$' | cut -d: -f2 | cut -d, -f1
 ```
 
@@ -382,7 +400,7 @@ Read the source at those lines. Classify each uncovered region:
 |---------------|--------|
 | **Reachable via fuzzer input** — the fuzzer *could* reach this code but hasn't found the right input sequence | Investigate why. Is the path gated by specific byte patterns the fuzzer struggles to generate? |
 | **Structurally unreachable** — the fuzzer harness doesn't wire up the code path (e.g., save/restore, PCI config reads the harness skips) | Extend the harness: add new `FuzzAction` variants, expose more device interfaces to the fuzzer. |
-| **Error-handling / defensive code** — `unreachable!()`, error paths for invalid hardware states | Low priority. These are worth testing but don't indicate a fuzzer deficiency. |
+| **Error-handling / defensive code** — `unreachable!()`, error paths for invalid hardware states | Check guest/root reachability first. Investigate reachable panics and malformed-input paths; do not dismiss them as low priority. |
 | **Inspect / debug only** — `InspectMut`, `Display`, `Debug` impls | Skip entirely. Not attack surface. |
 
 ### Step 3: Improve the fuzzer
@@ -415,7 +433,7 @@ impl. Common issues:
 
 After making changes:
 
-1. Run the fuzzer for a fixed duration (e.g., 1 hour)
+1. Run the fuzzer for the same bounded duration before and after the change
 2. Minimize the corpus: `cargo xtask fuzz cmin <target>`
 3. Collect coverage again
 4. Compare line counts against prior coverage runs
@@ -432,3 +450,5 @@ Coverage-guided improvement is iterative. Each cycle:
 Target **≥85% line coverage** in primary scope as a practical goal. The
 remaining ~15% is typically error-handling code, debug impls, and paths
 requiring specific hardware/timing conditions the fuzzer can't easily produce.
+Coverage percentages are not safety thresholds. Investigate guest/root-reachable
+panics and malformed-input paths regardless of the percentage.
