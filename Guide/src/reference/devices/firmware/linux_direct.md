@@ -148,13 +148,17 @@ Linux, which accepts each part when it first uses it. This makes boot faster
 for guests with a lot of RAM. The kernel needs `CONFIG_UNACCEPTED_MEMORY` to
 use the unaccepted RAM.
 
+To make the bootshim accept all RAM before it calls the EFI stub, set
+`"memory_acceptance": "eager"` in the `snp_linux_direct` image of the IGVM
+manifest. Use this for a kernel without `CONFIG_UNACCEPTED_MEMORY`.
+
 ### Launch Requirements
 
 One image boots with any supported CPU count, RAM size, and NUMA layout:
 
 - Give the guest at least the RAM that the image measures, which is
   `memory_page_count` pages in the manifest. The shim trusts any RAM that the
-  device tree describes above that, and Linux accepts it lazily.
+  device tree describes above that.
 - Use up to 255 processors and 64 RAM ranges, with all RAM below 512 GiB.
   The bootshim stops the guest when the configuration is larger.
 
