@@ -19,6 +19,7 @@ use igvmfilegen_config::LinuxImage;
 use igvmfilegen_config::ResourceType;
 use igvmfilegen_config::Resources;
 use igvmfilegen_config::SnpInjectionType;
+use igvmfilegen_config::SnpMemoryAcceptance;
 use loader::importer::BootPageAcceptance;
 use loader::importer::IgvmParameterType;
 use loader::importer::ImageLoad;
@@ -32,6 +33,7 @@ use loader_defs::linux::SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS;
 use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
@@ -74,6 +76,8 @@ pub struct BuildParams<'a> {
     pub memory_page_count: u64,
     /// The page-table address bit used as the SNP encryption bit.
     pub c_bit_position: u8,
+    /// When the bootshim accepts the guest's RAM.
+    pub memory_acceptance: SnpMemoryAcceptance,
     /// The SNP guest policy.
     pub policy: SnpPolicy,
     /// The SNP interrupt-injection mode.
@@ -138,6 +142,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         linux,
         memory_page_count,
         c_bit_position,
+        memory_acceptance,
         policy,
         injection_type,
         resources,
@@ -160,10 +165,15 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
     let mut bootshim = fs_err::File::open(bootshim_path)?;
 
     let mut loader = new_loader(policy, c_bit_position, memory_page_count, injection_type);
+    let flags = match memory_acceptance {
+        SnpMemoryAcceptance::Lazy => 0,
+        SnpMemoryAcceptance::Eager => SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY,
+    };
     let bootshim_ranges = layout_guest(
         &mut loader,
         memory_page_count,
         c_bit_position,
+        flags,
         &Payload {
             kernel: &kernel_pe,
             kernel_init_size,
@@ -208,11 +218,13 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
 ///   decompressed kernel.
 ///
 /// The heap, the stack, and the boot pool are not imported. The shim accepts
-/// them, and reports all other omitted RAM to Linux as unaccepted.
+/// them. Unless `flags` asks it to accept all RAM, it reports all other
+/// omitted RAM to Linux as unaccepted.
 fn layout_guest(
     loader: &mut IgvmLoader<X86Register>,
     memory_page_count: u64,
     c_bit_position: u8,
+    flags: u32,
     payload: &Payload<'_>,
     load_shim: impl FnOnce(&mut IgvmLoader<X86Register>, u64) -> anyhow::Result<loader::elf::LoadInfo>,
 ) -> anyhow::Result<Vec<SnpBootShimRange>> {
@@ -222,6 +234,7 @@ fn layout_guest(
     let mut platform = SnpBootShimPlatformParams {
         magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
         version: SNP_BOOT_SHIM_PLATFORM_VERSION,
+        flags,
         c_bit_mask: 1u64 << c_bit_position,
         ..FromZeros::new_zeroed()
     };
@@ -925,6 +938,14 @@ mod tests {
     }
 
     fn try_layout(ram_pages: u64, initrd: Option<&[u8]>) -> anyhow::Result<Layout> {
+        try_layout_with_flags(ram_pages, initrd, 0)
+    }
+
+    fn try_layout_with_flags(
+        ram_pages: u64,
+        initrd: Option<&[u8]>,
+        flags: u32,
+    ) -> anyhow::Result<Layout> {
         let kernel = test_kernel();
         let mut loader = test_loader(ram_pages);
         let mut shim_gpa = 0;
@@ -932,6 +953,7 @@ mod tests {
             &mut loader,
             ram_pages,
             51,
+            flags,
             &Payload {
                 kernel: &kernel,
                 kernel_init_size: KERNEL_INIT_SIZE,
@@ -1060,6 +1082,23 @@ mod tests {
             );
         }
         assert_eq!(platform.stack_size, SNP_BOOT_SHIM_EFI_STACK_SIZE);
+    }
+
+    #[test]
+    fn measures_the_memory_acceptance_flag() {
+        let (_, platform) = handoff(&generated_layout());
+        assert_eq!(platform.flags, 0);
+        let layout = try_layout_with_flags(
+            LAYOUT_RAM_PAGES,
+            None,
+            SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY,
+        )
+        .unwrap();
+        let (_, platform) = handoff(&layout);
+        assert_eq!(
+            platform.flags,
+            SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY
+        );
     }
 
     #[test]
