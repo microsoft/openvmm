@@ -725,9 +725,11 @@ fn recorded_cpuid_differences(
 /// no reserved entry exposes a host feature (`E_CPU_UNLISTED`). A table
 /// backend reports none, and its guests read zero there by construction.
 ///
-/// An `E_CPU_SURFACE` failure names every result that VP 0 does not observe,
-/// with the registers in which it differs, as [`cpuid_differences`] lists
-/// them.
+/// A failure names every violation at once, as `cpu_profile::verify_support`
+/// does: every result that VP 0 does not observe, with the registers in
+/// which it differs, as [`cpuid_differences`] lists them, then every
+/// non-zero entry outside the profile's tables. A report whose only
+/// violations are such entries fails with `E_CPU_UNLISTED`.
 pub(super) fn check_presented_cpuid(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
@@ -747,22 +749,28 @@ fn check_presented(
 ) -> anyhow::Result<()> {
     let presented = CpuidLeafSet::new(leaves);
     let differences = cpuid_differences(&presented, effective_cpuid);
+    let entries: Vec<_> = presented
+        .leaves()
+        .iter()
+        .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+        .collect();
     if differences.is_empty() {
-        let entries: Vec<_> = presented
-            .leaves()
-            .iter()
-            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
-            .collect();
         cpu_profile::check_unlisted_cpuid(profile, &entries)?;
         return Ok(());
     }
+    let unlisted = cpu_profile::unlisted_cpuid_violations(profile, &entries);
     Err(TimeAbiError::new(
         TimeAbiCode::CpuSurface,
         format!(
             "VP 0 does not observe the effective CPUID of CPU profile {} in {} results: {}",
             profile.id(),
             differences.len(),
-            differences.join("; ")
+            differences
+                .iter()
+                .chain(&unlisted)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
         ),
     )
     .into())
@@ -1304,8 +1312,9 @@ mod tests {
 
     /// A pass-through backend's report may hold VP 0's view at the host's
     /// entries outside the profile: zero there passes, and anything else is
-    /// `E_CPU_UNLISTED`. A report of the table alone passes, for every pinned
-    /// profile and topology.
+    /// `E_CPU_UNLISTED`, or is named after the governed differences of an
+    /// `E_CPU_SURFACE` failure. A report of the table alone passes, for every
+    /// pinned profile and topology.
     #[test]
     fn presented_cpuid_rejects_non_zero_unlisted_entries() {
         for profile in cpu_profile::pinned_profiles() {
@@ -1337,11 +1346,29 @@ mod tests {
             "E_CPU_UNLISTED"
         );
 
-        // A governed difference is reported first.
-        leaked.retain(|leaf| leaf.function != 0x8000_0002);
-        assert_eq!(
-            code(check_presented(profile, &effective, leaked)),
-            "E_CPU_SURFACE"
+        // Governed differences are reported first, then every non-zero entry
+        // outside the profile.
+        leaked.retain(|leaf| !matches!(leaf.function, 0x8000_0002 | 0x8000_0003));
+        let message = format!(
+            "{:#}",
+            check_presented(profile, &effective, leaked).unwrap_err()
+        );
+        assert!(
+            message.starts_with(&format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in 2 results: CPUID 0x80000002 EAX is 0x00000000, not "
+            )),
+            "{message}"
+        );
+        assert!(
+            message.contains("; CPUID 0x80000003 EAX is 0x00000000, not "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "; CPUID 0x1d is outside the profile and reads EAX 0x1, EBX 0x0, ECX 0x0, EDX 0x0"
+            ),
+            "{message}"
         );
     }
 
