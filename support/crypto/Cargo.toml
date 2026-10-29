@@ -75,6 +75,7 @@ x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
 const-oid.workspace = true
+jiff.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]

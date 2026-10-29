@@ -36,6 +36,17 @@ use mac as sys;
 
 use thiserror::Error;
 
+/// An error reading or converting certificate validity bounds.
+#[derive(Debug, Error)]
+pub enum X509ValidityError {
+    /// A certificate backend error.
+    #[error("failed to read certificate validity")]
+    X509(#[from] X509Error),
+    /// A validity bound outside the supported timestamp range.
+    #[error("invalid certificate validity timestamp")]
+    Timestamp(#[from] jiff::Error),
+}
+
 /// An error for X.509 operations.
 #[cfg(not(rust))]
 #[derive(Clone, Debug, Error)]
@@ -155,7 +166,7 @@ impl Default for X509SelfSignedOptions<'_> {
             organization: "OpenVMM Test",
             common_name: "test.example.com",
             not_before: "700101000000Z",
-            not_after: "99991231235959Z",
+            not_after: "99991230000000Z",
             authority_key_identifier: None,
         }
     }
@@ -187,6 +198,12 @@ impl X509Certificate {
     /// Parse an X.509 certificate from DER-encoded bytes.
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
         sys::X509CertificateInner::from_der(data).map(Self)
+    }
+
+    /// Parse the first DER-encoded certificate, ignoring extraneous trailing
+    /// bytes.
+    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
+        sys::X509CertificateInner::from_der_prefix(data).map(Self)
     }
 
     /// Extract the public key from this certificate.
@@ -234,6 +251,23 @@ impl X509Certificate {
         self.0.subject_common_name()
     }
 
+    /// Get the first common name in the certificate's issuer name.
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.0.issuer_common_name()
+    }
+
+    /// Get the inclusive validity bounds as UTC timestamps, without checking
+    /// the current time. The original ASN.1 time encoding is not preserved.
+    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), X509ValidityError> {
+        self.0.validity()
+    }
+
+    /// Get the authority key identifier, or `None` if the extension or its
+    /// key ID is unavailable.
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        self.0.authority_key_identifier()
+    }
+
     /// String representation of the certificate's issuer Distinguished Name.
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
         self.0.issuer_dn()
@@ -251,6 +285,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn certificate_prefix_ignores_storage_padding() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = build_test_cert(&key);
+        let encoded = cert.to_der().unwrap();
+        for padding in [
+            vec![],
+            vec![0; 4096],
+            vec![0xa5; 4096],
+            vec![0x30, 0x80, 0xff],
+        ] {
+            let mut storage = encoded.clone();
+            storage.extend_from_slice(&padding);
+            let parsed = X509Certificate::from_der_prefix(&storage).unwrap();
+            assert_eq!(parsed.to_der().unwrap(), encoded);
+            assert!(parsed.verify(&parsed.public_key().unwrap()).unwrap());
+        }
+        assert!(X509Certificate::from_der_prefix(&[]).is_err());
+        assert!(X509Certificate::from_der_prefix(&[0; 4096]).is_err());
+        assert!(X509Certificate::from_der_prefix(&encoded[..encoded.len() - 1]).is_err());
+    }
+
+    #[test]
     fn configurable_self_signed_metadata() {
         use der::Decode;
         use x509_cert::ext::pkix::AuthorityKeyIdentifier;
@@ -266,6 +322,18 @@ mod tests {
         };
         let cert = X509Certificate::build_self_signed((&key).into(), &options).unwrap();
         assert_eq!(cert.subject_common_name().unwrap().as_deref(), Some(name));
+        assert_eq!(cert.issuer_common_name().unwrap().as_deref(), Some(name));
+        assert_eq!(
+            cert.validity().unwrap(),
+            (
+                "2026-10-09T18:02:32Z".parse::<jiff::Timestamp>().unwrap(),
+                "2056-11-20T18:02:32Z".parse::<jiff::Timestamp>().unwrap()
+            )
+        );
+        assert_eq!(
+            cert.authority_key_identifier().unwrap(),
+            Some(vec![1, 0xab, 0, 0xff])
+        );
         let parsed = x509_cert::Certificate::from_der(&cert.to_der().unwrap()).unwrap();
         let tbs = parsed.tbs_certificate();
         assert_eq!(tbs.issuer(), tbs.subject());
@@ -312,6 +380,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn validity_timestamp_bounds() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        for (not_after, expected) in [
+            ("000229000000Z", "2000-02-29T00:00:00Z"),
+            ("491231235959Z", "2049-12-31T23:59:59Z"),
+            ("20500101000000Z", "2050-01-01T00:00:00Z"),
+        ] {
+            let cert = X509Certificate::build_self_signed(
+                (&key).into(),
+                &X509SelfSignedOptions {
+                    not_after,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                cert.validity().unwrap(),
+                (jiff::Timestamp::UNIX_EPOCH, expected.parse().unwrap())
+            );
+        }
+        let cert = X509Certificate::build_self_signed(
+            (&key).into(),
+            &X509SelfSignedOptions {
+                not_after: "99991231235959Z",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            cert.validity(),
+            Err(X509ValidityError::Timestamp(_))
+        ));
+    }
+
+    #[cfg(any(openssl, all(native, windows)))]
+    #[test]
+    fn validity_before_unix_epoch() {
+        let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
+        let cert = X509Certificate::build_self_signed(
+            (&key).into(),
+            &X509SelfSignedOptions {
+                not_before: "691231235959Z",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            cert.validity().unwrap().0,
+            jiff::Timestamp::from_second(-1).unwrap()
+        );
+    }
+
     fn build_test_cert<'a>(key: impl Into<X509KeyPair<'a>>) -> X509Certificate {
         X509Certificate::build_self_signed(key.into(), &Default::default()).unwrap()
     }
@@ -320,6 +441,14 @@ mod tests {
     fn rsa_self_signed_cert_verifies() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
+        assert_eq!(
+            cert.validity().unwrap(),
+            (
+                jiff::Timestamp::UNIX_EPOCH,
+                "9999-12-30T00:00:00Z".parse().unwrap()
+            )
+        );
+        assert_eq!(cert.authority_key_identifier().unwrap(), None);
         let public_key = cert.public_key().unwrap();
         assert!(matches!(&public_key, X509PublicKey::Rsa(_)));
         assert!(cert.verify(&public_key).unwrap());

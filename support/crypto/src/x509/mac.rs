@@ -19,6 +19,7 @@ use der::Decode;
 use der::Encode;
 use std::ptr;
 use x509_cert::Certificate;
+use x509_cert::ext::pkix::AuthorityKeyIdentifier;
 
 type SecCertificateRef = CFTypeRef;
 
@@ -79,6 +80,15 @@ impl X509CertificateInner {
             cert: CfHandle(cert),
             parsed,
         })
+    }
+
+    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
+        use der::Reader;
+
+        let encoded = der::SliceReader::new(data)
+            .and_then(|mut reader| reader.tlv_bytes())
+            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
+        Self::from_der(encoded)
     }
 
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
@@ -198,6 +208,37 @@ impl X509CertificateInner {
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
         Ok(self.parsed.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .parsed
+            .tbs_certificate()
+            .issuer()
+            .common_name()
+            .map_err(|e| der_err(e, "reading the issuer common name"))?
+            .map(|name| name.value().into_owned()))
+    }
+
+    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), super::X509ValidityError> {
+        let tbs = self.parsed.tbs_certificate();
+        let validity = tbs.validity();
+        let time = |time: x509_cert::time::Time| {
+            jiff::Timestamp::from_nanosecond(time.to_unix_duration().as_nanos() as i128)
+        };
+        Ok((time(validity.not_before)?, time(validity.not_after)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        let Some((_, aki)) = self
+            .parsed
+            .tbs_certificate()
+            .get_extension::<AuthorityKeyIdentifier>()
+            .map_err(|e| der_err(e, "reading authority key identifier"))?
+        else {
+            return Ok(None);
+        };
+        Ok(aki.key_identifier.map(|id| id.as_bytes().to_vec()))
     }
 
     pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {

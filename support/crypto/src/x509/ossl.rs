@@ -20,6 +20,11 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
+    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
+        // OpenSSL's d2i_X509 decodes one certificate without consuming the tail.
+        Self::from_der(data)
+    }
+
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let pkey = self
             .0
@@ -141,18 +146,41 @@ impl X509CertificateInner {
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
-        let sn = self
-            .0
-            .subject_name()
-            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
-            .next();
-        match sn {
-            None => Ok(None),
-            Some(sn) => sn
+        common_name(self.0.subject_name())
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        common_name(self.0.issuer_name())
+    }
+
+    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), super::X509ValidityError> {
+        let epoch = openssl::asn1::Asn1Time::from_unix(0)
+            .map_err(|e| err(e, "creating certificate time epoch"))?;
+        let time = |value: &openssl::asn1::Asn1TimeRef| {
+            let diff = epoch
+                .diff(value)
+                .map_err(|e| err(e, "reading certificate validity"))?;
+            Ok::<_, super::X509ValidityError>(jiff::Timestamp::from_second(
+                i64::from(diff.days) * 86_400 + i64::from(diff.secs),
+            )?)
+        };
+        Ok((time(self.0.not_before())?, time(self.0.not_after())?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        Ok(self.0.authority_key_id().map(|id| id.as_slice().to_vec()))
+    }
+}
+
+fn common_name(name: &openssl::x509::X509NameRef) -> Result<Option<String>, X509Error> {
+    name.entries_by_nid(openssl::nid::Nid::COMMONNAME)
+        .next()
+        .map(|entry| {
+            entry
                 .data()
                 .as_utf8()
-                .map(|u| Some(u.to_string()))
-                .map_err(|e| err(e, "decoding the subject common name")),
-        }
-    }
+                .map(|name| name.to_string())
+                .map_err(|e| err(e, "decoding certificate common name"))
+        })
+        .transpose()
 }
