@@ -2036,6 +2036,20 @@ impl InitializedVm {
                     }),
                     &parameters.hooks,
                 )?;
+                // The portb device takes the host fields of its time samples
+                // from the clock, which pairs host UTC with the guest TSC
+                // through the offset that the VM measures at every start.
+                let clock = Arc::new(time_abi::TimeAbiClock::new(
+                    msrs.clone(),
+                    &report,
+                    &parameters.hooks,
+                ));
+                resolver.add_resolver(time_abi::TimeSampleSourceResolver(clock.clone()));
+                let guest_tsc_offset: time_abi::MeasureOffset = {
+                    let partition = partition.clone();
+                    let hypervisor = hypervisor.clone();
+                    Box::new(move || time_abi::guest_tsc_offset(partition.as_ref(), &hypervisor))
+                };
                 let unit = state_units
                     .add(time_abi::TIME_ABI_UNIT)
                     .spawn(driver_source.simple(), {
@@ -2052,6 +2066,8 @@ impl InitializedVm {
                     profile,
                     effective_cpuid,
                     report,
+                    clock,
+                    guest_tsc_offset,
                     generation: parameters.generation,
                     hooks: parameters.hooks.clone(),
                 })
@@ -3989,6 +4005,19 @@ impl LoadedVm {
         Ok(true)
     }
 
+    /// Starts the state units, first measuring the time ABI's guest TSC
+    /// offset, which must follow the TSC writes of a cold boot, a restore, or
+    /// a reset and precede any VP run.
+    async fn start_units(&mut self) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "x86_64")]
+        if let Some(time_abi) = &self.inner.time_abi {
+            time_abi
+                .measure_offset()
+                .context("failed to measure the guest TSC offset")?;
+        }
+        self.state_units.start().await
+    }
+
     async fn pause(&mut self) -> bool {
         if !self.running {
             return false;
@@ -4026,8 +4055,7 @@ impl LoadedVm {
 
         // Start state units so device config space is accessible. This also
         // freezes SMMU capabilities before firmware reads them.
-        self.state_units
-            .start()
+        self.start_units()
             .await
             .context("failed to start devices for PCI resource assignment")?;
 
@@ -4153,7 +4181,7 @@ impl LoadedVm {
                             }
                             Err(err) => {
                                 if stopped {
-                                    if let Err(start_error) = self.state_units.start().await {
+                                    if let Err(start_error) = self.start_units().await {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
                                             "worker restart failed and the VM could not resume",
                                         ))));
