@@ -52,8 +52,7 @@ pub fn parse_metadata(data: &[u8]) -> Result<AkCertMetadata, AkCertMetadataError
     })
 }
 
-fn format_validity_time(time: jiff::Timestamp) -> String {
-    let time = time.to_zoned(jiff::tz::TimeZone::UTC);
+fn format_validity_time(time: jiff::civil::DateTime) -> String {
     let year = time.year();
     // Jiff's %y supports 1969-2068, not X.509's 1950-2049 range.
     let year = if (1950..=2049).contains(&year) {
@@ -175,6 +174,30 @@ mod tests {
     }
 
     #[test]
+    fn test_certificate_no_expiration_metadata() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let cert = X509Certificate::build_self_signed(
+            (&key).into(),
+            &X509SelfSignedOptions {
+                common_name: "No expiration",
+                not_before: "261009180232Z",
+                not_after: "99991231235959Z",
+                authority_key_identifier: Some(&[0x01, 0xab, 0x00, 0xff]),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .to_der()
+        .unwrap();
+        let metadata = parse_metadata(&cert).unwrap();
+        assert_eq!(metadata.issuer, "No expiration");
+        assert_eq!(metadata.subject, "No expiration");
+        assert_eq!(metadata.not_before, "261009180232Z");
+        assert_eq!(metadata.not_after, "99991231235959Z");
+        assert_eq!(metadata.authority, "01AB00FF");
+    }
+
+    #[test]
     fn test_certificate_missing_common_name() {
         let key = RsaKeyPair::generate(2048).unwrap();
         let cert = X509Certificate::build_self_signed(
@@ -203,17 +226,18 @@ mod tests {
 
     #[test]
     fn test_metadata_time_formatting() {
-        for (timestamp, expected) in [
-            ("1949-12-31T23:59:59Z", "19491231235959Z"),
-            ("1950-01-01T00:00:00Z", "500101000000Z"),
-            ("1970-01-01T00:00:00Z", "700101000000Z"),
-            ("2000-02-29T00:00:00Z", "000229000000Z"),
-            ("2049-12-31T23:59:59Z", "491231235959Z"),
-            ("2050-01-01T00:00:00Z", "20500101000000Z"),
-            ("2056-11-20T18:02:32Z", "20561120180232Z"),
-            ("9999-12-30T00:00:00Z", "99991230000000Z"),
+        for (time, expected) in [
+            ("1949-12-31T23:59:59", "19491231235959Z"),
+            ("1950-01-01T00:00:00", "500101000000Z"),
+            ("1970-01-01T00:00:00", "700101000000Z"),
+            ("2000-02-29T00:00:00", "000229000000Z"),
+            ("2049-12-31T23:59:59", "491231235959Z"),
+            ("2050-01-01T00:00:00", "20500101000000Z"),
+            ("2056-11-20T18:02:32", "20561120180232Z"),
+            ("9999-12-30T00:00:00", "99991230000000Z"),
+            ("9999-12-31T23:59:59", "99991231235959Z"),
         ] {
-            assert_eq!(format_validity_time(timestamp.parse().unwrap()), expected);
+            assert_eq!(format_validity_time(time.parse().unwrap()), expected);
         }
     }
 

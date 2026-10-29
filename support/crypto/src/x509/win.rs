@@ -397,14 +397,21 @@ impl X509CertificateInner {
         self.common_name(windows::Win32::Security::Cryptography::CERT_NAME_ISSUER_FLAG)
     }
 
-    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), super::X509ValidityError> {
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
         fn time(
             value: windows::Win32::Foundation::FILETIME,
-        ) -> Result<jiff::Timestamp, jiff::Error> {
-            const UNIX_EPOCH_FILETIME_TICKS: i128 = 116_444_736_000_000_000;
-            let ticks = (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime);
-            // FILETIME counts 100 ns ticks since 1601; Jiff uses the Unix epoch.
-            jiff::Timestamp::from_nanosecond((i128::from(ticks) - UNIX_EPOCH_FILETIME_TICKS) * 100)
+        ) -> Result<jiff::civil::DateTime, jiff::Error> {
+            const FILETIME_EPOCH: jiff::civil::DateTime =
+                jiff::civil::date(1601, 1, 1).at(0, 0, 0, 0);
+            const NANOS_PER_FILETIME_TICK: u32 = 100;
+
+            let ticks =
+                (u64::from(value.dwHighDateTime) << u32::BITS) | u64::from(value.dwLowDateTime);
+            // Scale the duration rather than the count to avoid overflowing u64 nanoseconds.
+            let duration = std::time::Duration::from_nanos(ticks) * NANOS_PER_FILETIME_TICK;
+            FILETIME_EPOCH.checked_add(duration)
         }
         let info = self.0.cert_info();
         Ok((time(info.NotBefore)?, time(info.NotAfter)?))

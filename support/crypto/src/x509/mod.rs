@@ -42,9 +42,9 @@ pub enum X509ValidityError {
     /// A certificate backend error.
     #[error("failed to read certificate validity")]
     X509(#[from] X509Error),
-    /// A validity bound outside the supported timestamp range.
-    #[error("invalid certificate validity timestamp")]
-    Timestamp(#[from] jiff::Error),
+    /// An invalid validity calendar value.
+    #[error("invalid certificate validity date and time")]
+    DateTime(#[from] jiff::Error),
 }
 
 /// An error for X.509 operations.
@@ -166,7 +166,7 @@ impl Default for X509SelfSignedOptions<'_> {
             organization: "OpenVMM Test",
             common_name: "test.example.com",
             not_before: "700101000000Z",
-            not_after: "99991230000000Z",
+            not_after: "99991231235959Z",
             authority_key_identifier: None,
         }
     }
@@ -251,9 +251,12 @@ impl X509Certificate {
         self.0.issuer_common_name()
     }
 
-    /// Get the inclusive validity bounds as UTC timestamps, without checking
-    /// the current time. The original ASN.1 time encoding is not preserved.
-    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), X509ValidityError> {
+    /// Get the inclusive validity bounds as UTC calendar values, without
+    /// checking the current time. Supports the X.509 no-expiration value
+    /// `99991231235959Z`. The original ASN.1 time encoding is not preserved.
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), X509ValidityError> {
         self.0.validity()
     }
 
@@ -322,8 +325,12 @@ mod tests {
         assert_eq!(
             cert.validity().unwrap(),
             (
-                "2026-10-09T18:02:32Z".parse::<jiff::Timestamp>().unwrap(),
-                "2056-11-20T18:02:32Z".parse::<jiff::Timestamp>().unwrap()
+                "2026-10-09T18:02:32"
+                    .parse::<jiff::civil::DateTime>()
+                    .unwrap(),
+                "2056-11-20T18:02:32"
+                    .parse::<jiff::civil::DateTime>()
+                    .unwrap()
             )
         );
         assert_eq!(
@@ -377,12 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn validity_timestamp_bounds() {
+    fn validity_calendar_bounds() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         for (not_after, expected) in [
-            ("000229000000Z", "2000-02-29T00:00:00Z"),
-            ("491231235959Z", "2049-12-31T23:59:59Z"),
-            ("20500101000000Z", "2050-01-01T00:00:00Z"),
+            ("000229000000Z", "2000-02-29T00:00:00"),
+            ("491231235959Z", "2049-12-31T23:59:59"),
+            ("20500101000000Z", "2050-01-01T00:00:00"),
+            ("99991231235959Z", "9999-12-31T23:59:59"),
         ] {
             let cert = X509Certificate::build_self_signed(
                 (&key).into(),
@@ -394,21 +402,12 @@ mod tests {
             .unwrap();
             assert_eq!(
                 cert.validity().unwrap(),
-                (jiff::Timestamp::UNIX_EPOCH, expected.parse().unwrap())
+                (
+                    jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0),
+                    expected.parse().unwrap()
+                )
             );
         }
-        let cert = X509Certificate::build_self_signed(
-            (&key).into(),
-            &X509SelfSignedOptions {
-                not_after: "99991231235959Z",
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            cert.validity(),
-            Err(X509ValidityError::Timestamp(_))
-        ));
     }
 
     #[cfg(any(openssl, all(native, windows)))]
@@ -425,7 +424,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cert.validity().unwrap().0,
-            jiff::Timestamp::from_second(-1).unwrap()
+            jiff::civil::date(1969, 12, 31).at(23, 59, 59, 0)
         );
     }
 
@@ -440,8 +439,8 @@ mod tests {
         assert_eq!(
             cert.validity().unwrap(),
             (
-                jiff::Timestamp::UNIX_EPOCH,
-                "9999-12-30T00:00:00Z".parse().unwrap()
+                jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0),
+                "9999-12-31T23:59:59".parse().unwrap()
             )
         );
         assert_eq!(cert.authority_key_identifier().unwrap(), None);

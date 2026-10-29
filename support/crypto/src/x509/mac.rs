@@ -216,11 +216,15 @@ impl X509CertificateInner {
             .map(|name| name.value().into_owned()))
     }
 
-    pub fn validity(&self) -> Result<(jiff::Timestamp, jiff::Timestamp), super::X509ValidityError> {
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
         let tbs = self.parsed.tbs_certificate();
         let validity = tbs.validity();
         let time = |time: x509_cert::time::Time| {
-            jiff::Timestamp::from_nanosecond(time.to_unix_duration().as_nanos() as i128)
+            jiff::civil::date(1970, 1, 1)
+                .at(0, 0, 0, 0)
+                .checked_add(time.to_unix_duration())
         };
         Ok((time(validity.not_before)?, time(validity.not_after)?))
     }
