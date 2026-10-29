@@ -378,10 +378,10 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disk_hook::HookDisk;
     use crate::hardware_key_sealing::{HardwareDerivedKeys, seal_key};
     use crate::test_utils::MockTeeCall;
     use disk_backend::Disk;
+    use disk_hook::HookDisk;
     use disklayer_ram::ram_disk;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
