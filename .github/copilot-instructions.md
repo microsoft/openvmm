@@ -113,8 +113,9 @@ See `Guide/src/dev_guide/tests/vmm.md` for details.
 - **VMM tests** — integration tests in `vmm_tests/` using the petri
   framework (requires additional setup).
 - Mark tests requiring special setup with `#[ignore]`.
-- Update `Guide/` docs when adding features or changing behavior
-  (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
+- Assess documentation impact using
+  `.github/instructions/doc-code-sync.instructions.md`; a Guide edit is not
+  always needed.
 - **CI failures** — to investigate failing CI checks on a PR, load the
   `openvmm-ci-investigation` skill.
 
