@@ -933,6 +933,29 @@ mod tests {
             )),
             ProfileErrorCode::ProfileDigest
         );
+        // A canonical document, with its own digest, of a profile that
+        // violates the CPU time bits: a TSC-deadline timer.
+        let mut deadline = host.clone();
+        let leaf1 = deadline
+            .cpuid
+            .iter_mut()
+            .find(|entry| entry.key() == (1, None))
+            .unwrap();
+        leaf1.value[2].0 |= 1 << 24;
+        let encoding_with_deadline = deadline.encode();
+        let error = host_profile_for_restore(
+            host.id(),
+            &canonical::sha256(&encoding_with_deadline),
+            &encoding_with_deadline,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileDigest);
+        assert!(
+            error
+                .message
+                .contains("violates the CPU time bits: CPUID 0x1 ECX bit 24 is set"),
+            "{error}"
+        );
         // A pinned profile's document under a host profile's ID.
         let pinned = pinned_record("intel.icelake-sp.v1").unwrap();
         assert_eq!(
