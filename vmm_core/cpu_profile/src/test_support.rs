@@ -19,7 +19,7 @@ use crate::signature::decode_signature;
 
 /// Returns the pinned profile `id`.
 pub(crate) fn profile(id: &str) -> &'static CpuProfile {
-    crate::pinned(id).unwrap_or_else(|| panic!("profile {id} is not pinned"))
+    crate::pinned(id).unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Returns a profile's CPUID values as fingerprint entries.

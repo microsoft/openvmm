@@ -29,23 +29,35 @@
 //!   a pass-through backend (MSHV, WHP) must present zero there
 //!   ([`check_unlisted_cpuid`]), and KVM answers those entries from the
 //!   effective CPUID itself ([`CpuidPresentation`]).
-//! - **Restore:** [`pinned_for_restore`] checks a snapshot's recorded profile
-//!   digest against the pinned constant, core compares the recorded document
-//!   with [`pinned_record`]'s encoding, and [`check_generation`] checks the
-//!   destination host. Core compares the effective CPUID record with the
-//!   recomputed [`EffectiveCpuid`]. A snapshot of a host profile carries the
-//!   only copy of its document, which [`host_profile_for_restore`] decodes
-//!   and checks against the recorded digest, and from which the restoring
-//!   VM worker's [`PartitionProfile`] takes it.
+//! - **Restore:** [`pinned_for_restore`] verifies the snapshot's pinned
+//!   profile and checks its recorded digest against the pinned constant,
+//!   core compares the recorded document with [`pinned_record`]'s encoding,
+//!   and [`check_generation`] checks the destination host. Core compares the
+//!   effective CPUID record with the recomputed [`EffectiveCpuid`]. A
+//!   snapshot of a host profile carries the only copy of its document, which
+//!   [`host_profile_for_restore`] decodes and checks against the recorded
+//!   digest, and from which the restoring VM worker's [`PartitionProfile`]
+//!   takes it.
+//! - **Pinned profile verification:** the first use of a pinned profile in a
+//!   process, by [`select`], [`pinned_for_restore`], [`pinned`], or
+//!   [`PartitionProfile::pinned`], verifies its static data before handing it
+//!   out: the profile is valid, CPU time bits included, and its constant
+//!   encoding, which snapshots embed, is its canonical encoding
+//!   (`E_PROFILE_DIGEST`). A cold boot or restore therefore verifies the one
+//!   profile that it selects, once per process, for which it encodes the
+//!   profile; [`select_auto`] verifies only the revision that it selects. The
+//!   constant digest is the profile's identity, which the tests check against
+//!   the golden digests, so a pinned profile's start hashes nothing.
 //! - **Offline only:** the codecs and digests
-//!   ([`CpuProfile::encode`], [`CpuProfile::digest`],
-//!   [`CpuProfile::digest_string`], [`CpuProfile::decode`],
-//!   [`CpuProfile::from_pretty_json`], [`CpuProfile::to_pretty_json`],
-//!   [`EffectiveCpuid::encode`], [`EffectiveCpuid::digest`],
-//!   [`EffectiveCpuid::decode`], and [`EffectiveCpuid::decode_verified`])
-//!   and [`pinned_profiles`] parse, encode, or hash. They serve tools, tests,
-//!   and `--cpu-fingerprint`, never a cold boot or restore of a pinned
-//!   profile, whose profile work uses only constants. Only a host profile,
+//!   ([`CpuProfile::digest`], [`CpuProfile::digest_string`],
+//!   [`CpuProfile::decode`], [`CpuProfile::from_pretty_json`],
+//!   [`CpuProfile::to_pretty_json`], [`EffectiveCpuid::encode`],
+//!   [`EffectiveCpuid::digest`], [`EffectiveCpuid::decode`], and
+//!   [`EffectiveCpuid::decode_verified`]) and [`pinned_profiles`] parse,
+//!   encode, or hash. They serve tools, tests, and `--cpu-fingerprint`, never
+//!   a cold boot or restore of a pinned profile, which parses no JSON, hashes
+//!   nothing, and compares its records with constants; only its verification
+//!   encodes it ([`CpuProfile::encode`]), once per process. A host profile,
 //!   which has no constants, encodes and hashes at cold boot and decodes at
 //!   restore.
 //!
