@@ -619,11 +619,90 @@ pub(super) fn declare_rates(
     })
 }
 
+/// Checks the CPU of a new partition against its CPU profile, at every cold
+/// boot and restore, before any VP runs: on restore, that the effective CPUID
+/// recomputed for the partition is the one that the snapshot recorded in
+/// `record` ([`check_recorded_cpuid`]), then that VP 0 observes the effective
+/// CPUID ([`check_presented_cpuid`]), and then that the backend supports the
+/// profile ([`check_profile_support`]).
+///
+/// Every check runs, even after one fails, so that a failure names every
+/// violation together ([`report_together`]): the error leads with the failure
+/// of the first check that fails, in that order, and so with its code, as if
+/// the checks had stopped there, and goes on with the failure of each later
+/// check that fails, with its own code.
+pub(super) fn check_cpu_profile(
+    partition: &dyn HvlitePartition,
+    hypervisor: &str,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    record: Option<&SnapshotCpuProfile>,
+) -> anyhow::Result<()> {
+    check_cpu_profile_with(
+        backend(partition, hypervisor),
+        hypervisor,
+        profile,
+        effective_cpuid,
+        record,
+    )
+}
+
+/// Runs the checks of [`check_cpu_profile`] with `backend`, the partition's
+/// time ABI backend, or the failure of a partition without one, which fails
+/// both of the backend's checks at once.
+fn check_cpu_profile_with(
+    backend: Result<&dyn TimeAbiBackend, TimeAbiError>,
+    hypervisor: &str,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    record: Option<&SnapshotCpuProfile>,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    let recorded = record.map_or(Ok(()), |record| {
+        check_recorded_cpuid(effective_cpuid, record)
+    });
+    let recorded_done = std::time::Instant::now();
+    let backend = match backend {
+        Ok(backend) => backend,
+        Err(err) => return report_together([recorded, Err(err.into())]),
+    };
+    let presented = check_presented_cpuid(backend, profile, effective_cpuid);
+    let presented_done = std::time::Instant::now();
+    let support = check_profile_support(backend, hypervisor, profile);
+    let support_done = std::time::Instant::now();
+    report_together([recorded, presented, support])?;
+    tracing::info!(
+        cpu_profile = profile.id(),
+        recorded_cpuid_us = (recorded_done - started).as_micros() as u64,
+        presented_cpuid_us = (presented_done - recorded_done).as_micros() as u64,
+        profile_support_us = (support_done - presented_done).as_micros() as u64,
+        "time ABI CPU checks passed"
+    );
+    Ok(())
+}
+
+/// Returns the outcome of checks that ran together, in order: success if
+/// every check passed, the failure of the only check that failed, unchanged,
+/// and otherwise one error that gives the error chain of each failure in
+/// turn, joined with `; `. Such an error leads with the first failure, whose
+/// code is therefore the first one that the error names.
+fn report_together(results: impl IntoIterator<Item = anyhow::Result<()>>) -> anyhow::Result<()> {
+    let mut failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    if failures.len() <= 1 {
+        return failures.pop().map_or(Ok(()), Err);
+    }
+    let failures: Vec<_> = failures
+        .iter()
+        .map(|failure| format!("{failure:#}"))
+        .collect();
+    Err(anyhow::Error::msg(failures.join("; ")))
+}
+
 /// Compares the effective CPUID recomputed for a restored partition with the
 /// one the snapshot recorded (`E_CPU_SURFACE`). It compares the binary
 /// records, about a microsecond of work, and decodes the snapshot's only to
 /// name every difference, as [`recorded_cpuid_differences`] lists them.
-pub(super) fn check_recorded_cpuid(
+fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
@@ -730,14 +809,12 @@ fn recorded_cpuid_differences(
 /// which it differs, as [`cpuid_differences`] lists them, then every
 /// non-zero entry outside the profile's tables. A report whose only
 /// violations are such entries fails with `E_CPU_UNLISTED`.
-pub(super) fn check_presented_cpuid(
-    partition: &dyn HvlitePartition,
-    hypervisor: &str,
+fn check_presented_cpuid(
+    backend: &dyn TimeAbiBackend,
     profile: &CpuProfile,
     effective_cpuid: &EffectiveCpuid,
 ) -> anyhow::Result<()> {
-    let leaves = backend(partition, hypervisor)?.effective_cpuid()?;
-    check_presented(profile, effective_cpuid, leaves)
+    check_presented(profile, effective_cpuid, backend.effective_cpuid()?)
 }
 
 /// Checks a backend's report of VP 0's CPUID, as [`check_presented_cpuid`]
@@ -812,22 +889,20 @@ fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Ve
 /// Checks that the backend supports the CPU profile, from the CPU surface it
 /// reports (`E_PROFILE_UNSUPPORTED`), at every cold boot and restore. A
 /// backend that reports no surface fails the check.
-pub(super) fn check_profile_support(
-    partition: &dyn HvlitePartition,
+fn check_profile_support(
+    backend: &dyn TimeAbiBackend,
     hypervisor: &str,
     profile: &CpuProfile,
 ) -> anyhow::Result<()> {
-    let surface = backend(partition, hypervisor)?
-        .supported_cpu_surface()?
-        .ok_or_else(|| {
-            TimeAbiError::new(
-                TimeAbiCode::ProfileUnsupported,
-                format!(
-                    "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
-                    profile.id()
-                ),
-            )
-        })?;
+    let surface = backend.supported_cpu_surface()?.ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnsupported,
+            format!(
+                "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
+                profile.id()
+            ),
+        )
+    })?;
     cpu_profile::verify_support(profile, &host_cpu_surface(&surface, hypervisor))?;
     Ok(())
 }
@@ -1124,8 +1199,13 @@ impl StateUnit for TimeAbiUnit {
 mod tests {
     use super::*;
     use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
+    use virt::time_abi::BackendPreflight;
+    use virt::time_abi::HostTimeSample;
+    use virt::time_abi::TscAnchor;
+    use virt::time_abi::TscSetReport;
     use virt::time_abi::cpuid::effective_cpuid;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+    use virt::time_abi::surface::SupportedMsrValue;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
@@ -1602,6 +1682,206 @@ mod tests {
                 expected.join("; ")
             )
         );
+    }
+
+    /// Returns the snapshot record of `effective`, an effective CPUID of the
+    /// test profile.
+    fn test_record(effective: &EffectiveCpuid) -> SnapshotCpuProfile {
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        SnapshotCpuProfile {
+            id: TEST_PROFILE.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(effective)),
+            capture_cpu_signature: 0,
+        }
+    }
+
+    /// A time ABI backend for the CPU checks of a partition: VP 0 reads
+    /// `presented`, and the backend supports `surface`.
+    #[derive(Clone)]
+    struct CpuBackend {
+        presented: Vec<CpuidLeaf>,
+        surface: SupportedCpuSurface,
+    }
+
+    impl CpuBackend {
+        /// Returns a backend whose VP 0 reads the effective CPUID that
+        /// `config` programs, as KVM reports it, and that supports exactly
+        /// the test profile.
+        fn new(config: &TimeAbiConfig) -> Self {
+            let profile = test_profile();
+            let cpuid = profile
+                .cpuid()
+                .iter()
+                .map(|entry| {
+                    let (function, index) = entry.key();
+                    let leaf = CpuidLeaf::new(function, entry.values());
+                    match index {
+                        Some(index) => leaf.indexed(index),
+                        None => leaf,
+                    }
+                })
+                .collect();
+            let msrs = profile
+                .msrs()
+                .iter()
+                .map(|msr| SupportedMsrValue {
+                    index: msr.index.0,
+                    supported: msr.value.0,
+                    controllable: !0,
+                })
+                .collect();
+            Self {
+                presented: config.cpuid.leaves().to_vec(),
+                surface: SupportedCpuSurface {
+                    cpuid,
+                    physical_address_width: profile.physical_address_width(),
+                    msrs,
+                },
+            }
+        }
+    }
+
+    impl TimeAbiBackend for CpuBackend {
+        fn native_tsc_hz(&self) -> Result<u64, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn lapic_hz(&self) -> Result<u64, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn preflight(&self) -> Result<BackendPreflight, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
+            Ok(self.presented.clone())
+        }
+
+        fn supported_cpu_surface(&self) -> Result<Option<SupportedCpuSurface>, TimeAbiError> {
+            Ok(Some(self.surface.clone()))
+        }
+
+        fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn set_synchronized_tsc(
+            &self,
+            _target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
+        ) -> Result<TscSetReport, TimeAbiError> {
+            unreachable!()
+        }
+    }
+
+    /// Runs the CPU checks of a partition of the test profile whose effective
+    /// CPUID is `effective`, on `backend`, and on restore of `record`.
+    fn check_cpu(
+        backend: Result<&dyn TimeAbiBackend, TimeAbiError>,
+        effective: &EffectiveCpuid,
+        record: Option<&SnapshotCpuProfile>,
+    ) -> anyhow::Result<()> {
+        check_cpu_profile_with(backend, "kvm", test_profile(), effective, record)
+    }
+
+    /// Every CPU check of a partition runs, so that a failure names the
+    /// violations of each check that fails, in order: here a snapshot record
+    /// that differs in one entry, a result that VP 0 does not observe, and a
+    /// feature that the backend lacks. The first failure leads, and so gives
+    /// the error its code, and a failure alone is the check's own error.
+    #[test]
+    fn cpu_checks_report_every_failure_together() {
+        let (_, config, effective) = test_config(2);
+        let record = test_record(&effective);
+        let backend = CpuBackend::new(&config);
+        check_cpu(Ok(&backend), &effective, Some(&record)).unwrap();
+        check_cpu(Ok(&backend), &effective, None).unwrap();
+
+        // The snapshot records leaf 0 with EAX's lowest bit flipped, VP 0
+        // reads zeros at the brand string's first leaf, and the backend lacks
+        // AVX2, which the profile sets.
+        let mut flipped = record.clone();
+        flipped.effective_cpuid[3 * 4] ^= 1;
+        let mut unobserved = backend.clone();
+        unobserved
+            .presented
+            .retain(|leaf| leaf.function != 0x8000_0002);
+        let mut lacking = backend.clone();
+        for leaf in &mut lacking.surface.cpuid {
+            if (leaf.function, leaf.index) == (7, Some(0)) {
+                leaf.result[1] &= !(1 << 5);
+            }
+        }
+        let failing = CpuBackend {
+            presented: unobserved.presented.clone(),
+            surface: lacking.surface.clone(),
+        };
+
+        let failure = |backend: &CpuBackend, record: &SnapshotCpuProfile| {
+            check_cpu(Ok(backend), &effective, Some(record)).unwrap_err()
+        };
+        let recorded = format!("{:#}", failure(&backend, &flipped));
+        assert!(
+            recorded.starts_with(&format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs \
+                 from the snapshot's in 1 entries: CPUID 0x0 EAX is "
+            )),
+            "{recorded}"
+        );
+        let presented = format!("{:#}", failure(&unobserved, &record));
+        assert!(
+            presented.starts_with(&format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in 1 results: CPUID 0x80000002 EAX is 0x00000000, not "
+            )),
+            "{presented}"
+        );
+        let unsupported = failure(&lacking, &record);
+        let support = format!("{unsupported:#}");
+        assert_eq!(
+            support,
+            format!(
+                "[E_PROFILE_UNSUPPORTED] the backend does not support CPU profile \
+                 {TEST_PROFILE}: CPUID 0x7.0 EBX bit 5 is not supported"
+            )
+        );
+        assert!(unsupported.downcast_ref::<ProfileError>().is_some());
+        assert_eq!(
+            leading_code(&unsupported),
+            Some(TimeAbiCode::ProfileUnsupported)
+        );
+
+        for (backend, snapshot, expected) in [
+            (
+                &failing,
+                &flipped,
+                format!("{recorded}; {presented}; {support}"),
+            ),
+            (&failing, &record, format!("{presented}; {support}")),
+            (&lacking, &flipped, format!("{recorded}; {support}")),
+            (&unobserved, &flipped, format!("{recorded}; {presented}")),
+        ] {
+            let err = failure(backend, snapshot);
+            assert_eq!(format!("{err:#}"), expected);
+            assert_eq!(leading_code(&err), Some(TimeAbiCode::CpuSurface));
+        }
+
+        // A partition whose backend does not implement the time ABI fails
+        // both of the backend's checks at once, after the snapshot's record.
+        let missing = TimeAbiError::new(
+            TimeAbiCode::TscSyncUnsupported,
+            "the kvm backend does not implement the time ABI",
+        );
+        let without = |record| {
+            format!(
+                "{:#}",
+                check_cpu(Err(missing.clone()), &effective, Some(record)).unwrap_err()
+            )
+        };
+        assert_eq!(without(&record), missing.to_string());
+        assert_eq!(without(&flipped), format!("{recorded}; {missing}"));
     }
 
     /// Capture copies the pinned profile's precomputed record, so restore
