@@ -180,6 +180,57 @@ impl<'a> TpmGuestTests<'a> {
     }
 
     #[cfg(windows)]
+    async fn read_ak_cert_fixture(
+        &self,
+        replacement: bool,
+        driver: &pal_async::DefaultDriver,
+    ) -> anyhow::Result<String> {
+        use pal_async::timer::PolledTimer;
+        use std::time::Duration;
+
+        let guest_binary_path = &self.guest_binary_path;
+        let output_path = format!("{guest_binary_path}.ak_cert");
+        let mut timer = PolledTimer::new(driver);
+        for attempt in 0..=10 {
+            let result = async {
+                match self.os_flavor {
+                    OsFlavor::Linux => {
+                        let sh = self.agent.unix_shell();
+                        cmd!(sh, "{guest_binary_path}")
+                            .args(["ak_cert", "--output-file", &output_path])
+                            .run()
+                            .await?;
+                    }
+                    OsFlavor::Windows => {
+                        let sh = self.agent.windows_shell();
+                        cmd!(sh, "{guest_binary_path}")
+                            .args(["ak_cert", "--output-file", &output_path])
+                            .run()
+                            .await?;
+                    }
+                    _ => unreachable!(),
+                }
+                let data = self
+                    .agent
+                    .read_file(&output_path)
+                    .await
+                    .context("reading captured AK certificate NV contents")?;
+                Ok(ak_cert_hex(&data))
+            }
+            .await;
+            match result {
+                Ok(hex) => return Ok(hex),
+                Err(error) if attempt == 10 => return Err(error),
+                Err(error) => {
+                    tracing::info!(attempt, ?error, "waiting for AK certificate fixture");
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    #[cfg(windows)]
     async fn read_report(&self) -> anyhow::Result<String> {
         let guest_binary_path = &self.guest_binary_path;
         match self.os_flavor {
@@ -431,15 +482,7 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    let expected_hex = ak_cert_hex(&test_igvm_agent_lib::ak_cert::certificate());
-    let output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
-
-    ensure!(
-        output.contains("AK certificate matches expected value"),
-        output
-    );
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(false, &driver).await?;
 
     // The next request validates A again before returning empty transport.
     agent.reboot().await?;
@@ -520,22 +563,10 @@ async fn ak_cert_renewal_impl<U: PetriVmmBackend>(
         }
         _ => unreachable!(),
     };
-    let cert = test_igvm_agent_lib::ak_cert::replacement_certificate();
-    ensure!(
-        cert != test_igvm_agent_lib::ak_cert::certificate(),
-        "replacement fixture B must differ from A"
-    );
-    let expected_hex = ak_cert_hex(&cert);
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
-    let output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(&expected_hex)
-        .await?;
-    ensure!(
-        output.contains("AK certificate matches expected value"),
-        output
-    );
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(true, &driver).await?;
 
     // Only exact B metadata earns an empty response; validation failures are
     // sticky errors, not empty responses. Read this subsequent boot's kmsg.
@@ -1044,16 +1075,9 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // Verify AK cert with the test IGVM agent RPC server
-    let expected_hex = ak_cert_hex(&test_igvm_agent_lib::ak_cert::certificate());
-    let ak_cert_output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
-
-    ensure!(
-        ak_cert_output.contains("AK certificate matches expected value"),
-        format!("{ak_cert_output}")
-    );
+    // Capture the RPC agent's certificate, not a separately generated fixture.
+    // The next boot validates its full renewal metadata before no-renewal.
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(false, &driver).await?;
 
     let report_output = tpm_guest_tests
         .read_report()

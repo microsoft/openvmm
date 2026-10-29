@@ -88,7 +88,6 @@ virt_kvm.workspace = true
 virt_mshv.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
-test_igvm_agent_lib.workspace = true
 virt_whp.workspace = true
 
 [build-dependencies]

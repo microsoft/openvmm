@@ -11345,7 +11345,6 @@ dependencies = [
  "static_assertions",
  "storvsp_resources",
  "tempfile",
- "test_igvm_agent_lib",
  "tmk_tests",
  "tracing",
  "unix_socket",
