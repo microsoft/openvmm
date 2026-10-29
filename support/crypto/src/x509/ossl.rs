@@ -151,18 +151,20 @@ impl X509CertificateInner {
     pub fn validity(
         &self,
     ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
-        let epoch = openssl::asn1::Asn1Time::from_unix(0)
+        let epoch = openssl::asn1::Asn1Time::from_unix(jiff::Timestamp::UNIX_EPOCH.as_second())
             .map_err(|e| err(e, "creating certificate time epoch"))?;
         let time = |value: &openssl::asn1::Asn1TimeRef| {
             let diff = epoch
                 .diff(value)
                 .map_err(|e| err(e, "reading certificate validity"))?;
             Ok::<_, super::X509ValidityError>(
-                jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0).checked_add(
-                    jiff::Span::new()
-                        .try_days(diff.days)?
-                        .try_seconds(diff.secs)?,
-                )?,
+                jiff::tz::Offset::UTC
+                    .to_datetime(jiff::Timestamp::UNIX_EPOCH)
+                    .checked_add(
+                        jiff::Span::new()
+                            .try_days(diff.days)?
+                            .try_seconds(diff.secs)?,
+                    )?,
             )
         };
         Ok((time(self.0.not_before())?, time(self.0.not_after())?))

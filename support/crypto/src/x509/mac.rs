@@ -222,8 +222,8 @@ impl X509CertificateInner {
         let tbs = self.parsed.tbs_certificate();
         let validity = tbs.validity();
         let time = |time: x509_cert::time::Time| {
-            jiff::civil::date(1970, 1, 1)
-                .at(0, 0, 0, 0)
+            jiff::tz::Offset::UTC
+                .to_datetime(jiff::Timestamp::UNIX_EPOCH)
                 .checked_add(time.to_unix_duration())
         };
         Ok((time(validity.not_before)?, time(validity.not_after)?))

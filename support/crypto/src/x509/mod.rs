@@ -177,7 +177,7 @@ impl Default for X509SelfSignedOptions<'_> {
 impl X509SelfSignedOptions<'_> {
     pub(super) fn validity(&self) -> anyhow::Result<x509_cert::time::Validity> {
         fn time(value: &str) -> der::Result<x509_cert::time::Time> {
-            let tag = if value.len() == 13 {
+            let tag = if value.len() == der::asn1::UtcTime::LENGTH {
                 der::Tag::UtcTime
             } else {
                 der::Tag::GeneralizedTime
@@ -403,7 +403,7 @@ mod tests {
             assert_eq!(
                 cert.validity().unwrap(),
                 (
-                    jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0),
+                    jiff::tz::Offset::UTC.to_datetime(jiff::Timestamp::UNIX_EPOCH),
                     expected.parse().unwrap()
                 )
             );
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(
             cert.validity().unwrap(),
             (
-                jiff::civil::date(1970, 1, 1).at(0, 0, 0, 0),
+                jiff::tz::Offset::UTC.to_datetime(jiff::Timestamp::UNIX_EPOCH),
                 "9999-12-31T23:59:59".parse().unwrap()
             )
         );
