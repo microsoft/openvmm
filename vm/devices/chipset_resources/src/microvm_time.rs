@@ -1,21 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The microVM restore packet version 4 and the time sample of the NVX time
-//! ABI v1, as the guest reads them through the portb device.
+//! The microVM restore packet version 5 and the time sample of NVX time ABI
+//! 2, as the guest reads them through the portb device, and the platform
+//! resource that pairs each time sample's host UTC with the guest TSC.
 //!
 //! Every byte the guest reads is a port exit, so the records are compact and
 //! readable four bytes at a time.
 
 use mesh::MeshPayload;
+use std::sync::Arc;
 use thiserror::Error;
+use vm_resource::CanResolveTo;
+use vm_resource::ResourceKind;
 
 /// The restore packet magic.
 pub const RESTORE_PACKET_MAGIC: [u8; 3] = *b"OVR";
 /// The restore packet version.
-pub const RESTORE_PACKET_VERSION: u8 = 4;
+pub const RESTORE_PACKET_VERSION: u8 = 5;
 /// The length of the restore packet header.
-pub const RESTORE_PACKET_HEADER_LEN: usize = 32;
+pub const RESTORE_PACKET_HEADER_LEN: usize = 24;
 /// The length of one memory range record.
 pub const RESTORE_RANGE_LEN: usize = 16;
 /// The length of the restore entropy.
@@ -49,9 +53,11 @@ pub const TIME_WINDOW_PORT: u16 = 0xeb;
 /// The portb status bit advertising the time-sample window.
 pub const STATUS_TIME_SAMPLE_AVAILABLE: u8 = 1 << 6;
 /// The time sample version.
-pub const TIME_SAMPLE_VERSION: u8 = 1;
+pub const TIME_SAMPLE_VERSION: u8 = 2;
 /// The length of a time sample.
-pub const TIME_SAMPLE_LEN: usize = 16;
+pub const TIME_SAMPLE_LEN: usize = 48;
+/// The encoding of an unknown bound in a time sample.
+pub const TIME_SAMPLE_UNKNOWN: u32 = u32::MAX;
 
 /// A restore packet or time sample is malformed.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -80,6 +86,9 @@ pub enum RestorePacketError {
     /// The rate deviation is beyond the tolerance.
     #[error("rate deviation {0} is beyond the tolerance")]
     RateDeviation(i32),
+    /// The host clock status of a time sample is unknown to this version.
+    #[error("unknown host clock status {0}")]
+    Status(u8),
     /// The record length does not match its counts.
     #[error("record is {actual} bytes, expected {expected}")]
     Length {
@@ -153,19 +162,19 @@ pub struct RestoreTimeRecord {
     pub test_hooks: bool,
 }
 
-/// A complete restore packet version 4.
+/// A complete restore packet version 5.
+///
+/// It carries no host UTC: the guest takes a time sample, which pairs host
+/// UTC with its TSC, to set its clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RestorePacketV4 {
+pub struct RestorePacketV5 {
     /// The controller's fields.
     pub base: RestorePacketBase,
     /// The worker's sealed time fields.
     pub time: RestoreTimeRecord,
-    /// Host UTC when the guest first selected the packet, in nanoseconds
-    /// since the Unix epoch.
-    pub utc_ns: u64,
 }
 
-impl RestorePacketV4 {
+impl RestorePacketV5 {
     /// Encodes the packet.
     pub fn encode(&self) -> Result<Vec<u8>, RestorePacketError> {
         self.base.validate()?;
@@ -195,7 +204,6 @@ impl RestorePacketV4 {
         bytes.extend_from_slice(&self.base.generation.to_le_bytes());
         bytes.extend_from_slice(&self.time.rate_deviation.to_le_bytes());
         bytes.extend_from_slice(&self.time.downtime_ns.to_le_bytes());
-        bytes.extend_from_slice(&self.utc_ns.to_le_bytes());
         for range in &self.base.ranges {
             bytes.extend_from_slice(&range.gpa_start.to_le_bytes());
             bytes.extend_from_slice(&range.length.to_le_bytes());
@@ -259,7 +267,6 @@ impl RestorePacketV4 {
                 rate_deviation: u32_at(12) as i32,
                 test_hooks: flags & FLAG_TEST_HOOKS != 0,
             },
-            utc_ns: u64_at(24),
         };
         packet.base.validate()?;
         if packet.time.rate_deviation.unsigned_abs() > MAX_RATE_DEVIATION.unsigned_abs() {
@@ -271,26 +278,111 @@ impl RestorePacketV4 {
     }
 }
 
-/// A time sample, latched by selector [`TIME_SAMPLE_SELECT`] and read from
-/// port [`TIME_WINDOW_PORT`].
+/// The status of host UTC in a time sample, as the host's time service
+/// reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostClockStatus {
+    /// The host does not report its clock's status.
+    Unknown,
+    /// A time service synchronizes host UTC with a reference.
+    Synchronized,
+    /// No time service synchronizes host UTC, which runs on its own.
+    FreeRunning,
+    /// The host reports a fault of its clock.
+    Unreliable,
+}
+
+impl HostClockStatus {
+    /// Returns the encoding of the status.
+    pub const fn to_byte(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Synchronized => 1,
+            Self::FreeRunning => 2,
+            Self::Unreliable => 3,
+        }
+    }
+
+    /// Returns the status that `byte` encodes, if any.
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::Synchronized),
+            2 => Some(Self::FreeRunning),
+            3 => Some(Self::Unreliable),
+            _ => None,
+        }
+    }
+}
+
+/// The host's fields of a time sample: host UTC paired with the guest TSC,
+/// and the discipline of host UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostTimeFields {
+    /// Host UTC at the latch, in nanoseconds since the Unix epoch.
+    pub utc_ns: u64,
+    /// The guest TSC at the instant of `utc_ns`.
+    pub tsc: u64,
+    /// The most the instants of `tsc` and `utc_ns` can differ, in
+    /// nanoseconds.
+    pub pairing_ns: u32,
+    /// The status of host UTC.
+    pub status: HostClockStatus,
+    /// A counter that changes when host UTC steps, the host resumes from a
+    /// suspension, or the guest TSC's offset from the host TSC changes.
+    pub disruption: u32,
+    /// How fast host UTC runs against the guest TSC counted at the declared
+    /// rate `F`, minus one, in ppm scaled by 2^16.
+    pub correction: i64,
+    /// A bound on the error of `correction`, in ppm scaled by 2^16, if
+    /// known.
+    pub correction_bound: Option<u32>,
+    /// The time service's bound on the error of host UTC, in microseconds,
+    /// if it reports one.
+    pub max_error_us: Option<u32>,
+}
+
+/// A time sample version 2, latched by selector [`TIME_SAMPLE_SELECT`] and
+/// read from port [`TIME_WINDOW_PORT`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSample {
     /// Whether a test hook is active.
     pub test_hooks: bool,
     /// The generation counter `g` of this VM process.
     pub generation: u32,
-    /// Host UTC at the latch, in nanoseconds since the Unix epoch.
-    pub utc_ns: u64,
+    /// The host's fields.
+    pub host: HostTimeFields,
+}
+
+/// Encodes an optional bound, saturating a known one below
+/// [`TIME_SAMPLE_UNKNOWN`].
+fn encode_bound(bound: Option<u32>) -> u32 {
+    bound.map_or(TIME_SAMPLE_UNKNOWN, |bound| {
+        bound.min(TIME_SAMPLE_UNKNOWN - 1)
+    })
+}
+
+/// Decodes an optional bound.
+fn decode_bound(value: u32) -> Option<u32> {
+    (value != TIME_SAMPLE_UNKNOWN).then_some(value)
 }
 
 impl TimeSample {
     /// Encodes the sample.
     pub fn encode(&self) -> [u8; TIME_SAMPLE_LEN] {
+        let host = &self.host;
         let mut bytes = [0; TIME_SAMPLE_LEN];
         bytes[0] = TIME_SAMPLE_VERSION;
         bytes[1] = if self.test_hooks { FLAG_TEST_HOOKS } else { 0 };
+        bytes[2] = host.status.to_byte();
         bytes[4..8].copy_from_slice(&self.generation.to_le_bytes());
-        bytes[8..16].copy_from_slice(&self.utc_ns.to_le_bytes());
+        bytes[8..16].copy_from_slice(&host.utc_ns.to_le_bytes());
+        bytes[16..24].copy_from_slice(&host.tsc.to_le_bytes());
+        bytes[24..28].copy_from_slice(&host.pairing_ns.to_le_bytes());
+        bytes[28..32].copy_from_slice(&host.disruption.to_le_bytes());
+        bytes[32..40].copy_from_slice(&host.correction.to_le_bytes());
+        bytes[40..44].copy_from_slice(&encode_bound(host.correction_bound).to_le_bytes());
+        bytes[44..48].copy_from_slice(&encode_bound(host.max_error_us).to_le_bytes());
         bytes
     }
 
@@ -304,16 +396,56 @@ impl TimeSample {
         if bytes[0] != TIME_SAMPLE_VERSION {
             return Err(RestorePacketError::Version(bytes[0]));
         }
-        if bytes[1] & !FLAG_TEST_HOOKS != 0 || bytes[2..4] != [0, 0] {
+        if bytes[1] & !FLAG_TEST_HOOKS != 0 || bytes[3] != 0 {
             return Err(RestorePacketError::Reserved);
         }
+        let status =
+            HostClockStatus::from_byte(bytes[2]).ok_or(RestorePacketError::Status(bytes[2]))?;
+        let u32_at =
+            |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let u64_at =
+            |offset: usize| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
         Ok(Self {
             test_hooks: bytes[1] & FLAG_TEST_HOOKS != 0,
-            generation: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            utc_ns: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            generation: u32_at(4),
+            host: HostTimeFields {
+                utc_ns: u64_at(8),
+                tsc: u64_at(16),
+                pairing_ns: u32_at(24),
+                status,
+                disruption: u32_at(28),
+                correction: u64_at(32) as i64,
+                correction_bound: decode_bound(u32_at(40)),
+                max_error_us: decode_bound(u32_at(44)),
+            },
         })
     }
 }
+
+/// The platform's source of the host's fields of time samples, which pairs
+/// host UTC with the guest TSC.
+pub trait TimeSampleSource: Send + Sync {
+    /// Pairs host UTC with the guest TSC now and reads the discipline of
+    /// host UTC, or returns `None` if the host cannot, which leaves the time
+    /// window empty.
+    fn sample(&self) -> Option<HostTimeFields>;
+}
+
+/// The resource kind of the platform's [`TimeSampleSource`], which the
+/// microVM portb device resolves from
+/// [`PlatformResource`](vm_resource::PlatformResource).
+pub enum TimeSampleSourceKind {}
+
+impl ResourceKind for TimeSampleSourceKind {
+    const NAME: &'static str = "microvm_time_sample_source";
+}
+
+impl CanResolveTo<ResolvedTimeSampleSource> for TimeSampleSourceKind {
+    type Input<'a> = ();
+}
+
+/// A resolved [`TimeSampleSourceKind`] resource.
+pub struct ResolvedTimeSampleSource(pub Arc<dyn TimeSampleSource>);
 
 #[cfg(test)]
 mod tests {
@@ -323,8 +455,8 @@ mod tests {
         std::array::from_fn(|i| i as u8)
     }
 
-    fn packet_without_ranges() -> RestorePacketV4 {
-        RestorePacketV4 {
+    fn packet_without_ranges() -> RestorePacketV5 {
+        RestorePacketV5 {
             base: RestorePacketBase {
                 online_vp_count: 2,
                 memory_target: false,
@@ -339,12 +471,11 @@ mod tests {
                 rate_deviation: -2,
                 test_hooks: false,
             },
-            utc_ns: 0x1122_3344_5566_7788,
         }
     }
 
-    fn packet_with_ranges() -> RestorePacketV4 {
-        RestorePacketV4 {
+    fn packet_with_ranges() -> RestorePacketV5 {
+        RestorePacketV5 {
             base: RestorePacketBase {
                 online_vp_count: 0,
                 memory_target: true,
@@ -368,35 +499,32 @@ mod tests {
                 rate_deviation: MAX_RATE_DEVIATION,
                 test_hooks: true,
             },
-            utc_ns: 1_700_000_000_000_000_000,
         }
     }
 
     #[test]
     fn golden_packet_without_ranges() {
         let mut expected = vec![
-            b'O', b'V', b'R', 4, 0x05, 2, 0, 0, // header
+            b'O', b'V', b'R', 5, 0x05, 2, 0, 0, // header
             7, 0, 0, 0, // generation
             0xfe, 0xff, 0xff, 0xff, // rate deviation
             0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // downtime
-            0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // UTC
         ];
         expected.extend(entropy());
         let packet = packet_without_ranges();
         let bytes = packet.encode().unwrap();
-        assert_eq!(bytes.len(), 96);
+        assert_eq!(bytes.len(), 88);
         assert_eq!(bytes, expected);
-        assert_eq!(RestorePacketV4::decode(&bytes).unwrap(), packet);
+        assert_eq!(RestorePacketV5::decode(&bytes).unwrap(), packet);
     }
 
     #[test]
     fn golden_packet_with_ranges() {
         let mut expected = vec![
-            b'O', b'V', b'R', 4, 0x0a, 0, 2, 0, // header
+            b'O', b'V', b'R', 5, 0x0a, 0, 2, 0, // header
             1, 0, 0, 0, // generation
             0x00, 0x00, 0xfa, 0x00, // rate deviation 250 * 2^16
             0x00, 0xac, 0x23, 0xfc, 0x06, 0x00, 0x00, 0x00, // downtime 30 s
-            0x00, 0x00, 0x2a, 0x36, 0xfe, 0x9c, 0x97, 0x17, // UTC
             0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // range 0 start
             0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, // range 0 length
             0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, // range 1 start
@@ -405,9 +533,9 @@ mod tests {
         expected.extend(entropy());
         let packet = packet_with_ranges();
         let bytes = packet.encode().unwrap();
-        assert_eq!(bytes.len(), 128);
+        assert_eq!(bytes.len(), 120);
         assert_eq!(bytes, expected);
-        assert_eq!(RestorePacketV4::decode(&bytes).unwrap(), packet);
+        assert_eq!(RestorePacketV5::decode(&bytes).unwrap(), packet);
     }
 
     #[test]
@@ -416,10 +544,10 @@ mod tests {
         let mutate = |offset: usize, value: u8| {
             let mut bytes = good.clone();
             bytes[offset] = value;
-            RestorePacketV4::decode(&bytes).unwrap_err()
+            RestorePacketV5::decode(&bytes).unwrap_err()
         };
         assert_eq!(mutate(0, b'X'), RestorePacketError::Magic);
-        assert_eq!(mutate(3, 3), RestorePacketError::Version(3));
+        assert_eq!(mutate(3, 4), RestorePacketError::Version(4));
         assert_eq!(mutate(4, 0x1a), RestorePacketError::Reserved);
         assert_eq!(mutate(7, 1), RestorePacketError::Reserved);
         assert_eq!(mutate(5, 3), RestorePacketError::OnlineVpCount(3));
@@ -431,11 +559,11 @@ mod tests {
             RestorePacketError::RateDeviation(_)
         ));
         assert_eq!(
-            RestorePacketV4::decode(&good[..31]).unwrap_err(),
-            RestorePacketError::Truncated(31)
+            RestorePacketV5::decode(&good[..23]).unwrap_err(),
+            RestorePacketError::Truncated(23)
         );
         assert!(matches!(
-            RestorePacketV4::decode(&good[..good.len() - 1]).unwrap_err(),
+            RestorePacketV5::decode(&good[..good.len() - 1]).unwrap_err(),
             RestorePacketError::Length { .. }
         ));
     }
@@ -468,27 +596,48 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn golden_time_sample() {
-        let sample = TimeSample {
+    fn sample() -> TimeSample {
+        TimeSample {
             test_hooks: true,
             generation: 3,
-            utc_ns: 0x0102_0304_0506_0708,
-        };
+            host: HostTimeFields {
+                utc_ns: 0x0102_0304_0506_0708,
+                tsc: 0x1112_1314_1516_1718,
+                pairing_ns: 0x2122_2324,
+                status: HostClockStatus::Synchronized,
+                disruption: 0x3132_3334,
+                correction: -2,
+                correction_bound: Some(66),
+                max_error_us: None,
+            },
+        }
+    }
+
+    #[test]
+    fn golden_time_sample() {
+        let sample = sample();
         let bytes = sample.encode();
         assert_eq!(
             bytes,
             [
-                1, 0x08, 0, 0, 3, 0, 0, 0, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01
+                2, 0x08, 1, 0, // version, flags, status, reserved
+                3, 0, 0, 0, // generation
+                0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // UTC
+                0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, // TSC
+                0x24, 0x23, 0x22, 0x21, // pairing
+                0x34, 0x33, 0x32, 0x31, // disruption
+                0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // correction
+                66, 0, 0, 0, // correction bound
+                0xff, 0xff, 0xff, 0xff, // maximum error, unknown
             ]
         );
         assert_eq!(TimeSample::decode(&bytes).unwrap(), sample);
 
         let mut bad = bytes;
-        bad[0] = 2;
+        bad[0] = 1;
         assert_eq!(
             TimeSample::decode(&bad).unwrap_err(),
-            RestorePacketError::Version(2)
+            RestorePacketError::Version(1)
         );
         let mut bad = bytes;
         bad[1] = 0x01;
@@ -502,9 +651,33 @@ mod tests {
             TimeSample::decode(&bad).unwrap_err(),
             RestorePacketError::Reserved
         );
+        let mut bad = bytes;
+        bad[2] = 4;
+        assert_eq!(
+            TimeSample::decode(&bad).unwrap_err(),
+            RestorePacketError::Status(4)
+        );
         assert!(matches!(
-            TimeSample::decode(&bytes[..15]).unwrap_err(),
+            TimeSample::decode(&bytes[..47]).unwrap_err(),
             RestorePacketError::Length { .. }
         ));
+    }
+
+    #[test]
+    fn known_bounds_never_encode_as_unknown() {
+        let mut sample = sample();
+        sample.host.correction_bound = Some(u32::MAX);
+        sample.host.max_error_us = Some(0);
+        let decoded = TimeSample::decode(&sample.encode()).unwrap();
+        assert_eq!(decoded.host.correction_bound, Some(u32::MAX - 1));
+        assert_eq!(decoded.host.max_error_us, Some(0));
+        for status in [
+            HostClockStatus::Unknown,
+            HostClockStatus::Synchronized,
+            HostClockStatus::FreeRunning,
+            HostClockStatus::Unreliable,
+        ] {
+            assert_eq!(HostClockStatus::from_byte(status.to_byte()), Some(status));
+        }
     }
 }

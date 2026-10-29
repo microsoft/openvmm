@@ -282,7 +282,7 @@ pub(super) mod tests {
 
     pub(in crate::snapshot) fn test_time_contract() -> SnapshotTimeContract {
         SnapshotTimeContract {
-            time_abi_version: 1,
+            time_abi_version: TIME_ABI_VERSION,
             tsc_frequency_hz: 2_100_000_000,
             tsc_tolerance_ppm: 250,
             apic_frequency_hz: rate::LAPIC_HZ_HYPERV,
@@ -383,8 +383,10 @@ pub(super) mod tests {
     #[test]
     fn time_contract_rules() {
         validate_time_contract(&test_time_contract()).unwrap();
-        let mutations: [(fn(&mut SnapshotTimeContract), TimeAbiCode); 8] = [
-            (|c| c.time_abi_version = 2, TimeAbiCode::ManifestTime),
+        let mutations: [(fn(&mut SnapshotTimeContract), TimeAbiCode); 9] = [
+            // A snapshot of time ABI 1 must be recaptured.
+            (|c| c.time_abi_version = 1, TimeAbiCode::ManifestTime),
+            (|c| c.time_abi_version = 3, TimeAbiCode::ManifestTime),
             (|c| c.tsc_tolerance_ppm = 251, TimeAbiCode::ManifestTime),
             (|c| c.tsc_frequency_hz = 100, TimeAbiCode::ManifestTime),
             (
