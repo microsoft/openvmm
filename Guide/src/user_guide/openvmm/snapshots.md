@@ -362,6 +362,12 @@ a host of the profile's generation; and an identical effective CPUID.
 OpenVMM computes the effective CPUID, including its own leaves and the bits
 it owns, such as the cache topology, so an OpenVMM build that computes it
 differently rejects earlier snapshots with `E_CPU_SURFACE`.
+These checks all run, even after one of them fails: on restore, the
+comparison of the effective CPUID with the snapshot's, then, on every boot,
+the check that VP 0 observes it and the check that the backend supports the
+profile. Their error thus names every violation of each, leads with the code
+of the first that fails, in that order, and goes on with the failures of the
+others.
 
 Restore also requires:
 
