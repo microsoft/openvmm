@@ -1102,6 +1102,60 @@ use zerocopy::FromZeros;
 
 type TestEmulatedDevice = EmulatedDevice<gdma::GdmaDevice, PagePoolAllocator>;
 
+#[derive(Debug, PartialEq, Eq)]
+struct TraceEvent {
+    level: tracing::Level,
+    fields: std::collections::BTreeMap<&'static str, String>,
+}
+
+impl tracing::field::Visit for TraceEvent {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.fields.insert(field.name(), format!("{value:?}"));
+    }
+}
+
+#[derive(Clone)]
+struct TraceCapture {
+    message: &'static str,
+    events: std::sync::mpsc::Sender<TraceEvent>,
+}
+
+impl TraceCapture {
+    fn new(message: &'static str) -> (Self, std::sync::mpsc::Receiver<TraceEvent>) {
+        let (events, receiver) = std::sync::mpsc::channel();
+        (Self { message, events }, receiver)
+    }
+}
+
+impl tracing::Subscriber for TraceCapture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut captured = TraceEvent {
+            level: *event.metadata().level(),
+            fields: Default::default(),
+        };
+        event.record(&mut captured);
+        if captured.fields.remove("message").as_deref() == Some(self.message) {
+            self.events.send(captured).unwrap();
+        }
+    }
+
+    fn enter(&self, _: &tracing::span::Id) {}
+
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// Sets up the full device stack and returns a [`ManaQueue`] ready for
 /// direct `handle_tx_cqe` testing along with the resources needed for
 /// teardown.
@@ -1150,6 +1204,78 @@ async fn new_test_queue(
 }
 
 #[async_test]
+async fn tx_wqe_trace_reports_long_oob_fields(driver: DefaultDriver) {
+    use gdma_defs::WQE_ALIGNMENT;
+    use gdma_defs::WqeHeader;
+    use gdma_defs::WqeParams;
+    use gdma_defs::bnic::{MANA_LONG_PKT_FMT, MANA_SHORT_PKT_FMT, ManaTxOob};
+    use mana_driver::queues::{DoorbellPage, Wq};
+    use user_driver::DmaClient;
+    use zerocopy::IntoBytes;
+
+    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
+    let mem = DeviceTestMemory::new(16, false, "tx_wqe_trace");
+    let (capture, captured_events) = TraceCapture::new("tx l_oob");
+    let mut results = Vec::new();
+
+    for (offset, pkt_fmt) in [
+        (0, MANA_LONG_PKT_FMT),
+        (4096 - WQE_ALIGNMENT, MANA_LONG_PKT_FMT),
+        (4096 - WQE_ALIGNMENT, MANA_SHORT_PKT_FMT),
+    ] {
+        let header = WqeHeader {
+            params: WqeParams::new()
+                .with_inline_client_oob_size(if pkt_fmt == MANA_LONG_PKT_FMT {
+                    gdma_defs::CLIENT_OOB_24
+                } else {
+                    gdma_defs::CLIENT_OOB_8
+                })
+                .with_num_sgl_entries(1),
+            ..FromZeros::new_zeroed()
+        };
+        let mut oob = ManaTxOob::new_zeroed();
+        oob.s_oob.set_pkt_fmt(pkt_fmt);
+        oob.l_oob.set_inject_vlan_pri_tag(true);
+        oob.l_oob.set_vlan_id(0xabc);
+        oob.l_oob.set_pcp(5);
+        oob.l_oob.set_dei(true);
+        oob.l_oob.set_long_vp_offset(0x789);
+        let wq_mem = mem.dma_client().allocate_dma_buffer(4096).unwrap();
+        wq_mem.write_at(offset, header.as_bytes());
+        wq_mem.write_at(offset + size_of::<WqeHeader>(), oob.as_bytes());
+        queue.tx_wq = Wq::new_sq(wq_mem, DoorbellPage::null(), 0);
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            queue.trace_tx_wqe_from_offset(tracing::Level::WARN, (offset / WQE_ALIGNMENT) as u32);
+        });
+        results.push((pkt_fmt, captured_events.try_iter().collect::<Vec<_>>()));
+    }
+
+    drop(queue);
+    endpoint.vport.destroy(arena).await;
+    endpoint.stop().await;
+
+    for (pkt_fmt, events) in results {
+        let expected = (pkt_fmt == MANA_LONG_PKT_FMT)
+            .then(|| TraceEvent {
+                level: tracing::Level::WARN,
+                fields: [
+                    ("inject_vlan_pri_tag", "true"),
+                    ("vlan_id", "2748"),
+                    ("pcp", "5"),
+                    ("dei", "true"),
+                    ("long_vp_offset", "1929"),
+                ]
+                .map(|(name, value)| (name, value.to_owned()))
+                .into(),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(events, expected);
+    }
+}
+
+#[async_test]
 #[should_panic(expected = "TX CQE arrived with no matching posted TX")]
 async fn tx_spurious_cqe_panics(driver: DefaultDriver) {
     use gdma_defs::bnic::CQE_TX_OKAY;
@@ -1160,7 +1286,8 @@ async fn tx_spurious_cqe_panics(driver: DefaultDriver) {
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
 
-    let _ = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let _ = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
 }
 
 #[async_test]
@@ -1175,13 +1302,16 @@ async fn tx_cqe_gdma_err_returns_try_restart(driver: DefaultDriver) {
         id: TxId(42),
         wqe_len: 0,
         bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 0,
     });
 
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_GDMA_ERR);
 
     // CQE_TX_GDMA_ERR returns TryRestart without popping posted_tx.
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
     assert!(
         matches!(result, Err(TxError::TryRestart(_))),
         "expected TryRestart, got {result:?}"
@@ -1195,31 +1325,241 @@ async fn tx_cqe_gdma_err_returns_try_restart(driver: DefaultDriver) {
     endpoint.stop().await;
 }
 
-#[async_test]
-async fn tx_cqe_invalid_oob_completes_packet(driver: DefaultDriver) {
+enum Bounce {
+    None,
+    Header,
+    Tail,
+}
+
+struct TxTraceCase {
+    cqe_type: u8,
+    eth_bytes: [u8; 2],
+    wq_number: u32,
+    wqe_offset: u32,
+    id: u32,
+    gpa: u64,
+    len: u32,
+    expected_type: Option<&'static str>,
+    bounce: Bounce,
+}
+
+async fn check_tx_cqe_trace(driver: &DefaultDriver, case: TxTraceCase) {
     use crate::PostedTx;
-    use gdma_defs::bnic::CQE_TX_INVALID_OOB;
+    use gdma_defs::bnic::ManaTxShortOob;
+    use gdma_defs::{Sge, WQE_ALIGNMENT};
 
-    let (mut queue, arena, mut endpoint) = new_test_queue(&driver).await;
-
+    let TxTraceCase {
+        cqe_type,
+        eth_bytes,
+        wq_number,
+        wqe_offset,
+        id,
+        gpa,
+        len,
+        expected_type,
+        bounce,
+    } = case;
+    let (mut queue, arena, mut endpoint) = new_test_queue(driver).await;
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let (capture, captured_events) = TraceCapture::new("tx ethernet frame");
+    let mut header = [0u8; 14];
+    header[12..14].copy_from_slice(&eth_bytes);
+    guest_memory.write_at(0, &header).unwrap();
+    let (wqe_offset, wqe_len, bounced_len_with_padding) = match bounce {
+        Bounce::None => (wqe_offset, 0, 0),
+        Bounce::Header | Bounce::Tail => {
+            assert!(queue.tx_bounce_buffer.gpa_to_offset(gpa).is_none());
+            let mut allocation = queue.tx_bounce_buffer.start_allocation();
+            let bounced = allocation.allocate(14).unwrap().reserve();
+            let bounced_len = allocation.commit();
+            // Distinct EtherTypes make selection of the wrong source observable.
+            header[12..14].copy_from_slice(&[0x08, 0x06]);
+            queue
+                .tx_bounce_buffer
+                .mem
+                .write_at(bounced.offset as usize, &header);
+            let mut sges = vec![Sge {
+                address: bounced.gpa,
+                mem_key: queue.mem_key,
+                size: 14,
+            }];
+            if matches!(bounce, Bounce::Tail) {
+                sges.insert(
+                    0,
+                    Sge {
+                        address: gpa,
+                        mem_key: queue.mem_key,
+                        size: len,
+                    },
+                );
+            }
+            let offset = queue.tx_wq.get_tail() / WQE_ALIGNMENT as u32;
+            let wqe_len = queue
+                .tx_wq
+                .push(ManaTxShortOob::new_zeroed(), sges)
+                .unwrap();
+            (offset, wqe_len, bounced_len)
+        }
+    };
     queue.posted_tx.push_back(PostedTx {
-        id: TxId(7),
-        wqe_len: 0,
-        bounced_len_with_padding: 0,
+        id: TxId(id),
+        wqe_len,
+        bounced_len_with_padding,
+        head_gpa: gpa,
+        head_len: len,
     });
-
     let mut oob = ManaTxCompOob::new_zeroed();
-    oob.cqe_hdr.set_cqe_type(CQE_TX_INVALID_OOB);
+    oob.cqe_hdr.set_cqe_type(cqe_type);
+    oob.offsets.set_tx_wqe_offset(wqe_offset);
+    let mut params = CqeParams::new();
+    params.set_wq_number(wq_number);
+    let previous_tail = queue.tx_bounce_buffer.tail;
 
-    // CQE_TX_INVALID_OOB logs an error but still pops posted_tx.
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
-    assert_eq!(result.unwrap().0, 7);
-    assert_eq!(queue.stats.tx_errors.get(), 1);
-    assert!(queue.posted_tx.is_empty());
+    // Keep the thread-local subscriber out of the async executor.
+    let result = tracing::subscriber::with_default(capture, || {
+        queue.handle_tx_cqe(&oob, params, 8, &guest_memory)
+    });
+    let events: Vec<_> = captured_events.try_iter().collect();
+    let errors = queue.stats.tx_errors.get();
+    let stuck = queue.stats.tx_stuck.get();
+    let posted = queue.posted_tx.len();
+    let bounce_bytes_freed = queue.tx_bounce_buffer.tail.wrapping_sub(previous_tail);
 
     drop(queue);
     endpoint.vport.destroy(arena).await;
     endpoint.stop().await;
+
+    let mut fields = std::collections::BTreeMap::from([
+        ("cqe_type", cqe_type.to_string()),
+        ("wq_number", wq_number.to_string()),
+        ("tx_wqe_offset", wqe_offset.to_string()),
+    ]);
+    if let Some(eth_type) = expected_type {
+        fields.insert("eth_type", eth_type.to_owned());
+    }
+    assert_eq!(
+        events,
+        [TraceEvent {
+            level: tracing::Level::WARN,
+            fields,
+        }],
+        "CQE {cqe_type:?}, packet {id}"
+    );
+    assert!(
+        matches!(result, Ok(completed) if completed.0 == id),
+        "expected TxId({id}), got {result:?}"
+    );
+    assert_eq!(errors, 1);
+    assert_eq!(stuck, 0);
+    assert_eq!(posted, 0);
+    assert_eq!(bounce_bytes_freed, bounced_len_with_padding);
+}
+
+#[async_test]
+async fn tx_cqe_errors_trace_eth_type(driver: DefaultDriver) {
+    use gdma_defs::bnic::{CQE_TX_INVALID_ETH_TYPE, CQE_TX_INVALID_OOB};
+
+    for case in [
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_OOB,
+            eth_bytes: [0x08, 0x06],
+            wq_number: 71,
+            wqe_offset: 3,
+            id: 701,
+            gpa: 0,
+            len: 14,
+            expected_type: Some("0x0806"),
+            bounce: Bounce::None,
+        },
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_ETH_TYPE,
+            eth_bytes: [0x88, 0xcc],
+            wq_number: 82,
+            wqe_offset: 5,
+            id: 802,
+            gpa: 0,
+            len: 14,
+            expected_type: Some("0x88cc"),
+            bounce: Bounce::None,
+        },
+    ] {
+        check_tx_cqe_trace(&driver, case).await;
+    }
+}
+
+#[async_test]
+async fn tx_cqe_errors_trace_without_eth_type(driver: DefaultDriver) {
+    use gdma_defs::bnic::{CQE_TX_INVALID_ETH_TYPE, CQE_TX_INVALID_OOB};
+
+    for case in [
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_ETH_TYPE,
+            eth_bytes: [0x88, 0xcc],
+            wq_number: 115,
+            wqe_offset: 11,
+            id: 1105,
+            gpa: 0,
+            len: 4,
+            expected_type: None,
+            bounce: Bounce::None,
+        },
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_OOB,
+            eth_bytes: [0x08, 0x06],
+            wq_number: 93,
+            wqe_offset: 7,
+            id: 903,
+            gpa: 0,
+            len: 13,
+            expected_type: None,
+            bounce: Bounce::None,
+        },
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_OOB,
+            eth_bytes: [0x08, 0x06],
+            wq_number: 104,
+            wqe_offset: 9,
+            id: 1004,
+            gpa: 4096,
+            len: 14,
+            expected_type: None,
+            bounce: Bounce::None,
+        },
+    ] {
+        check_tx_cqe_trace(&driver, case).await;
+    }
+}
+
+#[async_test]
+async fn tx_cqe_errors_trace_eth_type_from_correct_source(driver: DefaultDriver) {
+    use gdma_defs::bnic::{CQE_TX_INVALID_ETH_TYPE, CQE_TX_INVALID_OOB};
+
+    for case in [
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_OOB,
+            eth_bytes: [0x88, 0xcc],
+            wq_number: 126,
+            wqe_offset: 0,
+            id: 1206,
+            gpa: 0,
+            len: 14,
+            expected_type: Some("0x0806"),
+            bounce: Bounce::Header,
+        },
+        TxTraceCase {
+            cqe_type: CQE_TX_INVALID_ETH_TYPE,
+            eth_bytes: [0x88, 0xcc],
+            wq_number: 137,
+            wqe_offset: 0,
+            id: 1307,
+            gpa: 0,
+            len: 14,
+            expected_type: Some("0x88cc"),
+            bounce: Bounce::Tail,
+        },
+    ] {
+        check_tx_cqe_trace(&driver, case).await;
+    }
 }
 
 #[async_test]
@@ -1233,12 +1573,15 @@ async fn tx_cqe_okay_completes_packet(driver: DefaultDriver) {
         id: TxId(99),
         wqe_len: 0,
         bounced_len_with_padding: 0,
+        head_gpa: 0,
+        head_len: 0,
     });
 
     let mut oob = ManaTxCompOob::new_zeroed();
     oob.cqe_hdr.set_cqe_type(CQE_TX_OKAY);
 
-    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8);
+    let guest_memory = guestmem::GuestMemory::allocate(4096);
+    let result = queue.handle_tx_cqe(&oob, CqeParams::new(), 8, &guest_memory);
     assert_eq!(result.unwrap().0, 99);
     assert_eq!(queue.stats.tx_packets.get(), 1);
     assert!(queue.posted_tx.is_empty());

@@ -14,9 +14,11 @@ use gdma_defs::Cqe;
 use gdma_defs::CqeParams;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
+use gdma_defs::WQE_ALIGNMENT;
 use gdma_defs::WqeHeader;
 use gdma_defs::bnic::CQE_RX_OKAY;
 use gdma_defs::bnic::CQE_TX_GDMA_ERR;
+use gdma_defs::bnic::CQE_TX_INVALID_ETH_TYPE;
 use gdma_defs::bnic::CQE_TX_INVALID_OOB;
 use gdma_defs::bnic::CQE_TX_OKAY;
 use gdma_defs::bnic::MANA_LONG_PKT_FMT;
@@ -43,6 +45,7 @@ use mana_driver::queues::Eq;
 use mana_driver::queues::Wq;
 use net_backend::BackendQueueStats;
 use net_backend::BufferAccess;
+use net_backend::ETHERNET_HEADER_LEN;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::L4Protocol;
@@ -644,6 +647,10 @@ struct PostedTx {
     id: TxId,
     wqe_len: u32,
     bounced_len_with_padding: u32,
+    /// GPA of the first data segment, used for error tracing.
+    head_gpa: u64,
+    /// Length of the first data segment, used for error tracing.
+    head_len: u32,
 }
 
 #[derive(Default, Inspect)]
@@ -789,7 +796,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
     fn trace_tx_wqe_from_offset(&mut self, tracing_level: tracing::Level, wqe_offset: u32) {
         let header_size = size_of::<WqeHeader>(); // 8 bytes
         let s_oob_size = size_of::<ManaTxShortOob>(); // 8 bytes
-        let size = header_size + s_oob_size;
+        let size = header_size + s_oob_size + size_of::<ManaTxLongOob>();
         let bytes = self.tx_wq.read(wqe_offset, size);
         let wqe_header = WqeHeader::read_from_prefix(&bytes);
         let wqe_header = match wqe_header {
@@ -834,9 +841,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 );
 
                 if tx_s_oob.pkt_fmt() == MANA_LONG_PKT_FMT {
-                    let l_oob_offset = wqe_offset + (header_size + s_oob_size) as u32;
-                    let l_oob_bytes = self.tx_wq.read(l_oob_offset, size_of::<ManaTxLongOob>());
-                    match ManaTxLongOob::read_from_prefix(&l_oob_bytes) {
+                    match ManaTxLongOob::read_from_prefix(&bytes[s_oob_size..]) {
                         Ok((tx_l_oob, _)) => {
                             tracelimit::event_ratelimited!(
                                 tracing_level,
@@ -858,6 +863,47 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 tracelimit::error_ratelimited!("failed to read tx s_oob");
             }
         }
+    }
+
+    fn trace_tx_eth_frame(
+        &mut self,
+        cqe_type: u8,
+        wq_number: u32,
+        wqe_offset: u32,
+        guest_memory: &GuestMemory,
+    ) {
+        // MAC addresses are omitted for customer privacy.
+        tracelimit::warn_ratelimited!(
+            cqe_type,
+            wq_number,
+            tx_wqe_offset = wqe_offset,
+            eth_type = self
+                .read_tx_eth_type(wqe_offset, guest_memory)
+                .map(|bytes| tracing::field::display(format!(
+                    "{:#06x}",
+                    u16::from_be_bytes(bytes)
+                ))),
+            "tx ethernet frame"
+        );
+    }
+
+    fn read_tx_eth_type(&mut self, wqe_offset: u32, guest_memory: &GuestMemory) -> Option<[u8; 2]> {
+        let packet = self.posted_tx.front()?;
+        if packet.bounced_len_with_padding > 0 {
+            if let Some(eth_type) = read_tx_eth_type_from_bounce_buffer(
+                &mut self.tx_wq,
+                &self.tx_bounce_buffer,
+                wqe_offset,
+            ) {
+                return Some(eth_type);
+            }
+        }
+        // DirectDma tail coalescing may leave the head in guest memory.
+        // Do not walk the SGL when the EtherType is in a later segment.
+        if packet.head_len < ETHERNET_HEADER_LEN {
+            return None;
+        }
+        read_tx_eth_type_from_guest_memory(packet.head_gpa, guest_memory)
     }
 
     fn trace_rx_wqe_from_offset(&mut self, wqe_offset: u32) {
@@ -1095,14 +1141,14 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
 
     fn tx_poll(
         &mut self,
-        _pool: &mut dyn BufferAccess,
+        pool: &mut dyn BufferAccess,
         done: &mut [TxId],
     ) -> Result<usize, TxError> {
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                self.handle_tx_cqe(&tx_oob, cqe.params, done.len())?
+                self.handle_tx_cqe(&tx_oob, cqe.params, done.len(), pool.guest_memory())?
             } else if let Some(id) = self.dropped_tx.pop_front() {
                 self.stats.tx_dropped.increment();
                 id
@@ -1159,6 +1205,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
         tx_oob: &ManaTxCompOob,
         cqe_params: CqeParams,
         done_len: usize,
+        guest_memory: &GuestMemory,
     ) -> Result<TxId, TxError> {
         match tx_oob.cqe_hdr.cqe_type() {
             CQE_TX_OKAY => {
@@ -1173,11 +1220,19 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 // Return a TryRestart error to indicate that the queue needs to be restarted.
                 return Err(TxError::TryRestart(anyhow::anyhow!("TX GDMA error")));
             }
-            CQE_TX_INVALID_OOB => {
+            CQE_TX_INVALID_OOB | CQE_TX_INVALID_ETH_TYPE => {
                 // Invalid OOB means the metadata didn't match how the hardware parsed the packet.
-                // This is somewhat common, usually due to encapsulation, and only affects the specific packet.
+                // This is somewhat common, usually due to encapsulation.
+                // Metadata mismatches and unsupported EtherTypes only drop the
+                // individual packet; the queue continues.
                 self.stats.tx_errors.increment();
                 self.trace_tx(tracing::Level::WARN, cqe_params, tx_oob, done_len);
+                self.trace_tx_eth_frame(
+                    tx_oob.cqe_hdr.cqe_type(),
+                    cqe_params.wq_number(),
+                    tx_oob.offsets.tx_wqe_offset(),
+                    guest_memory,
+                );
             }
             ty => {
                 tracelimit::error_ratelimited!(
@@ -1460,6 +1515,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
             id: meta.id,
             wqe_len,
             bounced_len_with_padding: bounce_buffer.commit(),
+            head_gpa: head.gpa,
+            head_len: head.len,
         };
         Ok(Some(tx))
     }
@@ -1623,6 +1680,63 @@ impl ContiguousBufferManager {
     pub fn as_slice(&self) -> &[AtomicU8] {
         self.mem.as_slice()
     }
+
+    /// Given a GPA (DMA address) from an SGE, returns the corresponding
+    /// offset in the bounce buffer, or `None` if the GPA does not belong
+    /// to this buffer.
+    fn gpa_to_offset(&self, gpa: u64) -> Option<u32> {
+        let page_pfn = gpa / PAGE_SIZE64;
+        let offset_in_page = (gpa - page_pfn * PAGE_SIZE64) as u32;
+        let page_idx = self.mem.pfns().iter().position(|&pfn| pfn == page_pfn)? as u32;
+        Some(page_idx * PAGE_SIZE32 + offset_in_page)
+    }
+}
+
+/// Byte offset of the EtherType field, after the destination and source MAC addresses.
+/// Each MAC is 6 bytes long.
+const ETHERNET_TYPE_OFFSET: u32 = 12;
+
+/// Reads the EtherType from the first SGE of a bounced TX WQE, if accessible.
+fn read_tx_eth_type_from_bounce_buffer(
+    tx_wq: &mut Wq,
+    tx_bounce_buffer: &ContiguousBufferManager,
+    wqe_offset: u32,
+) -> Option<[u8; 2]> {
+    // The WQE header (8), largest inline OOB with padding (40), and first SGE
+    // (16) fit in 64 bytes. Read one alignment slot at a time to handle wrapping.
+    let mut bytes = [0u8; 64];
+    bytes[..WQE_ALIGNMENT].copy_from_slice(&tx_wq.read(wqe_offset, WQE_ALIGNMENT));
+    bytes[WQE_ALIGNMENT..].copy_from_slice(&tx_wq.read(wqe_offset.wrapping_add(1), WQE_ALIGNMENT));
+    let (wqe_header, _) = WqeHeader::read_from_prefix(&bytes).ok()?;
+
+    if wqe_header.params.num_sgl_entries() == 0 {
+        return None;
+    }
+
+    let sge_start = size_of::<WqeHeader>() + wqe_header.sgl_offset();
+    let sge_bytes = bytes.get(sge_start..)?;
+    let (sge, _) = Sge::read_from_prefix(sge_bytes).ok()?;
+
+    if sge.size < ETHERNET_HEADER_LEN {
+        return None;
+    }
+    let buf_offset = tx_bounce_buffer.gpa_to_offset(sge.address)?;
+    let start = buf_offset as usize + ETHERNET_TYPE_OFFSET as usize;
+    let slot = tx_bounce_buffer.as_slice().get(start..start + 2)?;
+    let mut eth_type_bytes = [0u8; 2];
+    slot.atomic_read(&mut eth_type_bytes);
+    Some(eth_type_bytes)
+}
+
+/// Reads the EtherType directly from guest memory at the given GPA.
+fn read_tx_eth_type_from_guest_memory(
+    head_gpa: u64,
+    guest_memory: &GuestMemory,
+) -> Option<[u8; 2]> {
+    let mut eth_type_bytes = [0u8; 2];
+    let addr = head_gpa.checked_add(u64::from(ETHERNET_TYPE_OFFSET))?;
+    guest_memory.read_at(addr, &mut eth_type_bytes).ok()?;
+    Some(eth_type_bytes)
 }
 
 impl Inspect for ContiguousBufferManager {
@@ -1637,7 +1751,33 @@ impl Inspect for ContiguousBufferManager {
 mod tests {
     use super::*;
     use anyhow::{Result, anyhow, ensure};
+    use gdma_defs::WqeParams;
+    use mana_driver::queues::DoorbellPage;
+    use test_with_tracing::test;
+    use user_driver::DmaClient;
     use user_driver_emulated_mock::DeviceTestMemory;
+    use zerocopy::IntoBytes;
+
+    /// Builds a send-WQ containing a single WQE with a single SGE.
+    fn build_tx_wq_with_sge(dma_client: &dyn DmaClient, address: u64) -> Wq {
+        let wqe_header = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_num_sgl_entries(1)
+                .with_inline_client_oob_size(gdma_defs::CLIENT_OOB_8),
+        };
+        let sge = Sge {
+            address,
+            mem_key: 0,
+            size: 1500,
+        };
+        let wq_mem = dma_client.allocate_dma_buffer(4096).unwrap();
+        wq_mem.write_at(0, wqe_header.as_bytes()); // [WqeHeader (8B)]
+        wq_mem.write_at(8, &[0u8; 8]); // [ShortOOB (8B)] (placeholder)
+        wq_mem.write_at(16, sge.as_bytes()); // [SGE (16B)]
+        Wq::new_sq(wq_mem, DoorbellPage::null(), 0)
+    }
 
     #[test]
     fn page_counts_powers_of_two_only() -> Result<()> {
@@ -1660,5 +1800,148 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_gpa_to_offset_round_trip() {
+        // Allocate a multi-page bounce buffer so we can exercise different
+        // page indices and offsets within pages.
+        let page_count: u32 = 4;
+        let dtm = DeviceTestMemory::new((page_count * 2).into(), false, "test_gpa_to_offset");
+        let mut bounce = ContiguousBufferManager::new(dtm.dma_client(), page_count).unwrap();
+        let pfns = bounce.mem.pfns().to_vec();
+        assert_eq!(pfns.len(), page_count as usize);
+
+        // Drive GPAs through the production `reserve()` path and check that
+        // `gpa_to_offset` recovers the same offset that `reserve` reported.
+        // Hopefully prevents any drift between `reserve` and `gpa_to_offset`.
+        let alloc_sizes = [1u32, 12, 13, PAGE_SIZE32 / 2, PAGE_SIZE32 - 1];
+        let mut tx = bounce.start_allocation();
+        let mut reserved = Vec::new();
+        for &len in &alloc_sizes {
+            let buf = tx.allocate(len).unwrap();
+            reserved.push(buf.reserve());
+        }
+        tx.commit();
+        for r in &reserved {
+            assert_eq!(
+                bounce.gpa_to_offset(r.gpa),
+                Some(r.offset),
+                "round-trip failed for offset={} gpa={:#x}",
+                r.offset,
+                r.gpa
+            );
+        }
+
+        // A GPA outside this buffer returns None.
+        assert_eq!(bounce.gpa_to_offset(0xDEAD_0000), None);
+
+        // A GPA one page before the first mapped page returns None.
+        let below = pfns[0].saturating_sub(1) * PAGE_SIZE64;
+        if below != pfns[0] * PAGE_SIZE64 {
+            assert_eq!(bounce.gpa_to_offset(below), None);
+        }
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_bounce_buffer() {
+        let mem = DeviceTestMemory::new(16, false, "test_trace_tx_eth_frame");
+        let dma_client = mem.dma_client();
+
+        let bounce_buffer = ContiguousBufferManager::new(dma_client.clone(), 1).unwrap();
+        // EtherType 0x0800 (IPv4) at bytes 12-13.
+        bounce_buffer.mem.write_at(12, &0x0800u16.to_be_bytes());
+
+        let sge_gpa = bounce_buffer.mem.pfns()[0] * PAGE_SIZE64; // offset 0
+        let mut wq = build_tx_wq_with_sge(dma_client.as_ref(), sge_gpa);
+
+        assert_eq!(
+            read_tx_eth_type_from_bounce_buffer(&mut wq, &bounce_buffer, 0),
+            Some([0x08, 0x00])
+        );
+
+        // An SGE outside the bounce buffer is unreadable.
+        let mut wq = build_tx_wq_with_sge(dma_client.as_ref(), 0xDEAD_0000);
+
+        assert_eq!(
+            read_tx_eth_type_from_bounce_buffer(&mut wq, &bounce_buffer, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_bounce_buffer_ring_wrap() {
+        let mem = DeviceTestMemory::new(16, false, "test_wrap");
+        let dma_client = mem.dma_client();
+
+        let bounce_buffer = ContiguousBufferManager::new(dma_client.clone(), 1).unwrap();
+        // EtherType 0x0800 (IPv4) at bytes 12-13.
+        bounce_buffer.mem.write_at(12, &0x0800u16.to_be_bytes());
+
+        let sge_gpa = bounce_buffer.mem.pfns()[0] * PAGE_SIZE64;
+
+        // Use CLIENT_OOB_32 so the WQE prefix is exactly 64 bytes:
+        //   WqeHeader(8) + sgl_offset(40) + SGE(16) = 64
+        // Placing this at the last 32-byte slot forces the SGE to wrap
+        // around to the beginning of the ring.
+        let wqe_header = WqeHeader {
+            reserved: [0; 3],
+            last_vbytes: 0,
+            params: WqeParams::new()
+                .with_num_sgl_entries(1)
+                .with_inline_client_oob_size(gdma_defs::CLIENT_OOB_32),
+        };
+        let sge = Sge {
+            address: sge_gpa,
+            mem_key: 0,
+            size: 1500,
+        };
+
+        // Build the 64-byte WQE prefix linearly, then split it across the
+        // ring boundary at offset 4064.
+        let mut wqe_buf = [0u8; 64];
+        wqe_buf[..8].copy_from_slice(wqe_header.as_bytes());
+        // OOB + padding (bytes 8..48) left as zeros.
+        wqe_buf[48..64].copy_from_slice(sge.as_bytes());
+
+        let wq_mem = dma_client.allocate_dma_buffer(4096).unwrap();
+        let wrap_offset: usize = 4096 - 32;
+        wq_mem.write_at(wrap_offset, &wqe_buf[..32]); // last 32 bytes of ring
+        wq_mem.write_at(0, &wqe_buf[32..]); // wraps to beginning
+        let mut wq = Wq::new_sq(wq_mem, DoorbellPage::null(), 0);
+
+        // wqe_offset is in WQE alignment units (32 bytes).
+        let wqe_offset = (wrap_offset / 32) as u32;
+        assert_eq!(
+            read_tx_eth_type_from_bounce_buffer(&mut wq, &bounce_buffer, wqe_offset),
+            Some([0x08, 0x00])
+        );
+    }
+
+    #[test]
+    fn test_trace_tx_eth_frame_guest_memory() {
+        use guestmem::GuestMemory;
+
+        let mut data = vec![0u8; 4096];
+        // Write EtherType 0x86DD (IPv6) at offset 12.
+        data[12] = 0x86;
+        data[13] = 0xDD;
+        let guest_memory = GuestMemory::allocate(4096);
+        guest_memory.write_at(0, &data).unwrap();
+
+        assert_eq!(
+            read_tx_eth_type_from_guest_memory(0, &guest_memory),
+            Some([0x86, 0xDD])
+        );
+
+        // Overflow and unmapped GPAs remain best-effort misses.
+        assert_eq!(
+            read_tx_eth_type_from_guest_memory(u64::MAX - 1, &guest_memory),
+            None
+        );
+        assert_eq!(
+            read_tx_eth_type_from_guest_memory(4096, &guest_memory),
+            None
+        );
     }
 }
