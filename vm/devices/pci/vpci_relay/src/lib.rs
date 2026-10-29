@@ -75,6 +75,13 @@ pub trait CreateMemoryAccess: 'static + Send + Sync {
 /// The size of the MMIO region required for each VPCI device.
 pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
 
+/// The maximum number of devices the relay supports; size its MMIO range for
+/// this many.
+pub const VPCI_RELAY_MAX_DEVICES: u64 = 64;
+
+/// The number of pages in the VMBus ring the relay allocates for each device.
+pub const VPCI_RELAY_RING_PAGES: u16 = 20;
+
 /// Size and alignment of the window the mocked TDISP flow programs into a
 /// device BAR so that it can reach the device's registers. Only reserved when
 /// that flow is enabled, and large enough for the BARs the emulated test
@@ -354,8 +361,8 @@ impl VpciRelay {
             self.driver_source.simple(),
             offer_info,
             OpenParams {
-                ring_pages: 20,
-                ring_offset_in_pages: 10,
+                ring_pages: VPCI_RELAY_RING_PAGES,
+                ring_offset_in_pages: VPCI_RELAY_RING_PAGES / 2,
             },
             self.dma_client.as_ref(),
         )
