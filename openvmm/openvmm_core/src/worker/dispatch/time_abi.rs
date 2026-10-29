@@ -56,9 +56,6 @@ use vmcore::save_restore::SavedStateBlob;
 /// The name of the time ABI state unit.
 pub(super) const TIME_ABI_UNIT: &str = "time-abi";
 
-/// The most differences an `E_CPU_SURFACE` read-back failure names.
-const MAX_REPORTED_CPUID_DIFFERENCES: usize = 16;
-
 /// The names of the CPUID result registers, for messages.
 const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 
@@ -625,7 +622,7 @@ pub(super) fn declare_rates(
 /// Compares the effective CPUID recomputed for a restored partition with the
 /// one the snapshot recorded (`E_CPU_SURFACE`). It compares the binary
 /// records, about a microsecond of work, and decodes the snapshot's only to
-/// name the differences.
+/// name every difference, as [`recorded_cpuid_differences`] lists them.
 pub(super) fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
@@ -640,14 +637,13 @@ pub(super) fn check_recorded_cpuid(
         )
     })?;
     let differences = recorded_cpuid_differences(effective_cpuid, &recorded);
-    let count = differences.len();
-    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
     Err(TimeAbiError::new(
         TimeAbiCode::CpuSurface,
         format!(
-            "the effective CPUID of CPU profile {} differs from the snapshot's in {count} entries: {}",
+            "the effective CPUID of CPU profile {} differs from the snapshot's in {} entries: {}",
             record.id,
-            shown.join("; ")
+            differences.len(),
+            differences.join("; ")
         ),
     )
     .into())
@@ -728,6 +724,10 @@ fn recorded_cpuid_differences(
 /// (`cpu_profile::unlisted_cpuid_candidates`); each must read zero, so that
 /// no reserved entry exposes a host feature (`E_CPU_UNLISTED`). A table
 /// backend reports none, and its guests read zero there by construction.
+///
+/// An `E_CPU_SURFACE` failure names every result that VP 0 does not observe,
+/// with the registers in which it differs, as [`cpuid_differences`] lists
+/// them.
 pub(super) fn check_presented_cpuid(
     partition: &dyn HvlitePartition,
     hypervisor: &str,
@@ -756,14 +756,13 @@ fn check_presented(
         cpu_profile::check_unlisted_cpuid(profile, &entries)?;
         return Ok(());
     }
-    let count = differences.len();
-    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
     Err(TimeAbiError::new(
         TimeAbiCode::CpuSurface,
         format!(
-            "VP 0 does not observe the effective CPUID of CPU profile {} in {count} results: {}",
+            "VP 0 does not observe the effective CPUID of CPU profile {} in {} results: {}",
             profile.id(),
-            shown.join("; ")
+            differences.len(),
+            differences.join("; ")
         ),
     )
     .into())
@@ -1217,6 +1216,15 @@ mod tests {
             .map_or(message.clone(), |(code, _)| code.to_owned())
     }
 
+    /// Returns the name of the CPUID entry of `function` and `index` in the
+    /// messages of the CPU checks.
+    fn leaf_name(function: u32, index: Option<u32>) -> String {
+        match index {
+            Some(index) => format!("CPUID {function:#x}.{index}"),
+            None => format!("CPUID {function:#x}"),
+        }
+    }
+
     #[test]
     fn unit_saves_restores_and_resets_the_invariant_control() {
         futures::executor::block_on(async {
@@ -1407,6 +1415,52 @@ mod tests {
         assert!(differences[0].starts_with("CPUID 0x80000002 "));
     }
 
+    /// A failure names every result that VP 0 does not observe, however many
+    /// there are, and counts them.
+    #[test]
+    fn presented_cpuid_names_every_difference() {
+        let (_, _, effective) = test_config(2);
+        // VP 0 reads each result with the lowest bit of its first masked
+        // register flipped.
+        let mut expected = Vec::new();
+        let presented = effective
+            .results()
+            .map(|result| {
+                let mut value = result.result;
+                if let Some(register) = (0..4).find(|&register| result.mask[register] != 0) {
+                    let mask = result.mask[register];
+                    value[register] ^= mask & mask.wrapping_neg();
+                    expected.push(format!(
+                        "{} {} is {:#010x}, not {:#010x} under mask {mask:#010x}",
+                        leaf_name(result.function, result.index),
+                        REGISTERS[register],
+                        value[register],
+                        result.result[register]
+                    ));
+                }
+                let leaf = CpuidLeaf::new(result.function, value);
+                match result.index {
+                    Some(index) => leaf.indexed(index),
+                    None => leaf,
+                }
+            })
+            .collect();
+        assert!(expected.len() > 16, "{expected:?}");
+        let message = format!(
+            "{:#}",
+            check_presented(test_profile(), &effective, presented).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in {} results: {}",
+                expected.len(),
+                expected.join("; ")
+            )
+        );
+    }
+
     #[test]
     fn recorded_cpuid_must_match() {
         let (_, _, effective) = test_config(2);
@@ -1473,6 +1527,53 @@ mod tests {
         assert_eq!(
             code(check_recorded_cpuid(&effective, &malformed)),
             "E_MANIFEST_TIME"
+        );
+    }
+
+    /// A failure names every entry in which the snapshot's record differs,
+    /// however many there are, and counts them.
+    #[test]
+    fn recorded_cpuid_names_every_difference() {
+        let (_, _, effective) = test_config(2);
+        // The snapshot records each entry with the lowest bit of EAX flipped.
+        let mut expected = Vec::new();
+        let recorded: Vec<_> = record_entries(&effective)
+            .map(|entry| {
+                let mut recorded = entry;
+                recorded.result[0] ^= 1;
+                expected.push(format!(
+                    "{} EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} \
+                     in the snapshot",
+                    leaf_name(entry.function, entry.index),
+                    entry.result[0],
+                    entry.mask[0],
+                    recorded.result[0],
+                    recorded.mask[0]
+                ));
+                recorded
+            })
+            .collect();
+        assert!(expected.len() > 16, "{expected:?}");
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        let record = SnapshotCpuProfile {
+            id: TEST_PROFILE.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(recorded),
+            capture_cpu_signature: 0,
+        };
+        let message = format!(
+            "{:#}",
+            check_recorded_cpuid(&effective, &record).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                expected.len(),
+                expected.join("; ")
+            )
         );
     }
 
