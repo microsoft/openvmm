@@ -15,7 +15,7 @@ use vmm_test_macros::openvmm_test;
 ///
 /// Windows-only right now, because the Linux images do not include the KVP IC
 /// daemon.
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2025_x64)))]
 async fn kvp_ic(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     // Run with a NIC to perform IP address tests.
     let (mut vm, agent) = config.modify_backend(|c| c.with_nic()).run().await?;
