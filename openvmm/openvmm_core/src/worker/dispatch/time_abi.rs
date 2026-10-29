@@ -56,8 +56,8 @@ use vmcore::save_restore::SavedStateBlob;
 /// The name of the time ABI state unit.
 pub(super) const TIME_ABI_UNIT: &str = "time-abi";
 
-/// The most differences an `E_CPU_SURFACE` read-back failure names.
-const MAX_REPORTED_CPUID_DIFFERENCES: usize = 16;
+/// The names of the CPUID result registers, for messages.
+const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 
 /// The time ABI state of a loaded VM.
 pub(super) struct TimeAbiState {
@@ -619,11 +619,90 @@ pub(super) fn declare_rates(
     })
 }
 
+/// Checks the CPU of a new partition against its CPU profile, at every cold
+/// boot and restore, before any VP runs: on restore, that the effective CPUID
+/// recomputed for the partition is the one that the snapshot recorded in
+/// `record` ([`check_recorded_cpuid`]), then that VP 0 observes the effective
+/// CPUID ([`check_presented_cpuid`]), and then that the backend supports the
+/// profile ([`check_profile_support`]).
+///
+/// Every check runs, even after one fails, so that a failure names every
+/// violation together ([`report_together`]): the error leads with the failure
+/// of the first check that fails, in that order, and so with its code, as if
+/// the checks had stopped there, and goes on with the failure of each later
+/// check that fails, with its own code.
+pub(super) fn check_cpu_profile(
+    partition: &dyn HvlitePartition,
+    hypervisor: &str,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    record: Option<&SnapshotCpuProfile>,
+) -> anyhow::Result<()> {
+    check_cpu_profile_with(
+        backend(partition, hypervisor),
+        hypervisor,
+        profile,
+        effective_cpuid,
+        record,
+    )
+}
+
+/// Runs the checks of [`check_cpu_profile`] with `backend`, the partition's
+/// time ABI backend, or the failure of a partition without one, which fails
+/// both of the backend's checks at once.
+fn check_cpu_profile_with(
+    backend: Result<&dyn TimeAbiBackend, TimeAbiError>,
+    hypervisor: &str,
+    profile: &CpuProfile,
+    effective_cpuid: &EffectiveCpuid,
+    record: Option<&SnapshotCpuProfile>,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    let recorded = record.map_or(Ok(()), |record| {
+        check_recorded_cpuid(effective_cpuid, record)
+    });
+    let recorded_done = std::time::Instant::now();
+    let backend = match backend {
+        Ok(backend) => backend,
+        Err(err) => return report_together([recorded, Err(err.into())]),
+    };
+    let presented = check_presented_cpuid(backend, profile, effective_cpuid);
+    let presented_done = std::time::Instant::now();
+    let support = check_profile_support(backend, hypervisor, profile);
+    let support_done = std::time::Instant::now();
+    report_together([recorded, presented, support])?;
+    tracing::info!(
+        cpu_profile = profile.id(),
+        recorded_cpuid_us = (recorded_done - started).as_micros() as u64,
+        presented_cpuid_us = (presented_done - recorded_done).as_micros() as u64,
+        profile_support_us = (support_done - presented_done).as_micros() as u64,
+        "time ABI CPU checks passed"
+    );
+    Ok(())
+}
+
+/// Returns the outcome of checks that ran together, in order: success if
+/// every check passed, the failure of the only check that failed, unchanged,
+/// and otherwise one error that gives the error chain of each failure in
+/// turn, joined with `; `. Such an error leads with the first failure, whose
+/// code is therefore the first one that the error names.
+fn report_together(results: impl IntoIterator<Item = anyhow::Result<()>>) -> anyhow::Result<()> {
+    let mut failures: Vec<_> = results.into_iter().filter_map(Result::err).collect();
+    if failures.len() <= 1 {
+        return failures.pop().map_or(Ok(()), Err);
+    }
+    let failures: Vec<_> = failures
+        .iter()
+        .map(|failure| format!("{failure:#}"))
+        .collect();
+    Err(anyhow::Error::msg(failures.join("; ")))
+}
+
 /// Compares the effective CPUID recomputed for a restored partition with the
 /// one the snapshot recorded (`E_CPU_SURFACE`). It compares the binary
 /// records, about a microsecond of work, and decodes the snapshot's only to
-/// name the differences.
-pub(super) fn check_recorded_cpuid(
+/// name every difference, as [`recorded_cpuid_differences`] lists them.
+fn check_recorded_cpuid(
     effective_cpuid: &EffectiveCpuid,
     record: &SnapshotCpuProfile,
 ) -> anyhow::Result<()> {
@@ -637,14 +716,13 @@ pub(super) fn check_recorded_cpuid(
         )
     })?;
     let differences = recorded_cpuid_differences(effective_cpuid, &recorded);
-    let count = differences.len();
-    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
     Err(TimeAbiError::new(
         TimeAbiCode::CpuSurface,
         format!(
-            "the effective CPUID of CPU profile {} differs from the snapshot's in {count} entries: {}",
+            "the effective CPUID of CPU profile {} differs from the snapshot's in {} entries: {}",
             record.id,
-            shown.join("; ")
+            differences.len(),
+            differences.join("; ")
         ),
     )
     .into())
@@ -660,8 +738,14 @@ fn record_entries(effective: &EffectiveCpuid) -> impl Iterator<Item = EffectiveC
     })
 }
 
-/// Lists the entries in which this partition's effective CPUID and a
-/// snapshot's `recorded` one differ.
+/// Lists the differences between this partition's effective CPUID and a
+/// snapshot's `recorded` one: each entry that only one of them has; each
+/// entry of the snapshot that differs from the partition's entry of the same
+/// leaf and subleaf, with every register in which they differ, with its value
+/// and mask in each; each entry that the snapshot lists more than once; and a
+/// snapshot that does not list its entries in order of leaf and subleaf, as
+/// the partition's effective CPUID does. The record's decoder admits the last
+/// two, which no OpenVMM writes.
 fn recorded_cpuid_differences(
     effective: &EffectiveCpuid,
     recorded: &[EffectiveCpuidEntry],
@@ -674,20 +758,35 @@ fn recorded_cpuid_differences(
     let ours: BTreeMap<_, _> = record_entries(effective)
         .map(|entry| (key(&entry), entry))
         .collect();
-    let theirs: BTreeMap<_, _> = recorded.iter().map(|entry| (key(entry), *entry)).collect();
+    // Every entry that the snapshot lists for a leaf and subleaf, in order.
+    let mut theirs: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for entry in recorded {
+        theirs.entry(key(entry)).or_default().push(entry);
+    }
     let mut differences = Vec::new();
     for (&entry_key, entry) in &ours {
-        match theirs.get(&entry_key) {
-            None => differences.push(format!("{} is not in the snapshot", name(entry_key))),
-            Some(theirs) if theirs != entry => differences.push(format!(
-                "{} is {:#x?} under mask {:#x?}, and {:#x?} under mask {:#x?} in the snapshot",
-                name(entry_key),
-                entry.result,
-                entry.mask,
-                theirs.result,
-                theirs.mask
-            )),
-            Some(_) => {}
+        let Some(listed) = theirs.get(&entry_key) else {
+            differences.push(format!("{} is not in the snapshot", name(entry_key)));
+            continue;
+        };
+        for &theirs in listed.iter().filter(|&&theirs| theirs != entry) {
+            let registers: Vec<String> = (0..4)
+                .filter(|&register| {
+                    (entry.result[register], entry.mask[register])
+                        != (theirs.result[register], theirs.mask[register])
+                })
+                .map(|register| {
+                    format!(
+                        "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the snapshot",
+                        REGISTERS[register],
+                        entry.result[register],
+                        entry.mask[register],
+                        theirs.result[register],
+                        theirs.mask[register]
+                    )
+                })
+                .collect();
+            differences.push(format!("{} {}", name(entry_key), registers.join(", ")));
         }
     }
     for &entry_key in theirs
@@ -696,8 +795,19 @@ fn recorded_cpuid_differences(
     {
         differences.push(format!("{} is only in the snapshot", name(entry_key)));
     }
-    if differences.is_empty() {
-        differences.push("the snapshot lists the same entries in another order".to_owned());
+    for (&entry_key, listed) in theirs.iter().filter(|(_, listed)| listed.len() > 1) {
+        differences.push(format!(
+            "{} is in the snapshot {} times",
+            name(entry_key),
+            listed.len()
+        ));
+    }
+    if recorded
+        .windows(2)
+        .any(|pair| key(&pair[0]) > key(&pair[1]))
+    {
+        differences
+            .push("the snapshot does not list its entries in order of leaf and subleaf".to_owned());
     }
     differences
 }
@@ -712,14 +822,18 @@ fn recorded_cpuid_differences(
 /// (`cpu_profile::unlisted_cpuid_candidates`); each must read zero, so that
 /// no reserved entry exposes a host feature (`E_CPU_UNLISTED`). A table
 /// backend reports none, and its guests read zero there by construction.
-pub(super) fn check_presented_cpuid(
-    partition: &dyn HvlitePartition,
-    hypervisor: &str,
+///
+/// A failure names every violation at once, as `cpu_profile::verify_support`
+/// does: every result that VP 0 does not observe, with the registers in
+/// which it differs, as [`cpuid_differences`] lists them, then every
+/// non-zero entry outside the profile's tables. A report whose only
+/// violations are such entries fails with `E_CPU_UNLISTED`.
+fn check_presented_cpuid(
+    backend: &dyn TimeAbiBackend,
     profile: &CpuProfile,
     effective_cpuid: &EffectiveCpuid,
 ) -> anyhow::Result<()> {
-    let leaves = backend(partition, hypervisor)?.effective_cpuid()?;
-    check_presented(profile, effective_cpuid, leaves)
+    check_presented(profile, effective_cpuid, backend.effective_cpuid()?)
 }
 
 /// Checks a backend's report of VP 0's CPUID, as [`check_presented_cpuid`]
@@ -731,23 +845,28 @@ fn check_presented(
 ) -> anyhow::Result<()> {
     let presented = CpuidLeafSet::new(leaves);
     let differences = cpuid_differences(&presented, effective_cpuid);
+    let entries: Vec<_> = presented
+        .leaves()
+        .iter()
+        .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
+        .collect();
     if differences.is_empty() {
-        let entries: Vec<_> = presented
-            .leaves()
-            .iter()
-            .map(|leaf| cpu_profile::cpuid::CpuidEntry::new(leaf.function, leaf.index, leaf.result))
-            .collect();
         cpu_profile::check_unlisted_cpuid(profile, &entries)?;
         return Ok(());
     }
-    let count = differences.len();
-    let shown = &differences[..count.min(MAX_REPORTED_CPUID_DIFFERENCES)];
+    let unlisted = cpu_profile::unlisted_cpuid_violations(profile, &entries);
     Err(TimeAbiError::new(
         TimeAbiCode::CpuSurface,
         format!(
-            "VP 0 does not observe the effective CPUID of CPU profile {} in {count} results: {}",
+            "VP 0 does not observe the effective CPUID of CPU profile {} in {} results: {}",
             profile.id(),
-            shown.join("; ")
+            differences.len(),
+            differences
+                .iter()
+                .chain(&unlisted)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
         ),
     )
     .into())
@@ -756,7 +875,6 @@ fn check_presented(
 /// Lists every result of `effective` that `presented` does not match under
 /// the result's masks.
 fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Vec<String> {
-    const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
     effective
         .results()
         .filter_map(|expected| {
@@ -790,22 +908,20 @@ fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Ve
 /// Checks that the backend supports the CPU profile, from the CPU surface it
 /// reports (`E_PROFILE_UNSUPPORTED`), at every cold boot and restore. A
 /// backend that reports no surface fails the check.
-pub(super) fn check_profile_support(
-    partition: &dyn HvlitePartition,
+fn check_profile_support(
+    backend: &dyn TimeAbiBackend,
     hypervisor: &str,
     profile: &CpuProfile,
 ) -> anyhow::Result<()> {
-    let surface = backend(partition, hypervisor)?
-        .supported_cpu_surface()?
-        .ok_or_else(|| {
-            TimeAbiError::new(
-                TimeAbiCode::ProfileUnsupported,
-                format!(
-                    "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
-                    profile.id()
-                ),
-            )
-        })?;
+    let surface = backend.supported_cpu_surface()?.ok_or_else(|| {
+        TimeAbiError::new(
+            TimeAbiCode::ProfileUnsupported,
+            format!(
+                "the {hypervisor} backend reports no CPU surface to verify CPU profile {} against",
+                profile.id()
+            ),
+        )
+    })?;
     cpu_profile::verify_support(profile, &host_cpu_surface(&surface, hypervisor))?;
     Ok(())
 }
@@ -1102,8 +1218,13 @@ impl StateUnit for TimeAbiUnit {
 mod tests {
     use super::*;
     use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
+    use virt::time_abi::BackendPreflight;
+    use virt::time_abi::HostTimeSample;
+    use virt::time_abi::TscAnchor;
+    use virt::time_abi::TscSetReport;
     use virt::time_abi::cpuid::effective_cpuid;
     use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
+    use virt::time_abi::surface::SupportedMsrValue;
     use vm_topology::processor::ProcessorTopology;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::VpIndex;
@@ -1202,6 +1323,15 @@ mod tests {
             .map_or(message.clone(), |(code, _)| code.to_owned())
     }
 
+    /// Returns the name of the CPUID entry of `function` and `index` in the
+    /// messages of the CPU checks.
+    fn leaf_name(function: u32, index: Option<u32>) -> String {
+        match index {
+            Some(index) => format!("CPUID {function:#x}.{index}"),
+            None => format!("CPUID {function:#x}"),
+        }
+    }
+
     #[test]
     fn unit_saves_restores_and_resets_the_invariant_control() {
         futures::executor::block_on(async {
@@ -1281,8 +1411,9 @@ mod tests {
 
     /// A pass-through backend's report may hold VP 0's view at the host's
     /// entries outside the profile: zero there passes, and anything else is
-    /// `E_CPU_UNLISTED`. A report of the table alone passes, for every pinned
-    /// profile and topology.
+    /// `E_CPU_UNLISTED`, or is named after the governed differences of an
+    /// `E_CPU_SURFACE` failure. A report of the table alone passes, for every
+    /// pinned profile and topology.
     #[test]
     fn presented_cpuid_rejects_non_zero_unlisted_entries() {
         for profile in cpu_profile::pinned_profiles() {
@@ -1314,11 +1445,29 @@ mod tests {
             "E_CPU_UNLISTED"
         );
 
-        // A governed difference is reported first.
-        leaked.retain(|leaf| leaf.function != 0x8000_0002);
-        assert_eq!(
-            code(check_presented(profile, &effective, leaked)),
-            "E_CPU_SURFACE"
+        // Governed differences are reported first, then every non-zero entry
+        // outside the profile.
+        leaked.retain(|leaf| !matches!(leaf.function, 0x8000_0002 | 0x8000_0003));
+        let message = format!(
+            "{:#}",
+            check_presented(profile, &effective, leaked).unwrap_err()
+        );
+        assert!(
+            message.starts_with(&format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in 2 results: CPUID 0x80000002 EAX is 0x00000000, not "
+            )),
+            "{message}"
+        );
+        assert!(
+            message.contains("; CPUID 0x80000003 EAX is 0x00000000, not "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with(
+                "; CPUID 0x1d is outside the profile and reads EAX 0x1, EBX 0x0, ECX 0x0, EDX 0x0"
+            ),
+            "{message}"
         );
     }
 
@@ -1392,6 +1541,52 @@ mod tests {
         assert!(differences[0].starts_with("CPUID 0x80000002 "));
     }
 
+    /// A failure names every result that VP 0 does not observe, however many
+    /// there are, and counts them.
+    #[test]
+    fn presented_cpuid_names_every_difference() {
+        let (_, _, effective) = test_config(2);
+        // VP 0 reads each result with the lowest bit of its first masked
+        // register flipped.
+        let mut expected = Vec::new();
+        let presented = effective
+            .results()
+            .map(|result| {
+                let mut value = result.result;
+                if let Some(register) = (0..4).find(|&register| result.mask[register] != 0) {
+                    let mask = result.mask[register];
+                    value[register] ^= mask & mask.wrapping_neg();
+                    expected.push(format!(
+                        "{} {} is {:#010x}, not {:#010x} under mask {mask:#010x}",
+                        leaf_name(result.function, result.index),
+                        REGISTERS[register],
+                        value[register],
+                        result.result[register]
+                    ));
+                }
+                let leaf = CpuidLeaf::new(result.function, value);
+                match result.index {
+                    Some(index) => leaf.indexed(index),
+                    None => leaf,
+                }
+            })
+            .collect();
+        assert!(expected.len() > 16, "{expected:?}");
+        let message = format!(
+            "{:#}",
+            check_presented(test_profile(), &effective, presented).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in {} results: {}",
+                expected.len(),
+                expected.join("; ")
+            )
+        );
+    }
+
     #[test]
     fn recorded_cpuid_must_match() {
         let (_, _, effective) = test_config(2);
@@ -1405,13 +1600,16 @@ mod tests {
         };
         check_recorded_cpuid(&effective, &record).unwrap();
 
-        // Another topology changes the topology leaves.
+        // Another topology changes the topology leaves, which are named on
+        // one line, with the registers in which they differ.
         let (_, _, other) = test_config(4);
         let message = format!("{:#}", check_recorded_cpuid(&other, &record).unwrap_err());
         assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
-        assert!(message.contains("CPUID 0xb.1"), "{message}");
+        assert!(message.contains("CPUID 0xb.1 E"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
 
-        // One flipped bit is named.
+        // One flipped bit is named, with its register, value, and mask.
+        let leaf_0 = record_entries(&effective).next().unwrap();
         let mut flipped = record.clone();
         flipped.effective_cpuid[3 * 4] ^= 1;
         let message = format!(
@@ -1419,7 +1617,17 @@ mod tests {
             check_recorded_cpuid(&effective, &flipped).unwrap_err()
         );
         assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
-        assert!(message.contains("CPUID 0x0 is"), "{message}");
+        assert!(
+            message.ends_with(&format!(
+                ": CPUID 0x0 EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask \
+                 {:#010x} in the snapshot",
+                leaf_0.result[0],
+                leaf_0.mask[0],
+                leaf_0.result[0] ^ 1,
+                leaf_0.mask[0]
+            )),
+            "{message}"
+        );
 
         // A missing entry, and the same entries in another order.
         let mut truncated = record.clone();
@@ -1446,6 +1654,450 @@ mod tests {
             code(check_recorded_cpuid(&effective, &malformed)),
             "E_MANIFEST_TIME"
         );
+    }
+
+    /// A failure names every entry in which the snapshot's record differs,
+    /// however many there are, and counts them.
+    #[test]
+    fn recorded_cpuid_names_every_difference() {
+        let (_, _, effective) = test_config(2);
+        // The snapshot records each entry with the lowest bit of EAX flipped.
+        let mut expected = Vec::new();
+        let recorded: Vec<_> = record_entries(&effective)
+            .map(|entry| {
+                let mut recorded = entry;
+                recorded.result[0] ^= 1;
+                expected.push(format!(
+                    "{} EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} \
+                     in the snapshot",
+                    leaf_name(entry.function, entry.index),
+                    entry.result[0],
+                    entry.mask[0],
+                    recorded.result[0],
+                    recorded.mask[0]
+                ));
+                recorded
+            })
+            .collect();
+        assert!(expected.len() > 16, "{expected:?}");
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        let record = SnapshotCpuProfile {
+            id: TEST_PROFILE.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(recorded),
+            capture_cpu_signature: 0,
+        };
+        let message = format!(
+            "{:#}",
+            check_recorded_cpuid(&effective, &record).unwrap_err()
+        );
+        assert_eq!(
+            message,
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                expected.len(),
+                expected.join("; ")
+            )
+        );
+    }
+
+    /// A difference of an entry that both records hold names each register
+    /// in which the entry differs, in order, with its value and mask in
+    /// each, and no other register; the entries that only one record holds
+    /// are named with the partition's, in order, then the snapshot's.
+    #[test]
+    fn recorded_cpuid_names_each_register_in_which_an_entry_differs() {
+        let (_, _, effective) = test_config(2);
+        let record = test_record(&effective);
+        let entries: Vec<_> = record_entries(&effective).collect();
+        let message = |recorded: &[EffectiveCpuidEntry]| {
+            let record = SnapshotCpuProfile {
+                effective_cpuid: encode_effective_cpuid(recorded.iter().copied()),
+                ..record.clone()
+            };
+            format!(
+                "{:#}",
+                check_recorded_cpuid(&effective, &record).unwrap_err()
+            )
+        };
+        let expected = |differences: &[String]| {
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                differences.len(),
+                differences.join("; ")
+            )
+        };
+        let register =
+            |register: usize, ours: &EffectiveCpuidEntry, theirs: &EffectiveCpuidEntry| {
+                format!(
+                    "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in \
+                     the snapshot",
+                    REGISTERS[register],
+                    ours.result[register],
+                    ours.mask[register],
+                    theirs.result[register],
+                    theirs.mask[register]
+                )
+            };
+
+        // The value or the mask of each register alone, of an entry of a
+        // subleaf.
+        let (index, entry) = entries
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.index.is_some())
+            .unwrap();
+        let name = leaf_name(entry.function, entry.index);
+        for changed_register in 0..4 {
+            for change_mask in [false, true] {
+                let mut changed = *entry;
+                if change_mask {
+                    changed.mask[changed_register] ^= 1 << changed_register;
+                } else {
+                    changed.result[changed_register] ^= 1 << changed_register;
+                }
+                let mut recorded = entries.clone();
+                recorded[index] = changed;
+                assert_eq!(
+                    message(&recorded),
+                    expected(&[format!(
+                        "{name} {}",
+                        register(changed_register, entry, &changed)
+                    )])
+                );
+            }
+        }
+
+        // Several registers, in order, on one line.
+        let mut changed = *entry;
+        changed.result[3] ^= 1;
+        changed.mask[1] ^= 1;
+        changed.result[0] ^= 1;
+        let mut recorded = entries.clone();
+        recorded[index] = changed;
+        assert_eq!(
+            message(&recorded),
+            expected(&[format!(
+                "{name} {}, {}, {}",
+                register(0, entry, &changed),
+                register(1, entry, &changed),
+                register(3, entry, &changed)
+            )])
+        );
+
+        // An entry that differs among entries that the snapshot lacks, then
+        // entries that only the snapshot has.
+        let mut recorded = entries.clone();
+        recorded[0].result[2] ^= 1;
+        let differing = format!(
+            "{} {}",
+            leaf_name(entries[0].function, entries[0].index),
+            register(2, &entries[0], &recorded[0])
+        );
+        let missing = [recorded.remove(1), recorded.remove(1)];
+        recorded.extend(
+            [0x8000_00fe, 0x8000_00ff].map(|function| EffectiveCpuidEntry {
+                function,
+                index: None,
+                result: [function, 0, 0, 0],
+                mask: [!0; 4],
+            }),
+        );
+        assert_eq!(
+            message(&recorded),
+            expected(&[
+                differing,
+                format!(
+                    "{} is not in the snapshot",
+                    leaf_name(missing[0].function, missing[0].index)
+                ),
+                format!(
+                    "{} is not in the snapshot",
+                    leaf_name(missing[1].function, missing[1].index)
+                ),
+                "CPUID 0x800000fe is only in the snapshot".to_owned(),
+                "CPUID 0x800000ff is only in the snapshot".to_owned(),
+            ])
+        );
+    }
+
+    /// A failure names every way in which the snapshot's record differs, at
+    /// once, including those that only a record that no OpenVMM writes has:
+    /// an entry that the snapshot lists more than once, with each of its
+    /// listings that differs, and entries out of order, with an entry that
+    /// differs.
+    #[test]
+    fn recorded_cpuid_names_repeated_and_unordered_entries() {
+        let (_, _, effective) = test_config(2);
+        let record = test_record(&effective);
+        let entries: Vec<_> = record_entries(&effective).collect();
+        let message = |recorded: &[EffectiveCpuidEntry]| {
+            let record = SnapshotCpuProfile {
+                effective_cpuid: encode_effective_cpuid(recorded.iter().copied()),
+                ..record.clone()
+            };
+            format!(
+                "{:#}",
+                check_recorded_cpuid(&effective, &record).unwrap_err()
+            )
+        };
+        let expected = |differences: &[&str]| {
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                differences.len(),
+                differences.join("; ")
+            )
+        };
+        let unordered = "the snapshot does not list its entries in order of leaf and subleaf";
+
+        // An entry listed twice, once changed, before or after itself, or
+        // unchanged.
+        let first = entries[0];
+        let mut changed = first;
+        changed.result[0] ^= 1;
+        let name = leaf_name(first.function, first.index);
+        let difference = format!(
+            "{name} EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the \
+             snapshot",
+            first.result[0], first.mask[0], changed.result[0], changed.mask[0]
+        );
+        let twice = format!("{name} is in the snapshot 2 times");
+        for listed in [[changed, first], [first, changed]] {
+            let recorded: Vec<_> = listed.into_iter().chain(entries[1..].to_vec()).collect();
+            assert_eq!(message(&recorded), expected(&[&difference, &twice]));
+        }
+        let recorded: Vec<_> = [first, first]
+            .into_iter()
+            .chain(entries[1..].to_vec())
+            .collect();
+        assert_eq!(message(&recorded), expected(&[&twice]));
+
+        // Entries out of order, alone, and with an entry that differs.
+        let mut recorded = entries.clone();
+        recorded.swap(0, 1);
+        assert_eq!(message(&recorded), expected(&[unordered]));
+        let last = recorded.len() - 1;
+        recorded[last].result[1] ^= 1;
+        let entry = entries[last];
+        let difference = format!(
+            "{} EBX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the \
+             snapshot",
+            leaf_name(entry.function, entry.index),
+            entry.result[1],
+            entry.mask[1],
+            entry.result[1] ^ 1,
+            entry.mask[1]
+        );
+        assert_eq!(message(&recorded), expected(&[&difference, unordered]));
+
+        // An entry listed again out of order.
+        let mut recorded = entries.clone();
+        recorded.push(first);
+        assert_eq!(message(&recorded), expected(&[&twice, unordered]));
+    }
+
+    /// Returns the snapshot record of `effective`, an effective CPUID of the
+    /// test profile.
+    fn test_record(effective: &EffectiveCpuid) -> SnapshotCpuProfile {
+        let pinned = cpu_profile::pinned_record(TEST_PROFILE).unwrap();
+        SnapshotCpuProfile {
+            id: TEST_PROFILE.to_owned(),
+            sha256: pinned.digest.to_vec(),
+            profile: pinned.encoding.to_vec(),
+            effective_cpuid: encode_effective_cpuid(record_entries(effective)),
+            capture_cpu_signature: 0,
+        }
+    }
+
+    /// A time ABI backend for the CPU checks of a partition: VP 0 reads
+    /// `presented`, and the backend supports `surface`.
+    #[derive(Clone)]
+    struct CpuBackend {
+        presented: Vec<CpuidLeaf>,
+        surface: SupportedCpuSurface,
+    }
+
+    impl CpuBackend {
+        /// Returns a backend whose VP 0 reads the effective CPUID that
+        /// `config` programs, as KVM reports it, and that supports exactly
+        /// the test profile.
+        fn new(config: &TimeAbiConfig) -> Self {
+            let profile = test_profile();
+            let cpuid = profile
+                .cpuid()
+                .iter()
+                .map(|entry| {
+                    let (function, index) = entry.key();
+                    let leaf = CpuidLeaf::new(function, entry.values());
+                    match index {
+                        Some(index) => leaf.indexed(index),
+                        None => leaf,
+                    }
+                })
+                .collect();
+            let msrs = profile
+                .msrs()
+                .iter()
+                .map(|msr| SupportedMsrValue {
+                    index: msr.index.0,
+                    supported: msr.value.0,
+                    controllable: !0,
+                })
+                .collect();
+            Self {
+                presented: config.cpuid.leaves().to_vec(),
+                surface: SupportedCpuSurface {
+                    cpuid,
+                    physical_address_width: profile.physical_address_width(),
+                    msrs,
+                },
+            }
+        }
+    }
+
+    impl TimeAbiBackend for CpuBackend {
+        fn native_tsc_hz(&self) -> Result<u64, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn lapic_hz(&self) -> Result<u64, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn preflight(&self) -> Result<BackendPreflight, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn effective_cpuid(&self) -> Result<Vec<CpuidLeaf>, TimeAbiError> {
+            Ok(self.presented.clone())
+        }
+
+        fn supported_cpu_surface(&self) -> Result<Option<SupportedCpuSurface>, TimeAbiError> {
+            Ok(Some(self.surface.clone()))
+        }
+
+        fn capture_anchor(&self) -> Result<TscAnchor, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn set_synchronized_tsc(
+            &self,
+            _target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
+        ) -> Result<TscSetReport, TimeAbiError> {
+            unreachable!()
+        }
+    }
+
+    /// Runs the CPU checks of a partition of the test profile whose effective
+    /// CPUID is `effective`, on `backend`, and on restore of `record`.
+    fn check_cpu(
+        backend: Result<&dyn TimeAbiBackend, TimeAbiError>,
+        effective: &EffectiveCpuid,
+        record: Option<&SnapshotCpuProfile>,
+    ) -> anyhow::Result<()> {
+        check_cpu_profile_with(backend, "kvm", test_profile(), effective, record)
+    }
+
+    /// Every CPU check of a partition runs, so that a failure names the
+    /// violations of each check that fails, in order: here a snapshot record
+    /// that differs in one entry, a result that VP 0 does not observe, and a
+    /// feature that the backend lacks. The first failure leads, and so gives
+    /// the error its code, and a failure alone is the check's own error.
+    #[test]
+    fn cpu_checks_report_every_failure_together() {
+        let (_, config, effective) = test_config(2);
+        let record = test_record(&effective);
+        let backend = CpuBackend::new(&config);
+        check_cpu(Ok(&backend), &effective, Some(&record)).unwrap();
+        check_cpu(Ok(&backend), &effective, None).unwrap();
+
+        // The snapshot records leaf 0 with EAX's lowest bit flipped, VP 0
+        // reads zeros at the brand string's first leaf, and the backend lacks
+        // AVX2, which the profile sets.
+        let mut flipped = record.clone();
+        flipped.effective_cpuid[3 * 4] ^= 1;
+        let mut unobserved = backend.clone();
+        unobserved
+            .presented
+            .retain(|leaf| leaf.function != 0x8000_0002);
+        let mut lacking = backend.clone();
+        for leaf in &mut lacking.surface.cpuid {
+            if (leaf.function, leaf.index) == (7, Some(0)) {
+                leaf.result[1] &= !(1 << 5);
+            }
+        }
+        let failing = CpuBackend {
+            presented: unobserved.presented.clone(),
+            surface: lacking.surface.clone(),
+        };
+
+        let failure = |backend: &CpuBackend, record: &SnapshotCpuProfile| {
+            check_cpu(Ok(backend), &effective, Some(record)).unwrap_err()
+        };
+        let recorded = format!("{:#}", failure(&backend, &flipped));
+        assert!(
+            recorded.starts_with(&format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs \
+                 from the snapshot's in 1 entries: CPUID 0x0 EAX is "
+            )),
+            "{recorded}"
+        );
+        let presented = format!("{:#}", failure(&unobserved, &record));
+        assert!(
+            presented.starts_with(&format!(
+                "[E_CPU_SURFACE] VP 0 does not observe the effective CPUID of CPU profile \
+                 {TEST_PROFILE} in 1 results: CPUID 0x80000002 EAX is 0x00000000, not "
+            )),
+            "{presented}"
+        );
+        let unsupported = failure(&lacking, &record);
+        let support = format!("{unsupported:#}");
+        assert_eq!(
+            support,
+            format!(
+                "[E_PROFILE_UNSUPPORTED] the backend does not support CPU profile \
+                 {TEST_PROFILE}: CPUID 0x7.0 EBX bit 5 is not supported"
+            )
+        );
+        assert!(unsupported.downcast_ref::<ProfileError>().is_some());
+        assert_eq!(
+            leading_code(&unsupported),
+            Some(TimeAbiCode::ProfileUnsupported)
+        );
+
+        for (backend, snapshot, expected) in [
+            (
+                &failing,
+                &flipped,
+                format!("{recorded}; {presented}; {support}"),
+            ),
+            (&failing, &record, format!("{presented}; {support}")),
+            (&lacking, &flipped, format!("{recorded}; {support}")),
+            (&unobserved, &flipped, format!("{recorded}; {presented}")),
+        ] {
+            let err = failure(backend, snapshot);
+            assert_eq!(format!("{err:#}"), expected);
+            assert_eq!(leading_code(&err), Some(TimeAbiCode::CpuSurface));
+        }
+
+        // A partition whose backend does not implement the time ABI fails
+        // both of the backend's checks at once, after the snapshot's record.
+        let missing = TimeAbiError::new(
+            TimeAbiCode::TscSyncUnsupported,
+            "the kvm backend does not implement the time ABI",
+        );
+        let without = |record| {
+            format!(
+                "{:#}",
+                check_cpu(Err(missing.clone()), &effective, Some(record)).unwrap_err()
+            )
+        };
+        assert_eq!(without(&record), missing.to_string());
+        assert_eq!(without(&flipped), format!("{recorded}; {missing}"));
     }
 
     /// Capture copies the pinned profile's precomputed record, so restore
