@@ -51,7 +51,6 @@ use parking_lot::MutexGuard;
 use std::marker::PhantomPinned;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::task::ready;
 
 /// Creates a new channel for sending messages of type `T`, returning the sender
 /// and receiver ends.
@@ -536,7 +535,8 @@ impl ReceiverCore {
     ) -> Poll<Result<T, RecvError>> {
         fn try_poll_recv<'a>(
             this: &'a mut ReceiverCore,
-            cx: Option<&mut Context<'_>>,
+            cx: Option<&Context<'_>>,
+            deferred_waker: &mut Option<Waker>,
         ) -> Poll<Result<MutexGuard<'a, LocalQueue>, RecvError>> {
             let (queue, state) = this.queue.split_mut();
             loop {
@@ -573,7 +573,6 @@ impl ReceiverCore {
                     }));
                     continue;
                 } else if local.messages.is_empty() {
-                    let mut old_waker = None;
                     if let Some(cx) = cx {
                         if !local
                             .waker
@@ -581,12 +580,18 @@ impl ReceiverCore {
                             .is_some_and(|waker| waker.will_wake(cx.waker()))
                             && !ReceiverCore::is_closed(&local, state)
                         {
-                            old_waker = local.waker.replace(cx.waker().clone());
+                            let Some(waker) = deferred_waker.take() else {
+                                drop(local);
+                                *deferred_waker = Some(cx.waker().clone());
+                                // Cloning can reenter the channel. Recheck all
+                                // queue state before registering the new waker.
+                                continue;
+                            };
+                            *deferred_waker = local.waker.replace(waker);
                         }
                     }
                     let closed = ReceiverCore::is_closed(&local, state);
                     drop(local);
-                    drop(old_waker);
                     if closed {
                         state.terminated = true;
                         return Poll::Ready(Err(RecvError::Closed));
@@ -599,13 +604,17 @@ impl ReceiverCore {
             }
         }
 
-        ready!(try_poll_recv(self, cx))
-            .map(|mut local| {
+        let mut deferred_waker = None;
+        let result = try_poll_recv(self, cx.as_deref(), &mut deferred_waker).map(|result| {
+            result.map(|mut local| {
                 let message = local.messages.pop_front_in_place().unwrap();
                 // SAFETY: `message` is a valid owned `T`.
                 unsafe { message.as_ptr().cast::<T>().read() }
             })
-            .into()
+        });
+        // Drop unused candidates and replaced wakers after consuming any queue guard.
+        drop(deferred_waker);
+        result
     }
 
     fn is_closed(local: &LocalQueue, state: &ReceiverState) -> bool {
@@ -957,13 +966,17 @@ mod tests {
     use futures::stream::FusedStream;
     use mesh_node::local_node::Port;
     use mesh_protobuf::Protobuf;
+    use parking_lot::Mutex;
     use std::cell::Cell;
     use std::marker::PhantomData;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
     use std::task::Wake;
     use std::task::Waker;
     use std::time::Duration;
@@ -1003,6 +1016,132 @@ mod tests {
 
     impl Wake for SenderWake {
         fn wake(self: Arc<Self>) {}
+    }
+
+    enum CloneAction {
+        CloneSender,
+        Send,
+        Close,
+    }
+
+    struct ReentrantWaker {
+        queue: Arc<super::Queue>,
+        sender: Mutex<Option<Sender<u32>>>,
+        action: CloneAction,
+        clones: AtomicUsize,
+        woken: AtomicBool,
+    }
+
+    impl ReentrantWaker {
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            Self::clone_waker,
+            Self::wake_waker,
+            Self::wake_by_ref,
+            Self::drop_waker,
+        );
+
+        fn make(
+            receiver: &Receiver<u32>,
+            sender: Sender<u32>,
+            action: CloneAction,
+        ) -> (Waker, Arc<Self>) {
+            let state = Arc::new(Self {
+                queue: receiver.0.queue.0.clone(),
+                sender: Mutex::new(Some(sender)),
+                action,
+                clones: AtomicUsize::new(0),
+                woken: AtomicBool::new(false),
+            });
+            let raw = RawWaker::new(Arc::into_raw(state.clone()).cast(), &Self::VTABLE);
+            // SAFETY: the vtable manages the owned Arc and only accesses
+            // thread-safe state.
+            (unsafe { Waker::from_raw(raw) }, state)
+        }
+
+        /// # Safety
+        /// `data` must point to the live Arc allocation owned by the calling waker.
+        unsafe fn clone_waker(data: *const ()) -> RawWaker {
+            // SAFETY: the calling waker keeps this Arc allocation alive.
+            let state = unsafe { &*data.cast::<Self>() };
+            state.clones.fetch_add(1, Ordering::SeqCst);
+            let mut sender = state.sender.lock();
+            match state.action {
+                CloneAction::CloneSender => drop(sender.as_ref().unwrap().clone()),
+                CloneAction::Send => sender.as_ref().unwrap().send(7),
+                CloneAction::Close => drop(sender.take()),
+            }
+            // SAFETY: the calling waker owns a strong reference, and the new
+            // waker takes ownership of this additional reference.
+            unsafe { Arc::increment_strong_count(data.cast::<Self>()) };
+            RawWaker::new(data, &Self::VTABLE)
+        }
+
+        /// # Safety
+        /// `data` must transfer the consuming waker's owned strong Arc reference.
+        unsafe fn wake_waker(data: *const ()) {
+            // SAFETY: wake consumes the waker's owned strong reference.
+            let state = unsafe { Arc::from_raw(data.cast::<Self>()) };
+            state.woken.store(true, Ordering::SeqCst);
+        }
+
+        /// # Safety
+        /// `data` must point to the live Arc allocation owned by the calling waker.
+        unsafe fn wake_by_ref(data: *const ()) {
+            // SAFETY: the borrowed waker keeps this Arc allocation alive.
+            let state = unsafe { &*data.cast::<Self>() };
+            state.woken.store(true, Ordering::SeqCst);
+        }
+
+        /// # Safety
+        /// `data` must transfer the consuming waker's owned strong Arc reference.
+        unsafe fn drop_waker(data: *const ()) {
+            // SAFETY: drop consumes the waker's owned strong reference.
+            let state = unsafe { Arc::from_raw(data.cast::<Self>()) };
+            // Reenter even when another Arc keeps the sender alive.
+            drop(state.queue.local.lock());
+        }
+    }
+
+    #[test]
+    fn test_waker_clone_reenters_sender_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::CloneSender);
+            let mut cx = Context::from_waker(&waker);
+            assert!(receiver.poll_recv(&mut cx).is_pending());
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+            assert!(receiver.poll_recv(&mut cx).is_pending());
+            state.sender.lock().as_ref().unwrap().send(7);
+            assert!(state.woken.load(Ordering::SeqCst));
+            assert!(matches!(receiver.poll_recv(&mut cx), Poll::Ready(Ok(7))));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn test_message_arrives_during_waker_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::Send);
+            assert!(matches!(
+                receiver.poll_recv(&mut Context::from_waker(&waker)),
+                Poll::Ready(Ok(7))
+            ));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn test_sender_closes_during_waker_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::Close);
+            assert!(matches!(
+                receiver.poll_recv(&mut Context::from_waker(&waker)),
+                Poll::Ready(Err(RecvError::Closed))
+            ));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]
