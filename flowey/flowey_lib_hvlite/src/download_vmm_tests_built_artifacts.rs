@@ -53,6 +53,7 @@ impl SimpleFlowNode for Node {
                     pipette_linux_musl_x64,
                     pipette_linux_musl_aarch64,
                     guest_test_uefi_x64,
+                    mshv_host_boot_x64,
                     guest_test_uefi_aarch64,
                     openhcl_standard_x64,
                     openhcl_standard_aarch64,
@@ -157,6 +158,7 @@ impl SimpleFlowNode for Node {
         download!(pipette_linux_musl_aarch64, "aarch64-linux-musl-pipette");
 
         download!(guest_test_uefi_x64, "x64-guest_test_uefi");
+        download!(mshv_host_boot_x64, "x64-mshv-host-boot");
         download!(guest_test_uefi_aarch64, "aarch64-guest_test_uefi");
 
         download!(openhcl_standard_x64, "x64-openhcl-igvm");

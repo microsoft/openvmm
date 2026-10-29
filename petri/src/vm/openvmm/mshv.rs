@@ -113,7 +113,8 @@ mod tests {
                     initrd.into_temp_path(),
                 )),
                 rdinit_param: "/caller-init".into(),
-            },
+            }
+            .into(),
             boot_artifacts: ResolvedArtifact::from_local_path(dir.to_path_buf()),
             kernel_cmdline: "console=ttyS0 panic=-1".into(),
             hypervisor_cmdline: "MSHV_ENABLE=TRUE".into(),
@@ -129,7 +130,10 @@ mod tests {
             let UefiGuest::Mshv(boot) = &guest else {
                 unreachable!()
             };
-            let initrd = boot.initrd.path.as_ref().to_path_buf();
+            let crate::mshv_boot::MshvInitrd::Prepared(prepared) = &boot.initrd else {
+                panic!("expected caller-prepared initrd")
+            };
+            let initrd = prepared.path.as_ref().to_path_buf();
             let builder = builder_with_guest(
                 &driver,
                 &logs,

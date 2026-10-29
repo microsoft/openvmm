@@ -227,6 +227,36 @@ async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 ```
 
+#### mshv root hosts
+
+On x86-64 Linux with KVM and nested virtualization enabled,
+`openvmm_uefi_x64(mshv)` describes an mshv root host. The host function applies
+`with_mshv_platform`; ordinary native nesting runs the musl L2 test inside it.
+Petri prepares the root's agent initrd, networking, clock, and CA setup without
+invoking the standalone Incubator CLI. The root kernel, development EFI host
+boot application, and licensed hypervisor payloads have distinct typed
+artifacts.
+
+Flowey resolves the published `mshv-test` kernel, builds `mshv_host_boot.efi`,
+and provisions the compatible hypervisor payloads. Run the native test with:
+
+```bash
+filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
+cargo xflowey vmm-tests-run --filter "$filter"
+```
+
+Use `--mshv-kernel path/to/mshv/bzImage` to override only the root kernel,
+independently of child kernels and their release pins. Runtime inputs remain
+offline; the shared Flowey nodes acquire payloads and build the EFI host boot
+application during preparation. See
+[Incubator's boot-artifact
+requirements](incubator.md#mshv-boot-artifacts-and-kernel) for the compatible
+kernel/payload contract and development-only trust model.
+
+CI provisions the mshv root artifacts on the x64 Linux KVM runner. MSHV host
+jobs do not acquire them because that backend does not support another level
+of nested virtualization.
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It

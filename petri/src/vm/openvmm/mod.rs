@@ -126,6 +126,17 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        if matches!(
+            firmware,
+            Firmware::Uefi {
+                guest: crate::UefiGuest::Mshv(_),
+                ..
+            }
+        ) {
+            return cfg!(target_os = "linux")
+                && arch == MachineArch::X86_64
+                && MachineArch::host() == MachineArch::X86_64;
+        }
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
     }
 

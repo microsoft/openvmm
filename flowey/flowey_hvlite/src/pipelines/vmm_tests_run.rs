@@ -100,6 +100,9 @@ pub struct VmmTestsRunCli {
     /// Optional: custom kernel image
     #[clap(long)]
     custom_kernel: Option<PathBuf>,
+    /// Override the pinned mshv root bzImage, independent of the child's kernel.
+    #[clap(long)]
+    mshv_kernel: Option<PathBuf>,
     /// Optional: custom UEFI firmware (MSVM.fd) to use instead of the
     /// downloaded release. Path to a locally-built MSVM.fd file.
     #[clap(long)]
@@ -218,6 +221,7 @@ impl IntoPipeline for VmmTestsRunCli {
             no_lazy_fetch,
             custom_kernel_modules,
             custom_kernel,
+            mshv_kernel,
             custom_uefi_firmware,
             ci_profile,
             no_reuse_prepped_vhds,
@@ -467,6 +471,19 @@ impl IntoPipeline for VmmTestsRunCli {
         );
 
         job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+        if let Some(path) = mshv_kernel {
+            anyhow::ensure!(
+                path.is_file(),
+                "mshv root kernel is not a file: {}",
+                path.display()
+            );
+            let path = std::path::absolute(path)?;
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalMshvKernel(
+                    ReadVar::from_static(path),
+                )
+            });
+        }
 
         // Override kernel with local paths if both kernel and modules are specified
         if let (Some(kernel_path), Some(modules_path)) =
@@ -921,6 +938,30 @@ mod tests {
                 .unwrap(),
             host_tools::NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL::relative_path()
         );
+    }
+
+    #[test]
+    fn mshv_root_artifacts_do_not_replace_the_child_kernel() -> anyhow::Result<()> {
+        use petri_artifacts_vmm_test::artifacts::loadable;
+
+        let mut selections =
+            ResolvedArtifactSelections::new(CommonTriple::X86_64_LINUX_GNU.as_triple(), false)?;
+        for id in [
+            loadable::MSHV_HOST_BOOT_X64::GLOBAL_UNIQUE_ID,
+            loadable::MSHV_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID,
+            loadable::MSHV_BOOT_ARTIFACTS_X64::GLOBAL_UNIQUE_ID,
+        ] {
+            selections.resolve_artifact(id)?;
+        }
+        assert!(selections.build.mshv_host_boot_x64);
+        assert!(selections.prebuilt_artifacts.mshv_test_kernel_x64);
+        assert!(selections.prebuilt_artifacts.mshv_boot_artifacts_x64);
+        assert!(!selections.prebuilt_artifacts.test_linux_kernel_x64);
+
+        selections.resolve_artifact(loadable::LINUX_DIRECT_TEST_KERNEL_X64::GLOBAL_UNIQUE_ID)?;
+        assert!(selections.prebuilt_artifacts.test_linux_kernel_x64);
+        assert!(selections.prebuilt_artifacts.mshv_test_kernel_x64);
+        Ok(())
     }
 
     #[test]
