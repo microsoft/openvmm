@@ -11307,6 +11307,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "der",
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vmdk",
@@ -11360,6 +11361,7 @@ dependencies = [
  "vmgs_resources",
  "vmm_test_igvm_agent",
  "vmm_test_macros",
+ "x509-cert",
  "x86defs",
  "zerocopy",
 ]
