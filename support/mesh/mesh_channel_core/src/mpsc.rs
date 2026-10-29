@@ -536,8 +536,8 @@ impl ReceiverCore {
         fn try_poll_recv<'a>(
             this: &'a mut ReceiverCore,
             cx: Option<&Context<'_>>,
-            deferred_waker: &mut Option<Waker>,
         ) -> Poll<Result<MutexGuard<'a, LocalQueue>, RecvError>> {
+            let mut deferred_waker = None;
             let (queue, state) = this.queue.split_mut();
             loop {
                 debug_assert!(queue.remote.get().is_none());
@@ -555,6 +555,8 @@ impl ReceiverCore {
                             && local.ports.is_empty()
                             && ReceiverCore::is_closed(&local, state)
                         {
+                            drop(local);
+                            drop(deferred_waker);
                             state.terminated = true;
                             return Poll::Ready(Err(RecvError::Error(err)));
                         } else {
@@ -582,16 +584,17 @@ impl ReceiverCore {
                         {
                             let Some(waker) = deferred_waker.take() else {
                                 drop(local);
-                                *deferred_waker = Some(cx.waker().clone());
+                                deferred_waker = Some(cx.waker().clone());
                                 // Cloning can reenter the channel. Recheck all
                                 // queue state before registering the new waker.
                                 continue;
                             };
-                            *deferred_waker = local.waker.replace(waker);
+                            deferred_waker = local.waker.replace(waker);
                         }
                     }
                     let closed = ReceiverCore::is_closed(&local, state);
                     drop(local);
+                    drop(deferred_waker);
                     if closed {
                         state.terminated = true;
                         return Poll::Ready(Err(RecvError::Closed));
@@ -599,22 +602,25 @@ impl ReceiverCore {
                         return Poll::Pending;
                     }
                 } else {
+                    if let Some(waker) = deferred_waker.take() {
+                        drop(local);
+                        // Dispose of an unused candidate before returning a
+                        // live guard. Its destructor can reenter the queue too.
+                        drop(waker);
+                        continue;
+                    }
                     return Poll::Ready(Ok(local));
                 }
             }
         }
 
-        let mut deferred_waker = None;
-        let result = try_poll_recv(self, cx.as_deref(), &mut deferred_waker).map(|result| {
-            result.map(|mut local| {
+        std::task::ready!(try_poll_recv(self, cx.as_deref()))
+            .map(|mut local| {
                 let message = local.messages.pop_front_in_place().unwrap();
                 // SAFETY: `message` is a valid owned `T`.
                 unsafe { message.as_ptr().cast::<T>().read() }
             })
-        });
-        // Drop unused candidates and replaced wakers after consuming any queue guard.
-        drop(deferred_waker);
-        result
+            .into()
     }
 
     fn is_closed(local: &LocalQueue, state: &ReceiverState) -> bool {
