@@ -5,22 +5,26 @@ description: Investigate CI failures on OpenVMM PRs. Load when a PR has failing 
 
 # Investigating CI Failures
 
-When a PR has failing CI checks, **always start by running the investigation
-script**. Do not manually query the GitHub API or download artifacts by hand
-— the script handles all of that automatically.
+When a PR has failing CI checks, prefer the investigation script. If it is
+unavailable or incompatible with the execution environment, use the read-only
+manual fallback below.
+
+The script reads from GitHub and downloads artifacts locally. It does not
+modify remote resources. Downloads use the system temporary directory; check
+that this destination is suitable for the execution environment.
 
 ## Step 1: Run the Script
 
 ```bash
-# Investigate the current branch's PR (no argument needed)
-python3 repo_support/investigate_ci.py
-
 # Investigate a specific PR by number
 python3 repo_support/investigate_ci.py 2946
 
 # Or by run ID directly
 python3 repo_support/investigate_ci.py 23017249697
 ```
+
+Prefer explicit PR or run identifiers for reproducible investigation. Omitting
+the identifier requires the script to resolve the current branch's PR.
 
 The script automatically:
 1. Resolves the PR to **every** failed CI run for its head commit. A commit
@@ -68,17 +72,25 @@ architecture — you can only reproduce tests locally on the same arch. If
 it doesn't match, explain this to the user and continue diagnosing from
 CI logs and test code.
 
-To reproduce locally, load the `vmm-tests` skill for instructions on
-running with `cargo xflowey vmm-tests-run`. Do **not** use
-`cargo nextest run -p vmm_tests` directly — it won't have the required
-artifacts.
+For approved local reproduction, select the workflow for the failure:
+
+| Failure | Workflow |
+|---------|----------|
+| Unit test | `cargo nextest run --profile agent -p <package>` with a focused filter |
+| VMM test | Load the `vmm-tests` skill and use `cargo xflowey vmm-tests-run` |
+| Rustdoc | `cargo doc --no-deps -p <package>` |
+| Guide | The Guide build workflow in `flowey/flowey_lib_hvlite/src/build_guide.rs`, including plugin setup, `mdbook test`, and `mdbook build` |
+| Build, clippy, or formatting | The failed job's command, scoped to the affected package or rule where possible |
+
+Do **not** use `cargo nextest run -p vmm_tests` directly; it won't have the
+required artifacts.
 
 ## Reference: Manual Commands
 
-> **Only use these if the script fails or you need to dig deeper into a
-> specific artifact.** In normal usage, the script above is sufficient.
+> Use these if the script is unavailable, fails, is incompatible with the
+> execution environment, or you need to inspect a specific artifact.
 
-If the script isn't available or you need more control, follow these steps:
+Follow these steps:
 
 ### 1. Find the failing run
 
@@ -208,13 +220,15 @@ URL in its summary.
   causes: new test code that relies on OS capabilities not available in CI
   (e.g. TAP devices, elevated permissions).
 - **Formatting / house-rules**: The `quick check [fmt, clippy x64-linux]` job
-  failed. No test artifacts will exist. Run `cargo xtask fmt --fix` locally
-  and check the job log for the specific rule that failed.
-- **Docs failure**: A job in the separate "OpenVMM Docs PR" workflow failed —
-  either `build mdbook guide` (broken Guide markdown/links; mdbook logs
-  `[ERROR] (mdbook::...)`) or `build and check docs` (rustdoc warnings, which
-  are denied in CI). Reproduce with `cargo doc --no-deps -p <package>`.
-  No test artifacts will exist.
+  failed. No test artifacts will exist. Check the job log for the specific rule
+  that failed. For approved reproduction, run `cargo xtask fmt --fix` locally.
+- **Guide failure**: The `build mdbook guide` job in "OpenVMM Docs PR" failed.
+  Check for broken Guide markdown, links, or code examples and
+  `[ERROR] (mdbook::...)` diagnostics. Use the Guide workflow above for approved
+  reproduction, not `cargo doc`. No test artifacts will exist.
+- **Rustdoc failure**: The `build and check docs` job in "OpenVMM Docs PR" failed.
+  Rustdoc warnings are denied in CI. Use package-scoped `cargo doc` for approved
+  reproduction. No test artifacts will exist.
 - **TripleFault**: VM hit a fatal error during boot. Check `petri.jsonl` for
   Hyper-V Worker/Chipset errors. Often infrastructure-related, not caused by
   the PR's code changes.
