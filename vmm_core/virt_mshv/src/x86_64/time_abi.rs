@@ -1556,7 +1556,7 @@ mod tests {
             [0x4000_0005, 0x7263_694d, 0x666f_736f, 0x7648_2074]
         );
         assert_eq!(result(0x4000_0001), [0x3123_7648, 0, 0, 0]);
-        assert_eq!(result(0x4000_0002), [0x0058_564e, 0x0001_0000, 0, 0]);
+        assert_eq!(result(0x4000_0002), [0x0058_564e, 0x0002_0000, 0, 0]);
         assert_eq!(result(0x4000_0003), [0x8860, 0, 0, 0x100]);
         assert_eq!(result(0x4000_0004), [0, 0xffff_ffff, 0, 0]);
         assert_eq!(result(0x4000_0005), [VP_COUNT, VP_COUNT, 0, 0]);
