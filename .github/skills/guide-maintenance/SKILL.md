@@ -2,17 +2,16 @@
 name: guide-maintenance
 description: >
   Maintain the OpenVMM Guide. Load when: (1) adding, removing, or moving Guide
-  pages, (2) adding new device crates or CLI args that need doc coverage, or
-  (3) auditing Guide freshness against code changes.
+  pages, (2) adding new device crates or adding or changing CLI interfaces
+  that need doc coverage, or (3) auditing Guide freshness against code changes.
 ---
 
 # Guide Maintenance Skill
 
 Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the codebase.
 
-`.github/instructions/doc-code-sync.instructions.md` contains the instructions
-and heuristics that are automatically loaded during Copilot code review on
-`*.rs` and `Cargo.toml` files.
+`.github/instructions/doc-code-sync.instructions.md` contains the documentation
+relevance rules and heuristics for changes to `*.rs` and `Cargo.toml` files.
 
 Apply that file's relevance and scope rules before editing the Guide. A code
 change does not automatically require a Guide update. Prefer an existing page
@@ -83,10 +82,9 @@ defaults, behavior, or interactions in
 `openvmm/openvmm_entry/src/cli_args.rs`):
 
 1. Update `Guide/src/reference/openvmm/management/cli.md`
-2. The CLI page has a disclaimer that it may be out of date — keep it honest,
-   but still update the affected documentation when the interface changes
-3. New arguments should include: flag syntax, description, default value,
-   and interactions with other flags that readers need to use them correctly
+2. Verify flag syntax, description, default value, and relevant interactions
+   against the parser and generated help. Include what readers need to use
+   the interface correctly.
 
 Refactors that leave the documented interface unchanged need no CLI page edit.
 
@@ -94,17 +92,19 @@ Refactors that leave the documented interface unchanged need no CLI page edit.
 
 ## Auditing Guide Freshness
 
-To check whether the Guide is in sync with the code:
+Use this procedure for an explicitly requested freshness audit. Limit scans
+and placeholder checks to the requested scope; do not expand a routine code
+or paragraph edit into an audit.
 
-1. **Scan the Guide pages** in `Guide/src/`
+1. **Scan the relevant Guide pages** in `Guide/src/`
 2. Check whether the Guide page content still matches the code:
    - Crate names still correct?
    - Struct/enum names still exist?
    - Behavioral descriptions still accurate?
    - Links to rustdoc still resolve?
-3. Check `Guide/src/SUMMARY.md` for placeholder links `()` — these are
-   topics that need content. Prioritize ones whose code areas have been
-   actively developed.
+3. Check `Guide/src/SUMMARY.md` for placeholder links `()` related to the audit.
+   Report relevant gaps; fill them only when the requested scope includes
+   writing the missing content.
 
 ### Quick audit commands
 

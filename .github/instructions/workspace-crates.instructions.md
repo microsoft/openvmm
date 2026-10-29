@@ -10,13 +10,16 @@ entries**. This has important implications when creating new crates.
 ## Key rules
 
 1. **Workspace dependencies are auto-cleaned.** The `[workspace.dependencies]`
-   section in the root `Cargo.toml` only lists crates that are actually
-   depended on by at least one workspace member. If you add an entry there
-   that nothing uses, `cargo xtask fmt --fix` will remove it.
+   section in the root `Cargo.toml` should only list crates used by workspace
+   members. Entries with no detected source reference or justified exception
+   may be removed by `cargo xtask fmt --fix`.
 
 2. **Unused crate dependencies are auto-cleaned.** If you add a dependency
-   to an existing crate's `Cargo.toml` but never `use` it in code,
-   `cargo xtask fmt --fix` will remove that dependency too.
+   to a crate's `Cargo.toml` without a recognized source reference, auto-fix
+   may remove it. The lint recognizes imports, qualified paths, and
+   `extern crate`, not just `use` statements. For justified dependencies it
+   cannot detect, use the `ignored` list in
+   `[package.metadata.xtask.unused-deps]`; do not add dummy imports.
 
 3. **To add a new standalone crate** (binary, fuzz target, tool, or a library
    still being built), you **must** add its path to the `[workspace] members`
@@ -48,9 +51,9 @@ entries**. This has important implications when creating new crates.
 ## Common mistakes
 
 - **Adding a workspace dependency entry without a real consumer.** The entry
-  will be silently removed by `cargo xtask fmt --fix`.
-- **Adding a crate dependency without using it in code.** Same result —
-  silently removed.
+  may be removed by `cargo xtask fmt --fix`.
+- **Adding a crate dependency without a recognized source reference or
+  justified lint exception.** Auto-fix may remove it.
 - **Forgetting to add a standalone crate to `members`.** Without a `members`
   entry or a dependency from another member, the crate will not be compiled,
   tested, or checked by CI.
