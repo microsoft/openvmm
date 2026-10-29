@@ -2300,9 +2300,13 @@ async fn new_underhill_vm(
         // suppressed). See the comment where `stateful` is computed.
         tpm_persisted: stateful,
         hardware_sealing_policy,
-        filtered_vpci_devices_allowed: with_vmbus_relay
-            && dps.general.vpci_boot_enabled
-            && isolation.is_isolated(),
+        // SNP/TDX keep the original value, as it feeds sealed VMGS keys;
+        // VBS (no key derivation) follows the relay.
+        filtered_vpci_devices_allowed: if isolation == virt::IsolationType::Vbs {
+            enable_vpci_relay
+        } else {
+            with_vmbus_relay && dps.general.vpci_boot_enabled && isolation.is_isolated()
+        },
         vm_unique_id: dps.general.bios_guid.to_string(),
         vmgs_provisioner: prov_claims.clone(),
     };
