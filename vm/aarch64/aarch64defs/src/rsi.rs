@@ -89,11 +89,12 @@ pub struct cca_rsi_plane_exit {
     pub gicv3_lrs: [u64; RSI_PLANE_GIC_NUM_LRS],
     pub gicv3_misr: u64,
     pub gicv3_vmcr: u64,
+    pub pad4: [u8; 0x100 - (3 + RSI_PLANE_GIC_NUM_LRS) * 8],
     pub cntp_ctl_el0: u64,
     pub cntp_cval_el0: u64,
     pub cntv_ctl_el0: u64,
     pub cntv_cval_el0: u64,
-    pub pad4: [u8; 0x100 - (7 + RSI_PLANE_GIC_NUM_LRS) * 8],
+    pub pad5: [u8; 0x100 - 4 * 8],
 }
 
 /// Combined RSI plane run page layout.
@@ -108,5 +109,7 @@ pub struct cca_rsi_plane_run {
 
 const _: () = assert!(size_of::<cca_realm_config>() == 0x1000);
 const _: () = assert!(size_of::<cca_rsi_plane_entry>() == 0x300);
-const _: () = assert!(size_of::<cca_rsi_plane_exit>() == 0x400);
+const _: () = assert!(size_of::<cca_rsi_plane_exit>() == 0x500);
+const _: () = assert!(core::mem::offset_of!(cca_rsi_plane_exit, cntp_ctl_el0) == 0x400);
+const _: () = assert!(core::mem::offset_of!(cca_rsi_plane_exit, cntv_ctl_el0) == 0x410);
 const _: () = assert!(size_of::<cca_rsi_plane_run>() == 0x1000);
