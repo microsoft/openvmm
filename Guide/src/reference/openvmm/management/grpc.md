@@ -187,7 +187,7 @@ restore flow over both transports:
   client requires the matching path configuration.
 * `restore_entropy` is accepted for compatibility and is valid only with
   `restore_path`; it has no effect, because every restore delivers restore
-  packet version 4 with fresh entropy. Every microVM process also receives a
+  packet version 5 with fresh entropy. Every microVM process also receives a
   fresh, non-serialized 16-byte generation ID through the fixed portb selector.
   On restore, the ID is the first 16 bytes of the restore packet's entropy.
 * `restore_processor_count` requests restore-time activation of the contiguous
@@ -202,7 +202,7 @@ restore flow over both transports:
   snapshot base and immutable capacity. Zero selects the base. Expansion uses
   fresh private zeroed backing, implies the post-restore repair gate, and is
   rejected for snapshots without a RAM capacity contract. A nonzero value sets
-  the memory-target flag of restore packet version 4, with the expansion
+  the memory-target flag of restore packet version 5, with the expansion
   ranges (none at the base size); zero leaves the flag clear.
 * `restore_gate_timeout_ms` bounds gated guest repair. Zero selects the
   60-second default; a nonzero value is valid only with `restore_path`.

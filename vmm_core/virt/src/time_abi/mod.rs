@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI v1.
+//! NVX time ABI 2.
 //!
 //! The guest-visible time contract of the microVM: a minimal Hyper-V
 //! frequency identity, the identity MSRs, the TSC rate policy, downtime
-//! selection, and the backend primitives that snapshot restore needs. A host,
-//! backend, or snapshot that cannot meet the contract fails with a stable
-//! [`TimeAbiCode`], and nothing falls back to another behavior.
+//! selection, the time samples that pair host UTC with the guest TSC and
+//! publish the host's clock correction, and the backend primitives that
+//! snapshot restore needs. A host, backend, or snapshot that cannot meet the
+//! contract fails with a stable [`TimeAbiCode`], and nothing falls back to
+//! another behavior.
 
 #[cfg(guest_arch = "x86_64")]
 pub mod backend;
@@ -19,8 +21,11 @@ pub mod host;
 pub mod identity;
 #[cfg(guest_arch = "x86_64")]
 pub mod msr;
+#[cfg(guest_arch = "x86_64")]
+pub mod publish;
 pub mod rate;
 pub mod surface;
+pub mod tsc;
 
 #[cfg(guest_arch = "x86_64")]
 pub use backend::BackendPreflight;
@@ -53,8 +58,10 @@ pub use rate::RateCheck;
 use mesh_protobuf::Protobuf;
 use std::fmt;
 
-/// The time ABI version this OpenVMM implements.
-pub const TIME_ABI_VERSION: u32 = 1;
+/// The time ABI version this OpenVMM implements: 2 publishes the host's clock
+/// correction with every time sample, and pairs its host UTC with the guest
+/// TSC on the host.
+pub const TIME_ABI_VERSION: u32 = 2;
 
 macro_rules! time_abi_codes {
     ($($(#[doc = $doc:literal])* $variant:ident => $name:literal,)*) => {
@@ -261,10 +268,16 @@ pub struct TimeAbiTestHooks {
     /// profile on a host that a pinned profile serves.
     #[mesh(7)]
     pub host_cpu_unknown: bool,
+    /// Publish host UTC as running this many ppm faster than it does, from
+    /// the VM process's first time sample on, with the correction to match.
+    #[mesh(8)]
+    pub host_rate_offset_ppm: i32,
 }
 
 /// The largest accepted `dest-rate-offset-ppm` magnitude.
 pub const MAX_HOOK_RATE_OFFSET_PPM: i32 = 10_000;
+/// The largest accepted `host-rate-offset-ppm` magnitude.
+pub const MAX_HOOK_HOST_RATE_OFFSET_PPM: i32 = 10_000;
 /// The largest accepted `downtime-add-s` value: ten years.
 pub const MAX_HOOK_DOWNTIME_ADD_S: u64 = 10 * 365 * 24 * 60 * 60;
 /// The largest accepted `utc-offset-ms` magnitude: ten years.
@@ -326,6 +339,14 @@ impl TimeAbiTestHooks {
                         argument,
                         -MAX_HOOK_RATE_OFFSET_PPM,
                         MAX_HOOK_RATE_OFFSET_PPM,
+                    )?;
+                }
+                "host-rate-offset-ppm" => {
+                    hooks.host_rate_offset_ppm = number(
+                        value,
+                        argument,
+                        -MAX_HOOK_HOST_RATE_OFFSET_PPM,
+                        MAX_HOOK_HOST_RATE_OFFSET_PPM,
                     )?;
                 }
                 "downtime-add-s" => {
@@ -571,6 +592,7 @@ mod tests {
             "utc-offset-ms=-5000",
             "sample-delay-us=3000",
             "host-cpu-unknown",
+            "host-rate-offset-ppm=-750",
         ])
         .unwrap();
         assert_eq!(
@@ -583,6 +605,7 @@ mod tests {
                 utc_offset_ms: -5000,
                 sample_delay_us: 3000,
                 host_cpu_unknown: true,
+                host_rate_offset_ppm: -750,
             }
         );
         assert!(hooks.active());
@@ -591,6 +614,10 @@ mod tests {
         let host_cpu_unknown = TimeAbiTestHooks::parse(&["host-cpu-unknown"]).unwrap();
         assert!(host_cpu_unknown.host_cpu_unknown);
         assert!(host_cpu_unknown.active());
+        // So is the host rate hook.
+        let host_rate = TimeAbiTestHooks::parse(&["host-rate-offset-ppm=10000"]).unwrap();
+        assert_eq!(host_rate.host_rate_offset_ppm, 10_000);
+        assert!(host_rate.active());
     }
 
     #[test]
@@ -604,6 +631,8 @@ mod tests {
             "dest-rate-offset-ppm=",
             "dest-rate-offset-ppm=x",
             "dest-rate-offset-ppm=10001",
+            "host-rate-offset-ppm",
+            "host-rate-offset-ppm=-10001",
             "downtime-add-s=-1",
             "downtime-add-s=315360001",
             "utc-offset-ms=315360000001",
