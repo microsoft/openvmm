@@ -303,6 +303,14 @@ fails (`E_PROFILE_HOST_UNKNOWN`). A host profile,
 `intel.host.v1` or `amd.host.v1`, serves only the host's CPU model and
 stepping, is not pinned, can change with the host's microcode, firmware,
 or hypervisor, and costs a fingerprint of the backend at every cold boot.
+Every profile, pinned or host, fixes the CPU time bits that the time ABI
+requires: the hypervisor, TSC, RDTSCP, ARAT, and invariant-TSC bits set, and
+no TSC-deadline timer, `IA32_TSC_ADJUST`, PDCM, performance monitoring leaf
+`0xa`, or rate leaves `0x15` and `0x16`; OpenVMM refuses a profile that
+violates them (`E_PROFILE_DIGEST`). Before a partition uses a pinned profile,
+OpenVMM verifies the profile's built-in data, once per process: a valid
+profile, CPU time bits included, whose built-in encoding, which snapshots
+embed, is its canonical encoding (`E_PROFILE_DIGEST`).
 Every boot checks that the backend
 supports the profile (`E_PROFILE_UNSUPPORTED`) and that VP 0 observes its
 effective CPUID (`E_CPU_SURFACE`); where `auto` fell back, such a failure
@@ -312,8 +320,8 @@ generation, because a host profile derives from what the backend supports.
 A snapshot records the profile and the
 effective CPUID. Restore requires the same profile, pinned in this OpenVMM with
 the same digest, or, for a host profile, the snapshot's own copy of it, which
-must match the recorded digest; a host of the profile's generation; and an
-identical effective CPUID.
+must be a valid profile, its CPU time bits included, with the recorded digest;
+a host of the profile's generation; and an identical effective CPUID.
 OpenVMM computes the effective CPUID, including its own leaves and the bits
 it owns, such as the cache topology, so an OpenVMM build that computes it
 differently rejects earlier snapshots with `E_CPU_SURFACE`.
