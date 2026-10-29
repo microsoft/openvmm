@@ -7,7 +7,11 @@
 //! flows as its limit, before creating any host socket for it. An unbounded
 //! protocol admits any number of flows.
 
+use crate::DropReason;
 use inspect::Inspect;
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::hash::Hash;
 
 /// Default maximum number of simultaneously active guest TCP flows.
 ///
@@ -55,6 +59,51 @@ impl Default for FlowLimits {
             udp: Some(DEFAULT_MAX_ACTIVE_UDP_FLOWS),
             icmp: Some(DEFAULT_MAX_ACTIVE_ICMP_FLOWS),
         }
+    }
+}
+
+/// A protocol whose active guest flows are limited.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FlowProtocol {
+    Tcp,
+    Udp,
+    Icmp,
+}
+
+/// Rejects the new guest flow `flow` of `protocol` when `connections` has
+/// reached `limit`, before a host socket is created for it. A flow already in
+/// `connections` is always admitted.
+pub(crate) fn check_flow_limit<K: Eq + Hash + Display, V>(
+    protocol: FlowProtocol,
+    connections: &HashMap<K, V>,
+    limit: Option<usize>,
+    flow: &K,
+) -> Result<(), DropReason> {
+    if !connections.contains_key(flow)
+        && let Some(max_connections) = reached(limit, connections.len())
+    {
+        return Err(reject(protocol, max_connections, flow));
+    }
+    Ok(())
+}
+
+/// Reports that the new guest flow `flow` of `protocol` was rejected at the
+/// active-flow limit `max_connections`, and returns the reason to drop it.
+pub(crate) fn reject(
+    protocol: FlowProtocol,
+    max_connections: usize,
+    flow: &dyn Display,
+) -> DropReason {
+    tracelimit::warn_ratelimited!(
+        ?protocol,
+        max_connections,
+        %flow,
+        "rejecting guest flow before host socket creation because the active-flow limit was reached"
+    );
+    match protocol {
+        FlowProtocol::Tcp => DropReason::TcpConnectionLimit,
+        FlowProtocol::Udp => DropReason::UdpConnectionLimit,
+        FlowProtocol::Icmp => DropReason::IcmpConnectionLimit,
     }
 }
 

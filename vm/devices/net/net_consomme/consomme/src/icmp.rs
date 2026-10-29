@@ -4,7 +4,6 @@
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![expect(unsafe_code)]
 
-mod limits;
 #[cfg(test)]
 mod tests;
 
@@ -15,6 +14,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
 use crate::MIN_MTU;
+use crate::limits::FlowProtocol;
 
 use inspect::Inspect;
 use inspect_counters::Counter;
@@ -66,6 +66,17 @@ impl Icmp {
             timeout,
             max_connections,
         }
+    }
+
+    /// Rejects a new guest source flow when the active-flow limit is reached,
+    /// before a host socket is opened for it.
+    fn check_flow_limit(&self, guest_addr: &SocketAddrV4) -> Result<(), DropReason> {
+        crate::limits::check_flow_limit(
+            FlowProtocol::Icmp,
+            &self.connections,
+            self.max_connections,
+            guest_addr,
+        )
     }
 }
 
