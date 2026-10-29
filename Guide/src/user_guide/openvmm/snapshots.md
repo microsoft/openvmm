@@ -219,11 +219,11 @@ the ID from the first 16 bytes of the restore packet's fresh entropy, so the
 guest can reject an unchanged clone identity, reseed Linux, refresh runtime
 identifiers, and acknowledge the input gate without another PMIO transfer.
 
-Every microVM restore exposes restore packet version 4. Status bit 1
+Every microVM restore exposes restore packet version 5. Status bit 1
 advertises it, and writing `0xa5` to the status port selects it for reading
-from the data port. Its 32-byte little-endian header holds:
+from the data port. Its 24-byte little-endian header holds:
 
-- the magic `OVR` and version 4;
+- the magic `OVR` and version 5;
 - flags: bit 0, the downtime came from host UTC; bit 1, a memory target;
   bit 2, the guest must acknowledge the restore through port `0x605`; bit 3,
   a test hook is active;
@@ -231,22 +231,38 @@ from the data port. Its 32-byte little-endian header holds:
   zero byte;
 - the generation counter (`u32`), which is 0 at cold boot and one more than
   the snapshot's at each restore;
-- the TSC rate deviation (`i32`, ppm scaled by 2^16);
-- the downtime in nanoseconds (`u64`); and
-- host UTC in nanoseconds since the Unix epoch (`u64`), latched when the guest
-  first selects the packet.
+- the TSC rate deviation (`i32`, ppm scaled by 2^16); and
+- the downtime in nanoseconds (`u64`).
 
 The `(u64 GPA start, u64 length)` memory ranges and 64 bytes of fresh entropy
 follow the header. Status bits 2, 3, and 4 report an online-VP target, a
 memory target, and one or more memory ranges, so a zero-range target can skip
-post-restore repair.
+post-restore repair. The packet carries no host UTC: the guest sets its clock
+from a time sample.
 
 Status bit 6 advertises the time sample. Writing `0xa7` to the status port
-latches a 16-byte sample: version 1, flags (bit 3: a test hook is active), two
-reserved zero bytes, the generation counter (`u32`), and host UTC in
-nanoseconds (`u64`). The guest reads it from window port `0xeb`, so samples
-never interleave with console input on the data port. The selected packet and
-the window can be read one, two, or four bytes at a time.
+latches a 48-byte little-endian sample, version 2:
+
+- the version, flags (bit 3: a test hook is active), the status of host UTC
+  (0 unknown, 1 synchronized, 2 free-running, 3 unreliable), and a reserved
+  zero byte;
+- the generation counter (`u32`);
+- host UTC in nanoseconds since the Unix epoch (`u64`), and the guest TSC at
+  the same instant (`u64`), which OpenVMM pairs on the host;
+- the most those two instants can differ, in nanoseconds (`u32`);
+- a disruption counter (`u32`), which changes when host UTC steps, the host
+  resumes from a suspension, or the guest TSC's offset from the host TSC
+  changes;
+- the host's clock correction (`i64`): how fast host UTC runs against the
+  guest TSC counted at the declared rate, minus one, in ppm scaled by 2^16;
+  and
+- a bound on the error of that correction (`u32`, ppm scaled by 2^16) and
+  the time service's bound on the error of host UTC (`u32`, microseconds),
+  each `0xffffffff` when unknown.
+
+The guest reads it from window port `0xeb`, so samples never interleave with
+console input on the data port. The selected packet and the window can be
+read one, two, or four bytes at a time.
 
 A microVM template may opt into restore-time vCPU activation by booting with an
 explicit canonical `maxcpus=1`, `2`, `4`, or `8` value below or equal to its
@@ -300,7 +316,7 @@ validation error and refuse to start.
 
 ## Time and CPU compatibility
 
-Every microVM uses the NVX time ABI v1. The guest sees a minimal Hyper-V
+Every microVM uses the NVX time ABI 2. The guest sees a minimal Hyper-V
 identity: CPUID leaves `0x40000000` through `0x40000005`, explicit zero leaves
 `0x40000006` through `0x4000000f` and `0x40000080` through `0x40000082`, and
 identity MSRs that return the declared TSC rate (`0x40000022`) and LAPIC rate
@@ -313,6 +329,20 @@ AMD CPU profile, AMD's configuration MSRs read fixed values on every backend:
 HWCR (`0xc0010015`) only `TscFreqSel`, so Linux takes the TSC to count at the
 P0 frequency, and DE_CFG (`0xc0011029`) only `LFENCE` serialization. Writing
 the value read back changes nothing; any other write raises #GP.
+
+Each time sample pairs host UTC with the guest TSC on the host, so the guest
+needs no tight bracket of its own around the port write: the guest TSC is the
+host TSC plus an offset, which KVM reports, and which MSHV and WHP measure
+from VP 0's TSC at every start, before any VP runs. Each sample also
+publishes the host's clock correction, which the guest applies instead of
+estimating it. OpenVMM reads it from the host's time service: on Linux, the
+frequency correction, tick, status, and maximum error that `adjtimex`
+reports, and on Windows, the time adjustment that
+`GetSystemTimeAdjustmentPrecise` reports, with an adjustment that Windows
+does not apply reported as a free-running clock. The correction refers to
+the declared rate, so on a restore it includes the deviation of the native
+rate. A paravirtual clock is still not exposed: the samples only discipline
+the guest's wall clock, and the TSC remains its clocksource.
 
 The guest CPU is a pinned CPU profile: one per CPU generation, the same on
 every backend. OpenVMM pins `intel.skylake-sp.v1` (Xeon Scalable, first
@@ -375,6 +405,8 @@ others.
 
 Restore also requires:
 
+- a snapshot of the same time ABI version, so a snapshot of time ABI 1 must
+  be recaptured (`E_MANIFEST_TIME`);
 - the backend that captured the snapshot;
 - a native TSC rate within 250 ppm of the snapshot's
   (`E_TSC_RATE_TOLERANCE`), and the identical LAPIC rate
@@ -383,7 +415,8 @@ Restore also requires:
   `E_DOWNTIME_EXCESSIVE`).
 
 The declared rates never change across a restore; the restore packet reports
-the rate deviation so the guest can compensate. The downtime is host monotonic
+the rate deviation, and every time sample's correction includes it, so the
+guest can compensate. The downtime is host monotonic
 time when capture and restore run on the same host boot, and host UTC
 otherwise. Capture and restore reject an armed periodic or TSC-deadline LAPIC
 timer and a periodically counting PIT channel 0 (`E_LAPIC_PERIODIC`,
