@@ -2501,9 +2501,88 @@ fn prepare_save_completes_unsaveable_requests() {
             result: CompletionResult::HvsockConnect(None),
         }
     )));
-    assert!(core.modify_connection_request_id.is_none());
+    assert!(core.modify_connection_pending());
+    assert_eq!(core.pending_request_count(), 0);
     assert!(core.hvsock_pending.is_empty());
     let _ = core.save();
+
+    sink.actions.clear();
+    core.step(Event::PrepareSave, &mut sink);
+    assert!(sink.actions.is_empty());
+    let _ = core.save();
+}
+
+#[test]
+fn prepare_save_keeps_modify_slot_until_late_response() {
+    let mut core = ClientCore::new(make_multi_version_config());
+    let mut sink = Recording::default();
+    connect_with_flags(
+        &mut core,
+        &mut sink,
+        FeatureFlags::new().with_modify_connection(true),
+    );
+    core.step(
+        Event::ModifyConnection {
+            request_id: RequestId(2520),
+            monitor_page: MonitorPageGpas::default(),
+        },
+        &mut sink,
+    );
+    core.step(Event::PrepareSave, &mut sink);
+    let _ = core.save();
+    sink.actions.clear();
+
+    core.step(
+        Event::ModifyConnection {
+            request_id: RequestId(2521),
+            monitor_page: MonitorPageGpas::default(),
+        },
+        &mut sink,
+    );
+    assert!(matches!(
+        sink.actions.as_slice(),
+        [Action::Complete {
+            request_id: RequestId(2521),
+            result: CompletionResult::ModifyConnection(
+                vmbus_core::protocol::ConnectionState::FAILED_UNKNOWN_FAILURE
+            ),
+        }]
+    ));
+    sink.actions.clear();
+
+    let late = make_host_message(&vmbus_core::protocol::ModifyConnectionResponse {
+        connection_state: vmbus_core::protocol::ConnectionState::FAILED_LOW_RESOURCES,
+    });
+    core.step(Event::HostMessage(&late), &mut sink);
+    assert!(sink.actions.is_empty());
+    assert!(!core.modify_connection_pending());
+    assert_eq!(core.pending_request_count(), 0);
+
+    core.step(
+        Event::ModifyConnection {
+            request_id: RequestId(2522),
+            monitor_page: MonitorPageGpas::default(),
+        },
+        &mut sink,
+    );
+    assert!(matches!(sink.actions.as_slice(), [Action::PostMessage(_)]));
+    sink.actions.clear();
+
+    let response = make_host_message(&vmbus_core::protocol::ModifyConnectionResponse {
+        connection_state: vmbus_core::protocol::ConnectionState::SUCCESSFUL,
+    });
+    core.step(Event::HostMessage(&response), &mut sink);
+    assert!(matches!(
+        sink.actions.as_slice(),
+        [Action::Complete {
+            request_id: RequestId(2522),
+            result: CompletionResult::ModifyConnection(
+                vmbus_core::protocol::ConnectionState::SUCCESSFUL
+            ),
+        }]
+    ));
+    assert!(!core.modify_connection_pending());
+    assert_eq!(core.pending_request_count(), 0);
 }
 
 #[test]

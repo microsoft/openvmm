@@ -501,6 +501,8 @@ pub enum Event<'a> {
     /// completions.
     Stop,
     /// Complete requests that cannot be represented in saved state.
+    /// A cancelled connection modification still occupies its wire-response
+    /// slot until the host replies.
     PrepareSave,
     /// Post `Pause` (V5+ pause/resume protocol).
     Pause,
@@ -726,8 +728,9 @@ pub struct ClientCore {
     flag_allocator: FlagAllocator,
     running: bool,
     host_busy: bool,
-    /// Set when a `ModifyConnection` is outstanding, so a duplicate
-    /// request can be rejected.
+    /// Set until the host answers `ModifyConnection`, so a duplicate request
+    /// can be rejected. After `PrepareSave`, the ID remains here but not in
+    /// `outstanding`, allowing the cancelled request's response to be discarded.
     modify_connection_request_id: Option<RequestId>,
     malformed_host_message_count: u64,
 }
@@ -956,11 +959,13 @@ impl ClientCore {
     ///
     /// # Panics
     ///
-    /// Panics if a caller attempts to save while a protocol request is in
-    /// flight. The wrapper must stop and drain the client before saving.
+    /// Panics if an unsaveable caller request or channel operation is still
+    /// in flight. The wrapper must stop and drain the client, then issue
+    /// [`Event::PrepareSave`] before saving.
     pub fn save(&self) -> SavedState {
         assert!(
-            self.modify_connection_request_id.is_none(),
+            self.modify_connection_request_id
+                .is_none_or(|request_id| !self.outstanding.contains_key(&request_id)),
             "cannot save while a connection modification is in flight"
         );
         assert!(
@@ -2602,11 +2607,12 @@ impl ClientCore {
         let Some(request_id) = self.modify_connection_request_id.take() else {
             return;
         };
-        self.outstanding.remove(&request_id);
-        sink.emit(Action::Complete {
-            request_id,
-            result: CompletionResult::ModifyConnection(response.connection_state),
-        });
+        if self.outstanding.remove(&request_id).is_some() {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::ModifyConnection(response.connection_state),
+            });
+        }
     }
 
     /// Handle [`Event::HvsockConnect`] — post `TlConnectRequest2` and
@@ -2686,8 +2692,9 @@ impl ClientCore {
     }
 
     fn handle_prepare_save<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
-        if let Some(request_id) = self.modify_connection_request_id.take() {
-            self.outstanding.remove(&request_id);
+        if let Some(request_id) = self.modify_connection_request_id
+            && self.outstanding.remove(&request_id).is_some()
+        {
             sink.emit(Action::Complete {
                 request_id,
                 result: CompletionResult::ModifyConnection(
