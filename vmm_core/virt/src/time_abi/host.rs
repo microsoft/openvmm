@@ -39,6 +39,84 @@ impl HostClockKind {
             _ => None,
         }
     }
+
+    /// Returns whether the clock runs at host UTC's corrected rate, so that
+    /// its difference from host UTC changes only when host UTC steps.
+    ///
+    /// Linux's corrections of `CLOCK_REALTIME`'s rate also apply to
+    /// `CLOCK_BOOTTIME`; Windows never corrects its interrupt time.
+    pub const fn follows_utc_rate(self) -> bool {
+        match self {
+            Self::LinuxBoottime => true,
+            Self::WindowsInterruptTime => false,
+        }
+    }
+}
+
+/// The host clock kind of this host OS, as [`host_identity`] reports it.
+pub const fn host_clock_kind() -> HostClockKind {
+    if cfg!(windows) {
+        HostClockKind::WindowsInterruptTime
+    } else {
+        HostClockKind::LinuxBoottime
+    }
+}
+
+/// The status of host UTC, as the host's time service reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostClockStatus {
+    /// The host does not report its clock's status.
+    Unknown,
+    /// A time service synchronizes host UTC with a reference.
+    Synchronized,
+    /// No time service synchronizes host UTC, which runs on its own.
+    FreeRunning,
+    /// The host reports a fault of its clock.
+    Unreliable,
+}
+
+/// How the host converts its TSC to UTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostClockBasis {
+    /// The TSC at the rate that the host kernel calibrated, to the kHz: the
+    /// `tsc` clocksource of Linux.
+    KernelTsc,
+    /// The TSC at the hypervisor's rate, to the Hz: the Hyper-V TSC page
+    /// clocksource of Linux, and the performance counter of Windows.
+    HypervisorTsc,
+    /// Another clock, which may not follow the TSC.
+    Other,
+}
+
+/// What the host's time service makes host UTC do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostClockDiscipline {
+    /// The status of host UTC.
+    pub status: HostClockStatus,
+    /// How much faster than the host's uncorrected clock host UTC runs, in
+    /// parts per million scaled by 2^16, the unit of Linux's frequency
+    /// correction.
+    pub correction: i64,
+    /// The time service's bound on the error of host UTC, in microseconds.
+    pub max_error_us: Option<u64>,
+    /// The clock from which the host derives UTC.
+    pub basis: HostClockBasis,
+}
+
+/// Reads the discipline of host UTC: on Linux, the kernel's frequency
+/// correction and status that `adjtimex` reports, which any time service
+/// sets; on Windows, the time adjustment that `GetSystemTimeAdjustmentPrecise`
+/// reports. A host that cannot report it reports
+/// [`HostClockStatus::Unknown`] and no correction.
+pub fn host_clock_discipline() -> HostClockDiscipline {
+    sys::clock_discipline()
+}
+
+/// Returns how long the host has been suspended since it booted, in
+/// nanoseconds: how far the host monotonic clock of [`host_clock_kind`],
+/// which counts suspended time, has run ahead of one that does not.
+pub fn host_suspended_ns() -> Result<u64, TimeAbiError> {
+    sys::suspended_ns()
 }
 
 /// The identity of a host and of its current boot.
@@ -94,6 +172,28 @@ fn host_error(message: impl Into<String>) -> TimeAbiError {
     TimeAbiError::new(TimeAbiCode::HostIdentity, message)
 }
 
+/// One part per million in Linux's frequency correction, which scales it by
+/// 2^16: the unit of [`HostClockDiscipline::correction`].
+pub const SCALED_PPM: i64 = 1 << 16;
+
+/// Returns the correction of a clock that counts a second for every
+/// `adjustment` ticks of a counter that ticks `increment` times a second, as
+/// Windows reports its precise time adjustment, in parts per million scaled
+/// by 2^16, rounded to the nearest: the clock runs at `increment /
+/// adjustment` of the counter's rate, so a larger adjustment slows it.
+#[cfg(any(windows, test))]
+fn adjustment_correction(adjustment: u64, increment: u64) -> i64 {
+    let scale = i128::from(SCALED_PPM) * 1_000_000;
+    let numerator = (i128::from(increment) - i128::from(adjustment)) * scale;
+    let adjustment = i128::from(adjustment.max(1));
+    let rounded = if numerator >= 0 {
+        (numerator + adjustment / 2) / adjustment
+    } else {
+        (numerator - adjustment / 2) / adjustment
+    };
+    rounded.clamp(i64::MIN.into(), i64::MAX.into()) as i64
+}
+
 /// Parses 32 hexadecimal digits, ignoring dashes and a trailing newline, as
 /// in `/etc/machine-id`, the Linux boot ID, and the Windows machine GUID.
 #[cfg(any(target_os = "linux", windows, test))]
@@ -126,7 +226,10 @@ fn zero_extended_id(value: u32) -> [u8; 16] {
 
 #[cfg(target_os = "linux")]
 mod sys {
+    use super::HostClockBasis;
+    use super::HostClockDiscipline;
     use super::HostClockKind;
+    use super::HostClockStatus;
     use super::HostIdentity;
     use super::host_error;
     use super::parse_hex_id;
@@ -163,6 +266,58 @@ mod sys {
         clock_ns(libc::CLOCK_BOOTTIME, "CLOCK_BOOTTIME")
     }
 
+    /// The file that names the clocksource from which Linux derives UTC.
+    const CURRENT_CLOCKSOURCE: &str =
+        "/sys/devices/system/clocksource/clocksource0/current_clocksource";
+
+    /// Linux's `USER_HZ`, whose ticks `adjtimex` measures: 100 on x86-64.
+    const USER_HZ: i64 = 100;
+
+    pub(super) fn clock_discipline() -> HostClockDiscipline {
+        let basis = match std::fs::read_to_string(CURRENT_CLOCKSOURCE)
+            .as_deref()
+            .map(str::trim)
+        {
+            Ok("tsc") => HostClockBasis::KernelTsc,
+            Ok("hyperv_clocksource_tsc_page") => HostClockBasis::HypervisorTsc,
+            _ => HostClockBasis::Other,
+        };
+        // SAFETY: `timex` holds only integers, for which zero is valid.
+        let mut timex: libc::timex = unsafe { std::mem::zeroed() };
+        // SAFETY: `timex` is a valid, writable timex for the duration of the
+        // call, and its zero `modes` only reads the kernel's state.
+        if unsafe { libc::adjtimex(&mut timex) } < 0 {
+            return HostClockDiscipline {
+                status: HostClockStatus::Unknown,
+                correction: 0,
+                max_error_us: None,
+                basis,
+            };
+        }
+        let status = if timex.status & libc::STA_CLOCKERR != 0 {
+            HostClockStatus::Unreliable
+        } else if timex.status & libc::STA_UNSYNC != 0 {
+            HostClockStatus::FreeRunning
+        } else {
+            HostClockStatus::Synchronized
+        };
+        // A second of host UTC lasts `tick` microseconds per `USER_HZ` tick,
+        // plus the frequency correction.
+        let tick_correction = (timex.tick * USER_HZ - 1_000_000) * super::SCALED_PPM;
+        HostClockDiscipline {
+            status,
+            correction: timex.freq.saturating_add(tick_correction),
+            max_error_us: u64::try_from(timex.maxerror).ok(),
+            basis,
+        }
+    }
+
+    pub(super) fn suspended_ns() -> Result<u64, TimeAbiError> {
+        let monotonic = clock_ns(libc::CLOCK_MONOTONIC, "CLOCK_MONOTONIC")?;
+        let boottime = clock_ns(libc::CLOCK_BOOTTIME, "CLOCK_BOOTTIME")?;
+        Ok(boottime.saturating_sub(monotonic))
+    }
+
     fn read_id(path: &str) -> Result<[u8; 16], TimeAbiError> {
         use std::io::Read;
 
@@ -196,7 +351,10 @@ mod sys {
 
 #[cfg(windows)]
 mod sys {
+    use super::HostClockBasis;
+    use super::HostClockDiscipline;
     use super::HostClockKind;
+    use super::HostClockStatus;
     use super::HostIdentity;
     use super::host_error;
     use super::parse_hex_id;
@@ -208,8 +366,10 @@ mod sys {
     use windows_sys::Win32::System::Registry::RRF_RT_REG_DWORD;
     use windows_sys::Win32::System::Registry::RRF_RT_REG_SZ;
     use windows_sys::Win32::System::Registry::RegGetValueW;
+    use windows_sys::Win32::System::SystemInformation::GetSystemTimeAdjustmentPrecise;
     use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
     use windows_sys::Win32::System::WindowsProgramming::QueryInterruptTimePrecise;
+    use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTimePrecise;
 
     /// 100 ns intervals from 1601-01-01 to 1970-01-01.
     const FILETIME_UNIX_EPOCH: u64 = 116_444_736_000_000_000;
@@ -235,6 +395,56 @@ mod sys {
         // the call.
         unsafe { QueryInterruptTimePrecise(&mut intervals) };
         intervals
+            .checked_mul(100)
+            .ok_or_else(|| host_error("host interrupt time overflows"))
+    }
+
+    pub(super) fn clock_discipline() -> HostClockDiscipline {
+        let mut adjustment = 0;
+        let mut increment = 0;
+        let mut disabled = 0;
+        // SAFETY: the three outputs are valid, writable values for the
+        // duration of the call.
+        let read = unsafe {
+            GetSystemTimeAdjustmentPrecise(&mut adjustment, &mut increment, &mut disabled)
+        };
+        let (status, correction) = if read == 0 || increment == 0 {
+            (HostClockStatus::Unknown, 0)
+        } else if disabled != 0 {
+            // No time service adjusts UTC, which follows the performance
+            // counter.
+            (HostClockStatus::FreeRunning, 0)
+        } else if adjustment == 0 {
+            (HostClockStatus::Unknown, 0)
+        } else {
+            // The increment is the performance counter's frequency, and UTC
+            // counts a second for every adjustment of its ticks.
+            (
+                HostClockStatus::Synchronized,
+                super::adjustment_correction(adjustment, increment),
+            )
+        };
+        // Under Hyper-V, the performance counter runs at the TSC rate that
+        // the hypervisor reports.
+        HostClockDiscipline {
+            status,
+            correction,
+            max_error_us: None,
+            basis: HostClockBasis::HypervisorTsc,
+        }
+    }
+
+    pub(super) fn suspended_ns() -> Result<u64, TimeAbiError> {
+        let mut unbiased = 0;
+        let mut interrupt = 0;
+        // SAFETY: `unbiased` and `interrupt` are valid, writable u64 values
+        // for the duration of the calls.
+        unsafe {
+            QueryUnbiasedInterruptTimePrecise(&mut unbiased);
+            QueryInterruptTimePrecise(&mut interrupt);
+        }
+        interrupt
+            .saturating_sub(unbiased)
             .checked_mul(100)
             .ok_or_else(|| host_error("host interrupt time overflows"))
     }
@@ -308,6 +518,9 @@ mod sys {
 
 #[cfg(not(any(target_os = "linux", windows)))]
 mod sys {
+    use super::HostClockBasis;
+    use super::HostClockDiscipline;
+    use super::HostClockStatus;
     use super::HostIdentity;
     use super::host_error;
     use crate::time_abi::TimeAbiError;
@@ -319,6 +532,21 @@ mod sys {
     }
 
     pub(super) fn monotonic_ns() -> Result<u64, TimeAbiError> {
+        Err(host_error(
+            "host time sampling is not supported on this host",
+        ))
+    }
+
+    pub(super) fn clock_discipline() -> HostClockDiscipline {
+        HostClockDiscipline {
+            status: HostClockStatus::Unknown,
+            correction: 0,
+            max_error_us: None,
+            basis: HostClockBasis::Other,
+        }
+    }
+
+    pub(super) fn suspended_ns() -> Result<u64, TimeAbiError> {
         Err(host_error(
             "host time sampling is not supported on this host",
         ))
@@ -372,6 +600,67 @@ mod tests {
             assert_eq!(HostClockKind::from_manifest(kind.as_str()), Some(kind));
         }
         assert_eq!(HostClockKind::from_manifest("utc"), None);
+    }
+
+    #[test]
+    fn only_linux_boottime_follows_utc_rate() {
+        assert!(HostClockKind::LinuxBoottime.follows_utc_rate());
+        assert!(!HostClockKind::WindowsInterruptTime.follows_utc_rate());
+    }
+
+    #[test]
+    fn windows_adjustments_are_scaled_ppm() {
+        // Windows's nominal rate: a second of UTC per second of the
+        // performance counter.
+        assert_eq!(adjustment_correction(10_000_000, 10_000_000), 0);
+        assert_eq!(
+            adjustment_correction(10_000_000, 10_000_100),
+            10 * SCALED_PPM
+        );
+        assert_eq!(
+            adjustment_correction(10_000_000, 9_999_900),
+            -10 * SCALED_PPM
+        );
+        // A larger adjustment counts more of the counter's ticks as a second,
+        // so UTC runs slow: a Windows host that reported 10,000,501 for its
+        // 10 MHz counter ran UTC 53 ppm slow against the counter, between the
+        // -50.1 and -58.8 ppm of its adjustments over the 20 s measured.
+        assert_eq!(adjustment_correction(10_000_501, 10_000_000), -3_283_189);
+        assert_eq!(
+            adjustment_correction(10_000_005, 10_000_000),
+            -SCALED_PPM / 2
+        );
+        // The correction rounds to the nearest scaled unit, and half a unit
+        // away from zero.
+        assert_eq!(adjustment_correction(1_000_000, 1_000_001), SCALED_PPM);
+        assert_eq!(adjustment_correction(156_250, 156_251), 419_430);
+        assert_eq!(adjustment_correction(156_250, 156_249), -419_430);
+        assert_eq!(adjustment_correction(131_072_000_000, 131_072_000_001), 1);
+        assert_eq!(adjustment_correction(131_072_000_000, 131_071_999_999), -1);
+        // A zero adjustment, which the caller rejects, does not divide by
+        // zero.
+        assert_eq!(adjustment_correction(0, 1), SCALED_PPM * 1_000_000);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn host_clock_discipline_is_available() {
+        let discipline = host_clock_discipline();
+        assert_ne!(
+            discipline.status,
+            HostClockStatus::Unknown,
+            "{discipline:?}"
+        );
+        // Linux limits the correction to its tick range and ±500 ppm.
+        assert!(
+            discipline.correction.unsigned_abs() < 200_000 * SCALED_PPM.unsigned_abs(),
+            "{discipline:?}"
+        );
+        if cfg!(windows) {
+            assert_eq!(discipline.basis, HostClockBasis::HypervisorTsc);
+            assert_eq!(discipline.max_error_us, None);
+        }
+        host_suspended_ns().unwrap();
     }
 
     #[cfg(any(target_os = "linux", windows))]

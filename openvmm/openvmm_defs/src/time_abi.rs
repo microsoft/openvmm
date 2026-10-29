@@ -20,7 +20,7 @@ use virt::time_abi::downtime::MAX_DOWNTIME_NS;
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
 pub struct SnapshotTimeContract {
-    /// The time ABI version: 1.
+    /// The time ABI version: 2.
     #[mesh(1)]
     pub time_abi_version: u32,
     /// `F_s`, the declared TSC rate of the snapshot lineage, in Hz.

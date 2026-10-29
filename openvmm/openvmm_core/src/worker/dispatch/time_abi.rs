@@ -1,16 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI v1 in the VM worker, which every microVM uses: the partition
+//! NVX time ABI 2 in the VM worker, which every microVM uses: the partition
 //! configuration, the backend preflight and rate policy, the `time-abi` state
-//! unit, the capture records, and the restore clock.
+//! unit, the guest TSC's offset from the host TSC, which the VM measures at
+//! every start, the source of the host fields of time samples, the capture
+//! records, and the restore clock.
 
 #![cfg(guest_arch = "x86_64")]
 
 use super::LoadedVm;
 use crate::partition::HvlitePartition;
 use anyhow::Context as _;
+use chipset_resources::microvm_time::HostTimeFields;
+use chipset_resources::microvm_time::ResolvedTimeSampleSource;
 use chipset_resources::microvm_time::RestoreTimeRecord;
+use chipset_resources::microvm_time::TimeSampleSource;
+use chipset_resources::microvm_time::TimeSampleSourceKind;
 use cpu_profile::CpuProfile;
 use cpu_profile::EffectiveCpuid;
 use cpu_profile::HostCpuSignature;
@@ -29,6 +35,7 @@ use openvmm_defs::time_abi::TimeCapture;
 use openvmm_defs::time_abi::decode_effective_cpuid;
 use openvmm_defs::time_abi::encode_effective_cpuid;
 use openvmm_defs::worker::SavedState;
+use parking_lot::Mutex;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use std::collections::BTreeMap;
@@ -48,7 +55,15 @@ use virt::time_abi::TimeAbiError;
 use virt::time_abi::TimeAbiMsrs;
 use virt::time_abi::TimeAbiTestHooks;
 use virt::time_abi::TscSyncMethod;
+use virt::time_abi::host::HostClockStatus;
+use virt::time_abi::publish::HostClockPublisher;
+use virt::time_abi::publish::NativeRateBasis;
+use virt::time_abi::publish::PublishedSample;
+use virt::time_abi::publish::SampleRates;
 use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::tsc::GuestTscOffset;
+use vm_resource::PlatformResource;
+use vm_resource::ResolveResource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -71,10 +86,31 @@ pub(super) struct TimeAbiState {
     pub effective_cpuid: Arc<EffectiveCpuid>,
     /// The preflight report.
     pub report: TimeAbiReport,
+    /// The time sample source, which uses the measured offset.
+    pub clock: Arc<TimeAbiClock>,
+    /// Measures the guest TSC's offset from the host TSC.
+    pub guest_tsc_offset: MeasureOffset,
     /// The generation counter of this VM process.
     pub generation: u32,
     /// The active test hooks.
     pub hooks: TimeAbiTestHooks,
+}
+
+impl TimeAbiState {
+    /// Measures the guest TSC's offset from the host TSC for the time samples.
+    ///
+    /// The VM measures it at every start, before it starts the state units:
+    /// after the TSC writes of a cold boot, a restore, or a reset, and before
+    /// any VP runs, so that a failed measurement fails the start.
+    pub(super) fn measure_offset(&self) -> Result<(), TimeAbiError> {
+        record_offset(&self.clock, &self.guest_tsc_offset)
+    }
+}
+
+/// Measures the guest TSC's offset with `measure` and records it in `clock`.
+fn record_offset(clock: &TimeAbiClock, measure: &MeasureOffset) -> Result<(), TimeAbiError> {
+    clock.set_offset(measure()?);
+    Ok(())
 }
 
 /// The time ABI of a new partition, set up before the partition is created.
@@ -562,6 +598,15 @@ fn backend<'a>(
     })
 }
 
+/// Measures the guest TSC's offset from the host TSC, with every VP
+/// stopped.
+pub(super) fn guest_tsc_offset(
+    partition: &dyn HvlitePartition,
+    hypervisor: &str,
+) -> Result<GuestTscOffset, TimeAbiError> {
+    backend(partition, hypervisor)?.guest_tsc_offset()
+}
+
 /// What the time ABI preflight established for a VM process, exposed through
 /// inspect at `time-abi` together with the declared rates.
 #[derive(Debug, Clone, Inspect)]
@@ -576,6 +621,9 @@ pub(super) struct TimeAbiReport {
     /// The synchronized TSC set method.
     #[inspect(debug)]
     pub sync: TscSyncMethod,
+    /// What the backend reports as the native TSC rate.
+    #[inspect(debug)]
+    pub native_rate: NativeRateBasis,
     /// The backend's native TSC rate `F_d`, after the rate test hook.
     pub native_tsc_hz: u64,
     /// On restore, the accepted rate check against the snapshot's rate.
@@ -614,6 +662,7 @@ pub(super) fn declare_rates(
         cpu_profile,
         msr_route: preflight.msr_route,
         sync: preflight.sync,
+        native_rate: preflight.native_rate,
         native_tsc_hz: rates.native_tsc_hz,
         rate_check: rates.check,
     })
@@ -1179,6 +1228,126 @@ impl LoadedVm {
     }
 }
 
+/// The time ABI's source of the host fields of time samples.
+///
+/// It pairs host UTC with the guest TSC through the guest TSC's offset from
+/// the host TSC, which the VM measures at every start, before any VP runs,
+/// and publishes the discipline of host UTC.
+pub(super) struct TimeAbiClock {
+    /// The identity MSR handler, which holds the declared rates.
+    msrs: Arc<TimeAbiMsrs>,
+    /// The backend's native TSC rate `F_d`, after the rate test hook.
+    native_hz: u64,
+    /// What the backend reports as the native rate.
+    native_rate: NativeRateBasis,
+    /// The measured offset and the publisher.
+    state: Mutex<ClockState>,
+}
+
+/// The mutable state of a [`TimeAbiClock`].
+struct ClockState {
+    /// The guest TSC's offset from the host TSC, once measured.
+    offset: Option<GuestTscOffset>,
+    /// The publisher of the host fields.
+    publisher: HostClockPublisher,
+}
+
+impl TimeAbiClock {
+    /// Returns the clock of a VM whose identity MSR handler is `msrs`, whose
+    /// preflight reported `report`, with the test hooks `hooks`.
+    pub(super) fn new(
+        msrs: Arc<TimeAbiMsrs>,
+        report: &TimeAbiReport,
+        hooks: &TimeAbiTestHooks,
+    ) -> Self {
+        Self {
+            msrs,
+            native_hz: report.native_tsc_hz,
+            native_rate: report.native_rate,
+            state: Mutex::new(ClockState {
+                offset: None,
+                publisher: HostClockPublisher::new(virt::time_abi::host::host_clock_kind(), hooks),
+            }),
+        }
+    }
+
+    /// Records a measured guest TSC offset. An offset that cannot be the last
+    /// one is a disruption.
+    fn set_offset(&self, offset: GuestTscOffset) {
+        let mut state = self.state.lock();
+        if state.offset.is_some_and(|last| !last.agrees_with(&offset)) {
+            state.publisher.disrupt();
+        }
+        state.offset = Some(offset);
+    }
+}
+
+impl TimeSampleSource for TimeAbiClock {
+    fn sample(&self) -> Option<HostTimeFields> {
+        let declared = self.msrs.declared()?;
+        let rates = SampleRates {
+            declared_hz: declared.tsc_hz,
+            native_hz: self.native_hz,
+            native_basis: self.native_rate,
+        };
+        let mut state = self.state.lock();
+        let offset = state.offset?;
+        match state.publisher.sample(offset, rates) {
+            Ok(sample) => Some(host_fields(&sample)),
+            Err(error) => {
+                tracelimit::error_ratelimited!(
+                    error = &error as &dyn std::error::Error,
+                    "time ABI time sample failed"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Returns the time sample fields of a published sample, saturating the
+/// values that the sample carries in 32 bits.
+fn host_fields(sample: &PublishedSample) -> HostTimeFields {
+    use chipset_resources::microvm_time::HostClockStatus as SampleStatus;
+
+    let saturate = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
+    HostTimeFields {
+        utc_ns: sample.utc_ns,
+        tsc: sample.tsc,
+        pairing_ns: saturate(sample.pairing_ns),
+        status: match sample.status {
+            HostClockStatus::Unknown => SampleStatus::Unknown,
+            HostClockStatus::Synchronized => SampleStatus::Synchronized,
+            HostClockStatus::FreeRunning => SampleStatus::FreeRunning,
+            HostClockStatus::Unreliable => SampleStatus::Unreliable,
+        },
+        disruption: sample.disruption,
+        correction: sample.correction,
+        correction_bound: sample.correction_bound.map(saturate),
+        max_error_us: sample.max_error_us.map(saturate),
+    }
+}
+
+/// Resolves the platform's time sample source, which the microVM portb device
+/// uses, to the time ABI's clock.
+pub(super) struct TimeSampleSourceResolver(pub Arc<TimeAbiClock>);
+
+impl ResolveResource<TimeSampleSourceKind, PlatformResource> for TimeSampleSourceResolver {
+    type Output = ResolvedTimeSampleSource;
+    type Error = std::convert::Infallible;
+
+    fn resolve(
+        &self,
+        _resource: PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedTimeSampleSource(self.0.clone()))
+    }
+}
+
+/// Measures the guest TSC's offset from the host TSC.
+pub(super) type MeasureOffset = Box<dyn Fn() -> Result<GuestTscOffset, TimeAbiError> + Send>;
+
 /// The `time-abi` state unit. It saves and restores
 /// `HV_X64_MSR_TSC_INVARIANT_CONTROL`, which is partition-wide guest state,
 /// and inspects the declared rates and the preflight report.
@@ -1216,6 +1385,8 @@ impl StateUnit for TimeAbiUnit {
 mod tests {
     use super::*;
     use openvmm_defs::time_abi::EFFECTIVE_CPUID_ENTRY_BYTES;
+    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::Ordering;
     use virt::time_abi::BackendPreflight;
     use virt::time_abi::HostTimeSample;
     use virt::time_abi::TscAnchor;
@@ -1249,6 +1420,7 @@ mod tests {
         utc_offset_ms: 0,
         sample_delay_us: 0,
         host_cpu_unknown: false,
+        host_rate_offset_ppm: 0,
     };
 
     /// The `host-cpu-unknown` test hook.
@@ -1299,18 +1471,75 @@ mod tests {
         (msrs, config, effective)
     }
 
+    fn test_report() -> TimeAbiReport {
+        TimeAbiReport {
+            hypervisor: "kvm".to_owned(),
+            cpu_profile: TEST_PROFILE.to_owned(),
+            msr_route: IdentityMsrRoute::ExitToVmm,
+            sync: TscSyncMethod::CommonOffset,
+            native_rate: NativeRateBasis::KernelKhz,
+            native_tsc_hz: 2_100_000_000,
+            rate_check: None,
+        }
+    }
+
     fn test_unit(msrs: Arc<TimeAbiMsrs>) -> TimeAbiUnit {
         TimeAbiUnit {
             msrs,
-            report: TimeAbiReport {
-                hypervisor: "kvm".to_owned(),
-                cpu_profile: TEST_PROFILE.to_owned(),
-                msr_route: IdentityMsrRoute::ExitToVmm,
-                sync: TscSyncMethod::CommonOffset,
-                native_tsc_hz: 2_100_000_000,
-                rate_check: None,
-            },
+            report: test_report(),
         }
+    }
+
+    #[test]
+    fn measuring_the_offset_sets_the_offset_that_samples_use() {
+        let (msrs, _, _) = test_config(1);
+        msrs.declare(DeclaredRates::new(2_100_000_000, 1_000_000_000).unwrap())
+            .unwrap();
+        let clock = TimeAbiClock::new(msrs, &test_report(), &NO_HOOKS);
+        let offset = Arc::new(AtomicU64::new(1 << 40));
+        let measure: MeasureOffset = Box::new({
+            let offset = offset.clone();
+            move || {
+                Ok(GuestTscOffset {
+                    offset: offset.load(Ordering::Relaxed),
+                    uncertainty: 1_000,
+                })
+            }
+        });
+        // No sample before the first measurement.
+        assert_eq!(clock.sample(), None);
+        record_offset(&clock, &measure).unwrap();
+        let first = clock.sample().unwrap();
+        // The guest TSC is ahead of the host TSC by the offset, and the
+        // offset's uncertainty of 1,000 cycles widens the pairing.
+        assert!(first.tsc > 1 << 40, "{first:?}");
+        assert!(first.pairing_ns >= 477, "{first:?}");
+        assert_eq!(first.disruption, 0);
+
+        // A measurement of the same offset is no disruption; one of another
+        // is.
+        offset.fetch_add(1_000, Ordering::Relaxed);
+        record_offset(&clock, &measure).unwrap();
+        assert_eq!(clock.sample().unwrap().disruption, 0);
+        offset.fetch_add(2_001, Ordering::Relaxed);
+        record_offset(&clock, &measure).unwrap();
+        assert_eq!(clock.sample().unwrap().disruption, 1);
+    }
+
+    #[test]
+    fn a_failed_measurement_keeps_the_last_offset() {
+        let (msrs, _, _) = test_config(1);
+        msrs.declare(DeclaredRates::new(2_100_000_000, 1_000_000_000).unwrap())
+            .unwrap();
+        let clock = TimeAbiClock::new(msrs, &test_report(), &NO_HOOKS);
+        let failing: MeasureOffset = Box::new(|| {
+            Err(TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                "intentional measurement failure",
+            ))
+        });
+        assert!(record_offset(&clock, &failing).is_err());
+        assert_eq!(clock.sample(), None);
     }
 
     fn code<T: std::fmt::Debug>(result: anyhow::Result<T>) -> String {
@@ -1367,6 +1596,7 @@ mod tests {
             "cpu_profile",
             "msr_route",
             "sync",
+            "native_rate",
             "native_tsc_hz",
         ] {
             assert!(names.contains(&name), "{names:?}");
@@ -1986,6 +2216,10 @@ mod tests {
             &self,
             _target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
         ) -> Result<TscSetReport, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
             unreachable!()
         }
     }
