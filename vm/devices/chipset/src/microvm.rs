@@ -15,9 +15,10 @@ use chipset_device::poll_device::PollDevice;
 use chipset_resources::microvm::MicrovmPortbDrain;
 use chipset_resources::microvm::MicrovmPortbTimeAbi;
 use chipset_resources::microvm_time::RestorePacketBase;
-use chipset_resources::microvm_time::RestorePacketV4;
+use chipset_resources::microvm_time::RestorePacketV5;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use chipset_resources::microvm_time::TimeSample;
+use chipset_resources::microvm_time::TimeSampleSource;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::InspectMut;
@@ -31,10 +32,10 @@ use std::io;
 use std::io::ErrorKind;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use std::time::SystemTime;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
@@ -61,43 +62,31 @@ const STATUS_TIME_SAMPLE_AVAILABLE: u8 =
     chipset_resources::microvm_time::STATUS_TIME_SAMPLE_AVAILABLE;
 const BUFFER_MAX: usize = 1024 * 1024;
 
-/// The restore packet version 4 of a restored VM process.
+/// The restore packet version 5 of a restored VM process.
 enum RestorePacketState {
     /// No packet, or the packet was consumed.
     None,
     /// Waiting for the worker to seal the time fields.
     Pending(RestorePacketBase, mesh::OneshotReceiver<RestoreTimeRecord>),
-    /// Sealed and not yet selected; host UTC is latched at the first
-    /// selection.
+    /// Sealed and not yet selected.
     Sealed(RestorePacketBase, RestoreTimeRecord),
     /// Encoded into the restore-packet queue.
     Encoded,
 }
 
-/// NVX time ABI v1 state of the portb device.
+/// NVX time ABI 2 state of the portb device.
 struct PortbTimeAbi {
     generation: u32,
-    utc_offset_ns: i128,
     sample_delay: std::time::Duration,
     test_hooks: bool,
+    /// The platform's source of the host fields of time samples.
+    source: Option<Arc<dyn TimeSampleSource>>,
     restore: RestorePacketState,
     /// Notified at the guest's first selection of the restore packet.
     packet_selected: Option<mesh::OneshotSender<()>>,
 }
 
 impl PortbTimeAbi {
-    /// Returns host UTC in nanoseconds, after the test hooks' delay and
-    /// offset.
-    fn latch_utc_ns(&self) -> u64 {
-        if !self.sample_delay.is_zero() {
-            std::thread::sleep(self.sample_delay);
-        }
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map_or(0, |since_epoch| since_epoch.as_nanos() as i128);
-        (now + self.utc_offset_ns).clamp(0, u64::MAX.into()) as u64
-    }
-
     /// Returns whether a sealed packet waits for its first selection,
     /// receiving the sealed time fields if they arrived.
     fn poll_sealed(&mut self) -> bool {
@@ -157,8 +146,10 @@ pub struct MicrovmPortb {
 
 impl MicrovmPortb {
     /// Creates a portb console using `io` as its host endpoint, with the NVX
-    /// time ABI v1 configuration `time_abi`: restore packet version 4 and the
-    /// time-sample window at port `0xeb`.
+    /// time ABI 2 configuration `time_abi`: restore packet version 5 and the
+    /// time-sample window at port `0xeb`, which stays empty until
+    /// [`Self::with_time_sample_source`] provides the host fields of its
+    /// samples.
     pub fn new(
         io: Box<dyn SerialIo>,
         generation_id: [u8; GENERATION_ID_SIZE],
@@ -166,7 +157,6 @@ impl MicrovmPortb {
     ) -> Self {
         let MicrovmPortbTimeAbi {
             generation,
-            utc_offset_ms,
             sample_delay_us,
             test_hooks,
             restore,
@@ -201,9 +191,9 @@ impl MicrovmPortb {
             input_gated: false,
             time_abi: PortbTimeAbi {
                 generation,
-                utc_offset_ns: i128::from(utc_offset_ms) * 1_000_000,
                 sample_delay: std::time::Duration::from_micros(sample_delay_us.into()),
                 test_hooks,
+                source: None,
                 restore,
                 packet_selected,
             },
@@ -215,8 +205,14 @@ impl MicrovmPortb {
         }
     }
 
-    /// Handles selector `0xa5`: encodes the sealed packet with host UTC at
-    /// its first selection, then selects it.
+    /// Installs the platform's source of the host fields of time samples.
+    pub fn with_time_sample_source(mut self, source: Arc<dyn TimeSampleSource>) -> Self {
+        self.time_abi.source = Some(source);
+        self
+    }
+
+    /// Handles selector `0xa5`: encodes the sealed packet at its first
+    /// selection, then selects it.
     fn select_restore_packet(&mut self) {
         let time_abi = &mut self.time_abi;
         if time_abi.poll_sealed() {
@@ -228,11 +224,7 @@ impl MicrovmPortb {
             if let Some(selected) = time_abi.packet_selected.take() {
                 selected.send(());
             }
-            let packet = RestorePacketV4 {
-                base,
-                time,
-                utc_ns: time_abi.latch_utc_ns(),
-            };
+            let packet = RestorePacketV5 { base, time };
             match packet.encode() {
                 Ok(bytes) => self.restore_packet = bytes.into(),
                 Err(error) => {
@@ -251,14 +243,27 @@ impl MicrovmPortb {
         }
     }
 
-    /// Handles selector `0xa7`: latches a fresh time sample into the window.
+    /// Handles selector `0xa7`: latches a fresh time sample into the window,
+    /// or empties the window if the platform cannot take one.
     fn latch_time_sample(&mut self) {
-        let sample = TimeSample {
-            test_hooks: self.time_abi.test_hooks,
-            generation: self.time_abi.generation,
-            utc_ns: self.time_abi.latch_utc_ns(),
+        let time_abi = &self.time_abi;
+        if !time_abi.sample_delay.is_zero() {
+            std::thread::sleep(time_abi.sample_delay);
+        }
+        let host = time_abi.source.as_ref().and_then(|source| source.sample());
+        self.time_window = match host {
+            Some(host) => TimeSample {
+                test_hooks: time_abi.test_hooks,
+                generation: time_abi.generation,
+                host,
+            }
+            .encode()
+            .into(),
+            None => {
+                tracelimit::error_ratelimited!("microVM time sample is unavailable");
+                VecDeque::new()
+            }
         };
-        self.time_window = sample.encode().into();
     }
 
     fn clear_restore_packet(&mut self) {
@@ -884,6 +889,9 @@ impl SaveRestore for MicrovmSnapshotRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chipset_resources::microvm_time::HostClockStatus;
+    use chipset_resources::microvm_time::HostTimeFields;
+    use chipset_resources::microvm_time::TIME_SAMPLE_LEN;
     use futures::AsyncRead;
     use futures::AsyncWrite;
     use futures::FutureExt;
@@ -893,7 +901,6 @@ mod tests {
     use serial_core::serial_io::Connected;
     use std::io;
     use std::pin::Pin;
-    use std::sync::Arc;
     use std::task::Context;
     use std::task::Poll;
     use test_with_tracing::test;
@@ -905,7 +912,6 @@ mod tests {
     ) -> MicrovmPortbTimeAbi {
         MicrovmPortbTimeAbi {
             generation: 7,
-            utc_offset_ms: 0,
             sample_delay_us: 0,
             test_hooks: true,
             restore,
@@ -1319,7 +1325,7 @@ mod tests {
             IoResult::Ok
         ));
         let bytes = read_record(&mut restored, DATA_PORT, base.encoded_len());
-        assert_eq!(RestorePacketV4::decode(&bytes).unwrap().base, base);
+        assert_eq!(RestorePacketV5::decode(&bytes).unwrap().base, base);
     }
 
     #[test]
@@ -1348,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_packet_v4_advertises_its_targets() {
+    fn restore_packet_v5_advertises_its_targets() {
         let range = chipset_resources::microvm_time::RestoreMemoryRange {
             gpa_start: 0x2000_0000,
             length: 0x2000_0000,
@@ -1410,7 +1416,7 @@ mod tests {
                 IoResult::Ok
             ));
             let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
-            assert_eq!(RestorePacketV4::decode(&bytes).unwrap().base, base);
+            assert_eq!(RestorePacketV5::decode(&bytes).unwrap().base, base);
             // Reading the whole packet clears every target.
             assert_eq!(
                 read_status(&mut portb),
@@ -1463,16 +1469,42 @@ mod tests {
         bytes
     }
 
-    fn now_ns() -> u64 {
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
+    /// A time sample source that returns its host fields with a count of the
+    /// samples taken in the disruption counter.
+    struct FakeSource {
+        host: Option<HostTimeFields>,
+        samples: Mutex<u32>,
     }
+
+    impl TimeSampleSource for FakeSource {
+        fn sample(&self) -> Option<HostTimeFields> {
+            let mut samples = self.samples.lock();
+            *samples += 1;
+            self.host.map(|host| HostTimeFields {
+                disruption: *samples,
+                ..host
+            })
+        }
+    }
+
+    const HOST_FIELDS: HostTimeFields = HostTimeFields {
+        utc_ns: 1_700_000_000_123_456_789,
+        tsc: 0x1234_5678_9abc,
+        pairing_ns: 640,
+        status: HostClockStatus::Synchronized,
+        disruption: 0,
+        correction: -12 * 65_536,
+        correction_bound: Some(66),
+        max_error_us: Some(2_000),
+    };
 
     #[test]
     fn time_abi_portb_cold_boot_offers_time_samples() {
-        let mut portb = time_abi_portb(None);
+        let source = Arc::new(FakeSource {
+            host: Some(HOST_FIELDS),
+            samples: Mutex::new(0),
+        });
+        let mut portb = time_abi_portb(None).with_time_sample_source(source.clone());
         assert_eq!(portb.get_static_regions()[0].1, 0xe9..=0xeb);
         assert_eq!(
             read_status(&mut portb),
@@ -1487,15 +1519,23 @@ mod tests {
 
         // The window is empty until a sample is latched.
         assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
-        let before = now_ns();
+        assert_eq!(*source.samples.lock(), 0);
         assert!(matches!(
             portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
             IoResult::Ok
         ));
-        let after = now_ns();
-        let sample = TimeSample::decode(&read_record(&mut portb, TIME_WINDOW_PORT, 16)).unwrap();
-        assert_eq!((sample.generation, sample.test_hooks), (7, true));
-        assert!((before..=after).contains(&sample.utc_ns));
+        let bytes = read_record(&mut portb, TIME_WINDOW_PORT, TIME_SAMPLE_LEN);
+        assert_eq!(
+            TimeSample::decode(&bytes).unwrap(),
+            TimeSample {
+                test_hooks: true,
+                generation: 7,
+                host: HostTimeFields {
+                    disruption: 1,
+                    ..HOST_FIELDS
+                },
+            }
+        );
         // Reads past the end are zero, and selecting a sample keeps the
         // generation-ID selection.
         assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
@@ -1507,11 +1547,35 @@ mod tests {
             portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
             IoResult::Ok
         ));
+        assert_eq!(*source.samples.lock(), 2);
         assert_eq!(read_record(&mut portb, DATA_PORT, 16), TEST_GENERATION_ID);
     }
 
     #[test]
-    fn time_abi_portb_serves_restore_packet_v4() {
+    fn time_abi_portb_window_stays_empty_without_a_sample() {
+        let mut portb = time_abi_portb(None);
+        assert!(matches!(
+            portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
+            IoResult::Ok
+        ));
+        assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
+
+        // A sample the platform cannot take empties a latched window.
+        let source = Arc::new(FakeSource {
+            host: None,
+            samples: Mutex::new(0),
+        });
+        let mut portb = time_abi_portb(None).with_time_sample_source(source.clone());
+        assert!(matches!(
+            portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
+            IoResult::Ok
+        ));
+        assert_eq!(*source.samples.lock(), 1);
+        assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
+    }
+
+    #[test]
+    fn time_abi_portb_serves_restore_packet_v5() {
         let base = RestorePacketBase {
             online_vp_count: 2,
             memory_target: false,
@@ -1555,17 +1619,14 @@ mod tests {
             "selection is notified only at the first selection"
         );
 
-        let before = now_ns();
         assert!(matches!(
             portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
             IoResult::Ok
         ));
-        let after = now_ns();
         assert!(matches!(selected.now_or_never(), Some(Ok(()))));
         let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
-        let packet = RestorePacketV4::decode(&bytes).unwrap();
+        let packet = RestorePacketV5::decode(&bytes).unwrap();
         assert_eq!((packet.base, packet.time), (base, time));
-        assert!((before..=after).contains(&packet.utc_ns));
 
         // The packet is consumed once read.
         assert_eq!(
@@ -1605,7 +1666,11 @@ mod tests {
 
     #[test]
     fn time_abi_portb_window_is_not_saved() {
-        let mut portb = time_abi_portb(None);
+        let source = Arc::new(FakeSource {
+            host: Some(HOST_FIELDS),
+            samples: Mutex::new(0),
+        });
+        let mut portb = time_abi_portb(None).with_time_sample_source(source);
         assert!(matches!(
             portb.io_write(STATUS_PORT, &[TIME_SAMPLE_SELECT]),
             IoResult::Ok
