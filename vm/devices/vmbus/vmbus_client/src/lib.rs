@@ -1041,8 +1041,6 @@ impl ClientTask {
         for action in sink.actions {
             self.handle_action(action, &mut outcome);
         }
-        self.runtime_channels
-            .retain(|channel_id, _| self.core.channels().contains_key(channel_id));
         outcome
     }
 
@@ -1123,6 +1121,9 @@ impl ClientTask {
                         revoke_send.send(());
                     }
                 }
+            }
+            Action::ChannelRemoved { channel_id } => {
+                self.runtime_channels.remove(&channel_id);
             }
             Action::ChannelObservable { channel_id, event } => {
                 if let Some(channel) = self.runtime_channels.get(&channel_id) {
@@ -2396,6 +2397,11 @@ mod tests {
                 teardown_queued: false,
             }],
             pending_messages: vec![saved_state::PendingMessage { data: vec![0xff] }],
+            modify_connection_pending: true,
+            hvsock_requests: vec![saved_state::PendingHvsockRequest {
+                service_id: Guid::ZERO,
+                endpoint_id: Guid::ZERO,
+            }],
         };
 
         assert!(client.restore(state).await.unwrap().is_none());
@@ -2403,6 +2409,8 @@ mod tests {
         assert!(restored.channels.is_empty());
         assert!(restored.gpadls.is_empty());
         assert!(restored.pending_messages.is_empty());
+        assert!(!restored.modify_connection_pending);
+        assert!(restored.hvsock_requests.is_empty());
     }
 
     #[async_test]
@@ -2824,70 +2832,78 @@ mod tests {
 
     #[async_test]
     async fn test_modify_connection_save_start_keeps_response_correlation(driver: DefaultDriver) {
-        let (mut server, mut client) = test_init(&driver);
-        server.connect(&mut client).await;
-        let request = ModifyConnectionRequest {
-            monitor_page: Some(MonitorPageGpas {
-                child_to_parent: 5,
-                parent_to_child: 6,
-            }),
-        };
-        let first = client
-            .access
-            .client_request_send
-            .call(ClientRequest::Modify, request);
-        check_message(
-            server.next().await.unwrap(),
-            protocol::ModifyConnection::from(request),
-        );
+        for restore in [false, true] {
+            let (mut server, mut client) = test_init(&driver);
+            server.connect(&mut client).await;
+            let request = ModifyConnectionRequest {
+                monitor_page: Some(MonitorPageGpas {
+                    child_to_parent: 5,
+                    parent_to_child: 6,
+                }),
+            };
+            let first = client
+                .access
+                .client_request_send
+                .call(ClientRequest::Modify, request);
+            check_message(
+                server.next().await.unwrap(),
+                protocol::ModifyConnection::from(request),
+            );
 
-        // PauseResponse does not drain an asynchronous connection modification.
-        server.stop_client(&mut client).await;
-        let _saved = client.save().await;
-        assert_eq!(
-            first.await.unwrap(),
-            ConnectionState::FAILED_UNKNOWN_FAILURE
-        );
-        server.start_client(&mut client).await;
+            // PauseResponse does not drain an asynchronous connection modification.
+            server.stop_client(&mut client).await;
+            let saved = client.save().await;
+            assert_eq!(
+                first.await.unwrap(),
+                ConnectionState::FAILED_UNKNOWN_FAILURE
+            );
+            if restore {
+                let saved = mesh::payload::decode(&mesh::payload::encode(saved)).unwrap();
+                let builder = client.sever().await;
+                client = builder.build(&driver);
+                client.restore(saved).await.unwrap();
+            }
+            server.start_client(&mut client).await;
 
-        let second = client
-            .access
-            .client_request_send
-            .call(ClientRequest::Modify, ModifyConnectionRequest::default());
-        let unexpected_post = async {
-            let message = server.next().await.unwrap();
-            panic!("posted a new modify before consuming the old response: {message:?}");
-        };
-        assert_eq!(
-            (second, unexpected_post).race().await.unwrap(),
-            ConnectionState::FAILED_UNKNOWN_FAILURE
-        );
+            let second = client
+                .access
+                .client_request_send
+                .call(ClientRequest::Modify, ModifyConnectionRequest::default());
+            let unexpected_post = async {
+                let message = server.next().await.unwrap();
+                panic!("posted a new modify before consuming the old response: {message:?}");
+            };
+            assert_eq!(
+                (second, unexpected_post).race().await.unwrap(),
+                ConnectionState::FAILED_UNKNOWN_FAILURE
+            );
 
-        server.send(in_msg(
-            MessageType::MODIFY_CONNECTION_RESPONSE,
-            protocol::ModifyConnectionResponse {
-                connection_state: ConnectionState::FAILED_LOW_RESOURCES,
-            },
-        ));
-        // Drain the late response before retrying the modification.
-        server.stop_client(&mut client).await;
-        server.start_client(&mut client).await;
+            server.send(in_msg(
+                MessageType::MODIFY_CONNECTION_RESPONSE,
+                protocol::ModifyConnectionResponse {
+                    connection_state: ConnectionState::FAILED_LOW_RESOURCES,
+                },
+            ));
+            // Drain the late response before retrying the modification.
+            server.stop_client(&mut client).await;
+            server.start_client(&mut client).await;
 
-        let third = client
-            .access
-            .client_request_send
-            .call(ClientRequest::Modify, request);
-        check_message(
-            server.next().await.unwrap(),
-            protocol::ModifyConnection::from(request),
-        );
-        server.send(in_msg(
-            MessageType::MODIFY_CONNECTION_RESPONSE,
-            protocol::ModifyConnectionResponse {
-                connection_state: ConnectionState::SUCCESSFUL,
-            },
-        ));
-        assert_eq!(third.await.unwrap(), ConnectionState::SUCCESSFUL);
+            let third = client
+                .access
+                .client_request_send
+                .call(ClientRequest::Modify, request);
+            check_message(
+                server.next().await.unwrap(),
+                protocol::ModifyConnection::from(request),
+            );
+            server.send(in_msg(
+                MessageType::MODIFY_CONNECTION_RESPONSE,
+                protocol::ModifyConnectionResponse {
+                    connection_state: ConnectionState::SUCCESSFUL,
+                },
+            ));
+            assert_eq!(third.await.unwrap(), ConnectionState::SUCCESSFUL);
+        }
     }
 
     #[async_test]
@@ -2925,6 +2941,132 @@ mod tests {
 
         let result = resp.await;
         assert!(result.is_none());
+    }
+
+    #[async_test]
+    async fn test_hvsock_cancelled_response_keeps_ownership(driver: DefaultDriver) {
+        for restore in [false, true] {
+            for late_success in [false, true] {
+                let (mut server, mut client) = test_init(&driver);
+                let mut connection = server.connect(&mut client).await;
+                let request = HvsockConnectRequest {
+                    service_id: Guid::new_random(),
+                    endpoint_id: Guid::new_random(),
+                    silo_id: Guid::ZERO,
+                    hosted_silo_unaware: false,
+                };
+                let message = protocol::TlConnectRequest2::from(request);
+                let first = client.access().connect_hvsock(request);
+                check_message(server.next().await.unwrap(), message);
+
+                server.stop_client(&mut client).await;
+                let saved = client.save().await;
+                assert!(first.await.is_none());
+                if restore {
+                    let saved = mesh::payload::decode(&mesh::payload::encode(saved)).unwrap();
+                    let builder = client.sever().await;
+                    client = builder.build(&driver);
+                    connection = client.restore(saved).await.unwrap().unwrap();
+                }
+                server.start_client(&mut client).await;
+
+                let second = client.access().connect_hvsock(request);
+                let unexpected_post = async {
+                    let message = server.next().await.unwrap();
+                    panic!("reused an hvsock key before consuming the old response: {message:?}");
+                };
+                assert!((second, unexpected_post).race().await.is_none());
+                let mut offer = protocol::OfferChannel {
+                    interface_id: request.service_id,
+                    instance_id: request.endpoint_id,
+                    channel_id: ChannelId(70),
+                    flags: OfferFlags::new().with_tlnpi_provider(true),
+                    ..FromZeros::new_zeroed()
+                };
+                if late_success {
+                    server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                } else {
+                    server.send(in_msg(
+                        MessageType::TL_CONNECT_REQUEST_RESULT,
+                        protocol::TlConnectResult {
+                            service_id: request.service_id,
+                            endpoint_id: request.endpoint_id,
+                            status: protocol::STATUS_CONNECTION_REFUSED,
+                        },
+                    ));
+                }
+
+                // This offer fences delivery of the late reply without using a timer.
+                let sentinel = protocol::OfferChannel {
+                    channel_id: ChannelId(72),
+                    ..FromZeros::new_zeroed()
+                };
+                server.send(in_msg(MessageType::OFFER_CHANNEL, sentinel));
+                assert_eq!(
+                    connection.offer_recv.next().await.unwrap().offer.channel_id,
+                    sentinel.channel_id
+                );
+                if late_success {
+                    check_message(
+                        server.next().await.unwrap(),
+                        protocol::RelIdReleased {
+                            channel_id: offer.channel_id,
+                        },
+                    );
+                }
+
+                let third = client.access().connect_hvsock(request);
+                check_message(server.next().await.unwrap(), message);
+                offer.channel_id = ChannelId(71);
+                server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                assert_eq!(third.await.unwrap().offer.channel_id, offer.channel_id);
+            }
+        }
+    }
+
+    #[async_test]
+    async fn test_released_channel_can_be_reoffered(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let mut connection = server.get_channels(&mut client, 2).await;
+        let channel = connection.offers.remove(0);
+        let offer = channel.offer;
+        drop(channel);
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: offer.channel_id,
+            },
+        ));
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased {
+                channel_id: offer.channel_id,
+            },
+        );
+        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+        let reoffered = connection.offer_recv.next().await.unwrap();
+        assert_eq!(reoffered.offer.channel_id, offer.channel_id);
+
+        let other = &connection.offers[0];
+        let modify = other.request_send.call(
+            ChannelRequest::Modify,
+            ModifyRequest::TargetVp { target_vp: 3 },
+        );
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyChannel {
+                channel_id: other.offer.channel_id,
+                target_vp: 3,
+            },
+        );
+        server.send(in_msg(
+            MessageType::MODIFY_CHANNEL_RESPONSE,
+            protocol::ModifyChannelResponse {
+                channel_id: other.offer.channel_id,
+                status: protocol::STATUS_SUCCESS,
+            },
+        ));
+        assert_eq!(modify.await.unwrap(), protocol::STATUS_SUCCESS);
     }
 
     #[async_test]
