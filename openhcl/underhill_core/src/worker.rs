@@ -3495,7 +3495,11 @@ async fn new_underhill_vm(
             let mut vpci_filter = vmbus_client::filter::FilterDefinition::new("vpci")
                 .by_interface(guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F"));
 
-            if enable_vpci_relay {
+            // Isolated guests may only see VPCI devices that pass the relay's
+            // allowlist, so their VPCI offers never fall through to the generic
+            // relay below, even when the VPCI relay isn't running.
+            let filter_vpci = enable_vpci_relay || isolation.is_isolated();
+            if filter_vpci {
                 filter.add(&mut vpci_filter);
             }
 
@@ -3605,6 +3609,13 @@ async fn new_underhill_vm(
                 })?;
 
                 vpci_relay = Some(relay);
+            } else if filter_vpci {
+                tracing::warn!(
+                    CVM_ALLOWED,
+                    "VPCI relay is not running, so VPCI devices will not be offered to the guest"
+                );
+                // Releasing the filtered offers rejects current and future ones.
+                drop(vpci_filter.take());
             }
 
             let mut intercept_list = Vec::new();
