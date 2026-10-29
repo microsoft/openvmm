@@ -1206,6 +1206,7 @@ mod tests {
     fn unsupported_open_flags_do_not_change_files() {
         let env = TestEnv::new();
         env.create_file("file", "unchanged");
+        let original_stat = env.volume.lstat("file").unwrap();
         for unsupported in [
             lx::O_PATH,
             lx::O_NOCTTY,
@@ -1223,6 +1224,7 @@ mod tests {
                     Some(LxCreateOptions::default()),
                 );
                 assert_eq!(result.err().unwrap(), lx::Error::EINVAL);
+                assert_eq!(env.volume.lstat("file").unwrap(), original_stat);
             }
         }
         assert_eq!(
