@@ -272,6 +272,46 @@ pub fn saved_state_roots() -> impl Iterator<Item = &'static MessageDescription<'
     private::SAVED_STATE_ROOTS.iter().flatten().copied()
 }
 
+// For `save_restore_derive`
+#[doc(hidden)]
+pub mod private {
+    pub use linkme;
+    pub use mesh::payload::protofile;
+
+    // Use Option<&X> in case the linker inserts some stray nulls, as we think
+    // it might on Windows.
+    //
+    // See <https://devblogs.microsoft.com/oldnewthing/20181108-00/?p=100165>.
+    #[linkme::distributed_slice]
+    pub static SAVED_STATE_ROOTS: [Option<&'static protofile::MessageDescription<'static>>] = [..];
+
+    // Always have at least one entry to work around linker bugs.
+    //
+    // See <https://github.com/llvm/llvm-project/issues/65855>.
+    #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
+    static WORKAROUND: Option<&'static protofile::MessageDescription<'static>> = None;
+
+    #[doc(hidden)]
+    #[macro_export]
+    macro_rules! declare_saved_state_root {
+        ($ident:ty) => {
+            impl $crate::save_restore::SavedStateRoot for $ident {
+                fn do_not_impl_this_manually(&self) {}
+            }
+            const _: () = {
+                use $crate::save_restore::private::SAVED_STATE_ROOTS;
+                use $crate::save_restore::private::linkme;
+                use $crate::save_restore::private::protofile;
+
+                #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
+                #[linkme(crate = linkme)]
+                static DESCRIPTION: Option<&'static protofile::MessageDescription<'static>> =
+                    Some(&protofile::message_description::<$ident>());
+            };
+        };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,45 +389,5 @@ mod tests {
             ));
             assert_eq!(device.0, 7);
         });
-    }
-}
-
-// For `save_restore_derive`
-#[doc(hidden)]
-pub mod private {
-    pub use linkme;
-    pub use mesh::payload::protofile;
-
-    // Use Option<&X> in case the linker inserts some stray nulls, as we think
-    // it might on Windows.
-    //
-    // See <https://devblogs.microsoft.com/oldnewthing/20181108-00/?p=100165>.
-    #[linkme::distributed_slice]
-    pub static SAVED_STATE_ROOTS: [Option<&'static protofile::MessageDescription<'static>>] = [..];
-
-    // Always have at least one entry to work around linker bugs.
-    //
-    // See <https://github.com/llvm/llvm-project/issues/65855>.
-    #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
-    static WORKAROUND: Option<&'static protofile::MessageDescription<'static>> = None;
-
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! declare_saved_state_root {
-        ($ident:ty) => {
-            impl $crate::save_restore::SavedStateRoot for $ident {
-                fn do_not_impl_this_manually(&self) {}
-            }
-            const _: () = {
-                use $crate::save_restore::private::SAVED_STATE_ROOTS;
-                use $crate::save_restore::private::linkme;
-                use $crate::save_restore::private::protofile;
-
-                #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
-                #[linkme(crate = linkme)]
-                static DESCRIPTION: Option<&'static protofile::MessageDescription<'static>> =
-                    Some(&protofile::message_description::<$ident>());
-            };
-        };
     }
 }

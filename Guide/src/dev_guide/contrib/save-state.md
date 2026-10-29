@@ -33,23 +33,19 @@ Here are the principles you must maintain when adding new save & restore code:
 
 ### Synchronous and asynchronous implementations
 
-Implement `vmcore::save_restore::SaveRestore` when your state can be saved and
-restored synchronously. If either operation must await a task or I/O, implement
-`AsyncSaveRestore` instead. Both traits use an associated `SavedState` type;
-asynchronous devices do not need to encode or decode protobuf blobs themselves.
+Use `vmcore::save_restore::SaveRestore` unless saving or restoring needs to wait
+for I/O or another task. In that case, implement `AsyncSaveRestore` instead.
+Both use an associated `SavedState` type; protobuf encoding is handled for you.
 
-Chipset lifecycle callers use the object-safe `AsyncProtobufSaveRestore` trait.
-Blanket implementations adapt `SaveRestore` to `AsyncSaveRestore`, then adapt
-`AsyncSaveRestore` to `AsyncProtobufSaveRestore`. Existing synchronous devices
-therefore need no changes, provided the device and saved state satisfy the
-adapters' `Send` and protobuf bounds. Nested synchronous helpers can continue
-using `SaveRestore` and `ProtobufSaveRestore`.
+Chipset code uses `AsyncProtobufSaveRestore` to call either kind of device.
+The provided implementations connect the traits, so existing synchronous
+devices and helpers can stay as they are. See the trait definitions for the
+required `Send` and protobuf bounds.
 
-To convert an existing device to native async save/restore, replace its
-`SaveRestore` implementation with `AsyncSaveRestore`; a type cannot implement
-both because of the blanket adapter. Keep the saved state type and protobuf
-fields unchanged. Each async operation must complete its work, including any
-fallible task communication, before returning.
+When converting a device, replace its `SaveRestore` implementation with
+`AsyncSaveRestore`; don't implement both. Keep the saved state type and protobuf
+fields unchanged. Finish the work before `save` or `restore` returns, so errors
+reach the caller rather than surfacing later when the device starts.
 
 ### Updating (Extending) Saved State
 
