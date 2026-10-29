@@ -270,6 +270,7 @@ mod tests {
         utc_offset_ms: 0,
         sample_delay_us: 0,
         host_cpu_unknown: false,
+        host_rate_offset_ppm: 0,
     };
 
     #[test]

@@ -68,6 +68,76 @@ pub fn pair_host_sample(bracket: HostTscBracket, tsc_hz: u64) -> Option<(u64, u6
     Some((host_tsc, cycles_to_ns_ceil(half_width, tsc_hz)))
 }
 
+/// Guest TSC reads that a backend's offset measurement tries.
+pub const OFFSET_ATTEMPTS: usize = 8;
+
+/// An offset measurement this tight, in cycles, ends the reads early.
+pub const OFFSET_TARGET_CYCLES: u64 = 2_000;
+
+/// The offset of a guest's TSC from the host TSC that this process reads.
+///
+/// The guest TSC is never scaled, so the offset holds until the VMM writes a
+/// guest TSC again, or stops and resumes partition time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuestTscOffset {
+    /// The guest TSC is the host TSC plus this offset, wrapping.
+    pub offset: u64,
+    /// The most the true offset can differ from `offset`, in cycles.
+    pub uncertainty: u64,
+}
+
+impl GuestTscOffset {
+    /// Returns the guest TSC at the host TSC `host_tsc`.
+    pub fn guest_tsc(&self, host_tsc: u64) -> u64 {
+        host_tsc.wrapping_add(self.offset)
+    }
+
+    /// Returns the offset of a guest TSC that was `guest_tsc` within
+    /// `bracket`, or `None` if the host TSC went backwards.
+    pub fn from_bracket(guest_tsc: u64, bracket: HostTscBracket) -> Option<Self> {
+        let (host_tsc, uncertainty) = bracket.midpoint()?;
+        Some(Self {
+            offset: guest_tsc.wrapping_sub(host_tsc),
+            uncertainty,
+        })
+    }
+
+    /// Returns whether `other` can be the same offset, within both
+    /// uncertainties.
+    pub fn agrees_with(&self, other: &Self) -> bool {
+        // The offsets wrap, so their difference is the shorter way round.
+        let difference = self.offset.wrapping_sub(other.offset) as i64;
+        difference.unsigned_abs() <= self.uncertainty.saturating_add(other.uncertainty)
+    }
+
+    /// Measures the offset of a guest TSC that `read` returns, reading it
+    /// between two host TSC reads up to `attempts` times, and keeps the
+    /// tightest reading. It stops early at an uncertainty of `target` cycles.
+    /// Returns `None` if the host TSC went backwards around every read.
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    pub fn measure<E>(
+        attempts: usize,
+        target: u64,
+        mut read: impl FnMut() -> Result<u64, E>,
+    ) -> Result<Option<Self>, E> {
+        let mut tightest: Option<Self> = None;
+        for _ in 0..attempts {
+            let (bracket, guest_tsc) = HostTscBracket::around(&mut read);
+            let Some(candidate) = Self::from_bracket(guest_tsc?, bracket) else {
+                continue;
+            };
+            if tightest.is_none_or(|tightest| candidate.uncertainty < tightest.uncertainty) {
+                tightest = Some(candidate);
+            }
+            if candidate.uncertainty <= target {
+                break;
+            }
+        }
+        Ok(tightest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,4 +172,61 @@ mod tests {
         assert!(bracket.end >= bracket.start, "{bracket:?}");
     }
 
+    #[test]
+    fn offsets_pair_the_guest_tsc_with_the_bracket_midpoint() {
+        let bracket = HostTscBracket {
+            start: 1_000,
+            end: 1_010,
+        };
+        let offset = GuestTscOffset::from_bracket(5_000, bracket).unwrap();
+        assert_eq!(
+            offset,
+            GuestTscOffset {
+                offset: 3_995,
+                uncertainty: 5
+            }
+        );
+        assert_eq!(offset.guest_tsc(2_005), 6_000);
+        // A guest TSC below the host TSC wraps.
+        let behind = GuestTscOffset::from_bracket(5, bracket).unwrap();
+        assert_eq!(behind.guest_tsc(1_005), 5);
+        assert_eq!(
+            GuestTscOffset::from_bracket(0, HostTscBracket { start: 10, end: 9 }),
+            None
+        );
+    }
+
+    #[test]
+    fn offsets_agree_within_their_uncertainties() {
+        let offset = |offset: u64, uncertainty| GuestTscOffset {
+            offset,
+            uncertainty,
+        };
+        assert!(offset(1_000, 5).agrees_with(&offset(1_010, 5)));
+        assert!(!offset(1_000, 5).agrees_with(&offset(1_011, 5)));
+        assert!(offset(0, 0).agrees_with(&offset(0, 0)));
+        // Across the wrap.
+        assert!(offset(u64::MAX, 1).agrees_with(&offset(0, 0)));
+        assert!(!offset(u64::MAX - 1, 0).agrees_with(&offset(1, 1)));
+    }
+
+    // xtask-fmt allow-target-arch cpu-intrinsic
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn measurement_keeps_the_tightest_reading() {
+        // A guest TSC that runs one million cycles ahead of the host TSC.
+        let read = || Ok::<_, ()>(safe_intrinsics::rdtsc().wrapping_add(1_000_000));
+        let offset = GuestTscOffset::measure(8, 0, read).unwrap().unwrap();
+        // The read lies between the two host reads, so the offset is within
+        // the uncertainty of one million cycles.
+        assert!(
+            offset.agrees_with(&GuestTscOffset {
+                offset: 1_000_000,
+                uncertainty: 0
+            }),
+            "{offset:?}"
+        );
+        assert_eq!(GuestTscOffset::measure(4, 0, || Err::<u64, _>(7)), Err(7));
+        assert_eq!(GuestTscOffset::measure(0, 0, read), Ok(None));
+    }
 }
