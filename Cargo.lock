@@ -6581,6 +6581,7 @@ dependencies = [
  "smallbox",
  "socket2",
  "tempfile",
+ "test_with_tracing",
  "unicycle",
  "unix_socket",
  "windows-result 0.4.0",

@@ -18,6 +18,7 @@ use pal::windows::pipe::Disposition;
 use pal::windows::pipe::FILE_PIPE_DISCONNECTED;
 use pal::windows::pipe::FILE_PIPE_READ_READY;
 use pal::windows::pipe::FILE_PIPE_WRITE_READY;
+use pal::windows::pipe::PipeEventControl;
 use pal::windows::pipe::PipeExt;
 use pal::windows::pipe::PipeMode;
 use pal::windows::pipe::new_named_pipe;
@@ -54,6 +55,7 @@ pub struct PolledPipe {
     wakers: MultiWaker<SLOT_COUNT>,
     file: File,
     _event: Event,
+    event_control: PipeEventControl,
     message_mode: bool,
     out_buffer_size: u32,
     events: u32,
@@ -104,6 +106,7 @@ impl PolledPipe {
 
         let event = Event::new();
         let wait = driver.new_dyn_wait(event.as_handle().as_raw_handle())?;
+        let mut event_control = PipeEventControl::new();
 
         let mut mode = PIPE_NOWAIT;
         if message_mode {
@@ -111,16 +114,17 @@ impl PolledPipe {
         }
         file.set_pipe_mode(mode)?;
 
+        let mut events = FILE_PIPE_READ_READY | FILE_PIPE_WRITE_READY;
         match file.set_pipe_select_event(
             &event,
             FILE_PIPE_READ_READY | FILE_PIPE_WRITE_READY | FILE_PIPE_DISCONNECTED,
+            &mut event_control,
         ) {
             Ok(()) => {}
             Err(err) if err.raw_os_error() == Some(ERROR_PIPE_NOT_CONNECTED as i32) => {
-                // The event could not be registered since the pipe has already
-                // disconnected. This is fine to ignore since the event state
-                // starts as read+write ready, and reads and writes will both
-                // return failures.
+                // The peer closed before registration, so no event will
+                // signal closure.
+                events |= FILE_PIPE_DISCONNECTED;
             }
             Err(err) => return Err(err),
         }
@@ -130,19 +134,16 @@ impl PolledPipe {
             wait,
             wakers: MultiWaker::new(),
             _event: event,
+            event_control,
             message_mode,
             out_buffer_size,
-            events: FILE_PIPE_READ_READY | FILE_PIPE_WRITE_READY,
+            events,
         })
     }
 
     /// Polls the pipe for entering the closing state, where the client has
     /// closed its handle.
     pub fn poll_closing(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        if self.file.is_pipe_peer_closed()? {
-            return Poll::Ready(Ok(()));
-        }
-        self.refresh_events()?;
         while self.events & FILE_PIPE_DISCONNECTED == 0 {
             ready!(
                 self.wakers
@@ -167,7 +168,7 @@ impl PolledPipe {
     /// Refreshes the current event state from the pipe.
     fn refresh_events(&mut self) -> io::Result<()> {
         // Capture the current event state.
-        self.events = self.file.get_pipe_select_events()?;
+        self.events = self.file.get_pipe_select_events(&mut self.event_control)?;
         Ok(())
     }
 }
