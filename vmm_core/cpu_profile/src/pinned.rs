@@ -6,15 +6,19 @@
 //! `pinned_data.rs` holds every pinned profile as Rust constants: its values,
 //! its canonical encoding, and its golden digest. The `generate_pinned`
 //! example generates the file from `profiles/<id>.json`. An OpenVMM start
-//! therefore neither parses JSON nor hashes: the first use of a profile
-//! copies its constants into a [`CpuProfile`], and snapshot records use the
-//! precomputed encoding and digest. The tests check every constant against
-//! the JSON files and the golden digests.
+//! therefore neither parses JSON nor hashes: the first use of a profile in a
+//! process copies its constants into a [`CpuProfile`] and verifies the profile
+//! and its encoding ([`PinnedProfile::verify`]), as a partition's CPU profile
+//! must be verified before the partition uses it, and snapshot records use the
+//! precomputed encoding and digest. The tests check every constant against the
+//! JSON files and the golden digests.
 
 use crate::Hex32;
 use crate::Hex64;
 use crate::cpuid::XsaveComponent;
 use crate::derive::KnownGeneration;
+use crate::error::ProfileError;
+use crate::error::ProfileErrorCode;
 use crate::profile::CpuProfile;
 use crate::profile::CpuidLeafValue;
 use crate::profile::PinnedMsr;
@@ -100,6 +104,34 @@ impl PinnedProfile {
             encoding: self.encoding.as_bytes(),
             digest: self.digest,
         }
+    }
+
+    /// Verifies `profile`, the profile that [`Self::to_profile`] copies from
+    /// these constants, as a cold boot or restore must verify its CPU profile
+    /// before a partition uses it: the profile is valid, with its density,
+    /// ownership masks, and CPU time bits, and `encoding`, which snapshots
+    /// embed, is its canonical encoding.
+    ///
+    /// A stale or malformed `pinned_data.rs` fails with `E_PROFILE_DIGEST`.
+    /// This encodes the profile but hashes nothing: `digest` is the profile's
+    /// identity, which the tests check against the golden digests, as they
+    /// check the static data against the reviewed JSON files.
+    pub(crate) fn verify(&self, profile: &CpuProfile) -> Result<(), ProfileError> {
+        let invalid = |message: String| {
+            ProfileError::new(
+                ProfileErrorCode::ProfileDigest,
+                format!("pinned CPU profile {} {message}", self.id),
+            )
+        };
+        profile
+            .validate()
+            .map_err(|message| invalid(format!("is invalid: {message}")))?;
+        if profile.encode() != self.encoding.as_bytes() {
+            return Err(invalid(
+                "differs from its constant canonical encoding".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 

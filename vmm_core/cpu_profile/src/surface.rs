@@ -17,7 +17,7 @@ use crate::unlisted::unlisted_cpuid_error;
 use crate::unlisted::unlisted_cpuid_violations;
 
 /// The register names, for messages.
-const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
+pub(crate) const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
 
 /// The CPU surface a backend supports on this host, which it reports through
 /// `supported_cpu_surface()` and which the CPU fingerprint records.
@@ -375,7 +375,7 @@ pub(crate) fn field_value(value: u32, shift: u32, width: u32) -> u32 {
 }
 
 /// Returns `bit 16 is` or `bits 3, 7 are`.
-fn bits_phrase(bits: u64) -> String {
+pub(crate) fn bits_phrase(bits: u64) -> String {
     let list = (0..64)
         .filter(|bit| bits & (1 << bit) != 0)
         .map(|bit| bit.to_string())
