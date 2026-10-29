@@ -44,7 +44,8 @@
 //!   never scaled: the backend never calls `KVM_SET_TSC_KHZ`, and `F_d` is
 //!   VP 0's `KVM_GET_TSC_KHZ`. The synchronized set writes one
 //!   `KVM_VCPU_TSC_OFFSET` (Linux 5.16 and later) to every vCPU, computed from
-//!   one host TSC read, and reads every offset back.
+//!   one host TSC read, and reads every offset back. VP 0's offset pairs the
+//!   guest TSC with host UTC in every time sample.
 //! - **LAPIC.** The in-kernel LAPIC timer counts KVM's fixed 1 GHz bus clock;
 //!   `KVM_CAP_X86_APIC_BUS_CYCLES_NS` is never set.
 //!
@@ -88,9 +89,11 @@ use virt::time_abi::msr::IDENTITY_MSR_RANGE;
 use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
+use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::rate::LAPIC_HZ_KVM;
 use virt::time_abi::surface::SupportedCpuSurface;
 use virt::time_abi::surface::SupportedMsrValue;
+use virt::time_abi::tsc::GuestTscOffset;
 use virt::time_abi::tsc::HostTscBracket;
 use virt::time_abi::tsc::pair_host_sample;
 use virt::x86::MsrError;
@@ -613,6 +616,7 @@ impl TimeAbiBackend for KvmPartitionInner {
         Ok(BackendPreflight {
             msr_route: IdentityMsrRoute::ExitToVmm,
             sync: TscSyncMethod::CommonOffset,
+            native_rate: NativeRateBasis::KernelKhz,
         })
     }
 
@@ -720,6 +724,21 @@ impl TimeAbiBackend for KvmPartitionInner {
             sample: paired.sample,
             readback,
             method: TscSyncMethod::CommonOffset,
+        })
+    }
+
+    fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
+        // Preflight verified that VP 0's TSC is the host TSC plus this
+        // offset, unscaled, so the offset is exact.
+        let offset = self.vp_kvm(VpIndex::BSP).tsc_offset().map_err(|err| {
+            TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                format!("cannot read VP 0's TSC offset: {err:#}"),
+            )
+        })?;
+        Ok(GuestTscOffset {
+            offset,
+            uncertainty: 0,
         })
     }
 }

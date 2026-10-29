@@ -8,7 +8,9 @@ use super::HostTimeSample;
 use super::RateCheck;
 use super::TimeAbiError;
 use super::TimeAbiTestHooks;
+use super::publish::NativeRateBasis;
 use super::rate;
+use super::tsc::GuestTscOffset;
 use crate::CpuidLeaf;
 use vm_topology::processor::VpIndex;
 
@@ -95,6 +97,17 @@ pub trait TimeAbiBackend: Send + Sync {
         &self,
         target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
     ) -> Result<TscSetReport, TimeAbiError>;
+
+    /// Returns the offset of VP 0's TSC from the host TSC that this process
+    /// reads, which pairs the guest TSC with host UTC in every time sample.
+    ///
+    /// Core calls it at every start of the VM, with all VPs stopped: after
+    /// every instantiated VP is bound, and after the TSC writes of a cold
+    /// boot, a restore's synchronized set, or a reset, and before any VP runs.
+    /// A backend that measures the offset reads VP 0's TSC between two host
+    /// TSC reads and keeps the tightest of a bounded number of reads. Fails
+    /// with `E_TSC_ANCHOR`.
+    fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError>;
 }
 
 /// How a backend delivers the identity MSR range to [`super::TimeAbiMsrs`].
@@ -125,6 +138,8 @@ pub struct BackendPreflight {
     pub msr_route: IdentityMsrRoute,
     /// The synchronized TSC set method.
     pub sync: TscSyncMethod,
+    /// What the backend reports as the native TSC rate.
+    pub native_rate: NativeRateBasis,
 }
 
 /// The largest accepted anchor pairing, in nanoseconds. A backend samples the
@@ -251,6 +266,10 @@ mod tests {
             &self,
             _target: &mut dyn FnMut(&HostTimeSample) -> Result<u64, TimeAbiError>,
         ) -> Result<TscSetReport, TimeAbiError> {
+            unreachable!()
+        }
+
+        fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
             unreachable!()
         }
     }

@@ -48,6 +48,11 @@
 //!   resumes explicitly before any VP runs, so the guest TSC runs from the
 //!   restore anchor. Every VP exists from partition creation, so no VP can be
 //!   created after the set.
+//! - **Guest TSC offset.** With partition time running, VP 0's TSC is the
+//!   host TSC plus a constant offset. The backend measures it at every start
+//!   by reading VP 0's TSC between two host TSC reads, after resuming
+//!   partition time, which a stop, a reset, and a new partition suspend; the
+//!   offset pairs the guest TSC with host UTC in every time sample.
 //!
 //! These semantics were measured on Windows Server 2025 bare metal (Xeon Gold
 //! 6138, Skylake-SP) and on Azure runners (Xeon Platinum 8370C and 8573C).
@@ -88,7 +93,11 @@ use virt::time_abi::identity::IDENTITY_CPUID_RANGE;
 use virt::time_abi::identity::IDENTITY_MAX_LEAF;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
+use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::tsc::GuestTscOffset;
+use virt::time_abi::tsc::OFFSET_ATTEMPTS;
+use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
 use virt::x86::topology::per_vp_cpuid_bits;
 use whp::abi::WHV_CPUID_OUTPUT;
 use whp::abi::WHV_EXTENDED_VM_EXITS;
@@ -1048,6 +1057,7 @@ impl TimeAbiBackend for WhpPartitionInner {
         Ok(BackendPreflight {
             msr_route: IdentityMsrRoute::ExitToVmm,
             sync: TscSyncMethod::FrozenWrite,
+            native_rate: NativeRateBasis::Hypervisor,
         })
     }
 
@@ -1195,6 +1205,38 @@ impl TimeAbiBackend for WhpPartitionInner {
             readback,
             method: TscSyncMethod::FrozenWrite,
         })
+    }
+
+    fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
+        self.time_abi_state()?;
+        // Partition time stays suspended after creation, a reset, or a stop
+        // until the partition starts, which resumes it before any VP runs.
+        // Resume it now, so that the guest TSC keeps the measured offset.
+        for (_, vtlp) in self.vtlps() {
+            vtlp.set_time_frozen(false);
+        }
+        let bsp = self.vtl0.whp.vp(VpIndex::BSP.index());
+        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
+            bsp.get_register(whp::Register64::Tsc)
+        })
+        .map_err(|err| {
+            TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                format!("cannot read the TSC of VP 0: {err}"),
+            )
+        })?
+        .ok_or_else(|| {
+            TimeAbiError::new(
+                TimeAbiCode::TscAnchor,
+                "the host TSC went backwards around every read of VP 0's TSC",
+            )
+        })?;
+        tracing::info!(
+            offset = format_args!("{:#x}", offset.offset),
+            uncertainty_cycles = offset.uncertainty,
+            "time ABI: guest TSC offset"
+        );
+        Ok(offset)
     }
 }
 
@@ -2991,5 +3033,27 @@ mod whp_tests {
         println!("bracket widths (ns): {widths:?}");
         let anchor = select_anchor(&candidates, MAX_ANCHOR_PAIRING_NS).unwrap();
         println!("pairing {} ns", anchor.pairing_ns);
+    }
+
+    #[test]
+    #[ignore = "requires WHP"]
+    fn guest_tsc_keeps_its_offset_from_the_host_tsc() {
+        let Some(Partition { partition, .. }) = partition(1) else {
+            return;
+        };
+        partition.resume_time().unwrap();
+        let bsp = partition.vp(0);
+        let measure = || {
+            GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
+                bsp.get_register(whp::Register64::Tsc)
+            })
+            .unwrap()
+            .unwrap()
+        };
+        let first = measure();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let second = measure();
+        println!("offsets: {first:x?}, {second:x?}");
+        assert!(first.agrees_with(&second), "{first:x?} {second:x?}");
     }
 }

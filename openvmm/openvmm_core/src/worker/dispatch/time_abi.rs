@@ -1991,6 +1991,10 @@ mod tests {
         ) -> Result<TscSetReport, TimeAbiError> {
             unreachable!()
         }
+
+        fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
+            unreachable!()
+        }
     }
 
     /// Runs the CPU checks of a partition of the test profile whose effective
