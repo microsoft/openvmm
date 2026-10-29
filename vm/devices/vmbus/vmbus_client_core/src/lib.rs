@@ -347,7 +347,7 @@ pub struct MonitorPageGpas {
 pub struct OpenChannelParams {
     /// Target VP for host-to-guest interrupts, or `None` to disable.
     pub target_vp: Option<u32>,
-    /// Byte offset into the ring GPADL where the host-to-guest ring
+    /// Page offset into the ring GPADL where the host-to-guest ring
     /// starts.
     pub ring_offset: u32,
     /// The ring buffer's GPADL id.
