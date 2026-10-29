@@ -491,6 +491,43 @@ mod test {
         guest.image.validate().unwrap();
     }
 
+    /// The SIVM manifests must be the CVM manifests plus a SIVM product
+    /// policy on the VBS configuration, so they can't drift apart.
+    #[test]
+    fn sivm_manifests_are_cvm_manifests_plus_vbs_policy() {
+        let pairs = [
+            (
+                include_str!("../../manifests/openhcl-x64-cvm-sivm-dev.json"),
+                include_str!("../../manifests/openhcl-x64-cvm-dev.json"),
+            ),
+            (
+                include_str!("../../manifests/openhcl-x64-cvm-sivm-release.json"),
+                include_str!("../../manifests/openhcl-x64-cvm-release.json"),
+            ),
+        ];
+        for (sivm, cvm) in pairs {
+            // Validates the policy against the manifest schema.
+            serde_json::from_str::<Config>(sivm).unwrap();
+
+            let mut sivm: serde_json::Value = serde_json::from_str(sivm).unwrap();
+            let vbs = sivm["guest_configs"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|guest| guest["isolation_type"].get("vbs").is_some())
+                .expect("no VBS config");
+            let policy = vbs["image"]["openhcl"]
+                .as_object_mut()
+                .unwrap()
+                .remove("product_policy");
+            assert!(policy.is_some(), "VBS config has no product policy");
+            assert_eq!(
+                sivm,
+                serde_json::from_str::<serde_json::Value>(cvm).unwrap()
+            );
+        }
+    }
+
     #[test]
     fn snp_linux_direct_required_resources_with_initrd() {
         let image = snp_linux_direct_image(true, 40960, 51);

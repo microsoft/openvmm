@@ -1687,22 +1687,27 @@ async fn new_underhill_vm(
     let uevent_listener =
         Arc::new(UeventListener::new(tp.driver(0)).context("failed to start uevent listener")?);
 
-    let use_mmio_hypercalls = dps.general.always_relay_host_mmio;
+    // Whether the hypervisor offers hypercall-based MMIO access. Only x86_64
+    // has a capability signal for this (CPUID) today.
     // TODO: Centralize cpuid based feature determination.
     #[cfg(guest_arch = "x86_64")]
-    let use_mmio_hypercalls = use_mmio_hypercalls
-        || isolation == virt::IsolationType::Vbs
-        || hardware_isolated && {
-            let result =
-                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
-            hvdef::HvEnlightenmentInformation::from(
-                result.eax as u128
-                    | (result.ebx as u128) << 32
-                    | (result.ecx as u128) << 64
-                    | (result.edx as u128) << 96,
-            )
-            .use_hypercall_for_mmio_access()
-        };
+    let host_mmio_hypercalls = {
+        let result =
+            safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+        hvdef::HvEnlightenmentInformation::from(
+            result.eax as u128
+                | (result.ebx as u128) << 32
+                | (result.ecx as u128) << 64
+                | (result.edx as u128) << 96,
+        )
+        .use_hypercall_for_mmio_access()
+    };
+    #[cfg(not(guest_arch = "x86_64"))]
+    let host_mmio_hypercalls = false;
+
+    let use_mmio_hypercalls =
+        dps.general.always_relay_host_mmio || isolation.is_isolated() && host_mmio_hypercalls;
+    tracing::info!(CVM_ALLOWED, use_mmio_hypercalls, "MMIO access mode");
 
     let boot_info = runtime_params.parsed_openhcl_boot();
 
@@ -1768,11 +1773,15 @@ async fn new_underhill_vm(
         with_vmbus_relay = !hide_isolation;
     }
 
-    // Default on for all isolated guests (VBS, SNP, TDX) so that only
-    // allow-listed devices are relayed to VTL0.
-    let enable_vpci_relay = env_cfg
-        .enable_vpci_relay
-        .unwrap_or(isolation.is_isolated() && !hide_isolation && with_vmbus_relay);
+    // Default on for isolated guests so that only allow-listed devices are
+    // relayed to VTL0. VBS guests can only reach a relayed device's config
+    // space through MMIO hypercalls, so require them there.
+    let enable_vpci_relay = env_cfg.enable_vpci_relay.unwrap_or(
+        !hide_isolation
+            && with_vmbus_relay
+            && (hardware_isolated
+                || (isolation == virt::IsolationType::Vbs && use_mmio_hypercalls)),
+    );
 
     if enable_vpci_relay && !with_vmbus_relay {
         anyhow::bail!("cannot run the VPCI relay without the VMBus relay");
@@ -3565,19 +3574,6 @@ async fn new_underhill_vm(
                     sub_system_id: None,
                 });
 
-                // Allow an SR-IOV enabled NVIDIA consumer GPU, matched by
-                // vendor, device, and revision ID.
-                relay.add_allowed_device(AllowedDevice {
-                    vendor_id: Some(0x10de),
-                    device_id: Some(0x2704),
-                    revision_id: Some(0xa1),
-                    prog_if: None,
-                    sub_class: None,
-                    base_class: Some(ClassCode::DISPLAY_CONTROLLER),
-                    sub_vendor_id: None,
-                    sub_system_id: None,
-                });
-
                 // Allow Azi HSM devices.
                 relay.add_allowed_device(AllowedDevice {
                     vendor_id: Some(pci_core::microsoft::VENDOR_ID), // Microsoft vendor ID
@@ -3589,6 +3585,24 @@ async fn new_underhill_vm(
                     sub_vendor_id: None,
                     sub_system_id: None,
                 });
+
+                // Allow devices from the measured product policy.
+                #[cfg(feature = "product_policy")]
+                measured_vtl2_info.measured_product_policy().sivm(|p| {
+                    for device in &p.allowed_pci_devices {
+                        relay.add_allowed_device(AllowedDevice {
+                            vendor_id: Some(device.vendor_id),
+                            device_id: device.device_id,
+                            revision_id: device.revision_id,
+                            prog_if: None,
+                            sub_class: None,
+                            base_class: None,
+                            sub_vendor_id: None,
+                            sub_system_id: None,
+                        });
+                    }
+                    Ok(())
+                })?;
 
                 vpci_relay = Some(relay);
             }

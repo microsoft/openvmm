@@ -6,8 +6,17 @@
 extern crate alloc;
 
 use super::*;
+use crate::sivm::AllowedPciDevice;
 use crate::sivm::SivmPolicy;
 use alloc::vec;
+
+fn nvidia_gpu() -> AllowedPciDevice {
+    AllowedPciDevice {
+        vendor_id: 0x10de,
+        device_id: Some(0x2704),
+        revision_id: Some(0xa1),
+    }
+}
 
 fn sample_sivm_policy() -> SivmPolicy {
     SivmPolicy {
@@ -16,6 +25,7 @@ fn sample_sivm_policy() -> SivmPolicy {
         require_secure_boot_vars: true,
         require_bcd_integrity: true,
         custom_uefi_json: vec![0xDE, 0xAD, 0xBE, 0xEF],
+        allowed_pci_devices: vec![nvidia_gpu()],
     }
 }
 
@@ -30,6 +40,24 @@ fn encode_decode_round_trip_nontrivial_sivm() {
     let bytes = encode_product_policy(&policy);
     let decoded = decode_product_policy(&bytes).unwrap();
     assert_eq!(decoded, policy);
+}
+
+/// The encoding is part of the launch measurement, so a policy without
+/// `allowed_pci_devices` must encode exactly as it did before that field existed.
+#[test]
+fn sivm_policy_without_pci_devices_keeps_its_encoding() {
+    let policy = ProductPolicy::Sivm(SivmPolicy {
+        require_ephemeral_vmgs: true,
+        require_secure_boot: true,
+        require_bcd_integrity: true,
+        custom_uefi_json: vec![0xDE, 0xAD],
+        ..Default::default()
+    });
+    let expected = [
+        0x08, 0x80, 0x98, 0xbd, 0x82, 0xc5, 0xe9, 0x90, 0xa4, 0x4f, 0x12, 0x0e, 0x0a, 0x0c, 0x0a,
+        0x0a, 0x08, 0x01, 0x10, 0x01, 0x20, 0x01, 0x2a, 0x02, 0xde, 0xad,
+    ];
+    assert_eq!(encode_product_policy(&policy), expected);
 }
 
 #[test]
@@ -93,7 +121,29 @@ mod serde_tests {
                 assert!(p.require_secure_boot_vars);
                 assert!(p.require_bcd_integrity);
                 assert!(p.custom_uefi_json.is_empty());
+                // Optional, so existing manifests without it still parse.
+                assert!(p.allowed_pci_devices.is_empty());
             }
+            _ => panic!("Expected Sivm policy"),
+        }
+    }
+
+    #[test]
+    fn deserialize_sivm_allowed_pci_devices() {
+        let json = r#"{
+            "sivm": {
+                "require_ephemeral_vmgs": false,
+                "require_secure_boot": false,
+                "require_secure_boot_vars": false,
+                "require_bcd_integrity": false,
+                "custom_uefi_json": "",
+                "allowed_pci_devices": [
+                    { "vendor_id": 4318, "device_id": 9988, "revision_id": 161 }
+                ]
+            }
+        }"#;
+        match from_json(json).unwrap() {
+            ProductPolicy::Sivm(p) => assert_eq!(p.allowed_pci_devices, vec![nvidia_gpu()]),
             _ => panic!("Expected Sivm policy"),
         }
     }
@@ -161,6 +211,7 @@ mod serde_tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             custom_uefi_json: alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0x00, 0xFF],
+            allowed_pci_devices: alloc::vec![nvidia_gpu()],
         });
         let json = serde_json::to_string(&original).unwrap();
         let restored: ProductPolicy = from_json(&json).unwrap();

@@ -65,6 +65,12 @@ pub enum OpenhclIgvmOutput {
         #[serde(flatten)]
         endorsements: Option<OpenhclIgvmEndorsements>,
     },
+    X64CvmSivm {
+        #[serde(rename = "openhcl-x64-cvm-sivm.bin")]
+        igvm_bin: PathBuf,
+        #[serde(flatten)]
+        endorsements: Option<OpenhclIgvmEndorsements>,
+    },
     Aarch64 {
         #[serde(rename = "openhcl-aarch64.bin")]
         igvm_bin: PathBuf,
@@ -145,6 +151,7 @@ impl OpenhclIgvmOutput {
             | OpenhclIgvmOutput::X64TestLinuxDirectDevkern { igvm_bin }
             | OpenhclIgvmOutput::X64Cvm { igvm_bin, .. }
             | OpenhclIgvmOutput::X64CvmDevkern { igvm_bin, .. }
+            | OpenhclIgvmOutput::X64CvmSivm { igvm_bin, .. }
             | OpenhclIgvmOutput::Aarch64 { igvm_bin }
             | OpenhclIgvmOutput::Aarch64Devkern { igvm_bin } => igvm_bin,
         }
@@ -154,7 +161,8 @@ impl OpenhclIgvmOutput {
         match self {
             OpenhclIgvmOutput::LocalOnlyCustom { endorsements, .. }
             | OpenhclIgvmOutput::X64Cvm { endorsements, .. }
-            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. } => endorsements.as_ref(),
+            | OpenhclIgvmOutput::X64CvmDevkern { endorsements, .. }
+            | OpenhclIgvmOutput::X64CvmSivm { endorsements, .. } => endorsements.as_ref(),
             _ => None,
         }
     }
@@ -172,6 +180,7 @@ impl OpenhclIgvmOutput {
             }
             OpenhclIgvmOutput::X64Cvm { .. } => Some(OpenhclIgvmRecipe::X64Cvm),
             OpenhclIgvmOutput::X64CvmDevkern { .. } => Some(OpenhclIgvmRecipe::X64CvmDevkern),
+            OpenhclIgvmOutput::X64CvmSivm { .. } => Some(OpenhclIgvmRecipe::X64CvmSivm),
             OpenhclIgvmOutput::Aarch64 { .. } => Some(OpenhclIgvmRecipe::Aarch64),
             OpenhclIgvmOutput::Aarch64Devkern { .. } => Some(OpenhclIgvmRecipe::Aarch64Devkern),
         }
@@ -231,6 +240,15 @@ impl OpenhclIgvmOutput {
                         ),
                     },
                     OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmOutput::X64CvmDevkern {
+                        igvm_bin,
+                        endorsements: Some(
+                            endorsements
+                                .take()
+                                .filter(OpenhclIgvmEndorsements::is_complete)
+                                .expect("missing endorsements"),
+                        ),
+                    },
+                    OpenhclIgvmRecipe::X64CvmSivm => OpenhclIgvmOutput::X64CvmSivm {
                         igvm_bin,
                         endorsements: Some(
                             endorsements
@@ -336,6 +354,7 @@ pub enum OpenhclIgvmRecipe {
     X64TestLinuxDirectDevkern,
     X64Cvm,
     X64CvmDevkern,
+    X64CvmSivm,
     Aarch64,
     Aarch64Devkern,
 }
@@ -365,14 +384,19 @@ impl OpenhclIgvmRecipe {
             | OpenhclIgvmRecipe::X64TestLinuxDirect
             | OpenhclIgvmRecipe::X64TestLinuxDirectDevkern
             | OpenhclIgvmRecipe::X64Cvm
-            | OpenhclIgvmRecipe::X64CvmDevkern => CommonArch::X86_64,
+            | OpenhclIgvmRecipe::X64CvmDevkern
+            | OpenhclIgvmRecipe::X64CvmSivm => CommonArch::X86_64,
             OpenhclIgvmRecipe::Aarch64 | OpenhclIgvmRecipe::Aarch64Devkern => CommonArch::Aarch64,
         }
     }
 
     pub fn uses_dev_kernel(&self) -> bool {
         match self {
-            Self::X64 | Self::X64TestLinuxDirect | Self::X64Cvm | Self::Aarch64 => false,
+            Self::X64
+            | Self::X64TestLinuxDirect
+            | Self::X64Cvm
+            | Self::X64CvmSivm
+            | Self::Aarch64 => false,
             Self::X64Devkern
             | Self::X64TestLinuxDirectDevkern
             | Self::X64CvmDevkern
@@ -401,6 +425,7 @@ impl OpenhclIgvmRecipe {
             OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => Some("test-linux-direct-devkern"),
             OpenhclIgvmRecipe::X64Cvm => Some("cvm"),
             OpenhclIgvmRecipe::X64CvmDevkern => Some("cvm-devkern"),
+            OpenhclIgvmRecipe::X64CvmSivm => Some("cvm-sivm"),
         }
     }
 
@@ -539,6 +564,28 @@ impl OpenhclIgvmRecipe {
                 ),
                 openhcl_kernel_package: OpenhclKernelPackage::Cvm,
                 openvmm_hcl_features: base_openvmm_hcl_features(),
+                target: CommonTriple::X86_64_LINUX_MUSL,
+                vtl0_kernel_type: None,
+                with_uefi: true,
+                with_interactive,
+                with_sidecar: false,
+                max_trace_level,
+            },
+            Self::X64CvmSivm => OpenhclIgvmRecipeDetails {
+                local_only: None,
+                igvm_manifest: in_repo_template(
+                    "openhcl-x64-cvm-sivm-dev.json",
+                    "openhcl-x64-cvm-sivm-release.json",
+                ),
+                openhcl_kernel_package: OpenhclKernelPackage::Cvm,
+                // OpenHCL only reads the manifests' SIVM product policy with
+                // this feature, and refuses to boot an image carrying one
+                // without it.
+                openvmm_hcl_features: {
+                    let mut features = base_openvmm_hcl_features();
+                    features.insert(OpenvmmHclFeature::ProductPolicy);
+                    features
+                },
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,
