@@ -973,6 +973,7 @@ async fn vm_config_from_command_line(
     };
 
     let mut pcie_root_complexes = Vec::new();
+    let mut legacy_pci_config_io_for_pcie = false;
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
@@ -1007,12 +1008,19 @@ async fn vm_config_from_command_line(
         } else {
             None
         };
+        let legacy_pci_config_io = arch == MachineArch::X86_64
+            && !opt.pcat
+            && rc_cli.segment == 0
+            && rc_cli.start_bus == 0
+            && rc_cli.end_bus == u8::MAX;
+        legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
+            legacy_pci_config_io,
             low_mmio: if let Some(base) = rc_cli.low_mmio_base {
                 PcieMmioRangeConfig::Fixed(
                     memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
@@ -1234,10 +1242,8 @@ async fn vm_config_from_command_line(
 
     let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
-    if arch == MachineArch::X86_64
-        && openvmm_defs::config::legacy_pci_config_io_enabled(&pcie_root_complexes)
-    {
-        chipset = chipset.with_legacy_pci_config_io();
+    if legacy_pci_config_io_for_pcie {
+        chipset = chipset.with_legacy_pci_config_io_for_pcie();
     }
 
     if framebuffer.is_some() {

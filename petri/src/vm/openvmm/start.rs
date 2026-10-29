@@ -62,8 +62,18 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
-        if arch == MachineArch::X86_64
-            && openvmm_defs::config::legacy_pci_config_io_enabled(&config.pcie_root_complexes)
+        let enable_legacy_pci_config_io =
+            arch == MachineArch::X86_64 && !config.chipset.with_piix4_pci_bus;
+        for root_complex in &mut config.pcie_root_complexes {
+            root_complex.legacy_pci_config_io = enable_legacy_pci_config_io
+                && root_complex.segment == 0
+                && root_complex.start_bus == 0
+                && root_complex.end_bus == u8::MAX;
+        }
+        if config
+            .pcie_root_complexes
+            .iter()
+            .any(|root_complex| root_complex.legacy_pci_config_io)
         {
             config
                 .chipset_devices

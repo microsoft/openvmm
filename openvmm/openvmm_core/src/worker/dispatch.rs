@@ -2220,9 +2220,6 @@ impl InitializedVm {
 
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
-            #[cfg(guest_arch = "x86_64")]
-            let legacy_pci_config_io =
-                openvmm_defs::config::legacy_pci_config_io_enabled(&cfg.pcie_root_complexes);
             let mut pcie_host_bridges = Vec::new();
             let mut pcie_root_complexes = Vec::new();
 
@@ -2322,7 +2319,6 @@ impl InitializedVm {
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
                             let mut register_mmio = services.register_mmio();
-                            #[cfg(guest_arch = "x86_64")]
                             let mut register_pio = services.register_pio();
                             let root_port_definitions = rc
                                 .ports
@@ -2331,21 +2327,16 @@ impl InitializedVm {
                                 .collect();
                             let builder = GenericPcieRootComplex::builder(
                                 &mut register_mmio,
+                                &mut register_pio,
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
                             );
-                            #[cfg(guest_arch = "x86_64")]
-                            let builder = if legacy_pci_config_io && !cfg.chipset.with_piix4_pci_bus
-                            {
-                                builder.pci_config_io(&mut register_pio)
-                            } else {
-                                builder
-                            };
                             builder
                                 .root_ports(
                                     root_port_definitions,
                                     &msi_conn.msi_target(rc_bus_range, 0),
                                 )
+                                .legacy_pci_config_io(rc.legacy_pci_config_io)
                                 .first_port_device_number(root_port_start_device)
                                 .reserved_device_numbers(reserved_device_numbers)
                                 .chbcr_range(chbcr_range)

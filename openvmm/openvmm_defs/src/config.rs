@@ -258,6 +258,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    /// Whether this root complex owns legacy PCI configuration I/O ports.
+    pub legacy_pci_config_io: bool,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PciePortConfig>,
@@ -272,18 +274,6 @@ pub struct PcieRootComplexConfig {
     /// When true, treat non-zero BAR values found during probing as pinned
     /// addresses. Used for P2P DMA with GPA = HPA.
     pub preserve_bars: bool,
-}
-
-/// Returns whether the topology can expose legacy PCI configuration I/O.
-///
-/// CF8/CFC can address only segment zero, so expose it only when one root
-/// complex owns the complete segment-zero bus domain.
-pub fn legacy_pci_config_io_enabled(root_complexes: &[PcieRootComplexConfig]) -> bool {
-    let [root_complex] = root_complexes else {
-        return false;
-    };
-
-    root_complex.segment == 0 && root_complex.start_bus == 0 && root_complex.end_bus == u8::MAX
 }
 
 /// Configuration for a single PCIe port — either a root-complex root port or a

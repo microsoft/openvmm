@@ -1083,7 +1083,13 @@ impl VmService {
         // Build the PCIe topology before the chipset manifest so full-domain
         // legacy PCI configuration ownership can be coordinated.
         let pcie = if let Some(pcie) = req_config.pcie.take() {
-            build_pcie_topology(pcie, &registry, &iommufds).await?
+            build_pcie_topology(
+                pcie,
+                &registry,
+                &iommufds,
+                arch == vm_manifest_builder::MachineArch::X86_64,
+            )
+            .await?
         } else {
             BuiltPcieTopology::default()
         };
@@ -1093,10 +1099,8 @@ impl VmService {
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
         }
-        if arch == vm_manifest_builder::MachineArch::X86_64
-            && openvmm_defs::config::legacy_pci_config_io_enabled(&pcie.root_complexes)
-        {
-            chipset_builder = chipset_builder.with_legacy_pci_config_io();
+        if pcie.legacy_pci_config_io_for_pcie {
+            chipset_builder = chipset_builder.with_legacy_pci_config_io_for_pcie();
         }
         if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
@@ -2037,18 +2041,21 @@ struct BuiltPcieTopology {
     switches: Vec<PcieSwitchConfig>,
     devices: Vec<PcieDeviceConfig>,
     generic_initiators: Vec<PcieGenericInitiatorConfig>,
+    legacy_pci_config_io_for_pcie: bool,
 }
 
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
     registry: &FdRegistry,
     iommufds: &IommufdContexts,
+    enable_legacy_pci_config_io: bool,
 ) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
         generic_initiators,
     } = topology;
     let mut root_complexes = Vec::new();
+    let mut legacy_pci_config_io_for_pcie = false;
     let mut switches = Vec::new();
     // Devices are built after the topology walk so that the (async) device
     // construction does not need to recurse.
@@ -2096,12 +2103,18 @@ async fn build_pcie_topology(
             }
         }
 
+        let legacy_pci_config_io = enable_legacy_pci_config_io
+            && segment == 0
+            && start_bus == 0
+            && end_bus == u8::MAX.into();
+        legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         root_complexes.push(PcieRootComplexConfig {
             index: index as u32,
             name,
             segment: segment.try_into().context("segment out of range")?,
             start_bus: start_bus.try_into().context("start_bus out of range")?,
             end_bus: end_bus.try_into().context("end_bus out of range")?,
+            legacy_pci_config_io,
             low_mmio: pcie_mmio_range_config(low_mmio, low_mmio_base)?,
             high_mmio: pcie_mmio_range_config(high_mmio, high_mmio_base)?,
             ports,
@@ -2134,6 +2147,7 @@ async fn build_pcie_topology(
         switches,
         devices,
         generic_initiators,
+        legacy_pci_config_io_for_pcie,
     })
 }
 
@@ -3398,6 +3412,7 @@ mod tests {
                 },
                 &FdRegistry::default(),
                 &IommufdContexts::default(),
+                false,
             ));
             if has_iommu && !cfg!(guest_arch = "aarch64") {
                 assert!(result.is_err());
@@ -3405,6 +3420,41 @@ mod tests {
                 assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
             }
         }
+    }
+
+    #[test]
+    fn pcie_topology_assigns_legacy_pci_config_io() {
+        let topology = vmservice::PcieTopologyConfig {
+            root_complexes: vec![
+                vmservice::PcieRootComplex {
+                    name: "segment-zero".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: u8::MAX.into(),
+                    ..Default::default()
+                },
+                vmservice::PcieRootComplex {
+                    name: "segment-one".into(),
+                    segment: 1,
+                    start_bus: 0,
+                    end_bus: u8::MAX.into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let topology = futures::executor::block_on(build_pcie_topology(
+            topology,
+            &FdRegistry::default(),
+            &IommufdContexts::default(),
+            true,
+        ))
+        .unwrap();
+
+        assert!(topology.legacy_pci_config_io_for_pcie);
+        assert!(topology.root_complexes[0].legacy_pci_config_io);
+        assert!(!topology.root_complexes[1].legacy_pci_config_io);
     }
 
     #[test]
@@ -3432,6 +3482,7 @@ mod tests {
                         },
                         &FdRegistry::default(),
                         &IommufdContexts::default(),
+                        false,
                     ))
                     .unwrap();
                     let expected = pasid.unwrap_or(false);

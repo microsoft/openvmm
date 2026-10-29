@@ -88,7 +88,7 @@ pub struct VmManifestBuilder {
     ipmi_kcs: bool,
     psp: bool,
     platform_pm_timer_assist: bool,
-    legacy_pci_config_io: bool,
+    legacy_pci_config_io_for_pcie: bool,
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
@@ -297,7 +297,7 @@ impl VmManifestBuilder {
             ipmi_kcs: false,
             psp: false,
             platform_pm_timer_assist: false,
-            legacy_pci_config_io: false,
+            legacy_pci_config_io_for_pcie: false,
             uefi: None,
             debugcon: None,
             vmbus,
@@ -421,8 +421,8 @@ impl VmManifestBuilder {
     }
 
     /// Mark legacy PCI configuration I/O as provided by a PCIe root complex.
-    pub fn with_legacy_pci_config_io(mut self) -> Self {
-        self.legacy_pci_config_io = true;
+    pub fn with_legacy_pci_config_io_for_pcie(mut self) -> Self {
+        self.legacy_pci_config_io_for_pcie = true;
         self
     }
 
@@ -554,7 +554,7 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, false);
-                if !self.legacy_pci_config_io {
+                if !self.legacy_pci_config_io_for_pcie {
                     result.attach_missing_pci_config_ports(self.arch);
                 }
                 if let Some(recv) = self.battery_status_recv {
@@ -602,7 +602,7 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, false);
-                if !self.legacy_pci_config_io {
+                if !self.legacy_pci_config_io_for_pcie {
                     // Linux probes legacy PCI configuration ports even when
                     // PCIe ECAM is available. Absorb those probes as missing
                     // devices instead of tracing them as unknown PIO.
@@ -643,7 +643,7 @@ impl VmManifestBuilder {
                         self.serial,
                     )?
                     .attach_missing_arch_ports(self.arch, true);
-                if !self.legacy_pci_config_io {
+                if !self.legacy_pci_config_io_for_pcie {
                     result.attach_missing_pci_config_ports(self.arch);
                 }
                 if let Some(recv) = self.battery_status_recv {
@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pci_config_io_omits_missing_pci_ports() {
+    fn legacy_pci_config_io_for_pcie_omits_missing_pci_ports() {
         let manifest =
             VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
                 .build()
@@ -1343,7 +1343,7 @@ mod tests {
 
         let manifest =
             VmManifestBuilder::new(BaseChipsetType::EnlightenedLinuxDirect, MachineArch::X86_64)
-                .with_legacy_pci_config_io()
+                .with_legacy_pci_config_io_for_pcie()
                 .build()
                 .unwrap();
         assert!(
