@@ -12,6 +12,7 @@ use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::microvm::MicrovmPortbHandle;
 use chipset_resources::microvm::MicrovmShutdownHandle;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
+use chipset_resources::microvm_time::TimeSampleSourceKind;
 use power_resources::PowerRequestHandleKind;
 use serial_core::resources::ResolveSerialBackendParams;
 use thiserror::Error;
@@ -37,6 +38,8 @@ declare_static_async_resolver! {
 pub enum ResolveMicrovmPortbError {
     #[error("failed to resolve microVM portb backend")]
     ResolveBackend(#[source] ResolveError),
+    #[error("failed to resolve the platform's time sample source")]
+    ResolveTimeSampleSource(#[source] ResolveError),
 }
 
 #[async_trait]
@@ -60,8 +63,13 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, MicrovmPortbHandle> for Micro
             )
             .await
             .map_err(ResolveMicrovmPortbError::ResolveBackend)?;
+        let source = resolver
+            .resolve::<TimeSampleSourceKind, _>(PlatformResource.into_resource(), ())
+            .await
+            .map_err(ResolveMicrovmPortbError::ResolveTimeSampleSource)?;
         let portb = MicrovmPortb::new(io.0.into_io(), resource.generation_id, resource.time_abi)
-            .with_output_drain(resource.output_drain);
+            .with_output_drain(resource.output_drain)
+            .with_time_sample_source(source.0);
         Ok(portb.into())
     }
 }

@@ -116,7 +116,7 @@ impl MicrovmRestore {
         contract.time.as_ref().zip(contract.cpu_profile.as_ref())
     }
 
-    /// Returns the controller's fields of restore packet version 4 for a time
+    /// Returns the controller's fields of restore packet version 5 for a time
     /// ABI restore, and the generation ID they imply. The generation counter
     /// is the snapshot's plus one.
     pub(crate) fn time_abi_restore_packet(
@@ -136,7 +136,7 @@ impl MicrovmRestore {
     }
 }
 
-/// Returns the controller's fields of restore packet version 4 for a time
+/// Returns the controller's fields of restore packet version 5 for a time
 /// ABI restore of a snapshot with the time contract `time`, and the
 /// generation ID they imply. The generation counter is the snapshot's plus
 /// one, and `ack_required` makes the guest acknowledge the restore through
@@ -180,7 +180,7 @@ pub(crate) fn restore_packet_base(
         entropy,
     };
     base.validate()
-        .context("restore packet version 4 is invalid")?;
+        .context("restore packet version 5 is invalid")?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
     Ok((microvm_generation_id(&entropy), base))
 }
@@ -530,7 +530,7 @@ pub(crate) mod tests {
     /// Returns a valid time contract for test machine contracts.
     pub(crate) fn test_time_contract() -> SnapshotTimeContract {
         SnapshotTimeContract {
-            time_abi_version: 1,
+            time_abi_version: virt::time_abi::TIME_ABI_VERSION,
             tsc_frequency_hz: 2_100_000_000,
             tsc_tolerance_ppm: 250,
             apic_frequency_hz: virt::time_abi::rate::LAPIC_HZ_HYPERV,
@@ -594,7 +594,7 @@ pub(crate) mod tests {
     fn time_abi_restore(capture_generation: u32) -> MicrovmRestore {
         let mut contract: SnapshotMachineContract = mesh::payload::decode(&[]).unwrap();
         contract.time = Some(SnapshotTimeContract {
-            time_abi_version: 1,
+            time_abi_version: virt::time_abi::TIME_ABI_VERSION,
             tsc_frequency_hz: 2_100_000_000,
             tsc_tolerance_ppm: 250,
             apic_frequency_hz: 200_000_000,

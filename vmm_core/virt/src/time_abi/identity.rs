@@ -28,8 +28,8 @@ pub const VENDOR_SIGNATURE: [u32; 3] = [0x7263_694d, 0x666f_736f, 0x7648_2074];
 pub const INTERFACE_SIGNATURE: u32 = 0x3123_7648;
 /// `"NVX"` in EAX of leaf `0x40000002`.
 pub const NVX_BUILD_SIGNATURE: u32 = 0x0058_564e;
-/// Time ABI 1.0 in EBX of leaf `0x40000002`.
-pub const TIME_ABI_VERSION_EBX: u32 = 0x0001_0000;
+/// Time ABI 2.0 in EBX of leaf `0x40000002`.
+pub const TIME_ABI_VERSION_EBX: u32 = 0x0002_0000;
 /// `AccessHypercallMsrs`, `AccessVpIndex`, `AccessFrequencyRegs`, and
 /// `AccessTscInvariantControls` in EAX of leaf `0x40000003`.
 pub const PRIVILEGES_EAX: u32 = 0x0000_8860;
@@ -298,7 +298,7 @@ mod tests {
                     [0x4000_0005, 0x7263_694d, 0x666f_736f, 0x7648_2074]
                 ),
                 (0x4000_0001, [0x3123_7648, 0, 0, 0]),
-                (0x4000_0002, [0x0058_564e, 0x0001_0000, 0, 0]),
+                (0x4000_0002, [0x0058_564e, 0x0002_0000, 0, 0]),
                 (0x4000_0003, [0x0000_8860, 0, 0, 0x0000_0100]),
                 (0x4000_0004, [0, 0xffff_ffff, 0, 0]),
                 (0x4000_0005, [4, 4, 0, 0]),

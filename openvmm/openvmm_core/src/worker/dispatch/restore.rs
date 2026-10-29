@@ -321,8 +321,7 @@ impl LoadedVm {
             self.snapshot_restore.input_gated = true;
         }
         let device_start = ProfileSpan::start();
-        self.state_units
-            .start()
+        self.start_units()
             .await
             .context("VM state units failed to start")?;
         if self.snapshot_restore.restored_from_snapshot && openvmm_defs::profile::enabled() {
