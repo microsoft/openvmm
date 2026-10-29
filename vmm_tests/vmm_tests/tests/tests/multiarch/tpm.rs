@@ -185,11 +185,20 @@ impl<'a> TpmGuestTests<'a> {
         replacement: bool,
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<String> {
+        use der::Decode;
+        use der::Reader;
+        use der::SliceReader;
         use pal_async::timer::PolledTimer;
         use std::time::Duration;
+        use x509_cert::Certificate;
 
         let guest_binary_path = &self.guest_binary_path;
         let output_path = format!("{guest_binary_path}.ak_cert");
+        let expected_name = if replacement {
+            "Next \"AK\" issuer"
+        } else {
+            "Test \"AK\" issuer"
+        };
         let mut timer = PolledTimer::new(driver);
         for attempt in 0..=10 {
             let result = async {
@@ -215,6 +224,24 @@ impl<'a> TpmGuestTests<'a> {
                     .read_file(&output_path)
                     .await
                     .context("reading captured AK certificate NV contents")?;
+                let encoded = SliceReader::new(&data)?.tlv_bytes()?;
+                let certificate =
+                    Certificate::from_der(encoded).context("parsing captured AK certificate")?;
+                let issuer = certificate
+                    .tbs_certificate()
+                    .issuer()
+                    .common_name()?
+                    .map(String::from);
+                let subject = certificate
+                    .tbs_certificate()
+                    .subject()
+                    .common_name()?
+                    .map(String::from);
+                ensure!(
+                    issuer.as_deref() == Some(expected_name)
+                        && subject.as_deref() == Some(expected_name),
+                    "expected AK certificate {expected_name:?}, got issuer {issuer:?} and subject {subject:?}"
+                );
                 Ok(ak_cert_hex(&data))
             }
             .await;

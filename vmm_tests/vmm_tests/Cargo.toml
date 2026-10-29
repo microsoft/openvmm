@@ -88,7 +88,9 @@ virt_kvm.workspace = true
 virt_mshv.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
+der.workspace = true
 virt_whp.workspace = true
+x509-cert.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
