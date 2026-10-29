@@ -866,7 +866,7 @@ message NICConfig {
         ConsommeBackend consomme = 8;
     }
     // Guest-visible NIC frontend. Defaults to the VMBus synthetic NIC.
-    // Virtio uses VPCI on Windows/macOS with VMBus enabled, PCI otherwise.
+    // Virtio uses VPCI on Windows/macOS with VMBus enabled, MMIO otherwise.
     // Virtio NICs must be configured at VM creation, not added via ModifyResource.
     NicFrontend frontend = 9;
 }
