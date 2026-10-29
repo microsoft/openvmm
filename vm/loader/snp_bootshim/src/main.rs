@@ -248,6 +248,8 @@ enum Failure {
     UnhandledVc = 0x0a,
     /// An unexpected exception.
     Exception = 0x0b,
+    /// A boot service was entered again while it was running.
+    EfiReentry = 0x0c,
     DeviceTree = 0x10,
     DeviceTreeProperty = 0x11,
     TooManyCpus = 0x12,

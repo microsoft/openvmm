@@ -183,8 +183,13 @@ pub(crate) fn initial_acceptance<'a>(
 
 /// Computes the CRC-32 that UEFI uses for table headers.
 pub(crate) fn crc32(data: &[u8]) -> u32 {
+    crc32_parts(&[data])
+}
+
+/// Computes the CRC-32 of the concatenation of `parts`.
+pub(crate) fn crc32_parts(parts: &[&[u8]]) -> u32 {
     let mut crc = !0u32;
-    for &byte in data {
+    for &byte in parts.iter().flat_map(|part| part.iter()) {
         crc ^= u32::from(byte);
         for _ in 0..8 {
             crc = if crc & 1 != 0 {
@@ -205,14 +210,18 @@ pub(crate) use guest::enter_linux;
 #[cfg(minimal_rt)]
 mod guest {
     use super::crc32;
+    use super::crc32_parts;
     use crate::Failure;
     use crate::accept;
     use crate::memory_map::AllocateType;
     use crate::memory_map::Error;
     use crate::memory_map::MemoryMap;
     use crate::terminate;
+    use core::cell::Cell;
+    use core::cell::UnsafeCell;
     use core::ffi::c_void;
     use core::mem::MaybeUninit;
+    use core::mem::offset_of;
     use guid::Guid;
     use memory_range::MemoryRange;
     use uefi_specs::uefi::boot::ACPI_20_TABLE_GUID;
@@ -240,6 +249,7 @@ mod guest {
     use uefi_specs::uefi::boot::SMBIOS3_TABLE_GUID;
     use uefi_specs::uefi::boot::TPL_APPLICATION;
     use uefi_specs::uefi::common::EfiStatus;
+    use zerocopy::Immutable;
     use zerocopy::IntoBytes;
 
     /// The number of functions in EFI_BOOT_SERVICES (UEFI spec 4.4).
@@ -279,6 +289,7 @@ mod guest {
     }
 
     #[repr(C)]
+    #[derive(IntoBytes, Immutable)]
     struct TableHeader {
         signature: u64,
         revision: u32,
@@ -372,23 +383,70 @@ mod guest {
         monotonic_count: u64,
     }
 
-    static mut EFI: MaybeUninit<Efi> = MaybeUninit::zeroed();
-    static mut STATE: MaybeUninit<State> = MaybeUninit::uninit();
-
-    fn efi() -> *mut Efi {
-        (&raw mut EFI).cast()
+    /// Data that only the boot processor uses.
+    ///
+    /// The shim and the EFI stub run on one processor with interrupts
+    /// disabled, so there is no concurrent access. [`BootCell::with`] gives
+    /// out one mutable reference at a time, and stops the guest if a borrow
+    /// is reentered. The stub reads the tables only through raw pointers,
+    /// between service calls.
+    struct BootCell<T> {
+        value: UnsafeCell<T>,
+        borrowed: Cell<bool>,
     }
 
-    /// Returns the boot-services state.
-    ///
-    /// # Safety
-    ///
-    /// `enter_linux` must have initialized the state, and no other reference
-    /// to it may be live. The shim and the stub run on one processor, and the
-    /// services do not call each other.
-    unsafe fn state() -> &'static mut State {
-        // SAFETY: As the caller guarantees.
-        unsafe { &mut *(&raw mut STATE).cast::<State>() }
+    // SAFETY: Only the boot processor uses the shim's statics, with
+    // interrupts disabled.
+    unsafe impl<T> Sync for BootCell<T> {}
+
+    impl<T> BootCell<T> {
+        const fn new(value: T) -> Self {
+            Self {
+                value: UnsafeCell::new(value),
+                borrowed: Cell::new(false),
+            }
+        }
+
+        /// Returns the address of the value, for the stub to use.
+        fn address(&self) -> u64 {
+            self.value.get() as u64
+        }
+
+        fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+            if self.borrowed.replace(true) {
+                terminate(Failure::EfiReentry);
+            }
+            // SAFETY: The borrow flag makes this the only reference, and no
+            // other processor or interrupt handler uses the value.
+            let result = f(unsafe { &mut *self.value.get() });
+            self.borrowed.set(false);
+            result
+        }
+    }
+
+    /// The tables start zeroed, which is a valid `Efi`: every field is an
+    /// integer, an array of integers, or a GUID.
+    static EFI: BootCell<MaybeUninit<Efi>> = BootCell::new(MaybeUninit::zeroed());
+    static STATE: BootCell<Option<State>> = BootCell::new(None);
+
+    fn with_efi<R>(f: impl FnOnce(&mut Efi) -> R) -> R {
+        // SAFETY: `EFI` starts zeroed, and all zeros is a valid `Efi`.
+        EFI.with(|efi| f(unsafe { efi.assume_init_mut() }))
+    }
+
+    /// Returns the address of a field of the EFI tables.
+    macro_rules! efi_address {
+        ($field:ident) => {
+            EFI.address() + offset_of!(Efi, $field) as u64
+        };
+    }
+
+    /// Runs `f` with the boot-services state, which `enter_linux` sets.
+    fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
+        STATE.with(|state| match state {
+            Some(state) => f(state),
+            None => terminate(Failure::EfiStub),
+        })
     }
 
     fn code(status: EfiStatus) -> usize {
@@ -406,8 +464,7 @@ mod guest {
 
     /// Returns `true` once boot services have ended.
     fn exited() -> bool {
-        // SAFETY: Boot services run one at a time.
-        unsafe { state().exited }
+        with_state(|state| state.exited)
     }
 
     extern "efiapi" fn unsupported() -> usize {
@@ -448,14 +505,14 @@ mod guest {
             2 => AllocateType::Address(address),
             _ => return code(EfiStatus::INVALID_PARAMETER),
         };
-        // SAFETY: Boot services run one at a time.
-        let map = unsafe { &mut state().map };
-        match map.allocate(
-            allocate_type,
-            EfiMemoryType(memory_type),
-            pages as u64,
-            &mut accept,
-        ) {
+        match with_state(|state| {
+            state.map.allocate(
+                allocate_type,
+                EfiMemoryType(memory_type),
+                pages as u64,
+                &mut accept,
+            )
+        }) {
             Ok(address) => {
                 // SAFETY: As above.
                 unsafe { memory.write(address) };
@@ -469,8 +526,7 @@ mod guest {
         if exited() {
             return code(EfiStatus::UNSUPPORTED);
         }
-        // SAFETY: Boot services run one at a time.
-        match unsafe { state().map.free(memory, pages as u64) } {
+        match with_state(|state| state.map.free(memory, pages as u64)) {
             Ok(()) => code(EfiStatus::SUCCESS),
             Err(error) => error_status(error),
         }
@@ -486,35 +542,37 @@ mod guest {
         if map_size.is_null() {
             return code(EfiStatus::INVALID_PARAMETER);
         }
-        // SAFETY: Boot services run one at a time. The caller passes valid
-        // pointers, and a buffer of `*map_size` bytes at `map`.
-        unsafe {
-            let memory_map = &state().map;
+        with_state(|state| {
+            let memory_map = &state.map;
             let needed = memory_map.descriptors().len() * DESCRIPTOR_SIZE;
-            if !descriptor_size.is_null() {
-                descriptor_size.write(DESCRIPTOR_SIZE);
-            }
-            if !descriptor_version.is_null() {
-                descriptor_version.write(EFI_MEMORY_DESCRIPTOR_VERSION);
-            }
-            if map.is_null() || map_size.read() < needed {
+            // SAFETY: The caller passes valid pointers, and a buffer of
+            // `*map_size` bytes at `map`.
+            unsafe {
+                if !descriptor_size.is_null() {
+                    descriptor_size.write(DESCRIPTOR_SIZE);
+                }
+                if !descriptor_version.is_null() {
+                    descriptor_version.write(EFI_MEMORY_DESCRIPTOR_VERSION);
+                }
+                if map.is_null() || map_size.read() < needed {
+                    map_size.write(needed);
+                    return code(EfiStatus::BUFFER_TOO_SMALL);
+                }
+                if map_key.is_null() {
+                    return code(EfiStatus::INVALID_PARAMETER);
+                }
+                for (index, descriptor) in memory_map.descriptors().enumerate() {
+                    core::ptr::copy_nonoverlapping(
+                        descriptor.as_bytes().as_ptr(),
+                        map.add(index * DESCRIPTOR_SIZE),
+                        DESCRIPTOR_SIZE,
+                    );
+                }
                 map_size.write(needed);
-                return code(EfiStatus::BUFFER_TOO_SMALL);
+                map_key.write(memory_map.key() as usize);
             }
-            if map_key.is_null() {
-                return code(EfiStatus::INVALID_PARAMETER);
-            }
-            for (index, descriptor) in memory_map.descriptors().enumerate() {
-                core::ptr::copy_nonoverlapping(
-                    descriptor.as_bytes().as_ptr(),
-                    map.add(index * DESCRIPTOR_SIZE),
-                    DESCRIPTOR_SIZE,
-                );
-            }
-            map_size.write(needed);
-            map_key.write(memory_map.key() as usize);
-        }
-        code(EfiStatus::SUCCESS)
+            code(EfiStatus::SUCCESS)
+        })
     }
 
     extern "efiapi" fn allocate_pool(
@@ -534,14 +592,14 @@ mod guest {
         else {
             return code(EfiStatus::OUT_OF_RESOURCES);
         };
-        // SAFETY: Boot services run one at a time.
-        let map = unsafe { &mut state().map };
-        match map.allocate(
-            AllocateType::Any,
-            EfiMemoryType(memory_type),
-            pages,
-            &mut accept,
-        ) {
+        match with_state(|state| {
+            state.map.allocate(
+                AllocateType::Any,
+                EfiMemoryType(memory_type),
+                pages,
+                &mut accept,
+            )
+        }) {
             Ok(address) => {
                 // SAFETY: The allocator handed out these accepted,
                 // identity-mapped pages. The caller passes a valid pointer.
@@ -565,37 +623,35 @@ mod guest {
         if buffer.is_null() || !address.is_multiple_of(EFI_PAGE_SIZE) {
             return code(EfiStatus::INVALID_PARAMETER);
         }
+        let header = address as *mut u64;
         // SAFETY: A pool buffer starts one header after its first page. The
         // magic check rejects other pointers before the map frees anything.
-        unsafe {
-            let header = address as *mut u64;
+        let pages = unsafe {
             if header.add(1).read() != POOL_MAGIC {
                 return code(EfiStatus::INVALID_PARAMETER);
             }
-            let pages = header.read();
-            match state().map.free(address, pages) {
-                Ok(()) => {
-                    header.add(1).write(0);
-                    code(EfiStatus::SUCCESS)
-                }
-                Err(_) => code(EfiStatus::INVALID_PARAMETER),
+            header.read()
+        };
+        match with_state(|state| state.map.free(address, pages)) {
+            Ok(()) => {
+                // SAFETY: As above. The pages are still accepted and mapped.
+                unsafe { header.add(1).write(0) };
+                code(EfiStatus::SUCCESS)
             }
+            Err(_) => code(EfiStatus::INVALID_PARAMETER),
         }
     }
 
     fn image_handle() -> usize {
-        // SAFETY: Only the address is taken.
-        unsafe { (&raw const (*efi()).loaded_image) as usize }
+        efi_address!(loaded_image) as usize
     }
 
     fn initrd_handle() -> usize {
-        // SAFETY: Only the address is taken.
-        unsafe { (&raw const (*efi()).initrd_path) as usize }
+        efi_address!(initrd_path) as usize
     }
 
     fn has_initrd() -> bool {
-        // SAFETY: Boot services run one at a time.
-        unsafe { state().initrd.is_some() }
+        with_state(|state| state.initrd.is_some())
     }
 
     extern "efiapi" fn handle_protocol(
@@ -608,27 +664,23 @@ mod guest {
         }
         // SAFETY: The caller passes valid pointers.
         let protocol = unsafe { protocol.read_unaligned() };
-        let efi = efi();
-        // SAFETY: Only addresses are taken.
-        let found = unsafe {
-            if handle == image_handle() && protocol == LOADED_IMAGE_PROTOCOL_GUID {
-                Some((&raw mut (*efi).loaded_image).cast::<c_void>())
-            } else if handle == initrd_handle() && has_initrd() {
-                if protocol == LOAD_FILE2_PROTOCOL_GUID {
-                    Some((&raw mut (*efi).load_file2).cast::<c_void>())
-                } else if protocol == DEVICE_PATH_PROTOCOL_GUID {
-                    Some((&raw mut (*efi).initrd_path).cast::<c_void>())
-                } else {
-                    None
-                }
+        let found = if handle == image_handle() && protocol == LOADED_IMAGE_PROTOCOL_GUID {
+            Some(efi_address!(loaded_image))
+        } else if handle == initrd_handle() && has_initrd() {
+            if protocol == LOAD_FILE2_PROTOCOL_GUID {
+                Some(efi_address!(load_file2))
+            } else if protocol == DEVICE_PATH_PROTOCOL_GUID {
+                Some(efi_address!(initrd_path))
             } else {
                 None
             }
+        } else {
+            None
         };
         match found {
             Some(found) => {
                 // SAFETY: The caller passes a valid pointer.
-                unsafe { interface.write(found) };
+                unsafe { interface.write(found as *mut c_void) };
                 code(EfiStatus::SUCCESS)
             }
             None => code(EfiStatus::UNSUPPORTED),
@@ -643,6 +695,7 @@ mod guest {
         if protocol.is_null() || device_path.is_null() || device.is_null() {
             return code(EfiStatus::INVALID_PARAMETER);
         }
+        let expected = with_efi(|efi| efi.initrd_path.vendor);
         // SAFETY: The caller passes valid pointers, and a device path that
         // ends with an end node, so its first node has at least four bytes.
         unsafe {
@@ -653,7 +706,6 @@ mod guest {
             if path.is_null() {
                 return code(EfiStatus::INVALID_PARAMETER);
             }
-            let expected = (*efi()).initrd_path.vendor;
             let header = path.cast::<[u8; 4]>().read_unaligned();
             if header != expected[..4] {
                 return code(EfiStatus::NOT_FOUND);
@@ -681,14 +733,16 @@ mod guest {
         if boot_policy != 0 {
             return code(EfiStatus::UNSUPPORTED);
         }
-        // SAFETY: Boot services run one at a time. The caller passes a buffer
-        // of `*buffer_size` bytes. The initrd is measured, accepted memory.
+        let Some((initrd, size)) = with_state(|state| {
+            state
+                .initrd
+                .map(|initrd| (initrd, state.initrd_size as usize))
+        }) else {
+            return code(EfiStatus::NOT_FOUND);
+        };
+        // SAFETY: The caller passes a buffer of `*buffer_size` bytes. The
+        // initrd is measured, accepted memory.
         unsafe {
-            let state = state();
-            let Some(initrd) = state.initrd else {
-                return code(EfiStatus::NOT_FOUND);
-            };
-            let size = state.initrd_size as usize;
             if buffer.is_null() || buffer_size.read() < size {
                 buffer_size.write(size);
                 return code(EfiStatus::BUFFER_TOO_SMALL);
@@ -700,13 +754,7 @@ mod guest {
     }
 
     /// Recomputes the CRC of the system table header.
-    ///
-    /// # Safety
-    ///
-    /// No other reference to the system table may be live.
-    unsafe fn update_system_table_crc() {
-        // SAFETY: As the caller guarantees.
-        let table = unsafe { &mut (*efi()).system_table };
+    fn update_system_table_crc(table: &mut EfiSystemTable) {
         table.crc32 = 0;
         table.crc32 = crc32(table.as_bytes());
     }
@@ -715,11 +763,9 @@ mod guest {
         if guid.is_null() {
             return code(EfiStatus::INVALID_PARAMETER);
         }
-        // SAFETY: The caller passes a valid GUID. Boot services run one at a
-        // time.
-        unsafe {
-            let guid = guid.read_unaligned();
-            let efi = &mut *efi();
+        // SAFETY: The caller passes a valid GUID.
+        let guid = unsafe { guid.read_unaligned() };
+        with_efi(|efi| {
             let count = efi.system_table.number_of_table_entries as usize;
             let tables = &mut efi.configuration_tables;
             let index = tables[..count].iter().position(|entry| entry.guid == guid);
@@ -741,9 +787,9 @@ mod guest {
                 }
                 (None, true) => return code(EfiStatus::NOT_FOUND),
             }
-            update_system_table_crc();
-        }
-        code(EfiStatus::SUCCESS)
+            update_system_table_crc(&mut efi.system_table);
+            code(EfiStatus::SUCCESS)
+        })
     }
 
     extern "efiapi" fn exit(
@@ -756,29 +802,28 @@ mod guest {
     }
 
     extern "efiapi" fn exit_boot_services(_image_handle: usize, map_key: usize) -> usize {
-        // SAFETY: Boot services run one at a time.
-        let state = unsafe { state() };
-        if state.exited {
-            return code(EfiStatus::UNSUPPORTED);
-        }
-        if map_key as u64 != state.map.key() {
-            return code(EfiStatus::INVALID_PARAMETER);
-        }
-        state.exited = true;
-        code(EfiStatus::SUCCESS)
+        with_state(|state| {
+            if state.exited {
+                return code(EfiStatus::UNSUPPORTED);
+            }
+            if map_key as u64 != state.map.key() {
+                return code(EfiStatus::INVALID_PARAMETER);
+            }
+            state.exited = true;
+            code(EfiStatus::SUCCESS)
+        })
     }
 
     extern "efiapi" fn get_next_monotonic_count(count: *mut u64) -> usize {
         if count.is_null() {
             return code(EfiStatus::INVALID_PARAMETER);
         }
-        // SAFETY: Boot services run one at a time. The caller passes a valid
-        // pointer.
-        unsafe {
-            let state = state();
+        let next = with_state(|state| {
             state.monotonic_count += 1;
-            count.write(state.monotonic_count);
-        }
+            state.monotonic_count
+        });
+        // SAFETY: The caller passes a valid pointer.
+        unsafe { count.write(next) };
         code(EfiStatus::SUCCESS)
     }
 
@@ -854,23 +899,19 @@ mod guest {
     /// Builds the UEFI environment and calls the Linux EFI stub. Does not
     /// return.
     pub fn enter_linux(map: MemoryMap, boot: &Boot) -> ! {
-        let efi = efi();
-        // SAFETY: The shim runs on one processor, and nothing else uses these
-        // statics until the stub runs.
-        unsafe {
-            (&raw mut STATE).cast::<State>().write(State {
+        STATE.with(|state| {
+            *state = Some(State {
                 map,
                 initrd: boot.initrd,
                 initrd_size: boot.initrd_size,
                 exited: false,
                 monotonic_count: 0,
-            });
-            build_tables(&mut *efi, boot);
-        }
+            })
+        });
+        with_efi(|efi| build_tables(efi, boot));
 
         let image_handle = image_handle() as u64;
-        // SAFETY: Only the address is taken.
-        let system_table = unsafe { (&raw const (*efi).system_table) as u64 };
+        let system_table = efi_address!(system_table);
         // SAFETY: The kernel image is measured and accepted, its entry point
         // follows the UEFI image-entry ABI, and the stack is accepted memory
         // that nothing else uses. The previous RSP is saved on the new stack
@@ -899,9 +940,6 @@ mod guest {
 
     /// Fills in every table and protocol.
     fn build_tables(efi: &mut Efi, boot: &Boot) {
-        let base = core::ptr::from_mut(efi);
-        let address = |field: *const ()| field as u64;
-
         for (index, c) in "OpenVMM\0".encode_utf16().enumerate() {
             efi.firmware_vendor[index] = c;
         }
@@ -916,8 +954,7 @@ mod guest {
             clear_screen: success as *const () as usize,
             set_cursor_position: unsupported as *const () as usize,
             enable_cursor: unsupported as *const () as usize,
-            // SAFETY: Only the address is taken.
-            mode: address(unsafe { (&raw const (*base).con_out_mode).cast() }),
+            mode: efi_address!(con_out_mode),
         };
         efi.con_in = TextInput {
             reset: success as *const () as usize,
@@ -970,11 +1007,7 @@ mod guest {
             (ACPI_20_TABLE_GUID, boot.rsdp_gpa),
             (SMBIOS3_TABLE_GUID, boot.smbios_gpa),
             (EFI_CC_BLOB_GUID, boot.cc_blob_gpa),
-            (
-                EFI_RT_PROPERTIES_TABLE_GUID,
-                // SAFETY: Only the address is taken.
-                address(unsafe { (&raw const (*base).rt_properties).cast() }),
-            ),
+            (EFI_RT_PROPERTIES_TABLE_GUID, efi_address!(rt_properties)),
         ] {
             efi.configuration_tables[count] = ConfigurationTable { guid, table };
             count += 1;
@@ -996,22 +1029,12 @@ mod guest {
         };
         efi.load_file2 = load_file as *const () as usize;
 
-        // SAFETY: Only addresses are taken.
-        let (system_table, con_out, con_in, runtime, boot_services, tables, vendor) = unsafe {
-            (
-                address((&raw const (*base).system_table).cast()),
-                address((&raw const (*base).con_out).cast()),
-                address((&raw const (*base).con_in).cast()),
-                address((&raw const (*base).runtime_services).cast()),
-                address((&raw const (*base).boot_services).cast()),
-                address((&raw const (*base).configuration_tables).cast()),
-                address((&raw const (*base).firmware_vendor).cast()),
-            )
-        };
+        let con_out = efi_address!(con_out);
+        let con_in = efi_address!(con_in);
         efi.loaded_image = LoadedImage {
             revision: EFI_LOADED_IMAGE_PROTOCOL_REVISION,
             parent_handle: 0,
-            system_table,
+            system_table: efi_address!(system_table),
             device_handle: 0,
             file_path: 0,
             reserved: 0,
@@ -1028,7 +1051,7 @@ mod guest {
             signature: EFI_SYSTEM_TABLE_SIGNATURE,
             revision: EFI_2_70_SYSTEM_TABLE_REVISION,
             header_size: size_of::<EfiSystemTable>() as u32,
-            firmware_vendor: vendor,
+            firmware_vendor: efi_address!(firmware_vendor),
             firmware_revision: 1,
             console_in_handle: con_in,
             con_in,
@@ -1036,14 +1059,13 @@ mod guest {
             con_out,
             standard_error_handle: con_out,
             std_err: con_out,
-            runtime_services: runtime,
-            boot_services,
+            runtime_services: efi_address!(runtime_services),
+            boot_services: efi_address!(boot_services),
             number_of_table_entries: count as u64,
-            configuration_table: tables,
+            configuration_table: efi_address!(configuration_tables),
             ..Default::default()
         };
-        // SAFETY: `efi` is the only reference.
-        unsafe { update_system_table_crc() };
+        update_system_table_crc(&mut efi.system_table);
     }
 
     fn header(signature: u64, size: usize) -> TableHeader {
@@ -1056,11 +1078,8 @@ mod guest {
         }
     }
 
-    fn table_crc<T>(table: &T) -> u32 {
-        // SAFETY: The service tables are plain integers with no padding.
-        crc32(unsafe {
-            core::slice::from_raw_parts(core::ptr::from_ref(table).cast::<u8>(), size_of::<T>())
-        })
+    fn table_crc<const N: usize>(table: &ServiceTable<N>) -> u32 {
+        crc32_parts(&[table.header.as_bytes(), table.functions.as_bytes()])
     }
 }
 
@@ -1075,6 +1094,7 @@ mod tests {
     #[test]
     fn crc32_matches_the_standard_check_value() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        assert_eq!(crc32_parts(&[b"1234", b"", b"56789"]), 0xcbf4_3926);
     }
 
     fn test_platform() -> SnpBootShimPlatformParams {
