@@ -92,6 +92,7 @@ pub mod pmem {
     #[derive(MeshPayload)]
     pub struct VirtioPmemHandle {
         pub path: String,
+        pub read_only: bool,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioPmemHandle {

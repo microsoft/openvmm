@@ -9,6 +9,7 @@ pub(crate) mod copy_on_write;
 
 use Memory::CreateFileMappingNumaW;
 use Memory::CreateFileMappingW;
+use Memory::FlushViewOfFile;
 use Memory::GetLargePageMinimum;
 use Memory::MEM_COMMIT;
 use Memory::MEM_DECOMMIT;
@@ -655,6 +656,21 @@ impl SparseMapping {
             )
         };
         if ret == 0 {
+            return Err(Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Flushes a mapped view to the backing file.
+    pub fn flush_view(&self, offset: usize, len: usize) -> Result<(), Error> {
+        assert!(self.is_local(), "cannot flush remote mappings");
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: `validate_offset_len` confirms this range is within the
+        // sparse mapping, and the caller must ensure it is mapped to a file.
+        if unsafe { FlushViewOfFile(self.address.wrapping_add(offset), len) } == 0 {
             return Err(Error::last_os_error());
         }
         Ok(())

@@ -1936,6 +1936,7 @@ async fn vm_config_from_command_line(
     if let Some(pmem_args) = &opt.virtio_pmem {
         let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
             path: pmem_args.path.clone(),
+            read_only: false,
         }
         .into_resource();
         if let Some(pcie_port) = &pmem_args.pcie_port {
