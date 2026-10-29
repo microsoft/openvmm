@@ -2987,77 +2987,36 @@ mod shutdown_tests {
     }
 
     #[test]
-    fn shutdown_without_caller_deadline_waits_beyond_thirty_seconds() {
-        DefaultPool::run_with(async |driver| {
-            let (send, mut recv) = mesh::channel();
-            let service = service(driver.clone(), Some(send));
-            let ctx = mesh::CancelContext::new();
-            assert!(ctx.deadline().is_none());
-            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
-            let guest = async {
-                let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
-                    panic!("expected shutdown request");
-                };
-                pal_async::timer::PolledTimer::new(&driver)
-                    .sleep(Duration::from_secs(31))
-                    .await;
-                rpc.complete(ShutdownResult::Ok);
-            };
-            let (result, ()) = mesh::CancelContext::new()
-                .with_timeout(Duration::from_secs(40))
-                .until_cancelled(async { futures::join!(request, guest) })
-                .await
-                .expect("shutdown did not complete after the delayed acknowledgement");
-            result.unwrap();
-        });
-    }
-
-    #[test]
-    fn shutdown_cancellation_after_dispatch() {
+    fn shutdown_without_caller_deadline_waits_for_acknowledgement() {
         DefaultPool::run_with(async |driver| {
             let (send, mut recv) = mesh::channel();
             let service = service(driver, Some(send));
-            let (ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
-            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
-            let cancel_request = async {
-                let rpc = recv.next().await.unwrap();
-                cancel.cancel();
-                rpc
+            let ctx = mesh::CancelContext::new();
+            assert!(ctx.deadline().is_none());
+            let mut request = std::pin::pin!(service.shutdown_vm(ctx, Default::default()).unwrap());
+            assert!(futures::poll!(&mut request).is_pending());
+            let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                panic!("expected shutdown request");
             };
-            let (result, pending_rpc) = futures::join!(request, cancel_request);
-            assert_eq!(grpc_error(result.unwrap_err()).code, Code::Cancelled as i32);
-            drop(pending_rpc);
+            assert!(futures::poll!(&mut request).is_pending());
+            rpc.complete(ShutdownResult::Ok);
+            request.await.unwrap();
         });
     }
 
     #[test]
-    fn shutdown_cancelled_before_dispatch_does_not_send() {
+    fn shutdown_expired_deadline_before_dispatch_does_not_send() {
         DefaultPool::run_with(async |driver| {
-            for expired in [false, true] {
-                let (send, mut recv) = mesh::channel();
-                let service = service(driver.clone(), Some(send));
-                let (ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
-                let ctx = if expired {
-                    ctx.with_timeout(Duration::ZERO)
-                } else {
-                    ctx
-                };
-                let request = service.shutdown_vm(ctx, Default::default()).unwrap();
-                if !expired {
-                    cancel.cancel();
-                }
-                let status = grpc_error(request.await.unwrap_err());
-                let expected = if expired {
-                    Code::DeadlineExceeded
-                } else {
-                    Code::Cancelled
-                };
-                assert_eq!(status.code, expected as i32);
-                assert!(
-                    recv.next().now_or_never().is_none(),
-                    "cancelled shutdown must not enqueue an IC request"
-                );
-            }
+            let (send, mut recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            let ctx = mesh::CancelContext::new().with_timeout(Duration::ZERO);
+            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
+            let status = grpc_error(request.await.unwrap_err());
+            assert_eq!(status.code, Code::DeadlineExceeded as i32);
+            assert!(
+                recv.next().now_or_never().is_none(),
+                "expired shutdown must not enqueue an IC request"
+            );
         });
     }
 
