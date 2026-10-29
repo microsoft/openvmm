@@ -405,13 +405,15 @@ impl X509CertificateInner {
         ) -> Result<jiff::civil::DateTime, jiff::Error> {
             const FILETIME_EPOCH: jiff::civil::DateTime =
                 jiff::civil::date(1601, 1, 1).at(0, 0, 0, 0);
-            const NANOS_PER_FILETIME_TICK: u32 = 100;
+            const TICKS_PER_DAY: u64 = 864_000_000_000;
+            const NANOS_PER_FILETIME_TICK: u64 = 100;
 
             let ticks =
                 (u64::from(value.dwHighDateTime) << u32::BITS) | u64::from(value.dwLowDateTime);
-            // Scale the duration rather than the count to avoid overflowing u64 nanoseconds.
-            let duration = std::time::Duration::from_nanos(ticks) * NANOS_PER_FILETIME_TICK;
-            FILETIME_EPOCH.checked_add(duration)
+            let days = jiff::Span::new().try_days((ticks / TICKS_PER_DAY) as i64)?;
+            let remainder =
+                std::time::Duration::from_nanos((ticks % TICKS_PER_DAY) * NANOS_PER_FILETIME_TICK);
+            FILETIME_EPOCH.checked_add(days)?.checked_add(remainder)
         }
         let info = self.0.cert_info();
         Ok((time(info.NotBefore)?, time(info.NotAfter)?))
