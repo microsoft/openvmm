@@ -501,8 +501,8 @@ pub enum Event<'a> {
     /// completions.
     Stop,
     /// Complete requests that cannot be represented in saved state.
-    /// A cancelled connection modification still occupies its wire-response
-    /// slot until the host replies.
+    /// Cancelled requests retain their wire-response slots until the host
+    /// replies, including across save/restore.
     PrepareSave,
     /// Post `Pause` (V5+ pause/resume protocol).
     Pause,
@@ -675,6 +675,10 @@ pub enum Action {
     OfferRescinded {
         channel_id: vmbus_core::protocol::ChannelId,
     },
+    /// The core removed a channel. The wrapper can drop its runtime resources.
+    ChannelRemoved {
+        channel_id: vmbus_core::protocol::ChannelId,
+    },
     /// A per-channel state observable transition.
     ChannelObservable {
         channel_id: vmbus_core::protocol::ChannelId,
@@ -694,6 +698,12 @@ pub enum Action {
 /// appropriate downstream target.
 pub trait ActionSink {
     fn emit(&mut self, action: Action);
+}
+
+#[derive(Copy, Clone, Debug)]
+enum PendingResponse {
+    Request(RequestId),
+    Cancelled,
 }
 
 // -- ClientCore skeleton ---------------------------------------------------
@@ -719,7 +729,7 @@ pub struct ClientCore {
     channels: alloc::collections::BTreeMap<vmbus_core::protocol::ChannelId, ChannelEntry>,
     outstanding: alloc::collections::BTreeMap<RequestId, PendingRequest>,
     hvsock_pending:
-        alloc::collections::BTreeMap<(Guid, Guid), alloc::collections::VecDeque<RequestId>>,
+        alloc::collections::BTreeMap<(Guid, Guid), alloc::collections::VecDeque<PendingResponse>>,
     teardown_gpadls: alloc::collections::BTreeMap<
         vmbus_core::protocol::GpadlId,
         vmbus_core::protocol::ChannelId,
@@ -728,10 +738,8 @@ pub struct ClientCore {
     flag_allocator: FlagAllocator,
     running: bool,
     host_busy: bool,
-    /// Set until the host answers `ModifyConnection`, so a duplicate request
-    /// can be rejected. After `PrepareSave`, the ID remains here but not in
-    /// `outstanding`, allowing the cancelled request's response to be discarded.
-    modify_connection_request_id: Option<RequestId>,
+    /// Cancelled requests still occupy the response slot until the host replies.
+    modify_connection_request: Option<PendingResponse>,
     malformed_host_message_count: u64,
 }
 
@@ -766,6 +774,18 @@ pub struct SavedState {
     /// Revoked channels omitted from `channels` that need a deferred
     /// `RelIdReleased` message after restore.
     pub released_channel_ids: alloc::vec::Vec<vmbus_core::protocol::ChannelId>,
+    /// A cancelled connection modification whose host response is still pending.
+    pub modify_connection_pending: bool,
+    /// Cancelled hvsock requests whose host responses are still pending.
+    /// Repeated keys represent distinct responses that must be consumed.
+    pub hvsock_requests: alloc::vec::Vec<SavedHvsockRequest>,
+}
+
+/// Response correlation for a cancelled hvsock connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedHvsockRequest {
+    pub service_id: Guid,
+    pub endpoint_id: Guid,
 }
 
 /// Saved protocol state for one channel.
@@ -863,7 +883,7 @@ impl ClientCore {
             flag_allocator: FlagAllocator::default(),
             running: false,
             host_busy: false,
-            modify_connection_request_id: None,
+            modify_connection_request: None,
             malformed_host_message_count: 0,
         }
     }
@@ -928,7 +948,7 @@ impl ClientCore {
 
     /// Whether a connection modification is waiting for a host response.
     pub fn modify_connection_pending(&self) -> bool {
-        self.modify_connection_request_id.is_some()
+        self.modify_connection_request.is_some()
     }
 
     /// Allocate a redirected-event flag from the internal pool.
@@ -964,12 +984,17 @@ impl ClientCore {
     /// [`Event::PrepareSave`] before saving.
     pub fn save(&self) -> SavedState {
         assert!(
-            self.modify_connection_request_id
-                .is_none_or(|request_id| !self.outstanding.contains_key(&request_id)),
+            !matches!(
+                self.modify_connection_request,
+                Some(PendingResponse::Request(_))
+            ),
             "cannot save while a connection modification is in flight"
         );
         assert!(
-            self.hvsock_pending.is_empty(),
+            self.hvsock_pending
+                .values()
+                .flatten()
+                .all(|response| matches!(response, PendingResponse::Cancelled)),
             "cannot save while an hvsock connection is in flight"
         );
         let version = self.phase.saved_version();
@@ -982,6 +1007,17 @@ impl ClientCore {
             version,
             channels,
             released_channel_ids,
+            modify_connection_pending: self.modify_connection_pending(),
+            hvsock_requests: self
+                .hvsock_pending
+                .iter()
+                .flat_map(|(&(service_id, endpoint_id), requests)| {
+                    requests.iter().map(move |_| SavedHvsockRequest {
+                        service_id,
+                        endpoint_id,
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -1123,18 +1159,29 @@ impl ClientCore {
             return Err(RestoreError::QueuedGpadlWithoutOwner(gpadl_id.0));
         }
 
+        let mut hvsock_pending =
+            alloc::collections::BTreeMap::<_, alloc::collections::VecDeque<_>>::new();
+        if connected {
+            for request in saved.hvsock_requests {
+                hvsock_pending
+                    .entry((request.service_id, request.endpoint_id))
+                    .or_default()
+                    .push_back(PendingResponse::Cancelled);
+            }
+        }
         self.phase = match saved.version {
             Some(version) => ClientPhase::Connected { version },
             None => ClientPhase::Disconnected,
         };
         self.channels = channels;
         self.outstanding.clear();
-        self.hvsock_pending.clear();
+        self.hvsock_pending = hvsock_pending;
         self.teardown_gpadls = teardown_gpadls;
         self.released_channel_ids = released_channel_ids;
         self.flag_allocator = FlagAllocator::default();
         self.host_busy = false;
-        self.modify_connection_request_id = None;
+        self.modify_connection_request =
+            (connected && saved.modify_connection_pending).then_some(PendingResponse::Cancelled);
         Ok(())
     }
 
@@ -1252,14 +1299,16 @@ impl ClientCore {
             }
             Event::Reset => {
                 self.phase = ClientPhase::Disconnected;
-                self.channels.clear();
+                for channel_id in core::mem::take(&mut self.channels).into_keys() {
+                    sink.emit(Action::ChannelRemoved { channel_id });
+                }
                 self.outstanding.clear();
                 self.hvsock_pending.clear();
                 self.teardown_gpadls.clear();
                 self.released_channel_ids.clear();
                 self.flag_allocator = FlagAllocator::default();
                 self.host_busy = false;
-                self.modify_connection_request_id = None;
+                self.modify_connection_request = None;
                 // `running` is deliberately preserved across reset —
                 // the wrapper toggles it explicitly via Start/Stop.
             }
@@ -1644,8 +1693,18 @@ impl ClientCore {
         if self.channels.contains_key(&offer.channel_id) {
             return;
         }
-        let hvsock_request_id = self.match_hvsock_offer(&offer);
-        if hvsock_request_id.is_none()
+        let hvsock_response = self.match_hvsock_offer(&offer);
+        if matches!(hvsock_response, Some(PendingResponse::Cancelled)) {
+            // The cancelled connection has no caller to claim this unopened channel.
+            Self::post_message(
+                &vmbus_core::protocol::RelIdReleased {
+                    channel_id: offer.channel_id,
+                },
+                sink,
+            );
+            return;
+        }
+        if hvsock_response.is_none()
             && !matches!(
                 self.phase,
                 ClientPhase::Connected { .. } | ClientPhase::RequestingOffers { .. }
@@ -1675,7 +1734,7 @@ impl ClientCore {
         // pending HvsockConnect, complete that instead of raising a
         // regular OfferReceived. Matches vmbus_client's
         // hvsock_tracker::check_offer semantics.
-        if let Some(request_id) = hvsock_request_id {
+        if let Some(PendingResponse::Request(request_id)) = hvsock_response {
             self.outstanding.remove(&request_id);
             sink.emit(Action::Complete {
                 request_id,
@@ -1693,13 +1752,13 @@ impl ClientCore {
     }
 
     /// Look up an offered channel against pending hvsock requests.
-    /// Returns the [`RequestId`] of the matching pending request if
+    /// Returns the response owner of the matching pending request if
     /// the offer is an hvsock guest-connect (rather than
     /// host-accept) result.
     fn match_hvsock_offer(
         &mut self,
         offer: &vmbus_core::protocol::OfferChannel,
-    ) -> Option<RequestId> {
+    ) -> Option<PendingResponse> {
         if !offer.flags.tlnpi_provider() {
             return None;
         }
@@ -2197,6 +2256,7 @@ impl ClientCore {
         if entry.is_client_released && is_revoked && !has_pending {
             Self::post_message(&vmbus_core::protocol::RelIdReleased { channel_id }, sink);
             self.channels.remove(&channel_id);
+            sink.emit(Action::ChannelRemoved { channel_id });
         }
     }
 
@@ -2575,7 +2635,7 @@ impl ClientCore {
             });
             return;
         }
-        if self.modify_connection_request_id.is_some() {
+        if self.modify_connection_request.is_some() {
             sink.emit(Action::Complete {
                 request_id,
                 result: CompletionResult::ModifyConnection(
@@ -2584,7 +2644,7 @@ impl ClientCore {
             });
             return;
         }
-        self.modify_connection_request_id = Some(request_id);
+        self.modify_connection_request = Some(PendingResponse::Request(request_id));
         self.outstanding
             .insert(request_id, PendingRequest::ModifyConnection);
         Self::post_message(
@@ -2604,15 +2664,15 @@ impl ClientCore {
         response: vmbus_core::protocol::ModifyConnectionResponse,
         sink: &mut S,
     ) {
-        let Some(request_id) = self.modify_connection_request_id.take() else {
+        let Some(PendingResponse::Request(request_id)) = self.modify_connection_request.take()
+        else {
             return;
         };
-        if self.outstanding.remove(&request_id).is_some() {
-            sink.emit(Action::Complete {
-                request_id,
-                result: CompletionResult::ModifyConnection(response.connection_state),
-            });
-        }
+        self.outstanding.remove(&request_id);
+        sink.emit(Action::Complete {
+            request_id,
+            result: CompletionResult::ModifyConnection(response.connection_state),
+        });
     }
 
     /// Handle [`Event::HvsockConnect`] — post `TlConnectRequest2` and
@@ -2636,6 +2696,18 @@ impl ClientCore {
             });
             return;
         }
+        // Replies have no request ID, so a cancelled key cannot be reused yet.
+        if self
+            .hvsock_pending
+            .get(&(request.service_id, request.endpoint_id))
+            .is_some_and(|requests| matches!(requests.front(), Some(PendingResponse::Cancelled)))
+        {
+            sink.emit(Action::Complete {
+                request_id,
+                result: CompletionResult::HvsockConnect(None),
+            });
+            return;
+        }
         // vmbus_client only sends the newer TlConnectRequest2 (Win10Rs5+).
         let msg = vmbus_core::protocol::TlConnectRequest2 {
             base: vmbus_core::protocol::TlConnectRequest {
@@ -2647,7 +2719,7 @@ impl ClientCore {
         self.hvsock_pending
             .entry((request.service_id, request.endpoint_id))
             .or_default()
-            .push_back(request_id);
+            .push_back(PendingResponse::Request(request_id));
         self.outstanding.insert(
             request_id,
             PendingRequest::HvsockConnect {
@@ -2671,7 +2743,8 @@ impl ClientCore {
         if result.status >= 0 {
             return;
         }
-        let Some(request_id) = self.pop_hvsock_request((result.service_id, result.endpoint_id))
+        let Some(PendingResponse::Request(request_id)) =
+            self.pop_hvsock_request((result.service_id, result.endpoint_id))
         else {
             return;
         };
@@ -2682,7 +2755,7 @@ impl ClientCore {
         });
     }
 
-    fn pop_hvsock_request(&mut self, key: (Guid, Guid)) -> Option<RequestId> {
+    fn pop_hvsock_request(&mut self, key: (Guid, Guid)) -> Option<PendingResponse> {
         let request_ids = self.hvsock_pending.get_mut(&key)?;
         let request_id = request_ids.pop_front();
         if request_ids.is_empty() {
@@ -2692,9 +2765,11 @@ impl ClientCore {
     }
 
     fn handle_prepare_save<S: ActionSink + ?Sized>(&mut self, sink: &mut S) {
-        if let Some(request_id) = self.modify_connection_request_id
-            && self.outstanding.remove(&request_id).is_some()
+        if let Some(response) = &mut self.modify_connection_request
+            && let PendingResponse::Request(request_id) =
+                core::mem::replace(response, PendingResponse::Cancelled)
         {
+            self.outstanding.remove(&request_id);
             sink.emit(Action::Complete {
                 request_id,
                 result: CompletionResult::ModifyConnection(
@@ -2703,8 +2778,13 @@ impl ClientCore {
             });
         }
 
-        for request_ids in core::mem::take(&mut self.hvsock_pending).into_values() {
-            for request_id in request_ids {
+        for responses in self.hvsock_pending.values_mut() {
+            for response in responses {
+                let PendingResponse::Request(request_id) =
+                    core::mem::replace(response, PendingResponse::Cancelled)
+                else {
+                    continue;
+                };
                 self.outstanding.remove(&request_id);
                 sink.emit(Action::Complete {
                     request_id,

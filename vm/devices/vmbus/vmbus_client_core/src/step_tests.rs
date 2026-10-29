@@ -1195,8 +1195,15 @@ fn release_after_rescind_posts_relidreleased_and_drops_entry() {
         },
         &mut sink,
     );
-    assert_eq!(sink.actions.len(), 1);
-    let _ = expect_post(&sink.actions[0]);
+    assert!(matches!(
+        sink.actions.as_slice(),
+        [
+            Action::PostMessage(_),
+            Action::ChannelRemoved {
+                channel_id: vmbus_core::protocol::ChannelId(12),
+            }
+        ]
+    ));
     assert!(
         !core
             .channels()
@@ -2059,6 +2066,8 @@ fn restore_rejects_queued_gpadl_teardown_without_owner() {
                 }],
             }],
             released_channel_ids: Vec::new(),
+            modify_connection_pending: false,
+            hvsock_requests: Vec::new(),
         })
         .unwrap_err();
 
@@ -2503,7 +2512,7 @@ fn prepare_save_completes_unsaveable_requests() {
     )));
     assert!(core.modify_connection_pending());
     assert_eq!(core.pending_request_count(), 0);
-    assert!(core.hvsock_pending.is_empty());
+    assert_eq!(core.pending_hvsock_request_count(), 1);
     let _ = core.save();
 
     sink.actions.clear();
@@ -2513,7 +2522,7 @@ fn prepare_save_completes_unsaveable_requests() {
 }
 
 #[test]
-fn prepare_save_keeps_modify_slot_until_late_response() {
+fn prepare_save_restore_keeps_modify_slot_until_late_response() {
     let mut core = ClientCore::new(make_multi_version_config());
     let mut sink = Recording::default();
     connect_with_flags(
@@ -2529,7 +2538,8 @@ fn prepare_save_keeps_modify_slot_until_late_response() {
         &mut sink,
     );
     core.step(Event::PrepareSave, &mut sink);
-    let _ = core.save();
+    let saved = core.save();
+    core.restore(saved).unwrap();
     sink.actions.clear();
 
     core.step(
@@ -2766,11 +2776,18 @@ fn disconnected_restore_discards_saved_channels() {
             }],
         }],
         released_channel_ids: Vec::new(),
+        modify_connection_pending: true,
+        hvsock_requests: alloc::vec![SavedHvsockRequest {
+            service_id: Guid::ZERO,
+            endpoint_id: Guid::ZERO,
+        }],
     })
     .unwrap();
 
     assert!(matches!(core.phase(), ClientPhase::Disconnected));
     assert!(core.channels().is_empty());
+    assert!(!core.modify_connection_pending());
+    assert_eq!(core.pending_hvsock_request_count(), 0);
 }
 
 #[test]
@@ -2786,6 +2803,8 @@ fn post_restore_replays_deferred_channel_releases() {
         version: Some(version),
         channels: Vec::new(),
         released_channel_ids: alloc::vec![channel_id],
+        modify_connection_pending: false,
+        hvsock_requests: Vec::new(),
     })
     .unwrap();
 
@@ -2797,6 +2816,131 @@ fn post_restore_replays_deferred_channel_releases() {
         make_host_message(&vmbus_core::protocol::RelIdReleased { channel_id })
     );
     assert!(core.save().released_channel_ids.is_empty());
+}
+
+#[test]
+fn cancelled_hvsock_responses_keep_fifo_across_restore() {
+    for late_success in [false, true] {
+        let config = make_redirect_config();
+        let mut core = ClientCore::new(config.clone());
+        let mut sink = Recording::default();
+        connect_with_flags(&mut core, &mut sink, config.supported_feature_flags);
+        let request = HvsockConnectRequest {
+            service_id: Guid {
+                data1: 1,
+                ..Guid::ZERO
+            },
+            endpoint_id: Guid {
+                data1: 2,
+                ..Guid::ZERO
+            },
+            silo_id: Guid::ZERO,
+            hosted_silo_unaware: false,
+        };
+        for request_id in [RequestId(1), RequestId(2)] {
+            core.step(
+                Event::HvsockConnect {
+                    request_id,
+                    request,
+                },
+                &mut sink,
+            );
+        }
+        core.step(Event::PrepareSave, &mut sink);
+        let saved = core.save();
+        assert_eq!(saved.hvsock_requests.len(), 2);
+        let mut restored = ClientCore::new(config);
+        restored.restore(saved).unwrap();
+        sink.actions.clear();
+
+        // A new instance can reuse a local request ID, but not an old wire reply.
+        restored.step(
+            Event::HvsockConnect {
+                request_id: RequestId(1),
+                request,
+            },
+            &mut sink,
+        );
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(1),
+                result: CompletionResult::HvsockConnect(None),
+            }]
+        ));
+        sink.actions.clear();
+        for channel_id in [80, 81] {
+            if late_success {
+                let mut offer = make_offer(channel_id);
+                offer.interface_id = request.service_id;
+                offer.instance_id = request.endpoint_id;
+                offer.flags = vmbus_core::protocol::OfferFlags::new().with_tlnpi_provider(true);
+                restored.step(Event::HostMessage(&make_host_message(&offer)), &mut sink);
+                assert!(matches!(sink.actions.as_slice(), [Action::PostMessage(_)]));
+                assert_eq!(
+                    expect_post(&sink.actions[0]),
+                    make_host_message(&vmbus_core::protocol::RelIdReleased {
+                        channel_id: offer.channel_id,
+                    })
+                );
+                assert!(!restored.channels().contains_key(&offer.channel_id));
+            } else {
+                let response = vmbus_core::protocol::TlConnectResult {
+                    service_id: request.service_id,
+                    endpoint_id: request.endpoint_id,
+                    status: -1,
+                };
+                restored.step(Event::HostMessage(&make_host_message(&response)), &mut sink);
+                assert!(sink.actions.is_empty());
+            }
+            sink.actions.clear();
+        }
+        assert_eq!(restored.pending_hvsock_request_count(), 0);
+        restored.step(
+            Event::HvsockConnect {
+                request_id: RequestId(1),
+                request,
+            },
+            &mut sink,
+        );
+        assert!(matches!(sink.actions.as_slice(), [Action::PostMessage(_)]));
+        sink.actions.clear();
+        let mut offer = make_offer(82);
+        offer.interface_id = request.service_id;
+        offer.instance_id = request.endpoint_id;
+        offer.flags = vmbus_core::protocol::OfferFlags::new().with_tlnpi_provider(true);
+        restored.step(Event::HostMessage(&make_host_message(&offer)), &mut sink);
+        assert!(matches!(
+            sink.actions.as_slice(),
+            [Action::Complete {
+                request_id: RequestId(1),
+                result: CompletionResult::HvsockConnect(Some(descriptor)),
+            }] if descriptor.offer.channel_id == offer.channel_id
+        ));
+        assert_eq!(restored.pending_request_count(), 0);
+        assert_eq!(restored.pending_hvsock_request_count(), 0);
+    }
+}
+
+#[test]
+fn reset_notifies_removed_channels() {
+    let mut core = ClientCore::new(make_redirect_config());
+    let mut sink = Recording::default();
+    connect_and_offer(&mut core, &mut sink, 80);
+    deliver_one_offer(&mut core, &mut sink, 81);
+    core.step(Event::Reset, &mut sink);
+    assert!(matches!(
+        sink.actions.as_slice(),
+        [
+            Action::ChannelRemoved {
+                channel_id: vmbus_core::protocol::ChannelId(80)
+            },
+            Action::ChannelRemoved {
+                channel_id: vmbus_core::protocol::ChannelId(81)
+            }
+        ]
+    ));
+    assert!(core.channels().is_empty());
 }
 
 #[test]

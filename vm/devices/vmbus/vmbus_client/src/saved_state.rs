@@ -94,6 +94,15 @@ impl super::ClientTask {
                 })
                 .collect(),
             pending_messages,
+            modify_connection_pending: core_state.modify_connection_pending,
+            hvsock_requests: core_state
+                .hvsock_requests
+                .into_iter()
+                .map(|request| PendingHvsockRequest {
+                    service_id: request.service_id,
+                    endpoint_id: request.endpoint_id,
+                })
+                .collect(),
         }
     }
 
@@ -108,6 +117,8 @@ impl super::ClientTask {
             channels,
             gpadls,
             pending_messages,
+            modify_connection_pending,
+            hvsock_requests,
         } = saved_state;
 
         let version = match client_state {
@@ -169,6 +180,14 @@ impl super::ClientTask {
             version,
             channels: core_channels,
             released_channel_ids: Vec::new(),
+            modify_connection_pending,
+            hvsock_requests: hvsock_requests
+                .into_iter()
+                .map(|request| vmbus_client_core::SavedHvsockRequest {
+                    service_id: request.service_id,
+                    endpoint_id: request.endpoint_id,
+                })
+                .collect(),
         };
         self.core
             .restore(core_state.clone())
@@ -247,6 +266,19 @@ pub struct SavedState {
     pub gpadls: Vec<Gpadl>,
     #[mesh(4)]
     pub pending_messages: Vec<PendingMessage>,
+    #[mesh(5)]
+    pub modify_connection_pending: bool,
+    #[mesh(6)]
+    pub hvsock_requests: Vec<PendingHvsockRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "vmbus.client")]
+pub struct PendingHvsockRequest {
+    #[mesh(1)]
+    pub service_id: Guid,
+    #[mesh(2)]
+    pub endpoint_id: Guid,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
