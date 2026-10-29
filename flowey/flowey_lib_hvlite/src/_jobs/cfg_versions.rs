@@ -52,6 +52,8 @@ flowey_request! {
         },
         /// Override UEFI mu_msvm with a local MSVM.fd path for this architecture
         LocalUefi(CommonArch, ReadVar<PathBuf>),
+        /// Temporary mshv root bzImage override, separate from child kernels.
+        LocalMshvKernel(ReadVar<PathBuf>),
     }
 }
 
@@ -90,6 +92,7 @@ impl FlowNode for Node {
         let mut local_protoc: Option<ReadVar<PathBuf>> = None;
         let mut local_kernel: BTreeMap<CommonArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> = BTreeMap::new();
         let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_mshv_kernel = None;
 
         for req in requests {
             match req {
@@ -128,6 +131,9 @@ impl FlowNode for Node {
                         );
                     }
                     local_uefi.insert(arch, path);
+                }
+                Request::LocalMshvKernel(path) => {
+                    anyhow::ensure!(local_mshv_kernel.replace(path).is_none(), "mshv kernel override specified more than once");
                 }
             }
         }
@@ -219,6 +225,7 @@ impl FlowNode for Node {
         ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
             version: Some(OPENVMM_DEPS.into()),
             mshv_version: Some(OPENVMM_MSHV_TEST_KERNEL.into()),
+            local_mshv_kernel: local_mshv_kernel.map(ConfigVar),
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {

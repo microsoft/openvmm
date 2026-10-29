@@ -640,11 +640,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
         let isolated_without_paravisor = artifacts.firmware.is_isolated_without_paravisor();
+        let mshv = artifacts.firmware.mshv_boot().is_some();
         let builder = Self::minimal(params.test_name, params.log_source, artifacts, driver)?
             .clear_minimal_mode()
             .with_serial_output()
             .with_capture_inspect_on_failure();
-        if isolated_without_paravisor {
+        if isolated_without_paravisor || mshv {
             Ok(builder)
         } else {
             builder
@@ -865,6 +866,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// [`with_prebuilt_initrd`](Self::with_prebuilt_initrd) for each
     /// iteration.
     pub fn prepare_initrd(&self) -> anyhow::Result<PetriInitrd> {
+        if let Some(boot) = self.config.firmware.mshv_boot() {
+            return boot.prepare_initrd(
+                self.pipette_binary
+                    .as_ref()
+                    .context("mshv initrd preparation requires Pipette")?,
+            );
+        }
         self.prepare_custom_initrd(T::build_custom_init_script)
     }
 
@@ -1182,9 +1190,10 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .enable_vpci_boot = true;
         }
 
-        let builder = if let Some(boot_drive) =
-            self.config.firmware.boot_drive(self.use_virtio_vsock)?
-        {
+        let builder = if let Some(boot_drive) = self.config.firmware.boot_drive(
+            self.use_virtio_vsock,
+            self.resources.prebuilt_initrd.as_ref(),
+        )? {
             match self.boot_device_type {
                 BootDeviceType::None => unreachable!(),
                 BootDeviceType::Ide => self.add_ide_drive(
@@ -1344,12 +1353,15 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Whether Petri will inject Pipette as PID 1 init in the initrd.
     ///
-    /// True for non-OpenHCL Linux direct boot when a pipette binary is
-    /// available. Pipette is injected into the initrd via CPIO and set
-    /// as `rdinit=/pipette`.
+    /// True for non-OpenHCL Linux direct boot or an mshv base initrd when a
+    /// Pipette binary is available. Caller-prepared mshv userspace is unchanged.
     fn uses_pipette_as_init(&self) -> bool {
-        self.config.firmware.is_linux_direct()
-            && !self.config.firmware.is_openhcl()
+        ((self.config.firmware.is_linux_direct() && !self.config.firmware.is_openhcl())
+            || self
+                .config
+                .firmware
+                .mshv_boot()
+                .is_some_and(|boot| matches!(&boot.initrd, crate::mshv_boot::MshvInitrd::Base(_))))
             && self.pipette_binary.is_some()
     }
 
@@ -1382,16 +1394,14 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     async fn run_core(mut self) -> anyhow::Result<PetriVm<T>> {
-        // Add the boot disk now to allow the test to modify the boot type
-        // Add the agent disks now to allow the test to add custom files
-        self = self.add_boot_disk()?.add_agent_disks()?;
-
         // Auto-prepare the initrd with pipette injected if needed.
         // This centralizes the injection logic so backends only ever
         // receive a prebuilt_initrd path.
         if self.uses_pipette_as_init() && self.resources.prebuilt_initrd.is_none() {
             self.resources.prebuilt_initrd = Some(self.prepare_initrd()?);
         }
+        // mshv boot media consumes the prepared userspace.
+        self = self.add_boot_disk()?.add_agent_disks()?;
 
         tracing::debug!(builder = ?self);
 
@@ -3778,7 +3788,21 @@ impl Firmware {
         }
     }
 
-    fn boot_drive(&self, use_virtio_vsock: bool) -> anyhow::Result<Option<Drive>> {
+    fn mshv_boot(&self) -> Option<&MshvBoot> {
+        match self {
+            Firmware::Uefi {
+                guest: UefiGuest::Mshv(boot),
+                ..
+            } => Some(boot),
+            _ => None,
+        }
+    }
+
+    fn boot_drive(
+        &self,
+        use_virtio_vsock: bool,
+        prepared: Option<&PetriInitrd>,
+    ) -> anyhow::Result<Option<Drive>> {
         if let Firmware::Uefi {
             guest: UefiGuest::Mshv(boot),
             ..
@@ -3790,7 +3814,7 @@ impl Firmware {
         {
             return Ok(Some(Drive::new(
                 Some(
-                    boot.build(use_virtio_vsock)
+                    boot.build(use_virtio_vsock, prepared)
                         .context("composing mshv boot disk")?,
                 ),
                 false,

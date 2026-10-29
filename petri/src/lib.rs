@@ -13,6 +13,7 @@ extern crate openvmm_hypervisors as _;
 
 pub mod disk_image;
 pub mod initrd;
+pub mod linux_bootstrap;
 mod linux_direct_serial_agent;
 pub mod mshv_boot;
 pub mod mshv_image;
