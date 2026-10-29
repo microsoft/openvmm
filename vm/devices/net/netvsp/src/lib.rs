@@ -5344,7 +5344,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             });
                         }
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(WorkerError::UnexpectedPacketOrder(
+                            PacketOrderError::InvalidPacketData,
+                        ));
+                    }
                 }
             }
         }

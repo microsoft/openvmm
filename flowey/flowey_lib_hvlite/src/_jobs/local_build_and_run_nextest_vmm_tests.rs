@@ -662,11 +662,15 @@ impl SimpleFlowNode for Node {
         let flowey_hvlite_linux_x64 = build
             .flowey_hvlite_linux_x64
             .then(|| build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_x64_target()));
+        let flowey_hvlite_linux_musl_x64 = build.flowey_hvlite_linux_musl_x64.then(|| {
+            build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_musl_x64_target())
+        });
 
         let built_artifacts = VmmTestsBuiltArtifacts {
             flowey_hvlite_windows_x64,
             flowey_hvlite_windows_aarch64,
             flowey_hvlite_linux_x64,
+            flowey_hvlite_linux_musl_x64,
             nextest_vmm_tests_archive_windows_x64,
             nextest_vmm_tests_archive_windows_aarch64,
             nextest_vmm_tests_archive_linux_x64,
@@ -793,6 +797,7 @@ impl SimpleFlowNode for Node {
                         CommonTriple::AARCH64_WINDOWS_MSVC => "windows-aarch64",
                         CommonTriple::X86_64_WINDOWS_MSVC => "windows-x64",
                         CommonTriple::X86_64_LINUX_GNU => "linux-x64",
+                        CommonTriple::X86_64_LINUX_MUSL => "linux-musl-x64",
                         CommonTriple::AARCH64_LINUX_MUSL => "linux-aarch64-musl",
                         _ => unreachable!(),
                     };

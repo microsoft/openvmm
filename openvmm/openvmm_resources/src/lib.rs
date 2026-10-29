@@ -77,6 +77,7 @@ vm_resource::register_static_resolvers! {
     disk_delay::resolver::DelayDiskResolver,
     disk_zone_emu::resolver::ZoneEmulationDiskResolver,
     disk_vhd1::Vhd1Resolver,
+    disk_vmdk::FlatVmdkResolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]
@@ -108,6 +109,7 @@ vm_resource::register_static_resolvers! {
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
     virtio_rng::resolver::VirtioRngResolver,
+    virtio_rtc::resolver::VirtioRtcResolver,
     #[cfg(target_os = "linux")]
     vhost_user_frontend::resolver::VhostUserFrontendResolver,
     virtio_vsock::resolver::VirtioVsockResolver,

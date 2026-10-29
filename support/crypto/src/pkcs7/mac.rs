@@ -336,10 +336,10 @@ fn cms_sign(
     use cms::content_info::ContentInfo;
     use cms::signed_data::SignedData;
     use cms::signed_data::SignerIdentifier;
+    use const_oid::db::rfc5911::ID_SIGNED_DATA;
     use der::Decode;
     use der::Encode;
     use der::asn1::SetOfVec;
-    use der::oid::db::rfc5911::ID_SIGNED_DATA;
     use x509_cert::Certificate;
     use x509_cert::spki::AlgorithmIdentifierOwned;
 
@@ -355,11 +355,11 @@ fn cms_sign(
     })?;
 
     let digest_alg = AlgorithmIdentifierOwned {
-        oid: der::oid::db::rfc5912::ID_SHA_256,
+        oid: const_oid::db::rfc5912::ID_SHA_256,
         parameters: None,
     };
     let signature_algorithm = AlgorithmIdentifierOwned {
-        oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+        oid: const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
         parameters: None,
     };
 
@@ -393,7 +393,7 @@ fn cms_sign(
         version: cms::content_info::CmsVersion::V1,
         digest_algorithms,
         encap_content_info: cms::signed_data::EncapsulatedContentInfo {
-            econtent_type: der::oid::db::rfc5911::ID_DATA,
+            econtent_type: const_oid::db::rfc5911::ID_DATA,
             econtent: None,
         },
         certificates: Some(cms::signed_data::CertificateSet(certs)),

@@ -13,6 +13,30 @@ use std::sync::Arc;
 // Common trait for fids (files and xattrs)
 // Default implementation is provided for most functions since not all are needed by all fid types.
 pub trait Fid: Send + Sync {
+    fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn fsync(&self, _data_only: bool) -> lx::Result<()> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn symlink(&self, _name: &lx::LxStr, _target: &lx::LxStr, _gid: u32) -> lx::Result<Qid> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn read_link(&self) -> lx::Result<lx::LxString> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn file_path(&self) -> lx::Result<(Arc<LxVolume>, PathBuf)> {
+        Err(lx::Error::EINVAL)
+    }
+
+    fn link(&self, _source: &dyn Fid, _name: &lx::LxStr) -> lx::Result<()> {
+        Err(lx::Error::EINVAL)
+    }
+
     fn get_attr(&self) -> lx::Result<(Qid, lx::Stat)> {
         Err(lx::Error::EINVAL)
     }
@@ -175,6 +199,9 @@ impl FileState {
     }
 
     fn child_path(&self, name: &lx::LxStr) -> lx::Result<PathBuf> {
+        if self.qid.qid_type & QID_TYPE_DIRECTORY == 0 {
+            return Err(lx::Error::ENOTDIR);
+        }
         // Defense in depth: the protocol parser already validates names,
         // but assert here to catch any bypass.
         assert!(!name.is_empty(), "empty child name");
@@ -262,6 +289,55 @@ impl File {
 }
 
 impl Fid for File {
+    fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        let state = self.state.read();
+        if let Some(file) = &state.file {
+            file.stat_fs()
+        } else {
+            state.root.stat_fs(&state.path)
+        }
+    }
+
+    fn fsync(&self, data_only: bool) -> lx::Result<()> {
+        let state = self.state.read();
+        state
+            .file
+            .as_ref()
+            .ok_or(lx::Error::EBADF)?
+            .fsync(data_only)
+    }
+
+    fn symlink(&self, name: &lx::LxStr, target: &lx::LxStr, gid: u32) -> lx::Result<Qid> {
+        let state = self.state.read();
+        let path = state.child_path(name)?;
+        let stat = state.root.symlink_stat(
+            path,
+            target,
+            LxCreateOptions::new(lx::S_IFLNK | 0o777, self.uid, gid),
+        )?;
+        Ok(FileState::stat_to_qid(&stat))
+    }
+
+    fn read_link(&self) -> lx::Result<lx::LxString> {
+        let state = self.state.read();
+        state.root.read_link(&state.path)
+    }
+
+    fn file_path(&self) -> lx::Result<(Arc<LxVolume>, PathBuf)> {
+        let state = self.state.read();
+        Ok((Arc::clone(&state.root), state.path.clone()))
+    }
+
+    fn link(&self, source: &dyn Fid, name: &lx::LxStr) -> lx::Result<()> {
+        // Snapshot before locking the destination, which may be the same fid.
+        let (root, path) = source.file_path()?;
+        let state = self.state.read();
+        if !Arc::ptr_eq(&root, &state.root) {
+            return Err(lx::Error::EXDEV);
+        }
+        state.root.link(path, state.child_path(name)?)
+    }
+
     // Get the file's attributes.
     fn get_attr(&self) -> lx::Result<(Qid, lx::Stat)> {
         self.state.read().get_attributes()
@@ -270,8 +346,10 @@ impl Fid for File {
     // Walk to a child, and make sure it exists.
     fn walk(&self, name: &lx::LxStr) -> lx::Result<Qid> {
         let mut state = self.state.write();
-        state.path.push_lx(name)?;
-        state.validate_exists()?;
+        let path = state.child_path(name)?;
+        let stat = state.root.lstat(&path)?;
+        state.path = path;
+        state.qid = FileState::stat_to_qid(&stat);
         Ok(state.qid)
     }
 
@@ -336,5 +414,94 @@ impl Fid for File {
         let state = self.state.read();
         let child_path = state.child_path(name)?;
         state.root.unlink(child_path, flags as i32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn stat_fs_after_unlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"retained").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (root, _) = File::new(Arc::clone(&volume), 0).unwrap();
+        let fid = root.fid_clone();
+        fid.walk("file".as_ref()).unwrap();
+        let before = fid.stat_fs().unwrap();
+        fid.open(lx::O_RDONLY as u32).unwrap();
+        root.unlink_at("file".as_ref(), 0).unwrap();
+        assert_eq!(volume.lstat("file").unwrap_err(), lx::Error::ENOENT);
+
+        let after = fid.stat_fs().unwrap();
+        assert_eq!(after.file_system_id, before.file_system_id);
+        assert_eq!(after.fs_type, before.fs_type);
+        assert_eq!(after.block_size, before.block_size);
+        let mut buffer = [0; 8];
+        assert_eq!(fid.read(0, &mut buffer).unwrap(), 8);
+        assert_eq!(&buffer, b"retained");
+    }
+
+    #[test]
+    fn non_directory_fids_reject_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"unchanged").unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        volume
+            .symlink("link", "dir", LxCreateOptions::default())
+            .unwrap();
+        for name in ["file", "link"] {
+            let (fid, _) = File::new(Arc::clone(&volume), 0).unwrap();
+            fid.walk(name.as_ref()).unwrap();
+            assert_eq!(fid.walk("child".as_ref()).unwrap_err(), lx::Error::ENOTDIR);
+            assert_eq!(
+                fid.create("child".as_ref(), 0, 0o600, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                fid.mkdir("child".as_ref(), 0o700, 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+            assert_eq!(
+                fid.unlink_at("child".as_ref(), 0).unwrap_err(),
+                lx::Error::ENOTDIR
+            );
+        }
+        assert_eq!(
+            std::fs::read(tmp.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!tmp.path().join("dir/child").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_directory_fid_rejects_replacement_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        std::fs::write(outside.path().join("file"), b"outside").unwrap();
+        let volume = Arc::new(LxVolume::new(tmp.path()).unwrap());
+        let (fid, _) = File::new(volume, 0).unwrap();
+        fid.walk("dir".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("dir"), tmp.path().join("original")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("dir")).unwrap();
+        assert!(matches!(
+            fid.walk("file".as_ref()).unwrap_err(),
+            lx::Error::ELOOP | lx::Error::ENOTDIR
+        ));
+        assert_eq!(
+            fid.create("new".as_ref(), lx::O_WRONLY as u32, 0o600, 0)
+                .unwrap_err(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            std::fs::read(outside.path().join("file")).unwrap(),
+            b"outside"
+        );
+        assert!(!outside.path().join("new").exists());
     }
 }

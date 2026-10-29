@@ -5,6 +5,9 @@
 //! response.
 use crate::igvm_attest::Error as CommonError;
 use crate::igvm_attest::parse_response_header;
+use const_oid::ObjectIdentifier;
+use const_oid::db::rfc4519::COMMON_NAME;
+use const_oid::db::rfc5280::ID_CE_AUTHORITY_KEY_IDENTIFIER;
 use der::Decode;
 use der::Reader;
 use der::SliceReader;
@@ -16,7 +19,6 @@ use der::asn1::BitStringRef;
 use der::asn1::BmpString;
 use der::asn1::GeneralizedTime;
 use der::asn1::IntRef;
-use der::asn1::ObjectIdentifier;
 use der::asn1::OctetStringRef;
 use der::asn1::PrintableStringRef;
 use der::asn1::TeletexStringRef;
@@ -151,7 +153,6 @@ fn common_name(
     reader: &mut SliceReader<'_>,
     name: &'static str,
 ) -> Result<String, AkCertMetadataError> {
-    const COMMON_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.3");
     let mut cn = None;
     reader.sequence(|rdns| {
         while !rdns.is_finished() {
@@ -207,7 +208,6 @@ fn directory_string(value: AnyRef<'_>) -> der::Result<String> {
 }
 
 fn authority_key_identifier(extensions: &[u8]) -> der::Result<Option<&[u8]>> {
-    const AUTHORITY_KEY_IDENTIFIER: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.35");
     let mut seen = false;
     let mut key = None;
     AnyRef::from_der(extensions)?.sequence(|extensions| {
@@ -224,7 +224,7 @@ fn authority_key_identifier(extensions: &[u8]) -> der::Result<Option<&[u8]>> {
                     }
                 }
                 let value = extension.decode::<&OctetStringRef>()?;
-                if oid == AUTHORITY_KEY_IDENTIFIER {
+                if oid == ID_CE_AUTHORITY_KEY_IDENTIFIER {
                     if seen {
                         return Err(Tag::Sequence.value_error().into());
                     }
@@ -351,6 +351,8 @@ pub fn parse_response(response: &[u8]) -> Result<AkCertResponse, AkCertError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use const_oid::db::rfc4519::ORGANIZATION_NAME;
+    use const_oid::db::rfc5280::ID_CE_POLICY_CONSTRAINTS;
     use der::Encode;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
@@ -386,7 +388,7 @@ mod tests {
         let cert = with_aki(&[der_value(TagNumber(0).context_specific(false), &[1])]);
         assert_eq!(parse_metadata(&cert).unwrap().authority, "01");
         let cert = edit_children(&cert, &[0, 7, 0, 0], |extension| {
-            extension[0] = ObjectIdentifier::new_unwrap("2.5.29.36").to_der().unwrap();
+            extension[0] = ID_CE_POLICY_CONSTRAINTS.to_der().unwrap();
         });
         assert_eq!(parse_metadata(&cert).unwrap().authority, "");
     }
@@ -395,7 +397,7 @@ mod tests {
     fn test_certificate_missing_common_name() {
         for name_index in [3, 5] {
             let cert = edit_children(&certificate(), &[0, name_index, 0, 0], |attribute| {
-                attribute[0] = ObjectIdentifier::new_unwrap("2.5.4.10").to_der().unwrap();
+                attribute[0] = ORGANIZATION_NAME.to_der().unwrap();
             });
             assert!(matches!(
                 parse_metadata(&cert),
@@ -447,7 +449,7 @@ mod tests {
         let extension = der_value(
             Tag::Sequence,
             &[
-                ObjectIdentifier::new_unwrap("2.5.29.35").to_der().unwrap(),
+                ID_CE_AUTHORITY_KEY_IDENTIFIER.to_der().unwrap(),
                 der_value(
                     Tag::OctetString,
                     &der_value(Tag::Sequence, &fields.concat()),

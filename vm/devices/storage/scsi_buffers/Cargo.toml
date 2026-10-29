@@ -10,7 +10,7 @@ rust-version.workspace = true
 guestmem.workspace = true
 safeatomic.workspace = true
 
-smallvec.workspace = true
+smallvec = { workspace = true, features = ["const_generics"] }
 zerocopy.workspace = true
 event-listener.workspace = true
 

@@ -5490,9 +5490,137 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
     );
 }
 
+#[async_test]
+async fn in_order_rejects_reuse_until_published(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+
+    for buffered in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+        let mut avail = 0;
+        for id in [3, 0, 0] {
+            make_available(
+                &mem,
+                BOUND_TEST_AVAIL_ADDR,
+                BOUND_TEST_QUEUE_SIZE,
+                id,
+                &mut avail,
+            );
+        }
+        let first = in_order.try_next(&mut queue).unwrap().unwrap();
+        let mut second = Some(in_order.try_next(&mut queue).unwrap().unwrap());
+        if buffered {
+            in_order.complete(&mut queue, second.take().unwrap().into_completion(), 0);
+        }
+        let state = queue.queue_state();
+        let error = in_order
+            .try_next(&mut queue)
+            .err()
+            .expect("outstanding descriptor reuse must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(queue.queue_state(), state, "duplicate must not be consumed");
+        assert_eq!(in_order.outstanding(), 2);
+
+        if let Some(second) = second {
+            in_order.complete(&mut queue, second.into_completion(), 0);
+        }
+        in_order.complete(&mut queue, first.into_completion(), 0);
+        let mut used = 0;
+        for id in [3, 0] {
+            assert_eq!(
+                read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+                Some((id, 0))
+            );
+        }
+        let reused = in_order.try_next(&mut queue).unwrap().unwrap();
+        assert_eq!(reused.descriptor_index(), 0);
+        in_order.complete(&mut queue, reused.into_completion(), 0);
+        assert_eq!(in_order.outstanding(), 0);
+
+        // Publication frees the ID on both the buffered and direct paths.
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            0,
+            &mut avail,
+        );
+        let reused = in_order.try_next(&mut queue).unwrap().unwrap();
+        in_order.complete(&mut queue, reused.into_completion(), 0);
+        for _ in 0..2 {
+            assert_eq!(
+                read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+                Some((0, 0))
+            );
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_packed_reuse_after_publication_and_wrap(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+
+    for buffered in [false, true] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, true, None);
+        let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+
+        for wrap in [true, false, true] {
+            let mut work = Vec::new();
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                write_packed_descriptor(
+                    &mem,
+                    index,
+                    BOUND_TEST_DATA_ADDR + u64::from(index) * 0x100,
+                    BOUND_TEST_QUEUE_SIZE - 1 - index,
+                    DescriptorFlags::new()
+                        .with_write(true)
+                        .with_available(wrap)
+                        .with_used(!wrap),
+                );
+                work.push(in_order.try_next(&mut queue).unwrap().unwrap());
+            }
+            assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+            assert_eq!(queue.queue_state().avail_index, u16::from(!wrap) << 15);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                let index = work.descriptor_index();
+                in_order.complete(&mut queue, work.into_completion(), u32::from(index) + 1);
+                if buffered && index != 0 {
+                    assert_eq!(queue.queue_state().used_index, u16::from(wrap) << 15);
+                    assert_eq!(in_order.outstanding(), usize::from(BOUND_TEST_QUEUE_SIZE));
+                }
+            }
+            assert_eq!(in_order.outstanding(), 0);
+            assert_eq!(queue.queue_state().used_index, u16::from(!wrap) << 15);
+
+            for index in 0..BOUND_TEST_QUEUE_SIZE {
+                let descriptor = mem
+                    .read_plain::<PackedDescriptor>(
+                        BOUND_TEST_DESC_ADDR
+                            + u64::from(index) * size_of::<PackedDescriptor>() as u64,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    descriptor.buffer_id.get(),
+                    BOUND_TEST_QUEUE_SIZE - 1 - index
+                );
+                assert_eq!(descriptor.length.get(), u32::from(index) + 1);
+                assert_eq!(descriptor.flags().available(), wrap);
+                assert_eq!(descriptor.flags().used(), wrap);
+            }
+            assert!(in_order.try_next(&mut queue).unwrap().is_none());
+        }
+    }
+}
+
 /// Completing the same descriptor twice while it is still outstanding is an
-/// internal invariant violation (the device rejects guest-induced duplicates
-/// upstream), so the in-order helper must fail fast rather than silently
+/// internal invariant violation (`try_next` rejects guest-induced duplicates),
+/// so the in-order helper must fail fast rather than silently
 /// stalling the used ring.
 #[async_test]
 #[should_panic(expected = "completed more than once")]
@@ -5553,7 +5681,9 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
 
     let _w0 = in_order.try_next(&mut queue).unwrap().unwrap();
     let w1a = in_order.try_next(&mut queue).unwrap().unwrap();
-    let w1b = in_order.try_next(&mut queue).unwrap().unwrap();
+    // Bypass the tracker to model an internal caller violating the completion
+    // contract; its normal consume path rejects this guest descriptor reuse.
+    let w1b = queue.try_next().unwrap().unwrap();
 
     // w0 (descriptor 0) is never completed, so descriptor 1 stays buffered
     // behind it; completing index 1 twice while buffered must panic.

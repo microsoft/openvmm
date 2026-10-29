@@ -17,6 +17,11 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
+## Protocol Buffers Enums
+
+For `.proto` changes (including gRPC/ttrpc), read and follow the
+[Protocol Buffers enum conventions](instructions/protobuf.instructions.md).
+
 ## Git Commit Rules
 
 - **Never amend commits that have already been pushed without express

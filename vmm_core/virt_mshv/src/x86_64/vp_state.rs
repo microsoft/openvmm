@@ -415,10 +415,10 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateSaveUnsupported.into())
     }
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateRestoreUnsupported.into())
     }
 }

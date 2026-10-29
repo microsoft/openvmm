@@ -9,6 +9,38 @@ use lxutil::LxVolumeOptions;
 use std::sync::Arc;
 use test_with_tracing::test;
 
+fn assert_config_errno(error: crate::CreateError, expected: lx::Error) {
+    match error {
+        crate::CreateError::Filesystem(actual) => assert_eq!(actual, expected),
+        other => panic!("expected configuration errno {expected}, got {other}"),
+    }
+}
+
+#[test]
+fn setup_failures_preserve_error_sources() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing_root = tmp.path().join("missing");
+    let aggregate = VirtioFs::new_aggregate();
+    for error in [
+        VirtioFs::new(&missing_root, None).err().unwrap(),
+        aggregate
+            .add_child("share", &missing_root, None)
+            .unwrap_err(),
+    ] {
+        assert!(matches!(error, crate::CreateError::Volume(_)));
+        assert!(
+            error
+                .to_string()
+                .contains("failed to initialize filesystem volume")
+        );
+        let cause = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<lx::Error>()
+            .expect("filesystem setup must preserve the OS error");
+        assert_eq!(*cause, lx::Error::ENOENT);
+    }
+}
+
 #[test]
 fn aggregate_child_registry() {
     let a = tempfile::tempdir().unwrap();
@@ -24,9 +56,9 @@ fn aggregate_child_registry() {
     fs.add_child("share_b", b.path(), None).unwrap();
 
     // Duplicate names are rejected.
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("share_a", a.path(), None).unwrap_err(),
-        lx::Error::EEXIST
+        lx::Error::EEXIST,
     );
 
     // Each child gets a distinct, non-zero volume id (0 is reserved for
@@ -66,9 +98,9 @@ fn aggregate_operations_are_scoped_to_aggregate_mode() {
     let a = tempfile::tempdir().unwrap();
     let fs = VirtioFs::new(a.path(), None).unwrap();
     assert!(!fs.is_synthetic_root_handle(FUSE_ROOT_ID, SYNTHETIC_ROOT_FH));
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("x", a.path(), None).unwrap_err(),
-        lx::Error::EINVAL
+        lx::Error::EINVAL,
     );
     assert_eq!(fs.remove_child("x").unwrap_err(), lx::Error::EINVAL);
 }
@@ -79,17 +111,17 @@ fn add_child_validates_name() {
     let fs = VirtioFs::new_aggregate();
 
     for name in ["", ".", "..", "a/b", "a\0b"] {
-        assert_eq!(
+        assert_config_errno(
             fs.add_child(name, root.path(), None).unwrap_err(),
-            lx::Error::EINVAL
+            lx::Error::EINVAL,
         );
     }
 
     fs.add_child(&"a".repeat(255), root.path(), None).unwrap();
-    assert_eq!(
+    assert_config_errno(
         fs.add_child(&"b".repeat(256), root.path(), None)
             .unwrap_err(),
-        lx::Error::ENAMETOOLONG
+        lx::Error::ENAMETOOLONG,
     );
 }
 
@@ -187,9 +219,9 @@ fn add_child_rejected_after_teardown() {
     fs.begin_teardown();
 
     // Once tearing down, no further children can be added.
-    assert_eq!(
+    assert_config_errno(
         fs.add_child("after", a.path(), None).unwrap_err(),
-        lx::Error::EAGAIN
+        lx::Error::EAGAIN,
     );
     assert_eq!(
         fs.inner.aggregate().unwrap().registry.read().entries.len(),
