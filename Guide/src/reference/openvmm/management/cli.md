@@ -501,7 +501,7 @@ describes the source definitions.
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
 * `--restore-entropy`: Accepted for compatibility; it has no effect. Every
-  microVM restore makes restore packet version 4 available on the private
+  microVM restore makes restore packet version 5 available on the private
   portb restore channel. The packet carries 64 bytes of fresh entropy, the
   online-VP target, the memory-expansion ranges, the downtime, and the TSC
   rate deviation; the guest must consume it and explicitly reseed its RNG.
