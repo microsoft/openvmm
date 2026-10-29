@@ -26,20 +26,36 @@ For cross-compilation from WSL2 to Windows, see
   `git commit --amend`, `git rebase -i`, or `git push --force` to clean
   up history on already-pushed commits.
 
-## Pre-Commit Checklist (MANDATORY)
+## Validation
 
-**You MUST run these commands before every `git commit` in this repo.
-Do NOT commit without completing all three steps.**
+During development, run the smallest relevant checks and focused tests.
+Broaden validation when the change or the results require it.
 
-1. `cargo clippy --all-targets -p <package-name>` — for each modified package.
-2. `cargo doc --no-deps -p <package-name>` — for each modified package.
-3. `cargo xtask fmt --fix` — fix formatting, headers, naming conventions.
-   Run this **last** because fixing clippy/doc issues may introduce
-   formatting changes that need to be cleaned up.
+For Markdown-only changes, check the affected content, links, and front matter.
+Run relevant documentation checks when changing executable examples or book
+structure. Do not run unrelated Rust package checks or tests.
 
-If `cargo xtask fmt --fix` still fails after auto-fixes, fix the remaining
-reported issues manually and re-run until it succeeds. Do not run individual
-`--pass` commands afterward.
+**Before committing Rust changes**, identify each modified package and run:
+
+1. `cargo check -p <package-name>`
+2. `cargo clippy --all-targets -p <package-name>`
+3. `cargo doc --no-deps -p <package-name>`
+4. `cargo nextest run --profile agent -p <package-name>` — if nextest is not
+   installed, use `cargo test -p <package-name>`.
+   For integration tests that require external artifacts, use their repository
+   build/test workflow instead of either direct runner command.
+   For the `vmm_tests` package, use a focused
+   `cargo xflowey vmm-tests-run --filter "test(my_test_name)"` selection
+   and load the `vmm-tests` skill for the required workflow.
+
+**Before every commit**, including Markdown-only changes, run
+`cargo xtask fmt --fix` last. Inspect its diagnostics and the resulting diff;
+fix remaining reported issues and re-run until no errors remain. Do not run
+individual `--pass` commands afterward.
+
+These validation requirements do not authorize a commit or push. Do not include
+or overwrite unrelated edits, including edits within files you changed. Review
+formatter changes before keeping them.
 
 ## Trust Boundaries & Safety
 
@@ -139,28 +155,3 @@ This project uses the **Rust 2024 edition** (`edition = "2024"` in root
   hand-edit them. Run `cargo xflowey regen` to regenerate.
 - **flowey nodes**: Use `flowey::shell_cmd!` and `rt.sh` inside flowey
   nodes — not `xshell::cmd!` or `xshell::Shell::new`.
-
-## Autonomous Agent Inner Loop
-
-When running as a coding agent (GitHub Copilot coding agent or similar),
-follow this validation loop **before pushing each commit**. This covers
-the common early CI failures (including the fmt + clippy checks from job0)
-locally, avoiding slow push-and-wait cycles.
-
-1. **Identify modified packages.** For each file you changed, find the
-   crate's `Cargo.toml` and note the package name.
-2. **Check compilation:** `cargo check -p <package>` — fast type-check.
-3. **Clippy:** `cargo clippy --all-targets -p <package>` — lint.
-4. **Doc:** `cargo doc --no-deps -p <package>` — catch doc errors.
-5. **Unit tests:** `cargo nextest run --profile agent -p <package>` — run the crate's
-   tests. If nextest is not installed, use `cargo test -p <package>`.
-6. **Formatting:** `cargo xtask fmt --fix` — run last, since earlier
-   fixes may introduce formatting changes.
-
-If any step fails, fix the issue and re-run from that step. Do not push
-until all six steps pass.
-
-**Cost notes:** Steps 2–5 are scoped to the modified package (`-p`),
-so they are fast even in this large workspace. Step 6 runs workspace-wide
-but is also fast. The full cycle typically takes under 2 minutes for
-a single-crate change.
