@@ -2989,7 +2989,7 @@ async fn new_underhill_vm(
                             .cloned()
                             .unwrap_or_default();
                         let scsi_disk =
-                            Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params)?);
+                            Arc::new(scsidisk::SimpleScsiDisk::new(disk.clone(), params));
 
                         // Only disks, not DVD drives, get IDE accelerator channels.
                         storvsp_ide_disks.push((path, storvsp::ScsiControllerDisk::new(scsi_disk)));

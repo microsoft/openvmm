@@ -32,6 +32,8 @@ use crate::vm_controller::VmControllerRpc;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
+use disk_backend_resources::ZoneEmulationDiskHandle;
+use disk_backend_resources::ZoneEmulationParameters;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
@@ -90,7 +92,6 @@ use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use scsidisk_resources::DiskParameters;
-use scsidisk_resources::HostManagedZonedParameters;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
@@ -1856,12 +1857,12 @@ fn parse_nic_config(
 }
 
 async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
-    let parameters = if disk.zoned {
+    let zoned = if disk.zoned {
         if disk.read_only {
             anyhow::bail!("zoned SCSI disks cannot be read-only");
         }
 
-        let mut zoned = HostManagedZonedParameters::default();
+        let mut zoned = ZoneEmulationParameters::default();
         if disk.zone_size_bytes != 0 {
             zoned.zone_size_bytes = disk.zone_size_bytes;
         }
@@ -1880,10 +1881,7 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
             anyhow::bail!("max open zones must be nonzero");
         }
 
-        DiskParameters {
-            host_managed_zoned: Some(zoned),
-            ..Default::default()
-        }
+        Some(zoned)
     } else {
         if disk.zone_size_bytes != 0
             || disk.conventional_zones != 0
@@ -1892,8 +1890,23 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
         {
             anyhow::bail!("zoned disk parameters require zoned=true");
         }
-        Default::default()
+        None
     };
+    let mut disk_resource = open_disk_type(
+        disk.host_path.as_ref(),
+        OpenDiskOptions {
+            read_only: disk.read_only,
+            direct: false,
+        },
+    )
+    .await
+    .with_context(|| format!("failed to open {}", disk.host_path))?;
+    if let Some(parameters) = zoned {
+        disk_resource = Resource::new(ZoneEmulationDiskHandle {
+            disk: disk_resource,
+            parameters,
+        });
+    }
 
     Ok(ScsiDeviceAndPath {
         path: storvsp_resources::ScsiPath {
@@ -1902,17 +1915,9 @@ async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDevic
             lun: disk.lun.try_into().ok().context("lun value out of range")?,
         },
         device: SimpleScsiDiskHandle {
-            disk: open_disk_type(
-                disk.host_path.as_ref(),
-                OpenDiskOptions {
-                    read_only: disk.read_only,
-                    direct: false,
-                },
-            )
-            .await
-            .with_context(|| format!("failed to open {}", disk.host_path))?,
+            disk: disk_resource,
             read_only: disk.read_only,
-            parameters,
+            parameters: DiskParameters::default(),
         }
         .into_resource(),
     })

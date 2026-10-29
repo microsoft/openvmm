@@ -88,8 +88,7 @@ async fn test_request_response(driver: DefaultDriver) {
     let disk = scsidisk::SimpleScsiDisk::new(
         disklayer_ram::ram_disk(0x4000, false).unwrap(),
         Default::default(),
-    )
-    .unwrap();
+    );
     controller
         .attach(
             ScsiPath {

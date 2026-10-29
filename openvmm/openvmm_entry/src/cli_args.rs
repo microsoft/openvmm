@@ -2478,7 +2478,7 @@ pub struct DiskCli {
     pub nsid: Option<u32>,
     pub lun: Option<u8>,
     pub relay: Option<(String, Option<u32>)>,
-    pub zoned: Option<scsidisk_resources::HostManagedZonedParameters>,
+    pub zoned: Option<disk_backend_resources::ZoneEmulationParameters>,
 }
 
 #[derive(Copy, Clone)]
@@ -2637,7 +2637,7 @@ impl FromStr for DiskCli {
                 );
             }
 
-            let mut parameters = scsidisk_resources::HostManagedZonedParameters::default();
+            let mut parameters = disk_backend_resources::ZoneEmulationParameters::default();
             if let Some(value) = args.zone_size {
                 parameters.zone_size_bytes =
                     parse_memory(&value).context("invalid `zone_size` value")?;

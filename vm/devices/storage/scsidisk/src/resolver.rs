@@ -38,8 +38,6 @@ declare_static_async_resolver! {
 pub enum Error {
     #[error("failed to resolve backing disk")]
     Disk(#[source] ResolveError),
-    #[error("invalid SCSI disk parameters")]
-    InvalidParameters(#[source] crate::zoned::InvalidZonedConfiguration),
 }
 
 #[async_trait]
@@ -64,8 +62,7 @@ impl AsyncResolveResource<ScsiDeviceHandleKind, SimpleScsiDiskHandle> for Simple
             .await
             .map_err(Error::Disk)?;
 
-        let disk =
-            SimpleScsiDisk::new(disk.0, resource.parameters).map_err(Error::InvalidParameters)?;
+        let disk = SimpleScsiDisk::new(disk.0, resource.parameters);
         Ok(disk.into())
     }
 }

@@ -75,6 +75,7 @@ vm_resource::register_static_resolvers! {
     disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
+    disk_zone_emu::resolver::ZoneEmulationDiskResolver,
     disk_vhd1::Vhd1Resolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,

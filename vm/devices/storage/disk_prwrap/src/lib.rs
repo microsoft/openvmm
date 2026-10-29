@@ -148,6 +148,10 @@ impl DiskIo for DiskWithReservations {
         Some(self)
     }
 
+    fn zoned(&self) -> Option<&dyn disk_backend::zoned::ZonedDisk> {
+        self.inner.zoned()
+    }
+
     async fn read_vectored(
         &self,
         buffers: &RequestBuffers<'_>,

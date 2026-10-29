@@ -8,14 +8,14 @@ use super::test_helpers::TestDiskWriteBlocker;
 use crate::SimpleScsiDisk;
 use crate::scsi;
 use disk_backend::Disk;
+use disk_backend_resources::ZoneEmulationParameters;
+use disk_zone_emu::ZoneEmulationDisk;
 use guestmem::GuestMemory;
 use pal_async::async_test;
 use parking_lot::Mutex;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
-use scsidisk_resources::DiskParameters;
-use scsidisk_resources::HostManagedZonedParameters;
 use std::mem::size_of;
 use std::sync::Arc;
 use zerocopy::FromBytes;
@@ -37,16 +37,19 @@ fn new_zoned_disk_with(zone_size_bytes: u64, max_open_zones: u32) -> SimpleScsiD
     new_zoned_disk_with_state(zone_size_bytes, max_open_zones).0
 }
 
-fn zoned_parameters(zone_size_bytes: u64, max_open_zones: u32) -> DiskParameters {
-    DiskParameters {
-        host_managed_zoned: Some(HostManagedZonedParameters {
-            zone_size_bytes,
-            conventional_zone_count: 1,
-            max_open_zones,
-            unrestricted_read: true,
-        }),
-        ..Default::default()
+fn zoned_parameters(zone_size_bytes: u64, max_open_zones: u32) -> ZoneEmulationParameters {
+    ZoneEmulationParameters {
+        zone_size_bytes,
+        conventional_zone_count: 1,
+        max_open_zones,
+        unrestricted_read: true,
     }
+}
+
+fn new_scsi_zoned_disk(disk: Disk, zone_size_bytes: u64, max_open_zones: u32) -> SimpleScsiDisk {
+    let disk =
+        ZoneEmulationDisk::new(disk, zoned_parameters(zone_size_bytes, max_open_zones)).unwrap();
+    SimpleScsiDisk::new(Disk::new(disk).unwrap(), Default::default())
 }
 
 fn new_zoned_disk_with_state(
@@ -69,11 +72,7 @@ fn new_zoned_disk_with_backing_sector_count(
         true,
     );
     (
-        SimpleScsiDisk::new(
-            Disk::new(disk).unwrap(),
-            zoned_parameters(zone_size_bytes, max_open_zones),
-        )
-        .unwrap(),
+        new_scsi_zoned_disk(Disk::new(disk).unwrap(), zone_size_bytes, max_open_zones),
         state,
     )
 }
@@ -84,8 +83,7 @@ async fn zoned_disk_exposes_only_complete_zones_before_metadata() {
     let (disk, state) =
         new_zoned_disk_with_backing_sector_count(backing_sector_count, ZONE_SIZE, 2);
 
-    let zoned = disk.zoned.as_ref().unwrap();
-    assert_eq!(zoned.sector_count(), VISIBLE_SECTOR_COUNT);
+    assert_eq!(disk.disk.sector_count(), VISIBLE_SECTOR_COUNT);
     for index in 0..(VISIBLE_SECTOR_COUNT / (ZONE_SIZE / u64::from(SECTOR_SIZE))) as usize {
         assert_eq!(
             zone_descriptor(&disk, index).await.zone_length.get(),
@@ -142,7 +140,7 @@ fn zoned_disk_rejects_zone_size_not_aligned_to_physical_sector() {
         false,
     );
     assert!(
-        SimpleScsiDisk::new(
+        ZoneEmulationDisk::new(
             Disk::new(disk).unwrap(),
             zoned_parameters(u64::from(PHYSICAL_SECTOR_SIZE) + u64::from(SECTOR_SIZE), 2),
         )
@@ -153,7 +151,7 @@ fn zoned_disk_rejects_zone_size_not_aligned_to_physical_sector() {
 #[test]
 fn zoned_disk_rejects_impractical_zone_count() {
     let zone_size_sectors = ZONE_SIZE / u64::from(SECTOR_SIZE);
-    let backing_sector_count = (crate::zoned::MAX_ZONE_COUNT + 1) * zone_size_sectors + 20_000;
+    let backing_sector_count = (disk_zone_emu::MAX_ZONE_COUNT + 1) * zone_size_sectors + 20_000;
     let (disk, _) = TestDisk::new(
         SECTOR_SIZE,
         PHYSICAL_SECTOR_SIZE,
@@ -162,7 +160,7 @@ fn zoned_disk_rejects_impractical_zone_count() {
         false,
     );
     assert!(
-        SimpleScsiDisk::new(Disk::new(disk).unwrap(), zoned_parameters(ZONE_SIZE, 2),).is_err()
+        ZoneEmulationDisk::new(Disk::new(disk).unwrap(), zoned_parameters(ZONE_SIZE, 2)).is_err()
     );
 }
 
@@ -176,12 +174,8 @@ async fn zoned_disk_reports_40tb_capacity_without_backing_allocation() {
         false,
         false,
     );
-    let disk = SimpleScsiDisk::new(
-        Disk::new(disk).unwrap(),
-        zoned_parameters(LARGE_ZONE_SIZE_BYTES, 32),
-    )
-    .unwrap();
-    let visible_sector_count = disk.zoned.as_ref().unwrap().sector_count();
+    let disk = new_scsi_zoned_disk(Disk::new(disk).unwrap(), LARGE_ZONE_SIZE_BYTES, 32);
+    let visible_sector_count = disk.disk.sector_count();
     let zone_size_sectors = LARGE_ZONE_SIZE_BYTES / u64::from(SECTOR_SIZE);
 
     assert!(visible_sector_count > u64::from(u32::MAX));
@@ -218,11 +212,7 @@ fn reopen_zoned_disk(
         state,
         write_blocker: None,
     };
-    SimpleScsiDisk::new(
-        Disk::new(disk).unwrap(),
-        zoned_parameters(zone_size_bytes, max_open_zones),
-    )
-    .unwrap()
+    new_scsi_zoned_disk(Disk::new(disk).unwrap(), zone_size_bytes, max_open_zones)
 }
 
 fn request_from_bytes(bytes: &[u8]) -> Request {
@@ -829,7 +819,7 @@ async fn zoned_disk_serializes_zone_transitions_with_metadata_snapshot() {
         entered: Mutex::new(Some(entered_send)),
         release: Mutex::new(Some(release_recv)),
     }));
-    let disk = SimpleScsiDisk::new(Disk::new(backing).unwrap(), zoned_parameters(8192, 1)).unwrap();
+    let disk = new_scsi_zoned_disk(Disk::new(backing).unwrap(), 8192, 1);
 
     let memory = GuestMemory::allocate(4096);
     memory.write_at(0, &vec![0xa5; 4096]).unwrap();

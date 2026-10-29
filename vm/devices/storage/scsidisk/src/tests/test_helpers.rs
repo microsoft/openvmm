@@ -225,7 +225,7 @@ pub fn new_scsi_disk(
         Disk::new(disk).unwrap()
     };
 
-    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default()).unwrap();
+    let scsi_disk = SimpleScsiDisk::new(simple_disk, Default::default());
     let sector_shift = logical_sector_size.trailing_zeros() as u8;
     let physical_extra_shift = physical_sector_size.trailing_zeros() as u8 - sector_shift;
     assert_eq!(scsi_disk.sector_size, logical_sector_size);

@@ -642,10 +642,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
-                scsidisk_resources::DiskParameters {
-                    host_managed_zoned: zoned.clone(),
-                    ..Default::default()
-                },
+                zoned.clone(),
+                Default::default(),
             )
             .await?;
     }
@@ -667,6 +665,7 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
+                None,
                 Default::default(),
             )
             .await?;
@@ -730,10 +729,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
-                scsidisk_resources::DiskParameters {
-                    host_managed_zoned: zoned.clone(),
-                    ..Default::default()
-                },
+                zoned.clone(),
+                Default::default(),
             )
             .await?;
     }
@@ -768,10 +765,8 @@ async fn vm_config_from_command_line(
                 kind,
                 is_dvd,
                 read_only,
-                scsidisk_resources::DiskParameters {
-                    host_managed_zoned: zoned.clone(),
-                    ..Default::default()
-                },
+                zoned.clone(),
+                Default::default(),
             )
             .await?;
     }

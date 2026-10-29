@@ -116,7 +116,7 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
 
 impl SimpleScsiDisk {
     fn device_type(&self) -> u8 {
-        if self.zoned.is_some() {
+        if self.disk.zoned().is_some() {
             scsi::HOST_MANAGED_ZONED_BLOCK_DEVICE
         } else {
             scsi::DIRECT_ACCESS_DEVICE
@@ -146,7 +146,7 @@ impl SimpleScsiDisk {
                 scsi::VPD_LOGICAL_BLOCK_PROVISIONING,
             ]);
         }
-        if self.zoned.is_some() {
+        if self.disk.zoned().is_some() {
             supported_pages.extend([
                 scsi::VPD_BLOCK_LIMITS,
                 scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS,
@@ -319,22 +319,25 @@ impl SimpleScsiDisk {
         external_data: &RequestBuffers<'_>,
         allocation_length: usize,
     ) -> Result<usize, ScsiError> {
-        let zoned = self
-            .zoned
-            .as_ref()
-            .ok_or(ScsiError::UnsupportedVpdPageCode(
-                scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS,
-            ))?;
-        let parameters = zoned.parameters();
+        let zoned = self.disk.zoned().ok_or(ScsiError::UnsupportedVpdPageCode(
+            scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS,
+        ))?;
+        let info = zoned.info();
         let page = scsi::VpdZonedBlockDeviceCharacteristicsPage {
-            flags: if parameters.unrestricted_read {
+            flags: if info.unrestricted_read {
                 scsi::VPD_ZONED_URSWRZ
             } else {
                 0
             },
-            optimal_open_sequential_write_preferred_zones: u32::MAX.into(),
-            optimal_nonsequential_sequential_write_preferred_zones: u32::MAX.into(),
-            max_open_sequential_write_required_zones: parameters.max_open_zones.into(),
+            optimal_open_sequential_write_preferred_zones: info
+                .optimal_open_sequential_write_preferred_zones
+                .into(),
+            optimal_nonsequential_sequential_write_preferred_zones: info
+                .optimal_nonsequential_sequential_write_preferred_zones
+                .into(),
+            max_open_sequential_write_required_zones: info
+                .max_open_sequential_write_required_zones
+                .into(),
             ..FromZeros::new_zeroed()
         };
 
@@ -570,16 +573,16 @@ impl SimpleScsiDisk {
                     self.handle_vpd_device_identifiers(external_data, allocation_length)
                 }
                 scsi::VPD_BLOCK_LIMITS
-                    if self.scsi_parameters.support_unmap || self.zoned.is_some() =>
+                    if self.scsi_parameters.support_unmap || self.disk.zoned().is_some() =>
                 {
                     self.handle_vpd_block_limits(external_data, allocation_length)
                 }
                 scsi::VPD_BLOCK_DEVICE_CHARACTERISTICS
-                    if self.scsi_parameters.support_unmap || self.zoned.is_some() =>
+                    if self.scsi_parameters.support_unmap || self.disk.zoned().is_some() =>
                 {
                     self.handle_vpd_block_device_characteristics(external_data, allocation_length)
                 }
-                scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS if self.zoned.is_some() => self
+                scsi::VPD_ZONED_BLOCK_DEVICE_CHARACTERISTICS if self.disk.zoned().is_some() => self
                     .handle_vpd_zoned_block_device_characteristics(
                         external_data,
                         allocation_length,

@@ -8,6 +8,8 @@ use crate::cli_args::DiskCliKind;
 use crate::cli_args::UnderhillDiskSource;
 use crate::disk_open;
 use anyhow::Context;
+use disk_backend_resources::ZoneEmulationDiskHandle;
+use disk_backend_resources::ZoneEmulationParameters;
 use guid::Guid;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -321,10 +323,10 @@ impl StorageBuilder {
         kind: &DiskCliKind,
         is_dvd: bool,
         read_only: bool,
+        zoned: Option<ZoneEmulationParameters>,
         disk_parameters: DiskParameters,
     ) -> anyhow::Result<()> {
-        if disk_parameters.host_managed_zoned.is_some() && (underhill.is_some() || relay.is_some())
-        {
+        if zoned.is_some() && (underhill.is_some() || relay.is_some()) {
             anyhow::bail!("zoned SCSI disks cannot be relayed through OpenHCL");
         }
         if let Some(source) = underhill {
@@ -337,7 +339,7 @@ impl StorageBuilder {
             self.add_relay(relay, target, kind, is_dvd, read_only)
                 .await?;
         } else {
-            self.add_inner(vtl, target, kind, is_dvd, read_only, disk_parameters)
+            self.add_inner(vtl, target, kind, is_dvd, read_only, zoned, disk_parameters)
                 .await?;
         }
         Ok(())
@@ -352,12 +354,17 @@ impl StorageBuilder {
         kind: &DiskCliKind,
         is_dvd: bool,
         read_only: bool,
+        zoned: Option<ZoneEmulationParameters>,
         disk_parameters: DiskParameters,
     ) -> anyhow::Result<Option<u32>> {
-        let disk = disk_open(kind, read_only || is_dvd).await?;
+        let mut disk = disk_open(kind, read_only || is_dvd).await?;
+        let is_zoned = zoned.is_some();
+        if let Some(parameters) = zoned {
+            disk = Resource::new(ZoneEmulationDiskHandle { disk, parameters });
+        }
         let location = match target {
             DiskLocation::Ide(channel, device) => {
-                if disk_parameters.host_managed_zoned.is_some() {
+                if is_zoned {
                     anyhow::bail!("zoned disks require a SCSI controller");
                 }
                 let guest_media = if is_dvd {
@@ -425,7 +432,7 @@ impl StorageBuilder {
                 None
             }
             DiskLocation::Scsi(lun) => {
-                if is_dvd && disk_parameters.host_managed_zoned.is_some() {
+                if is_dvd && is_zoned {
                     anyhow::bail!("zoned disks cannot be DVDs");
                 }
                 let device = if is_dvd {
@@ -459,7 +466,7 @@ impl StorageBuilder {
                 Some(lun.into())
             }
             DiskLocation::Nvme(nsid) => {
-                if disk_parameters.host_managed_zoned.is_some() {
+                if is_zoned {
                     anyhow::bail!("zoned disks require a SCSI controller");
                 }
                 let namespaces = match vtl {
@@ -484,7 +491,7 @@ impl StorageBuilder {
                 lun,
             } => match self.controllers.get_mut(&controller) {
                 Some(ControllerEntry::Nvme(nvme)) => {
-                    if disk_parameters.host_managed_zoned.is_some() {
+                    if is_zoned {
                         anyhow::bail!("zoned disks require a SCSI controller");
                     }
                     if lun.is_some() {
@@ -511,7 +518,7 @@ impl StorageBuilder {
                         anyhow::bail!("`nsid` is not valid for SCSI controller '{controller}'");
                     }
                     let device = if is_dvd {
-                        if disk_parameters.host_managed_zoned.is_some() {
+                        if is_zoned {
                             anyhow::bail!("zoned disks cannot be DVDs");
                         }
                         SimpleScsiDvdHandle {
@@ -546,7 +553,7 @@ impl StorageBuilder {
                 }
             },
             DiskLocation::VirtioBlk { pcie_port, serial } => {
-                if disk_parameters.host_managed_zoned.is_some() {
+                if is_zoned {
                     anyhow::bail!("zoned disks require a SCSI controller");
                 }
                 if vtl != DeviceVtl::Vtl0 {
@@ -630,6 +637,7 @@ impl StorageBuilder {
                 kind,
                 is_dvd,
                 read_only,
+                None,
                 Default::default(),
             )
             .await?
@@ -691,6 +699,7 @@ impl StorageBuilder {
                 kind,
                 is_dvd,
                 read_only,
+                None,
                 Default::default(),
             )
             .await?
