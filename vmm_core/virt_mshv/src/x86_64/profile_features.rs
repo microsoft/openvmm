@@ -201,7 +201,7 @@ mod tests {
     ];
 
     fn profile(id: &str) -> &'static CpuProfile {
-        cpu_profile::pinned(id).unwrap_or_else(|| panic!("profile {id} is not pinned"))
+        cpu_profile::pinned(id).unwrap_or_else(|error| panic!("{error}"))
     }
 
     fn has(features: &HvFeatures, word: HvFeatureWord, mask: u64) -> bool {
