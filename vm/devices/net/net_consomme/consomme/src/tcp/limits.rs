@@ -11,6 +11,7 @@ use super::TcpConnection;
 use super::TcpState;
 use crate::DropReason;
 use crate::FourTuple;
+use crate::limits::FlowProtocol;
 use std::collections::HashMap;
 
 impl Tcp {
@@ -24,13 +25,11 @@ impl Tcp {
             ft,
             &mut self.aggregate_stats,
         ) {
-            tracelimit::warn_ratelimited!(
+            return Err(crate::limits::reject(
+                FlowProtocol::Tcp,
                 max_connections,
-                src = %ft.src,
-                dst = %ft.dst,
-                "rejecting TCP flow before host socket creation because the active-flow limit was reached"
-            );
-            return Err(DropReason::TcpConnectionLimit);
+                ft,
+            ));
         }
         Ok(())
     }

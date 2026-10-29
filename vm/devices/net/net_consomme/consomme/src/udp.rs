@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod limits;
-
 use super::Access;
 use super::BindError;
 use super::Client;
@@ -21,6 +19,7 @@ use crate::PortForwardKey;
 use crate::dns_resolver::DnsFlow;
 use crate::dns_resolver::DnsRequest;
 use crate::dns_resolver::DnsResponse;
+use crate::limits::FlowProtocol;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -82,6 +81,17 @@ impl Udp {
             timeout,
             max_connections,
         }
+    }
+
+    /// Rejects a new guest flow when the active-flow limit is reached, before
+    /// a host socket is bound for it.
+    fn check_flow_limit(&self, guest_addr: &SocketAddr) -> Result<(), DropReason> {
+        crate::limits::check_flow_limit(
+            FlowProtocol::Udp,
+            &self.connections,
+            self.max_connections,
+            guest_addr,
+        )
     }
 }
 
