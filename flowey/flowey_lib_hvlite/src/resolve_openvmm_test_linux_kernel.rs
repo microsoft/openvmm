@@ -119,6 +119,8 @@ flowey_config! {
         pub version: Option<String>,
         /// Override the mshv-test release independently of other test kernels.
         pub mshv_version: Option<String>,
+        /// Use an explicit mshv root bzImage instead of the published kernel.
+        pub local_mshv_kernel: Option<ConfigVar<PathBuf>>,
         /// Use locally downloaded openvmm-test-linux contents, keyed by
         /// (architecture, kernel version)
         pub local_paths: BTreeMap<(CommonArch, LinuxTestKernelVersion), ConfigVar<PathBuf>>,
@@ -157,11 +159,19 @@ impl FlowNodeWithConfig for Node {
             version,
             mshv_version,
             local_paths,
+            local_mshv_kernel,
         } = config;
         let mut deps: BTreeMap<
             (OpenvmmTestKernelFile, CommonArch, LinuxTestKernelVersion),
             Vec<WriteVar<PathBuf>>,
         > = BTreeMap::new();
+        let mut mshv_outputs = Vec::new();
+        anyhow::ensure!(
+            local_mshv_kernel.is_none()
+                || !local_paths
+                    .contains_key(&(CommonArch::X86_64, LinuxTestKernelVersion::MshvTest)),
+            "specify only one local mshv kernel override"
+        );
 
         for req in requests {
             match req {
@@ -177,9 +187,39 @@ impl FlowNodeWithConfig for Node {
                             "{file:?} is not available in the openvmm-test-linux archive for {arch:?}"
                         );
                     }
+                    if kver == LinuxTestKernelVersion::MshvTest && local_mshv_kernel.is_some() {
+                        anyhow::ensure!(
+                            file == OpenvmmTestKernelFile::BzImage,
+                            "the local mshv root override must be a bzImage"
+                        );
+                        mshv_outputs.push(var);
+                        continue;
+                    }
                     deps.entry((file, arch, kver)).or_default().push(var);
                 }
             }
+        }
+
+        if !mshv_outputs.is_empty() {
+            let ConfigVar(kernel) =
+                local_mshv_kernel.context("missing local mshv root kernel override")?;
+            ctx.emit_rust_step("use explicit mshv root kernel", |ctx| {
+                let kernel = kernel.claim(ctx);
+                let outputs = mshv_outputs.claim(ctx);
+                move |rt| {
+                    let kernel = rt.read(kernel);
+                    anyhow::ensure!(
+                        kernel.is_file(),
+                        "mshv root kernel is not a file: {}",
+                        kernel.display()
+                    );
+                    rt.write_all(outputs, &kernel);
+                    Ok(())
+                }
+            });
+        }
+        if deps.is_empty() {
+            return Ok(());
         }
 
         if version.is_some() && !local_paths.is_empty() {
