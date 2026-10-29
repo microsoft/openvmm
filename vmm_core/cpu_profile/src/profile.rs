@@ -314,8 +314,9 @@ impl CpuProfile {
 
     /// Returns the canonical encoding: compact canonical JSON.
     ///
-    /// Offline only, for tools and tests: a pinned profile's encoding is the
-    /// constant [`pinned_record`](crate::pinned_record) returns.
+    /// A pinned profile's encoding is the constant
+    /// [`pinned_record`](crate::pinned_record) returns, which the profile's
+    /// first use in a process compares with this, to verify the profile.
     pub fn encode(&self) -> Vec<u8> {
         canonical::to_compact_ordered(self)
     }
@@ -440,7 +441,7 @@ impl CpuProfile {
 
     /// Checks every structural invariant of a profile; see the module
     /// documentation and [`SCHEMA`].
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err(format!("schema {:?} is not {SCHEMA:?}", self.schema));
         }
