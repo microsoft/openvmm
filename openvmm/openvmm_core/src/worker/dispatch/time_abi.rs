@@ -59,6 +59,9 @@ pub(super) const TIME_ABI_UNIT: &str = "time-abi";
 /// The most differences an `E_CPU_SURFACE` read-back failure names.
 const MAX_REPORTED_CPUID_DIFFERENCES: usize = 16;
 
+/// The names of the CPUID result registers, for messages.
+const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
+
 /// The time ABI state of a loaded VM.
 pub(super) struct TimeAbiState {
     /// The `time-abi` state unit.
@@ -661,7 +664,9 @@ fn record_entries(effective: &EffectiveCpuid) -> impl Iterator<Item = EffectiveC
 }
 
 /// Lists the entries in which this partition's effective CPUID and a
-/// snapshot's `recorded` one differ.
+/// snapshot's `recorded` one differ: each entry that only one of them has,
+/// and each entry that both have with every register in which they differ,
+/// with its value and mask in each.
 fn recorded_cpuid_differences(
     effective: &EffectiveCpuid,
     recorded: &[EffectiveCpuidEntry],
@@ -679,14 +684,25 @@ fn recorded_cpuid_differences(
     for (&entry_key, entry) in &ours {
         match theirs.get(&entry_key) {
             None => differences.push(format!("{} is not in the snapshot", name(entry_key))),
-            Some(theirs) if theirs != entry => differences.push(format!(
-                "{} is {:#x?} under mask {:#x?}, and {:#x?} under mask {:#x?} in the snapshot",
-                name(entry_key),
-                entry.result,
-                entry.mask,
-                theirs.result,
-                theirs.mask
-            )),
+            Some(theirs) if theirs != entry => {
+                let registers: Vec<String> = (0..4)
+                    .filter(|&register| {
+                        (entry.result[register], entry.mask[register])
+                            != (theirs.result[register], theirs.mask[register])
+                    })
+                    .map(|register| {
+                        format!(
+                            "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the snapshot",
+                            REGISTERS[register],
+                            entry.result[register],
+                            entry.mask[register],
+                            theirs.result[register],
+                            theirs.mask[register]
+                        )
+                    })
+                    .collect();
+                differences.push(format!("{} {}", name(entry_key), registers.join(", ")));
+            }
             Some(_) => {}
         }
     }
@@ -756,7 +772,6 @@ fn check_presented(
 /// Lists every result of `effective` that `presented` does not match under
 /// the result's masks.
 fn cpuid_differences(presented: &CpuidLeafSet, effective: &EffectiveCpuid) -> Vec<String> {
-    const REGISTERS: [&str; 4] = ["EAX", "EBX", "ECX", "EDX"];
     effective
         .results()
         .filter_map(|expected| {
@@ -1405,13 +1420,16 @@ mod tests {
         };
         check_recorded_cpuid(&effective, &record).unwrap();
 
-        // Another topology changes the topology leaves.
+        // Another topology changes the topology leaves, which are named on
+        // one line, with the registers in which they differ.
         let (_, _, other) = test_config(4);
         let message = format!("{:#}", check_recorded_cpuid(&other, &record).unwrap_err());
         assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
-        assert!(message.contains("CPUID 0xb.1"), "{message}");
+        assert!(message.contains("CPUID 0xb.1 E"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
 
-        // One flipped bit is named.
+        // One flipped bit is named, with its register, value, and mask.
+        let leaf_0 = record_entries(&effective).next().unwrap();
         let mut flipped = record.clone();
         flipped.effective_cpuid[3 * 4] ^= 1;
         let message = format!(
@@ -1419,7 +1437,17 @@ mod tests {
             check_recorded_cpuid(&effective, &flipped).unwrap_err()
         );
         assert!(message.starts_with("[E_CPU_SURFACE]"), "{message}");
-        assert!(message.contains("CPUID 0x0 is"), "{message}");
+        assert!(
+            message.ends_with(&format!(
+                ": CPUID 0x0 EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask \
+                 {:#010x} in the snapshot",
+                leaf_0.result[0],
+                leaf_0.mask[0],
+                leaf_0.result[0] ^ 1,
+                leaf_0.mask[0]
+            )),
+            "{message}"
+        );
 
         // A missing entry, and the same entries in another order.
         let mut truncated = record.clone();
