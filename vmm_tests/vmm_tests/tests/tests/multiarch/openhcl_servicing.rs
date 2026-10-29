@@ -1865,6 +1865,29 @@ async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     Ok(())
 }
 
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic_diagnostic_save(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_mana_keepalive(true)
+        .modify_backend(|b| b.with_nic())
+        .run()
+        .await?;
+
+    configure_mana_nic(&agent).await?;
+    validate_mana_nic(&agent).await?;
+
+    let state = vm.dump_openhcl_saved_state().await?;
+    assert!(!state.is_empty(), "diagnostic save returned empty state");
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
 /// the MANA emulator), and vmbus relay. Perform servicing and validate that the
 /// nic is still functional.
@@ -2052,33 +2075,17 @@ async fn mana_nic_servicing_both_boot_with_nvme_only(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
 ) -> Result<(), anyhow::Error> {
-    let options = ServicingKeepAliveOperations {
-        enable_mana_keepalive_at_boot: true,
-        disable_nvme_keepalive_at_boot: false,
-        enable_nvme_keepalive_during_servicing: true,
-        enable_mana_keepalive_during_servicing: false,
-    };
-    let mut flags = config.default_servicing_flags();
-    flags.enable_nvme_keepalive = options.enable_nvme_keepalive_during_servicing;
-    flags.enable_mana_keepalive = options.enable_mana_keepalive_during_servicing;
-
-    let (mut vm, agent) = mana_nic_servicing_config(config, options).run().await?;
-
-    configure_mana_nic(&agent).await?;
-    validate_mana_nic(&agent).await?;
-
-    let error = vm
-        .restart_openhcl(igvm_file, flags)
-        .await
-        .expect_err("MANA allocations should fail DMA manager restore validation");
-    assert!(
-        format!("{error:#}").contains("unrestored allocations found"),
-        "unexpected servicing error: {error:#}"
-    );
-
-    // No graceful shutdown.
-
-    Ok(())
+    mana_nic_servicing_core(
+        config,
+        igvm_file,
+        ServicingKeepAliveOperations {
+            enable_mana_keepalive_at_boot: true,
+            disable_nvme_keepalive_at_boot: false,
+            enable_nvme_keepalive_during_servicing: true,
+            enable_mana_keepalive_during_servicing: false,
+        },
+    )
+    .await
 }
 
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]

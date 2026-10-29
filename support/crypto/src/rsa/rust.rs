@@ -258,10 +258,10 @@ impl RsaPublicKeyInner {
         self.0.size()
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        Ok(RsaPublicKeyComponents {
             modulus: self.0.n().to_be_bytes_trimmed_vartime().to_vec(),
             public_exponent: self.0.e().to_be_bytes_trimmed_vartime().to_vec(),
-        }
+        })
     }
 }

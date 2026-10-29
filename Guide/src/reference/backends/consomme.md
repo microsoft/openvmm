@@ -273,6 +273,8 @@ start time.
 ### Static DNS records only support the `A` record type
 
 Only `A` records are currently supported.
+`AAAA` queries for names with a static `A` record return `NOERROR` with no
+answers, rather than being forwarded to the upstream resolver.
 
 ### Static DNS records don't support DNSSEC
 

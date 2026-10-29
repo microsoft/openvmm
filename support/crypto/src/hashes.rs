@@ -5,7 +5,7 @@
 
 #![expect(deprecated)]
 
-/// Hash algorithm for RSA operations.
+/// Hash algorithm for cryptographic operations.
 #[derive(Debug, Clone, Copy)]
 pub enum HashAlgorithm {
     /// SHA-1
@@ -97,6 +97,20 @@ impl HashAlgorithm {
         }
     }
 
+    /// Returns the hash algorithm named by an RSA signature OID.
+    #[cfg(any(symcrypt, rust, all(native, target_os = "macos")))]
+    pub(crate) fn from_rsa_signature_oid(
+        oid: const_oid::ObjectIdentifier,
+    ) -> Result<Self, der::Error> {
+        match oid {
+            const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
+            const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
+            const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION => Ok(Self::Sha512),
+            const_oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
+            _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
+        }
+    }
+
     /// Returns the hash algorithm named by a CryptoAPI RSA signature
     /// algorithm OID string (`szOID_RSA_*RSA`), or `None` if `oid` is null or
     /// names an unsupported algorithm.
@@ -121,6 +135,53 @@ impl HashAlgorithm {
             } else if oid == szOID_RSA_SHA512RSA.as_bytes() {
                 Some(HashAlgorithm::Sha512)
             } else if oid == szOID_RSA_SHA1RSA.as_bytes() {
+                Some(HashAlgorithm::Sha1)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Returns the hash algorithm named by an ECDSA signature OID.
+    #[cfg(symcrypt)]
+    pub(crate) fn from_ecdsa_signature_oid(
+        oid: const_oid::ObjectIdentifier,
+    ) -> Result<Self, der::Error> {
+        // RFC 3279's ecdsa-with-SHA1 is absent from const-oid's database.
+        const ECDSA_WITH_SHA_1: const_oid::ObjectIdentifier =
+            const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.4.1");
+
+        match oid {
+            ECDSA_WITH_SHA_1 => Ok(Self::Sha1),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_256 => Ok(Self::Sha256),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_384 => Ok(Self::Sha384),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_512 => Ok(Self::Sha512),
+            _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
+        }
+    }
+
+    /// Returns the hash algorithm named by a CryptoAPI ECDSA signature OID.
+    #[cfg(all(native, windows))]
+    pub(crate) fn from_ecdsa_signature_oid(oid: windows::core::PSTR) -> Option<Self> {
+        use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA1;
+        use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA256;
+        use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA384;
+        use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA512;
+
+        if oid.is_null() {
+            return None;
+        }
+        // SAFETY: ASN.1-decoded OID strings from crypt32 and szOID_* constants
+        // are null-terminated.
+        unsafe {
+            let oid = oid.as_bytes();
+            if oid == szOID_ECDSA_SHA256.as_bytes() {
+                Some(HashAlgorithm::Sha256)
+            } else if oid == szOID_ECDSA_SHA384.as_bytes() {
+                Some(HashAlgorithm::Sha384)
+            } else if oid == szOID_ECDSA_SHA512.as_bytes() {
+                Some(HashAlgorithm::Sha512)
+            } else if oid == szOID_ECDSA_SHA1.as_bytes() {
                 Some(HashAlgorithm::Sha1)
             } else {
                 None
@@ -207,21 +268,6 @@ impl HashAlgorithm {
     }
 }
 
-#[cfg(any(symcrypt, rust, all(native, target_os = "macos")))]
-impl TryFrom<der::asn1::ObjectIdentifier> for HashAlgorithm {
-    type Error = der::Error;
-
-    fn try_from(oid: der::asn1::ObjectIdentifier) -> Result<Self, Self::Error> {
-        match oid {
-            der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
-            der::oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
-            der::oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION => Ok(Self::Sha512),
-            der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
-            _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
-        }
-    }
-}
-
 #[cfg(openssl)]
 impl From<HashAlgorithm> for openssl::hash::MessageDigest {
     fn from(hash_algorithm: HashAlgorithm) -> Self {
@@ -254,6 +300,18 @@ impl From<HashAlgorithm> for symcrypt::hash::HashAlgorithm {
             HashAlgorithm::Sha256 => symcrypt::hash::HashAlgorithm::Sha256,
             HashAlgorithm::Sha384 => symcrypt::hash::HashAlgorithm::Sha384,
             HashAlgorithm::Sha512 => symcrypt::hash::HashAlgorithm::Sha512,
+        }
+    }
+}
+
+#[cfg(symcrypt)]
+impl From<HashAlgorithm> for symcrypt::hmac::HmacAlgorithm {
+    fn from(hash_algorithm: HashAlgorithm) -> Self {
+        match hash_algorithm {
+            HashAlgorithm::Sha1 => symcrypt::hmac::HmacAlgorithm::HmacSha1,
+            HashAlgorithm::Sha256 => symcrypt::hmac::HmacAlgorithm::HmacSha256,
+            HashAlgorithm::Sha384 => symcrypt::hmac::HmacAlgorithm::HmacSha384,
+            HashAlgorithm::Sha512 => symcrypt::hmac::HmacAlgorithm::HmacSha512,
         }
     }
 }

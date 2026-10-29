@@ -73,7 +73,7 @@ fn start_rpc_server(
     let env = rt.read(env);
 
     let test_output_path = env
-        .get("TEST_OUTPUT_PATH")
+        .get(petri_artifacts_vmm_test::env::TEST_OUTPUT_PATH)
         .context("TEST_OUTPUT_PATH not set")?;
 
     let TestIgvmAgentRpcServerOutput { exe, .. } = rt.read(test_igvm_agent_rpc_server);

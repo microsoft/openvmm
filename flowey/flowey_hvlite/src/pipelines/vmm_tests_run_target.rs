@@ -4,7 +4,6 @@
 //! Run VMM tests on a target system with artifacts built by `VmmTestsRun`.
 
 use crate::pipelines::vmm_tests_run::VmmTestTargetCli;
-use crate::pipelines::vmm_tests_run::resolve_incubator;
 use crate::pipelines::vmm_tests_run::resolve_target;
 use anyhow::Context;
 use flowey::node::prelude::ReadVar;
@@ -75,11 +74,6 @@ pub struct VmmTestsRunTargetCli {
     /// How many times to run the tests
     #[clap(long)]
     repetitions: Option<u64>,
-
-    /// Run tests inside an emulated incubator.
-    #[clap(long, num_args = 0..=1)]
-    #[expect(clippy::option_option)]
-    incubator: Option<Option<PathBuf>>,
 }
 
 impl IntoPipeline for VmmTestsRunTargetCli {
@@ -102,23 +96,12 @@ impl IntoPipeline for VmmTestsRunTargetCli {
             needs_hardware_isolation,
             needs_igvm_agent,
             repetitions,
-            incubator,
         } = self;
-
-        // When --incubator is set, --target must also be specified
-        // to indicate the cross-compilation target for the incubator.
-        if incubator.is_some() && target.is_none() {
-            anyhow::bail!("--incubator requires --target (e.g., --target linux-aarch64-musl)");
-        }
 
         let repetitions =
             NonZeroU64::new(repetitions.unwrap_or(1)).context("repetitions must not be zero")?;
 
         let target = resolve_target(target, backend_hint)?;
-
-        let incubator_profile = incubator
-            .map(|i| resolve_incubator(i, &target))
-            .transpose()?;
 
         let external_deps = match target.as_triple().operating_system {
             target_lexicon::OperatingSystem::Windows => {
@@ -180,7 +163,6 @@ impl IntoPipeline for VmmTestsRunTargetCli {
                         require_2mb_hugetlb: false, // TODO
                     },
                     repetitions,
-                    incubator_profile,
                     done: ctx.new_done_handle(),
                 },
             );

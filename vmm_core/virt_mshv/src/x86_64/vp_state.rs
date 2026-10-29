@@ -330,6 +330,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
         self.get_register_state()
     }
@@ -407,10 +415,10 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateSaveUnsupported.into())
     }
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateRestoreUnsupported.into())
     }
 }

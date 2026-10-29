@@ -20,6 +20,7 @@ hvdef.workspace = true
 memory_range.workspace = true
 sidecar_defs.workspace = true
 spin.workspace = true
+uart_16550.workspace = true
 x86defs.workspace = true
 
 arrayvec.workspace = true

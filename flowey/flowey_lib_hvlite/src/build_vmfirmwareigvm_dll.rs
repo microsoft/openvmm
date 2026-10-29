@@ -40,6 +40,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -54,11 +55,39 @@ impl SimpleFlowNode for Node {
 
         let igvm_bin = openhcl_igvm.map(ctx, |o| o.igvm_bin().to_path_buf());
 
+        let mut pre_build_deps = Vec::new();
+        let mut cross_env = BTreeMap::new();
+        if let FlowPlatform::Linux(distro) = ctx.platform() {
+            if distro != FlowPlatformLinuxDistro::Nix {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["clang".into(), "llvm".into(), "lld".into()],
+                        done: v,
+                    }
+                }));
+            }
+
+            // Resource-only DLLs need no Windows SDK or runtime libraries.
+            let target = CommonTriple::Common {
+                arch,
+                platform: crate::common::CommonPlatform::WindowsMsvc,
+            }
+            .as_triple()
+            .to_string()
+            .replace('-', "_");
+            cross_env.insert(format!("CC_{target}"), "clang".into());
+            cross_env.insert(format!("RC_{target}"), "llvm-rc".into());
+            cross_env.insert(
+                format!("CARGO_TARGET_{}_LINKER", target.to_uppercase()),
+                "lld-link".into(),
+            );
+        }
+
         let extra_env = ctx.emit_rust_stepv("determine vmfirmwareigvm_dll env vars", |ctx| {
             let igvm_bin = igvm_bin.claim(ctx);
             let dll_version = dll_version.claim(ctx);
             move |rt| {
-                let mut extra_env = BTreeMap::new();
+                let mut extra_env = cross_env;
 
                 // set the various build-time env vars `vmfirmwareigvm_dll` expects
                 {
@@ -106,7 +135,7 @@ impl SimpleFlowNode for Node {
             .as_triple(),
             no_split_dbg_info: false,
             extra_env: Some(extra_env),
-            pre_build_deps: Vec::new(),
+            pre_build_deps,
             output: v,
         });
 

@@ -30,6 +30,12 @@
 //! vmfirmwareigvm_dll` invocation should be sufficient to build the DLL. This
 //! assumes you're running on Windows (or have Windows cross-compile set up).
 //!
+//! On Linux, resource-only DLLs can be built without the Windows SDK by installing
+//! `clang`, `llvm`, and `lld`, setting `CC_<target>` to `clang`, `RC_<target>` to
+//! `llvm-rc`, and `CARGO_TARGET_<TARGET>_LINKER` to `lld-link`. Replace `<target>`
+//! with the Windows MSVC triple using underscores, and `<TARGET>` with its
+//! uppercase form. Set `RUSTFLAGS=""` as required below.
+//!
 //! The resulting DLL will be emitted in the standard Rust output directory
 //! (i.e: under target/...), and will be named `vmfirmwareigvm_dll.dll`.
 //!
@@ -130,6 +136,7 @@ fn main() {
 
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         println!("cargo:rustc-link-arg=/NOENTRY"); // resource DLL
+        println!("cargo:rustc-link-arg=/NODEFAULTLIB");
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-changed=resources.rc");
         println!("cargo:rerun-if-changed={uh_igvm_path}");

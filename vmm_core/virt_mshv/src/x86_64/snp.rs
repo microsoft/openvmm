@@ -1870,8 +1870,7 @@ mod tests {
             &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                 restricted_injection: true,
             }),
-            false,
-            false,
+            Default::default(),
         )
         .unwrap();
         for restricted in [false, true] {
@@ -1885,8 +1884,7 @@ mod tests {
                 &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
                     config.clone(),
                 ))),
-                false,
-                false,
+                Default::default(),
             )
             .unwrap();
             assert_eq!(
@@ -1920,8 +1918,7 @@ mod tests {
                 &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                     restricted_injection,
                 }),
-                false,
-                false,
+                Default::default(),
             )
             .unwrap();
             let vmsa = virt::x86::snp::vmsa_from_initial_regs(
@@ -1948,8 +1945,8 @@ mod tests {
 
     #[test]
     fn injection_policy_is_snp_only() {
-        let args =
-            partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap();
+        let args = partition_create_args(&virt::ProtoPartitionIsolation::None, Default::default())
+            .unwrap();
         assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
     }
 
@@ -1971,8 +1968,7 @@ mod tests {
                     &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
                         config
                     ))),
-                    false,
-                    false,
+                    Default::default(),
                 )
                 .unwrap_err()
                 .0,

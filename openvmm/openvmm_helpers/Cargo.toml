@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 disk_backend_resources.workspace = true
 disk_vhd1.workspace = true
+disk_vmdk.workspace = true
 disklayer_vhdx.workspace = true
 get_resources.workspace = true
 hypervisor_resources.workspace = true
@@ -29,6 +30,7 @@ disk_vhdmp.workspace = true
 sparse_mmap.workspace = true
 
 [dev-dependencies]
+pal_async.workspace = true
 tempfile.workspace = true
 
 [lints]

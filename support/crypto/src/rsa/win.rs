@@ -6,8 +6,10 @@
 use super::RsaError;
 use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
-use crate::win::CryptAlloc;
 use crate::win::KeyHandle;
+use crate::win::decode_object;
+#[cfg(any(test, feature = "export_private"))]
+use crate::win::encode_object;
 use std::ffi::CStr;
 use std::ffi::c_void;
 use windows::Win32::Foundation::STATUS_INVALID_PARAMETER;
@@ -29,18 +31,10 @@ use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
 use windows::Win32::Security::Cryptography::CNG_RSA_PRIVATE_KEY_BLOB;
 #[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
-use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
-#[cfg(any(test, feature = "export_private"))]
-use windows::Win32::Security::Cryptography::CRYPT_ENCODE_ALLOC_FLAG;
 #[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 use windows::Win32::Security::Cryptography::CRYPT_PRIVATE_KEY_INFO;
-use windows::Win32::Security::Cryptography::CryptDecodeObjectEx;
-#[cfg(any(test, feature = "export_private"))]
-use windows::Win32::Security::Cryptography::CryptEncodeObjectEx;
-use windows::Win32::Security::Cryptography::PKCS_7_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::PKCS_PRIVATE_KEY_INFO;
-use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
 use windows::Win32::Security::Cryptography::szOID_RSA_RSA;
 #[cfg(any(test, feature = "export_private"))]
 use windows::core::PSTR;
@@ -150,31 +144,9 @@ impl RsaKeyPairInner {
     pub fn from_pkcs8_der(der_bytes: &[u8]) -> Result<Self, RsaError> {
         // Step 1: parse the PKCS#8 PrivateKeyInfo wrapper to obtain the
         // algorithm OID and the inner PKCS#1 RSAPrivateKey DER.
-        let pki_buf = {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let mut len: u32 = 0;
-            // SAFETY: With CRYPT_DECODE_ALLOC_FLAG, Crypt32 allocates the
-            // output buffer and writes its pointer into the location
-            // pointed to by pvstructinfo.
-            unsafe {
-                CryptDecodeObjectEx(
-                    X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                    PKCS_PRIVATE_KEY_INFO,
-                    der_bytes,
-                    CRYPT_DECODE_ALLOC_FLAG,
-                    None,
-                    Some(std::ptr::from_mut(&mut ptr).cast::<c_void>()),
-                    &mut len,
-                )
-            }
-            .map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?
-        };
-        // SAFETY: Crypt32 was asked to decode a PKCS_PRIVATE_KEY_INFO, so
-        // the buffer (when non-null and large enough, as validated by
-        // as_struct) holds a CRYPT_PRIVATE_KEY_INFO.
-        let pki = unsafe { pki_buf.as_struct::<CRYPT_PRIVATE_KEY_INFO>() }
-            .map_err(|e| err(e, "decoding the PKCS#8 PrivateKeyInfo"))?;
+        let pki_buf = decode_object::<CRYPT_PRIVATE_KEY_INFO>(PKCS_PRIVATE_KEY_INFO, der_bytes)
+            .map_err(RsaError)?;
+        let pki = pki_buf.get();
         // SAFETY: pszObjId is a NUL-terminated string owned by the same
         // Crypt32 allocation.
         let oid = unsafe { CStr::from_ptr(pki.Algorithm.pszObjId.0.cast()) };
@@ -201,33 +173,10 @@ impl RsaKeyPairInner {
         // or BCRYPT_RSAFULLPRIVATE layout depending on which fields are
         // present in the source DER; the magic word at the start of the
         // blob distinguishes them.
-        let blob_buf = {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let mut len: u32 = 0;
-            // SAFETY: With CRYPT_DECODE_ALLOC_FLAG, Crypt32 allocates the
-            // output buffer and writes its pointer into the location
-            // pointed to by pvstructinfo.
-            unsafe {
-                CryptDecodeObjectEx(
-                    X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                    CNG_RSA_PRIVATE_KEY_BLOB,
-                    pkcs1_der,
-                    CRYPT_DECODE_ALLOC_FLAG,
-                    None,
-                    Some(std::ptr::from_mut(&mut ptr).cast::<c_void>()),
-                    &mut len,
-                )
-            }
-            .map_err(|e| err(e, "decoding the PKCS#1 RSA private key"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "decoding the PKCS#1 RSA private key"))?
-        };
+        let blob_buf = decode_object::<BCRYPT_RSAKEY_BLOB>(CNG_RSA_PRIVATE_KEY_BLOB, pkcs1_der)
+            .map_err(RsaError)?;
         let blob = blob_buf.as_bytes();
-        if blob.len() < size_of::<BCRYPT_RSAKEY_BLOB>() {
-            return Err(invalid_err("decoded RSA private key blob is too small"));
-        }
-        // SAFETY: blob is at least header-sized and the header is POD.
-        let magic =
-            unsafe { std::ptr::read_unaligned(blob.as_ptr().cast::<BCRYPT_RSAKEY_BLOB>()) }.Magic;
+        let magic = blob_buf.get().Magic;
         let blob_type = match magic {
             windows::Win32::Security::Cryptography::BCRYPT_RSAFULLPRIVATE_MAGIC => {
                 BCRYPT_RSAFULLPRIVATE_BLOB
@@ -256,26 +205,8 @@ impl RsaKeyPairInner {
         // CryptEncodeObjectEx with CNG_RSA_PRIVATE_KEY_BLOB takes the raw
         // BCRYPT_RSAKEY_BLOB layout (header + concatenated components) as
         // its struct input.
-        let pkcs1_buf = {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let mut len: u32 = 0;
-            // SAFETY: With CRYPT_ENCODE_ALLOC_FLAG, Crypt32 allocates the
-            // output buffer and writes its pointer into the location
-            // pointed to by pvencoded.
-            unsafe {
-                CryptEncodeObjectEx(
-                    X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                    CNG_RSA_PRIVATE_KEY_BLOB,
-                    blob.as_ptr().cast::<c_void>(),
-                    CRYPT_ENCODE_ALLOC_FLAG,
-                    None,
-                    Some(std::ptr::from_mut(&mut ptr).cast::<c_void>()),
-                    &mut len,
-                )
-            }
+        let pkcs1_buf = encode_object(CNG_RSA_PRIVATE_KEY_BLOB, blob.as_slice())
             .map_err(|e| err(e, "encoding the PKCS#1 RSA private key"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding the PKCS#1 RSA private key"))?
-        };
 
         // Step 3: wrap the PKCS#1 DER in a PKCS#8 PrivateKeyInfo with the
         // rsaEncryption algorithm OID and ASN.1 NULL parameters.
@@ -293,7 +224,7 @@ impl RsaKeyPairInner {
                 },
             },
             PrivateKey: {
-                let pkcs1 = pkcs1_buf.as_bytes();
+                let pkcs1 = pkcs1_buf.as_slice();
                 CRYPT_INTEGER_BLOB {
                     cbData: pkcs1.len() as u32,
                     pbData: pkcs1.as_ptr().cast_mut(),
@@ -301,27 +232,8 @@ impl RsaKeyPairInner {
             },
             pAttributes: std::ptr::null_mut(),
         };
-        let pkcs8_buf = {
-            let mut ptr: *mut c_void = std::ptr::null_mut();
-            let mut len: u32 = 0;
-            // SAFETY: With CRYPT_ENCODE_ALLOC_FLAG, Crypt32 allocates the
-            // output buffer and writes its pointer into the location
-            // pointed to by pvencoded.
-            unsafe {
-                CryptEncodeObjectEx(
-                    X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-                    PKCS_PRIVATE_KEY_INFO,
-                    std::ptr::from_ref(&pki).cast::<c_void>(),
-                    CRYPT_ENCODE_ALLOC_FLAG,
-                    None,
-                    Some(std::ptr::from_mut(&mut ptr).cast::<c_void>()),
-                    &mut len,
-                )
-            }
-            .map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))?;
-            CryptAlloc::new(ptr, len).map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))?
-        };
-        Ok(pkcs8_buf.as_bytes().to_vec())
+        encode_object(PKCS_PRIVATE_KEY_INFO, &pki)
+            .map_err(|e| err(e, "encoding the PKCS#8 PrivateKeyInfo"))
     }
 
     #[cfg(any(test, feature = "export_private"))]
@@ -340,7 +252,7 @@ impl RsaKeyPairInner {
                 "exported RSA private key blob has an invalid magic value",
             ));
         }
-        let mut take_component = |size: u32| -> Result<Vec<u8>, RsaError> {
+        let mut take_component = |size: u32| {
             if size == 0 {
                 return Err(invalid_err(
                     "exported RSA private key has an empty component",
@@ -350,16 +262,20 @@ impl RsaKeyPairInner {
                 .split_at_checked(size as usize)
                 .ok_or_else(|| invalid_err("exported RSA private key blob is truncated"))?;
             rest = remaining;
-            Ok(bytes.to_vec())
+            Ok(bytes)
         };
-        let public_exponent = take_component(cb_e)?;
-        let modulus = take_component(cb_n)?;
-        let prime1 = take_component(cb_p)?;
-        let prime2 = take_component(cb_q)?;
+        let public_exponent = take_component(cb_e)?.to_vec();
+        let modulus = take_component(cb_n)?.to_vec();
+        let prime1 = take_component(cb_p)?.to_vec();
+        let prime2 = take_component(cb_q)?.to_vec();
         let _exponent1 = take_component(cb_p)?;
         let _exponent2 = take_component(cb_q)?;
         let _coefficient = take_component(cb_p)?;
-        let private_exponent = take_component(cb_n)?;
+        // The private exponent is exported at modulus width.
+        let private_exponent =
+            crate::helpers::unpad_component(take_component(cb_n)?).ok_or_else(|| {
+                invalid_err("exported RSA private key has an empty or zero private exponent")
+            })?;
         if !rest.is_empty() {
             return Err(invalid_err(
                 "exported RSA private key blob has trailing bytes",
@@ -529,18 +445,36 @@ fn verify_hash(
     Ok(true)
 }
 
-fn parse_public_components(blob: &[u8]) -> PublicComponents<'_> {
-    assert!(blob.len() >= size_of::<BCRYPT_RSAKEY_BLOB>());
-    let header_ptr = blob.as_ptr().cast::<BCRYPT_RSAKEY_BLOB>();
-    // SAFETY: blob is at least header-sized; header is POD.
-    let header = unsafe { std::ptr::read_unaligned(header_ptr) };
-    let off = size_of::<BCRYPT_RSAKEY_BLOB>();
-    let cb_e = header.cbPublicExp as usize;
-    let cb_n = header.cbModulus as usize;
-    PublicComponents {
-        public_exponent: &blob[off..off + cb_e],
-        modulus: &blob[off + cb_e..off + cb_e + cb_n],
+fn parse_public_components(blob: &[u8]) -> Result<PublicComponents<'_>, RsaError> {
+    use zerocopy::FromBytes;
+
+    let ([magic, _bits, cb_e, cb_n, _cb_p, _cb_q], rest) = <[u32; 6]>::read_from_prefix(blob)
+        .map_err(|_| invalid_err("exported RSA public key blob is too small"))?;
+    if magic != BCRYPT_RSAPUBLIC_MAGIC.0 {
+        return Err(invalid_err(
+            "exported RSA public key blob has an invalid magic value",
+        ));
     }
+    if cb_e == 0 || cb_n == 0 {
+        return Err(invalid_err(
+            "exported RSA public key has an empty component",
+        ));
+    }
+    let (public_exponent, rest) = rest
+        .split_at_checked(cb_e as usize)
+        .ok_or_else(|| invalid_err("exported RSA public key blob is truncated"))?;
+    let (modulus, rest) = rest
+        .split_at_checked(cb_n as usize)
+        .ok_or_else(|| invalid_err("exported RSA public key blob is truncated"))?;
+    if !rest.is_empty() {
+        return Err(invalid_err(
+            "exported RSA public key blob has trailing bytes",
+        ));
+    }
+    Ok(PublicComponents {
+        public_exponent,
+        modulus,
+    })
 }
 
 impl RsaPublicKeyInner {
@@ -663,15 +597,15 @@ impl RsaPublicKeyInner {
     }
 
     pub fn modulus_size(&self) -> usize {
-        self.to_components().modulus.len()
+        self.to_components().unwrap().modulus.len()
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
-        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB).unwrap();
-        let components = parse_public_components(&blob);
-        RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
+        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB)?;
+        let components = parse_public_components(&blob)?;
+        Ok(RsaPublicKeyComponents {
             modulus: components.modulus.to_vec(),
             public_exponent: components.public_exponent.to_vec(),
-        }
+        })
     }
 }

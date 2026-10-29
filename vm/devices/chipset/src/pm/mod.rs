@@ -48,11 +48,11 @@ open_enum! {
     /// Power management I/O offsets from base port address
     pub enum DynReg: u8 {
         #![expect(missing_docs)] // self explanatory constants
-        STATUS             = 0x00, // two-byte value
+        STATUS             = acpi_spec::hyperv::PM_STATUS as u8, // two-byte value
         RESUME_ENABLE      = 0x02, // two-byte value
-        CONTROL            = 0x04, // two-byte value
-        TIMER              = 0x08, // four-byte value (read only)
-        GEN_PURPOSE_STATUS = 0x0C, // two-byte value
+        CONTROL            = acpi_spec::hyperv::PM_CONTROL as u8, // two-byte value
+        TIMER              = acpi_spec::hyperv::PM_TIMER as u8, // four-byte value (read only)
+        GEN_PURPOSE_STATUS = acpi_spec::hyperv::PM_GPE0_STATUS as u8, // two-byte value
         GEN_PURPOSE_ENABLE = 0x0E, // two-byte value
         PROC_CONTROL       = 0x10, // four-byte value
         PROC_L2            = 0x14, // one-byte value
@@ -65,7 +65,7 @@ open_enum! {
         GENERAL_INPUT1     = 0x30, // one-byte value (read only)
         GENERAL_INPUT2     = 0x31, // one-byte value (read only)
         GENERAL_INPUT3     = 0x32, // one-byte value (read only)
-        RESET              = 0x33, // one-byte value
+        RESET              = acpi_spec::hyperv::PM_RESET as u8, // one-byte value
         GENERAL_OUTPUT0    = 0x34, // one-byte value
         GENERAL_OUTPUT2    = 0x35, // one-byte value
         GENERAL_OUTPUT3    = 0x36, // one-byte value
@@ -84,7 +84,7 @@ const STATUS_PM_MASK: u16 = 0x0040; // One of the PM event flags is set
 const TIMER_OVERFLOW_MASK: u16 = 0x0001; // The PM timer overflowed
 
 /// Value that initiates a system reset when written to [`DynReg::RESET`].
-pub const RESET_VALUE: u8 = 0x01; // Reset the VM
+pub const RESET_VALUE: u8 = acpi_spec::hyperv::RESET_VALUE;
 
 #[derive(Clone, Debug, Inspect)]
 struct PmState {

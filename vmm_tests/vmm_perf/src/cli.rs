@@ -2,10 +2,9 @@
 // Licensed under the MIT License.
 
 use crate::config::ConfigSelection;
-use crate::config::VmmPerfProfile;
+use crate::config::VmmPerfProfileVariant;
 use clap::ArgAction;
 use clap::Parser;
-use clap::ValueEnum;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -31,11 +30,10 @@ pub(crate) struct Cli {
 
     #[arg(
         long = "profile",
-        value_name = "PROFILE",
-        value_enum,
+        value_name = "PROFILE[:MODIFIER...]",
         action = ArgAction::Append
     )]
-    profiles: Vec<ProfileArg>,
+    profiles: Vec<VmmPerfProfileVariant>,
 
     #[arg(long = "vm-sizes-json", value_name = "JSON")]
     pub(crate) vm_sizes_json: Option<String>,
@@ -44,31 +42,16 @@ pub(crate) struct Cli {
     pub(crate) parameters_json: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum ProfileArg {
-    #[value(name = "fio")]
-    Fio,
-    #[value(name = "iperf3")]
-    Iperf3,
-    #[value(name = "boot-time")]
-    BootTime,
-}
-
 impl Cli {
-    pub(crate) fn selected_profiles(&self) -> Vec<VmmPerfProfile> {
+    pub(crate) fn selected_profile_variants(&self) -> Vec<VmmPerfProfileVariant> {
         if self.profiles.is_empty() {
-            return VmmPerfProfile::all().to_vec();
+            return VmmPerfProfileVariant::defaults();
         }
 
         let mut profiles = Vec::new();
         for profile in &self.profiles {
-            let profile = match profile {
-                ProfileArg::Fio => VmmPerfProfile::Fio,
-                ProfileArg::Iperf3 => VmmPerfProfile::Iperf3,
-                ProfileArg::BootTime => VmmPerfProfile::BootTime,
-            };
-            if !profiles.contains(&profile) {
-                profiles.push(profile);
+            if !profiles.contains(profile) {
+                profiles.push(profile.clone());
             }
         }
         profiles
@@ -91,7 +74,6 @@ pub(crate) fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::Cli;
-    use crate::config::VmmPerfProfile;
     use clap::Parser as _;
     use test_with_tracing::test;
 
@@ -109,7 +91,13 @@ mod tests {
             "out",
         ])?;
 
-        assert_eq!(cli.selected_profiles(), VmmPerfProfile::all());
+        assert_eq!(
+            cli.selected_profile_variants()
+                .iter()
+                .map(|profile| profile.name())
+                .collect::<Vec<_>>(),
+            ["fio_vmbus", "iperf3_vmbus", "boot_time"]
+        );
         assert!(cli.temp_dir.is_none());
         assert!(cli.vm_sizes_json.is_none());
         assert!(cli.parameters_json.is_none());
@@ -131,6 +119,8 @@ mod tests {
             "--profile",
             "fio",
             "--profile",
+            "fio:virtio",
+            "--profile",
             "boot-time",
             "--profile",
             "fio",
@@ -141,8 +131,11 @@ mod tests {
         ])?;
 
         assert_eq!(
-            cli.selected_profiles(),
-            vec![VmmPerfProfile::Fio, VmmPerfProfile::BootTime]
+            cli.selected_profile_variants()
+                .iter()
+                .map(|profile| profile.name())
+                .collect::<Vec<_>>(),
+            ["fio_vmbus", "fio_virtio", "boot_time"]
         );
         assert_eq!(cli.vm_sizes_json.as_deref(), Some("[]"));
         assert_eq!(cli.parameters_json.as_deref(), Some("{}"));

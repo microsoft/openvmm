@@ -33,12 +33,11 @@ use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
-use cli_args::ProvisionVmgs;
+use cli_args::ProvisionCondition;
 use cli_args::SerialConfigCli;
 use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
-use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
 use cxl::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
@@ -70,6 +69,7 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::IgvmPersonality;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -83,7 +83,7 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::RootComplexCxlConfig;
-use openvmm_defs::config::SerialInformation;
+use openvmm_defs::config::UartId;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
@@ -103,6 +103,7 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
+use serial_core::resources::NullSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -136,6 +137,7 @@ use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
@@ -366,19 +368,9 @@ async fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
-            SerialConfigCli::File(path) => {
-                let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
-                let file = fs_err::File::create(path).context("failed to create file")?;
-
-                thread::Builder::new()
-                    .name(name.to_owned())
-                    .spawn(move || {
-                        let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
-                    })
-                    .unwrap();
-                Some(config)
-            }
+            SerialConfigCli::File(path) => Some(serial_io::file_serial(&path, false)?),
             SerialConfigCli::None => None,
+            SerialConfigCli::Null => Some(NullSerialBackendHandle.into_resource()),
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
             }
@@ -813,6 +805,7 @@ async fn vm_config_from_command_line(
                     cidr: None,
                     host_fwd: Vec::new(),
                 },
+                mac_address: None,
                 max_queues: None,
                 underhill: false,
                 pcie_port: None,
@@ -1301,11 +1294,8 @@ async fn vm_config_from_command_line(
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
-        let nvram_storage = if opt.vmgs.is_some() {
-            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
-        } else {
-            EphemeralNonVolatileStoreHandle.into_resource()
-        };
+        let nvram_storage =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::BIOS_NVRAM);
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             base_template,
@@ -1389,10 +1379,12 @@ async fn vm_config_from_command_line(
             } else {
                 Vtl2BaseAddressType::File
             },
-            com_serial: has_com3.then(|| SerialInformation {
-                io_port: ComPort::Com3.io_port(),
-                irq: ComPort::Com3.irq().into(),
-            }),
+            com_serial: has_com3.then_some(UartId::Com(ComPort::Com3)),
+            personality: match igvm.personality {
+                IgvmPersonalityCli::Openhcl => IgvmPersonality::Openhcl,
+                IgvmPersonalityCli::Uefi => IgvmPersonality::Uefi,
+                IgvmPersonalityCli::LinuxDirect => IgvmPersonality::LinuxDirect,
+            },
         };
 
         // An IGVM launch carries no SMBIOS field of its own; the identity is
@@ -1530,22 +1522,15 @@ async fn vm_config_from_command_line(
         };
     }
 
-    let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
-        let disk = VmgsDisk {
-            disk: disk_open(kind, false)
-                .await
-                .context("failed to open vmgs disk")?,
-            encryption_policy: if opt.test_gsp_by_id {
-                GuestStateEncryptionPolicy::GspById(true)
-            } else {
-                GuestStateEncryptionPolicy::None(true)
-            },
+    let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
+        let encryption_policy = if opt.test_gsp_by_id {
+            GuestStateEncryptionPolicy::GspById(true)
+        } else {
+            GuestStateEncryptionPolicy::None(true)
         };
-        match provision {
-            ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
-            ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
-            ProvisionVmgs::True => VmgsResource::Reprovision(disk),
-        }
+        open_vmgs(&vmgs.kind, vmgs.provision, encryption_policy)
+            .await
+            .context("failed to open vmgs disk")?
     } else {
         VmgsResource::Ephemeral
     });
@@ -1673,17 +1658,12 @@ async fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
-            (
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(tpm_vmgs::tpm_nvram_file_id(tpm_version), true).into_resource(),
-            )
-        } else {
-            (
-                EphemeralNonVolatileStoreHandle.into_resource(),
-                EphemeralNonVolatileStoreHandle.into_resource(),
-            )
-        };
+        let ppi_store =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::TPM_PPI);
+        let nvram_store = non_volatile_store_resource(
+            opt.vmgs.is_some(),
+            tpm_vmgs::tpm_nvram_file_id(tpm_version),
+        );
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_string(),
@@ -1979,6 +1959,12 @@ async fn vm_config_from_command_line(
         } else {
             add_virtio_device(opt.virtio_rng_bus.clone(), resource, &mut pcie_devices);
         }
+    }
+
+    if let Some(rtc) = &opt.virtio_rtc {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rtc::VirtioRtcHandle.into_resource();
+        add_virtio_device(rtc.bus.clone(), resource, &mut pcie_devices);
     }
 
     if let Some(backend) = virtio_console_backend {
@@ -2411,9 +2397,11 @@ fn parse_endpoint(
         }
     };
 
-    // Pick a random MAC address.
-    let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-    getrandom::fill(&mut mac_address[3..]).expect("rng failure");
+    let mac_address = cli_cfg.mac_address.unwrap_or_else(|| {
+        let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
+        getrandom::fill(&mut mac_address[3..]).expect("rng failure");
+        mac_address.into()
+    });
 
     // Pick a fixed instance ID based on the index.
     const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
@@ -2427,7 +2415,7 @@ fn parse_endpoint(
         vtl: cli_cfg.vtl,
         instance_id,
         endpoint,
-        mac_address: mac_address.into(),
+        mac_address,
         max_queues: cli_cfg.max_queues,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
@@ -2456,6 +2444,33 @@ impl NicConfig {
             .into_resource(),
         )
     }
+}
+
+fn non_volatile_store_resource(
+    with_vmgs: bool,
+    file_id: vmgs_format::FileId,
+) -> Resource<NonVolatileStoreKind> {
+    if with_vmgs {
+        VmgsFileHandle::new(file_id, true).into_resource()
+    } else {
+        EphemeralNonVolatileStoreHandle.into_resource()
+    }
+}
+
+async fn open_vmgs(
+    kind: &DiskCliKind,
+    provision: ProvisionCondition,
+    encryption_policy: GuestStateEncryptionPolicy,
+) -> anyhow::Result<VmgsResource> {
+    let disk = VmgsDisk {
+        disk: disk_open(kind, false).await?,
+        encryption_policy,
+    };
+    Ok(match provision {
+        ProvisionCondition::OnEmpty => VmgsResource::Disk(disk),
+        ProvisionCondition::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+        ProvisionCondition::Single => VmgsResource::ReprovisionSingle(disk),
+    })
 }
 
 enum LayerOrDisk {
@@ -2718,7 +2733,7 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
-    tracing_init::enable_tracing()?;
+    let _tracing_guard = tracing_init::enable_tracing()?;
 
     // Try to run as a worker host.
     // On success the worker runs to completion and then exits the process (does
@@ -2774,10 +2789,12 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
                     unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
                 // This is a local launch
+                let (exit_code_send, exit_code_recv) = mesh::oneshot();
                 let mut handle =
                     mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
                         listener,
                         transport,
+                        exit_code: exit_code_send,
                     })
                     .await?;
 
@@ -2788,7 +2805,9 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
                 handle.join().await?;
 
-                Ok(0)
+                exit_code_recv
+                    .await
+                    .context("RPC worker did not report an exit code")
             });
         }
     }
@@ -3186,6 +3205,71 @@ mod tests {
     use clap::Parser;
     use std::fs::File;
     use test_with_tracing::test;
+    use vm_resource::ResourceId;
+
+    #[test]
+    fn selects_non_volatile_store_backing() {
+        for file_id in [
+            vmgs_format::FileId::BIOS_NVRAM,
+            vmgs_format::FileId::TPM_PPI,
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V138),
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V185),
+        ] {
+            assert_eq!(
+                non_volatile_store_resource(true, file_id).id(),
+                <VmgsFileHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+            assert_eq!(
+                non_volatile_store_resource(false, file_id).id(),
+                <EphemeralNonVolatileStoreHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+        }
+    }
+
+    #[test]
+    fn opens_vmgs_with_provisioning_and_encryption_policy() {
+        block_on(async {
+            for provision in [
+                ProvisionCondition::OnEmpty,
+                ProvisionCondition::OnFailure,
+                ProvisionCondition::Single,
+            ] {
+                for encryption_policy in [
+                    GuestStateEncryptionPolicy::None(true),
+                    GuestStateEncryptionPolicy::GspById(true),
+                ] {
+                    let vmgs = open_vmgs(
+                        &DiskCliKind::Memory(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                        provision,
+                        encryption_policy,
+                    )
+                    .await
+                    .unwrap();
+                    let disk = match (provision, vmgs) {
+                        (ProvisionCondition::OnEmpty, VmgsResource::Disk(disk))
+                        | (
+                            ProvisionCondition::OnFailure,
+                            VmgsResource::ReprovisionOnFailure(disk),
+                        )
+                        | (ProvisionCondition::Single, VmgsResource::ReprovisionSingle(disk)) => {
+                            disk
+                        }
+                        _ => panic!("incorrect VMGS provisioning"),
+                    };
+                    assert!(matches!(
+                        (encryption_policy, disk.encryption_policy),
+                        (
+                            GuestStateEncryptionPolicy::None(true),
+                            GuestStateEncryptionPolicy::None(true)
+                        ) | (
+                            GuestStateEncryptionPolicy::GspById(true),
+                            GuestStateEncryptionPolicy::GspById(true)
+                        )
+                    ));
+                }
+            }
+        });
+    }
 
     #[test]
     fn maps_igvm_personalities_to_chipsets() {
