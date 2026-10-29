@@ -349,7 +349,10 @@ impl VpciRelay {
         let instance_id = offer_info.offer.instance_id;
         let entry = self.devices.vacant_entry();
         if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
-            tracing::warn!(%instance_id, "no relay MMIO space left, rejecting VPCI device");
+            tracelimit::warn_ratelimited!(
+                %instance_id,
+                "no relay MMIO space left, rejecting VPCI device"
+            );
             return Ok(());
         }
 
