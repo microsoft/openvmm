@@ -17,6 +17,10 @@
 //! Pinned profiles are stored as pretty canonical JSON. Decoding accepts only
 //! the canonical bytes, so a profile has exactly one encoding and one digest.
 //!
+//! A valid profile is dense (it lists every leaf and subleaf in range), masks
+//! exactly the bits that it does not own, and fixes the time ABI's CPU time
+//! bits ([`TIME_BITS`]); every way to build or decode a profile checks this.
+//!
 //! Every serialized struct declares its fields in the byte order of their
 //! keys, so serializing it directly gives the canonical form (tests check
 //! this against the sorting encoder). Keep new fields in that order.
@@ -33,6 +37,8 @@ use crate::error::ProfileErrorCode;
 use crate::fingerprint::IA32_ARCH_CAPABILITIES;
 use crate::signature::HostCpuSignature;
 use crate::signature::decode_signature;
+use crate::surface::REGISTERS;
+use crate::surface::bits_phrase;
 use crate::vendor::CpuVendor;
 use serde::Deserialize;
 use serde::Serialize;
@@ -49,6 +55,39 @@ const MAX_SUBLEAF_IN_EAX_LEAVES: [u32; 6] = [0x7, 0x14, 0x17, 0x18, 0x1d, 0x24];
 
 /// `CPUID.(7,0):EDX[29]`, the presence of `IA32_ARCH_CAPABILITIES`.
 const LEAF7_EDX_ARCH_CAPABILITIES: u32 = 1 << 29;
+
+/// The CPU time bits of the NVX time ABI, which every profile fixes: for each
+/// leaf and subleaf, the bits of `EAX`, `EBX`, `ECX`, and `EDX` that the time
+/// ABI governs, and their values. A leaf that a profile does not list reads
+/// as zero, so leaves `0x15` and `0x16` above the maximum basic leaf comply.
+pub(crate) const TIME_BITS: [(u32, Option<u32>, [u32; 4], [u32; 4]); 8] = [
+    // The hypervisor and TSC bits, and neither the TSC-deadline timer nor
+    // PDCM.
+    (
+        0x1,
+        None,
+        [0, 0, 1 << 31 | 1 << 24 | 1 << 15, 1 << 4],
+        [0, 0, 1 << 31, 1 << 4],
+    ),
+    // ARAT only.
+    (0x6, None, [!0; 4], [1 << 2, 0, 0, 0]),
+    // No `IA32_TSC_ADJUST`.
+    (0x7, Some(0), [0, 1 << 1, 0, 0], [0; 4]),
+    // No PMU.
+    (0xa, None, [!0; 4], [0; 4]),
+    // No TSC or processor frequency leaves.
+    (0x15, None, [!0; 4], [0; 4]),
+    (0x16, None, [!0; 4], [0; 4]),
+    // RDTSCP.
+    (
+        EXTENDED_LEAF_BASE + 1,
+        None,
+        [0, 0, 0, 1 << 27],
+        [0, 0, 0, 1 << 27],
+    ),
+    // The invariant TSC only.
+    (EXTENDED_LEAF_BASE + 7, None, [!0; 4], [0, 0, 0, 1 << 8]),
+];
 
 /// The CPU generation that a profile serves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,8 +314,9 @@ impl CpuProfile {
 
     /// Returns the canonical encoding: compact canonical JSON.
     ///
-    /// Offline only, for tools and tests: a pinned profile's encoding is the
-    /// constant [`pinned_record`](crate::pinned_record) returns.
+    /// A pinned profile's encoding is the constant
+    /// [`pinned_record`](crate::pinned_record) returns, which the profile's
+    /// first use in a process compares with this, to verify the profile.
     pub fn encode(&self) -> Vec<u8> {
         canonical::to_compact_ordered(self)
     }
@@ -401,7 +441,7 @@ impl CpuProfile {
 
     /// Checks every structural invariant of a profile; see the module
     /// documentation and [`SCHEMA`].
-    fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         if self.schema != SCHEMA {
             return Err(format!("schema {:?} is not {SCHEMA:?}", self.schema));
         }
@@ -416,7 +456,7 @@ impl CpuProfile {
                 self.physical_address_width
             ));
         }
-        Ok(())
+        self.validate_time_bits()
     }
 
     /// Checks the profile's identity and returns its vendor.
@@ -625,6 +665,37 @@ impl CpuProfile {
         }
         Ok(())
     }
+
+    /// Checks the CPU time bits ([`TIME_BITS`]), naming every bit that
+    /// violates them.
+    fn validate_time_bits(&self) -> Result<(), String> {
+        let mut violations = Vec::new();
+        for (leaf, subleaf, governed, expected) in TIME_BITS {
+            let value = self.lookup(leaf, subleaf.unwrap_or(0));
+            for register in 0..4 {
+                let set = value[register] & governed[register] & !expected[register];
+                let clear = !value[register] & governed[register] & expected[register];
+                for (bits, state) in [(set, "set"), (clear, "clear")] {
+                    if bits != 0 {
+                        violations.push(format!(
+                            "{} {} {} {state}",
+                            describe_leaf(leaf, subleaf),
+                            REGISTERS[register],
+                            bits_phrase(bits.into())
+                        ));
+                    }
+                }
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "it violates the CPU time bits: {}",
+                violations.join("; ")
+            ))
+        }
+    }
 }
 
 /// Returns whether `component` is a valid vendor or generation component of a
@@ -763,6 +834,21 @@ mod tests {
                         == subleaf.map_or(Value::Null, |s| json!(format!("{s:#010x}")))
             })
             .unwrap()
+    }
+
+    /// Replaces `register` of the CPUID entry of `leaf` and `subleaf` in a
+    /// profile's JSON with what `edit` makes of it.
+    fn edit_register(
+        value: &mut Value,
+        leaf: u32,
+        subleaf: Option<u32>,
+        register: usize,
+        edit: impl FnOnce(u32) -> u32,
+    ) {
+        let field = &mut entry(value, leaf, subleaf)["value"][register];
+        let old =
+            u32::from_str_radix(field.as_str().unwrap().trim_start_matches("0x"), 16).unwrap();
+        *field = json!(format!("{:#010x}", edit(old)));
     }
 
     fn assert_invalid(result: Result<CpuProfile, ProfileError>, expected: &str) {
@@ -953,6 +1039,69 @@ mod tests {
         assert_invalid(
             decode_edited(|value| entry(value, 7, Some(0))["value"][3] = json!("0x00000010")),
             "not enumerated",
+        );
+    }
+
+    #[test]
+    fn validation_rejects_profiles_that_violate_the_cpu_time_bits() {
+        // Every pinned profile fixes them, those whose maximum basic leaf is
+        // below 0x15 included.
+        for profile in crate::pinned_profiles() {
+            profile.validate_time_bits().unwrap();
+        }
+        for (leaf, subleaf, register, set, clear, expected) in [
+            (0x1, None, 2, 0, 1 << 31, "CPUID 0x1 ECX bit 31 is clear"),
+            (0x1, None, 2, 1 << 24, 0, "CPUID 0x1 ECX bit 24 is set"),
+            (0x1, None, 2, 1 << 15, 0, "CPUID 0x1 ECX bit 15 is set"),
+            (0x1, None, 3, 0, 1 << 4, "CPUID 0x1 EDX bit 4 is clear"),
+            (
+                0x6,
+                None,
+                0,
+                0x73,
+                1 << 2,
+                "CPUID 0x6 EAX bits 0, 1, 4, 5, 6 are set; CPUID 0x6 EAX bit 2 is clear",
+            ),
+            (0x6, None, 2, 1 << 3, 0, "CPUID 0x6 ECX bit 3 is set"),
+            (0x7, Some(0), 1, 1 << 1, 0, "CPUID 0x7.0 EBX bit 1 is set"),
+            (0xa, None, 0, 1, 0, "CPUID 0xa EAX bit 0 is set"),
+            (0x15, None, 2, 1 << 5, 0, "CPUID 0x15 ECX bit 5 is set"),
+            (0x16, None, 0, 1 << 11, 0, "CPUID 0x16 EAX bit 11 is set"),
+            (
+                0x8000_0001,
+                None,
+                3,
+                0,
+                1 << 27,
+                "CPUID 0x80000001 EDX bit 27 is clear",
+            ),
+            (
+                0x8000_0007,
+                None,
+                3,
+                1 << 9,
+                1 << 8,
+                "CPUID 0x80000007 EDX bit 9 is set; CPUID 0x80000007 EDX bit 8 is clear",
+            ),
+        ] {
+            assert_invalid(
+                decode_edited(|value| {
+                    edit_register(value, leaf, subleaf, register, |old| (old | set) & !clear)
+                }),
+                &format!(
+                    "profile \"{ICELAKE}\" is invalid: it violates the CPU time bits: {expected}"
+                ),
+            );
+        }
+
+        // Every violation is named.
+        assert_invalid(
+            decode_edited(|value| {
+                edit_register(value, 1, None, 2, |ecx| ecx | 1 << 24);
+                edit_register(value, 0x8000_0001, None, 3, |edx| edx & !(1 << 27));
+            }),
+            "it violates the CPU time bits: CPUID 0x1 ECX bit 24 is set; \
+             CPUID 0x80000001 EDX bit 27 is clear",
         );
     }
 
