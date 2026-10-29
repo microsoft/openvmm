@@ -68,6 +68,11 @@ pub struct X509CertificateInner {
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
+        use der::Reader;
+
+        let data = der::SliceReader::new(data)
+            .and_then(|mut reader| reader.tlv_bytes())
+            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
         let parsed =
             Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
         let cf = cf_data(data, "creating a CFData for the certificate").map_err(err)?;
@@ -80,15 +85,6 @@ impl X509CertificateInner {
             cert: CfHandle(cert),
             parsed,
         })
-    }
-
-    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
-        use der::Reader;
-
-        let encoded = der::SliceReader::new(data)
-            .and_then(|mut reader| reader.tlv_bytes())
-            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
-        Self::from_der(encoded)
     }
 
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {

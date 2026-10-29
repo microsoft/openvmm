@@ -34,7 +34,7 @@ pub enum AkCertMetadataError {
 ///
 /// TPM NV storage can contain padding or stale bytes after the DER certificate.
 pub fn parse_metadata(data: &[u8]) -> Result<AkCertMetadata, AkCertMetadataError> {
-    let certificate = X509Certificate::from_der_prefix(data)?;
+    let certificate = X509Certificate::from_der(data)?;
     let (not_before, not_after) = certificate.validity()?;
     Ok(AkCertMetadata {
         issuer: certificate

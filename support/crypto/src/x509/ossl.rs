@@ -20,11 +20,6 @@ impl X509CertificateInner {
         Ok(Self(cert))
     }
 
-    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
-        // OpenSSL's d2i_X509 decodes one certificate without consuming the tail.
-        Self::from_der(data)
-    }
-
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let pkey = self
             .0

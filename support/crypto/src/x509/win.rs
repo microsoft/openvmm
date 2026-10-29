@@ -109,11 +109,6 @@ impl X509CertificateInner {
         Ok(Self(CertContext(p)))
     }
 
-    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
-        // CryptoAPI accepts trailing bytes after the encoded certificate.
-        Self::from_der(data)
-    }
-
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
         let info = &self.0.cert_info().SubjectPublicKeyInfo;
 

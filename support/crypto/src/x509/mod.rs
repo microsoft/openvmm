@@ -195,15 +195,10 @@ impl X509SelfSignedOptions<'_> {
 }
 
 impl X509Certificate {
-    /// Parse an X.509 certificate from DER-encoded bytes.
+    /// Parse the first DER-encoded X.509 certificate, ignoring extraneous
+    /// trailing bytes.
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
         sys::X509CertificateInner::from_der(data).map(Self)
-    }
-
-    /// Parse the first DER-encoded certificate, ignoring extraneous trailing
-    /// bytes.
-    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
-        sys::X509CertificateInner::from_der_prefix(data).map(Self)
     }
 
     /// Extract the public key from this certificate.
@@ -285,7 +280,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn certificate_prefix_ignores_storage_padding() {
+    fn certificate_parsing_ignores_trailing_bytes() {
         let key = crate::rsa::RsaKeyPair::generate(2048).unwrap();
         let cert = build_test_cert(&key);
         let encoded = cert.to_der().unwrap();
@@ -294,16 +289,17 @@ mod tests {
             vec![0; 4096],
             vec![0xa5; 4096],
             vec![0x30, 0x80, 0xff],
+            encoded.clone(),
         ] {
             let mut storage = encoded.clone();
             storage.extend_from_slice(&padding);
-            let parsed = X509Certificate::from_der_prefix(&storage).unwrap();
+            let parsed = X509Certificate::from_der(&storage).unwrap();
             assert_eq!(parsed.to_der().unwrap(), encoded);
             assert!(parsed.verify(&parsed.public_key().unwrap()).unwrap());
         }
-        assert!(X509Certificate::from_der_prefix(&[]).is_err());
-        assert!(X509Certificate::from_der_prefix(&[0; 4096]).is_err());
-        assert!(X509Certificate::from_der_prefix(&encoded[..encoded.len() - 1]).is_err());
+        assert!(X509Certificate::from_der(&[]).is_err());
+        assert!(X509Certificate::from_der(&[0; 4096]).is_err());
+        assert!(X509Certificate::from_der(&encoded[..encoded.len() - 1]).is_err());
     }
 
     #[test]

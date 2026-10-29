@@ -44,18 +44,14 @@ pub(crate) struct X509CertificateInner(pub(crate) Certificate);
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
-        let cert =
-            Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
-        Ok(Self(cert))
-    }
-
-    pub fn from_der_prefix(data: &[u8]) -> Result<Self, X509Error> {
         use der::Reader;
 
         let encoded = der::SliceReader::new(data)
             .and_then(|mut reader| reader.tlv_bytes())
             .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
-        Self::from_der(encoded)
+        let cert = Certificate::from_der(encoded)
+            .map_err(|e| der_err(e, "parsing the DER certificate"))?;
+        Ok(Self(cert))
     }
 
     pub fn public_key(&self) -> Result<X509PublicKey, X509Error> {
