@@ -2423,14 +2423,14 @@ impl FromStr for RpcCli {
 #[derive(Clone)]
 pub struct VmgsCli {
     pub kind: DiskCliKind,
-    pub provision: ProvisionVmgs,
+    pub provision: ProvisionCondition,
 }
 
 #[derive(Copy, Clone)]
-pub enum ProvisionVmgs {
+pub enum ProvisionCondition {
     OnEmpty,
     OnFailure,
-    True,
+    Single,
 }
 
 impl FromStr for VmgsCli {
@@ -2444,9 +2444,9 @@ impl FromStr for VmgsCli {
         let kind = kind.parse()?;
 
         let provision = match opt {
-            None => ProvisionVmgs::OnEmpty,
-            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
-            Some("fmt") => ProvisionVmgs::True,
+            None => ProvisionCondition::OnEmpty,
+            Some("fmt-on-fail") => ProvisionCondition::OnFailure,
+            Some("fmt") => ProvisionCondition::Single,
             Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
         };
 
@@ -3965,6 +3965,23 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn vmgs_provision_conditions() {
+        for (option, expected) in [
+            ("", ProvisionCondition::OnEmpty),
+            (",fmt-on-fail", ProvisionCondition::OnFailure),
+            (",fmt", ProvisionCondition::Single),
+        ] {
+            let vmgs: VmgsCli = format!("mem:VMGS_DEFAULT{option}").parse().unwrap();
+            assert!(matches!(
+                (vmgs.provision, expected),
+                (ProvisionCondition::OnEmpty, ProvisionCondition::OnEmpty)
+                    | (ProvisionCondition::OnFailure, ProvisionCondition::OnFailure)
+                    | (ProvisionCondition::Single, ProvisionCondition::Single)
+            ));
+        }
+    }
 
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.

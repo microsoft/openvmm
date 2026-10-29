@@ -299,7 +299,21 @@ message DiskBackend {
     oneof kind {
         // A file-backed disk.
         FileDisk file = 1;
+        // A memory-backed disk.
+        MemoryDisk memory = 2;
+        // A memory-backed writable overlay over a read-only lower disk.
+        MemoryDiffDisk memory_diff = 3;
     }
+}
+
+message MemoryDisk {
+    // Disk size in bytes.
+    uint64 size_bytes = 1;
+}
+
+message MemoryDiffDisk {
+    // Read-only lower disk.
+    DiskBackend lower = 1;
 }
 
 // A disk backed by a host file.
@@ -308,6 +322,32 @@ message FileDisk {
     string path = 1;
     // Bypass the OS page cache (O_DIRECT).
     bool   direct = 2;
+    // Create or truncate the backing file to this size in bytes before use.
+    // For .vhd and .vmgs files, also write a fixed VHD1 footer.
+    optional uint64 create_size_bytes = 3;
+}
+
+// Virtual machine guest state storage, equivalent to --vmgs.
+message VmgsConfig {
+    enum ProvisionCondition {
+        // A provisioning condition must be specified.
+        PROVISION_CONDITION_UNSPECIFIED = 0;
+        // Open existing VMGS data, formatting only an empty disk.
+        PROVISION_CONDITION_ON_EMPTY = 1;
+        // Reformat if the existing VMGS data cannot be opened (--vmgs ...,fmt-on-fail).
+        PROVISION_CONDITION_ON_FAILURE = 2;
+        // Request marker-aware reprovisioning (--vmgs ...,fmt). Format unless
+        // the VMGS reprovisioned marker is already set. Opening without a
+        // reprovision request clears the marker, allowing a later request
+        // to format again.
+        PROVISION_CONDITION_SINGLE = 3;
+    }
+
+    // Required writable backing disk. VMGS files must already exist unless
+    // FileDisk.create_size_bytes is specified.
+    DiskBackend backend = 1;
+    // Required provisioning policy.
+    ProvisionCondition provision_condition = 2;
 }
 
 // virtio-blk block device configuration.
@@ -643,24 +683,33 @@ message PcieAttachment {
 message VMConfig {
     // Action for the VMM to take when the guest triggers a power event.
     enum GuestPowerAction {
-        // Use the default for this event.
-        DEFAULT = 0;
+        // No action specified. Use the default for this event.
+        GUEST_POWER_ACTION_UNSPECIFIED = 0;
         // Restart the guest.
-        RESTART = 1;
+        GUEST_POWER_ACTION_RESTART = 1;
         // Leave the virtual machine halted.
-        HALT = 2;
+        GUEST_POWER_ACTION_HALT = 2;
+        // Exit the VMM process with the event's exit code (default 0).
+        GUEST_POWER_ACTION_EXIT = 3;
     }
 
     // Actions for the VMM to take on guest power events.
     message GuestPowerActions {
-        // The guest powered off or hibernated. Defaults to HALT.
+        // The guest powered off or hibernated. Defaults to GUEST_POWER_ACTION_HALT.
         GuestPowerAction shutdown = 1;
-        // The guest requested a reset. Defaults to RESTART.
+        // The guest requested a reset. Defaults to GUEST_POWER_ACTION_RESTART.
         GuestPowerAction reset = 2;
-        // The guest triple faulted. Defaults to HALT.
+        // The guest triple faulted. Defaults to GUEST_POWER_ACTION_HALT.
         GuestPowerAction crash = 3;
-        // The guest's watchdog timer expired. Defaults to RESTART.
+        // The guest's watchdog timer expired. Defaults to GUEST_POWER_ACTION_RESTART.
         GuestPowerAction watchdog = 4;
+        // Exit codes (0-255). Only used when the corresponding action is
+        // GUEST_POWER_ACTION_EXIT.
+        // Each omitted code defaults to 0.
+        optional uint32 shutdown_exit_code = 5;
+        optional uint32 reset_exit_code = 6;
+        optional uint32 crash_exit_code = 7;
+        optional uint32 watchdog_exit_code = 8;
     }
 
     MemoryConfig memory_config = 1;
@@ -707,6 +756,9 @@ message VMConfig {
     IsolationConfig isolation_config = 19;
     // Expose hardware virtualization extensions to the guest.
     bool nested_virt = 20;
+    // Guest state storage, including UEFI variables. If absent, guest state
+    // remains in memory and is lost when the VM is torn down.
+    VmgsConfig vmgs = 21;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.

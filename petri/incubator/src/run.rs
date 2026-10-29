@@ -134,12 +134,13 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                 IncubatorBoot::LinuxDirect => builder
                     .with_prebuilt_initrd(initrd)
                     .with_no_vmbus()
-                    .with_virtio_vsock(false)
+                    .with_virtio_vsock(true)
+                    .with_virtio_console()
                     .with_serial_output()
                     .modify_backend(|backend| {
                         backend
                             .with_pcie_root_topology_at(0, 1, 1, 1)
-                            .with_tcp_pipette_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
+                            .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
                     }),
             };
             execute(builder, &driver, &config, &signals, bound_command).await

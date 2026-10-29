@@ -19,7 +19,9 @@ use fd_passing::FdRegistry;
 #[derive(Clone, Default)]
 struct FdRegistry {}
 
+use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
+use crate::cli_args::ProvisionCondition;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -109,7 +111,8 @@ use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmgs_resources::GuestStateEncryptionPolicy;
+use vmgs_resources::VmgsResource;
 use vmservice::uefi::initial_variables::SecureBootTemplate;
 
 #[cfg(guest_arch = "aarch64")]
@@ -163,6 +166,7 @@ fn parse_arch_topology_overrides(
 pub struct Parameters {
     pub listener: UnixListener,
     pub transport: RpcTransport,
+    pub exit_code: mesh::OneshotSender<i32>,
 }
 
 #[derive(Copy, Clone, mesh::MeshPayload)]
@@ -337,6 +341,7 @@ mod dispatch {
 pub struct TtrpcWorker {
     listener: UnixListener,
     transport: ResolvedTransport,
+    exit_code: mesh::OneshotSender<i32>,
 }
 
 pub const TTRPC_WORKER: WorkerId<Parameters> = WorkerId::new("TtrpcWorker");
@@ -349,6 +354,7 @@ impl Worker for TtrpcWorker {
     fn new(parameters: Self::Parameters) -> anyhow::Result<Self> {
         Ok(Self {
             listener: parameters.listener,
+            exit_code: parameters.exit_code,
             transport: match parameters.transport {
                 #[cfg(feature = "ttrpc")]
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
@@ -380,7 +386,8 @@ impl Worker for TtrpcWorker {
                 transport: self.transport,
                 registry: FdRegistry::default(),
             };
-            service.run(self.listener, recv).await?;
+            let code = service.run(self.listener, recv).await?;
+            self.exit_code.send(code);
             Ok(())
         })
     }
@@ -391,7 +398,7 @@ impl VmService {
         &mut self,
         listener: UnixListener,
         mut recv: mesh::Receiver<WorkerRpc<()>>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i32> {
         let mut server = mesh_rpc::Server::new();
         let mut vm_service_recv = server.add_service::<vmservice::Vm>();
         let mut inspect_service_recv = server.add_service::<InspectService>();
@@ -493,7 +500,11 @@ impl VmService {
                     break false;
                 }
                 Action::ControllerEvent(Some(event)) => {
-                    self.handle_controller_event(event);
+                    if let Some(code) = self.handle_controller_event(event) {
+                        // Like the CLI exit path, do not wait for parked VM
+                        // workers or in-flight RPCs to finish teardown.
+                        return Ok(code);
+                    }
                 }
                 Action::ControllerEvent(None) => {} // handled above
                 Action::WaitVmCancelled(reason) => {
@@ -526,7 +537,8 @@ impl VmService {
             let _ = Arc::try_unwrap(vm).ok().expect("no more VM references");
         }
         drop(cancel_send);
-        server_task.await
+        server_task.await?;
+        Ok(0)
     }
 
     fn start_rpc<F, R>(
@@ -656,6 +668,7 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
 fn build_uefi_manifest(
     arch: vm_manifest_builder::MachineArch,
     uefi: vmservice::Uefi,
+    with_vmgs: bool,
 ) -> anyhow::Result<vm_manifest_builder::UefiManifest> {
     let initial_variables = uefi.initial_variables.unwrap_or_default();
     let base_template = match (arch, initial_variables.secure_boot_template()) {
@@ -688,7 +701,7 @@ fn build_uefi_manifest(
         uefi.secure_boot_enabled,
         firmware_uefi_resources::LogLevel::make_default(),
         None,
-        EphemeralNonVolatileStoreHandle.into_resource(),
+        crate::non_volatile_store_resource(with_vmgs, vmgs_format::FileId::BIOS_NVRAM),
         None,
     ))
 }
@@ -895,6 +908,7 @@ impl VmService {
 
         validate_platform_config(&req_config)?;
 
+        let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
         // Snapshot the fd registry so tap NIC backends can resolve descriptors
@@ -1027,7 +1041,7 @@ impl VmService {
                 let firmware = File::open(&uefi.firmware_path).with_context(|| {
                     format!("failed to open uefi firmware {}", uefi.firmware_path)
                 })?;
-                let uefi_manifest = build_uefi_manifest(arch, uefi)?;
+                let uefi_manifest = build_uefi_manifest(arch, uefi, vmgs.is_some())?;
                 (
                     LoadMode::Uefi {
                         firmware,
@@ -1073,9 +1087,7 @@ impl VmService {
         }
         if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
-            // runtime services, so it is required for a UEFI boot. The store is
-            // ephemeral: with no VMGS file configured there is nowhere to
-            // persist boot entries or secure boot state across reboots.
+            // runtime services, so it is required for a UEFI boot.
             chipset_builder = chipset_builder.with_uefi(uefi_manifest);
         }
         let layout_config = chipset_builder.layout_config();
@@ -1171,7 +1183,7 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs: None,
+            vmgs,
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
@@ -1182,26 +1194,7 @@ impl VmService {
             rtc_delta_milliseconds: 0,
         };
 
-        let guest_power_actions = {
-            use vmservice::vm_config::GuestPowerAction as ProtoAction;
-
-            let requested = req_config.guest_power_actions.unwrap_or_default();
-            let defaults = GuestPowerActions::default();
-            let action = |value: i32, default| -> anyhow::Result<GuestPowerAction> {
-                Ok(match ProtoAction::from_i32(value) {
-                    Some(ProtoAction::Default) => default,
-                    Some(ProtoAction::Restart) => GuestPowerAction::Reset,
-                    Some(ProtoAction::Halt) => GuestPowerAction::Halt,
-                    None => bail!("unknown guest power action {value}"),
-                })
-            };
-            GuestPowerActions {
-                shutdown: action(requested.shutdown, defaults.shutdown)?,
-                reset: action(requested.reset, defaults.reset)?,
-                crash: action(requested.crash, defaults.crash)?,
-                watchdog: action(requested.watchdog, defaults.watchdog)?,
-            }
-        };
+        let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;
 
         let mut scsi_rpc = None;
         let mut consomme_rpc = None;
@@ -1466,7 +1459,7 @@ impl VmService {
         Ok(())
     }
 
-    fn handle_controller_event(&mut self, event: VmControllerEvent) {
+    fn handle_controller_event(&mut self, event: VmControllerEvent) -> Option<i32> {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
@@ -1476,10 +1469,8 @@ impl VmService {
                 }
             }
             VmControllerEvent::ExitRequested { code } => {
-                // The protocol has no `exit` power action, so this should not
-                // occur in ttrpc/grpc mode; log rather than exiting the server
-                // out from under its clients.
-                tracing::warn!(code, "unexpected exit request in server mode");
+                tracing::info!(code, "exiting on guest power event");
+                return Some(code);
             }
             VmControllerEvent::WorkerStopped { error } => {
                 if let Some(err) = &error {
@@ -1507,6 +1498,7 @@ impl VmService {
                 }
             }
         }
+        None
     }
 
     fn add_pcie_device(
@@ -1705,6 +1697,42 @@ fn open_socket_backend(
     } else {
         (bind_serial, "bind")
     }
+}
+
+fn guest_power_actions_from_proto(
+    requested: Option<vmservice::vm_config::GuestPowerActions>,
+) -> anyhow::Result<GuestPowerActions> {
+    use vmservice::vm_config::GuestPowerAction as ProtoAction;
+
+    let requested = requested.unwrap_or_default();
+    let defaults = GuestPowerActions::default();
+    let action =
+        |value: i32, exit_code: Option<u32>, default| -> anyhow::Result<GuestPowerAction> {
+            Ok(match ProtoAction::from_i32(value) {
+                Some(ProtoAction::Unspecified) => default,
+                Some(ProtoAction::Restart) => GuestPowerAction::Reset,
+                Some(ProtoAction::Halt) => GuestPowerAction::Halt,
+                Some(ProtoAction::Exit) => GuestPowerAction::Exit(
+                    u8::try_from(exit_code.unwrap_or(0))
+                        .context("invalid guest power exit code (expected 0-255)")?,
+                ),
+                None => bail!("unknown guest power action {value}"),
+            })
+        };
+    Ok(GuestPowerActions {
+        shutdown: action(
+            requested.shutdown,
+            requested.shutdown_exit_code,
+            defaults.shutdown,
+        )?,
+        reset: action(requested.reset, requested.reset_exit_code, defaults.reset)?,
+        crash: action(requested.crash, requested.crash_exit_code, defaults.crash)?,
+        watchdog: action(
+            requested.watchdog,
+            requested.watchdog_exit_code,
+            defaults.watchdog,
+        )?,
+    })
 }
 
 /// Convert the proto `SMBIOSConfig` (untrusted input) into the loader's
@@ -2464,14 +2492,55 @@ async fn build_disk_backend(
     backend: vmservice::DiskBackend,
     read_only: bool,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
+    crate::disk_open(&disk_backend_from_proto(backend)?, read_only).await
+}
+
+fn disk_backend_from_proto(backend: vmservice::DiskBackend) -> anyhow::Result<DiskCliKind> {
     let vmservice::DiskBackend { kind } = backend;
-    match kind.context("missing disk backend kind")? {
-        vmservice::disk_backend::Kind::File(vmservice::FileDisk { path, direct }) => {
-            open_disk_type(path.as_ref(), OpenDiskOptions { read_only, direct })
-                .await
-                .with_context(|| format!("failed to open {path}"))
+    Ok(match kind.context("missing disk backend kind")? {
+        vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+            path,
+            direct,
+            create_size_bytes,
+        }) => DiskCliKind::File {
+            path: path.into(),
+            create_with_len: create_size_bytes,
+            direct,
+        },
+        vmservice::disk_backend::Kind::Memory(vmservice::MemoryDisk { size_bytes }) => {
+            DiskCliKind::Memory(size_bytes)
         }
-    }
+        vmservice::disk_backend::Kind::MemoryDiff(overlay) => DiskCliKind::MemoryDiff(Box::new(
+            disk_backend_from_proto(*overlay.lower.context("missing memory diff lower disk")?)?,
+        )),
+    })
+}
+
+async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Option<VmgsResource>> {
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    let provision_condition =
+        vmservice::vmgs_config::ProvisionCondition::from_i32(config.provision_condition)
+            .with_context(|| {
+                format!(
+                    "unknown VMGS provision condition {}",
+                    config.provision_condition
+                )
+            })?;
+    let provision = match provision_condition {
+        vmservice::vmgs_config::ProvisionCondition::Unspecified => ProvisionCondition::OnEmpty,
+        vmservice::vmgs_config::ProvisionCondition::OnEmpty => ProvisionCondition::OnEmpty,
+        vmservice::vmgs_config::ProvisionCondition::OnFailure => ProvisionCondition::OnFailure,
+        vmservice::vmgs_config::ProvisionCondition::Single => ProvisionCondition::Single,
+    };
+    let kind = disk_backend_from_proto(config.backend.context("missing VMGS backend")?)
+        .context("failed to open VMGS disk")?;
+    Ok(Some(
+        crate::open_vmgs(&kind, provision, GuestStateEncryptionPolicy::None(true))
+            .await
+            .context("failed to open VMGS disk")?,
+    ))
 }
 
 /// Builds a host network endpoint resource from the proto `NicBackend`.
@@ -2618,6 +2687,405 @@ mod tests {
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
 
+    fn memory_disk() -> vmservice::DiskBackend {
+        vmservice::DiskBackend {
+            kind: Some(vmservice::disk_backend::Kind::Memory(
+                vmservice::MemoryDisk {
+                    size_bytes: vmgs_format::VMGS_DEFAULT_CAPACITY,
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn vmgs_defaults_and_provisioning() {
+        futures::executor::block_on(async {
+            assert!(build_vmgs(None).await.unwrap().is_none());
+            assert!(vmservice::VmConfig::default().vmgs.is_none());
+            assert_eq!(
+                vmservice::VmgsConfig::default().provision_condition,
+                vmservice::vmgs_config::ProvisionCondition::Unspecified as i32
+            );
+            for (condition, value, name) in [
+                (
+                    vmservice::vmgs_config::ProvisionCondition::Unspecified,
+                    0,
+                    "PROVISION_CONDITION_UNSPECIFIED",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                    1,
+                    "PROVISION_CONDITION_ON_EMPTY",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::OnFailure,
+                    2,
+                    "PROVISION_CONDITION_ON_FAILURE",
+                ),
+                (
+                    vmservice::vmgs_config::ProvisionCondition::Single,
+                    3,
+                    "PROVISION_CONDITION_SINGLE",
+                ),
+            ] {
+                assert_eq!(condition as i32, value);
+                assert_eq!(condition.as_str_name(), name);
+            }
+            for provision_condition in [
+                vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                vmservice::vmgs_config::ProvisionCondition::OnFailure,
+                vmservice::vmgs_config::ProvisionCondition::Single,
+            ] {
+                let resource = build_vmgs(Some(vmservice::VmgsConfig {
+                    backend: Some(memory_disk()),
+                    provision_condition: provision_condition as i32,
+                }))
+                .await
+                .unwrap()
+                .unwrap();
+                let disk = match (provision_condition, resource) {
+                    (
+                        vmservice::vmgs_config::ProvisionCondition::OnEmpty,
+                        VmgsResource::Disk(disk),
+                    )
+                    | (
+                        vmservice::vmgs_config::ProvisionCondition::OnFailure,
+                        VmgsResource::ReprovisionOnFailure(disk),
+                    )
+                    | (
+                        vmservice::vmgs_config::ProvisionCondition::Single,
+                        VmgsResource::ReprovisionSingle(disk),
+                    ) => disk,
+                    other => panic!("incorrect VMGS provisioning: {other:?}"),
+                };
+                assert!(matches!(
+                    disk.encryption_policy,
+                    GuestStateEncryptionPolicy::None(true)
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn vmgs_rejects_invalid_configuration() {
+        futures::executor::block_on(async {
+            for (config, expected) in [
+                (
+                    vmservice::VmgsConfig {
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
+                        ..Default::default()
+                    },
+                    "missing VMGS backend",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(Default::default()),
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
+                    },
+                    "missing disk backend kind",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(memory_disk()),
+                        provision_condition: i32::MAX,
+                    },
+                    "unknown VMGS provision condition",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(vmservice::DiskBackend {
+                            kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::default())),
+                        }),
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
+                    },
+                    "missing memory diff lower disk",
+                ),
+                (
+                    vmservice::VmgsConfig {
+                        backend: Some(vmservice::DiskBackend {
+                            kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                                vmservice::MemoryDiffDisk {
+                                    lower: Some(Box::default()),
+                                },
+                            ))),
+                        }),
+                        provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty
+                            as i32,
+                    },
+                    "missing disk backend kind",
+                ),
+            ] {
+                let error = build_vmgs(Some(config)).await.unwrap_err();
+                assert!(
+                    format!("{error:#}").contains(expected),
+                    "expected {expected}, got {error:#}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn vmgs_file_backend() {
+        futures::executor::block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("guest.vmgs");
+            let mut backend = vmservice::FileDisk {
+                path: path.to_str().unwrap().into(),
+                ..Default::default()
+            };
+            let config = |file| vmservice::VmgsConfig {
+                backend: Some(vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::File(file)),
+                }),
+                provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty as i32,
+            };
+            let error = build_vmgs(Some(config(backend.clone()))).await.unwrap_err();
+            assert!(format!("{error:#}").contains("failed to open VMGS disk"));
+            assert!(!path.exists());
+
+            backend.create_size_bytes = Some(vmgs_format::VMGS_DEFAULT_CAPACITY);
+            assert!(matches!(
+                build_vmgs(Some(config(backend.clone()))).await.unwrap(),
+                Some(VmgsResource::Disk(_))
+            ));
+            let original = std::fs::read(&path).unwrap();
+            assert_eq!(
+                original.len() as u64,
+                vmgs_format::VMGS_DEFAULT_CAPACITY + 512
+            );
+
+            backend.create_size_bytes = None;
+            assert!(matches!(
+                build_vmgs(Some(config(backend.clone()))).await.unwrap(),
+                Some(VmgsResource::Disk(_))
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+
+            backend.direct = true;
+            assert!(
+                format!("{:#}", build_vmgs(Some(config(backend))).await.unwrap_err())
+                    .contains("direct I/O is not supported")
+            );
+        });
+    }
+
+    #[test]
+    fn disk_backends_match_cli() {
+        use prost::Message;
+
+        for (backend, cli) in [
+            (memory_disk(), "mem:VMGS_DEFAULT".to_owned()),
+            (
+                vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::MemoryDiff(Box::new(
+                        vmservice::MemoryDiffDisk {
+                            lower: Some(Box::new(vmservice::DiskBackend {
+                                kind: Some(vmservice::disk_backend::Kind::File(
+                                    vmservice::FileDisk {
+                                        path: "guest.vmgs".into(),
+                                        create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                                        ..Default::default()
+                                    },
+                                )),
+                            })),
+                        },
+                    ))),
+                },
+                "memdiff:file:guest.vmgs;create=VMGS_DEFAULT".to_owned(),
+            ),
+            (
+                vmservice::DiskBackend {
+                    kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
+                        path: "disk.img".into(),
+                        direct: true,
+                        ..Default::default()
+                    })),
+                },
+                "file:disk.img;direct".to_owned(),
+            ),
+        ] {
+            let backend =
+                vmservice::DiskBackend::decode(backend.encode_to_vec().as_slice()).unwrap();
+            assert_eq!(
+                disk_backend_from_proto(backend).unwrap(),
+                cli.parse::<DiskCliKind>().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn guest_power_actions_defaults() {
+        use vmservice::vm_config::GuestPowerAction as Action;
+
+        for (action, value, name) in [
+            (Action::Unspecified, 0, "GUEST_POWER_ACTION_UNSPECIFIED"),
+            (Action::Restart, 1, "GUEST_POWER_ACTION_RESTART"),
+            (Action::Halt, 2, "GUEST_POWER_ACTION_HALT"),
+            (Action::Exit, 3, "GUEST_POWER_ACTION_EXIT"),
+        ] {
+            assert_eq!(action as i32, value);
+            assert_eq!(action.as_str_name(), name);
+        }
+        assert_eq!(
+            guest_power_actions_from_proto(None).unwrap(),
+            GuestPowerActions::default()
+        );
+        assert_eq!(
+            guest_power_actions_from_proto(Some(Default::default())).unwrap(),
+            GuestPowerActions::default()
+        );
+    }
+
+    #[test]
+    fn guest_power_actions_exit_codes() {
+        use prost::Message;
+        use vmservice::vm_config::GuestPowerAction as Action;
+        use vmservice::vm_config::GuestPowerActions as Actions;
+
+        for code in [None, Some(0), Some(5), Some(255), Some(256), Some(u32::MAX)] {
+            for event in 0..4 {
+                let mut requested = Actions::default();
+                let (action, exit_code) = match event {
+                    0 => (&mut requested.shutdown, &mut requested.shutdown_exit_code),
+                    1 => (&mut requested.reset, &mut requested.reset_exit_code),
+                    2 => (&mut requested.crash, &mut requested.crash_exit_code),
+                    _ => (&mut requested.watchdog, &mut requested.watchdog_exit_code),
+                };
+                *action = Action::Exit as i32;
+                *exit_code = code;
+                let requested = Actions::decode(requested.encode_to_vec().as_slice()).unwrap();
+                let result = guest_power_actions_from_proto(Some(requested));
+                if code.is_some_and(|code| code > 255) {
+                    assert!(result.unwrap_err().to_string().contains("expected 0-255"));
+                } else {
+                    let mut expected = GuestPowerActions::default();
+                    let action = GuestPowerAction::Exit(code.unwrap_or(0) as u8);
+                    match event {
+                        0 => expected.shutdown = action,
+                        1 => expected.reset = action,
+                        2 => expected.crash = action,
+                        _ => expected.watchdog = action,
+                    }
+                    assert_eq!(result.unwrap(), expected);
+                }
+            }
+        }
+
+        assert_eq!(
+            guest_power_actions_from_proto(Some(Actions {
+                shutdown: Action::Exit as i32,
+                reset: Action::Exit as i32,
+                crash: Action::Exit as i32,
+                watchdog: Action::Exit as i32,
+                shutdown_exit_code: Some(1),
+                reset_exit_code: Some(2),
+                crash_exit_code: Some(3),
+                watchdog_exit_code: Some(4),
+            }))
+            .unwrap(),
+            GuestPowerActions {
+                shutdown: GuestPowerAction::Exit(1),
+                reset: GuestPowerAction::Exit(2),
+                crash: GuestPowerAction::Exit(3),
+                watchdog: GuestPowerAction::Exit(4),
+            }
+        );
+    }
+
+    #[test]
+    fn guest_power_actions_existing_and_unknown_actions() {
+        use vmservice::vm_config::GuestPowerAction as Action;
+        use vmservice::vm_config::GuestPowerActions as Actions;
+
+        for value in [
+            Action::Unspecified as i32,
+            Action::Restart as i32,
+            Action::Halt as i32,
+            -1,
+            4,
+        ] {
+            for event in 0..4 {
+                let mut requested = Actions::default();
+                let action = match event {
+                    0 => &mut requested.shutdown,
+                    1 => &mut requested.reset,
+                    2 => &mut requested.crash,
+                    _ => &mut requested.watchdog,
+                };
+                *action = value;
+                let result = guest_power_actions_from_proto(Some(requested));
+                let expected = match Action::from_i32(value) {
+                    Some(Action::Unspecified) => GuestPowerActions::default(),
+                    Some(Action::Restart) => GuestPowerActions {
+                        shutdown: if event == 0 {
+                            GuestPowerAction::Reset
+                        } else {
+                            GuestPowerAction::Halt
+                        },
+                        crash: if event == 2 {
+                            GuestPowerAction::Reset
+                        } else {
+                            GuestPowerAction::Halt
+                        },
+                        ..GuestPowerActions::default()
+                    },
+                    Some(Action::Halt) => GuestPowerActions {
+                        reset: if event == 1 {
+                            GuestPowerAction::Halt
+                        } else {
+                            GuestPowerAction::Reset
+                        },
+                        watchdog: if event == 3 {
+                            GuestPowerAction::Halt
+                        } else {
+                            GuestPowerAction::Reset
+                        },
+                        ..GuestPowerActions::default()
+                    },
+                    _ => {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("unknown guest power action")
+                        );
+                        continue;
+                    }
+                };
+                assert_eq!(result.unwrap(), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn guest_power_exit_stops_rpc_server() {
+        DefaultPool::run_with(async |driver| {
+            for code in [0, 5, 255] {
+                let dir = tempfile::tempdir().unwrap();
+                let listener = UnixListener::bind(dir.path().join("rpc.sock")).unwrap();
+                let (event_send, event_recv) = mesh::channel();
+                let (_worker_send, worker_recv) = mesh::channel();
+                let mut service = VmService {
+                    driver: driver.clone(),
+                    vm: None,
+                    vm_controller: None,
+                    vm_controller_events: Some(event_recv),
+                    controller_task: None,
+                    wait_vm_response: None,
+                    lifecycle: VmLifecycle::Running,
+                    rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
+                    transport: ResolvedTransport::Auto,
+                    registry: FdRegistry::default(),
+                };
+                event_send.send(VmControllerEvent::ExitRequested { code });
+                assert_eq!(service.run(listener, worker_recv).await.unwrap(), code);
+            }
+        });
+    }
+
     #[test]
     fn uefi_initial_variables_defaults() {
         for arch in [
@@ -2625,17 +3093,28 @@ mod tests {
             vm_manifest_builder::MachineArch::Aarch64,
         ] {
             for initial_variables in [None, Some(Default::default())] {
-                let manifest = build_uefi_manifest(
-                    arch,
-                    vmservice::Uefi {
-                        initial_variables,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-                assert!(manifest.config.base_template.is_none());
-                assert!(manifest.config.custom_uefi_json.is_none());
-                assert!(!manifest.config.secure_boot);
+                for with_vmgs in [false, true] {
+                    let manifest = build_uefi_manifest(
+                        arch,
+                        vmservice::Uefi {
+                            initial_variables: initial_variables.clone(),
+                            ..Default::default()
+                        },
+                        with_vmgs,
+                    )
+                    .unwrap();
+                    assert!(manifest.config.base_template.is_none());
+                    assert!(manifest.config.custom_uefi_json.is_none());
+                    assert!(!manifest.config.secure_boot);
+                    assert_eq!(
+                        manifest.nvram_storage.id(),
+                        crate::non_volatile_store_resource(
+                            with_vmgs,
+                            vmgs_format::FileId::BIOS_NVRAM,
+                        )
+                        .id()
+                    );
+                }
             }
         }
     }
@@ -2669,7 +3148,7 @@ mod tests {
                         };
                         let uefi =
                             vmservice::Uefi::decode(uefi.encode_to_vec().as_slice()).unwrap();
-                        let manifest = build_uefi_manifest(arch, uefi).unwrap();
+                        let manifest = build_uefi_manifest(arch, uefi, false).unwrap();
                         assert_eq!(
                             manifest.config.base_template.is_some(),
                             template != SecureBootTemplate::None
@@ -2696,6 +3175,7 @@ mod tests {
                     }),
                     ..Default::default()
                 },
+                false,
             )
             .err()
             .unwrap();

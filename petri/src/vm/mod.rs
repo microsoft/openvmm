@@ -225,6 +225,7 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     pipette_binary: Option<ResolvedArtifact>,
     // Enable serial output even in minimal mode (for diagnostics).
     enable_serial: bool,
+    use_virtio_console: bool,
     // Enable periodic framebuffer screenshots.
     enable_screenshots: bool,
     // Use virtio vsock instead of VMBus-based hvsocket for guest communication.
@@ -264,6 +265,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("pcie_boot_port", &self.pcie_boot_port)
             .field("minimal_mode", &self.minimal_mode)
             .field("enable_serial", &self.enable_serial)
+            .field("use_virtio_console", &self.use_virtio_console)
             .field("enable_screenshots", &self.enable_screenshots)
             .field("use_virtio_vsock", &self.use_virtio_vsock)
             .field("no_vmbus", &self.no_vmbus)
@@ -376,6 +378,8 @@ pub struct PetriVmProperties {
     pub uses_pipette_as_init: bool,
     /// Enable serial output even in minimal mode
     pub enable_serial: bool,
+    /// Capture a Linux virtio console independently of the firmware UART.
+    pub use_virtio_console: bool,
     /// Whether the VM has a CIDATA agent disk attached
     pub has_agent_disk: bool,
     /// Use virtio vsock instead of VMBus-based hvsocket
@@ -741,6 +745,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             minimal_mode: true,
             pipette_binary: artifacts.pipette_binary,
             enable_serial: false,
+            use_virtio_console: false,
             enable_screenshots: true,
             use_virtio_vsock: isolated_without_paravisor,
             #[cfg(target_os = "linux")]
@@ -1177,7 +1182,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 .enable_vpci_boot = true;
         }
 
-        let builder = if let Some(boot_drive) = self.config.firmware.boot_drive()? {
+        let builder = if let Some(boot_drive) =
+            self.config.firmware.boot_drive(self.use_virtio_vsock)?
+        {
             match self.boot_device_type {
                 BootDeviceType::None => unreachable!(),
                 BootDeviceType::Ide => self.add_ide_drive(
@@ -1325,6 +1332,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             minimal_mode: self.minimal_mode,
             uses_pipette_as_init: self.uses_pipette_as_init(),
             enable_serial: self.enable_serial,
+            use_virtio_console: self.use_virtio_console,
             has_agent_disk: self.has_agent_disk(),
             use_virtio_vsock: self.use_virtio_vsock,
             #[cfg(target_os = "linux")]
@@ -1856,7 +1864,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let disk = match self.config.vmgs {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
-            | PetriVmgsResource::Reprovision(disk) => disk,
+            | PetriVmgsResource::ReprovisionSingle(disk) => disk,
             PetriVmgsResource::Ephemeral => PetriVmgsDisk::default(),
         };
         self.config.vmgs = match guest_state_lifetime {
@@ -1864,7 +1872,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriGuestStateLifetime::ReprovisionOnFailure => {
                 PetriVmgsResource::ReprovisionOnFailure(disk)
             }
-            PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
+            PetriGuestStateLifetime::ReprovisionSingle => {
+                PetriVmgsResource::ReprovisionSingle(disk)
+            }
             PetriGuestStateLifetime::Ephemeral => {
                 if !matches!(disk.disk, Disk::Memory(_)) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
@@ -1880,7 +1890,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => {
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => {
                 vmgs.encryption_policy = policy;
             }
             PetriVmgsResource::Ephemeral => {
@@ -1904,7 +1914,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => {
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => {
                 if !matches!(vmgs.disk, Disk::Memory(_)) {
                     panic!("already specified a backing vmgs file");
                 }
@@ -3768,7 +3778,7 @@ impl Firmware {
         }
     }
 
-    fn boot_drive(&self) -> anyhow::Result<Option<Drive>> {
+    fn boot_drive(&self, use_virtio_vsock: bool) -> anyhow::Result<Option<Drive>> {
         if let Firmware::Uefi {
             guest: UefiGuest::Mshv(boot),
             ..
@@ -3779,7 +3789,10 @@ impl Firmware {
         } = self
         {
             return Ok(Some(Drive::new(
-                Some(boot.build().context("composing mshv boot disk")?),
+                Some(
+                    boot.build(use_virtio_vsock)
+                        .context("composing mshv boot disk")?,
+                ),
                 false,
             )));
         }
@@ -4069,7 +4082,7 @@ pub enum PetriVmgsResource {
     /// Use disk to store guest state, reformatting if corrupted.
     ReprovisionOnFailure(PetriVmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(PetriVmgsDisk),
+    ReprovisionSingle(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
 }
@@ -4080,7 +4093,7 @@ impl PetriVmgsResource {
         match self {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => Some(vmgs),
             PetriVmgsResource::Ephemeral => None,
         }
     }
@@ -4105,7 +4118,7 @@ pub enum PetriGuestStateLifetime {
     /// Same as default, except reformat the backing disk if corrupted
     ReprovisionOnFailure,
     /// Same as default, except reformat the backing disk
-    Reprovision,
+    ReprovisionSingle,
     /// Store guest state in memory (no backing disk)
     Ephemeral,
 }
@@ -4160,6 +4173,14 @@ pub struct PetriHaltReasonDetail {
     pub reason: PetriHaltReason,
     /// More details about the halt
     pub detail: String,
+}
+
+pub(crate) fn linux_vsock_blacklist(use_virtio_vsock: bool) -> &'static str {
+    if use_virtio_vsock {
+        "initcall_blacklist=hv_sock_init"
+    } else {
+        "initcall_blacklist=virtio_vsock_init"
+    }
 }
 
 fn append_cmdline(cmd: &mut Option<String>, add_cmd: impl AsRef<str>) {

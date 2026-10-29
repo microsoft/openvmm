@@ -33,12 +33,11 @@ use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
-use cli_args::ProvisionVmgs;
+use cli_args::ProvisionCondition;
 use cli_args::SerialConfigCli;
 use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
-use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
 use cxl::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
@@ -138,6 +137,7 @@ use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
@@ -1294,11 +1294,8 @@ async fn vm_config_from_command_line(
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
-        let nvram_storage = if opt.vmgs.is_some() {
-            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
-        } else {
-            EphemeralNonVolatileStoreHandle.into_resource()
-        };
+        let nvram_storage =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::BIOS_NVRAM);
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             base_template,
@@ -1525,22 +1522,15 @@ async fn vm_config_from_command_line(
         };
     }
 
-    let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
-        let disk = VmgsDisk {
-            disk: disk_open(kind, false)
-                .await
-                .context("failed to open vmgs disk")?,
-            encryption_policy: if opt.test_gsp_by_id {
-                GuestStateEncryptionPolicy::GspById(true)
-            } else {
-                GuestStateEncryptionPolicy::None(true)
-            },
+    let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
+        let encryption_policy = if opt.test_gsp_by_id {
+            GuestStateEncryptionPolicy::GspById(true)
+        } else {
+            GuestStateEncryptionPolicy::None(true)
         };
-        match provision {
-            ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
-            ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
-            ProvisionVmgs::True => VmgsResource::Reprovision(disk),
-        }
+        open_vmgs(&vmgs.kind, vmgs.provision, encryption_policy)
+            .await
+            .context("failed to open vmgs disk")?
     } else {
         VmgsResource::Ephemeral
     });
@@ -1668,17 +1658,12 @@ async fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
-            (
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(tpm_vmgs::tpm_nvram_file_id(tpm_version), true).into_resource(),
-            )
-        } else {
-            (
-                EphemeralNonVolatileStoreHandle.into_resource(),
-                EphemeralNonVolatileStoreHandle.into_resource(),
-            )
-        };
+        let ppi_store =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::TPM_PPI);
+        let nvram_store = non_volatile_store_resource(
+            opt.vmgs.is_some(),
+            tpm_vmgs::tpm_nvram_file_id(tpm_version),
+        );
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_string(),
@@ -2461,6 +2446,33 @@ impl NicConfig {
     }
 }
 
+fn non_volatile_store_resource(
+    with_vmgs: bool,
+    file_id: vmgs_format::FileId,
+) -> Resource<NonVolatileStoreKind> {
+    if with_vmgs {
+        VmgsFileHandle::new(file_id, true).into_resource()
+    } else {
+        EphemeralNonVolatileStoreHandle.into_resource()
+    }
+}
+
+async fn open_vmgs(
+    kind: &DiskCliKind,
+    provision: ProvisionCondition,
+    encryption_policy: GuestStateEncryptionPolicy,
+) -> anyhow::Result<VmgsResource> {
+    let disk = VmgsDisk {
+        disk: disk_open(kind, false).await?,
+        encryption_policy,
+    };
+    Ok(match provision {
+        ProvisionCondition::OnEmpty => VmgsResource::Disk(disk),
+        ProvisionCondition::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+        ProvisionCondition::Single => VmgsResource::ReprovisionSingle(disk),
+    })
+}
+
 enum LayerOrDisk {
     Layer(DiskLayerDescription),
     Disk(Resource<DiskHandleKind>),
@@ -2777,10 +2789,12 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
                     unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
                 // This is a local launch
+                let (exit_code_send, exit_code_recv) = mesh::oneshot();
                 let mut handle =
                     mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
                         listener,
                         transport,
+                        exit_code: exit_code_send,
                     })
                     .await?;
 
@@ -2791,7 +2805,9 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
                 handle.join().await?;
 
-                Ok(0)
+                exit_code_recv
+                    .await
+                    .context("RPC worker did not report an exit code")
             });
         }
     }
@@ -3189,6 +3205,71 @@ mod tests {
     use clap::Parser;
     use std::fs::File;
     use test_with_tracing::test;
+    use vm_resource::ResourceId;
+
+    #[test]
+    fn selects_non_volatile_store_backing() {
+        for file_id in [
+            vmgs_format::FileId::BIOS_NVRAM,
+            vmgs_format::FileId::TPM_PPI,
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V138),
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V185),
+        ] {
+            assert_eq!(
+                non_volatile_store_resource(true, file_id).id(),
+                <VmgsFileHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+            assert_eq!(
+                non_volatile_store_resource(false, file_id).id(),
+                <EphemeralNonVolatileStoreHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+        }
+    }
+
+    #[test]
+    fn opens_vmgs_with_provisioning_and_encryption_policy() {
+        block_on(async {
+            for provision in [
+                ProvisionCondition::OnEmpty,
+                ProvisionCondition::OnFailure,
+                ProvisionCondition::Single,
+            ] {
+                for encryption_policy in [
+                    GuestStateEncryptionPolicy::None(true),
+                    GuestStateEncryptionPolicy::GspById(true),
+                ] {
+                    let vmgs = open_vmgs(
+                        &DiskCliKind::Memory(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                        provision,
+                        encryption_policy,
+                    )
+                    .await
+                    .unwrap();
+                    let disk = match (provision, vmgs) {
+                        (ProvisionCondition::OnEmpty, VmgsResource::Disk(disk))
+                        | (
+                            ProvisionCondition::OnFailure,
+                            VmgsResource::ReprovisionOnFailure(disk),
+                        )
+                        | (ProvisionCondition::Single, VmgsResource::ReprovisionSingle(disk)) => {
+                            disk
+                        }
+                        _ => panic!("incorrect VMGS provisioning"),
+                    };
+                    assert!(matches!(
+                        (encryption_policy, disk.encryption_policy),
+                        (
+                            GuestStateEncryptionPolicy::None(true),
+                            GuestStateEncryptionPolicy::None(true)
+                        ) | (
+                            GuestStateEncryptionPolicy::GspById(true),
+                            GuestStateEncryptionPolicy::GspById(true)
+                        )
+                    ));
+                }
+            }
+        });
+    }
 
     #[test]
     fn maps_igvm_personalities_to_chipsets() {

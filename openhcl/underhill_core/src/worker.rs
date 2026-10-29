@@ -1602,7 +1602,7 @@ async fn new_underhill_vm(
                 GuestStateLifetimeCli::ReprovisionOnFailure => {
                     GuestStateLifetime::ReprovisionOnFailure
                 }
-                GuestStateLifetimeCli::Reprovision => GuestStateLifetime::Reprovision,
+                GuestStateLifetimeCli::ReprovisionSingle => GuestStateLifetime::Reprovision,
                 GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
             };
         }

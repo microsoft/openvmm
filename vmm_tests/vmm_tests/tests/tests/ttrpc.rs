@@ -1182,28 +1182,41 @@ async fn openvmm_rpc_failure(
     }
 }
 
-petri::test!(test_ttrpc_uefi_boot, |resolver| {
-    let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
-    let (firmware, guest_disk) = match petri_artifacts_common::tags::MachineArch::host() {
-        petri_artifacts_common::tags::MachineArch::X86_64 => (
-            resolver
-                .require(artifacts::loadable::UEFI_FIRMWARE_X64)
-                .erase(),
-            resolver
-                .require(artifacts::test_vhd::GUEST_TEST_UEFI_X64)
-                .erase(),
-        ),
-        petri_artifacts_common::tags::MachineArch::Aarch64 => (
-            resolver
-                .require(artifacts::loadable::UEFI_FIRMWARE_AARCH64)
-                .erase(),
-            resolver
-                .require(artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64)
-                .erase(),
-        ),
-    };
-    Some([openvmm.erase(), firmware, guest_disk])
-});
+petri::multitest!(
+    [
+        ("test_ttrpc_uefi_boot", false),
+        ("test_ttrpc_uefi_vmgs", true),
+    ]
+    .into_iter()
+    .map(|(name, with_vmgs)| petri::SimpleTest::new_async(
+        name,
+        move |resolver| {
+            let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
+            let (firmware, guest_disk) = match petri_artifacts_common::tags::MachineArch::host() {
+                petri_artifacts_common::tags::MachineArch::X86_64 => (
+                    resolver
+                        .require(artifacts::loadable::UEFI_FIRMWARE_X64)
+                        .erase(),
+                    resolver
+                        .require(artifacts::test_vhd::GUEST_TEST_UEFI_X64)
+                        .erase(),
+                ),
+                petri_artifacts_common::tags::MachineArch::Aarch64 => (
+                    resolver
+                        .require(artifacts::loadable::UEFI_FIRMWARE_AARCH64)
+                        .erase(),
+                    resolver
+                        .require(artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64)
+                        .erase(),
+                ),
+            };
+            Some(([openvmm.erase(), firmware, guest_disk], with_vmgs))
+        },
+        test_ttrpc_uefi_boot
+    )
+    .into())
+    .collect()
+);
 
 /// Boots a VM with UEFI firmware over ttrpc, using the `guest_test_uefi` image
 /// as the boot disk on a vmbus SCSI controller.
@@ -1215,12 +1228,13 @@ petri::test!(test_ttrpc_uefi_boot, |resolver| {
 async fn test_ttrpc_uefi_boot(
     params: petri::PetriTestParams<'_>,
     driver: DefaultDriver,
-    [openvmm, firmware_path, guest_disk_path]: [ResolvedArtifact; 3],
+    ([openvmm, firmware_path, guest_disk_path], with_vmgs): ([ResolvedArtifact; 3], bool),
 ) -> anyhow::Result<()> {
     let tempdir = tempfile::tempdir()?;
     let socket_path = tempdir.path().join("ttrpc.sock");
     let pidfile_path = tempdir.path().join("openvmm.pid");
     let com1_path = tempdir.path().join("com1.sock");
+    let vmgs_path = tempdir.path().join("guest.vmgs");
 
     let (mut child, client, _stderr_task) =
         launch_openvmm(&driver, &params, &openvmm, &socket_path, &pidfile_path).await?;
@@ -1249,6 +1263,18 @@ async fn test_ttrpc_uefi_boot(
                                 secure_boot_enabled: false,
                             },
                         )),
+                        vmgs: with_vmgs.then(|| vmservice::VmgsConfig {
+                            backend: Some(vmservice::DiskBackend {
+                                kind: Some(vmservice::disk_backend::Kind::File(
+                                    vmservice::FileDisk {
+                                        path: vmgs_path.to_string_lossy().into(),
+                                        create_size_bytes: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                                        ..Default::default()
+                                    },
+                                )),
+                            }),
+                            provision_condition: vmservice::vmgs_config::ProvisionCondition::OnEmpty as i32,
+                        }),
                         // The UEFI watchdog that ends `guest_test_uefi` reports
                         // a reset on aarch64 but a triple fault on x64, so halt
                         // on both rather than rebooting forever.
@@ -1359,6 +1385,16 @@ async fn test_ttrpc_uefi_boot(
         .start(vmservice::Vm::TeardownVm, ())
         .await
         .unwrap();
+
+    if with_vmgs {
+        let disk = disk_backend::Disk::new(disk_vhd1::Vhd1Disk::open_fixed(
+            std::fs::File::open(&vmgs_path)?,
+            true,
+        )?)?;
+        let mut vmgs = vmgs::Vmgs::open(disk, None).await?;
+        let nvram = vmgs.read_file(vmgs::FileId::BIOS_NVRAM).await?;
+        anyhow::ensure!(!nvram.is_empty(), "UEFI did not persist variables to VMGS");
+    }
 
     let _ = client.call().start(vmservice::Vm::Quit, ()).await;
 
@@ -1767,6 +1803,7 @@ fn file_disk(path: &Path) -> vmservice::DiskBackend {
         kind: Some(vmservice::disk_backend::Kind::File(vmservice::FileDisk {
             path: path.to_string_lossy().into(),
             direct: false,
+            ..Default::default()
         })),
     }
 }

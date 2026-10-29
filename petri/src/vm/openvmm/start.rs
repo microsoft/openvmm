@@ -30,6 +30,7 @@ impl PetriVmConfigOpenVmm {
         let has_guest_shares = !self.guest_shares.is_empty();
         let Self {
             guest_shares: _,
+            private_virtio_devices: _,
             runtime_config,
             arch,
             host_log_levels,
@@ -48,7 +49,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
-        } = self.with_guest_shares();
+        } = self.with_private_virtio_devices();
 
         // Resolve deferred IOMMU assignments.
         for (name, iommu_config) in &pending_iommu {
@@ -64,7 +65,7 @@ impl PetriVmConfigOpenVmm {
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
-        // TODO: virtio vsock doesn't support save/restore yet
+        // TODO: virtio vsock and console don't support save/restore yet
         // TODO: 9p shares don't support save/restore yet
         // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
@@ -78,6 +79,7 @@ impl PetriVmConfigOpenVmm {
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
             && !resources.properties.use_virtio_vsock
+            && !resources.properties.use_virtio_console
             && !has_guest_shares
             && !config.hypervisor.nested_virt;
 
