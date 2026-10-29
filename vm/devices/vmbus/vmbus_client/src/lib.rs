@@ -2823,6 +2823,74 @@ mod tests {
     }
 
     #[async_test]
+    async fn test_modify_connection_save_start_keeps_response_correlation(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        server.connect(&mut client).await;
+        let request = ModifyConnectionRequest {
+            monitor_page: Some(MonitorPageGpas {
+                child_to_parent: 5,
+                parent_to_child: 6,
+            }),
+        };
+        let first = client
+            .access
+            .client_request_send
+            .call(ClientRequest::Modify, request);
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyConnection::from(request),
+        );
+
+        // PauseResponse does not drain an asynchronous connection modification.
+        server.stop_client(&mut client).await;
+        let _saved = client.save().await;
+        assert_eq!(
+            first.await.unwrap(),
+            ConnectionState::FAILED_UNKNOWN_FAILURE
+        );
+        server.start_client(&mut client).await;
+
+        let second = client
+            .access
+            .client_request_send
+            .call(ClientRequest::Modify, ModifyConnectionRequest::default());
+        let unexpected_post = async {
+            let message = server.next().await.unwrap();
+            panic!("posted a new modify before consuming the old response: {message:?}");
+        };
+        assert_eq!(
+            (second, unexpected_post).race().await.unwrap(),
+            ConnectionState::FAILED_UNKNOWN_FAILURE
+        );
+
+        server.send(in_msg(
+            MessageType::MODIFY_CONNECTION_RESPONSE,
+            protocol::ModifyConnectionResponse {
+                connection_state: ConnectionState::FAILED_LOW_RESOURCES,
+            },
+        ));
+        // Drain the late response before retrying the modification.
+        server.stop_client(&mut client).await;
+        server.start_client(&mut client).await;
+
+        let third = client
+            .access
+            .client_request_send
+            .call(ClientRequest::Modify, request);
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyConnection::from(request),
+        );
+        server.send(in_msg(
+            MessageType::MODIFY_CONNECTION_RESPONSE,
+            protocol::ModifyConnectionResponse {
+                connection_state: ConnectionState::SUCCESSFUL,
+            },
+        ));
+        assert_eq!(third.await.unwrap(), ConnectionState::SUCCESSFUL);
+    }
+
+    #[async_test]
     async fn test_hvsock(driver: DefaultDriver) {
         let (mut server, mut client) = test_init(&driver);
         server.connect(&mut client).await;
