@@ -392,12 +392,12 @@ magic="$(read_port 233) $(read_port 233) $(read_port 233) $(read_port 233)"
 flags=$(read_port 233)
 target=$(read_port 233)
 range_count=$(read_port 233)
-if [ "$magic" != "79 86 82 4" ] || [ $((flags & 4)) -eq 0 ]; then
+if [ "$magic" != "79 86 82 5" ] || [ $((flags & 4)) -eq 0 ]; then
 {}
     write_port 1540 255
     while :; do sleep 1; done
 fi
-remaining=$((25 + range_count * 16 + 64))
+remaining=$((17 + range_count * 16 + 64))
 index=0
 while [ "$index" -lt "$remaining" ]; do
     read_port 233 >/dev/null
