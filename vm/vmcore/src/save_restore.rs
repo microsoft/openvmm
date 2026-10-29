@@ -30,13 +30,13 @@
 //!    will be converted to [`SavedStateBlob`]; the infrastructure will find any
 //!    dependent types. But it doesn't hurt to put it on other types, too.
 //!
-//! 3. Typically, you implement the [`SaveRestore`] trait. This trait allows you
-//!    to specify your associated saved state type and to implement `save` and
+//! 3. Typically, you implement [`AsyncSaveRestore`]. This trait allows you to
+//!    specify your associated saved state type and to implement `save` and
 //!    `restore` methods that act on this type.
 //!
-//!    Implement [`AsyncSaveRestore`] instead if saving or restoring requires
-//!    asynchronous work. Synchronous implementations are automatically adapted
-//!    to this trait, so callers can migrate independently of devices.
+//!    New code should use this trait even if it doesn't need to await anything
+//!    yet. It will eventually replace [`SaveRestore`]. Existing synchronous
+//!    implementations are adapted automatically and can migrate over time.
 //!
 //!    For some device types (such as vmbus devices), you may need to use a
 //!    device-specific trait that provides additional parameters. But the
@@ -85,6 +85,10 @@ use std::future::Future;
 
 /// Implemented by objects which can be saved/restored with an associated
 /// type that can be serialized as a protobuf message.
+///
+/// New code should implement [`AsyncSaveRestore`] instead. This trait is kept
+/// for existing implementations to migrate over time and will eventually be
+/// removed.
 pub trait SaveRestore {
     /// The concrete saved state type.
     type SavedState;
@@ -96,6 +100,9 @@ pub trait SaveRestore {
 }
 
 /// Asynchronous save/restore with a concrete saved state type.
+///
+/// Use this trait for new code, even when no asynchronous work is needed yet.
+/// It will eventually be the only typed save/restore interface.
 ///
 /// Types implementing [`SaveRestore`] are adapted automatically. To migrate a
 /// type to native asynchronous save/restore, replace its `SaveRestore`

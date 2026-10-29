@@ -33,14 +33,15 @@ Here are the principles you must maintain when adding new save & restore code:
 
 ### Synchronous and asynchronous implementations
 
-Use `vmcore::save_restore::SaveRestore` unless saving or restoring needs to wait
-for I/O or another task. In that case, implement `AsyncSaveRestore` instead.
-Both use an associated `SavedState` type; protobuf encoding is handled for you.
+New code should implement `vmcore::save_restore::AsyncSaveRestore`, even if it
+doesn't need to await anything yet. It will eventually be the only typed
+save/restore interface. It uses an associated `SavedState` type; protobuf
+encoding is handled for you.
 
 Chipset code uses `AsyncProtobufSaveRestore` to call either kind of device.
-The provided implementations connect the traits, so existing synchronous
-devices and helpers can stay as they are. See the trait definitions for the
-required `Send` and protobuf bounds.
+Existing `SaveRestore` implementations are adapted automatically, so devices
+and helpers can migrate over time. See the trait definitions for the required
+`Send` and protobuf bounds.
 
 When converting a device, replace its `SaveRestore` implementation with
 `AsyncSaveRestore`; don't implement both. Keep the saved state type and protobuf
