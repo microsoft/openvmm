@@ -1,13 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI v1.
+//! NVX time ABI 2.
 //!
 //! The guest-visible time contract of the microVM: a minimal Hyper-V
 //! frequency identity, the identity MSRs, the TSC rate policy, downtime
-//! selection, and the backend primitives that snapshot restore needs. A host,
-//! backend, or snapshot that cannot meet the contract fails with a stable
-//! [`TimeAbiCode`], and nothing falls back to another behavior.
+//! selection, the time samples that pair host UTC with the guest TSC and
+//! publish the host's clock correction, and the backend primitives that
+//! snapshot restore needs. A host, backend, or snapshot that cannot meet the
+//! contract fails with a stable [`TimeAbiCode`], and nothing falls back to
+//! another behavior.
 
 #[cfg(guest_arch = "x86_64")]
 pub mod backend;
@@ -56,8 +58,10 @@ pub use rate::RateCheck;
 use mesh_protobuf::Protobuf;
 use std::fmt;
 
-/// The time ABI version this OpenVMM implements.
-pub const TIME_ABI_VERSION: u32 = 1;
+/// The time ABI version this OpenVMM implements: 2 publishes the host's clock
+/// correction with every time sample, and pairs its host UTC with the guest
+/// TSC on the host.
+pub const TIME_ABI_VERSION: u32 = 2;
 
 macro_rules! time_abi_codes {
     ($($(#[doc = $doc:literal])* $variant:ident => $name:literal,)*) => {
