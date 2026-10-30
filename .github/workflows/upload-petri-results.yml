@@ -39,6 +39,15 @@ jobs:
           # Azure CLI is considered a large package
           large-packages: false
 
+      - name: Check out manifest generator
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          # This privileged workflow must not execute code from the tested PR.
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: repo_support/generate_petri_results_manifest.py
+          sparse-checkout-cone-mode: false
+
       - name: Authenticate to Azure
         uses: azure/login@cb79c773a3cfa27f31f25eb3f677781210c9ce3d # v1.6.1
         with:
@@ -86,7 +95,13 @@ jobs:
 
       - name: Upload to Azure Blob Storage
         run: |
+          set -euo pipefail
           run_key="${run_id}_${run_attempt}"
+
+          python3 repo_support/generate_petri_results_manifest.py results \
+            --run-number "$run_key" \
+            --creation-time "$run_created_at" \
+            --output "$RUNNER_TEMP/petri-run-manifest.json"
 
           az storage blob upload-batch \
             --destination "$BASE_URL/results" \
@@ -96,7 +111,8 @@ jobs:
 
           az storage blob upload \
             --blob-url "$BASE_URL/results/attempts/$run_key" \
-            --file /dev/null \
+            --file "$RUNNER_TEMP/petri-run-manifest.json" \
+            --content-type application/json \
             --metadata \
               "petrifailed=$FAIL_COUNT" \
               "petripassed=$PASS_COUNT" \
@@ -106,6 +122,7 @@ jobs:
         env:
           run_id: ${{ github.event.workflow_run.id }}
           run_attempt: ${{ github.event.workflow_run.run_attempt }}
+          run_created_at: ${{ github.event.workflow_run.created_at }}
 
       - name: Upload VMM.Perf results to Azure Blob Storage
         continue-on-error: true
