@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod assembler;
+mod limits;
 mod ring;
 
 use super::Access;
@@ -67,6 +68,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 #[derive(InspectMut)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct Tcp {
     #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
@@ -74,6 +76,7 @@ pub(crate) struct Tcp {
     listeners: HashMap<PortForwardKey, TcpListener>,
     #[inspect(skip)]
     timer: Option<TcpTimer>,
+    max_connections: Option<usize>,
     connection_params: ConnectionParams,
     aggregate_stats: TcpAggregateStats,
 }
@@ -91,6 +94,9 @@ struct TcpAggregateStats {
     connections_closed_local_error: Counter,
     /// Connections reaped after the peer did not finish a handshake or shutdown.
     connections_closed_timeout: Counter,
+    /// Connections in TIME-WAIT reclaimed early to admit a new flow at the
+    /// active-flow limit. Also counted as normal closes.
+    connections_reclaimed_time_wait: Counter,
 }
 
 impl TcpAggregateStats {
@@ -159,11 +165,27 @@ impl TcpError {
 }
 
 impl Tcp {
-    pub fn new(rx_buffer: crate::TcpBufferBounds, tx_buffer: crate::TcpBufferBounds) -> Self {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field("active_connections", self.connections.len());
+        resp.field(
+            "time_wait_connections",
+            self.connections
+                .values()
+                .filter(|conn| conn.inner.state == TcpState::TimeWait)
+                .count(),
+        );
+    }
+
+    pub fn new(
+        rx_buffer: crate::TcpBufferBounds,
+        tx_buffer: crate::TcpBufferBounds,
+        max_connections: Option<usize>,
+    ) -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             timer: None,
+            max_connections,
             connection_params: ConnectionParams {
                 rx_buffer: NormalizedBufferBounds::from_bounds(rx_buffer),
                 tx_buffer: NormalizedBufferBounds::from_bounds(tx_buffer),
@@ -814,8 +836,23 @@ impl<T: Client> Access<'_, T> {
                             dst: ft.src,
                         };
 
+                        let reached_limit = limits::make_room(
+                            &mut self.inner.tcp.connections,
+                            self.inner.tcp.max_connections,
+                            &ft,
+                            &mut self.inner.tcp.aggregate_stats,
+                        );
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {
+                                if let Some(max_connections) = reached_limit {
+                                    tracelimit::warn_ratelimited!(
+                                        max_connections,
+                                        "dropping inbound TCP flow because the active-flow limit was reached"
+                                    );
+                                    // Drain another accept or re-arm listener readiness.
+                                    cx.waker().wake_by_ref();
+                                    return true;
+                                }
                                 let mut sender = Sender {
                                     ft: &ft,
                                     client: self.client,
@@ -1026,8 +1063,9 @@ impl<T: Client> Access<'_, T> {
         let inspect_static_dns =
             ft.dst.port() == crate::DNS_PORT && self.inner.dns.should_intercept_static_queries();
 
-        let replace_time_wait = tcp.control == TcpControl::Syn
-            && tcp.ack_number.is_none()
+        // Only a SYN without an ACK can open a connection.
+        let opens_connection = tcp.control == TcpControl::Syn && tcp.ack_number.is_none();
+        let replace_time_wait = opens_connection
             && self.inner.tcp.connections.get(&ft).is_some_and(|conn| {
                 conn.inner.state == TcpState::TimeWait && tcp.seq_number > conn.inner.rx_seq
             });
@@ -1049,6 +1087,13 @@ impl<T: Client> Access<'_, T> {
             client: self.client,
             state: &mut self.inner.state,
         };
+
+        // Check the limit only for a packet that would open a connection, so
+        // that other packets of an unknown flow, such as a stale ACK, still
+        // get the reset below while the flow map is full.
+        if opens_connection {
+            self.inner.tcp.check_flow_limit(&ft)?;
+        }
 
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
@@ -1087,7 +1132,7 @@ impl<T: Client> Access<'_, T> {
                 } else if let Some(ack) = tcp.ack_number {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
-                } else if tcp.control == TcpControl::Syn {
+                } else if opens_connection {
                     let conn = if is_dns_tcp {
                         TcpConnection::new_dns(
                             &mut sender,
@@ -1755,6 +1800,15 @@ impl TcpConnectionInner {
             if !self.poll_socket_write(cx, sender, socket, static_dns, dns) {
                 return false;
             }
+        }
+
+        // Once the host has closed its side and the guest's data and FIN have
+        // been passed to the host socket, nothing will use the socket again.
+        // Release it now instead of waiting for a hangup, which Windows
+        // reports only for an aborted connection, so that a connection
+        // lingering in TIME-WAIT toward the guest holds no host socket.
+        if self.state.tx_fin() && self.is_shutdown {
+            *opt_socket = None;
         }
 
         // Send any pending data or ACKs. Always use Flush: if no data was
