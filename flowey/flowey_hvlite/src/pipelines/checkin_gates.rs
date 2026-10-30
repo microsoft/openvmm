@@ -1666,6 +1666,8 @@ impl IntoPipeline for CheckinGatesCli {
             test_vmgs::VMGS_WITH_BOOT_ENTRY.into(),
             test_vmgs::VMGS_WITH_16K_TPM.into(),
         ];
+        let mut linux_kvm_test_artifacts = linux_host_test_artifacts.clone();
+        linux_kvm_test_artifacts.push(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.into());
 
         // Prep variants needed by tests in the standard x64 filter
         // (e.g. boot_no_vmbus_windows needs the no-vmbus prepped VHD).
@@ -1827,7 +1829,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
-                downloaded_artifacts: linux_host_test_artifacts.clone(),
+                downloaded_artifacts: linux_kvm_test_artifacts,
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
                     hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
@@ -1844,7 +1846,11 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+                // - Windows Server 2025 needs an initial reset, which MSHV rejects while
+                //   restoring reset state. Keep its KVP test covered by KVM and Windows jobs.
+                nextest_filter_expr: format!(
+                    "{standard_filter} & !test(pcat_x64) & !test(windows_datacenter_core_2025_x64_kvp_ic)"
+                ),
                 downloaded_artifacts: linux_host_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
