@@ -1659,6 +1659,8 @@ impl IntoPipeline for CheckinGatesCli {
             ]);
             artifacts
         };
+        let mut linux_x64_kvm_test_artifacts = linux_x64_emu_host_test_artifacts.clone();
+        linux_x64_kvm_test_artifacts.push(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.into());
 
         // Prep variants needed by tests in the standard x64 filter
         // (e.g. boot_no_vmbus_windows needs the no-vmbus prepped VHD).
@@ -1810,7 +1812,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: "all() & !test(pcat)".into(),
-                downloaded_artifacts: linux_x64_emu_host_test_artifacts.clone(),
+                downloaded_artifacts: linux_x64_kvm_test_artifacts,
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
                     hugetlb_2mb_overcommit_pages: Some(HUGETLB_2MB_OVERCOMMIT_PAGES),
@@ -1837,7 +1839,9 @@ impl IntoPipeline for CheckinGatesCli {
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 // - No additional coverage gained by running qemu tests on mshv
                 //   runners as well as kvm, since it is emulated.
-                nextest_filter_expr: "all() & !test(pcat) & !test(qemu)".into(),
+                // - Windows Server 2025 needs an initial reset, which MSHV rejects while
+                //   restoring reset state. Keep its KVP test covered by KVM and Windows jobs.
+                nextest_filter_expr: "all() & !test(pcat) & !test(qemu) & !test(windows_datacenter_core_2025_x64_kvp_ic)".into(),
                 downloaded_artifacts: linux_x64_host_test_artifacts.clone(),
                 prep_steps_variants: standard_x64_prep_variants.clone(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
