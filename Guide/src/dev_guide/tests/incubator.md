@@ -57,10 +57,13 @@ not a child VM's kernel.
 
 The writable share defaults to this checkout. `--share` selects a different
 workspace; `--dir` defaults to `target/incubator` within that share and must
-remain beneath it so Incubator can read the staged Pipette. Preparation updates
-`profile.toml` and retains compatible binaries for direct reuse after other
-Flowey jobs. Unchanged binaries are reused across kernel edits. Per-run logs
-remain in `results/incubator-*`; do not use the same directory concurrently.
+remain beneath it so Incubator can read the staged Pipette. Each preparation
+overwrites `profile.toml`, including any manual edits. The directory represents
+the latest preparation, not a saved environment: discard previously printed
+commands after preparing it again, since they may reference old binaries with
+the new profile. Use a separate `--dir` to keep multiple environments.
+Unchanged binaries are reused across kernel edits. Per-run logs remain in
+`results/incubator-*`; do not use the same directory concurrently.
 
 Use `--prepare-only` without a guest command to prepare everything and print
 a direct Incubator command for `/bin/sh`. Run that printed command for an
