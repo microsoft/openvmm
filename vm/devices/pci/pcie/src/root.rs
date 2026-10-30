@@ -14,6 +14,7 @@ use crate::VENDOR_ID;
 use crate::port::GenericPciePortDefinition;
 use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
+use bitfield_struct::bitfield;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -47,6 +48,28 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
+
+/// Writable bits in the PCI Configuration Mechanism #1 CONFIG_ADDRESS register
+/// (I/O port 0xCF8): enable [31], bus [23:16], device [15:11], function [10:8],
+/// and DWORD-aligned register offset [7:2]. Reserved bits [30:24] and alignment
+/// bits [1:0] are cleared on writes.
+const PCI_CONFIG_ADDRESS_WRITE_MASK: u32 = 0x80ff_fffc;
+
+/// PCI Configuration Mechanism #1 CONFIG_ADDRESS register (I/O port 0xCF8).
+#[bitfield(u32)]
+struct PioAddress {
+    #[bits(2)]
+    _alignment: u8,
+    /// DWORD index within the function's 256-byte configuration space.
+    #[bits(6)]
+    register: u8,
+    /// Function [10:8] and device [15:11], in PCI devfn encoding.
+    device_function: u8,
+    bus: u8,
+    #[bits(7)]
+    _reserved: u8,
+    enable: bool,
+}
 
 /// Error returned when a root complex configuration is invalid.
 #[derive(Debug, Error)]
@@ -661,7 +684,7 @@ impl PortIoIntercept for GenericPcieRootComplex {
         };
         let value = ByteEnabledDwordWrite::from_intercept_buffer(byte_enable, data);
         if pio.address_control.offset_of(io_port).is_some() {
-            pio.address = value.merge(pio.address) & 0x80ff_fffc;
+            pio.address = value.merge(pio.address) & PCI_CONFIG_ADDRESS_WRITE_MASK;
             IoResult::Ok
         } else if pio.data_control.offset_of(io_port).is_some() {
             let Some(address) = Self::pio_config_address(pio.address) else {
@@ -678,13 +701,14 @@ impl PortIoIntercept for GenericPcieRootComplex {
 
 impl GenericPcieRootComplex {
     fn pio_config_address(pio_address: u32) -> Option<PciConfigAddress> {
-        if pio_address & (1 << 31) == 0 {
+        let address = PioAddress::from(pio_address);
+        if !address.enable() {
             return None;
         }
         PciConfigAddress::new(
-            (pio_address >> 16) as u8,
-            (pio_address >> 8) as u8,
-            ((pio_address & 0xfc) / 4) as u16,
+            address.bus(),
+            address.device_function(),
+            u16::from(address.register()),
         )
     }
 }
@@ -1170,6 +1194,7 @@ mod tests {
     use pal_async::async_test;
     use parking_lot::Mutex;
     use pci_core::test_helpers::TestCfgAccess;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     struct DeferredEndpoint {
@@ -1350,6 +1375,38 @@ mod tests {
         .root_ports(port_defs, &msi_conn.msi_target(rc_bus_range, 0))
         .build()
         .unwrap()
+    }
+
+    #[test]
+    fn test_pio_config_address_decode() {
+        // Distinct fields catch bit-position errors; low bits are not an offset.
+        let address = GenericPcieRootComplex::pio_config_address(0x805a_adeb).unwrap();
+        assert_eq!(address.bus, 0x5a);
+        assert_eq!(address.device(), 0x15);
+        assert_eq!(address.function(), 5);
+        assert_eq!(address.byte_offset(), 0xe8);
+
+        assert!(GenericPcieRootComplex::pio_config_address(0x7fff_ffff).is_none());
+        let address = GenericPcieRootComplex::pio_config_address(u32::MAX).unwrap();
+        assert_eq!(address.bus, 0xff);
+        assert_eq!(address.devfn, 0xff);
+        assert_eq!(address.byte_offset(), 0xfc);
+    }
+
+    #[test]
+    fn test_pio_config_address_write_mask() {
+        let mut rc = instantiate_root_complex_with_pio();
+        rc.io_write(0xcf8, &u32::MAX.to_le_bytes()).unwrap();
+
+        let mut value = [0; 4];
+        rc.io_read(0xcf8, &mut value).unwrap();
+        assert_eq!(u32::from_le_bytes(value), 0x80ff_fffc);
+
+        // Partial writes preserve other fields and still clear reserved bits.
+        rc.io_write(0xcfb, &[0x7f]).unwrap();
+        rc.io_write(0xcf8, &[0xab]).unwrap();
+        rc.io_read(0xcf8, &mut value).unwrap();
+        assert_eq!(u32::from_le_bytes(value), 0x00ff_ffa8);
     }
 
     fn instantiate_root_complex_with_pio() -> GenericPcieRootComplex {
