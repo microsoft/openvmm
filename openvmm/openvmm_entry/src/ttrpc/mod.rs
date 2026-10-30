@@ -1241,7 +1241,7 @@ impl VmService {
             }
 
             for virtiofs in devices_config.virtiofs_config {
-                let resource = build_virtio_fs(virtiofs)?.into_resource();
+                let resource = build_virtio_fs(virtiofs).into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if cfg!(windows) || cfg!(target_os = "macos") {
@@ -2442,49 +2442,34 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
-        Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
+        Kind::Fs(config) => build_virtio_fs(config).into_resource(),
     })
 }
 
 const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
 
-fn build_virtio_fs(
-    config: vmservice::VirtioFs,
-) -> anyhow::Result<virtio_resources::fs::VirtioFsHandle> {
+fn build_virtio_fs(config: vmservice::VirtioFs) -> virtio_resources::fs::VirtioFsHandle {
     let vmservice::VirtioFs {
         tag,
         root_path,
         read_only,
+        mount_options,
+        windows_options,
     } = config;
-    const VIRTIO_FS_TAG_LEN: usize = 36;
-    anyhow::ensure!(!tag.is_empty(), "virtio-fs tag must not be empty");
-    anyhow::ensure!(
-        !tag.contains('\0'),
-        "virtio-fs tag must not contain NUL bytes"
-    );
-    anyhow::ensure!(
-        tag.len() <= VIRTIO_FS_TAG_LEN,
-        "virtio-fs tag exceeds the {VIRTIO_FS_TAG_LEN}-byte protocol limit"
-    );
-    anyhow::ensure!(
-        !root_path.is_empty(),
-        "virtio-fs root path must not be empty"
-    );
-    anyhow::ensure!(
-        !root_path.contains('\0'),
-        "virtio-fs root path must not contain NUL bytes"
-    );
-    Ok(virtio_resources::fs::VirtioFsHandle {
+    virtio_resources::fs::VirtioFsHandle {
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
-            mount_options: if read_only {
-                "ro".to_string()
-            } else {
-                String::new()
-            },
+            mount_options,
+            read_only,
+            windows_options: windows_options.map(|options| {
+                virtio_resources::fs::VirtioFsWindowsOptions {
+                    user_token_handle: options.user_token_handle,
+                    shared_mem: options.shared_mem,
+                }
+            }),
         },
-    })
+    }
 }
 
 /// Builds a disk backend resource from the proto `DiskBackend`.

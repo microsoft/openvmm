@@ -4707,7 +4707,9 @@ dependencies = [
  "range_map_vec",
  "slab",
  "sparse_mmap",
+ "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virt",
  "vmcore",
@@ -10610,6 +10612,7 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "fuse",
  "futures",
  "guestmem",
@@ -10625,6 +10628,7 @@ dependencies = [
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",

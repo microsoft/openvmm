@@ -19,8 +19,10 @@ inspect.workspace = true
 lx.workspace = true
 lxutil.workspace = true
 task_control.workspace = true
+tracelimit.workspace = true
 
 anyhow.workspace = true
+cfg-if.workspace = true
 futures.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true
@@ -37,6 +39,8 @@ windows-sys = { workspace = true, features = [
 	"Wdk_System_SystemServices",
 	"Win32_Foundation",
 	"Win32_System_Memory",
+	"Win32_Security",
+	"Win32_System_Threading",
 ] }
 
 [lints]
