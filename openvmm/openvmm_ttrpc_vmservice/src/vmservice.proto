@@ -42,7 +42,7 @@ service VM {
 
     // ModifyResource is a generic call to modify (add/remove/update) resources for a VM.
     // This includes things such as block devices, network adapters, and pci devices.
-    rpc ModifyResource(ModifyResourceRequest) returns (google.protobuf.Empty);
+    rpc ModifyResource(ModifyResourceRequest) returns (ModifyResourceResponse);
 
     // AddPcieDevice hot-adds a PCIe device behind a named port (a root port or
     // switch downstream port declared in the topology).
@@ -926,6 +926,11 @@ message VPMEMDisk {
     bool read_only = 3;
 }
 
+enum NicFrontend {
+    NIC_FRONTEND_VMBUS = 0;
+    NIC_FRONTEND_VIRTIO = 1;
+}
+
 message NICConfig {
     string nic_id = 1; // GUID
     string mac_address = 3; // 12-34-56-78-9A-BC
@@ -938,6 +943,10 @@ message NICConfig {
         TapBackend tap = 7;
         ConsommeBackend consomme = 8;
     }
+    // Guest-visible NIC frontend. Defaults to the VMBus synthetic NIC.
+    // Virtio uses VPCI on Windows/macOS with VMBus enabled, MMIO otherwise.
+    // Virtio NICs must be configured at VM creation, not added via ModifyResource.
+    NicFrontend frontend = 9;
 }
 
 message DioBackend {
@@ -977,6 +986,51 @@ message ConsommeBackend {
     // Ports to forward from the host into the guest.
     // Used during initial creation and for dynamic add/remove via ModifyResource.
     repeated PortConfig ports = 2;
+    // If true or unset, the guest resolves names through consomme's built-in
+    // DNS resolver on the gateway address. If false, the guest uses the host's
+    // DNS servers instead. Only honored when the NIC is created.
+    optional bool internal_dns = 3;
+    // Optional guest IPv4 address, gateway IPv4 address and network mask.
+    // Each overrides the value derived from cidr. Only honored when the NIC
+    // is created.
+    string client_ip = 4;
+    string gateway_ip = 5;
+    string net_mask = 6;
+    // Optional guest IPv6 address, used before consomme learns it from the
+    // guest. Only honored when the NIC is created.
+    string client_ip_ipv6 = 7;
+    // If true, guest traffic to host-local addresses (loopback, unspecified,
+    // link-local) is forwarded to the host. Only honored when the NIC is
+    // created.
+    bool allow_host_local_access = 8;
+    // Runtime operations for ModifyResource UPDATE requests targeting this NIC.
+    // Do not combine an operation with ports. Not valid at VM creation or for
+    // REMOVE requests.
+    oneof operation {
+        AddDnsRecordRequest add_dns_record = 9;
+        CreateVirtualAddressRequest create_virtual_address = 10;
+    }
+}
+
+message CreateVirtualAddressRequest {
+    // The host address (IPv4 or IPv6) that guest traffic to the virtual
+    // address is routed to, e.g. "127.0.0.1". Allocates a guest-visible alias
+    // in the NIC's subnet and returns it in ModifyResourceResponse. Repeating
+    // the operation for the same destination returns the same virtual address.
+    string destination = 1;
+}
+
+message CreateVirtualAddressResponse {
+    // The allocated guest-visible address, in the same family as the destination.
+    string virtual_address = 1;
+}
+
+message AddDnsRecordRequest {
+    // The name the guest resolves, e.g. "host.wsl.internal".
+    string name = 1;
+    // The IPv4 address returned for the name (A record). Answered directly
+    // without forwarding the query to the host resolver.
+    string address = 2;
 }
 
 message WindowsPCIDevice {
@@ -1023,6 +1077,13 @@ message ModifyResourceRequest {
         VPMEMDisk vpmem_disk = 6;
         NICConfig nic_config = 7;
         WindowsPCIDevice windows_device = 8;
+    }
+}
+
+message ModifyResourceResponse {
+    // Unset for operations without a result, including DNS and port changes.
+    oneof result {
+        CreateVirtualAddressResponse virtual_address = 1;
     }
 }
 

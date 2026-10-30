@@ -493,6 +493,8 @@ async fn test_ttrpc_interface(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
                                             ports: vec![],
+                                            internal_dns: None,
+                                            ..Default::default()
                                         },
                                     )),
                                 }),
@@ -659,6 +661,11 @@ async fn test_ttrpc_interface(
                             nic_config: vec![vmservice::NicConfig {
                                 nic_id: consomme_nic_id.clone(),
                                 mac_address: "00-15-5D-12-12-12".to_string(),
+                                frontend: if i == 1 {
+                                    vmservice::NicFrontend::Virtio as i32
+                                } else {
+                                    vmservice::NicFrontend::Vmbus as i32
+                                },
                                 backend: Some(vmservice::nic_config::Backend::Consomme(
                                     vmservice::ConsommeBackend {
                                         cidr: String::new(),
@@ -668,6 +675,8 @@ async fn test_ttrpc_interface(
                                             protocol: vmservice::IpProtocol::Tcp as i32,
                                             host_address: host_address.to_string(),
                                         }],
+                                        internal_dns: None,
+                                        ..Default::default()
                                     },
                                 )),
                                 ..Default::default()
@@ -779,6 +788,8 @@ async fn test_ttrpc_interface(
                                                     protocol,
                                                     host_address: host_address.to_string(),
                                                 }],
+                                                internal_dns: None,
+                                                ..Default::default()
                                             },
                                         )),
                                         ..Default::default()
