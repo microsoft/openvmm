@@ -1013,6 +1013,15 @@ message ModifyProcessorConfigRequest {
     uint32 processor_limit = 2;
 }
 
+message HVSocketListener {
+    // Unix socket path to bind on ADD. The caller owns the socket file and
+    // removes it after the listener is removed.
+    string path = 1;
+    // Guest hvsocket service ID (GUID). Vsock port N uses the service ID
+    // N-facb-11e6-bd58-64006a7986d3, with N as eight hexadecimal digits.
+    string service_id = 2;
+}
+
 message ModifyResourceRequest {
     ModifyType type = 1;
     oneof resource {
@@ -1023,6 +1032,7 @@ message ModifyResourceRequest {
         VPMEMDisk vpmem_disk = 6;
         NICConfig nic_config = 7;
         WindowsPCIDevice windows_device = 8;
+        HVSocketListener hvsocket_listener = 9;
     }
 }
 
