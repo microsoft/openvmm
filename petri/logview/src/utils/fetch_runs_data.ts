@@ -313,7 +313,7 @@ export async function fetchTestAnalysis(
   signal?: AbortSignal,
 ): Promise<Map<string, TestRunInfo[]>> {
   // Fetch all runs
-  const runs = await queryClient.ensureQueryData<RunData[]>({
+  const runs = await queryClient.fetchQuery<RunData[]>({
     queryKey: ["runs"],
     queryFn: () => fetchRunData(queryClient),
     staleTime: 2 * 60 * 1000, // refetch every 2 minutes

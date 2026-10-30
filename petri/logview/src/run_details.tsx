@@ -42,10 +42,11 @@ export function RunDetails(): React.JSX.Element {
       prefetchQueue.add(
         {
           queryKey: ["petriLog", runId, architecture, remainder],
-          queryFn: (signal) =>
+          queryFn: (signal, foregroundSignal) =>
             fetchProcessedLog(runId, architecture, remainder, {
               signal,
               background: true,
+              foregroundSignal,
             }),
         },
         priority,

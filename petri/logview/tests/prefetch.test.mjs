@@ -150,6 +150,61 @@ test("a foreground observer adopts matching work across route cleanup", async ()
   unsubscribe();
 });
 
+test("foreground adoption releases idle processing after route cleanup", async () => {
+  const queryKey = ["waiting-log"];
+  queue.add({
+    queryKey,
+    queryFn: async (signal, foregroundSignal) => {
+      await waitForIdle(signal, foregroundSignal);
+      return "processed";
+    },
+  });
+  runIdle();
+  assert.equal(
+    idle.size,
+    1,
+    "Background processing waits for another idle slot",
+  );
+  stop();
+
+  const observer = new QueryObserver(client, {
+    queryKey,
+    queryFn: () => assert.fail("Must adopt the waiting log"),
+    staleTime: Infinity,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  await setImmediate();
+  assert.equal(observer.getCurrentResult().data, "processed");
+  assert.equal(idle.size, 0, "Promotion cancels the pending idle callback");
+  unsubscribe();
+});
+
+test("a log adopted during download bypasses its later idle wait", async () => {
+  const downloaded = Promise.withResolvers();
+  const queryKey = ["downloading-log"];
+  queue.add({
+    queryKey,
+    queryFn: async (signal, foregroundSignal) => {
+      await downloaded.promise;
+      await waitForIdle(signal, foregroundSignal);
+      return "processed";
+    },
+  });
+  runIdle();
+
+  const observer = new QueryObserver(client, {
+    queryKey,
+    queryFn: () => assert.fail("Must share the download"),
+    staleTime: Infinity,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  downloaded.resolve();
+  await setImmediate();
+  assert.equal(observer.getCurrentResult().data, "processed");
+  assert.equal(idle.size, 0);
+  unsubscribe();
+});
+
 test("hover promotion preempts unrelated warming and goes ahead of queued work", async () => {
   const first = task("first");
   const second = task("second");

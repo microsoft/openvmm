@@ -133,9 +133,13 @@ export async function fetchProcessedLog(
   runId: string,
   architecture: string | undefined,
   testNameRemainder: string,
-  options: { signal?: AbortSignal; background?: boolean } = {},
+  options: {
+    signal?: AbortSignal;
+    background?: boolean;
+    foregroundSignal?: AbortSignal;
+  } = {},
 ): Promise<LogEntry[]> {
-  const { signal, background } = options;
+  const { signal, background, foregroundSignal } = options;
   const { url, text } = await fetchLog(
     runId,
     architecture,
@@ -144,7 +148,7 @@ export async function fetchProcessedLog(
   );
   signal?.throwIfAborted();
   if (!text) return [];
-  if (background) await waitForIdle(signal);
+  if (background) await waitForIdle(signal, foregroundSignal);
   const raw = parseLogText(text);
   const entries: LogEntry[] = [];
   let start: string | null = null;

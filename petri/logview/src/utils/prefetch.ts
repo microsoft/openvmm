@@ -18,24 +18,38 @@ function runWhenIdle(callback: () => void): () => void {
   return () => clearTimeout(id);
 }
 
-export function waitForIdle(signal?: AbortSignal): Promise<void> {
+export function waitForIdle(
+  signal?: AbortSignal,
+  foregroundSignal?: AbortSignal,
+): Promise<void> {
   signal?.throwIfAborted();
+  if (foregroundSignal?.aborted) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const cancel = runWhenIdle(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    });
-    function onAbort() {
+    const cancel = runWhenIdle(onReady);
+    function cleanup() {
       cancel();
+      signal?.removeEventListener("abort", onAbort);
+      foregroundSignal?.removeEventListener("abort", onReady);
+    }
+    function onReady() {
+      cleanup();
+      resolve();
+    }
+    function onAbort() {
+      cleanup();
       reject(signal?.reason);
     }
     signal?.addEventListener("abort", onAbort, { once: true });
+    foregroundSignal?.addEventListener("abort", onReady, { once: true });
   });
 }
 
 interface PrefetchTask {
   queryKey: readonly string[];
-  queryFn: (signal: AbortSignal) => Promise<unknown>;
+  queryFn: (
+    signal: AbortSignal,
+    foregroundSignal: AbortSignal,
+  ) => Promise<unknown>;
 }
 
 interface QueuedTask extends PrefetchTask {
@@ -45,7 +59,12 @@ interface QueuedTask extends PrefetchTask {
 export class PrefetchQueue {
   private client: QueryClient;
   private pending = new Map<string, QueuedTask>();
-  private active?: { hash: string; task: QueuedTask; cancelled: boolean };
+  private active?: {
+    hash: string;
+    task: QueuedTask;
+    cancelled: boolean;
+    foreground: AbortController;
+  };
   private cancelScheduled?: () => void;
   private running = false;
 
@@ -55,7 +74,14 @@ export class PrefetchQueue {
 
   start(): () => void {
     this.running = true;
-    const unsubscribe = this.client.getQueryCache().subscribe(() => {
+    const unsubscribe = this.client.getQueryCache().subscribe((event) => {
+      if (
+        event.type === "observerAdded" &&
+        event.query.queryHash === this.active?.hash
+      ) {
+        // Release idle processing without canceling the adopted download.
+        this.active.foreground.abort();
+      }
       if (this.hasForegroundFetch()) {
         this.clearScheduled();
         this.cancelActive(true);
@@ -114,7 +140,10 @@ export class PrefetchQueue {
       queryKey: active.task.queryKey,
       exact: true,
     });
-    if (query && query.getObserversCount() > 0) return;
+    if (query && query.getObserversCount() > 0) {
+      active.foreground.abort();
+      return;
+    }
     active.cancelled = true;
     if (requeue) this.pending.set(active.hash, active.task);
     void this.client.cancelQueries({
@@ -152,11 +181,12 @@ export class PrefetchQueue {
     if (!next) return;
     const [hash, task] = next;
     this.pending.delete(hash);
-    this.active = { hash, task, cancelled: false };
+    const foreground = new AbortController();
+    this.active = { hash, task, cancelled: false, foreground };
     void this.client
       .fetchQuery({
         queryKey: task.queryKey,
-        queryFn: ({ signal }) => task.queryFn(signal),
+        queryFn: ({ signal }) => task.queryFn(signal, foreground.signal),
         staleTime: Infinity,
         gcTime: Infinity,
         retry: false,
