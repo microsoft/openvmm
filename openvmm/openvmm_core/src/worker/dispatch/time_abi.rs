@@ -738,10 +738,14 @@ fn record_entries(effective: &EffectiveCpuid) -> impl Iterator<Item = EffectiveC
     })
 }
 
-/// Lists the entries in which this partition's effective CPUID and a
-/// snapshot's `recorded` one differ: each entry that only one of them has,
-/// and each entry that both have with every register in which they differ,
-/// with its value and mask in each.
+/// Lists the differences between this partition's effective CPUID and a
+/// snapshot's `recorded` one: each entry that only one of them has; each
+/// entry of the snapshot that differs from the partition's entry of the same
+/// leaf and subleaf, with every register in which they differ, with its value
+/// and mask in each; each entry that the snapshot lists more than once; and a
+/// snapshot that does not list its entries in order of leaf and subleaf, as
+/// the partition's effective CPUID does. The record's decoder admits the last
+/// two, which no OpenVMM writes.
 fn recorded_cpuid_differences(
     effective: &EffectiveCpuid,
     recorded: &[EffectiveCpuidEntry],
@@ -754,31 +758,35 @@ fn recorded_cpuid_differences(
     let ours: BTreeMap<_, _> = record_entries(effective)
         .map(|entry| (key(&entry), entry))
         .collect();
-    let theirs: BTreeMap<_, _> = recorded.iter().map(|entry| (key(entry), *entry)).collect();
+    // Every entry that the snapshot lists for a leaf and subleaf, in order.
+    let mut theirs: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    for entry in recorded {
+        theirs.entry(key(entry)).or_default().push(entry);
+    }
     let mut differences = Vec::new();
     for (&entry_key, entry) in &ours {
-        match theirs.get(&entry_key) {
-            None => differences.push(format!("{} is not in the snapshot", name(entry_key))),
-            Some(theirs) if theirs != entry => {
-                let registers: Vec<String> = (0..4)
-                    .filter(|&register| {
-                        (entry.result[register], entry.mask[register])
-                            != (theirs.result[register], theirs.mask[register])
-                    })
-                    .map(|register| {
-                        format!(
-                            "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the snapshot",
-                            REGISTERS[register],
-                            entry.result[register],
-                            entry.mask[register],
-                            theirs.result[register],
-                            theirs.mask[register]
-                        )
-                    })
-                    .collect();
-                differences.push(format!("{} {}", name(entry_key), registers.join(", ")));
-            }
-            Some(_) => {}
+        let Some(listed) = theirs.get(&entry_key) else {
+            differences.push(format!("{} is not in the snapshot", name(entry_key)));
+            continue;
+        };
+        for &theirs in listed.iter().filter(|&&theirs| theirs != entry) {
+            let registers: Vec<String> = (0..4)
+                .filter(|&register| {
+                    (entry.result[register], entry.mask[register])
+                        != (theirs.result[register], theirs.mask[register])
+                })
+                .map(|register| {
+                    format!(
+                        "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the snapshot",
+                        REGISTERS[register],
+                        entry.result[register],
+                        entry.mask[register],
+                        theirs.result[register],
+                        theirs.mask[register]
+                    )
+                })
+                .collect();
+            differences.push(format!("{} {}", name(entry_key), registers.join(", ")));
         }
     }
     for &entry_key in theirs
@@ -787,8 +795,19 @@ fn recorded_cpuid_differences(
     {
         differences.push(format!("{} is only in the snapshot", name(entry_key)));
     }
-    if differences.is_empty() {
-        differences.push("the snapshot lists the same entries in another order".to_owned());
+    for (&entry_key, listed) in theirs.iter().filter(|(_, listed)| listed.len() > 1) {
+        differences.push(format!(
+            "{} is in the snapshot {} times",
+            name(entry_key),
+            listed.len()
+        ));
+    }
+    if recorded
+        .windows(2)
+        .any(|pair| key(&pair[0]) > key(&pair[1]))
+    {
+        differences
+            .push("the snapshot does not list its entries in order of leaf and subleaf".to_owned());
     }
     differences
 }
@@ -1803,6 +1822,82 @@ mod tests {
                 "CPUID 0x800000ff is only in the snapshot".to_owned(),
             ])
         );
+    }
+
+    /// A failure names every way in which the snapshot's record differs, at
+    /// once, including those that only a record that no OpenVMM writes has:
+    /// an entry that the snapshot lists more than once, with each of its
+    /// listings that differs, and entries out of order, with an entry that
+    /// differs.
+    #[test]
+    fn recorded_cpuid_names_repeated_and_unordered_entries() {
+        let (_, _, effective) = test_config(2);
+        let record = test_record(&effective);
+        let entries: Vec<_> = record_entries(&effective).collect();
+        let message = |recorded: &[EffectiveCpuidEntry]| {
+            let record = SnapshotCpuProfile {
+                effective_cpuid: encode_effective_cpuid(recorded.iter().copied()),
+                ..record.clone()
+            };
+            format!(
+                "{:#}",
+                check_recorded_cpuid(&effective, &record).unwrap_err()
+            )
+        };
+        let expected = |differences: &[&str]| {
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                differences.len(),
+                differences.join("; ")
+            )
+        };
+        let unordered = "the snapshot does not list its entries in order of leaf and subleaf";
+
+        // An entry listed twice, once changed, before or after itself, or
+        // unchanged.
+        let first = entries[0];
+        let mut changed = first;
+        changed.result[0] ^= 1;
+        let name = leaf_name(first.function, first.index);
+        let difference = format!(
+            "{name} EAX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the \
+             snapshot",
+            first.result[0], first.mask[0], changed.result[0], changed.mask[0]
+        );
+        let twice = format!("{name} is in the snapshot 2 times");
+        for listed in [[changed, first], [first, changed]] {
+            let recorded: Vec<_> = listed.into_iter().chain(entries[1..].to_vec()).collect();
+            assert_eq!(message(&recorded), expected(&[&difference, &twice]));
+        }
+        let recorded: Vec<_> = [first, first]
+            .into_iter()
+            .chain(entries[1..].to_vec())
+            .collect();
+        assert_eq!(message(&recorded), expected(&[&twice]));
+
+        // Entries out of order, alone, and with an entry that differs.
+        let mut recorded = entries.clone();
+        recorded.swap(0, 1);
+        assert_eq!(message(&recorded), expected(&[unordered]));
+        let last = recorded.len() - 1;
+        recorded[last].result[1] ^= 1;
+        let entry = entries[last];
+        let difference = format!(
+            "{} EBX is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in the \
+             snapshot",
+            leaf_name(entry.function, entry.index),
+            entry.result[1],
+            entry.mask[1],
+            entry.result[1] ^ 1,
+            entry.mask[1]
+        );
+        assert_eq!(message(&recorded), expected(&[&difference, unordered]));
+
+        // An entry listed again out of order.
+        let mut recorded = entries.clone();
+        recorded.push(first);
+        assert_eq!(message(&recorded), expected(&[&twice, unordered]));
     }
 
     /// Returns the snapshot record of `effective`, an effective CPUID of the

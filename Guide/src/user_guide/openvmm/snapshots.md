@@ -361,7 +361,11 @@ must be a valid profile, its CPU time bits included, with the recorded digest;
 a host of the profile's generation; and an identical effective CPUID.
 OpenVMM computes the effective CPUID, including its own leaves and the bits
 it owns, such as the cache topology, so an OpenVMM build that computes it
-differently rejects earlier snapshots with `E_CPU_SURFACE`.
+differently rejects earlier snapshots with `E_CPU_SURFACE`. That error names
+each entry in which the two effective CPUIDs differ, with every register in
+which it differs, each entry that only one of them has, each entry that the
+snapshot lists more than once, and a snapshot that does not list its entries
+in order of leaf and subleaf.
 These checks all run, even after one of them fails: on restore, the
 comparison of the effective CPUID with the snapshot's, then, on every boot,
 the check that VP 0 observes it and the check that the backend supports the
