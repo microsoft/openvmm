@@ -127,13 +127,31 @@ fn print_system_info(rt: &mut RustRuntimeServices<'_>) {
 }
 
 fn azure_container_id(rt: &mut RustRuntimeServices<'_>) -> anyhow::Result<String> {
-    let output = flowey::shell_cmd!(
-        rt,
-        "curl --disable --silent --show-error --fail --noproxy '*' --connect-timeout 1 --max-time 2 --header x-ms-version:2012-11-30 'http://168.63.129.16/machine?comp=goalstate'"
-    )
-    .quiet()
-    .ignore_status()
-    .output()?;
+    let curl = if matches!(rt.platform(), FlowPlatform::Linux(_)) {
+        // Azure Linux Agent restricts WireServer TCP access to root.
+        flowey::shell_cmd!(rt, "sudo -n -- curl")
+    } else {
+        flowey::shell_cmd!(rt, "curl")
+    };
+    let output = curl
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--noproxy",
+            "*",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            "2",
+            "--header",
+            "x-ms-version:2012-11-30",
+            "http://168.63.129.16/machine?comp=goalstate",
+        ])
+        .quiet()
+        .ignore_status()
+        .output()?;
     anyhow::ensure!(
         output.status.success(),
         "WireServer request failed ({}): {}",
