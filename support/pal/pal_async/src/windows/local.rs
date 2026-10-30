@@ -132,10 +132,9 @@ impl State {
         }
     }
 
-    fn clear_handle_signal(&mut self, id: HandleId) -> bool {
+    fn clear_handle_signal(&mut self, id: HandleId) -> (bool, Option<Waker>) {
         let entry = &mut self.entries[id.0];
-        entry.waker = None;
-        std::mem::take(&mut entry.signaled)
+        (std::mem::take(&mut entry.signaled), entry.waker.take())
     }
 
     fn add_socket(&mut self, socket: RawSocket) -> SocketId {
@@ -396,7 +395,9 @@ impl PollWait for Wait {
     }
 
     fn poll_cancel_wait(&mut self, _cx: &mut Context<'_>) -> Poll<bool> {
-        Poll::Ready(self.inner.lock_sys_state().clear_handle_signal(self.id))
+        // Waker destruction may re-enter the driver, so defer it until unlocked.
+        let (signaled, _waker) = self.inner.lock_sys_state().clear_handle_signal(self.id);
+        Poll::Ready(signaled)
     }
 }
 

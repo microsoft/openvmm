@@ -275,6 +275,43 @@ mod tests {
         block_with_io(executor_tests::wait_tests)
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn cancel_wait_reentrant_waker_drop() {
+        use crate::timer::PolledTimer;
+        use crate::wait::PolledWait;
+        use pal_event::Event;
+        use std::future::poll_fn;
+        use std::sync::Arc;
+        use std::task::Context;
+        use std::task::Wake;
+        use std::task::Waker;
+
+        struct TimerWaker {
+            _timer: PolledTimer,
+        }
+
+        impl Wake for TimerWaker {
+            fn wake(self: Arc<Self>) {}
+        }
+
+        block_with_io(|driver| async move {
+            let mut wait = PolledWait::new(&driver, Event::new()).unwrap();
+            let timer_waker = Arc::new(TimerWaker {
+                _timer: PolledTimer::new(&driver),
+            });
+            let weak = Arc::downgrade(&timer_waker);
+            let waker = Waker::from(timer_waker);
+            assert!(
+                wait.poll_wait(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            assert!(!poll_fn(|cx| wait.poll_cancel_wait(cx)).await);
+            assert!(weak.upgrade().is_none());
+        });
+    }
+
     #[test]
     fn socket_works() {
         block_with_io(executor_tests::socket_tests)
