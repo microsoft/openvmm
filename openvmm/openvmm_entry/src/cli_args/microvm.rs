@@ -429,7 +429,9 @@ pub struct MicrovmCli {
     /// replies to the host pass regardless of the egress policy. With
     /// `--network-ingress allow`, the listeners published to the host's
     /// private networks admit the host instead. Explicit forwards may publish
-    /// further ports. Snapshot capture does not support explicit `allow`, and
+    /// further ports. Explicit `allow` requires an IPv4 network of /29 or
+    /// larger, whose subnet leaves addresses at which host peers reach the
+    /// guest. Snapshot capture does not support explicit `allow`, and
     /// a restore supports it only with `--restore-network-policy`.
     #[clap(long, value_enum, value_name = "ACTION")]
     pub host_loopback: Option<MicrovmNetworkActionCli>,
@@ -753,6 +755,12 @@ pub(super) fn parse_endpoint(network: &str) -> Result<EndpointConfigCli, String>
         .map(EndpointConfigCli::Microvm)
         .map_err(|error| format!("invalid microVM network: {error}"))
 }
+
+/// Longest IPv4 prefix of a microVM network that explicit `--host-loopback
+/// allow` accepts. Consomme presents host peers to the guest at addresses of
+/// the guest's subnet, allocated downward from its last usable address, which
+/// a /30, holding only the gateway and the guest, cannot spare.
+const MICROVM_HOST_LOOPBACK_MAX_PREFIX_LENGTH: u8 = 29;
 
 impl Options {
     /// Rejects unsupported microVM combinations before opening host resources.
@@ -1391,13 +1399,16 @@ impl Options {
         Ok(())
     }
 
+    /// Binds the network policy of these options to `network`: the identity
+    /// that `--net` names, or at a restore the one that the snapshot recorded.
+    ///
+    /// Refuses explicit `--host-loopback allow` on a network whose prefix is
+    /// longer than [`MICROVM_HOST_LOOPBACK_MAX_PREFIX_LENGTH`], which leaves no
+    /// address at which Consomme can present host peers to the guest.
     pub(crate) fn microvm_egress_policy(
         &self,
         network: &openvmm_defs::microvm::MicrovmNetworkConfig,
-    ) -> Result<
-        net_backend_resources::egress::EgressPolicy,
-        net_backend_resources::egress::InvalidEgressPolicy,
-    > {
+    ) -> anyhow::Result<net_backend_resources::egress::EgressPolicy> {
         use net_backend_resources::egress::EgressPolicyMode;
 
         let mode = if !self.microvm.network_egress_allow.is_empty()
@@ -1423,7 +1434,7 @@ impl Options {
         } else {
             EgressPolicyMode::AllowAll
         };
-        network.bind_egress_policy(mode).and_then(|policy| {
+        let policy = network.bind_egress_policy(mode).and_then(|policy| {
             Ok(policy
                 .with_host_loopback(
                     self.microvm
@@ -1444,7 +1455,15 @@ impl Options {
                         .unwrap_or(MicrovmNetworkActionCli::Deny)
                         .into(),
                 ))
-        })
+        })?;
+        // Binding the policy has checked the prefix, so a longer one is a /30.
+        anyhow::ensure!(
+            self.microvm.host_loopback != Some(MicrovmNetworkActionCli::Allow)
+                || network.prefix_length <= MICROVM_HOST_LOOPBACK_MAX_PREFIX_LENGTH,
+            "--host-loopback allow requires an IPv4 network of /{MICROVM_HOST_LOOPBACK_MAX_PREFIX_LENGTH} or larger: a /{} holds only the gateway and the guest, and leaves no address at which to present host peers to the guest",
+            network.prefix_length
+        );
+        Ok(policy)
     }
 
     /// Returns the publication of the guest's listeners to the host's private
@@ -2593,6 +2612,73 @@ mod tests {
         ]))
         .unwrap();
         forwarded.validate_microvm_options().unwrap();
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_host_loopback_allow_needs_an_address_for_host_peers() {
+        let parse = |arguments: &[&str]| {
+            Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--network-profile",
+                    "portable",
+                ]
+                .into_iter()
+                .chain(arguments.iter().copied()),
+            )
+            .unwrap()
+        };
+        // Consomme presents host peers at addresses of the guest's subnet,
+        // which a /30, holding only the gateway and the guest, cannot spare,
+        // whether the host reaches the guest's listeners on loopback, through
+        // private-network ingress, or through forwards.
+        let slash_30: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/30".parse().unwrap();
+        for extra in [
+            &[][..],
+            &["--network-egress", "deny"][..],
+            &["--network-ingress", "allow"][..],
+            &["--host-loopback-forward", "udp:3000:8080"][..],
+        ] {
+            let options = parse(
+                &[
+                    &["--net", "10.0.0.2/30", "--host-loopback", "allow"][..],
+                    extra,
+                ]
+                .concat(),
+            );
+            for error in [
+                options.validate_microvm_options().unwrap_err(),
+                options.microvm_egress_policy(&slash_30).unwrap_err(),
+            ] {
+                assert!(
+                    error.to_string().contains(
+                        "--host-loopback allow requires an IPv4 network of /29 or larger"
+                    ),
+                    "{extra:?}: {error:#}"
+                );
+            }
+        }
+        // A /29 leaves four addresses for host peers.
+        let options = parse(&["--net", "10.0.0.2/29", "--host-loopback", "allow"]);
+        options.validate_microvm_options().unwrap();
+        options
+            .microvm_egress_policy(&"10.0.0.2/29".parse().unwrap())
+            .unwrap();
+        // Without explicit host-loopback access, no host peer reaches the
+        // guest at a synthetic address, so a /30 serves every other policy.
+        for extra in [
+            &[][..],
+            &["--host-loopback", "deny"][..],
+            &["--network-ingress", "allow"][..],
+            &["--network-ingress", "allow", "--host-loopback", "deny"][..],
+        ] {
+            let options = parse(&[&["--net", "10.0.0.2/30"][..], extra].concat());
+            options.validate_microvm_options().unwrap();
+            options.microvm_egress_policy(&slash_30).unwrap();
+        }
     }
 
     #[cfg(guest_arch = "x86_64")]
