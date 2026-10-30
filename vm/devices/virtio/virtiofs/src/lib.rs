@@ -47,6 +47,23 @@ const ATTRIBUTE_TIMEOUT: Duration = Duration::from_millis(1);
 // update the path.
 const ENTRY_TIMEOUT: Duration = Duration::from_secs(0);
 
+/// Upper bound for guest-sized buffers other than file reads.
+///
+/// This is also the `max_write` advertised during FUSE_INIT. Larger directory reads are
+/// truncated rather than rejected, since they may return less data than requested.
+const MAX_GUEST_BUFFER_SIZE: usize = 1024 * 1024;
+
+/// The largest page size a guest may use.
+const MAX_GUEST_PAGE_SIZE: usize = 64 * 1024;
+
+/// Upper bound for a single file read.
+///
+/// Linux bounds reads by the `max_pages` advertised during FUSE_INIT rather than by
+/// `max_write`, and counts those pages in its own page size. The FUSE session derives
+/// `max_pages` from `max_write` using 4 KiB pages, so a guest with 64 KiB pages can
+/// legitimately request 16 times `MAX_GUEST_BUFFER_SIZE`.
+const MAX_READ_SIZE: usize = MAX_GUEST_BUFFER_SIZE / 4096 * MAX_GUEST_PAGE_SIZE;
+
 /// Shared mutable state behind a [`VirtioFs`] handle.
 struct VirtioFsInner {
     inodes: RwLock<InodeMap>,
@@ -125,6 +142,10 @@ impl Fuse for VirtioFs {
         if info.capable2() & FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2 != 0 {
             info.want2 |= FUSE_DIRECT_IO_ALLOW_MMAP_FLAG2;
         }
+
+        // Advertise the write limit enforced on parsed payloads. The session derives the
+        // advertised `max_pages`, which bounds reads, from this value; see `MAX_READ_SIZE`.
+        info.max_write = MAX_GUEST_BUFFER_SIZE as u32;
     }
 
     fn get_attr(&self, request: &Request, flags: u32, fh: u64) -> lx::Result<fuse_attr_out> {
@@ -354,13 +375,16 @@ impl Fuse for VirtioFs {
 
     fn read(&self, _request: &Request, arg: &fuse_read_in) -> lx::Result<Vec<u8>> {
         let file = self.get_file(arg.fh)?;
-        let mut buffer = vec![0u8; arg.size as usize];
+        let mut buffer = guest_buffer(arg.size as usize, MAX_READ_SIZE)?;
         let size = file.read(&mut buffer, arg.offset)?;
         buffer.truncate(size);
         Ok(buffer)
     }
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
+        if data.len() > MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
         let file = self.get_file(arg.fh)?;
         self.check_writable(file.inode())?;
         file.write(data, arg.offset, request.uid())
@@ -468,7 +492,7 @@ impl Fuse for VirtioFs {
             return Err(lx::Error::ENODATA);
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut value = vec![0u8; size as usize];
+        let mut value = guest_buffer(size as usize, MAX_GUEST_BUFFER_SIZE)?;
         let size = inode.get_xattr(name, Some(&mut value))?;
         value.truncate(size);
         Ok(value)
@@ -494,6 +518,9 @@ impl Fuse for VirtioFs {
         if self.is_synthetic_root(request.node_id()) {
             return Err(lx::Error::EROFS);
         }
+        if value.len() > MAX_GUEST_BUFFER_SIZE {
+            return Err(lx::Error::E2BIG);
+        }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         inode.set_xattr(name, value, flags)
@@ -504,7 +531,7 @@ impl Fuse for VirtioFs {
             return Ok(Vec::new());
         }
         let inode = self.get_inode(request.node_id())?;
-        let mut list = vec![0u8; size as usize];
+        let mut list = guest_buffer(size as usize, MAX_GUEST_BUFFER_SIZE)?;
         let size = inode.list_xattr(Some(&mut list))?;
         list.truncate(size);
         Ok(list)
@@ -646,7 +673,7 @@ impl VirtioFs {
     /// Retrieve the inode with the specified node ID.
     fn get_inode(&self, node_id: u64) -> lx::Result<Arc<VirtioFsInode>> {
         self.inner.inodes.read().get(node_id).ok_or_else(|| {
-            tracing::warn!(node_id, "request for unknown inode");
+            tracelimit::warn_ratelimited!(node_id, "request for unknown inode");
             lx::Error::EINVAL
         })
     }
@@ -663,7 +690,7 @@ impl VirtioFs {
     fn get_file(&self, fh: u64) -> lx::Result<Arc<VirtioFsFile>> {
         let files = self.inner.files.read();
         let file = files.get(fh).ok_or_else(|| {
-            tracing::warn!(fh, "Request for unknown file");
+            tracelimit::warn_ratelimited!(fh, "Request for unknown file");
             lx::Error::EBADF
         })?;
 
@@ -679,6 +706,32 @@ impl VirtioFs {
     fn remove_file(&self, fh: u64) {
         self.inner.files.write().remove(fh);
     }
+}
+
+/// Allocates a zeroed, guest-sized buffer, failing with `E2BIG` if `size` exceeds `limit`.
+fn guest_buffer(size: usize, limit: usize) -> lx::Result<Vec<u8>> {
+    if size > limit {
+        return Err(lx::Error::E2BIG);
+    }
+    let mut buffer = reserve_buffer(size)?;
+    buffer.resize(size, 0);
+    Ok(buffer)
+}
+
+/// Allocates an empty buffer for a directory read of up to `size` bytes.
+///
+/// The directory entry writers fill the buffer up to its capacity, which is capped at
+/// `MAX_GUEST_BUFFER_SIZE` because a directory read may return less than requested.
+fn dir_buffer(size: u32) -> lx::Result<Vec<u8>> {
+    reserve_buffer((size as usize).min(MAX_GUEST_BUFFER_SIZE))
+}
+
+fn reserve_buffer(capacity: usize) -> lx::Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(capacity)
+        .map_err(|_| lx::Error::ENOMEM)?;
+    Ok(buffer)
 }
 
 /// A key/value map where the keys are automatically incremented identifiers.

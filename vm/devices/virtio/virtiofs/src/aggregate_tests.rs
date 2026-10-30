@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::SYNTHETIC_ROOT_FH;
+use crate::MAX_GUEST_BUFFER_SIZE;
 use crate::VirtioFs;
 use crate::inode;
 use fuse::protocol::FUSE_ROOT_ID;
@@ -227,4 +228,22 @@ fn add_child_rejected_after_teardown() {
         fs.inner.aggregate().unwrap().registry.read().entries.len(),
         1
     );
+}
+
+#[test]
+fn synthetic_root_readdir_payload_is_bounded() {
+    let fs = VirtioFs::new_aggregate();
+
+    for plus in [false, true] {
+        let entries = fs
+            .read_synthetic_root_dir(0, MAX_GUEST_BUFFER_SIZE as u32, plus)
+            .unwrap();
+        assert!(!entries.is_empty());
+        // Larger directory reads are truncated rather than rejected.
+        for size in [MAX_GUEST_BUFFER_SIZE as u32 + 1, u32::MAX] {
+            let buffer = fs.read_synthetic_root_dir(0, size, plus).unwrap();
+            assert_eq!(buffer, entries);
+            assert!(buffer.capacity() <= MAX_GUEST_BUFFER_SIZE);
+        }
+    }
 }
