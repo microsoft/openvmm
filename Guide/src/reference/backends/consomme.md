@@ -109,11 +109,13 @@ own flows come from the address and port that the guest addressed, such as the
 gateway, as connected UDP sockets require. Consomme presents other host
 peers to the guest at virtual addresses inside the guest's subnet of their
 family, allocated downward from its high end, so that the guest answers them
-from its address in that subnet. The endpoint's egress policy evaluates the
-guest's traffic to such an address at the host address to which Consomme
-routes it, and for host loopback at the gateway of its family, so a peer's
-virtual address reaches no host-loopback port that the rules deny at the
-gateway. Without ingress `allow`, OpenVMM appends
+from its address in that subnet. OpenVMM therefore requires an IPv4 network of
+`/29` or larger for explicit `--host-loopback allow`: a `/30` holds only the
+gateway and the guest and leaves no address for host peers. The endpoint's
+egress policy evaluates the guest's traffic to such an address at the host
+address to which Consomme routes it, and for host loopback at the gateway of
+its family, so a peer's virtual address reaches no host-loopback port that the
+rules deny at the gateway. Without ingress `allow`, OpenVMM appends
 `virtnet_ingress=host-loopback` to the microVM command line, and the guest
 announces its listeners as it does for ingress `allow`. The endpoint keeps one
 host listener per announced port and address family, bound to the family's
