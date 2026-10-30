@@ -1355,6 +1355,7 @@ impl InitializedVm {
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
                 ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    &cfg.pcie_root_complexes,
                     ranges,
                     &spi_layout,
                     device_assignment_msi_iova_range,
@@ -3275,6 +3276,11 @@ impl LoadedVmInner {
     }
 
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "aarch64")]
+        let smmu_configs = match &self.iommu_devices {
+            IommuDevices::Smmu(devices) => devices.firmware_configs(),
+            IommuDevices::None => Vec::new(),
+        };
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
                 cache_topology::CacheTopology::from_host()
@@ -3348,10 +3354,7 @@ impl LoadedVmInner {
                     0
                 },
                 virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
-                smmu: match &self.iommu_devices {
-                    IommuDevices::Smmu(devices) => devices.configs.clone(),
-                    IommuDevices::None => Vec::new(),
-                },
+                smmu: smmu_configs.clone(),
             },
         };
 
@@ -3483,11 +3486,6 @@ impl LoadedVmInner {
                     None
                 };
 
-                let smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig] =
-                    match &self.iommu_devices {
-                        IommuDevices::Smmu(devices) => &devices.configs,
-                        IommuDevices::None => &[],
-                    };
                 super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
@@ -3495,7 +3493,7 @@ impl LoadedVmInner {
                     linux_arm64_console(&self.dt_uarts, enable_serial),
                     &self.processor_topology,
                     &self.pcie_host_bridges,
-                    smmu_configs,
+                    &smmu_configs,
                     &self.chipset_mmio,
                     build_acpi,
                 )?
@@ -3732,7 +3730,8 @@ impl LoadedVm {
         // partition unit.
         let stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
 
-        // Start state units so device config space is accessible.
+        // Start state units so device config space is accessible. This also
+        // freezes SMMU capabilities before firmware reads them.
         self.state_units.start().await;
 
         let result = ecam_config_access::assign_pci_resources_for_root_complexes(

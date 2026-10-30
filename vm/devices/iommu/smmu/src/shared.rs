@@ -122,10 +122,15 @@ pub trait Invalidate: Send + Sync {
 /// of these variants so the backend never has to interpret raw STE bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamConfig {
-    /// Abort all transactions. Produced for an invalid STE (`V=0`),
-    /// `Config=ABORT`, or any config the emulator does not support in
-    /// accelerated mode.
+    /// Abort all transactions without an event (`Config=ABORT` or global abort).
     Abort,
+    /// Terminate transactions with a configuration fault.
+    ///
+    /// The event is due when DMA is attempted, not when this policy is applied.
+    Fault {
+        /// Configuration-fault event type selected by STE lookup or validation.
+        event_id: EventId,
+    },
     /// Bypass translation (`Config=BYPASS`) — identity GPA→HPA via the
     /// nesting parent (S2) HWPT.
     Bypass,
@@ -152,6 +157,8 @@ pub(crate) struct TranslationPolicy {
     pub(crate) strtab_base: u64,
     pub(crate) strtab_log2size: u8,
     pub(crate) oas_mask: u64,
+    pub(crate) ssid_bits: u8,
+    pub(crate) ats: bool,
 }
 
 /// Reduce a guest stage-1 STE to the double-words that are architecturally
@@ -171,10 +178,10 @@ pub(crate) struct TranslationPolicy {
 /// - `IDR1.ATTR_TYPES_OVR == 0` → MTCFG, MemAttr, SHCFG, ALLOCCFG are RES0;
 /// - `IDR1.ATTR_PERMS_OVR == 0` → NSCFG, PRIVCFG, INSTCFG are RES0;
 /// - `IDR0.HYP == 0` → STRW is fixed to NS-EL1 (0);
-/// - `IDR0.ATS == 0` → EATS is IGNORED;
-/// - `IDR1.SSIDSIZE == 0` → S1CDMax is IGNORED, and S1Fmt and S1DSS are in turn
-///   IGNORED ("substreams unsupported"), leaving `S1ContextPtr` addressing
-///   exactly one CD;
+/// - when `IDR0.ATS == 0`, EATS is IGNORED;
+/// - when `IDR1.SSIDSIZE == 0`, S1CDMax is IGNORED, and S1Fmt and S1DSS are in
+///   turn IGNORED ("substreams unsupported"), leaving `S1ContextPtr`
+///   addressing exactly one CD;
 /// - unadvertised optional features (S1PIE, S1MPAM, CONT, DCP, DRE, PPAR, MEV)
 ///   are RES0/IGNORED; the SW bits have no hardware effect.
 ///
@@ -182,27 +189,42 @@ pub(crate) struct TranslationPolicy {
 /// fetch address to the OAS (§3.4), so the pointer it acts on never contains
 /// bits above the advertised output address size.
 ///
-/// Retained — DW0: V, Config, S1ContextPtr; DW1: S1CIR, S1COR, S1CSH, S1STALLD.
-/// Rebuilding the words through the typed field setters keeps the selection
-/// tied to the spec definitions.
+/// Retained unconditionally — DW0: V, Config, S1ContextPtr; DW1: S1CIR, S1COR,
+/// S1CSH, S1STALLD. S1Fmt, S1CDMax, and S1DSS are additionally retained when
+/// SSID support is advertised; EATS is retained when ATS is advertised.
 ///
 /// NOTE: if this emulator ever advertises one of the above features, the
 /// retained set must grow to match (and attach-time capability resolution must
 /// gate the new field against the host SMMU).
-fn canonical_s1_ste_dwords(ste: &crate::spec::ste::Ste, oas_mask: u64) -> [u64; 2] {
+fn canonical_s1_ste_dwords(
+    ste: &crate::spec::ste::Ste,
+    oas_mask: u64,
+    ssid_bits: u8,
+    ats: bool,
+) -> [u64; 2] {
     use crate::spec::ste::SteDw0;
     use crate::spec::ste::SteDw1;
 
-    let dw0 = SteDw0::new()
+    let mut dw0 = SteDw0::new()
         .with_v(ste.qw0.v())
         .with_config(ste.qw0.config())
         .with_s1_context_ptr((ste.s1_context_ptr() & oas_mask) >> 6);
 
-    let dw1 = SteDw1::new()
+    let mut dw1 = SteDw1::new()
         .with_s1_cir(ste.qw1.s1_cir())
         .with_s1_cor(ste.qw1.s1_cor())
         .with_s1_csh(ste.qw1.s1_csh())
         .with_s1stalld(ste.qw1.s1stalld());
+
+    if ssid_bits != 0 {
+        dw0 = dw0
+            .with_s1_fmt(ste.qw0.s1_fmt())
+            .with_s1_cd_max(ste.qw0.s1_cd_max());
+        dw1 = dw1.with_s1_dss(ste.qw1.s1_dss());
+    }
+    if ats {
+        dw1 = dw1.with_eats(ste.qw1.eats());
+    }
 
     [dw0.into(), dw1.into()]
 }
@@ -298,14 +320,12 @@ impl Drop for AccelRegistration {
 /// Result of an SMMU translation attempt.
 #[derive(Debug)]
 enum TranslateResult {
-    /// SMMU disabled (with `GBPA.ABORT=0`) or bus not yet assigned — bypass
-    /// (IOVA = GPA).
+    /// Bypass (IOVA = GPA), within the implemented address size.
     Bypass,
     /// Translated GPA.
     Translated(u64),
-    /// Global abort: the SMMU is disabled with `GBPA.ABORT=1`. The transaction
-    /// is terminated with an abort and **no** event record is generated (there
-    /// is no stream context to fault against).
+    /// Global abort: the SMMU is disabled and either `GBPA.ABORT=1` or the
+    /// bypass address exceeds OAS. No event record is generated.
     GlobalAbort,
     /// STE-driven abort with **no** event: `STE.Config[2] == 0` (the `0b000`
     /// encoding, and the reserved `0b0xx` encodings which "behave as `0b000`").
@@ -349,6 +369,8 @@ pub struct SmmuSharedState {
     /// How the advertised OAS is resolved against the host SMMU before
     /// capabilities are frozen (see [`resolve_host_caps`](Self::resolve_host_caps)).
     oas_policy: crate::SmmuOasPolicy,
+    /// How the advertised SSID width is selected and validated.
+    ssid_policy: crate::SmmuSsidPolicy,
     /// Accelerated stream registrations and the host vIOMMU they share. This
     /// is shared because VFIO devices can be added or removed while the
     /// chipset emulator is stopped.
@@ -357,7 +379,7 @@ pub struct SmmuSharedState {
 
 struct SharedStateInner {
     /// Whether guest-visible identification registers are fixed. Set when the
-    /// device first starts and never cleared by stop or reset.
+    /// device first starts or restores and never cleared by stop or reset.
     capabilities_frozen: bool,
     /// Whether the SMMU is enabled (CR0.SMMUEN).
     enabled: bool,
@@ -370,11 +392,7 @@ struct SharedStateInner {
     strtab_base: u64,
     /// Stream table log2 size (number of entries).
     strtab_log2size: u8,
-    /// Advertised output address size in bits. Reflected in IDR5.OAS and
-    /// used to derive `oas_mask`.
-    oas_bits: u8,
-    /// Advertised SubstreamID size in bits. Reflected in IDR1.SSIDSIZE.
-    ssid_bits: u8,
+    capabilities: SmmuCapabilities,
     /// Host SMMU capabilities, once an accelerated VFIO device has bound and
     /// [`SmmuSharedState::resolve_host_caps`] has resolved or validated the
     /// host-derived parameters. `None` until then (and always `None` for
@@ -385,6 +403,14 @@ struct SharedStateInner {
     /// Output address mask: `(1 << oas_bits) - 1`. Computed addresses for
     /// STE/CD/PT fetches are masked with this per SMMUv3 §3.4.
     oas_mask: u64,
+}
+
+/// The configurable or host-derived portion of the guest-visible device contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SmmuCapabilities {
+    pub(crate) oas_bits: u8,
+    pub(crate) ssid_bits: u8,
+    pub(crate) ats: bool,
 }
 
 /// Event queue and global error state.
@@ -448,19 +474,29 @@ impl SmmuSharedState {
     /// `oas_bits` is the initial output address size in bits (e.g., 40 for a
     /// 40-bit physical address space). Computed addresses for STE/CD/PT
     /// fetches are truncated to this width, matching hardware behavior per
-    /// SMMUv3 §3.4. `ssid_bits` is the guest-visible IDR1.SSIDSIZE value.
+    /// SMMUv3 §3.4. `ssid_policy` selects the guest-visible SSID width.
     /// `oas_policy` controls whether OAS can be resolved against a host SMMU
     /// before capabilities are frozen (see [`Self::resolve_host_caps`]).
     pub(crate) fn new(
         guest_memory: GuestMemory,
         oas_bits: u8,
-        ssid_bits: u8,
         oas_policy: crate::SmmuOasPolicy,
+        ssid_policy: crate::SmmuSsidPolicy,
         accel: bool,
         evtq_irq: Option<LineInterrupt>,
         gerror_irq: Option<LineInterrupt>,
     ) -> Arc<Self> {
         let oas_mask = (1u64 << oas_bits) - 1;
+        let ssid_bits = match ssid_policy {
+            crate::SmmuSsidPolicy::Auto => 0,
+            crate::SmmuSsidPolicy::Fixed(bits) => {
+                assert!(
+                    bits <= 20,
+                    "SSID width must be validated before device creation"
+                );
+                bits
+            }
+        };
         Arc::new(Self {
             inner: RwLock::new(SharedStateInner {
                 capabilities_frozen: false,
@@ -468,8 +504,11 @@ impl SmmuSharedState {
                 gbpa_abort: false,
                 strtab_base: 0,
                 strtab_log2size: 0,
-                oas_bits,
-                ssid_bits,
+                capabilities: SmmuCapabilities {
+                    oas_bits,
+                    ssid_bits,
+                    ats: false,
+                },
                 resolved_host_caps: None,
                 oas_mask,
             }),
@@ -489,6 +528,7 @@ impl SmmuSharedState {
             gerror_irq,
             accel,
             oas_policy,
+            ssid_policy,
             accel_state: Mutex::new(AccelState::default()),
         })
     }
@@ -498,19 +538,26 @@ impl SmmuSharedState {
         self.accel
     }
 
-    /// Returns the currently advertised output address size in bits.
-    pub(crate) fn oas_bits(&self) -> u8 {
-        self.inner.read().oas_bits
-    }
-
     /// Returns the currently advertised SubstreamID size in bits.
     pub fn ssid_bits(&self) -> u8 {
-        self.inner.read().ssid_bits
+        self.capabilities().ssid_bits
     }
 
-    /// Freezes guest-visible capabilities before the VM can observe them.
-    pub(crate) fn freeze_capabilities(&self) {
-        self.inner.write().capabilities_frozen = true;
+    /// Returns whether ATS is currently advertised.
+    pub fn ats_supported(&self) -> bool {
+        self.capabilities().ats
+    }
+
+    pub(crate) fn capabilities(&self) -> SmmuCapabilities {
+        self.inner.read().capabilities
+    }
+
+    /// Freezes and returns guest-visible capabilities on start or successful restore.
+    /// Later binds only validate compatibility.
+    pub(crate) fn freeze_capabilities(&self) -> SmmuCapabilities {
+        let mut inner = self.inner.write();
+        inner.capabilities_frozen = true;
+        inner.capabilities
     }
 
     /// Binds this vSMMU to the physical SMMU and host vIOMMU backing an
@@ -552,16 +599,17 @@ impl SmmuSharedState {
     /// SMMU backing an accelerated device.
     ///
     /// Runs once per vSMMU: the first device validates compatibility (TTF,
-    /// TTENDIAN, GRAN4K). Before capabilities are frozen, `auto` adopts the host
-    /// OAS. Afterward, the advertised OAS is immutable and must not exceed the
-    /// host's. `fixed` is always validated as an upper bound. Subsequent devices
+    /// TTENDIAN, GRAN4K). Before start, ATS and `auto` OAS/SSID adopt the host
+    /// values. Fixed OAS/SSID values are only validated. Afterward, capabilities are
+    /// immutable and must be supported by the host. `fixed` OAS is always
+    /// validated as an upper bound. Subsequent devices
     /// must report identical host caps; a mismatch is rejected, since a single
     /// vSMMU cannot be backed by two different physical SMMUs.
     ///
     /// The compatibility checks cover only the features this emulator
     /// actually advertises that the host hardware must honor when walking the
     /// guest's page tables. Features the emulator does not advertise
-    /// (SSIDSIZE, ATS, RIL, 16K/64K granules, 2-level stream tables) are
+    /// (RIL, 16K/64K granules, 2-level stream tables) are
     /// intentionally not checked — see the TODOs at the IDR advertisement in
     /// `emulator.rs`. The host stream-ID size (IDR1.SIDSIZE) and stream-table
     /// format (IDR0.ST_LEVEL) are deliberately *not* validated: in the nested
@@ -614,8 +662,38 @@ impl SmmuSharedState {
             anyhow::bail!("host SMMU does not support the 4KB translation granule (IDR5.GRAN4K=0)");
         }
 
+        if caps.ssid_bits > 20 {
+            anyhow::bail!(
+                "host reported SSID width {} above the supported maximum of 20",
+                caps.ssid_bits
+            );
+        }
+
+        let mut capabilities = inner.capabilities;
+        match self.ssid_policy {
+            crate::SmmuSsidPolicy::Auto if !inner.capabilities_frozen => {
+                capabilities.ssid_bits = caps.ssid_bits;
+            }
+            _ => {
+                if capabilities.ssid_bits > caps.ssid_bits {
+                    anyhow::bail!(
+                        "advertised SMMU SSID width {} exceeds host SSID width {}",
+                        capabilities.ssid_bits,
+                        caps.ssid_bits
+                    );
+                }
+            }
+        }
+        if !inner.capabilities_frozen {
+            capabilities.ats = caps.ats;
+        } else {
+            if capabilities.ats && !caps.ats {
+                anyhow::bail!("advertised SMMU ATS is not supported by the host device");
+            }
+        }
+
         // OAS: decode the host's IDR5.OAS encoding (may be a reserved value).
-        // Before the device starts, `auto` adopts the host value. Once
+        // Before start, `auto` adopts the host value. Once
         // capabilities are guest-visible, both policies only validate the
         // already-advertised value.
         let host_oas_bits = caps.oas.addr_bits().ok_or_else(|| {
@@ -626,14 +704,13 @@ impl SmmuSharedState {
         })?;
         match self.oas_policy {
             crate::SmmuOasPolicy::Auto { .. } if !inner.capabilities_frozen => {
-                inner.oas_bits = host_oas_bits;
-                inner.oas_mask = (1u64 << host_oas_bits) - 1;
+                capabilities.oas_bits = host_oas_bits;
             }
             crate::SmmuOasPolicy::Auto { .. } => {
-                if inner.oas_bits > host_oas_bits {
+                if capabilities.oas_bits > host_oas_bits {
                     anyhow::bail!(
                         "advertised SMMU OAS {} exceeds host SMMU OAS {host_oas_bits}",
-                        inner.oas_bits
+                        capabilities.oas_bits
                     );
                 }
             }
@@ -647,6 +724,8 @@ impl SmmuSharedState {
             }
         }
 
+        inner.capabilities = capabilities;
+        inner.oas_mask = (1u64 << capabilities.oas_bits) - 1;
         inner.resolved_host_caps = Some(caps);
         Ok(())
     }
@@ -670,6 +749,8 @@ impl SmmuSharedState {
             strtab_base: inner.strtab_base,
             strtab_log2size: inner.strtab_log2size,
             oas_mask: inner.oas_mask,
+            ssid_bits: inner.capabilities.ssid_bits,
+            ats: inner.capabilities.ats,
         }
     }
 
@@ -973,13 +1054,13 @@ impl SmmuSharedState {
     /// - For emulated devices, an illegal/invalid STE faults per transaction in
     ///   the software translate path
     ///   ([`translate_locked`](Self::translate_locked)).
-    /// - For accelerated (passthrough) devices, the physical SMMU generates the
-    ///   fault on the real transaction and the host forwards it via the iommufd
-    ///   virtual event queue (VEVENTQ); this emulator does not fake it here.
+    /// - For accelerated devices, the backend realizes the decoded policy and
+    ///   reports faults from actual transactions.
     ///
     /// An illegal/invalid STE, an out-of-range SID, or an STE fetch failure all
-    /// resolve to [`StreamConfig::Abort`] (block the stream's DMA). When the
-    /// SMMU is disabled the result is `GBPA.ABORT ? Abort : Bypass`.
+    /// resolve to [`StreamConfig::Fault`], preserving the fault type separately
+    /// from intentional silent aborts.
+    /// When the SMMU is disabled the result is `GBPA.ABORT ? Abort : Bypass`.
     ///
     /// The translation (`inner`) lock is only held to snapshot register state;
     /// it is released before the STE read so callers can apply the result to a
@@ -1003,32 +1084,35 @@ impl SmmuSharedState {
             };
         }
 
-        // SMMU enabled: look up and decode this stream's STE with the same
-        // classification (`lookup_ste` + `ste_config_action`) as the software
-        // translation path, so the two cannot diverge. Every non-translating,
-        // non-bypass outcome blocks the stream's DMA by aborting; the matching
-        // fault event, when one is architecturally due, is delivered on the
-        // data plane (see the method doc), not here.
-        let Ok(ste) = translate::lookup_ste(
+        let ste = match translate::lookup_ste(
             &self.guest_memory,
             policy.strtab_base,
             policy.strtab_log2size,
             sid,
             policy.oas_mask,
-        ) else {
-            // Invalid STE (V=0), out-of-range SID, or STE fetch failure.
-            return StreamConfig::Abort;
+        ) {
+            Ok(ste) => ste,
+            Err(fault) => {
+                return StreamConfig::Fault {
+                    event_id: fault.event.header.event_id(),
+                };
+            }
         };
 
-        match translate::ste_config_action(&ste) {
+        match translate::ste_config_action(&ste, policy.ssid_bits, policy.ats) {
             translate::SteAction::Bypass => StreamConfig::Bypass,
             translate::SteAction::S1Translate => StreamConfig::Translate {
-                ste_dwords: canonical_s1_ste_dwords(&ste, policy.oas_mask),
+                ste_dwords: canonical_s1_ste_dwords(
+                    &ste,
+                    policy.oas_mask,
+                    policy.ssid_bits,
+                    policy.ats,
+                ),
             },
-            // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
-            // config (0b110/0b111 on this stage-1-only SMMU) also aborts here —
-            // its C_BAD_STE, being a data-plane fault, is delivered elsewhere.
-            translate::SteAction::Abort | translate::SteAction::Illegal => StreamConfig::Abort,
+            translate::SteAction::Abort => StreamConfig::Abort,
+            translate::SteAction::Illegal => StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            },
         }
     }
 
@@ -1187,7 +1271,8 @@ impl SmmuSharedState {
             // context to fault against); otherwise transactions bypass
             // (IOVA = GPA). The matching accel policy is computed in
             // [`current_stream_config`].
-            if inner.gbpa_abort {
+            // Disabled bypass exceeding OAS aborts without an event (§3.4).
+            if inner.gbpa_abort || iova & !inner.oas_mask != 0 {
                 return TranslateResult::GlobalAbort;
             }
             return TranslateResult::Bypass;
@@ -1206,14 +1291,40 @@ impl SmmuSharedState {
         };
 
         // Dispatch on STE config.
-        match translate::ste_config_action(&ste) {
+        match translate::ste_config_action(
+            &ste,
+            inner.capabilities.ssid_bits,
+            inner.capabilities.ats,
+        ) {
             // Config[2]==0 (0b000 / reserved): abort, no event recorded.
             translate::SteAction::Abort => TranslateResult::Abort,
-            // Illegal on this stage-1-only SMMU (0b110/0b111): terminate and
-            // record C_BAD_STE, matching the spec's "behaves as V=0" rule.
+            // Illegal STE: terminate and record C_BAD_STE, matching the
+            // spec's "behaves as V=0" rule.
             translate::SteAction::Illegal => TranslateResult::Fault(EvtEntry::bad_ste(sid)),
-            translate::SteAction::Bypass => TranslateResult::Bypass,
+            translate::SteAction::Bypass => Self::translate_bypass(inner, sid, iova, write),
             translate::SteAction::S1Translate => {
+                if inner.capabilities.ssid_bits != 0 && ste.s1_cd_max() != 0 {
+                    use crate::spec::ste::S1Dss;
+                    match S1Dss(ste.qw1.s1_dss()) {
+                        S1Dss::TERMINATE | S1Dss::RESERVED => {
+                            return TranslateResult::Fault(EvtEntry::stream_disabled(
+                                sid, iova, write,
+                            ));
+                        }
+                        S1Dss::BYPASS => {
+                            return Self::translate_bypass(inner, sid, iova, write);
+                        }
+                        S1Dss::SSID0 => {}
+                        _ => return TranslateResult::Fault(EvtEntry::bad_ste(sid)),
+                    }
+                }
+                // Without substreams the descriptor is directly addressed;
+                // S1Fmt and S1CDMax are ignored, including for software DMA.
+                let mut ste = ste;
+                if inner.capabilities.ssid_bits == 0 || ste.s1_cd_max() == 0 {
+                    ste.qw0.set_s1_fmt(crate::spec::ste::S1Fmt::LINEAR.0);
+                    ste.qw0.set_s1_cd_max(0);
+                }
                 // Look up the CD.
                 let cd =
                     match translate::lookup_cd(&self.guest_memory, &ste, sid, 0, inner.oas_mask) {
@@ -1233,6 +1344,20 @@ impl SmmuSharedState {
                     Err(fault) => TranslateResult::Fault(fault.event),
                 }
             }
+        }
+    }
+
+    fn translate_bypass(
+        inner: &SharedStateInner,
+        sid: u32,
+        iova: u64,
+        write: bool,
+    ) -> TranslateResult {
+        // This SMMU supports only AArch64 tables, so IAS equals OAS (§3.4).
+        if iova & !inner.oas_mask != 0 {
+            TranslateResult::Fault(EvtEntry::addr_size_fault(sid, iova, write))
+        } else {
+            TranslateResult::Bypass
         }
     }
 
@@ -1390,7 +1515,7 @@ impl SmmuDmaFault {
     }
 
     /// A termination with **no** event record generated — either a global
-    /// abort (disabled SMMU, `GBPA.ABORT=1`) or an STE-driven abort
+    /// abort (disabled SMMU, blocked or address exceeds OAS) or an STE-driven abort
     /// (`STE.Config[2]==0`).
     fn no_event_abort(sid: u32, input_addr: u64) -> Self {
         Self {
@@ -1430,7 +1555,7 @@ impl iommu_common::IommuTranslator for SmmuTranslator {
             TranslateResult::GlobalAbort | TranslateResult::Abort => {
                 drop(inner);
                 // Terminate with no event recorded: either a disabled SMMU
-                // (`GBPA.ABORT=1`), or a valid STE whose `Config[2]==0`
+                // (blocked or address exceeds OAS), or a valid STE whose `Config[2]==0`
                 // (`0b000` / reserved) aborts without a fault event.
                 return Err(iommu_common::TranslationFault {
                     iova,
@@ -1495,7 +1620,7 @@ impl SignalMsi for SmmuSignalMsi {
                 self.inner.signal_msi(devid, gpa, data);
             }
             TranslateResult::GlobalAbort | TranslateResult::Abort => {
-                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
+                // No event recorded: disabled-SMMU abort or an
                 // STE with `Config[2]==0`. Drop the MSI.
                 tracelimit::warn_ratelimited!(sid, address, "smmu: MSI aborted, no event");
             }
@@ -1565,7 +1690,7 @@ impl IrqFdRoute for SmmuIrqFdRoute {
                 self.inner.enable(gpa, data, devid);
             }
             TranslateResult::GlobalAbort | TranslateResult::Abort => {
-                // No event recorded: disabled SMMU (`GBPA.ABORT=1`) or an
+                // No event recorded: disabled-SMMU abort or an
                 // STE with `Config[2]==0`. Drop the route.
                 tracelimit::warn_ratelimited!(
                     sid,
@@ -1608,6 +1733,7 @@ mod tests {
     use parking_lot::Mutex;
     use pci_core::bus_range::AssignedBusRange;
     use std::sync::Arc;
+    use test_with_tracing::test;
 
     // Memory layout for tests. All addresses fit within a 6 MB allocation
     // to avoid excessive memory usage in test processes.
@@ -1677,7 +1803,7 @@ mod tests {
             _qw2_7: [0; 6],
         };
 
-        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 0, false);
         // Retained fields survive untouched.
         assert_eq!(out0, u64::from(qw0));
         assert_eq!(out1, u64::from(qw1));
@@ -1691,7 +1817,7 @@ mod tests {
             qw1: SteDw1::from(u64::MAX),
             _qw2_7: [u64::MAX; 6],
         };
-        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK);
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 0, false);
 
         // DW0 retains V[0] | Config[3:1] | S1ContextPtr[55:6], the pointer
         // truncated to the 48-bit OAS. S1Fmt[5:4] and S1CDMax[63:59] are
@@ -1702,6 +1828,28 @@ mod tests {
         // IDR0.ATS == 0; everything else (STRW, SHCFG, NSCFG, PRIVCFG,
         // stage-2/override fields, ...) is RES0/IGNORED.
         assert_eq!(out1, 0x0800_00fc);
+    }
+
+    #[test]
+    fn test_canonical_s1_ste_dwords_preserves_pasid_and_ats_fields() {
+        let ste = Ste {
+            qw0: SteDw0::new()
+                .with_v(true)
+                .with_config(SteConfig::S1_TRANS.0)
+                .with_s1_fmt(0)
+                .with_s1_context_ptr(0x1234)
+                .with_s1_cd_max(14),
+            qw1: SteDw1::new().with_s1_dss(2).with_eats(1),
+            _qw2_7: [0; 6],
+        };
+
+        let [out0, out1] = canonical_s1_ste_dwords(&ste, TEST_OAS_MASK, 14, true);
+        let out0 = SteDw0::from(out0);
+        let out1 = SteDw1::from(out1);
+        assert_eq!(out0.s1_fmt(), 0);
+        assert_eq!(out0.s1_cd_max(), 14);
+        assert_eq!(out1.s1_dss(), 2);
+        assert_eq!(out1.eats(), 1);
     }
 
     /// A mock SignalMsi that records calls.
@@ -1855,8 +2003,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             false,
             None,
             None,
@@ -1867,6 +2015,267 @@ mod tests {
         state.set_evtq_config(EVTQ_BASE, EVTQ_LOG2SIZE);
         state.set_evtq_enabled(true);
         state
+    }
+
+    #[test]
+    fn software_dma_honors_default_substream_policy() {
+        use crate::spec::ste::S1Dss;
+
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        setup_translation(&gm, sid);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Fixed(14),
+            false,
+            None,
+            None,
+        );
+        state.freeze_capabilities();
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        transition_to_enabled(&state);
+
+        for cd_max in [1, 14] {
+            let mut ste = make_s1_ste(CD_BASE);
+            ste.qw0.set_s1_cd_max(cd_max);
+            ste.qw1.set_s1_dss(S1Dss::SSID0.0);
+            write_ste(&gm, sid, &ste);
+            assert!(matches!(
+                state.translate(sid, 0, false),
+                TranslateResult::Translated(DATA_GPA)
+            ));
+
+            ste.qw1.set_s1_dss(S1Dss::BYPASS.0);
+            write_ste(&gm, sid, &ste);
+            assert!(matches!(
+                state.translate(sid, 0, false),
+                TranslateResult::Bypass
+            ));
+
+            for dss in [S1Dss::TERMINATE, S1Dss::RESERVED] {
+                ste.qw1.set_s1_dss(dss.0);
+                write_ste(&gm, sid, &ste);
+                assert!(matches!(
+                    state.current_stream_config(sid),
+                    StreamConfig::Translate { .. }
+                ));
+                let TranslateResult::Fault(event) = state.translate(sid, 0x123, true) else {
+                    panic!("default substream must be terminated");
+                };
+                assert_eq!(event.header.event_id(), EventId::F_STREAM_DISABLED);
+                assert_eq!(event.sid, sid);
+                assert_eq!(event.input_addr, 0x123);
+                assert!(!event.header.ssv());
+                assert!(!event.flags.rnw());
+            }
+        }
+    }
+
+    #[test]
+    fn software_and_nested_paths_reject_unadvertised_ste_features() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
+            true,
+            None,
+            None,
+        );
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        state.freeze_capabilities();
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        transition_to_enabled(&state);
+        for (cd_max, fmt, eats) in [(15, 0, 0), (14, 1, 0), (14, 2, 0), (14, 0, 2)] {
+            for dss in 0..4 {
+                let mut ste = make_s1_ste(CD_BASE);
+                ste.qw0.set_s1_cd_max(cd_max);
+                ste.qw0.set_s1_fmt(fmt);
+                ste.qw1.set_s1_dss(dss);
+                ste.qw1.set_eats(eats);
+                write_ste(&gm, sid, &ste);
+                assert_eq!(
+                    state.current_stream_config(sid),
+                    StreamConfig::Fault {
+                        event_id: EventId::C_BAD_STE,
+                    }
+                );
+                let TranslateResult::Fault(event) = state.translate(sid, 0, false) else {
+                    panic!("invalid STE must fault before applying S1DSS");
+                };
+                assert_eq!(event.header.event_id(), EventId::C_BAD_STE);
+            }
+        }
+    }
+
+    #[test]
+    fn software_single_cd_ignores_format_and_default_substream_policy() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        setup_translation(&gm, sid);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Fixed(14),
+            false,
+            None,
+            None,
+        );
+        state.freeze_capabilities();
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        transition_to_enabled(&state);
+        for fmt in 0..4 {
+            for dss in 0..4 {
+                let mut ste = make_s1_ste(CD_BASE);
+                ste.qw0.set_s1_fmt(fmt);
+                ste.qw1.set_s1_dss(dss);
+                write_ste(&gm, sid, &ste);
+                assert!(matches!(
+                    state.current_stream_config(sid),
+                    StreamConfig::Translate { .. }
+                ));
+                assert!(matches!(
+                    state.translate(sid, 0, false),
+                    TranslateResult::Translated(DATA_GPA)
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_cd_format_behaves_as_linear() {
+        use crate::spec::ste::S1Dss;
+        use crate::spec::ste::S1Fmt;
+
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        setup_translation(&gm, sid);
+        let state = SmmuSharedState::new(
+            gm.clone(),
+            40,
+            crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Fixed(14),
+            false,
+            None,
+            None,
+        );
+        state.freeze_capabilities();
+        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+        transition_to_enabled(&state);
+        let mut ste = make_s1_ste(CD_BASE);
+        ste.qw0.set_s1_cd_max(1);
+        ste.qw0.set_s1_fmt(S1Fmt::RESERVED.0);
+        ste.qw1.set_s1_dss(S1Dss::SSID0.0);
+        write_ste(&gm, sid, &ste);
+        let StreamConfig::Translate { ste_dwords } = state.current_stream_config(sid) else {
+            panic!("reserved format must behave as linear");
+        };
+        assert_eq!(SteDw0::from(ste_dwords[0]).s1_fmt(), S1Fmt::RESERVED.0);
+        assert!(matches!(
+            state.translate(sid, 0, false),
+            TranslateResult::Translated(DATA_GPA)
+        ));
+    }
+
+    #[test]
+    fn software_and_nested_paths_validate_ats_modes() {
+        struct RecordingBackend {
+            configs: Mutex<Vec<StreamConfig>>,
+        }
+
+        impl AcceleratedStreamBackend for RecordingBackend {
+            fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()> {
+                self.configs.lock().push(config);
+                Ok(())
+            }
+        }
+
+        for ats in [false, true] {
+            let gm = GuestMemory::allocate(0x60_0000);
+            let sid = expected_sid();
+            setup_translation(&gm, sid);
+            let state = SmmuSharedState::new(
+                gm.clone(),
+                40,
+                crate::SmmuOasPolicy::Fixed(40),
+                crate::SmmuSsidPolicy::Auto,
+                true,
+                None,
+                None,
+            );
+            state
+                .resolve_host_caps(crate::HostSmmuCaps {
+                    ats,
+                    ..compatible_host_caps()
+                })
+                .unwrap();
+            state.freeze_capabilities();
+            state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+            transition_to_enabled(&state);
+            let backend = Arc::new(RecordingBackend {
+                configs: Mutex::new(Vec::new()),
+            });
+            let _registration = state.register_accel_device(sid, backend.clone()).unwrap();
+
+            for eats in [0, 1, 2] {
+                let mut ste = make_s1_ste(CD_BASE);
+                ste.qw1.set_eats(eats);
+                write_ste(&gm, sid, &ste);
+                backend.configs.lock().clear();
+                state.apply_stream_config(sid).unwrap();
+                let config = state.current_stream_config(sid);
+                assert_eq!(*backend.configs.lock(), [config]);
+
+                if ats && eats == 2 {
+                    assert_eq!(
+                        config,
+                        StreamConfig::Fault {
+                            event_id: EventId::C_BAD_STE,
+                        }
+                    );
+                    assert!(!state.lock_accel_devices().is_translating(sid));
+                    let TranslateResult::Fault(event) = state.translate(sid, 0, false) else {
+                        panic!("split-stage ATS must fault on a stage-1-only SMMU");
+                    };
+                    assert_eq!(event.header.event_id(), EventId::C_BAD_STE);
+                } else {
+                    let StreamConfig::Translate { ste_dwords } = config else {
+                        panic!("supported or ignored ATS mode must allow translation");
+                    };
+                    assert_eq!(
+                        SteDw1::from(ste_dwords[1]).eats(),
+                        if ats { eats } else { 0 }
+                    );
+                    assert!(state.lock_accel_devices().is_translating(sid));
+                    assert!(matches!(
+                        state.translate(sid, 0, false),
+                        TranslateResult::Translated(DATA_GPA)
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn software_without_substreams_ignores_substream_fields() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        setup_translation(&gm, sid);
+        let state = make_shared_state(&gm);
+        let mut ste = make_s1_ste(CD_BASE);
+        ste.qw0.set_s1_fmt(3);
+        ste.qw0.set_s1_cd_max(31);
+        ste.qw1.set_s1_dss(3);
+        write_ste(&gm, sid, &ste);
+        assert!(matches!(
+            state.translate(sid, 0, false),
+            TranslateResult::Translated(DATA_GPA)
+        ));
     }
 
     /// Count events currently queued in the EVTQ as the distance between the
@@ -1880,6 +2289,148 @@ mod tests {
     // =========================================================================
     // TranslatingMemory tests
     // =========================================================================
+
+    #[test]
+    fn bypass_address_size_limits() {
+        use iommu_common::IommuTranslator;
+
+        for oas_bits in crate::VALID_OAS_BITS {
+            for (enabled, substreams) in [(false, false), (true, false), (true, true)] {
+                let gm = GuestMemory::allocate(0x60_0000);
+                let sid = expected_sid();
+                let state = SmmuSharedState::new(
+                    gm.clone(),
+                    oas_bits,
+                    crate::SmmuOasPolicy::Fixed(oas_bits),
+                    crate::SmmuSsidPolicy::Auto,
+                    substreams,
+                    None,
+                    None,
+                );
+                if substreams {
+                    state
+                        .resolve_host_caps(crate::HostSmmuCaps {
+                            oas: AddrSize::BITS_52,
+                            ..compatible_host_caps()
+                        })
+                        .unwrap();
+                }
+                state.freeze_capabilities();
+                state.set_evtq_config(EVTQ_BASE, EVTQ_LOG2SIZE);
+                state.set_evtq_enabled(true);
+                if enabled {
+                    let ste = if substreams {
+                        let mut ste = make_s1_ste(CD_BASE);
+                        ste.qw0.set_s1_cd_max(1);
+                        ste.qw1.set_s1_dss(crate::spec::ste::S1Dss::BYPASS.0);
+                        // CD memory is left invalid: bypass must not fetch it.
+                        ste
+                    } else {
+                        make_bypass_ste()
+                    };
+                    write_ste(&gm, sid, &ste);
+                    state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+                    transition_to_enabled(&state);
+                }
+
+                let translator = state.translator(TEST_STREAM_ID_BASE);
+                let limit = 1u64 << oas_bits;
+                let mut events = 0;
+                for write in [false, true] {
+                    for address in [0, limit - 1] {
+                        assert!(matches!(
+                            state.translate(sid, address, write),
+                            TranslateResult::Bypass
+                        ));
+                        let gpa = translator
+                            .translate(TEST_RID as u16, address, write, |gpa| gpa)
+                            .unwrap();
+                        assert_eq!(gpa, address);
+                        assert_eq!(evtq_event_count(&state), events);
+                    }
+                    for address in [limit, limit + 0x123, u64::MAX] {
+                        match state.translate(sid, address, write) {
+                            TranslateResult::GlobalAbort => assert!(!enabled),
+                            TranslateResult::Fault(event) => {
+                                assert!(enabled);
+                                assert_eq!(event.header.event_id(), EventId::F_ADDR_SIZE);
+                                assert_eq!(event.sid, sid);
+                                assert_eq!(event.input_addr, address);
+                                assert_eq!(event.flags.rnw(), !write);
+                                assert!(!event.flags.s2());
+                                assert_eq!(event.flags.class(), 0b10);
+                                assert!(!event.header.ssv());
+                            }
+                            result => panic!("out-of-range bypass accepted: {result:?}"),
+                        }
+                        let fault = translator
+                            .translate(TEST_RID as u16, address, write, |_| {
+                                panic!("out-of-range DMA must not reach guest memory");
+                            })
+                            .unwrap_err();
+                        assert_eq!(fault.iova, address);
+                        assert_eq!(fault.error.sid, sid);
+                        assert_eq!(fault.error.input_addr, address);
+                        if enabled {
+                            assert_eq!(fault.error.event_id, EventId::F_ADDR_SIZE);
+                            let raw: [u32; 8] = gm
+                                .read_plain(EVTQ_BASE + u64::from(events) * EvtEntry::SIZE as u64)
+                                .unwrap();
+                            assert_eq!(
+                                raw,
+                                [
+                                    0x11,
+                                    sid,
+                                    0,
+                                    0x200 | (u32::from(!write) << 3),
+                                    address as u32,
+                                    (address >> 32) as u32,
+                                    0,
+                                    0,
+                                ]
+                            );
+                            events += 1;
+                        } else {
+                            assert_eq!(fault.error.event_id, EventId(0));
+                        }
+                        assert_eq!(evtq_event_count(&state), events);
+                    }
+                }
+
+                let sink = MockSignalMsi::new();
+                let msi = SmmuSignalMsi::new(state.clone(), TEST_STREAM_ID_BASE, sink.clone());
+                msi.signal_msi(Some(TEST_RID), limit - 4, 0x42);
+                assert_eq!(sink.take_calls(), [(Some(TEST_RID), limit - 4, 0x42)]);
+                msi.signal_msi(Some(TEST_RID), limit, 0x42);
+                assert!(sink.take_calls().is_empty());
+                assert_eq!(evtq_event_count(&state), events + u32::from(enabled));
+            }
+        }
+    }
+
+    #[test]
+    fn bypass_size_check_preserves_ste_abort_precedence() {
+        let gm = GuestMemory::allocate(0x60_0000);
+        let sid = expected_sid();
+        let state = make_shared_state(&gm);
+        write_ste(&gm, sid, &make_abort_ste());
+        assert!(matches!(
+            state.translate(sid, u64::MAX, false),
+            TranslateResult::Abort
+        ));
+        write_ste(
+            &gm,
+            sid,
+            &Ste {
+                qw0: SteDw0::new(),
+                ..make_bypass_ste()
+            },
+        );
+        let TranslateResult::Fault(event) = state.translate(sid, u64::MAX, false) else {
+            panic!("invalid STE must fault before checking the address");
+        };
+        assert_eq!(event.header.event_id(), EventId::C_BAD_STE);
+    }
 
     #[test]
     fn test_translating_memory_basic_read() {
@@ -2123,8 +2674,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             false,
             None,
             None,
@@ -2365,6 +2916,8 @@ mod tests {
             ttf: registers::Idr0Ttf::new().with_aarch64(true),
             ttendian: registers::Idr0TtEndian::LE,
             gran4k: true,
+            ssid_bits: 14,
+            ats: true,
         }
     }
 
@@ -2375,13 +2928,37 @@ mod tests {
             crate::SmmuOasPolicy::Auto { provisional } => provisional,
             crate::SmmuOasPolicy::Fixed(bits) => bits,
         };
-        SmmuSharedState::new(gm, oas_bits, 0, policy, true, None, None)
+        SmmuSharedState::new(
+            gm,
+            oas_bits,
+            policy,
+            crate::SmmuSsidPolicy::Auto,
+            true,
+            None,
+            None,
+        )
     }
 
     #[test]
     fn resolve_host_caps_accepts_compatible_host() {
         let state = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
         state.resolve_host_caps(compatible_host_caps()).unwrap();
+    }
+
+    #[test]
+    fn resolve_host_caps_updates_ats_support() {
+        let supported = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        supported.resolve_host_caps(compatible_host_caps()).unwrap();
+        assert!(supported.ats_supported());
+
+        let unsupported = make_accel_state(crate::SmmuOasPolicy::Fixed(40));
+        unsupported
+            .resolve_host_caps(crate::HostSmmuCaps {
+                ats: false,
+                ..compatible_host_caps()
+            })
+            .unwrap();
+        assert!(!unsupported.ats_supported());
     }
 
     #[test]
@@ -2392,7 +2969,7 @@ mod tests {
             ..compatible_host_caps()
         };
         state.resolve_host_caps(caps).unwrap();
-        assert_eq!(state.oas_bits(), 48);
+        assert_eq!(state.capabilities().oas_bits, 48);
     }
 
     #[test]
@@ -2401,12 +2978,14 @@ mod tests {
         state.freeze_capabilities();
 
         state.resolve_host_caps(compatible_host_caps()).unwrap();
-        assert_eq!(state.oas_bits(), 40);
+        assert_eq!(state.capabilities().oas_bits, 40);
+        assert_eq!(state.capabilities().ssid_bits, 0);
+        assert!(!state.ats_supported());
 
         // A later device with the same physical-SMMU capabilities is accepted
         // without changing the guest-visible OAS.
         state.resolve_host_caps(compatible_host_caps()).unwrap();
-        assert_eq!(state.oas_bits(), 40);
+        assert_eq!(state.capabilities().oas_bits, 40);
     }
 
     #[test]
@@ -2420,7 +2999,7 @@ mod tests {
 
         let err = state.resolve_host_caps(caps).unwrap_err().to_string();
         assert!(err.contains("advertised SMMU OAS 40 exceeds host SMMU OAS 36"));
-        assert_eq!(state.oas_bits(), 40);
+        assert_eq!(state.capabilities().oas_bits, 40);
     }
 
     #[test]
@@ -2432,6 +3011,44 @@ mod tests {
         };
         let err = state.resolve_host_caps(caps).unwrap_err().to_string();
         assert!(err.contains("exceeds host SMMU OAS"), "{err}");
+        assert_eq!(state.capabilities().ssid_bits, 0);
+        assert!(!state.ats_supported());
+        assert_eq!(state.capabilities().oas_bits, 52);
+        assert!(state.inner.read().resolved_host_caps.is_none());
+    }
+
+    #[test]
+    fn rejected_host_caps_leave_contract_unchanged() {
+        let state = make_accel_state(crate::SmmuOasPolicy::Auto { provisional: 40 });
+        let before = state.capabilities();
+        for caps in [
+            crate::HostSmmuCaps {
+                oas: AddrSize(7),
+                ..compatible_host_caps()
+            },
+            crate::HostSmmuCaps {
+                ssid_bits: 21,
+                ..compatible_host_caps()
+            },
+        ] {
+            assert!(state.resolve_host_caps(caps).is_err());
+            assert_eq!(state.capabilities(), before);
+            assert_eq!(state.translation_policy().oas_mask, (1u64 << 40) - 1);
+            assert!(state.inner.read().resolved_host_caps.is_none());
+        }
+        state.resolve_host_caps(compatible_host_caps()).unwrap();
+        state.freeze_capabilities();
+        let frozen = state.capabilities();
+        state.freeze_capabilities();
+        assert!(
+            state
+                .resolve_host_caps(crate::HostSmmuCaps {
+                    ats: false,
+                    ..compatible_host_caps()
+                })
+                .is_err()
+        );
+        assert_eq!(state.capabilities(), frozen);
     }
 
     #[test]
@@ -2531,8 +3148,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             false,
             None,
             None,
@@ -2565,8 +3182,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             false,
             None,
             None,
@@ -2597,8 +3214,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             true,
             None,
             None,
@@ -2615,8 +3232,8 @@ mod tests {
         let state = SmmuSharedState::new(
             gm.clone(),
             40,
-            0,
             crate::SmmuOasPolicy::Fixed(40),
+            crate::SmmuSsidPolicy::Auto,
             true,
             None,
             None,
@@ -2648,7 +3265,7 @@ mod tests {
         write_ste(&gm, sid, &make_abort_ste());
         assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
 
-        // Invalid STE (V=0) → Abort.
+        // Invalid STE (V=0) → C_BAD_STE.
         write_ste(
             &gm,
             sid,
@@ -2658,12 +3275,14 @@ mod tests {
                 _qw2_7: [0; 6],
             },
         );
-        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            }
+        );
 
-        // Illegal config (0b110 stage-2 on a stage-1-only SMMU) → Abort. The
-        // config plane is pure: no fault event is synthesized here (a C_BAD_STE
-        // is a data-plane fault, delivered via the software translate path or
-        // the host VEVENTQ).
+        // Illegal stage-2 config on a stage-1-only SMMU → C_BAD_STE.
         write_ste(
             &gm,
             sid,
@@ -2675,15 +3294,27 @@ mod tests {
                 _qw2_7: [0; 6],
             },
         );
-        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            }
+        );
+        assert_eq!(evtq_event_count(&state), 0);
     }
 
     #[test]
-    fn test_current_stream_config_out_of_range_sid_aborts() {
+    fn test_current_stream_config_out_of_range_sid_faults() {
         let gm = GuestMemory::allocate(0x60_0000);
         let state = make_shared_state(&gm);
-        // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end aborts.
+        // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end faults.
         let oob_sid = 1u32 << STRTAB_LOG2SIZE;
-        assert_eq!(state.current_stream_config(oob_sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(oob_sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STREAMID,
+            }
+        );
+        assert_eq!(evtq_event_count(&state), 0);
     }
 }

@@ -2137,6 +2137,7 @@ fn parse_pcie_iommu(
 ) -> anyhow::Result<openvmm_defs::config::PcieIommuConfig> {
     use openvmm_defs::config::PcieIommuConfig;
     use openvmm_defs::config::SmmuOas;
+    use openvmm_defs::config::SmmuSsidSize;
     use vmservice::pcie_iommu_config::Kind;
 
     match config.kind.context("missing PCIe IOMMU kind")? {
@@ -2149,9 +2150,16 @@ fn parse_pcie_iommu(
                 None => SmmuOas::Auto,
                 Some(bits) => SmmuOas::Fixed(bits.try_into().context("SMMU OAS out of range")?),
             };
+            let ssidsize = match config.ssid_bits {
+                None => SmmuSsidSize::Auto,
+                Some(bits) => {
+                    SmmuSsidSize::Fixed(bits.try_into().context("SMMU SSID width out of range")?)
+                }
+            };
             Ok(PcieIommuConfig::Smmu {
                 accel: config.accel,
                 oas,
+                ssidsize,
             })
         }
     }
@@ -3335,7 +3343,11 @@ mod tests {
                 Some(u32::MAX),
             ] {
                 let result = parse_pcie_iommu(vmservice::PcieIommuConfig {
-                    kind: Some(Kind::Smmu(vmservice::SmmuConfig { accel, oas_bits })),
+                    kind: Some(Kind::Smmu(vmservice::SmmuConfig {
+                        accel,
+                        oas_bits,
+                        ssid_bits: None,
+                    })),
                 });
                 if !cfg!(guest_arch = "aarch64") {
                     assert!(result.err().unwrap().to_string().contains("aarch64"));
@@ -3343,11 +3355,13 @@ mod tests {
                     let PcieIommuConfig::Smmu {
                         accel: actual_accel,
                         oas,
+                        ssidsize,
                     } = result.unwrap()
                     else {
                         panic!("expected SMMU configuration");
                     };
                     assert_eq!(actual_accel, accel);
+                    assert!(matches!(ssidsize, openvmm_defs::config::SmmuSsidSize::Auto));
                     match (oas, oas_bits) {
                         (SmmuOas::Auto, None) => {}
                         (SmmuOas::Fixed(actual), Some(expected)) => {
@@ -3370,6 +3384,8 @@ mod tests {
 
     #[test]
     fn pcie_topology_iommu_selection() {
+        use openvmm_defs::config::PcieIommuConfig;
+        use openvmm_defs::config::SmmuSsidSize;
         use vmservice::pcie_iommu_config::Kind;
 
         for iommu in [
@@ -3378,6 +3394,7 @@ mod tests {
                 kind: Some(Kind::Smmu(vmservice::SmmuConfig {
                     accel: true,
                     oas_bits: Some(48),
+                    ssid_bits: Some(0),
                 })),
             }),
         ] {
@@ -3397,7 +3414,18 @@ mod tests {
             if has_iommu && !cfg!(guest_arch = "aarch64") {
                 assert!(result.is_err());
             } else {
-                assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
+                let topology = result.unwrap();
+                let iommu = &topology.root_complexes[0].iommu;
+                assert_eq!(iommu.is_some(), has_iommu);
+                if has_iommu {
+                    assert!(matches!(
+                        iommu,
+                        Some(PcieIommuConfig::Smmu {
+                            ssidsize: SmmuSsidSize::Fixed(0),
+                            ..
+                        })
+                    ));
+                }
             }
         }
     }
