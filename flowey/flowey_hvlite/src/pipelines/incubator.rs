@@ -12,6 +12,10 @@ use std::path::PathBuf;
 
 #[derive(clap::Args)]
 pub struct IncubatorCli {
+    /// Source Incubator profile (currently x64 OpenVMM with mshv boot only).
+    #[arg(long)]
+    profile: PathBuf,
+
     /// Override the pinned mshv root bzImage, not the child VM's kernel.
     #[arg(long)]
     kernel: Option<PathBuf>,
@@ -83,6 +87,7 @@ pub struct IncubatorCli {
 
 impl IntoPipeline for IncubatorCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+        let source_profile = read_source_profile(&self.profile)?;
         anyhow::ensure!(
             matches!(backend_hint, PipelineBackendHint::Local)
                 && matches!(FlowPlatform::host(backend_hint), FlowPlatform::Linux(_))
@@ -143,6 +148,7 @@ impl IntoPipeline for IncubatorCli {
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::local_run_incubator::Params {
                     profile: CommonProfile::from_release(self.release),
+                    source_profile,
                     kernel,
                     initrd,
                     firmware,
@@ -162,6 +168,14 @@ impl IntoPipeline for IncubatorCli {
             .finish();
         Ok(pipeline)
     }
+}
+
+fn read_source_profile(path: &Path) -> anyhow::Result<String> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("reading Incubator profile {}", path.display()))?;
+    flowey_lib_hvlite::_jobs::local_run_incubator::parse_source_profile(&contents)
+        .with_context(|| format!("validating Incubator profile {}", path.display()))?;
+    Ok(contents)
 }
 
 #[expect(
@@ -191,7 +205,7 @@ mod tests {
 
     #[test]
     fn preparation_needs_neither_a_kernel_override_nor_a_command() -> anyhow::Result<()> {
-        let cli = Cli::try_parse_from(["incubator", "--prepare-only"])?;
+        let cli = Cli::try_parse_from(["incubator", "--profile", "source.toml", "--prepare-only"])?;
         assert!(cli.incubator.prepare_only);
         assert!(cli.incubator.kernel.is_none());
         assert!(cli.incubator.command.is_empty());
@@ -201,13 +215,31 @@ mod tests {
     #[test]
     fn commands_preserve_shell_arguments_and_conflicting_modes_are_rejected() -> anyhow::Result<()>
     {
-        let cli = Cli::try_parse_from(["incubator", "--", "/bin/sh", "-c", "exit 17"])?;
+        let cli = Cli::try_parse_from([
+            "incubator",
+            "--profile",
+            "source.toml",
+            "--",
+            "/bin/sh",
+            "-c",
+            "exit 17",
+        ])?;
         assert_eq!(cli.incubator.command, ["/bin/sh", "-c", "exit 17"]);
         for args in [
             vec!["incubator"],
-            vec!["incubator", "--prepare-only", "--", "/bin/sh"],
+            vec!["incubator", "--prepare-only"],
             vec![
                 "incubator",
+                "--profile",
+                "source.toml",
+                "--prepare-only",
+                "--",
+                "/bin/sh",
+            ],
+            vec![
+                "incubator",
+                "--profile",
+                "source.toml",
                 "--prepare-only",
                 "--boot-artifacts",
                 "payloads",

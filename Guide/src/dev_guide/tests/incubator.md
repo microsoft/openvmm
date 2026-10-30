@@ -41,9 +41,17 @@ Profile devices are provisioned for VFIO before the command runs.
 On an x64 Linux host with KVM and nested virtualization enabled:
 
 ```bash
-cargo xflowey incubator -- \
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/x86_64-mshv.toml -- \
   /bin/sh -c 'test -c /dev/mshv && uname -a'
 ```
+
+`--profile` is required. Provisioning currently supports only x64 OpenVMM
+profiles with `mshv` boot; other launcher, architecture, or boot combinations
+are rejected. Flowey leaves the source file untouched and prepares a copy,
+preserving its VM settings and boot options while replacing `binary`,
+`host-boot`, `firmware`, and `boot-artifacts` with resolved paths. These source
+paths may be placeholders; use CLI artifact overrides to supply local inputs.
 
 This builds the native OpenVMM/Incubator pair, static x64 Pipette, and EFI host
 boot application; downloads the pinned mshv root kernel, firmware, shared
@@ -69,7 +77,7 @@ Use `--prepare-only` without a guest command to prepare everything and print
 a direct Incubator command for `/bin/sh`. Run that printed command for an
 interactive shell without going through Flowey again. Copy the generated
 profile before customizing it. `--kernel-cmdline` and `--hypervisor-cmdline`
-override the checked-in profile's boot options without rebuilding EFI code.
+override the source profile's boot options without rebuilding EFI code.
 
 `--initrd`, `--firmware`, and `--boot-artifacts` accept explicit local inputs.
 `--rpm-cache` reuses an existing RPM cache; `--offline` prohibits only mshv RPM

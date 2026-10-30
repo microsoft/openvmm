@@ -12,6 +12,7 @@ use sha2::Digest as _;
 flowey_request! {
     pub struct Params {
         pub profile: CommonProfile,
+        pub source_profile: String,
         pub kernel: Option<PathBuf>,
         pub initrd: Option<PathBuf>,
         pub firmware: Option<PathBuf>,
@@ -43,12 +44,12 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
-        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             profile,
+            source_profile,
             kernel,
             initrd,
             firmware,
@@ -69,7 +70,6 @@ impl SimpleFlowNode for Node {
             cache_dir: rpm_cache.map(|path| ConfigVar(ReadVar::from_static(path))),
             offline: Some(offline),
         });
-        let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let openvmm = ctx.reqv(|openvmm| crate::build_openvmm::Request {
             params: crate::build_openvmm::OpenvmmBuildParams {
                 target: CommonTriple::X86_64_LINUX_GNU,
@@ -122,7 +122,6 @@ impl SimpleFlowNode for Node {
         });
 
         ctx.emit_rust_step("prepare standalone Incubator profile and command", |ctx| {
-            let repo = repo.claim(ctx);
             let openvmm = openvmm.claim(ctx);
             let incubator = incubator.claim(ctx);
             let pipette = pipette.claim(ctx);
@@ -133,7 +132,6 @@ impl SimpleFlowNode for Node {
             let firmware = firmware.claim(ctx);
             done.claim(ctx);
             move |rt| {
-                let repo = rt.read(repo);
                 let runner = rt.read(incubator).bin;
                 let crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: openvmm, .. } =
                     rt.read(openvmm)
@@ -167,22 +165,18 @@ impl SimpleFlowNode for Node {
                 let relative_pipette = pipette_path.strip_prefix(&share)?;
                 let guest_pipette = format!("/share/{}", path_str(relative_pipette)?);
 
-                let template = crate::build_incubator::incubator_profile_path(&repo, "x86_64-mshv");
-                let mut config: toml_edit::DocumentMut =
-                    fs_err::read_to_string(template)?.parse()?;
-                config["incubator"]["binary"] = toml_edit::value(path_str(&openvmm)?);
-                config["boot"]["host-boot"] = toml_edit::value(path_str(&host_boot)?);
-                config["boot"]["firmware"] = toml_edit::value(path_str(&firmware)?);
-                config["boot"]["boot-artifacts"] = toml_edit::value(path_str(&artifacts)?);
-                if let Some(value) = kernel_cmdline {
-                    config["boot"]["kernel-cmdline"] = toml_edit::value(value);
-                }
-                if let Some(value) = hypervisor_cmdline {
-                    config["boot"]["hypervisor-cmdline"] = toml_edit::value(value);
-                }
+                let config = resolve_profile(
+                    &source_profile,
+                    &openvmm,
+                    &host_boot,
+                    &firmware,
+                    &artifacts,
+                    kernel_cmdline.as_deref(),
+                    hypervisor_cmdline.as_deref(),
+                )?;
                 let profile_path = dir.join("profile.toml");
                 let profile_file = tempfile::NamedTempFile::new_in(&dir)?;
-                fs_err::write(profile_file.path(), config.to_string())?;
+                fs_err::write(profile_file.path(), config)?;
                 profile_file.persist(&profile_path)?;
                 let args = vec![
                     "--profile".into(),
@@ -221,6 +215,43 @@ impl SimpleFlowNode for Node {
         });
         Ok(())
     }
+}
+
+/// Validate the provisioning recipe selected by an Incubator profile.
+pub fn parse_source_profile(contents: &str) -> anyhow::Result<toml_edit::DocumentMut> {
+    let config: toml_edit::DocumentMut = contents.parse()?;
+    let incubator = config.get("incubator").context("missing [incubator]")?;
+    let boot = config.get("boot").context("missing [boot]")?;
+    anyhow::ensure!(
+        incubator.get("type").and_then(|v| v.as_str()) == Some("openvmm")
+            && incubator.get("arch").and_then(|v| v.as_str()) == Some("x86-64")
+            && boot.get("type").and_then(|v| v.as_str()) == Some("mshv"),
+        "Incubator provisioning currently supports only type=openvmm, arch=x86-64, boot.type=mshv profiles"
+    );
+    Ok(config)
+}
+
+fn resolve_profile(
+    source: &str,
+    openvmm: &Path,
+    host_boot: &Path,
+    firmware: &Path,
+    artifacts: &Path,
+    kernel_cmdline: Option<&str>,
+    hypervisor_cmdline: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut config = parse_source_profile(source)?;
+    config["incubator"]["binary"] = toml_edit::value(path_str(openvmm)?);
+    config["boot"]["host-boot"] = toml_edit::value(path_str(host_boot)?);
+    config["boot"]["firmware"] = toml_edit::value(path_str(firmware)?);
+    config["boot"]["boot-artifacts"] = toml_edit::value(path_str(artifacts)?);
+    if let Some(value) = kernel_cmdline {
+        config["boot"]["kernel-cmdline"] = toml_edit::value(value);
+    }
+    if let Some(value) = hypervisor_cmdline {
+        config["boot"]["hypervisor-cmdline"] = toml_edit::value(value);
+    }
+    Ok(config.to_string())
 }
 
 fn path_str(path: &Path) -> anyhow::Result<&str> {
@@ -287,6 +318,80 @@ fn stage_runtime(root: &Path, files: &[(&str, &Path)]) -> anyhow::Result<PathBuf
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    const SOURCE_PROFILE: &str =
+        include_str!("../../../../petri/incubator/profiles/x86_64-mshv.toml");
+
+    #[test]
+    fn unsupported_profiles_are_rejected_before_provisioning() {
+        for source in [
+            SOURCE_PROFILE.replace("type = \"openvmm\"", "type = \"qemu-tcg\""),
+            SOURCE_PROFILE.replace("arch = \"x86-64\"", "arch = \"aarch64\""),
+            SOURCE_PROFILE.replace("type = \"mshv\"", "type = \"linux-direct\""),
+            "[incubator]\ntype = 'openvmm'\narch = 'x86-64'\n".into(),
+        ] {
+            assert!(parse_source_profile(&source).is_err());
+        }
+    }
+
+    #[test]
+    fn source_settings_survive_path_resolution_and_explicit_overrides() -> anyhow::Result<()> {
+        let source = SOURCE_PROFILE
+            .replace("memory = \"8G\"", "memory = \"12G\"")
+            .replace("processors = 2", "processors = 4");
+        let paths = [
+            Path::new("/resolved/openvmm"),
+            Path::new("/resolved/host-boot"),
+            Path::new("/resolved/firmware"),
+            Path::new("/resolved/artifacts"),
+        ];
+        let resolved =
+            resolve_profile(&source, paths[0], paths[1], paths[2], paths[3], None, None)?;
+        let config = parse_source_profile(&resolved)?;
+        assert_eq!(config["incubator"]["memory"].as_str(), Some("12G"));
+        assert_eq!(config["incubator"]["processors"].as_integer(), Some(4));
+        assert_eq!(
+            config["incubator"]["binary"].as_str(),
+            Some("/resolved/openvmm")
+        );
+        assert_eq!(
+            config["boot"]["host-boot"].as_str(),
+            Some("/resolved/host-boot")
+        );
+        assert_eq!(
+            config["boot"]["firmware"].as_str(),
+            Some("/resolved/firmware")
+        );
+        assert_eq!(
+            config["boot"]["boot-artifacts"].as_str(),
+            Some("/resolved/artifacts")
+        );
+        let original = parse_source_profile(&source)?;
+        assert_eq!(
+            config["boot"]["kernel-cmdline"].as_str(),
+            original["boot"]["kernel-cmdline"].as_str()
+        );
+        assert_eq!(
+            config["boot"]["hypervisor-cmdline"].as_str(),
+            original["boot"]["hypervisor-cmdline"].as_str()
+        );
+        let overridden = resolve_profile(
+            &source,
+            paths[0],
+            paths[1],
+            paths[2],
+            paths[3],
+            Some("debug"),
+            Some("MSHV_ENABLE=TRUE"),
+        )?;
+        let config = parse_source_profile(&overridden)?;
+        assert_eq!(config["boot"]["kernel-cmdline"].as_str(), Some("debug"));
+        assert_eq!(
+            config["boot"]["hypervisor-cmdline"].as_str(),
+            Some("MSHV_ENABLE=TRUE")
+        );
+        Ok(())
+    }
 
     #[test]
     fn retains_coherent_runtime_snapshots_across_builds() -> anyhow::Result<()> {
