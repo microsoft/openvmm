@@ -728,6 +728,36 @@ pub(crate) mod tests {
         let error = effective_microvm_network(&readdressed, Some(&contract)).unwrap_err();
         assert!(error.to_string().contains("from saved state"), "{error:#}");
 
+        // A template captured on a /30 cannot give its clones explicit
+        // host-loopback access, which a cold boot on a /30 cannot have, but
+        // takes every other policy.
+        let slash_30: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/30".parse().unwrap();
+        let contract = template_contract_for(&slash_30);
+        for arguments in [
+            &["--host-loopback", "allow"][..],
+            &["--network-ingress", "allow", "--host-loopback", "allow"][..],
+        ] {
+            let options = restore_options(&[&["--restore-network-policy"][..], arguments].concat());
+            let error = effective_microvm_network(&options, Some(&contract)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("--host-loopback allow requires an IPv4 network of /29 or larger"),
+                "{arguments:?}: {error:#}"
+            );
+        }
+        for arguments in [
+            &["--network-egress", "allow"][..],
+            &["--network-ingress", "allow"][..],
+            &["--network-egress", "deny", "--host-loopback", "deny"][..],
+        ] {
+            let options = restore_options(&[&["--restore-network-policy"][..], arguments].concat());
+            let restored = effective_microvm_network(&options, Some(&contract))
+                .unwrap()
+                .unwrap();
+            assert_eq!(restored.config, slash_30, "{arguments:?}");
+        }
+
         // A template whose network predates IPv6 keeps no IPv6 identity.
         let ipv4_only = network.without_ipv6();
         let contract = template_contract_for(&ipv4_only);

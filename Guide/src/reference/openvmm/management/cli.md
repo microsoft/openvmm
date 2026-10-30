@@ -209,10 +209,15 @@ describes the source definitions.
   loopback at each announced port, never displacing a host listener that
   already holds the port. Replies to the host pass regardless of the egress
   policy. With `--network-ingress allow`, the listeners published to the
-  host's private networks admit the host instead. Snapshot capture rejects
-  explicit `allow`, because its listeners are live host attachments, and so
-  does a restore, unless it installs a new policy with
-  `--restore-network-policy`.
+  host's private networks admit the host instead. Explicit `allow` requires an
+  IPv4 network of `/29` or larger: Consomme presents host peers to the guest
+  at addresses of the guest's subnet, which a `/30`, holding only the gateway
+  and the guest, cannot spare. OpenVMM rejects explicit `allow` on a `/30`
+  before it opens host resources, and at a restore with
+  `--restore-network-policy` of a NIC captured on one, before any vCPU runs.
+  Snapshot capture rejects explicit `allow`, because its listeners are live
+  host attachments, and so does a restore, unless it installs a new policy
+  with `--restore-network-policy`.
   Omitting the option preserves the existing guest-gateway-to-host-loopback
   mapping, from the IPv4 gateway to host IPv4 loopback and from the IPv6
   gateway to host IPv6 loopback, without publishing guest ports. `deny` blocks
