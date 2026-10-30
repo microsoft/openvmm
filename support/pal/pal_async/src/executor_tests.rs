@@ -11,6 +11,8 @@ use crate::socket::PolledSocket;
 use crate::task::Spawn;
 use crate::task::with_current_task_metadata;
 use crate::timer::Instant;
+use crate::timer::PolledTimer;
+use crate::wait::PolledWait;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
@@ -24,7 +26,10 @@ use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 use std::sync::Arc;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::time::Duration;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -159,6 +164,98 @@ pub async fn wait_tests(driver: impl Driver) {
     }
     pend_once().await;
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    drop(poller);
+
+    let mut poller = PolledWait::new(&driver, event.clone()).unwrap();
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+    assert!(event.try_wait(), "idle cancellation consumed a signal");
+    assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    // Let the executor wait on other IO while this wait is cancelled.
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_millis(1))
+        .await;
+    assert!(event.try_wait(), "cancelled wait consumed a new signal");
+    event.signal();
+    poller.wait().await.unwrap();
+
+    // Cancellation must account for a signal exactly once, including when
+    // completion races cancellation and replaces the original wait's waker.
+    for _ in 0..64 {
+        assert!(
+            poller
+                .poll_wait(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        event.signal();
+        let consumed = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+        assert_ne!(consumed, event.try_wait());
+        assert!(!event.try_wait());
+        assert_eq!(
+            poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+            Some(false)
+        );
+        event.signal();
+        poller.wait().await.unwrap();
+    }
+
+    struct SignalOnWake(Event);
+
+    impl Wake for SignalOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.signal();
+        }
+    }
+
+    // Observe completion without polling the original wait, so cancellation
+    // also exercises the already-completed state.
+    let wake_event = Event::new();
+    let waker = Waker::from(Arc::new(SignalOnWake(wake_event.clone())));
+    assert!(
+        poller
+            .poll_wait(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    event.signal();
+    PolledWait::new(&driver, wake_event)
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let consumed = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+    #[cfg(windows)]
+    assert!(consumed);
+    assert_ne!(consumed, event.try_wait());
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    poller.wait().await.unwrap();
+    drop(poller);
+
+    for _ in 0..16 {
+        let mut poller = PolledWait::new(&driver, event.clone()).unwrap();
+        assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+        assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+        drop(poller);
+        event.signal();
+        assert!(event.try_wait());
+    }
 }
 
 /// Runs socket-related tests.

@@ -134,6 +134,7 @@ impl State {
 
     fn clear_handle_signal(&mut self, id: HandleId) -> bool {
         let entry = &mut self.entries[id.0];
+        entry.waker = None;
         std::mem::take(&mut entry.signaled)
     }
 
