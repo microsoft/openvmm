@@ -18,6 +18,7 @@ use super::backing::arc_mutex::pci::WeakMutexPcieDeviceEntry;
 use super::backing::arc_mutex::pci::WeakMutexPcieRciepEntry;
 use super::backing::arc_mutex::services::ArcMutexChipsetServices;
 use super::backing::arc_mutex::state_unit::ArcMutexChipsetDeviceUnit;
+pub use super::backing::arc_mutex::state_unit::DynamicDeviceUnit;
 use crate::BusId;
 use crate::BusIdPci;
 use crate::BusIdPcieDownstreamPort;
@@ -89,16 +90,6 @@ impl ChipsetDevices {
             .context("name in use")?;
 
         Ok((DynamicDeviceUnit(unit), device))
-    }
-}
-
-/// A unit handle for a dynamically managed device.
-pub struct DynamicDeviceUnit(SpawnedUnit<ArcMutexChipsetDeviceUnit>);
-
-impl DynamicDeviceUnit {
-    /// Removes and drops the dynamically managed device.
-    pub async fn remove(self) {
-        self.0.remove().await;
     }
 }
 

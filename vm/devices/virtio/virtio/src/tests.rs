@@ -6053,3 +6053,70 @@ async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
         "failed queue must park rather than repeat the error or end the stream"
     );
 }
+
+/// Virtio device that records when it is dropped.
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct DropTrackingDevice(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropTrackingDevice {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl VirtioDevice for DropTrackingDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::CONSOLE,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+        0
+    }
+
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _idx: u16,
+        _resources: QueueResources,
+        _features: &VirtioDeviceFeatures,
+        _initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+        None
+    }
+}
+
+/// Teardown must drop the device (and thus release its backing resources)
+/// before returning, rather than leaving that to an asynchronously cancelled
+/// task.
+#[async_test]
+async fn verify_teardown_drops_device(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mem = GuestMemory::new("test", test_mem);
+    let msi_conn = MsiConnection::new();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut dev = VirtioPciDevice::new(
+        Box::new(DropTrackingDevice(dropped.clone())),
+        &driver,
+        mem,
+        PciInterruptModel::Msix(&msi_conn.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    assert!(!dropped.load(Ordering::SeqCst));
+    dev.teardown().await;
+    assert!(dropped.load(Ordering::SeqCst));
+}

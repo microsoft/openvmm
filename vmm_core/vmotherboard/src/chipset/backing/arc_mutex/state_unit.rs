@@ -10,6 +10,7 @@ use futures::task::ArcWake;
 use futures::task::WakerRef;
 use futures::task::waker_ref;
 use inspect::InspectMut;
+use state_unit::SpawnedUnit;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
 use std::sync::Arc;
@@ -26,6 +27,21 @@ pub struct ArcMutexChipsetDeviceUnit {
     omit_saved_state: bool,
 }
 
+/// A unit handle for a dynamically managed device.
+pub struct DynamicDeviceUnit(pub(crate) SpawnedUnit<ArcMutexChipsetDeviceUnit>);
+
+impl DynamicDeviceUnit {
+    /// Removes the dynamically managed device and releases its backing resources.
+    ///
+    /// Waits for the state-unit task to exit before invoking device teardown.
+    /// Resources owned by device-specific background tasks must be released
+    /// before this returns, even if other references to the device remain.
+    pub async fn remove(self) {
+        let unit = self.0.remove().await;
+        unit.device.close().teardown().await;
+    }
+}
+
 impl InspectMut for ArcMutexChipsetDeviceUnit {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         self.device.lock().inspect_mut(req);
@@ -38,6 +54,7 @@ trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
+    async fn teardown(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
     async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
@@ -55,6 +72,10 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn reset(&mut self) {
         self.reset().await
+    }
+
+    async fn teardown(&mut self) {
+        self.teardown().await
     }
 
     fn poll_device(&mut self, cx: &mut Context<'_>) {
