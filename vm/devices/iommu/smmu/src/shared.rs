@@ -122,10 +122,15 @@ pub trait Invalidate: Send + Sync {
 /// of these variants so the backend never has to interpret raw STE bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamConfig {
-    /// Abort all transactions. Produced for an invalid STE (`V=0`),
-    /// `Config=ABORT`, or any config the emulator does not support in
-    /// accelerated mode.
+    /// Abort all transactions without an event (`Config=ABORT` or global abort).
     Abort,
+    /// Terminate transactions with a configuration fault.
+    ///
+    /// The event is due when DMA is attempted, not when this policy is applied.
+    Fault {
+        /// Configuration-fault event type selected by STE lookup or validation.
+        event_id: EventId,
+    },
     /// Bypass translation (`Config=BYPASS`) — identity GPA→HPA via the
     /// nesting parent (S2) HWPT.
     Bypass,
@@ -1049,13 +1054,13 @@ impl SmmuSharedState {
     /// - For emulated devices, an illegal/invalid STE faults per transaction in
     ///   the software translate path
     ///   ([`translate_locked`](Self::translate_locked)).
-    /// - For accelerated (passthrough) devices, the physical SMMU generates the
-    ///   fault on the real transaction and the host forwards it via the iommufd
-    ///   virtual event queue (VEVENTQ); this emulator does not fake it here.
+    /// - For accelerated devices, the backend realizes the decoded policy and
+    ///   reports faults from actual transactions.
     ///
     /// An illegal/invalid STE, an out-of-range SID, or an STE fetch failure all
-    /// resolve to [`StreamConfig::Abort`] (block the stream's DMA). When the
-    /// SMMU is disabled the result is `GBPA.ABORT ? Abort : Bypass`.
+    /// resolve to [`StreamConfig::Fault`], preserving the fault type separately
+    /// from intentional silent aborts.
+    /// When the SMMU is disabled the result is `GBPA.ABORT ? Abort : Bypass`.
     ///
     /// The translation (`inner`) lock is only held to snapshot register state;
     /// it is released before the STE read so callers can apply the result to a
@@ -1079,21 +1084,19 @@ impl SmmuSharedState {
             };
         }
 
-        // SMMU enabled: look up and decode this stream's STE with the same
-        // classification (`lookup_ste` + `ste_config_action`) as the software
-        // translation path, so the two cannot diverge. Every non-translating,
-        // non-bypass outcome blocks the stream's DMA by aborting; the matching
-        // fault event, when one is architecturally due, is delivered on the
-        // data plane (see the method doc), not here.
-        let Ok(ste) = translate::lookup_ste(
+        let ste = match translate::lookup_ste(
             &self.guest_memory,
             policy.strtab_base,
             policy.strtab_log2size,
             sid,
             policy.oas_mask,
-        ) else {
-            // Invalid STE (V=0), out-of-range SID, or STE fetch failure.
-            return StreamConfig::Abort;
+        ) {
+            Ok(ste) => ste,
+            Err(fault) => {
+                return StreamConfig::Fault {
+                    event_id: fault.event.header.event_id(),
+                };
+            }
         };
 
         match translate::ste_config_action(&ste, policy.ssid_bits, policy.ats) {
@@ -1106,10 +1109,10 @@ impl SmmuSharedState {
                     policy.ats,
                 ),
             },
-            // Config[2]==0 (0b000 / reserved) aborts with no event; an illegal
-            // STE also aborts here. Its C_BAD_STE, being a data-plane fault,
-            // is delivered elsewhere.
-            translate::SteAction::Abort | translate::SteAction::Illegal => StreamConfig::Abort,
+            translate::SteAction::Abort => StreamConfig::Abort,
+            translate::SteAction::Illegal => StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            },
         }
     }
 
@@ -2095,10 +2098,12 @@ mod tests {
                 ste.qw1.set_s1_dss(dss);
                 ste.qw1.set_eats(eats);
                 write_ste(&gm, sid, &ste);
-                assert!(matches!(
+                assert_eq!(
                     state.current_stream_config(sid),
-                    StreamConfig::Abort
-                ));
+                    StreamConfig::Fault {
+                        event_id: EventId::C_BAD_STE,
+                    }
+                );
                 let TranslateResult::Fault(event) = state.translate(sid, 0, false) else {
                     panic!("invalid STE must fault before applying S1DSS");
                 };
@@ -2227,7 +2232,12 @@ mod tests {
                 assert_eq!(*backend.configs.lock(), [config]);
 
                 if ats && eats == 2 {
-                    assert!(matches!(config, StreamConfig::Abort));
+                    assert_eq!(
+                        config,
+                        StreamConfig::Fault {
+                            event_id: EventId::C_BAD_STE,
+                        }
+                    );
                     assert!(!state.lock_accel_devices().is_translating(sid));
                     let TranslateResult::Fault(event) = state.translate(sid, 0, false) else {
                         panic!("split-stage ATS must fault on a stage-1-only SMMU");
@@ -3255,7 +3265,7 @@ mod tests {
         write_ste(&gm, sid, &make_abort_ste());
         assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
 
-        // Invalid STE (V=0) → Abort.
+        // Invalid STE (V=0) → C_BAD_STE.
         write_ste(
             &gm,
             sid,
@@ -3265,12 +3275,14 @@ mod tests {
                 _qw2_7: [0; 6],
             },
         );
-        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            }
+        );
 
-        // Illegal config (0b110 stage-2 on a stage-1-only SMMU) → Abort. The
-        // config plane is pure: no fault event is synthesized here (a C_BAD_STE
-        // is a data-plane fault, delivered via the software translate path or
-        // the host VEVENTQ).
+        // Illegal stage-2 config on a stage-1-only SMMU → C_BAD_STE.
         write_ste(
             &gm,
             sid,
@@ -3282,15 +3294,27 @@ mod tests {
                 _qw2_7: [0; 6],
             },
         );
-        assert_eq!(state.current_stream_config(sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STE,
+            }
+        );
+        assert_eq!(evtq_event_count(&state), 0);
     }
 
     #[test]
-    fn test_current_stream_config_out_of_range_sid_aborts() {
+    fn test_current_stream_config_out_of_range_sid_faults() {
         let gm = GuestMemory::allocate(0x60_0000);
         let state = make_shared_state(&gm);
-        // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end aborts.
+        // strtab has 2^STRTAB_LOG2SIZE entries; an SID past the end faults.
         let oob_sid = 1u32 << STRTAB_LOG2SIZE;
-        assert_eq!(state.current_stream_config(oob_sid), StreamConfig::Abort);
+        assert_eq!(
+            state.current_stream_config(oob_sid),
+            StreamConfig::Fault {
+                event_id: EventId::C_BAD_STREAMID,
+            }
+        );
+        assert_eq!(evtq_event_count(&state), 0);
     }
 }

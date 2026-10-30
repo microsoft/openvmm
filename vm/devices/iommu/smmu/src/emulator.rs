@@ -3086,6 +3086,41 @@ mod tests {
             .expect("retry the stream's policy");
         assert_eq!(backend.take(), vec![crate::shared::StreamConfig::Bypass]);
     }
+
+    #[test]
+    fn test_rejected_fault_policy_falls_back_to_abort() {
+        use crate::shared::StreamConfig;
+        use crate::spec::events::EventId;
+        use crate::spec::ste::SteConfig;
+
+        let dev = make_accel_device();
+        dev.shared_state
+            .set_strtab(TEST_STRTAB_GPA, TEST_STRTAB_LOG2SIZE);
+        transition_to_enabled(&dev.shared_state);
+        let sid = 0x100;
+        write_test_ste(&dev, sid, SteConfig::S1_TRANS);
+        let backend = RecordingBackend::new();
+        let _registration = dev
+            .shared_state
+            .register_accel_device(sid, backend.clone())
+            .unwrap();
+        backend.take();
+        assert!(is_translating(&dev, sid));
+
+        write_test_ste(&dev, sid, SteConfig::S2_TRANS);
+        backend.fail_next();
+        assert!(dev.shared_state.apply_stream_config(sid).is_err());
+        let fault = StreamConfig::Fault {
+            event_id: EventId::C_BAD_STE,
+        };
+        assert_eq!(backend.take(), [fault, StreamConfig::Abort]);
+        assert!(!is_translating(&dev, sid));
+
+        dev.shared_state.apply_stream_config(sid).unwrap();
+        assert_eq!(backend.take(), [fault]);
+        assert!(!is_translating(&dev, sid));
+    }
+
     /// Shared policy re-drive applies every registered backend's current
     /// policy (used on CR0/GBPA writes, reset, restore, and CFGI_ALL).
     #[test]
@@ -3291,7 +3326,7 @@ mod tests {
     /// A rejected policy replacement leaves the stream aborting rather than on
     /// its old translating attachment. `CMD_CFGI_STE` has no content-derived
     /// failure (SMMUv3 §4.3.1), so it is still consumed and raises no CMDQ
-    /// error — the guest sees the same aborting stream an ILLEGAL STE gives it.
+    /// error, while the stream falls back to a silent abort.
     #[test]
     fn test_cfgi_failure_aborts_stream() {
         use crate::spec::ste::SteConfig;
