@@ -121,6 +121,7 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
+    failed_write_range: Mutex<Option<std::ops::Range<u64>>>,
     doorbell_count: AtomicUsize,
     /// The doorbells that are currently INSTALLED, i.e. whose registration
     /// object is still alive.
@@ -269,6 +270,18 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         src: *const u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        let end = address.saturating_add(len as u64);
+        if self
+            .failed_write_range
+            .lock()
+            .as_ref()
+            .is_some_and(|range| address < range.end && range.start < end)
+        {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                io::Error::other("injected guest-memory write failure"),
+            ));
+        }
         match self.memory_map.lock().get(address, len) {
             Some((true, value)) => {
                 // SAFETY: guaranteed by caller
@@ -5693,6 +5706,84 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
     in_order.complete(&mut queue, w1b.into_completion(), 1);
 }
 
+#[async_test]
+async fn completion_write_failure_releases_queue_capacity(driver: DefaultDriver) {
+    use crate::test_helpers::read_used_idx;
+
+    for prepared in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("completion-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| queue.try_next().unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            for work in work {
+                if prepared {
+                    queue.complete_prepared(work.into_completion(), 0);
+                } else {
+                    queue.complete(work, 0);
+                }
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    queue.try_next().unwrap().is_some(),
+                    "failed publication must not strand host queue capacity"
+                );
+            }
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_write_failure_releases_ownership_and_capacity(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::read_used_idx;
+
+    for buffered in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("in-order-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| in_order.try_next(&mut queue).unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                in_order.complete(&mut queue, work.into_completion(), 0);
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+            assert_eq!(in_order.outstanding(), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    in_order.try_next(&mut queue).unwrap().is_some(),
+                    "failed publication must not strand host descriptor ownership or capacity"
+                );
+            }
+        }
+    }
+}
+
 const BOUND_TEST_QUEUE_SIZE: u16 = 4;
 const BOUND_TEST_DESC_ADDR: u64 = 0x1000;
 const BOUND_TEST_AVAIL_ADDR: u64 = 0x2000;
@@ -5722,11 +5813,24 @@ fn new_bound_test_queue_result(
     packed: bool,
     initial_state: Option<QueueState>,
 ) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    new_bound_test_queue_with_memory(
+        driver,
+        packed,
+        initial_state,
+        GuestMemory::allocate(0x10000),
+    )
+}
+
+fn new_bound_test_queue_with_memory(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+    mem: GuestMemory,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
     use crate::test_helpers::write_descriptor;
 
-    let mem = GuestMemory::allocate(0x10000);
     init_avail_ring(&mem, BOUND_TEST_AVAIL_ADDR);
     init_used_ring(&mem, BOUND_TEST_USED_ADDR);
     if !packed {
