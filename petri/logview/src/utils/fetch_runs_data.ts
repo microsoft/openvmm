@@ -15,56 +15,20 @@ import {
   fetchMissingPRTitles,
   getAllGithubPullRequests,
 } from "./fetch_git_data";
-import { fetchProcessedLog } from "./fetch_logs_data";
 
 const GET_RUNS_URL =
   "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=attempts/";
 
-/**
- * Start background data prefetching and refetching for the runs list.
- * This ensures the homepage loads instantly and data stays fresh.
- */
-export function startDataPrefetching(queryClient: QueryClient): void {
-  // Initial prefetch for instant first load
-  void queryClient.prefetchQuery({
-    queryKey: ["runs"],
-    queryFn: () => fetchRunData(queryClient),
-    staleTime: 3 * 60 * 1000,
-    gcTime: Infinity,
-  });
-
-  // Prefetch GitHub PR author map (never stale / never GC so we only fetch once
-  // per session)
-  // Subsequent calls will be handled by per-PR queries
-  void queryClient.prefetchQuery({
-    queryKey: ["prs"],
-    queryFn: () => getAllGithubPullRequests(),
-    staleTime: Infinity, // never goes stale
-    gcTime: Infinity, // keep forever
-  });
-
-  // Background refetch every 2 minutes to keep data fresh
-  setInterval(
-    () => {
-      void queryClient.refetchQueries({
-        queryKey: ["runs"],
-        type: "all", // Keeps the runs data current no matter what!
-      });
-    },
-    2 * 60 * 1000
-  );
-}
-
 // Main export function - fetches and returns parsed run data
 export async function fetchRunData(
-  queryClient: QueryClient
+  queryClient: QueryClient,
 ): Promise<RunData[]> {
   try {
     const response = await fetch(GET_RUNS_URL);
     const data = await response.text();
 
     // Parse the data and get the runs array
-    const runs = parseRunData(data, queryClient);
+    const runs = parseRunData(data);
 
     // Collect all PR numbers that need titles
     const prNumbers = runs
@@ -100,7 +64,7 @@ export async function fetchRunData(
       if (missingPRs.length > 0) {
         const missingTitles = await fetchMissingPRTitles(
           missingPRs,
-          queryClient
+          queryClient,
         );
         runs.forEach((run) => {
           const pr = run.metadata.ghPr;
@@ -120,7 +84,7 @@ export async function fetchRunData(
 }
 
 // Function to parse XML run data into structured format
-function parseRunData(xmlText: string, queryClient: QueryClient): RunData[] {
+function parseRunData(xmlText: string): RunData[] {
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlText, "text/xml");
 
@@ -131,14 +95,14 @@ function parseRunData(xmlText: string, queryClient: QueryClient): RunData[] {
   for (const blob of blobs) {
     const name = blob.getElementsByTagName("Name")[0]?.textContent || "";
     const creationTime = new Date(
-      blob.getElementsByTagName("Creation-Time")[0]?.textContent || ""
+      blob.getElementsByTagName("Creation-Time")[0]?.textContent || "",
     );
     const lastModified = new Date(
-      blob.getElementsByTagName("Last-Modified")[0]?.textContent || ""
+      blob.getElementsByTagName("Last-Modified")[0]?.textContent || "",
     );
     const etag = blob.getElementsByTagName("Etag")[0]?.textContent || "";
     const contentLength = parseInt(
-      blob.getElementsByTagName("Content-Length")[0]?.textContent || "0"
+      blob.getElementsByTagName("Content-Length")[0]?.textContent || "0",
     );
 
     // Parse metadata
@@ -146,11 +110,11 @@ function parseRunData(xmlText: string, queryClient: QueryClient): RunData[] {
     const metadata: RunMetadata = {
       petriFailed: parseInt(
         metadataElement?.getElementsByTagName("petrifailed")[0]?.textContent ||
-          "0"
+          "0",
       ),
       petriPassed: parseInt(
         metadataElement?.getElementsByTagName("petripassed")[0]?.textContent ||
-          "0"
+          "0",
       ),
       ghBranch:
         metadataElement?.getElementsByTagName("ghbranch")[0]?.textContent || "",
@@ -169,108 +133,13 @@ function parseRunData(xmlText: string, queryClient: QueryClient): RunData[] {
     });
   }
 
-  opportunisticPrefetching(runs, queryClient);
   return runs;
-}
-
-/**
- * We avoid duplicate work and run this in the background so initial render isn't blocked.
- * Prefetches in batches of 5 concurrent requests to balance speed vs resource usage.
- */
-function opportunisticPrefetching(
-  runs: RunData[],
-  queryClient: QueryClient
-): void {
-  try {
-    // Sort all runs by creation time descending
-    const sortedRuns = [...runs].sort(
-      (a, b) => b.creationTime.getTime() - a.creationTime.getTime()
-    );
-
-    const extractRunNumber = (name: string) => {
-      // name is "attempts/<runId>_<attempt>"; return the "<runId>_<attempt>" key.
-      const runNumberFull = name.replace(/^attempts\//, "");
-      return runNumberFull.split("/")[0];
-    };
-
-    void (async () => {
-      const prefetched = new Set<string>();
-      const prefetchList: string[] = [];
-
-      // Step 1: First 7 failed runs
-      const failedRuns = sortedRuns.filter((r) => r.metadata.petriFailed > 0);
-      const first7Failed = failedRuns.slice(0, 7);
-      for (const run of first7Failed) {
-        const runNumber = extractRunNumber(run.name);
-        if (runNumber) {
-          prefetchList.push(runNumber);
-          prefetched.add(runNumber);
-        }
-      }
-
-      // Step 2: Top 10 runs overall (regardless of status/branch)
-      const top10 = sortedRuns.slice(0, 10);
-      for (const run of top10) {
-        const runNumber = extractRunNumber(run.name);
-        if (runNumber && !prefetched.has(runNumber)) {
-          prefetchList.push(runNumber);
-          prefetched.add(runNumber);
-        }
-      }
-
-      // Step 3: Last 7 runs on main branch
-      const mainRuns = sortedRuns
-        .filter((r) => r.metadata.ghBranch === "main")
-        .slice(0, 7);
-      for (const run of mainRuns) {
-        const runNumber = extractRunNumber(run.name);
-        if (runNumber && !prefetched.has(runNumber)) {
-          prefetchList.push(runNumber);
-          prefetched.add(runNumber);
-        }
-      }
-
-      // Prefetch with controlled parallelism (5 concurrent requests at a time)
-      const BATCH_SIZE = 5;
-      const prefetchRun = async (runNumber: string) => {
-        const key = ["runDetails", runNumber];
-        if (queryClient.getQueryData(key)) return;
-        try {
-          await queryClient.prefetchQuery({
-            queryKey: key,
-            queryFn: () => fetchRunDetails(runNumber, queryClient),
-            staleTime: Infinity,
-            gcTime: Infinity,
-          });
-        } catch (e) {
-          console.warn(
-            `[opportunisticPrefetching] Prefetch failed for run`,
-            e
-          );
-        }
-      };
-
-      // Process in batches to limit concurrent requests
-      for (let i = 0; i < prefetchList.length; i += BATCH_SIZE) {
-        const batch = prefetchList.slice(i, i + BATCH_SIZE);
-        await Promise.allSettled(
-          batch.map((runNumber) => prefetchRun(runNumber))
-        );
-      }
-    })();
-  } catch (e) {
-    console.warn(
-      "[opportunisticPrefetching] Failed to schedule runDetails prefetch",
-      e
-    );
-  }
 }
 
 // Function to parse detailed run data from XML using lightweight regex parsing
 function parseRunDetails(
   xmlTextArray: string[],
   runNumber: string,
-  queryClient: QueryClient
 ): RunDetailsData {
   const testFolders = new Map<
     string,
@@ -282,7 +151,7 @@ function parseRunDetails(
   if (xmlTextArray.length > 0) {
     try {
       const creationTimeMatch = xmlTextArray[0].match(
-        /<Creation-Time>([^<]+)<\/Creation-Time>/
+        /<Creation-Time>([^<]+)<\/Creation-Time>/,
       );
       if (creationTimeMatch) {
         const parsedDate = new Date(creationTimeMatch[1]);
@@ -304,7 +173,7 @@ function parseRunDetails(
     let match;
     // Reset regex lastIndex for each new string
     nameRegex.lastIndex = 0;
-    
+
     while ((match = nameRegex.exec(xmlText)) !== null) {
       const name = match[1];
       const nameParts = name.split("/");
@@ -374,40 +243,6 @@ function parseRunDetails(
   // Sort tests by name
   tests.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Prefetch petri.jsonl ONLY for failed tests (background, non-blocking)
-  try {
-    const prefetchPromises: Promise<unknown>[] = [];
-    for (const test of tests) {
-      if (test.status !== "failed") continue; // only failed tests
-      const firstSlash = test.name.indexOf("/");
-      if (firstSlash === -1) continue; // malformed name
-      const architecture = test.name.slice(0, firstSlash);
-      const remainder = test.name.slice(firstSlash + 1); // may contain further slashes
-      const queryKey = ["petriLog", runNumber, architecture, remainder];
-      prefetchPromises.push(
-        queryClient.prefetchQuery({
-          queryKey,
-          queryFn: () =>
-            fetchProcessedLog(runNumber, architecture, remainder),
-          staleTime: Infinity, // Never go stale. This data never changes.
-          gcTime: Infinity,
-        })
-      );
-    }
-    if (prefetchPromises.length) {
-      Promise.allSettled(prefetchPromises).then((res) => {
-        const failed = res.filter((r) => r.status === "rejected").length;
-        if (failed) {
-          console.warn(
-            `[parseRunDetails] ${failed} petri.jsonl prefetches failed`
-          );
-        }
-      });
-    }
-  } catch (e) {
-    console.warn("[parseRunDetails] Prefetch phase error", e);
-  }
-  
   return {
     creationTime: creationTime ?? undefined,
     runNumber,
@@ -417,12 +252,10 @@ function parseRunDetails(
 
 /**
  * Fetch detailed run information (listing of test result folders) for a run number.
- * When a QueryClient is supplied we proactively prefetch & cache the content of
- * any petri.jsonl (and petri.passed) files discovered during the blob listing.
  */
 export async function fetchRunDetails(
   runNumber: string,
-  queryClient: QueryClient
+  signal?: AbortSignal,
 ): Promise<RunDetailsData> {
   try {
     const xmlDataArray: string[] = [];
@@ -436,10 +269,10 @@ export async function fetchRunDetails(
         url += `&marker=${encodeURIComponent(continuationToken)}`;
       }
 
-      const response = await fetch(url);
+      const response = await fetch(url, { signal });
       if (!response.ok) {
         throw new Error(
-          `Failed to fetch run details: ${response.status} ${response.statusText}`
+          `Failed to fetch run details: ${response.status} ${response.statusText}`,
         );
       }
 
@@ -452,9 +285,10 @@ export async function fetchRunDetails(
     } while (continuationToken);
 
     // Parse all collected data at once by scanning through the array
-    return parseRunDetails(xmlDataArray, runNumber, queryClient);
+    signal?.throwIfAborted();
+    return parseRunDetails(xmlDataArray, runNumber);
   } catch (error) {
-    console.error(`Error fetching run details`, error);
+    if (!signal?.aborted) console.error(`Error fetching run details`, error);
     throw error;
   }
 }
@@ -462,7 +296,7 @@ export async function fetchRunDetails(
 /**
  * Fetch run details for runs filtered by branch.
  * Returns a map of testName -> TestRunInfo[].
- * 
+ *
  * DEV NOTE: Ideally the abort signal should also be passed to the query client
  * to abort any in-flight fetches, but due to time constraints this is not yet
  * implemented. Currently the tests and test details both use a foreground
@@ -476,7 +310,7 @@ export async function fetchTestAnalysis(
   queryClient: QueryClient,
   onProgress?: (fetched: number, total: number) => void,
   getConcurrency?: () => number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<Map<string, TestRunInfo[]>> {
   // Fetch all runs
   const runs = await queryClient.ensureQueryData<RunData[]>({
@@ -489,9 +323,7 @@ export async function fetchTestAnalysis(
   // Filter runs based on branch selection
   let filteredRuns = runs;
   if (branchFilter !== "all") {
-    filteredRuns = runs.filter(
-      (run) => run.metadata.ghBranch === branchFilter
-    );
+    filteredRuns = runs.filter((run) => run.metadata.ghBranch === branchFilter);
   }
 
   const totalToFetch = filteredRuns.length;
@@ -506,7 +338,7 @@ export async function fetchTestAnalysis(
 
     // Check if already aborted
     if (signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
+      throw new DOMException("Aborted", "AbortError");
     }
 
     // Skip if already cached
@@ -521,7 +353,7 @@ export async function fetchTestAnalysis(
     try {
       await queryClient.prefetchQuery({
         queryKey: key,
-        queryFn: () => fetchRunDetails(runId, queryClient),
+        queryFn: ({ signal }) => fetchRunDetails(runId, signal),
         staleTime: Infinity, // never goes stale because this data should never change
         gcTime: Infinity, // never garbage collect
       });
@@ -546,7 +378,7 @@ export async function fetchTestAnalysis(
   // Process with rolling window - always keep maxConcurrent requests in flight
   let currentIndex = 0;
   const inFlight = new Set<Promise<string>>();
-  
+
   // Prefetch with controlled parallelism - maintains constant concurrent requests
   // Use dynamic concurrency if provided, otherwise default to 5
   const runIds: string[] = [];
@@ -572,7 +404,7 @@ export async function fetchTestAnalysis(
         },
         () => {
           inFlight.delete(promise);
-        }
+        },
       );
     }
 
@@ -583,7 +415,7 @@ export async function fetchTestAnalysis(
 
     // If it was aborted don't do the consolidation step
     if (signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
+      throw new DOMException("Aborted", "AbortError");
     }
   }
 
@@ -626,20 +458,20 @@ export async function fetchTestAnalysis(
  * Transforms a map of test names to their run information into a flat array of TestData.
  */
 export function convertToTestData(
-  testMapping: Map<string, TestRunInfo[]>
+  testMapping: Map<string, TestRunInfo[]>,
 ): TestData[] {
   const data: TestData[] = [];
 
   testMapping.forEach((runInfos, testName) => {
     const failedCount = runInfos.filter(
-      (info) => info.status === "failed"
+      (info) => info.status === "failed",
     ).length;
 
     // Default to - to avoid skipping entries. Added benefit here is that
     // linking is on test name. So if split was unsuccessful, we won't make a
     // bad link either.
     const split = testName.split("/");
-    const architecture: string = split[0];  // Minimum len is 1. This is safe to do.
+    const architecture: string = split[0]; // Minimum len is 1. This is safe to do.
     const name: string = split.length > 1 ? split[1] : "-";
     const totalCount = runInfos.length;
 
@@ -660,7 +492,7 @@ export function convertToTestData(
  */
 export function convertToTestDetailsData(
   testMapping: Map<string, TestRunInfo[]>,
-  testName: string
+  testName: string,
 ): TestRunInfo[] {
   const testRunInfos = testMapping.get(testName);
   return testRunInfos || [];
