@@ -1096,7 +1096,7 @@ impl SmmuSharedState {
             return StreamConfig::Abort;
         };
 
-        match translate::ste_config_action(&ste, policy.ssid_bits) {
+        match translate::ste_config_action(&ste, policy.ssid_bits, policy.ats) {
             translate::SteAction::Bypass => StreamConfig::Bypass,
             translate::SteAction::S1Translate => StreamConfig::Translate {
                 ste_dwords: canonical_s1_ste_dwords(
@@ -1288,7 +1288,11 @@ impl SmmuSharedState {
         };
 
         // Dispatch on STE config.
-        match translate::ste_config_action(&ste, inner.capabilities.ssid_bits) {
+        match translate::ste_config_action(
+            &ste,
+            inner.capabilities.ssid_bits,
+            inner.capabilities.ats,
+        ) {
             // Config[2]==0 (0b000 / reserved): abort, no event recorded.
             translate::SteAction::Abort => TranslateResult::Abort,
             // Illegal STE: terminate and record C_BAD_STE, matching the
@@ -2083,12 +2087,13 @@ mod tests {
         state.freeze_capabilities();
         state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
         transition_to_enabled(&state);
-        for (cd_max, fmt) in [(15, 0), (14, 1), (14, 2)] {
+        for (cd_max, fmt, eats) in [(15, 0, 0), (14, 1, 0), (14, 2, 0), (14, 0, 2)] {
             for dss in 0..4 {
                 let mut ste = make_s1_ste(CD_BASE);
                 ste.qw0.set_s1_cd_max(cd_max);
                 ste.qw0.set_s1_fmt(fmt);
                 ste.qw1.set_s1_dss(dss);
+                ste.qw1.set_eats(eats);
                 write_ste(&gm, sid, &ste);
                 assert!(matches!(
                     state.current_stream_config(sid),
@@ -2173,60 +2178,77 @@ mod tests {
     }
 
     #[test]
-    fn nested_backend_owns_ats_mode_acceptance() {
-        struct FullAtsOnly {
+    fn software_and_nested_paths_validate_ats_modes() {
+        struct RecordingBackend {
             configs: Mutex<Vec<StreamConfig>>,
         }
 
-        impl AcceleratedStreamBackend for FullAtsOnly {
+        impl AcceleratedStreamBackend for RecordingBackend {
             fn set_stream_config(&self, config: StreamConfig) -> anyhow::Result<()> {
                 self.configs.lock().push(config);
-                if let StreamConfig::Translate { ste_dwords } = config {
-                    anyhow::ensure!(
-                        SteDw1::from(ste_dwords[1]).eats() <= 1,
-                        "unsupported ATS mode"
-                    );
-                }
                 Ok(())
             }
         }
 
-        let gm = GuestMemory::allocate(0x60_0000);
-        let sid = expected_sid();
-        setup_translation(&gm, sid);
-        let state = SmmuSharedState::new(
-            gm.clone(),
-            40,
-            crate::SmmuOasPolicy::Fixed(40),
-            crate::SmmuSsidPolicy::Auto,
-            true,
-            None,
-            None,
-        );
-        state.resolve_host_caps(compatible_host_caps()).unwrap();
-        state.freeze_capabilities();
-        state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
-        transition_to_enabled(&state);
-        let mut ste = make_s1_ste(CD_BASE);
-        ste.qw1.set_s1_dss(crate::spec::ste::S1Dss::SSID0.0);
-        ste.qw1.set_eats(2); // Architecturally defined S1-only ATS.
-        write_ste(&gm, sid, &ste);
+        for ats in [false, true] {
+            let gm = GuestMemory::allocate(0x60_0000);
+            let sid = expected_sid();
+            setup_translation(&gm, sid);
+            let state = SmmuSharedState::new(
+                gm.clone(),
+                40,
+                crate::SmmuOasPolicy::Fixed(40),
+                crate::SmmuSsidPolicy::Auto,
+                true,
+                None,
+                None,
+            );
+            state
+                .resolve_host_caps(crate::HostSmmuCaps {
+                    ats,
+                    ..compatible_host_caps()
+                })
+                .unwrap();
+            state.freeze_capabilities();
+            state.set_strtab(STRTAB_BASE, STRTAB_LOG2SIZE);
+            transition_to_enabled(&state);
+            let backend = Arc::new(RecordingBackend {
+                configs: Mutex::new(Vec::new()),
+            });
+            let _registration = state.register_accel_device(sid, backend.clone()).unwrap();
 
-        assert!(matches!(
-            state.translate(sid, 0, false),
-            TranslateResult::Translated(DATA_GPA)
-        ));
-        let config = state.current_stream_config(sid);
-        let StreamConfig::Translate { ste_dwords } = config else {
-            panic!("ATS mode must reach the backend");
-        };
-        assert_eq!(SteDw1::from(ste_dwords[1]).eats(), 2);
-        let backend = Arc::new(FullAtsOnly {
-            configs: Mutex::new(Vec::new()),
-        });
-        let _registration = state.register_accel_device(sid, backend.clone()).unwrap();
-        assert_eq!(*backend.configs.lock(), [config, StreamConfig::Abort]);
-        assert!(!state.lock_accel_devices().is_translating(sid));
+            for eats in [0, 1, 2] {
+                let mut ste = make_s1_ste(CD_BASE);
+                ste.qw1.set_eats(eats);
+                write_ste(&gm, sid, &ste);
+                backend.configs.lock().clear();
+                state.apply_stream_config(sid).unwrap();
+                let config = state.current_stream_config(sid);
+                assert_eq!(*backend.configs.lock(), [config]);
+
+                if ats && eats == 2 {
+                    assert!(matches!(config, StreamConfig::Abort));
+                    assert!(!state.lock_accel_devices().is_translating(sid));
+                    let TranslateResult::Fault(event) = state.translate(sid, 0, false) else {
+                        panic!("split-stage ATS must fault on a stage-1-only SMMU");
+                    };
+                    assert_eq!(event.header.event_id(), EventId::C_BAD_STE);
+                } else {
+                    let StreamConfig::Translate { ste_dwords } = config else {
+                        panic!("supported or ignored ATS mode must allow translation");
+                    };
+                    assert_eq!(
+                        SteDw1::from(ste_dwords[1]).eats(),
+                        if ats { eats } else { 0 }
+                    );
+                    assert!(state.lock_accel_devices().is_translating(sid));
+                    assert!(matches!(
+                        state.translate(sid, 0, false),
+                        TranslateResult::Translated(DATA_GPA)
+                    ));
+                }
+            }
+        }
     }
 
     #[test]

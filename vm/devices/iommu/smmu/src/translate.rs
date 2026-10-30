@@ -126,7 +126,7 @@ pub fn lookup_ste(
     Ok(ste)
 }
 
-/// Determine the translation action from an STE and the advertised SSID width.
+/// Determine the translation action from an STE and advertised SSID/ATS support.
 ///
 /// This SMMU is stage-1 only (`IDR0.S2P == 0`), so any `Config` that selects
 /// stage 2 (`0b110`/`0b111`) is ILLEGAL and must fault with `C_BAD_STE`. Per
@@ -137,10 +137,13 @@ pub fn lookup_ste(
 /// supported, and rejects two-level formats when substreams are enabled but
 /// CD2L is zero. S1Fmt=0b11 behaves as linear, not ILLEGAL. These are STE-wide
 /// checks, before considering the transaction's SubstreamID or S1DSS policy.
-/// Host-specific acceptance is left to the backend.
-pub fn ste_config_action(ste: &Ste, ssid_bits: u8) -> SteAction {
+/// Split-stage ATS (EATS=0b10) requires both translation stages, so it is
+/// ILLEGAL here when ATS is advertised. Otherwise EATS is IGNORED.
+/// Additional host-specific acceptance is left to the backend.
+pub fn ste_config_action(ste: &Ste, ssid_bits: u8, ats: bool) -> SteAction {
     match ste.config() {
         SteConfig::BYPASS => SteAction::Bypass,
+        SteConfig::S1_TRANS if ats && ste.qw1.eats() == 0b10 => SteAction::Illegal,
         SteConfig::S1_TRANS
             if ssid_bits != 0
                 && (ste.s1_cd_max() > ssid_bits
@@ -593,19 +596,19 @@ mod tests {
     #[test]
     fn test_ste_config_abort() {
         let ste = make_abort_ste();
-        assert_eq!(ste_config_action(&ste, 0), SteAction::Abort);
+        assert_eq!(ste_config_action(&ste, 0, false), SteAction::Abort);
     }
 
     #[test]
     fn test_ste_config_bypass() {
         let ste = make_bypass_ste();
-        assert_eq!(ste_config_action(&ste, 0), SteAction::Bypass);
+        assert_eq!(ste_config_action(&ste, 0, false), SteAction::Bypass);
     }
 
     #[test]
     fn test_ste_config_s1_trans() {
         let ste = make_s1_ste(CD_BASE);
-        assert_eq!(ste_config_action(&ste, 0), SteAction::S1Translate);
+        assert_eq!(ste_config_action(&ste, 0, false), SteAction::S1Translate);
     }
 
     #[test]
@@ -617,7 +620,7 @@ mod tests {
             qw1: SteDw1::new(),
             _qw2_7: [0; 6],
         };
-        assert_eq!(ste_config_action(&ste, 0), SteAction::Abort);
+        assert_eq!(ste_config_action(&ste, 0, false), SteAction::Abort);
     }
 
     #[test]
@@ -630,7 +633,7 @@ mod tests {
                 qw1: SteDw1::new(),
                 _qw2_7: [0; 6],
             };
-            assert_eq!(ste_config_action(&ste, 0), SteAction::Illegal);
+            assert_eq!(ste_config_action(&ste, 0, false), SteAction::Illegal);
         }
     }
 
