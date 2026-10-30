@@ -29,16 +29,8 @@ pub struct IncubatorCli {
     firmware: Option<PathBuf>,
 
     /// Use authorized local payloads containing boot/ instead of pinned RPMs.
-    #[arg(long, conflicts_with_all = ["rpm_cache", "offline"])]
+    #[arg(long)]
     boot_artifacts: Option<PathBuf>,
-
-    /// Override the persistent cache for the pinned hypervisor/loader RPMs.
-    #[arg(long)]
-    rpm_cache: Option<PathBuf>,
-
-    /// Only use cached mshv RPMs; other build/dependency nodes are unaffected.
-    #[arg(long)]
-    offline: bool,
 
     /// Writable host share (defaults to the OpenVMM checkout).
     #[arg(long)]
@@ -57,7 +49,7 @@ pub struct IncubatorCli {
     hypervisor_cmdline: Option<String>,
 
     /// Prepare dependencies/profile and print a direct command without booting.
-    #[arg(long, conflicts_with = "command")]
+    #[arg(long, conflicts_with = "incubator_args")]
     prepare_only: bool,
 
     /// Release VMM, agent, and EFI builds (Incubator otherwise uses light).
@@ -68,21 +60,13 @@ pub struct IncubatorCli {
     #[arg(long)]
     install_missing_deps: bool,
 
-    /// Boot and guest-command deadline in seconds.
-    #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
-    timeout: u64,
-
     /// Enable verbose Flowey output.
     #[arg(long)]
     verbose: bool,
 
-    /// Non-interactive guest command and arguments, after `--`.
-    #[arg(
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        required_unless_present = "prepare_only"
-    )]
-    command: Vec<String>,
+    /// Incubator options and guest command, after `--`.
+    #[arg(last = true, required_unless_present = "prepare_only")]
+    incubator_args: Vec<String>,
 }
 
 impl IntoPipeline for IncubatorCli {
@@ -117,7 +101,6 @@ impl IntoPipeline for IncubatorCli {
             dir.starts_with(&share),
             "--dir must be beneath --share so the guest Pipette source is accessible"
         );
-        let rpm_cache = self.rpm_cache.map(std::path::absolute).transpose()?;
 
         let mut pipeline = Pipeline::new();
         pipeline
@@ -153,15 +136,12 @@ impl IntoPipeline for IncubatorCli {
                     initrd,
                     firmware,
                     boot_artifacts,
-                    rpm_cache,
-                    offline: self.offline,
                     share,
                     dir,
                     kernel_cmdline: self.kernel_cmdline,
                     hypervisor_cmdline: self.hypervisor_cmdline,
                     prepare_only: self.prepare_only,
-                    timeout: self.timeout,
-                    command: self.command,
+                    incubator_args: self.incubator_args,
                     done: ctx.new_done_handle(),
                 },
             )
@@ -208,7 +188,7 @@ mod tests {
         let cli = Cli::try_parse_from(["incubator", "--profile", "source.toml", "--prepare-only"])?;
         assert!(cli.incubator.prepare_only);
         assert!(cli.incubator.kernel.is_none());
-        assert!(cli.incubator.command.is_empty());
+        assert!(cli.incubator.incubator_args.is_empty());
         Ok(())
     }
 
@@ -220,14 +200,34 @@ mod tests {
             "--profile",
             "source.toml",
             "--",
+            "--timeout",
+            "600",
+            "--guest-env",
+            "TEST=hello world",
+            "--no-pty",
+            "--",
             "/bin/sh",
             "-c",
             "exit 17",
         ])?;
-        assert_eq!(cli.incubator.command, ["/bin/sh", "-c", "exit 17"]);
+        assert_eq!(
+            cli.incubator.incubator_args,
+            [
+                "--timeout",
+                "600",
+                "--guest-env",
+                "TEST=hello world",
+                "--no-pty",
+                "--",
+                "/bin/sh",
+                "-c",
+                "exit 17"
+            ]
+        );
         for args in [
             vec!["incubator"],
             vec!["incubator", "--prepare-only"],
+            vec!["incubator", "--profile", "source.toml", "--timeout", "600"],
             vec![
                 "incubator",
                 "--profile",
@@ -235,15 +235,6 @@ mod tests {
                 "--prepare-only",
                 "--",
                 "/bin/sh",
-            ],
-            vec![
-                "incubator",
-                "--profile",
-                "source.toml",
-                "--prepare-only",
-                "--boot-artifacts",
-                "payloads",
-                "--offline",
             ],
         ] {
             assert!(Cli::try_parse_from(args).is_err());

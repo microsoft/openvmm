@@ -43,7 +43,7 @@ On an x64 Linux host with KVM and nested virtualization enabled:
 ```bash
 cargo xflowey incubator \
   --profile petri/incubator/profiles/x86_64-mshv.toml -- \
-  /bin/sh -c 'test -c /dev/mshv && uname -a'
+  --timeout 600 --no-pty -- /bin/sh -c 'test -c /dev/mshv && uname -a'
 ```
 
 `--profile` is required. Provisioning currently supports only x64 OpenVMM
@@ -56,7 +56,15 @@ paths may be placeholders; use CLI artifact overrides to supply local inputs.
 This builds the native OpenVMM/Incubator pair, static x64 Pipette, and EFI host
 boot application; downloads the pinned mshv root kernel, firmware, shared
 test initrd, and verified hypervisor/loader RPMs; then boots and executes the
-command non-interactively. Incubator uses the `light` build profile by default.
+command. Everything after Flowey's `--` is passed directly to Incubator:
+execution options such as `--timeout`, `--guest-env`, and `--no-pty`, followed
+by the guest command (optionally separated by a second `--`). Flowey does not
+force `--no-pty`; Incubator uses its normal terminal detection.
+Flowey supplies `--profile`, `--kernel`, `--initrd`, `--share`,
+`--guest-pipette`, and `--output-dir`; do not repeat those in the forwarded
+arguments. Use the Flowey-side overrides for provisioning inputs instead.
+
+Incubator uses the `light` build profile by default.
 `--release` selects release builds for all components; the normal VMM/agent
 build profile remains independent of the optimized launcher. It never checks
 out, configures, patches, or builds a kernel. `--kernel path/to/mshv/bzImage`
@@ -80,8 +88,8 @@ profile before customizing it. `--kernel-cmdline` and `--hypervisor-cmdline`
 override the source profile's boot options without rebuilding EFI code.
 
 `--initrd`, `--firmware`, and `--boot-artifacts` accept explicit local inputs.
-`--rpm-cache` reuses an existing RPM cache; `--offline` prohibits only mshv RPM
-downloads, not Rust or other dependency downloads. Cached RPMs and extracted
+RPMs use Flowey's normal persistent cache; missing RPMs are downloaded as
+needed. Cached RPMs and extracted
 payloads are checked on reuse; corrupt caches fail rather than being trusted.
 Packaged licenses and source URLs/hashes are retained with the extracted
 payloads. No RPM is installed and no package script runs.

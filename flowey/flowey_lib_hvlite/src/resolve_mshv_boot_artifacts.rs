@@ -54,10 +54,6 @@ flowey_config! {
     pub struct Config {
         /// Authorized local artifacts, containing boot/HvLoader.efi and its runtime.
         pub local_path: Option<ConfigVar<PathBuf>>,
-        /// Override the persistent RPM/extraction cache.
-        pub cache_dir: Option<ConfigVar<PathBuf>>,
-        /// Never download missing RPMs. Other dependency nodes are unaffected.
-        pub offline: Option<bool>,
     }
 }
 
@@ -83,12 +79,7 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let Config {
-            local_path,
-            cache_dir,
-            offline,
-        } = config;
-        let offline = offline.unwrap_or(false);
+        let Config { local_path } = config;
         let mut outputs = Vec::new();
         for Request { arch, artifacts } in requests {
             anyhow::ensure!(
@@ -101,7 +92,7 @@ impl FlowNodeWithConfig for Node {
             return Ok(());
         }
 
-        let installed = if local_path.is_none() && !offline {
+        let installed = if local_path.is_none() {
             Some(ctx.reqv(
                 |done| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec!["curl".into()],
@@ -114,7 +105,6 @@ impl FlowNodeWithConfig for Node {
         let persistent_dir = ctx.persistent_dir();
         ctx.emit_rust_step("resolve mshv boot payloads", |ctx| {
             let local_path = local_path.claim(ctx);
-            let cache_dir = cache_dir.claim(ctx);
             let persistent_dir = persistent_dir.claim(ctx);
             let outputs = outputs.claim(ctx);
             installed.claim(ctx);
@@ -122,15 +112,11 @@ impl FlowNodeWithConfig for Node {
                 let path = if let Some(local_path) = local_path {
                     rt.read(local_path)
                 } else {
-                    let cache = if let Some(cache_dir) = cache_dir {
-                        rt.read(cache_dir)
-                    } else {
-                        persistent_dir
-                            .map(|dir| rt.read(dir))
-                            .unwrap_or_else(|| rt.sh.current_dir())
-                            .join("mshv")
-                    };
-                    acquire(&cache, offline, |url, output| {
+                    let cache = persistent_dir
+                        .map(|dir| rt.read(dir))
+                        .unwrap_or_else(|| rt.sh.current_dir())
+                        .join("mshv");
+                    acquire(&cache, |url, output| {
                         flowey::shell_cmd!(
                             rt,
                             "curl --fail --location --proto =https --proto-redir =https
@@ -198,7 +184,6 @@ fn verify_hash(path: &Path, expected: &str) -> anyhow::Result<()> {
 fn cached_rpm(
     cache: &Path,
     package: &Package,
-    offline: bool,
     download: &mut impl FnMut(&str, &Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
     let path = cache.join(package.filename);
@@ -210,7 +195,6 @@ fn cached_rpm(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    anyhow::ensure!(!offline, "RPM is not cached: {}", path.display());
     let temp = tempfile::NamedTempFile::new_in(cache)?;
     download(&package.url(), temp.path())?;
     verify_hash(temp.path(), package.sha256)?;
@@ -227,14 +211,13 @@ fn cached_rpm(
 
 fn acquire(
     cache: &Path,
-    offline: bool,
     mut download: impl FnMut(&str, &Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
     fs_err::create_dir_all(cache)?;
     let mut files = BTreeMap::new();
     let mut manifest = String::new();
     for package in PACKAGES {
-        let path = cached_rpm(cache, package, offline, &mut download)?;
+        let path = cached_rpm(cache, package, &mut download)?;
         let rpm =
             rpm::Package::open(&path).with_context(|| format!("reading {}", path.display()))?;
         anyhow::ensure!(
@@ -379,7 +362,7 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
-    fn verifies_cached_rpms_even_offline() -> anyhow::Result<()> {
+    fn verifies_cached_rpms_without_downloading_again() -> anyhow::Result<()> {
         let cache = tempfile::tempdir()?;
         let package = Package {
             repository: "base",
@@ -388,15 +371,14 @@ mod tests {
         };
         let mut unexpected_download =
             |_: &str, _: &Path| -> anyhow::Result<()> { anyhow::bail!("unexpected download") };
-        assert!(cached_rpm(cache.path(), &package, true, &mut unexpected_download).is_err());
         let path = cache.path().join(package.filename);
         fs_err::write(&path, b"abc")?;
         assert_eq!(
-            cached_rpm(cache.path(), &package, true, &mut unexpected_download)?,
+            cached_rpm(cache.path(), &package, &mut unexpected_download)?,
             path
         );
         fs_err::write(&path, b"bad")?;
-        assert!(cached_rpm(cache.path(), &package, true, &mut unexpected_download).is_err());
+        assert!(cached_rpm(cache.path(), &package, &mut unexpected_download).is_err());
         Ok(())
     }
 
@@ -447,14 +429,14 @@ mod tests {
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
         };
         assert!(
-            cached_rpm(cache.path(), &package, false, &mut |_, path| {
+            cached_rpm(cache.path(), &package, &mut |_, path| {
                 fs_err::write(path, b"bad")?;
                 Ok(())
             })
             .is_err()
         );
         assert!(!cache.path().join(package.filename).exists());
-        let path = cached_rpm(cache.path(), &package, false, &mut |_, path| {
+        let path = cached_rpm(cache.path(), &package, &mut |_, path| {
             fs_err::write(path, b"abc")?;
             Ok(())
         })?;
