@@ -211,14 +211,24 @@ impl TimerState {
 
     /// Returns the timestamp corresponding to the given VM time.
     ///
-    /// If the VM time is before the last start time, then the timestamp is at
-    /// the host time when the VM last started.
+    /// If the VM time is in the past and before the last start time, then the
+    /// timestamp is at the host time when the VM last started. If the VM time
+    /// is in the future, beyond what the host clock can represent, then the
+    /// timestamp is at the host clock's latest time.
     fn timestamp(&self, time: VmTime) -> Option<Timestamp> {
         let start_time = self.time.start_time()?;
-        let since = time
-            .checked_sub(start_time.vmtime)
-            .unwrap_or(Duration::ZERO);
-        Some(Timestamp::new(time, start_time.os_time() + since))
+        let os_time = if let Some(since) = time.checked_sub(start_time.vmtime) {
+            start_time.os_time().saturating_add(since)
+        } else if time.is_after(self.now(Instant::now()).vmtime) {
+            // Once VM time has run since the start, a time nearly half the ring
+            // after now is more than half the ring after the start, which VM
+            // time's circular order puts before it. Such a time is still in
+            // the future, far beyond the host clock.
+            Instant::from_nanos(u64::MAX)
+        } else {
+            start_time.os_time()
+        };
+        Some(Timestamp::new(time, os_time))
     }
 
     /// Returns the current guest time given a host time.
@@ -883,8 +893,10 @@ impl VmTimeAccess {
 
     /// Returns the host time corresponding to a guest time.
     ///
-    /// If the guest time is before the VM last resumed, then returns the time
-    /// the VM last resumed.
+    /// If the guest time is in the past and before the VM last resumed, then
+    /// returns the time the VM last resumed. If the guest time is in the
+    /// future, beyond what the host clock can represent, then returns the host
+    /// clock's latest time.
     ///
     /// If the VM is not running, returns `None`.
     pub fn host_time(&self, time: VmTime) -> Option<Instant> {
@@ -1038,11 +1050,14 @@ impl VmTimerPeriodic {
 
 #[cfg(test)]
 mod tests {
+    use super::SavedState;
     use super::VmTime;
+    use super::VmTimeAccess;
     use super::VmTimeKeeper;
     use futures::FutureExt;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
     use std::future::poll_fn;
     use std::time::Duration;
@@ -1131,5 +1146,116 @@ mod tests {
         assert_eq!(keeper.save().stop_host_time(), None);
         assert_eq!(acc1.now(), zero);
         assert_eq!(acc2.now(), zero);
+    }
+
+    /// Checks that `access`, waiting for a timeout that the host clock cannot
+    /// represent, keeps waiting, and that an earlier timeout still fires.
+    async fn check_unrepresentable_timeout(driver: &DefaultDriver, access: &mut VmTimeAccess) {
+        let mut timer = PolledTimer::new(driver);
+        futures::select! {
+            _ = timer.sleep(Duration::from_millis(50)).fuse() => {}
+            _ = poll_fn(|cx| access.poll_timeout(cx)).fuse() => panic!("unexpected wait completion"),
+        }
+
+        let deadline = access.now().wrapping_add(Duration::from_millis(10));
+        access.set_timeout(deadline);
+        futures::select! {
+            _ = timer.sleep(Duration::from_millis(1000)).fuse() => panic!("unexpected timeout"),
+            now = poll_fn(|cx| access.poll_timeout(cx)).fuse() => {
+                assert!(now.is_after(deadline));
+            }
+        }
+    }
+
+    #[async_test]
+    async fn test_timeout_beyond_host_clock(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+        keeper.start().await;
+
+        // The host clock counts nanoseconds in 64 bits, about 584 years, so it
+        // cannot represent a time 1000 years ahead.
+        let timeout = access
+            .now()
+            .wrapping_add(Duration::from_secs(1000 * 365 * 24 * 60 * 60));
+        assert_eq!(
+            access.host_time(timeout),
+            Some(Instant::from_nanos(u64::MAX))
+        );
+        access.set_timeout(timeout);
+        check_unrepresentable_timeout(&driver, &mut access).await;
+        keeper.stop().await;
+    }
+
+    #[async_test]
+    async fn test_timeout_beyond_host_clock_after_restore(driver: DefaultDriver) {
+        let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+
+        // Arm a timeout while VM time is stopped, and poll once to register
+        // it.
+        let timeout = VmTime::from_100ns(18_000_000_000_000_000);
+        access.set_timeout(timeout);
+        assert!(
+            poll_fn(|cx| access.poll_timeout(cx))
+                .now_or_never()
+                .is_none()
+        );
+
+        // Restore VM time to a time that the timeout follows, in VM time's
+        // circular order, by more nanoseconds than the host clock can count.
+        // The timeout stays armed, so starting VM time arms the host timer for
+        // it.
+        let restored = VmTime::from_100ns(15_800_000_000_000_000_000);
+        assert!(timeout.checked_sub(restored).unwrap().as_nanos() > u64::MAX.into());
+        keeper.restore(SavedState::from_vmtime(restored)).await;
+        keeper.start().await;
+        check_unrepresentable_timeout(&driver, &mut access).await;
+        keeper.stop().await;
+    }
+
+    #[async_test]
+    async fn test_timeout_nearly_half_the_ring_ahead(driver: DefaultDriver) {
+        let start = VmTime::from_100ns(0);
+        let mut keeper = VmTimeKeeper::new(&driver, start);
+        let mut access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+        keeper.start().await;
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+
+        // The latest time that follows now in VM time's circular order. As VM
+        // time has run since the start, that order puts it before the start.
+        let now = access.now();
+        let timeout = VmTime::from_100ns(now.as_100ns().wrapping_add(i64::MAX as u64));
+        assert!(timeout.is_after(now));
+        assert!(timeout.is_before(start));
+        assert_eq!(
+            access.host_time(timeout),
+            Some(Instant::from_nanos(u64::MAX))
+        );
+        // A time in the past before the start still maps to the start.
+        assert_eq!(
+            access.host_time(VmTime::from_100ns(u64::MAX)),
+            access.host_time(start)
+        );
+        access.set_timeout(timeout);
+        check_unrepresentable_timeout(&driver, &mut access).await;
+        keeper.stop().await;
     }
 }
