@@ -227,7 +227,7 @@ struct Adapter {
     tx_fast_completions: bool,
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
-    rx_offload_support: RxOffloadSupport,
+    enable_rx_gso: bool,
 }
 
 pub struct Device {
@@ -275,8 +275,8 @@ impl VirtioDevice for Device {
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
-            .with_guest_tso4(self.adapter.rx_offload_support.tcpv4_gso)
-            .with_guest_tso6(self.adapter.rx_offload_support.tcpv6_gso)
+            .with_guest_tso4(self.adapter.enable_rx_gso)
+            .with_guest_tso6(self.adapter.enable_rx_gso)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -549,8 +549,7 @@ impl NicBuilder {
         self
     }
 
-    /// Enables advertising guest TCP segmentation offload when supported by
-    /// the network backend.
+    /// Enables advertising guest TCP segmentation offload.
     pub fn enable_rx_gso(mut self, enable: bool) -> Self {
         self.enable_rx_gso = enable;
         self
@@ -586,11 +585,6 @@ impl NicBuilder {
 
         let driver = driver_source.simple();
         let tx_offload_support = endpoint.tx_offload_support();
-        let mut rx_offload_support = endpoint.rx_offload_support();
-        if !self.enable_rx_gso {
-            rx_offload_support.tcpv4_gso = false;
-            rx_offload_support.tcpv6_gso = false;
-        }
         let speed = u32::try_from(endpoint.link_speed() / BITS_PER_MEGABIT)
             .ok()
             .filter(|speed| *speed <= i32::MAX as u32)
@@ -601,7 +595,7 @@ impl NicBuilder {
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
             tx_offload_support,
-            rx_offload_support,
+            enable_rx_gso: self.enable_rx_gso,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {

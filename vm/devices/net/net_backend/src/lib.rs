@@ -112,11 +112,6 @@ pub trait Endpoint: Send + Sync + InspectMut {
         TxOffloadSupport::default()
     }
 
-    /// Specifies the receive offloads that this endpoint can produce.
-    fn rx_offload_support(&self) -> RxOffloadSupport {
-        RxOffloadSupport::default()
-    }
-
     /// Specifies parameters related to supporting multiple queues.
     fn multiqueue_support(&self) -> MultiQueueSupport {
         MultiQueueSupport {
@@ -348,7 +343,6 @@ impl DisconnectableEndpointControl {
 pub struct DisconnectableEndpointCachedState {
     is_ordered: bool,
     tx_offload_support: TxOffloadSupport,
-    rx_offload_support: RxOffloadSupport,
     multiqueue_support: MultiQueueSupport,
     tx_fast_completions: bool,
     link_speed: u64,
@@ -438,13 +432,6 @@ impl Endpoint for DisconnectableEndpoint {
             .tx_offload_support
     }
 
-    fn rx_offload_support(&self) -> RxOffloadSupport {
-        self.cached_state
-            .as_ref()
-            .expect("Endpoint needs connected at least once before use")
-            .rx_offload_support
-    }
-
     fn multiqueue_support(&self) -> MultiQueueSupport {
         self.cached_state
             .as_ref()
@@ -514,7 +501,6 @@ impl Endpoint for DisconnectableEndpoint {
                 self.cached_state = Some(DisconnectableEndpointCachedState {
                     is_ordered,
                     tx_offload_support: self.current().tx_offload_support(),
-                    rx_offload_support: self.current().rx_offload_support(),
                     multiqueue_support: self.current().multiqueue_support(),
                     tx_fast_completions: self.current().tx_fast_completions(),
                     link_speed: self.current().link_speed(),

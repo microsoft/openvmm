@@ -435,14 +435,6 @@ impl Endpoint for MockEndpoint {
         TxOffloadSupport::default()
     }
 
-    fn rx_offload_support(&self) -> RxOffloadSupport {
-        RxOffloadSupport {
-            checksum: true,
-            tcpv4_gso: true,
-            tcpv6_gso: true,
-        }
-    }
-
     fn multiqueue_support(&self) -> MultiQueueSupport {
         MultiQueueSupport {
             max_queues: 1,
@@ -2339,18 +2331,13 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport {
             ipv4_header: true,
             tcp: true,
             udp: true,
             tso: true,
             uso: true,
-        },
-        rx_offloads: RxOffloadSupport {
-            checksum: true,
-            tcpv4_gso: true,
-            tcpv6_gso: true,
         },
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
@@ -2404,13 +2391,8 @@ async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport::default(),
-        rx_offloads: RxOffloadSupport {
-            checksum: true,
-            tcpv4_gso: true,
-            tcpv6_gso: true,
-        },
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
@@ -2433,9 +2415,8 @@ async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
 async fn advertises_in_order(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport::default(),
-        rx_offloads: RxOffloadSupport::default(),
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
     let device = Device::builder()
@@ -2466,16 +2447,15 @@ async fn in_order_negotiated_rx_roundtrip(driver: DefaultDriver) {
     assert_eq!(used_len, NET_HEADER_SIZE + payload.len() as u32);
 }
 
-/// Verify that the device does NOT advertise offload features when the
-/// endpoint supports none.
+/// Verify that the device does not advertise transmit offloads without
+/// backend support, while receive GSO remains disabled by default.
 #[async_test]
 async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
-    let endpoint = MockEndpointWithOffloads {
+    let endpoint = MockEndpointWithTxOffloads {
         offloads: TxOffloadSupport::default(),
-        rx_offloads: RxOffloadSupport::default(),
         link_speed: 10_000 * BITS_PER_MEGABIT,
     };
 
@@ -2488,8 +2468,8 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     assert!(bank0.mac());
     assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
-    assert!(!bank0.guest_tso4(), "GUEST_TSO4 requires backend support");
-    assert!(!bank0.guest_tso6(), "GUEST_TSO6 requires backend support");
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 requires explicit opt-in");
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 requires explicit opt-in");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),
@@ -2523,9 +2503,8 @@ async fn link_speed_boundaries(driver: DefaultDriver) {
         Device::builder()
             .build(
                 &driver_source,
-                Box::new(MockEndpointWithOffloads {
+                Box::new(MockEndpointWithTxOffloads {
                     offloads: TxOffloadSupport::default(),
-                    rx_offloads: RxOffloadSupport::default(),
                     link_speed,
                 }),
                 mac,
@@ -2548,21 +2527,20 @@ async fn link_speed_boundaries(driver: DefaultDriver) {
     );
 }
 
-// Mock endpoint that reports specific offload support.
-struct MockEndpointWithOffloads {
+// Mock endpoint that reports specific transmit offload support.
+struct MockEndpointWithTxOffloads {
     offloads: TxOffloadSupport,
-    rx_offloads: RxOffloadSupport,
     link_speed: u64,
 }
 
-impl InspectMut for MockEndpointWithOffloads {
+impl InspectMut for MockEndpointWithTxOffloads {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.ignore();
     }
 }
 
 #[async_trait]
-impl Endpoint for MockEndpointWithOffloads {
+impl Endpoint for MockEndpointWithTxOffloads {
     fn endpoint_type(&self) -> &'static str {
         "mock-offloads"
     }
@@ -2584,10 +2562,6 @@ impl Endpoint for MockEndpointWithOffloads {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         self.offloads
-    }
-
-    fn rx_offload_support(&self) -> RxOffloadSupport {
-        self.rx_offloads
     }
 
     fn link_speed(&self) -> u64 {

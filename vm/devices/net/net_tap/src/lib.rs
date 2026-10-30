@@ -216,14 +216,6 @@ impl Endpoint for TapEndpoint {
             uso: true,
         }
     }
-
-    fn rx_offload_support(&self) -> RxOffloadSupport {
-        RxOffloadSupport {
-            checksum: true,
-            tcpv4_gso: true,
-            tcpv6_gso: true,
-        }
-    }
 }
 
 struct TapQueue {
