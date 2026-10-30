@@ -17,15 +17,12 @@ flowey_request! {
         pub initrd: Option<PathBuf>,
         pub firmware: Option<PathBuf>,
         pub boot_artifacts: Option<PathBuf>,
-        pub rpm_cache: Option<PathBuf>,
-        pub offline: bool,
         pub share: PathBuf,
         pub dir: PathBuf,
         pub kernel_cmdline: Option<String>,
         pub hypervisor_cmdline: Option<String>,
         pub prepare_only: bool,
-        pub timeout: u64,
-        pub command: Vec<String>,
+        pub incubator_args: Vec<String>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -54,21 +51,16 @@ impl SimpleFlowNode for Node {
             initrd,
             firmware,
             boot_artifacts,
-            rpm_cache,
-            offline,
             share,
             dir,
             kernel_cmdline,
             hypervisor_cmdline,
             prepare_only,
-            timeout,
-            command,
+            incubator_args,
             done,
         } = request;
         ctx.config(crate::resolve_mshv_boot_artifacts::Config {
             local_path: boot_artifacts.map(|path| ConfigVar(ReadVar::from_static(path))),
-            cache_dir: rpm_cache.map(|path| ConfigVar(ReadVar::from_static(path))),
-            offline: Some(offline),
         });
         let openvmm = ctx.reqv(|openvmm| crate::build_openvmm::Request {
             params: crate::build_openvmm::OpenvmmBuildParams {
@@ -191,14 +183,12 @@ impl SimpleFlowNode for Node {
                     guest_pipette,
                     "--output-dir".into(),
                     path_str(&dir.join("results"))?.into(),
-                    "--timeout".into(),
-                    timeout.to_string(),
                 ];
                 log::info!("Prepared profile: {}", profile_path.display());
                 if prepare_only {
                     let command = std::iter::once(path_str(&runner)?)
                         .chain(args.iter().map(String::as_str))
-                        .chain(std::iter::once("/bin/sh"))
+                        .chain(["--", "/bin/sh"])
                         .map(shell_word)
                         .collect::<Vec<_>>()
                         .join(" ");
@@ -206,9 +196,8 @@ impl SimpleFlowNode for Node {
                 } else {
                     flowey::shell_cmd!(rt, "{runner}")
                         .args(args)
-                        .args(["--no-pty", "--"])
-                        .args(command)
-                        .run()?;
+                        .args(incubator_args)
+                        .run_interactive()?;
                 }
                 Ok(())
             }
