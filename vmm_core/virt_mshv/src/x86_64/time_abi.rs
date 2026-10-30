@@ -36,6 +36,11 @@
 //!   every created VP, reads it back, and resumes partition time right after a
 //!   good read-back. Guest time therefore runs from the restore anchor, as on
 //!   the other backends, instead of waiting for the first VP run.
+//! - With partition time running, VP 0's TSC is the host TSC plus a constant
+//!   offset. The backend measures it at every start by reading VP 0's TSC
+//!   between two host TSC reads, after resuming partition time, which
+//!   preflight, a reset, and a stop freeze; the offset pairs the guest TSC
+//!   with host UTC in every time sample.
 //!
 //! These semantics were verified on hypervisor builds 10.0.26100.30000 (bare
 //! metal) and 10.0.26100.9444 (Azure nested), where they are identical.
@@ -86,7 +91,11 @@ use virt::time_abi::msr::MSR_TSC_INVARIANT_CONTROL;
 use virt::time_abi::msr::MSR_VP_INDEX;
 use virt::time_abi::msr::amd_config_msr_read;
 use virt::time_abi::msr::amd_config_msr_write;
+use virt::time_abi::publish::NativeRateBasis;
 use virt::time_abi::surface::SupportedCpuSurface;
+use virt::time_abi::tsc::GuestTscOffset;
+use virt::time_abi::tsc::OFFSET_ATTEMPTS;
+use virt::time_abi::tsc::OFFSET_TARGET_CYCLES;
 
 /// The identity MSRs that OpenVMM serves. The hypervisor raises #GP for
 /// every other MSR of the identity range.
@@ -1153,6 +1162,7 @@ impl TimeAbiBackend for MshvPartition {
         Ok(BackendPreflight {
             msr_route: IdentityMsrRoute::ExitToVmm,
             sync: TscSyncMethod::FrozenWrite,
+            native_rate: NativeRateBasis::Hypervisor,
         })
     }
 
@@ -1305,6 +1315,37 @@ impl TimeAbiBackend for MshvPartition {
             readback,
             method: TscSyncMethod::FrozenWrite,
         })
+    }
+
+    fn guest_tsc_offset(&self) -> Result<GuestTscOffset, TimeAbiError> {
+        let anchor_error = |message: String| TimeAbiError::new(TimeAbiCode::TscAnchor, message);
+        // Partition time stays frozen after preflight, a reset, or a stop
+        // until the partition starts, which resumes it before any VP runs.
+        // Resume it now, so that the guest TSC keeps the measured offset.
+        self.inner.thaw_time().map_err(|error| {
+            anchor_error(format!(
+                "cannot resume partition time: {}",
+                error_chain(&error)
+            ))
+        })?;
+        let offset = GuestTscOffset::measure(OFFSET_ATTEMPTS, OFFSET_TARGET_CYCLES, || {
+            get_vp_tsc(&self.inner.vmfd, VpIndex::BSP)
+        })
+        .map_err(|error| {
+            anchor_error(format!(
+                "cannot read the TSC of VP 0: {}",
+                error_chain(&error)
+            ))
+        })?
+        .ok_or_else(|| {
+            anchor_error("the host TSC went backwards around every read of VP 0's TSC".into())
+        })?;
+        tracing::info!(
+            offset = format_args!("{:#x}", offset.offset),
+            uncertainty_cycles = offset.uncertainty,
+            "time ABI: guest TSC offset"
+        );
+        Ok(offset)
     }
 }
 
@@ -1515,7 +1556,7 @@ mod tests {
             [0x4000_0005, 0x7263_694d, 0x666f_736f, 0x7648_2074]
         );
         assert_eq!(result(0x4000_0001), [0x3123_7648, 0, 0, 0]);
-        assert_eq!(result(0x4000_0002), [0x0058_564e, 0x0001_0000, 0, 0]);
+        assert_eq!(result(0x4000_0002), [0x0058_564e, 0x0002_0000, 0, 0]);
         assert_eq!(result(0x4000_0003), [0x8860, 0, 0, 0x100]);
         assert_eq!(result(0x4000_0004), [0, 0xffff_ffff, 0, 0]);
         assert_eq!(result(0x4000_0005), [VP_COUNT, VP_COUNT, 0, 0]);
@@ -1845,6 +1886,7 @@ mod hw {
     use virt::time_abi::identity::check_time_bits;
     use virt::time_abi::rate::LAPIC_HZ_HYPERV;
     use virt::time_abi::rate::check_plausible_tsc_hz;
+    use virt::time_abi::tsc::HostTscBracket;
     use vm_topology::memory::MemoryLayout;
     use vm_topology::processor::TopologyBuilder;
     use vm_topology::processor::x86::X2ApicState;
@@ -2022,11 +2064,22 @@ mod hw {
                 BackendPreflight {
                     msr_route: IdentityMsrRoute::ExitToVmm,
                     sync: TscSyncMethod::FrozenWrite,
+                    native_rate: NativeRateBasis::Hypervisor,
                 }
             );
             // Preflight leaves partition time frozen, as a reset does, until
             // the synchronized TSC set or the first VP run resumes it.
             assert!(*partition.inner.time_frozen.lock());
+            // The offset measurement resumes it, so that the offset holds.
+            let offset = backend.guest_tsc_offset().unwrap();
+            assert!(!*partition.inner.time_frozen.lock());
+            let (bracket, tsc) =
+                HostTscBracket::around(|| get_vp_tsc(&partition.inner.vmfd, VpIndex::BSP).unwrap());
+            let read = GuestTscOffset::from_bracket(tsc, bracket).unwrap();
+            assert!(
+                offset.agrees_with(&read),
+                "{offset:x?} {read:x?} with {created} VPs"
+            );
             partition.inner.thaw_time().unwrap();
             let tsc_hz = backend.native_tsc_hz().unwrap();
             check_plausible_tsc_hz(tsc_hz).unwrap();

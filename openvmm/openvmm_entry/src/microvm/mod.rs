@@ -147,7 +147,8 @@ impl MicrovmResources {
 /// Configures the chipset devices of a microVM for the time ABI: puts the PIT
 /// in strict mode, which forbids a periodic channel 0 at capture and restore
 /// (`E_PIT_ACTIVE`), and returns the portb device's time ABI configuration,
-/// with the restore packet of a restore.
+/// with the restore packet of a restore. The VM worker provides the host
+/// fields of the time samples, and applies the hooks that alter them.
 pub(crate) fn time_abi_chipset(
     chipset_devices: &mut [vmotherboard::ChipsetDeviceHandle],
     hooks: &virt::time_abi::TimeAbiTestHooks,
@@ -166,7 +167,6 @@ pub(crate) fn time_abi_chipset(
         generation: restore
             .as_ref()
             .map_or(0, |restore| restore.base.generation),
-        utc_offset_ms: hooks.utc_offset_ms,
         sample_delay_us: hooks.sample_delay_us,
         test_hooks: hooks.active(),
         restore,
