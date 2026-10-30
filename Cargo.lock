@@ -1146,6 +1146,7 @@ dependencies = [
  "anyhow",
  "cms",
  "const-oid",
+ "constant_time_eq",
  "der",
  "getrandom 0.4.2",
  "hex",

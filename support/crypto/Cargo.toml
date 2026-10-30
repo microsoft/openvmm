@@ -75,6 +75,7 @@ x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
 const-oid.workspace = true
+constant_time_eq.workspace = true
 jiff.workspace = true
 thiserror.workspace = true
 
