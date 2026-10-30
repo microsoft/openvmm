@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use super::BindingReportState;
-use super::EnumerationResult;
+use super::DeviceEnumerationState;
 use super::Vtl2DeviceState;
 use super::discard_pending_mana_buffers;
 use memory_range::MemoryRange;
@@ -61,10 +61,10 @@ fn discard_pending_mana_buffers_releases_restored_allocations() {
 fn enumeration_after_startup_from_missing_is_accepted() {
     let shutdown_active = false;
     let mut state = Vtl2DeviceState::Missing;
-    state.device_started();
+    state.mark_started();
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::ReportBinding,
+        DeviceEnumerationState::ReportBinding,
     );
     assert_eq!(
         state,
@@ -76,7 +76,7 @@ fn enumeration_after_startup_from_missing_is_accepted() {
     // A duplicate enumeration request does not report another binding.
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::Ignored
+        DeviceEnumerationState::Ignored
     );
     assert_eq!(
         state,
@@ -92,10 +92,10 @@ fn enumeration_before_startup_from_missing_is_accepted() {
     let mut state = Vtl2DeviceState::Missing;
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::WaitForDevice
+        DeviceEnumerationState::WaitForDevice
     );
     assert_eq!(state, Vtl2DeviceState::DeviceEnumerated);
-    state.device_started();
+    state.mark_started();
     assert_eq!(
         state,
         Vtl2DeviceState::Present {
@@ -106,7 +106,7 @@ fn enumeration_before_startup_from_missing_is_accepted() {
     // A duplicate enumeration request does not report another binding.
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::Ignored
+        DeviceEnumerationState::Ignored
     );
     assert_eq!(
         state,
@@ -124,7 +124,7 @@ fn enumeration_in_initial_present_is_ignored() {
     };
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::Ignored
+        DeviceEnumerationState::Ignored
     );
     assert_eq!(
         state,
@@ -140,11 +140,11 @@ fn enumeration_in_reconfiguring_is_ignored() {
     let mut state = Vtl2DeviceState::Reconfiguring;
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::Ignored
+        DeviceEnumerationState::Ignored
     );
     assert_eq!(state, Vtl2DeviceState::Reconfiguring);
     // Finish Reconfiguring
-    state.device_started();
+    state.mark_started();
     assert_eq!(
         state,
         Vtl2DeviceState::Present {
@@ -153,7 +153,7 @@ fn enumeration_in_reconfiguring_is_ignored() {
     );
     assert_eq!(
         state.device_enumerated(shutdown_active),
-        EnumerationResult::Ignored
+        DeviceEnumerationState::Ignored
     );
 }
 
@@ -174,7 +174,7 @@ fn enumeration_during_shutdown_is_ignored() {
         let mut state = original;
         assert_eq!(
             state.device_enumerated(shutdown_active),
-            EnumerationResult::Ignored
+            DeviceEnumerationState::Ignored
         );
         assert_eq!(state, original);
     }

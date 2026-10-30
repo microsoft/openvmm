@@ -375,7 +375,7 @@ enum BindingReportState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EnumerationResult {
+enum DeviceEnumerationState {
     Ignored,
     WaitForDevice,
     ReportBinding,
@@ -394,26 +394,26 @@ enum Vtl2DeviceState {
 }
 
 impl Vtl2DeviceState {
-    fn device_enumerated(&mut self, shutdown_active: bool) -> EnumerationResult {
+    fn device_enumerated(&mut self, shutdown_active: bool) -> DeviceEnumerationState {
         if shutdown_active {
-            return EnumerationResult::Ignored;
+            return DeviceEnumerationState::Ignored;
         }
         match self {
             Self::Missing => {
                 *self = Self::DeviceEnumerated;
-                EnumerationResult::WaitForDevice
+                DeviceEnumerationState::WaitForDevice
             }
             Self::Present { binding_report }
                 if *binding_report == BindingReportState::WaitingForEnumeration =>
             {
                 *binding_report = BindingReportState::Done;
-                EnumerationResult::ReportBinding
+                DeviceEnumerationState::ReportBinding
             }
-            _ => EnumerationResult::Ignored,
+            _ => DeviceEnumerationState::Ignored,
         }
     }
 
-    fn device_started(&mut self) {
+    fn mark_started(&mut self) {
         let binding_report = if matches!(self, Self::Missing) {
             BindingReportState::WaitingForEnumeration
         } else {
@@ -1551,7 +1551,7 @@ impl HclNetworkVFManagerWorker {
                 NextWorkItem::Continue => continue,
                 NextWorkItem::ManaDeviceEnumerated => {
                     match vtl2_device_state.device_enumerated(self.is_shutdown_active) {
-                        EnumerationResult::Ignored => {
+                        DeviceEnumerationState::Ignored => {
                             tracing::warn!(
                                 vtl2_vfid,
                                 vtl2_device_state = ?vtl2_device_state,
@@ -1559,8 +1559,8 @@ impl HclNetworkVFManagerWorker {
                                 "ignoring VPCI DeviceEnumerated notification, invalid device state"
                             );
                         }
-                        EnumerationResult::WaitForDevice => {}
-                        EnumerationResult::ReportBinding => {
+                        DeviceEnumerationState::WaitForDevice => {}
+                        DeviceEnumerationState::ReportBinding => {
                             if let Err(err) = self.update_vtl2_device_bind_state(true).await {
                                 tracing::error!(
                                     vtl2_vfid,
@@ -1627,7 +1627,7 @@ impl HclNetworkVFManagerWorker {
                         VfReconfigResult::Retry(backoff) => vf_reconfig_backoff = Some(backoff),
                         VfReconfigResult::Success => {
                             vf_reconfig_backoff = None;
-                            vtl2_device_state.device_started();
+                            vtl2_device_state.mark_started();
                         }
                         VfReconfigResult::Exhausted => {
                             vf_reconfig_backoff = None;
@@ -1649,7 +1649,7 @@ impl HclNetworkVFManagerWorker {
                         .instrument(tracing::info_span!("VTL2 VF arrived", vtl2_vfid))
                         .await
                     {
-                        vtl2_device_state.device_started();
+                        vtl2_device_state.mark_started();
                     }
                 }
                 NextWorkItem::ManaDeviceRemoved { surprise_remove } => {
