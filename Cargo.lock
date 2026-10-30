@@ -6780,6 +6780,7 @@ name = "pcie"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct 0.11.0",
  "chipset_device",
  "cxl",
  "cxl_spec",
@@ -6791,6 +6792,7 @@ dependencies = [
  "parking_lot",
  "pci_bus",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
