@@ -211,19 +211,24 @@ impl TimerState {
 
     /// Returns the timestamp corresponding to the given VM time.
     ///
-    /// If the VM time is before the last start time, then the timestamp is at
-    /// the host time when the VM last started. If the VM time is after it,
-    /// beyond what the host clock can represent, then the timestamp is at the
-    /// host clock's latest time.
+    /// If the VM time is in the past and before the last start time, then the
+    /// timestamp is at the host time when the VM last started. If the VM time
+    /// is in the future, beyond what the host clock can represent, then the
+    /// timestamp is at the host clock's latest time.
     fn timestamp(&self, time: VmTime) -> Option<Timestamp> {
         let start_time = self.time.start_time()?;
-        let since = time
-            .checked_sub(start_time.vmtime)
-            .unwrap_or(Duration::ZERO);
-        Some(Timestamp::new(
-            time,
-            start_time.os_time().saturating_add(since),
-        ))
+        let os_time = if let Some(since) = time.checked_sub(start_time.vmtime) {
+            start_time.os_time().saturating_add(since)
+        } else if time.is_after(self.now(Instant::now()).vmtime) {
+            // Once VM time has run since the start, a time nearly half the ring
+            // after now is more than half the ring after the start, which VM
+            // time's circular order puts before it. Such a time is still in
+            // the future, far beyond the host clock.
+            Instant::from_nanos(u64::MAX)
+        } else {
+            start_time.os_time()
+        };
+        Some(Timestamp::new(time, os_time))
     }
 
     /// Returns the current guest time given a host time.
@@ -888,9 +893,10 @@ impl VmTimeAccess {
 
     /// Returns the host time corresponding to a guest time.
     ///
-    /// If the guest time is before the VM last resumed, then returns the time
-    /// the VM last resumed. If the guest time is after it, beyond what the host
-    /// clock can represent, then returns the host clock's latest time.
+    /// If the guest time is in the past and before the VM last resumed, then
+    /// returns the time the VM last resumed. If the guest time is in the
+    /// future, beyond what the host clock can represent, then returns the host
+    /// clock's latest time.
     ///
     /// If the VM is not running, returns `None`.
     pub fn host_time(&self, time: VmTime) -> Option<Instant> {
@@ -1214,6 +1220,41 @@ mod tests {
         assert!(timeout.checked_sub(restored).unwrap().as_nanos() > u64::MAX.into());
         keeper.restore(SavedState::from_vmtime(restored)).await;
         keeper.start().await;
+        check_unrepresentable_timeout(&driver, &mut access).await;
+        keeper.stop().await;
+    }
+
+    #[async_test]
+    async fn test_timeout_nearly_half_the_ring_ahead(driver: DefaultDriver) {
+        let start = VmTime::from_100ns(0);
+        let mut keeper = VmTimeKeeper::new(&driver, start);
+        let mut access = keeper
+            .builder()
+            .build(&driver)
+            .await
+            .unwrap()
+            .access("test");
+        keeper.start().await;
+        PolledTimer::new(&driver)
+            .sleep(Duration::from_millis(10))
+            .await;
+
+        // The latest time that follows now in VM time's circular order. As VM
+        // time has run since the start, that order puts it before the start.
+        let now = access.now();
+        let timeout = VmTime::from_100ns(now.as_100ns().wrapping_add(i64::MAX as u64));
+        assert!(timeout.is_after(now));
+        assert!(timeout.is_before(start));
+        assert_eq!(
+            access.host_time(timeout),
+            Some(Instant::from_nanos(u64::MAX))
+        );
+        // A time in the past before the start still maps to the start.
+        assert_eq!(
+            access.host_time(VmTime::from_100ns(u64::MAX)),
+            access.host_time(start)
+        );
+        access.set_timeout(timeout);
         check_unrepresentable_timeout(&driver, &mut access).await;
         keeper.stop().await;
     }
