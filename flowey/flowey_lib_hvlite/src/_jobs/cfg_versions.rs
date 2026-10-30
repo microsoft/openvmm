@@ -32,6 +32,7 @@ pub const NODEJS: &str = "24.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.6";
 pub const OPENVMM_DEPS: &str = "0.3.0-175";
+pub const OPENVMM_MSHV_TEST_KERNEL: &str = "0.3.0-161";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -215,6 +216,7 @@ impl FlowNode for Node {
         // 0.3.0 split moved the kernel and initrd into their own artifacts.
         ctx.config(crate::resolve_openvmm_test_linux_kernel::Config {
             version: Some(OPENVMM_DEPS.into()),
+            mshv_version: Some(OPENVMM_MSHV_TEST_KERNEL.into()),
             ..Default::default()
         });
         ctx.config(crate::resolve_openvmm_test_initrd::Config {
