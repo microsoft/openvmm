@@ -737,6 +737,17 @@ impl<'a> Builder<'a> {
         self
     }
 
+    /// Applies prepared sandbox launch requirements to the new process.
+    pub fn apply_sandbox(
+        &mut self,
+        _config: sandbox::SandboxProcessConfig,
+    ) -> io::Result<&mut Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sandboxed process launch is not implemented on Windows",
+        ))
+    }
+
     pub fn stdin(&mut self, stdin: Stdio<'a>) -> &mut Self {
         self.stdin = stdin;
         self
