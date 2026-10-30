@@ -85,6 +85,11 @@ impl Default for RxMetadata {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct RxOffload {
+    // Interpreted according to `kind`:
+    // - Checksum: value0 = checksum start, value1 = checksum offset.
+    // - TcpV4/TcpV6: value0 = header length, value1 = maximum segment size.
+    // - TcpV4Checksum/TcpV6Checksum: the TCP fields above, plus
+    //   value2 = checksum start. The TCP checksum offset is always 16.
     value0: u16,
     value1: u16,
     value2: u16,
