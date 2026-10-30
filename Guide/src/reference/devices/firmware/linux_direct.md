@@ -56,6 +56,52 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
 The DSDT includes whatever x86 chipset devices are configured (serial ports,
 IOAPIC, PCI bus, VMBus, virtio-mmio, RTC, etc.).
 
+### MP-Table Loader API
+
+The `loader` crate also exposes
+`linux::mptable_boot::load_x86_mptable` for firmware-less x86_64 direct
+boot. This library API supplies Intel MP 1.4 processor and interrupt-routing
+tables instead of ACPI and does not supply SMBIOS, UEFI, or BIOS tables.
+
+This PR does not add an OpenVMM CLI flag or configuration option that selects
+the MP-table loader. The OpenVMM x86_64 CLI path described above continues to
+use ACPI and SMBIOS.
+
+Callers must meet these image and topology requirements:
+
+- The kernel must be an uncompressed x86_64 ELF image. The loader rejects
+  `bzImage` kernels.
+- The topology must contain 1 through 15 processors with consecutive APIC IDs
+  starting at zero. The first processor is the bootstrap processor, and the
+  builder assigns the next four-bit ID to the I/O APIC. IRQs marked as
+  level-triggered must be ISA IRQs 0 through 15.
+- The command line, including its terminating NUL byte, must fit in the
+  64-KiB command-line region.
+
+The following half-open guest-physical ranges must be backed by RAM:
+
+| Range | Purpose |
+|-------|---------|
+| `0x0000..0x3000` | MP tables, GDT, and Linux zero page |
+| `0x4000..0xA000` | Initial 4-GiB identity-map page tables |
+| `0x20000..0x30000` | Command-line storage |
+| `0xA0000..0x100000` | Legacy ISA region, which the loader reserves in e820 |
+
+The memory layout must contain no RAM in `0xC0000000..0x100000000` (3 GiB
+through 4 GiB), which remains available for MMIO. RAM may resume at 4 GiB and
+is included in the e820 map.
+
+The page ranges covering the kernel and initrd must lie entirely in RAM and end
+at or before the 4-GiB identity-map limit. Because the 3-GiB-to-4-GiB range
+contains no RAM, accepted image placements are below 3 GiB. The images must
+not overlap each other, the fixed ranges above, the legacy ISA region, or any
+caller-provided reserved range. The kernel entry point must fall inside its
+loaded image.
+
+Caller-provided reserved ranges must be non-empty, page-aligned, sorted,
+non-overlapping, and contained in RAM. They cannot overlap the fixed boot-data
+ranges or the legacy ISA region.
+
 ## AArch64 Boot Flow
 
 On AArch64, OpenVMM supports two modes for presenting hardware descriptions to
