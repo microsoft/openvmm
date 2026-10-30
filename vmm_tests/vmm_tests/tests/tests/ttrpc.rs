@@ -262,10 +262,8 @@ exec /bin/busybox poweroff -f
     Ok(())
 }
 
-// The ttrpc disk configuration only accepts a host path, so this test needs the
-// Windows image as a local file. `vmm-tests-run` streams images instead of
-// downloading them by default; request the source so the test can explain how
-// to get a local copy rather than failing with a missing-file error.
+// Ignored by default because ttrpc requires a local Windows image, while
+// `vmm-tests-run` defaults to streaming. Use --no-lazy-fetch for local images.
 petri::multitest!(vec![
     petri::SimpleTest::new_async(
         "test_ttrpc_shutdown_windows_guest",
@@ -290,6 +288,7 @@ petri::multitest!(vec![
         },
         test_ttrpc_shutdown_windows_guest,
     )
+    .ignore()
     .remote_access(petri::RemoteAccess::Allow)
     .into()
 ]);
