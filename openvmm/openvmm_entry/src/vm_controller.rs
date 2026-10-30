@@ -19,6 +19,7 @@ use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use openvmm_defs::rpc::VmRpc;
+use sandbox::profiles::SandboxRole;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -420,7 +421,7 @@ impl VmController {
     async fn handle_restart(&mut self) -> anyhow::Result<()> {
         let vm_host = self
             .mesh
-            .make_host("vm", self.log_file.clone())
+            .make_sandboxed_host(SandboxRole::Vm, self.log_file.clone())
             .await
             .context("spawning vm process failed")?;
         self.vm_worker.restart(&vm_host);

@@ -295,6 +295,12 @@ PCAT firmware.
 
 Make sure you completed Step 2 (allow unsafe interrupts) and that the device is bound to `vfio-pci`. An IOMMU must be available — NoIommu mode is not supported.
 
+With worker sandboxing enabled, load the VFIO modules before starting the
+worker: its filesystem view includes `/dev/vfio/vfio` only if that node
+exists at startup. VFIO group/device descriptors are still passed by the
+control process. PCI sysfs aliases and their `/sys/devices` targets are
+visible read-only for BAR metadata.
+
 ### "No interrupt remapping" / ENODEV on IOMMU setup
 
 Run Step 2 to enable `allow_unsafe_interrupts`. This is needed when the platform's IOMMU does not support interrupt remapping.

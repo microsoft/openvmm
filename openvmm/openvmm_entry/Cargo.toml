@@ -76,6 +76,7 @@ mesh_rpc.workspace = true
 mesh_process.workspace = true
 mesh_worker.workspace = true
 pal.workspace = true
+sandbox.workspace = true
 unix_socket.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
@@ -105,6 +106,8 @@ unicycle.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap.workspace = true
+pal_tracer.workspace = true
+sandbox.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 vmswitch.workspace = true

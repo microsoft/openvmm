@@ -116,6 +116,10 @@ The kernel and initrd can be controlled via options:
 * `--initrd <PATH>`: The initial ramdisk image.
 * `-c <STRING>` or `--cmdline <STRING>`: Extra kernel command line options, such as `root=/dev/sda`.
 
+On Unix, OpenVMM can record the files and system calls used by each worker and
+automatically convert that trace into a candidate sandbox profile. See
+`support/sandbox_profiler/README.md` for setup and usage instructions.
+
 ### Windows, via UEFI
 
 This example will launch a modern copy of Windows via UEFI, using the `mu_msvm`

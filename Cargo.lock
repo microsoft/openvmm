@@ -4836,6 +4836,8 @@ dependencies = [
  "mesh_remote",
  "pal",
  "pal_async",
+ "pal_tracer",
+ "sandbox",
  "slab",
  "tempfile",
  "test_with_tracing",
@@ -6242,10 +6244,12 @@ dependencies = [
  "otel_tracing",
  "pal",
  "pal_async",
+ "pal_tracer",
  "parking_lot",
  "pcie_remote_resources",
  "prost",
  "rustyline",
+ "sandbox",
  "scsidisk_resources",
  "serial_16550_resources",
  "serial_core",
@@ -6543,20 +6547,18 @@ dependencies = [
 name = "pal"
 version = "0.0.0"
 dependencies = [
- "caps",
  "fs-err",
  "getrandom 0.4.2",
  "headervec",
- "landlock",
  "libc",
  "ntapi",
  "pal_event",
+ "sandbox",
  "seccompiler",
  "socket2",
  "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
- "tracing",
  "widestring",
  "winapi",
  "windows 0.62.0",
@@ -6610,6 +6612,22 @@ dependencies = [
  "libc",
  "mesh_protobuf",
  "windows-sys 0.61.0",
+]
+
+[[package]]
+name = "pal_tracer"
+version = "0.0.0"
+dependencies = [
+ "async-channel",
+ "fs-err",
+ "futures",
+ "libc",
+ "pal",
+ "seccompiler",
+ "serde_json",
+ "tempfile",
+ "test_with_tracing",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -7694,6 +7712,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "sandbox"
+version = "0.0.0"
+dependencies = [
+ "caps",
+ "fs-err",
+ "landlock",
+ "libc",
+ "seccompiler",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
+name = "sandbox_profiler"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "libc",
+ "pal_tracer",
+ "sandbox",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

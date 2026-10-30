@@ -101,6 +101,7 @@ use pal_async::DefaultPool;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use sandbox::profiles::SandboxRole;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use serial_core::resources::NullSerialBackendHandle;
@@ -161,7 +162,11 @@ pub fn openvmm_main() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
-            1
+            if err.downcast_ref::<sandbox::Error>().is_some() {
+                sandbox::EXIT_SANDBOX_FAILED
+            } else {
+                1
+            }
         }
     };
 
@@ -1682,7 +1687,7 @@ async fn vm_config_from_command_line(
                     bios_guid,
                 }
                 .into_resource(),
-                worker_host: mesh.make_host("tpm", None).await?,
+                worker_host: mesh.make_sandboxed_host(SandboxRole::Tpm, None).await?,
             }
             .into_resource(),
         });
@@ -2730,6 +2735,8 @@ fn prepare_snapshot_restore(
 }
 
 fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> {
+    meshworker::apply_vmm_mesh_host_sandbox()?;
+
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2825,7 +2832,12 @@ fn new_hvsock_service_id(port: u32) -> Guid {
 }
 
 async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<i32> {
-    let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
+    let mut mesh = Some(VmmMesh::new(
+        &driver,
+        opt.single_process,
+        #[cfg(target_os = "linux")]
+        opt.worker_trace_dir.clone(),
+    )?);
     let result = run_control_inner(driver, &mut mesh, opt).await;
     // If setup failed before the mesh was handed to the controller, shut it
     // down so the child host process exits cleanly without noisy logs.
@@ -2963,7 +2975,9 @@ async fn run_control_inner(
     let (vm_rpc, rpc_recv) = mesh::channel();
     let (notify_send, notify_recv) = mesh::channel();
     let vm_worker = {
-        let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
+        let vm_host = mesh
+            .make_sandboxed_host(SandboxRole::Vm, opt.log_file.clone())
+            .await?;
 
         let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
             let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
@@ -3332,7 +3346,13 @@ mod tests {
             let igvm_path = temp_dir.path().join("guest.igvm");
             File::create(&igvm_path).unwrap();
             let igvm_options = format!("firmware={},personality=openhcl", igvm_path.display());
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             for (extra, expected_alias, expected_policy) in [
                 (vec![], true, Some(LateMapVtl0MemoryPolicy::Halt)),
@@ -3465,7 +3485,13 @@ mod tests {
                 "--single-process",
             ])
             .unwrap();
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
                 .await
@@ -3502,7 +3528,13 @@ mod tests {
                 "--single-process",
             ])
             .unwrap();
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             let (config, _resources) = vm_config_from_command_line(driver, &mesh, &opt)
                 .await
@@ -3541,7 +3573,13 @@ mod tests {
                 "--single-process",
             ])
             .unwrap();
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             let error = vm_config_from_command_line(driver, &mesh, &opt)
                 .await
@@ -3575,7 +3613,13 @@ mod tests {
                 "--single-process",
             ])
             .unwrap();
-            let mesh = VmmMesh::new(&driver, true).unwrap();
+            let mesh = VmmMesh::new(
+                &driver,
+                true,
+                #[cfg(target_os = "linux")]
+                None,
+            )
+            .unwrap();
 
             let error = vm_config_from_command_line(driver, &mesh, &opt)
                 .await

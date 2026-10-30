@@ -3,7 +3,9 @@
 
 [workspace]
 resolver = "2"
-default-members = ["openvmm/openvmm"]
+default-members = [
+  "openvmm/openvmm",
+]
 members = [
   # openvmm
   "openvmm/openvmm",
@@ -53,6 +55,7 @@ members = [
   "petri/incubator",
   "petri/make_imc_hive",
   "petri/petri-tool",
+  "support/sandbox_profiler",
   "vm/devices/get/test_igvm_agent_rpc_server",
   "vm/devices/storage/openvmm-img",
   "vm/devices/tpm/tpm_guest_tests",
@@ -170,6 +173,7 @@ mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_tracing = { path = "support/mesh_tracing" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
+pal_tracer = { path = "support/pal/pal_tracer" }
 minircu = { path = "support/minircu" }
 nostd_spin_channel = { path = "support/nostd_spin_channel"}
 otel_tracing = { path = "support/otel_tracing" }
@@ -186,6 +190,7 @@ powershell_builder = { path = "support/powershell_builder" }
 resource_dll_parser = { path = "support/resource_dll_parser" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 safeatomic = { path = "support/safeatomic" }
+sandbox = { path = "support/sandbox" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
 sev_guest_device_tio = { path = "support/sev_guest_device/sev_guest_device_tio" }
