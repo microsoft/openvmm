@@ -57,7 +57,7 @@ pub(crate) enum CertificateChainValidationError {
     #[error("certificate public key is not an RSA key")]
     PublicKeyNotRsa,
     #[error("failed to verify the child certificate signature with parent public key")]
-    VerifyChildSignatureWithParentPublicKey(#[source] crypto::rsa::RsaError),
+    VerifyChildSignatureWithParentPublicKey(#[source] crypto::x509::X509VerifyError),
     #[error("cert chain validation failed -- signature mismatch")]
     CertChainSignatureMismatch,
     #[error("failed to check if the certificate was issued by the issuer")]
@@ -246,9 +246,7 @@ fn validate_cert_chain(
             let parent = &cert_chain[i + 1];
             let public_key = parent
                 .public_key()
-                .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)?
-                .rsa()
-                .ok_or(CertificateChainValidationError::PublicKeyNotRsa)?;
+                .map_err(CertificateChainValidationError::GetPublicKeyFromCertificate)?;
 
             let verified = child.verify(&public_key).map_err(
                 CertificateChainValidationError::VerifyChildSignatureWithParentPublicKey,
@@ -279,6 +277,7 @@ mod tests {
 
     use crate::test_helpers::CIPHERTEXT;
     use crypto::rsa::RsaKeyPair;
+    use crypto::x509::X509SelfSignedOptions;
     use openhcl_attestation_protocol::igvm_attest::akv;
 
     /// Empty JWT body type to use for parsing invalid JWTs.
@@ -459,12 +458,11 @@ mod tests {
 
         // Build root cert with different subject name
         let root = X509Certificate::build_self_signed(
-            &rsa_key,
-            "US",
-            "Washington",
-            "Redmond",
-            "ACME INC",
-            "acme.com",
+            (&rsa_key).into(),
+            &X509SelfSignedOptions {
+                common_name: "acme.com",
+                ..Default::default()
+            },
         )
         .unwrap();
 

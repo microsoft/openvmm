@@ -11,7 +11,7 @@ use flowey::pipeline::prelude::*;
 // (in both GitHub and ADO).
 pub const WINDOWS_IMAGE_AMD64_V2: &str = "win-amd64-v2";
 pub const WINDOWS_IMAGE_ARM64_V2: &str = "win-arm64-v2";
-pub const LINUX_IMAGE_AMD64: &str = "ubuntu2404-amd64";
+pub const LINUX_IMAGE_AMD64_PREPPED: &str = "ubuntu2404-amd64-prepped";
 pub const LINUX_IMAGE_ARM64: &str = "ubuntu2404-arm64";
 pub const MSHV_IMAGE_AMD64: &str = "azurelinux3-amd64-dom0";
 
@@ -47,11 +47,11 @@ pub fn linux_arm_v5_1es() -> GhRunner {
 }
 
 pub fn linux_intel_v6_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, LINUX_IMAGE_AMD64)
+    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
 pub fn linux_amd_v7_1es() -> GhRunner {
-    gh_pool_with_image_1es(AMD_V7_POOL_1ES, LINUX_IMAGE_AMD64)
+    gh_pool_with_image_1es(AMD_V7_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
 pub fn linux_mshv_intel_v5_1es() -> GhRunner {
@@ -101,6 +101,16 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
         "X64".to_string(),
         "SNP".to_string(),
         "Baremetal".to_string(),
+    ])
+}
+
+pub fn linux_snp_mshv_self_hosted() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Linux".to_string(),
+        "X64".to_string(),
+        "SNP".to_string(),
+        "MSHV".to_string(),
     ])
 }
 

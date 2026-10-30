@@ -2499,6 +2499,9 @@ impl UhPartition {
 
         // Compute and validate capabilities.
         let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(topology, cpuid_fn)?;
+        // Hardware-isolated guests use our software APIC, which does not
+        // implement the architectural TSC-deadline MSR.
+        caps.tsc_deadline &= !isolation.is_hardware_isolated();
         match isolation {
             IsolationType::Tdx => {
                 assert_eq!(caps.vtom.is_some(), !hide_isolation);

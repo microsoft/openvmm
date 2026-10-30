@@ -124,12 +124,14 @@ describes the source definitions.
   `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
-  and only by backends that support nested virtualization (currently WHP and
-  KVM); requesting it with a backend that does not support it fails early. The
-  host must expose virtualization extensions to the VM running OpenVMM. When
-  enabled, a guest may detect nested virtualization and turn on features such
-  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
-  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  and only by backends that support nested virtualization (currently WHP,
+  KVM, and MSHV); requesting it with a backend that does not support it fails
+  early.
+  The host must expose virtualization extensions to the VM running OpenVMM.
+  When enabled, a guest may detect nested virtualization and turn on features
+  such as Virtual Secure Mode (VSM), which can hurt performance and interfere
+  with VMBus devices; nested virt cannot currently be combined with
+  `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
 * `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
   * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
@@ -188,12 +190,16 @@ describes the source definitions.
 * `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image
-  * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx
+  * A fixed VHD1 file with a `.vhd` extension on any supported host
+  * A dynamic or differencing VHD1 file with a `.vhd` extension on Windows
+  * A VHDX file with a `.vhdx` extension
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+  OpenVMM selects VHD handling from the file extension. Fixed VHD1 disks
+  require the default cached I/O mode on every host. VHDX disks also require
+  cached I/O on Linux.
 * `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
   node). Mutually exclusive with `--memory`. Each `--numa` specifies one
   guest NUMA node with its own memory backing and optional VP assignment.
@@ -275,6 +281,13 @@ describes the source definitions.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--virtio-rtc [bus=BUS]`: Add a Virtio 1.4 RTC device with one read-only
+  `UTC_MAYBE_SMEARED` clock backed by host wall time. Readings use nanosecond
+  units; cross-timestamping and alarms are not supported. The guest needs a
+  Virtio RTC driver. The optional `bus` accepts `auto`, `mmio`, `pci`,
+  `pcie:PORT`, or `vpci`; bare `--virtio-rtc` uses `auto`. No device is added
+  unless the option is supplied. For example, use
+  `--virtio-rtc bus=pcie:rp0` to attach it to the named PCIe port `rp0`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
@@ -523,10 +536,15 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
+--net mac=00-15-5d-12-12-13:consomme
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
+
+Use `mac=<XX-XX-XX-XX-XX-XX>:` to set the MAC address exposed to the guest.
+If it is omitted, OpenVMM generates a random MAC address. This prefix can be
+combined with the other NIC prefixes.
 
 **Filesystems and other virtio devices** (colon-prefixed):
 `--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
@@ -543,6 +561,12 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+For `--virtio-rtc`, select the named PCIe port in its options:
+
+```sh
+--virtio-rtc bus=pcie:rp0
 ```
 
 **vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
@@ -632,7 +656,7 @@ named root complex. The flag is repeatable — use one `--intel-vtd` per
 root complex that should have an IOMMU. The guest discovers VT-d units
 via the ACPI DMAR table (not PCI config space).
 
-```sh
+```bash
 # Enable Intel VT-d on root complex rc0
 --intel-vtd rc0
 
@@ -642,3 +666,45 @@ via the ACPI DMAR table (not PCI config space).
 
 Mutually exclusive with `--amd-iommu` within the same VM (only one x86
 IOMMU type can be active).
+
+VT-d advertises legacy and scalable second-stage translation by default;
+there is no separate scalable-mode or accessed/dirty CLI flag. Both modes
+support 39-bit (3-level) and 48-bit (4-level) addresses, 4KB/2MB/1GB pages,
+pass-through, and interrupt remapping for MSI and IOAPIC routes. Legacy mode
+accepts 128-bit or 256-bit queued invalidations; scalable mode requires
+256-bit descriptors.
+
+The scalable profile advertises SMTS, SSTS, SMPWCS, SSADS, and RPS. Requests
+without a PASID use the context entry's implied `RID_PASID`, including
+nonzero values. Explicitly PASID-tagged requests, first-stage and nested
+translation, ATS, PRI, and supervisor requests are not supported. The
+implementation version remains 1.0; use CAP/ECAP, not VER, for discovery.
+
+Accessed/dirty tracking is optional and controlled by each PASID table
+entry's `SSADE` bit. With tracking enabled, translation atomically sets
+accessed (bit 8) on visited second-stage entries and dirty (bit 9) on an
+accepted write's leaf, before performing DMA. A later DMA operation failure
+does not undo those flags. Legacy translation and pass-through never set
+them. Updates require coherent page-table access (`PWSNP=1`); a required
+non-snooping update faults with reason `0x7c`, and an atomic-update failure
+faults with `0x7d`.
+
+Flags are sticky until guest software clears them. Quiesce relevant DMA,
+clear the flags, perform the required translation-cache invalidations, and
+wait for completion before resuming DMA. The emulator does not cache page
+walks, but software must still follow the architectural invalidation
+protocol. Unsynchronized clearing or reading does not provide a race-free
+dirty snapshot, and no migration bitmap API is provided.
+
+Linux 6.18 and Ubuntu 24.04's 6.8 kernel document `intel_iommu=on,sm_on`
+to request scalable mode and `intel_iommu=on,sm_off` to force legacy mode.
+These are guest kernel options, not OpenVMM options. For UEFI boots, configure
+them in the guest bootloader; a direct-boot kernel command line does not
+configure the disk's kernel. Scalable mode alone does not enable `SSADE`.
+OpenVMM inspection exposes the SRTP-latched `translation_table_mode` (0 for
+legacy, 1 for scalable), rather than just the pending RTADDR value.
+
+See the [`intel_vtd` crate documentation][intel-vtd-rustdoc] for implementation
+details.
+
+[intel-vtd-rustdoc]: https://openvmm.dev/rustdoc/linux/intel_vtd/index.html

@@ -100,6 +100,10 @@ fn virtio_class_code(device_id: VirtioDeviceType) -> (ClassCode, Subclass) {
             ClassCode::SIMPLE_COMMUNICATION_CONTROLLER,
             Subclass::SIMPLE_COMMUNICATION_CONTROLLER_OTHER,
         ),
+        VirtioDeviceType::RTC => (
+            ClassCode::BASE_SYSTEM_PERIPHERAL,
+            Subclass::BASE_SYSTEM_PERIPHERAL_RTC,
+        ),
         // These device types have no well-established class code; report a
         // generic base system peripheral.
         VirtioDeviceType::RNG
@@ -855,12 +859,13 @@ mod saved_state {
     }
 
     use super::*;
+    use vmcore::save_restore::AsyncSaveRestore;
     use vmcore::save_restore::SaveRestore;
 
-    impl SaveRestore for VirtioPciDevice {
+    impl AsyncSaveRestore for VirtioPciDevice {
         type SavedState = state::SavedState;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 common: self.core.save_common()?,
                 msix_config_vector: self.pci.msix_config_vector,
@@ -875,11 +880,11 @@ mod saved_state {
                     })
                     .collect(),
                 interrupt_status: *self.pci.interrupt_status.lock(),
-                cfg_space: self.pci.config_space.save()?,
+                cfg_space: SaveRestore::save(&mut self.pci.config_space)?,
             })
         }
 
-        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+        async fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let saved_queue_count = state.queues.len();
 
             // Restore the PCI config space (BARs, command register, etc.) so
@@ -895,7 +900,7 @@ mod saved_state {
             // life of the VM and every queue kick takes an MMIO exit instead of
             // the registered doorbell. Nothing in `restore_common` reads the
             // interrupt state restored below.
-            self.pci.config_space.restore(state.cfg_space)?;
+            SaveRestore::restore(&mut self.pci.config_space, state.cfg_space)?;
 
             self.core.restore_common(
                 &mut self.pci,

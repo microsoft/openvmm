@@ -30,6 +30,8 @@ pub mod build_pipette;
 pub mod build_prep_steps;
 pub mod build_rustdoc;
 pub mod build_sidecar;
+pub mod build_snp_bootshim;
+pub mod build_snp_linux_direct_igvm;
 pub mod build_test_igvm_agent_rpc_server;
 pub mod build_tmk_vmm;
 pub mod build_tmks;

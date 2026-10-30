@@ -22,6 +22,7 @@ use inspect::Inspect;
 use log::Log;
 use processor::ProcessingError;
 use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+use uefi_specs::hyperv::debug_level::DEBUG_INFO;
 use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 
 mod accumulator;
@@ -36,6 +37,9 @@ pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
 /// Number of EfiDiagnosticsLogs emitted per period for watchdog timeouts
 pub const WATCHDOG_LOGS_PER_PERIOD: u32 = 2000;
+
+// MsvmPkg uses WARN | INFO to pass the default EFI filter; emit at INFO.
+const IMPORTANT_INFO: u32 = DEBUG_WARN | DEBUG_INFO;
 
 /// Emit a diagnostic log entry with rate limiting.
 ///
@@ -52,7 +56,7 @@ fn emit_log_ratelimited(log: &Log, limit: u32) {
             log_message = log.message_trimmed(),
             "EFI log entry"
         )
-    } else if log.debug_level & DEBUG_WARN != 0 {
+    } else if log.debug_level & DEBUG_WARN != 0 && log.debug_level != IMPORTANT_INFO {
         tracelimit::warn_ratelimited!(
             limit: limit,
             debug_level = %log.debug_level_str(),
@@ -86,7 +90,7 @@ fn emit_log_unrestricted(log: &Log) {
             log_message = log.message_trimmed(),
             "EFI log entry"
         )
-    } else if log.debug_level & DEBUG_WARN != 0 {
+    } else if log.debug_level & DEBUG_WARN != 0 && log.debug_level != IMPORTANT_INFO {
         tracing::warn!(
             debug_level = %log.debug_level_str(),
             ticks = log.ticks(),

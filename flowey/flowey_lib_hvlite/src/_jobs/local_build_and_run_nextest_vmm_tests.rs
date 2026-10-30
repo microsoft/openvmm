@@ -107,6 +107,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
+        ctx.import::<crate::build_snp_linux_direct_igvm::Node>();
         ctx.import::<crate::build_tmks::Node>();
         ctx.import::<crate::build_tmk_vmm::Node>();
         ctx.import::<crate::build_tpm_guest_tests::Node>();
@@ -269,6 +270,11 @@ impl SimpleFlowNode for Node {
         let openhcl_linux_direct_x64 = build
             .openhcl_linux_direct_x64
             .then(|| build_openhcl(OpenhclIgvmRecipe::X64TestLinuxDirect));
+        let snp_linux_direct_igvm_x64 = build.snp_linux_direct_igvm_x64.then(|| {
+            ctx.reqv(|v| crate::build_snp_linux_direct_igvm::Request {
+                snp_linux_direct_igvm: v,
+            })
+        });
 
         let mut build_vmfirmwareigvm = |openhcl_igvm| {
             ctx.reqv(|v| crate::build_vmfirmwareigvm_dll::Request {
@@ -656,11 +662,15 @@ impl SimpleFlowNode for Node {
         let flowey_hvlite_linux_x64 = build
             .flowey_hvlite_linux_x64
             .then(|| build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_x64_target()));
+        let flowey_hvlite_linux_musl_x64 = build.flowey_hvlite_linux_musl_x64.then(|| {
+            build_flowey_hvlite(VmmTestsBuiltArtifacts::flowey_hvlite_linux_musl_x64_target())
+        });
 
         let built_artifacts = VmmTestsBuiltArtifacts {
             flowey_hvlite_windows_x64,
             flowey_hvlite_windows_aarch64,
             flowey_hvlite_linux_x64,
+            flowey_hvlite_linux_musl_x64,
             nextest_vmm_tests_archive_windows_x64,
             nextest_vmm_tests_archive_windows_aarch64,
             nextest_vmm_tests_archive_linux_x64,
@@ -692,6 +702,7 @@ impl SimpleFlowNode for Node {
             openhcl_cvm_x64,
             vmfirmwareigvm_cvm_x64,
             openhcl_linux_direct_x64,
+            snp_linux_direct_igvm_x64,
             tmks_x64,
             tmks_aarch64,
             tmk_vmm_windows_x64,
@@ -786,6 +797,7 @@ impl SimpleFlowNode for Node {
                         CommonTriple::AARCH64_WINDOWS_MSVC => "windows-aarch64",
                         CommonTriple::X86_64_WINDOWS_MSVC => "windows-x64",
                         CommonTriple::X86_64_LINUX_GNU => "linux-x64",
+                        CommonTriple::X86_64_LINUX_MUSL => "linux-musl-x64",
                         CommonTriple::AARCH64_LINUX_MUSL => "linux-aarch64-musl",
                         _ => unreachable!(),
                     };

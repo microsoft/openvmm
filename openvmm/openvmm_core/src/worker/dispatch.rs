@@ -1407,7 +1407,7 @@ impl InitializedVm {
                 Some(
                     VmgsResource::Disk(_)
                         | VmgsResource::ReprovisionOnFailure(_)
-                        | VmgsResource::Reprovision(_)
+                        | VmgsResource::ReprovisionSingle(_)
                 )
             ) {
                 anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
@@ -1661,7 +1661,7 @@ impl InitializedVm {
                 .await
                 .context("failed to open vmgs file")?,
             ),
-            Some(VmgsResource::Reprovision(disk)) => Some(
+            Some(VmgsResource::ReprovisionSingle(disk)) => Some(
                 vmgs::Vmgs::request_format(
                     open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
@@ -3687,6 +3687,7 @@ impl LoadedVmInner {
 }
 
 impl LoadedVm {
+    #[tracing::instrument(name = "resume_vm", target = "openvmm::perf", skip_all)]
     async fn resume(&mut self) -> bool {
         if self.running {
             return false;

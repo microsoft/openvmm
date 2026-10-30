@@ -6,6 +6,7 @@
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
 use crate::virtio::VirtioFsDeviceOptions;
+use anyhow::Context as _;
 use cfg_if::cfg_if;
 use lxutil::LxVolumeOptions;
 use virtio::resolve::ResolvedVirtioDevice;
@@ -21,7 +22,6 @@ use vm_resource::kind::VirtioDeviceHandle;
 cfg_if! {
     if #[cfg(windows)] {
         use crate::impersonation::duplicate_user_token;
-        use anyhow::Context as _;
         use std::os::windows::io::OwnedHandle;
     }
 }
@@ -255,11 +255,10 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                         &child.root_path,
                         Some(&LxVolumeOptions::from_option_string(&child.mount_options)),
                     )
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "failed to add virtiofs aggregate child '{}' (root_path='{}'): {e}",
-                            child.name,
-                            child.root_path
+                    .with_context(|| {
+                        format!(
+                            "failed to add virtiofs aggregate child '{}' (root_path='{}')",
+                            child.name, child.root_path
                         )
                     })?;
                 }

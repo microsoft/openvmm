@@ -348,7 +348,7 @@ impl fuse::Fuse for SectionFs {
             SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
         ) {
             Ok(section) => {
-                if (arg.flags as i32) & lx::O_EXCL != 0 {
+                if arg.flags & lx::O_EXCL as u32 != 0 {
                     return Err(lx::Error::EEXIST);
                 }
                 let size = section.query_size()?;

@@ -89,8 +89,7 @@ impl Fuse for TestFs {
             return Err(lx::Error::EISDIR);
         }
 
-        let flags = flags as i32;
-        if flags & lx::O_ACCESS_MASK != lx::O_RDONLY {
+        if flags & lx::O_ACCESS_MASK as u32 != lx::O_RDONLY as u32 {
             return Err(lx::Error::EACCES);
         }
 

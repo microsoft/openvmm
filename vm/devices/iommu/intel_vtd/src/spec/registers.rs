@@ -221,10 +221,10 @@ pub const SLLPS_2MB: u8 = 1 << 0;
 /// CAP.SLLPS bit: 1GB large page support (30-bit page offset).
 pub const SLLPS_1GB: u8 = 1 << 1;
 
-/// Extended Capability Register (MMIO offset 0x010, 64-bit, RO). §10.4.3.
+/// Extended Capability Register (MMIO offset 0x010, 64-bit, RO). §11.4.3.
 ///
-/// Reports extended capabilities. Key fields: queued invalidation, interrupt
-/// remapping, extended interrupt mode (x2APIC).
+/// Reports queued invalidation, interrupt remapping, scalable translation,
+/// and second-stage accessed/dirty capabilities.
 #[bitfield(u64)]
 #[derive(Inspect)]
 #[rustfmt::skip]
@@ -243,7 +243,7 @@ pub struct EcapReg {
     _reserved1: u64,
     /// Pass Through support.
     pub pt: bool,
-    /// Snoop Control (not used in emulator).
+    /// Snoop Control support.
     pub sc: bool,
     /// IOTLB Register Offset (10 bits).
     /// Offset in 16-byte units from register base. IRO=0x10 → offset 0x100.
@@ -283,19 +283,19 @@ pub struct EcapReg {
     pub dit: bool,
     /// Page-request Drain Support (not implemented).
     pub pds: bool,
-    /// Scalable Mode Translation support (not implemented).
+    /// Scalable-mode DMA remapping through context and PASID tables.
     pub smts: bool,
     /// Virtual Command support (not used).
     pub vcs: bool,
-    /// Second-stage Accessed/Dirty Support (not used).
+    /// Second-stage accessed/dirty flag support, enabled by PASID-entry SSADE.
     pub ssads: bool,
-    /// Second-stage Translation Support (scalable mode, not used).
+    /// Second-stage translation support in scalable mode.
     pub ssts: bool,
     /// First-stage Translation Support (scalable mode, not used).
     pub flts: bool,
-    /// Scalable-Mode Page-walk Coherency Support (not used).
+    /// Scalable-mode page walks snoop according to PASID-entry PWSNP.
     pub smpwcs: bool,
-    /// RID-PASID Support (not used).
+    /// Context-entry RID_PASID support for requests without an explicit PASID.
     pub rps: bool,
     #[bits(1)]
     _reserved6: u64,

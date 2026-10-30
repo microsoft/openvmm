@@ -226,27 +226,33 @@ impl BounceBuffer {
 }
 
 /// A set of locked memory ranges, represented by [`IoBuffer`]s.
-pub struct LockedIoBuffers<'a>(LockedRangeImpl<'a, LockedIoVecs>);
+///
+/// Up to `INLINE_CAPACITY` buffer descriptors are stored inside this object
+/// (64 by default). Each descriptor holds a memory address and byte length.
+/// Longer lists use a separate heap allocation. This capacity does not limit
+/// the number of memory ranges that can be locked.
+pub struct LockedIoBuffers<'a, const INLINE_CAPACITY: usize = 64>(
+    LockedRangeImpl<'a, LockedIoVecs<INLINE_CAPACITY>>,
+);
 
-impl LockedIoBuffers<'_> {
+impl<const INLINE_CAPACITY: usize> LockedIoBuffers<'_, INLINE_CAPACITY> {
     /// Returns the slice of IO buffers.
     pub fn io_vecs(&self) -> &[IoBuffer<'_>] {
-        // SAFETY: the LockedRangeImpl passed to new guarantees that only
-        // vectors with valid lifetimes were passed to
-        // LockedGuestBuffers::push_sub_range.
+        // SAFETY: LockedRangeImpl guarantees that only vectors with valid lifetimes
+        // were passed to LockedIoVecs::push_sub_range.
         unsafe { IoBuffer::from_io_vecs(&self.0.get().0) }
     }
 }
 
-struct LockedIoVecs(SmallVec<[AtomicIoVec; 64]>);
+struct LockedIoVecs<const INLINE_CAPACITY: usize = 64>(SmallVec<[AtomicIoVec; INLINE_CAPACITY]>);
 
-impl LockedIoVecs {
+impl<const INLINE_CAPACITY: usize> LockedIoVecs<INLINE_CAPACITY> {
     fn new() -> Self {
         Self(Default::default())
     }
 }
 
-impl<'a> LockedRange<'a> for LockedIoVecs {
+impl<'a, const INLINE_CAPACITY: usize> LockedRange<'a> for LockedIoVecs<INLINE_CAPACITY> {
     fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]) {
         self.0.push(sub_range.into());
     }
@@ -399,9 +405,23 @@ impl<'a> RequestBuffers<'a> {
     /// object containing [`IoBuffer`]s, suitable for executing asynchronous I/O
     /// operations.
     pub fn lock(&self, for_write: bool) -> Result<LockedIoBuffers<'_>, AccessError> {
+        self.lock_with_capacity::<64>(for_write)
+    }
+
+    /// Locks the guest memory ranges as [`Self::lock`], storing up to
+    /// `INLINE_CAPACITY` buffer descriptors inside the returned object.
+    ///
+    /// Choosing a smaller capacity can reduce the object's size, which is useful
+    /// when it is stored in an async future. Longer lists are allocated on the
+    /// heap without changing locking or access checks.
+    pub fn lock_with_capacity<const INLINE_CAPACITY: usize>(
+        &self,
+        for_write: bool,
+    ) -> Result<LockedIoBuffers<'_, INLINE_CAPACITY>, AccessError> {
         if for_write && !self.is_write {
             return Err(AccessError::ReadOnly);
         }
+
         Ok(LockedIoBuffers(self.guest_memory.lock_range(
             if for_write {
                 guestmem::AccessType::Write
@@ -562,7 +582,91 @@ impl BounceBufferTracker {
 mod tests {
     use super::*;
     use sparse_mmap::SparseMapping;
+
     const SIZE_1MB: usize = 1048576;
+
+    /// Checks that the selected inline capacity matches the default lock's ranges
+    /// and allows writes to the same guest memory.
+    fn check_lock_ranges<const INLINE_CAPACITY: usize>() {
+        let memory = GuestMemory::allocate(130 * PAGE_SIZE);
+
+        for page_count in [1, 16, 17, 37, 65] {
+            // Skip pages so adjacent entries cannot merge into one memory range.
+            let gpns = (0..page_count)
+                .map(|page| (page * 2) as u64)
+                .collect::<Vec<_>>();
+
+            // Start 3 bytes into the first page and leave 6 bytes at the end.
+            let length = page_count * PAGE_SIZE - 9;
+            let owned = OwnedRequestBuffers::new_unaligned(&gpns, 3, length);
+            let buffers = owned.buffer(&memory);
+
+            // Lock the same memory with the default and selected inline capacities.
+            let default = buffers.lock(true).unwrap();
+            let selected = buffers.lock_with_capacity::<INLINE_CAPACITY>(true).unwrap();
+
+            // Check the number of ranges and the total bytes they cover.
+            assert_eq!(default.io_vecs().len(), selected.io_vecs().len());
+            assert_eq!(
+                selected
+                    .io_vecs()
+                    .iter()
+                    .map(|buffer| buffer.len())
+                    .sum::<usize>(),
+                length
+            );
+
+            // Compare each range and write a test value through the selected lock.
+            for (original, selected) in default.io_vecs().iter().zip(selected.io_vecs()) {
+                assert_eq!(original.as_ptr(), selected.as_ptr());
+                assert_eq!(original.len(), selected.len());
+
+                for byte in selected.iter() {
+                    byte.store(0x5a, Ordering::Relaxed);
+                }
+            }
+
+            // Read through the original request buffers to confirm the writes.
+            let mut actual = vec![0; length];
+            buffers.reader().read(&mut actual).unwrap();
+            assert!(actual.iter().all(|&byte| byte == 0x5a));
+        }
+    }
+
+    /// Checks read-only permissions, invalid pages, and empty buffers at the selected capacity.
+    fn check_lock_access<const INLINE_CAPACITY: usize>() {
+        let memory = GuestMemory::allocate(PAGE_SIZE);
+
+        // Read-only buffers allow read locks but reject write locks.
+        let read_only = OwnedRequestBuffers::linear(0, 512, false);
+        let buffers = read_only.buffer(&memory);
+
+        assert!(matches!(
+            buffers.lock_with_capacity::<INLINE_CAPACITY>(true),
+            Err(AccessError::ReadOnly)
+        ));
+        assert!(buffers.lock_with_capacity::<INLINE_CAPACITY>(false).is_ok());
+
+        // Reject a page outside the allocated guest memory.
+        let invalid = OwnedRequestBuffers::new(&[0x10000]);
+        assert!(
+            invalid
+                .buffer(&memory)
+                .lock_with_capacity::<INLINE_CAPACITY>(true)
+                .is_err()
+        );
+
+        // An empty buffer locks successfully without producing any I/O ranges.
+        let empty = OwnedRequestBuffers::linear(0, 0, true);
+        assert!(
+            empty
+                .buffer(&memory)
+                .lock_with_capacity::<INLINE_CAPACITY>(true)
+                .unwrap()
+                .io_vecs()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn correct_read_only_behavior() {
@@ -589,5 +693,26 @@ mod tests {
             buffers.writer().len() == 0,
             "Length should be 0 for read-only writer"
         );
+    }
+
+    // Verifies buffer ranges and object sizes for different descriptor capacities.
+    #[test]
+    fn lock_with_capacity_matches_default_ranges() {
+        check_lock_ranges::<1>();
+        check_lock_ranges::<16>();
+        check_lock_ranges::<64>();
+        assert!(size_of::<LockedIoBuffers<'_, 16>>() < size_of::<LockedIoBuffers<'_>>());
+        assert_eq!(
+            size_of::<LockedIoBuffers<'_>>(),
+            size_of::<LockedIoBuffers<'_, 64>>()
+        );
+    }
+
+    // Verifies permissions, invalid-page errors, and empty ranges at each capacity.
+    #[test]
+    fn lock_with_capacity_preserves_access_checks() {
+        check_lock_access::<1>();
+        check_lock_access::<16>();
+        check_lock_access::<64>();
     }
 }

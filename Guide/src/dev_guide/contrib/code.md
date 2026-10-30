@@ -37,6 +37,17 @@ Assuming you've followed the [suggested dev env setup](../getting_started/sugges
 and set up `rust-analyzer` to format-on-save, you should rarely have to think
 about formatting in `.rs` files.
 
+## Protocol Buffers enums
+
+_Checked Automatically:_ **No**
+
+Follow the [Protocol Buffers enum conventions] when authoring or reviewing
+OpenVMM-owned `.proto` schemas, including gRPC and ttrpc APIs. The rules
+are maintained in the path-specific Copilot instructions so contributors
+and automated reviewers use the same source of truth.
+
+[Protocol Buffers enum conventions]: https://github.com/microsoft/openvmm/blob/main/.github/instructions/protobuf.instructions.md
+
 ## Custom Lints
 
 _Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))

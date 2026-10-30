@@ -28,7 +28,8 @@
 //! When the [`SerialIo`] backend disconnects (i.e. `poll_read` returns
 //! `Ok(0)`), the worker drains any pending guest TX descriptors without
 //! forwarding them. Once `poll_connect` resolves, normal bidirectional
-//! forwarding resumes.
+//! forwarding resumes. When no guest receive buffer is available, the worker
+//! uses `poll_disconnect` to detect disconnects without reading.
 
 #![forbid(unsafe_code)]
 
@@ -48,6 +49,7 @@ use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
+use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -292,10 +294,29 @@ impl ConsoleWorker {
             } else {
                 let rx = async {
                     let Some(receiveq) = receiveq.as_mut() else {
-                        std::future::pending().await
+                        poll_fn(|cx| io.lock().poll_disconnect(cx))
+                            .await
+                            .map_err(WorkerError::Serial)?;
+                        return Ok(false);
                     };
                     'rx: loop {
-                        let work = receiveq.peek().await.map_err(WorkerError::Virtio)?;
+                        let work = {
+                            let mut wait_work = pin!(receiveq.peek());
+                            poll_fn(|cx| {
+                                if let Poll::Ready(work) = wait_work.as_mut().poll(cx) {
+                                    return Poll::Ready(
+                                        work.map(Some).map_err(WorkerError::Virtio),
+                                    );
+                                }
+                                io.lock().poll_disconnect(cx).map(|result| {
+                                    result.map(|()| None).map_err(WorkerError::Serial)
+                                })
+                            })
+                            .await?
+                        };
+                        let Some(work) = work else {
+                            break 'rx Ok(false);
+                        };
                         let writeable_len = work
                             .payload()
                             .iter()
