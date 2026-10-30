@@ -1684,6 +1684,127 @@ mod tests {
         );
     }
 
+    /// A difference of an entry that both records hold names each register
+    /// in which the entry differs, in order, with its value and mask in
+    /// each, and no other register; the entries that only one record holds
+    /// are named with the partition's, in order, then the snapshot's.
+    #[test]
+    fn recorded_cpuid_names_each_register_in_which_an_entry_differs() {
+        let (_, _, effective) = test_config(2);
+        let record = test_record(&effective);
+        let entries: Vec<_> = record_entries(&effective).collect();
+        let message = |recorded: &[EffectiveCpuidEntry]| {
+            let record = SnapshotCpuProfile {
+                effective_cpuid: encode_effective_cpuid(recorded.iter().copied()),
+                ..record.clone()
+            };
+            format!(
+                "{:#}",
+                check_recorded_cpuid(&effective, &record).unwrap_err()
+            )
+        };
+        let expected = |differences: &[String]| {
+            format!(
+                "[E_CPU_SURFACE] the effective CPUID of CPU profile {TEST_PROFILE} differs from \
+                 the snapshot's in {} entries: {}",
+                differences.len(),
+                differences.join("; ")
+            )
+        };
+        let register =
+            |register: usize, ours: &EffectiveCpuidEntry, theirs: &EffectiveCpuidEntry| {
+                format!(
+                    "{} is {:#010x} under mask {:#010x}, and {:#010x} under mask {:#010x} in \
+                     the snapshot",
+                    REGISTERS[register],
+                    ours.result[register],
+                    ours.mask[register],
+                    theirs.result[register],
+                    theirs.mask[register]
+                )
+            };
+
+        // The value or the mask of each register alone, of an entry of a
+        // subleaf.
+        let (index, entry) = entries
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.index.is_some())
+            .unwrap();
+        let name = leaf_name(entry.function, entry.index);
+        for changed_register in 0..4 {
+            for change_mask in [false, true] {
+                let mut changed = *entry;
+                if change_mask {
+                    changed.mask[changed_register] ^= 1 << changed_register;
+                } else {
+                    changed.result[changed_register] ^= 1 << changed_register;
+                }
+                let mut recorded = entries.clone();
+                recorded[index] = changed;
+                assert_eq!(
+                    message(&recorded),
+                    expected(&[format!(
+                        "{name} {}",
+                        register(changed_register, entry, &changed)
+                    )])
+                );
+            }
+        }
+
+        // Several registers, in order, on one line.
+        let mut changed = *entry;
+        changed.result[3] ^= 1;
+        changed.mask[1] ^= 1;
+        changed.result[0] ^= 1;
+        let mut recorded = entries.clone();
+        recorded[index] = changed;
+        assert_eq!(
+            message(&recorded),
+            expected(&[format!(
+                "{name} {}, {}, {}",
+                register(0, entry, &changed),
+                register(1, entry, &changed),
+                register(3, entry, &changed)
+            )])
+        );
+
+        // An entry that differs among entries that the snapshot lacks, then
+        // entries that only the snapshot has.
+        let mut recorded = entries.clone();
+        recorded[0].result[2] ^= 1;
+        let differing = format!(
+            "{} {}",
+            leaf_name(entries[0].function, entries[0].index),
+            register(2, &entries[0], &recorded[0])
+        );
+        let missing = [recorded.remove(1), recorded.remove(1)];
+        recorded.extend(
+            [0x8000_00fe, 0x8000_00ff].map(|function| EffectiveCpuidEntry {
+                function,
+                index: None,
+                result: [function, 0, 0, 0],
+                mask: [!0; 4],
+            }),
+        );
+        assert_eq!(
+            message(&recorded),
+            expected(&[
+                differing,
+                format!(
+                    "{} is not in the snapshot",
+                    leaf_name(missing[0].function, missing[0].index)
+                ),
+                format!(
+                    "{} is not in the snapshot",
+                    leaf_name(missing[1].function, missing[1].index)
+                ),
+                "CPUID 0x800000fe is only in the snapshot".to_owned(),
+                "CPUID 0x800000ff is only in the snapshot".to_owned(),
+            ])
+        );
+    }
+
     /// Returns the snapshot record of `effective`, an effective CPUID of the
     /// test profile.
     fn test_record(effective: &EffectiveCpuid) -> SnapshotCpuProfile {
