@@ -16,6 +16,8 @@ use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
+use watchdog_core::platform::WatchdogCallback;
+use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::resources::WatchdogPlatformHandleKind;
 
 /// Resolver for the Hyper-V guest watchdog device.
@@ -50,11 +52,14 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVGuestWatchdogDeviceHand
         let mut pio_static_wdat_port = input.register_pio.new_io_region("wdat_port", 8);
         pio_static_wdat_port.map(resource.port_base);
 
-        let watchdog_platform = resolver
+        let mut watchdog_platform = resolver
             .resolve::<WatchdogPlatformHandleKind, _>(PlatformResource.into_resource(), ())
             .await
             .map_err(ResolveGuestWatchdogError::ResolvePlatform)?
             .into_inner();
+        if resource.log_only {
+            watchdog_platform = Box::new(NoActionWatchdog(watchdog_platform));
+        }
 
         let device = GuestWatchdogServices::new(
             input.vmtime.access("guest-watchdog-time"),
@@ -65,5 +70,23 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVGuestWatchdogDeviceHand
         .await;
 
         Ok(device.into())
+    }
+}
+
+/// Ignores watchdog timeouts instead of notifying the platform, so the VM keeps
+/// running and no watchdog boot failure is recorded. The timeout itself is
+/// already logged by `WatchdogServices`.
+struct NoActionWatchdog(Box<dyn WatchdogPlatform>);
+
+#[async_trait]
+impl WatchdogPlatform for NoActionWatchdog {
+    async fn on_timeout(&mut self) {}
+
+    async fn read_and_clear_boot_status(&mut self) -> bool {
+        self.0.read_and_clear_boot_status().await
+    }
+
+    fn add_callback(&mut self, callback: Box<dyn WatchdogCallback>) {
+        self.0.add_callback(callback);
     }
 }

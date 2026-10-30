@@ -622,6 +622,13 @@ impl IommufdContexts {
     }
 }
 
+fn guest_watchdog_enabled(config: &vmservice::VmConfig) -> bool {
+    matches!(
+        config.boot_config.as_ref(),
+        Some(vmservice::vm_config::BootConfig::Uefi(uefi)) if !uefi.disable_guest_watchdog
+    )
+}
+
 fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> {
     anyhow::ensure!(
         !config.disable_hv || config.disable_vmbus,
@@ -635,6 +642,13 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                 Some(vmservice::vm_config::BootConfig::Uefi(_))
             )),
         "disabling Hyper-V enlightenments for UEFI boot is not supported on x86_64"
+    );
+    anyhow::ensure!(
+        guest_watchdog_enabled(config)
+            || config.guest_power_actions.as_ref().is_none_or(|actions| {
+                actions.watchdog == vmservice::vm_config::GuestPowerAction::Unspecified as i32
+            }),
+        "guest_power_actions.watchdog requires the UEFI guest watchdog"
     );
     if config.disable_vmbus {
         anyhow::ensure!(
@@ -967,6 +981,7 @@ impl VmService {
 
         // The boot configuration also determines the base chipset, since the
         // firmware and the device model have to agree on the platform.
+        let guest_watchdog = guest_watchdog_enabled(&req_config);
         let (load_mode, base_chipset_type, uefi_config, igvm_path) = match req_config
             .boot_config
             .take()
@@ -1084,6 +1099,19 @@ impl VmService {
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
+        }
+        if guest_watchdog {
+            // For the watchdog, an UNSPECIFIED action means take no action on timeout.
+            chipset_builder = if req_config
+                .guest_power_actions
+                .as_ref()
+                .is_none_or(|actions| {
+                    actions.watchdog == vmservice::vm_config::GuestPowerAction::Unspecified as i32
+                }) {
+                chipset_builder.with_guest_watchdog_log_only()
+            } else {
+                chipset_builder.with_guest_watchdog()
+            };
         }
         if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
@@ -3213,6 +3241,45 @@ mod tests {
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());
+    }
+
+    #[test]
+    fn platform_config_watchdog_action_requires_device() {
+        use vmservice::vm_config::BootConfig;
+        use vmservice::vm_config::GuestPowerAction;
+
+        for (boot_config, enabled) in [
+            (BootConfig::DirectBoot(Default::default()), false),
+            (BootConfig::Uefi(Default::default()), true),
+            (
+                BootConfig::Uefi(vmservice::Uefi {
+                    disable_guest_watchdog: true,
+                    ..Default::default()
+                }),
+                false,
+            ),
+        ] {
+            for action in [
+                GuestPowerAction::Unspecified,
+                GuestPowerAction::Restart,
+                GuestPowerAction::Halt,
+                GuestPowerAction::Exit,
+            ] {
+                let config = vmservice::VmConfig {
+                    boot_config: Some(boot_config.clone()),
+                    guest_power_actions: Some(vmservice::vm_config::GuestPowerActions {
+                        watchdog: action as i32,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                assert_eq!(guest_watchdog_enabled(&config), enabled);
+                assert_eq!(
+                    validate_platform_config(&config).is_ok(),
+                    enabled || action == GuestPowerAction::Unspecified
+                );
+            }
+        }
     }
 
     #[test]
