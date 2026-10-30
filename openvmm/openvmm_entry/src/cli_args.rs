@@ -1067,6 +1067,13 @@ flags:
     #[clap(long)]
     pub nested_virt: bool,
 
+    /// processor limit/weight/reserve (`limit=N,weight=N,reserve=N`)
+    ///
+    /// limit and reserve are per VP, 0..=100000 (100000 = one full LP); weight
+    /// is 1..=10000. WHP only, and requires the hypervisor core scheduler.
+    #[clap(long, value_name = "PARAMS", value_parser = parse_processor_qos)]
+    pub processor_qos: Option<openvmm_defs::config::ProcessorQos>,
+
     /// attach an ide drive (can be passed multiple times)
     ///
     /// Each ide controller has two channels. Each channel can have up to two
@@ -2064,6 +2071,29 @@ fn parse_smbios(s: &str) -> anyhow::Result<SmbiosCli> {
         },
         other => anyhow::bail!("unsupported smbios type '{other}' (expected 0 or 1)"),
     })
+}
+
+/// `--processor-qos` keys, mapped onto [`openvmm_defs::config::ProcessorQos`].
+#[derive(vmm_cli::KeyValueArgs)]
+struct ProcessorQosCli {
+    limit: Option<u32>,
+    weight: Option<u32>,
+    reserve: Option<u32>,
+}
+
+fn parse_processor_qos(s: &str) -> anyhow::Result<openvmm_defs::config::ProcessorQos> {
+    let ProcessorQosCli {
+        limit,
+        weight,
+        reserve,
+    } = s.parse()?;
+    let qos = openvmm_defs::config::ProcessorQos {
+        limit,
+        weight,
+        reserve,
+    };
+    qos.validate()?;
+    Ok(qos)
 }
 
 fn parse_memory_config(s: &str) -> anyhow::Result<MemoryCli> {
@@ -5336,6 +5366,29 @@ mod tests {
         assert_eq!(parse_memory("3MB").unwrap(), 3 * 1024 * 1024);
         assert_eq!(parse_memory("512KB").unwrap(), 512 * 1024);
         assert!(parse_memory("3MiB").is_err());
+    }
+
+    #[test]
+    fn test_processor_qos() {
+        use openvmm_defs::config::ProcessorQos;
+        assert_eq!(
+            parse_processor_qos("limit=50000,weight=200,reserve=10000").unwrap(),
+            ProcessorQos {
+                limit: Some(50000),
+                weight: Some(200),
+                reserve: Some(10000),
+            }
+        );
+        assert_eq!(
+            parse_processor_qos("limit=25000").unwrap(),
+            ProcessorQos {
+                limit: Some(25000),
+                ..Default::default()
+            }
+        );
+        assert!(parse_processor_qos("limit=100001").is_err());
+        assert!(parse_processor_qos("limit=1000,reserve=2000").is_err());
+        assert!(parse_processor_qos("cap=1").is_err());
     }
 
     #[test]

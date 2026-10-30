@@ -133,6 +133,11 @@ describes the source definitions.
   with VMBus devices; nested virt cannot currently be combined with
   `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
+* `--processor-qos limit=N,weight=N,reserve=N`: Set the hypervisor CPU limit,
+  weight, and reserve for the VM, in Hyper-V units. `limit` and `reserve` are
+  per VP, 0-100000 (100000 is one full logical processor); `weight` is 1-10000.
+  Any key can be omitted. WHP only, and the host must use the hypervisor core
+  scheduler; otherwise VM creation fails.
 * `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
   * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
   * `debug`: Enable UEFI debugging on COM1.

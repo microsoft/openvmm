@@ -164,6 +164,7 @@ message ProcessorConfig {
     uint32 processor_count = 1;
     uint32 processor_weight = 2;
     uint32 processor_limit = 3;
+    uint32 processor_reservation = 6;
 
     // Optional arch specific topology overrides.
     oneof arch_config {
@@ -1011,6 +1012,8 @@ message ModifyProcessorRequest {
 message ModifyProcessorConfigRequest {
     uint32 processor_weight = 1;
     uint32 processor_limit = 2;
+    // Set to 0 to clear the reservation; unset keeps it.
+    optional uint32 processor_reservation = 3;
 }
 
 message ModifyResourceRequest {
