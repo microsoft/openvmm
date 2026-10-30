@@ -112,7 +112,13 @@ exec /bin/busybox poweroff -f
     };
 
     for (name, request) in [
-        ("default", vmservice::ShutdownVmRequest::default()),
+        (
+            "non-forced",
+            vmservice::ShutdownVmRequest {
+                mechanism: Mechanism::HypervIc as i32,
+                force: false,
+            },
+        ),
         (
             "force",
             vmservice::ShutdownVmRequest {
@@ -246,6 +252,172 @@ exec /bin/busybox poweroff -f
         assert!(props.halt_reason.is_none());
     }
 
+    let _ = client.call().start(vmservice::Vm::Quit, ()).await;
+    let status = child.wait().await?;
+    anyhow::ensure!(status.success(), "OpenVMM exited with {status}");
+    assert!(
+        !pidfile_path.exists(),
+        "pidfile should be removed after exit"
+    );
+    Ok(())
+}
+
+// The ttrpc disk configuration only accepts a host path, so this test needs the
+// Windows image as a local file. `vmm-tests-run` streams images instead of
+// downloading them by default; request the source so the test can explain how
+// to get a local copy rather than failing with a missing-file error.
+petri::multitest!(vec![
+    petri::SimpleTest::new_async(
+        "test_ttrpc_shutdown_windows_guest",
+        |resolver| {
+            if petri_artifacts_common::tags::MachineArch::host()
+                != petri_artifacts_common::tags::MachineArch::X86_64
+            {
+                return None;
+            }
+            Some((
+                resolver.require(artifacts::OPENVMM_NATIVE).erase(),
+                resolver
+                    .require(artifacts::loadable::UEFI_FIRMWARE_X64)
+                    .erase(),
+                resolver
+                    .require_source(
+                        artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64,
+                        petri::RemoteAccess::Allow,
+                    )
+                    .erase(),
+            ))
+        },
+        test_ttrpc_shutdown_windows_guest,
+    )
+    .remote_access(petri::RemoteAccess::Allow)
+    .into()
+]);
+
+async fn test_ttrpc_shutdown_windows_guest(
+    params: petri::PetriTestParams<'_>,
+    driver: DefaultDriver,
+    (openvmm, firmware, guest_disk): (
+        ResolvedArtifact,
+        ResolvedArtifact,
+        petri::ResolvedArtifactSource,
+    ),
+) -> anyhow::Result<()> {
+    let guest_disk = match guest_disk.get() {
+        petri::ArtifactSource::Local(path) => path,
+        petri::ArtifactSource::Remote { .. } => anyhow::bail!(
+            "this test needs a local copy of the Windows Server 2022 image; run it with \
+             `cargo xflowey vmm-tests-run --no-lazy-fetch`"
+        ),
+    };
+    let tempdir = tempfile::tempdir()?;
+    let disk_path = tempdir.path().join("windows.vhd");
+    std::fs::copy(guest_disk, &disk_path).context("failed to copy the Windows guest disk")?;
+    let pidfile_path = tempdir.path().join("openvmm.pid");
+    let (mut child, client, _stderr_task) = launch_openvmm(
+        &driver,
+        &params,
+        &openvmm,
+        &tempdir.path().join("ttrpc.sock"),
+        &pidfile_path,
+    )
+    .await?;
+
+    client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: 2048,
+                        ..Default::default()
+                    }),
+                    boot_config: Some(vmservice::vm_config::BootConfig::Uefi(vmservice::Uefi {
+                        firmware_path: firmware.get().to_string_lossy().into(),
+                        initial_variables: Some(vmservice::uefi::InitialVariables {
+                            secure_boot_template: vmservice::uefi::initial_variables::SecureBootTemplate::MicrosoftWindows as i32,
+                            ..Default::default()
+                        }),
+                        secure_boot_enabled: true,
+                    })),
+                    devices_config: Some(vmservice::DevicesConfig {
+                        scsi_disks: vec![vmservice::ScsiDisk {
+                            host_path: disk_path.to_string_lossy().into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                log_id: String::new(),
+            },
+        )
+        .await
+        .unwrap();
+    client
+        .call()
+        .start(vmservice::Vm::ResumeVm, ())
+        .await
+        .unwrap();
+
+    // The shutdown request stays queued until Windows boots and opens the IC
+    // channel, so the per-call deadline must cover the boot rather than a
+    // single acknowledgement round trip. A timed-out request may already have
+    // been delivered, so it is not retried.
+    const WINDOWS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+    CancelContext::new()
+        .with_timeout(WINDOWS_BOOT_TIMEOUT)
+        .until_cancelled(async {
+            let mut timer = pal_async::timer::PolledTimer::new(&driver);
+            loop {
+                match client
+                    .call()
+                    .timeout(Some(WINDOWS_BOOT_TIMEOUT))
+                    .start(
+                        vmservice::Vm::ShutdownVm,
+                        vmservice::ShutdownVmRequest {
+                            mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
+                            force: false,
+                        },
+                    )
+                    .await
+                {
+                    Err(status)
+                        if status.code == mesh_rpc::service::Code::FailedPrecondition as i32
+                            && status.message.contains("shutdown IC not ready") =>
+                    {
+                        timer.sleep(Duration::from_millis(100)).await;
+                    }
+                    result => break result,
+                }
+            }
+        })
+        .await
+        .context("timed out waiting for Windows shutdown IC readiness")?
+        .unwrap();
+    client
+        .call()
+        .timeout(Some(Duration::from_secs(120)))
+        .start(vmservice::Vm::WaitVm, ())
+        .await
+        .unwrap();
+    let props = client
+        .call()
+        .start(
+            vmservice::Vm::PropertiesVm,
+            vmservice::PropertiesVmRequest { types: Vec::new() },
+        )
+        .await
+        .unwrap();
+    assert_eq!(props.state, vmservice::VmState::Halted as i32);
+    assert_eq!(props.halt_reason.as_deref(), Some("PowerOff"));
+    client
+        .call()
+        .timeout(Some(Duration::from_secs(30)))
+        .start(vmservice::Vm::TeardownVm, ())
+        .await
+        .unwrap();
     let _ = client.call().start(vmservice::Vm::Quit, ()).await;
     let status = child.wait().await?;
     anyhow::ensure!(status.success(), "OpenVMM exited with {status}");

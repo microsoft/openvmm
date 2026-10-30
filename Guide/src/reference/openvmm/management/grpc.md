@@ -87,85 +87,8 @@ or reopen the file.
 ## Graceful guest shutdown
 
 `ShutdownVM` requests a cooperative guest power-off, non-forced by default.
-It describes the operation, not a particular shutdown mechanism, and remains
-separate from resource teardown.
-
-`ShutdownVMRequest` has two fields:
-
-* `mechanism`: `MECHANISM_UNSPECIFIED` (the default) uses the VM's default
-  shutdown facility, established when the VM is created. This is not runtime
-  probing or a fallback sequence. Explicit `MECHANISM_HYPERV_IC` requires
-  Hyper-V IC to be available for that VM; it never selects another facility.
-  Unknown values return `INVALID_ARGUMENT` without issuing a shutdown request.
-* `force`: defaults to `false`. Sets the force bit in the shutdown protocol;
-  its interpretation is guest-specific. This is not a host-side hard power-off.
-
-An empty request uses the VM's default facility without requesting force.
-Future VM configurations may use a different default facility without changing
-the request shape. Callers that specifically require IC can select it explicitly.
-For example, this JSON request explicitly selects IC and sets its force flag:
-
-```json
-{
-  "mechanism": "MECHANISM_HYPERV_IC",
-  "force": true
-}
-```
-
-Success means the request was issued successfully, not that the guest will
-shut down or has powered off. Mechanism-specific rejection errors are reported
-when available.
-Call `WaitVM` to observe the guest halt, then `TeardownVM` to release resources.
-`WaitVM` observes any halt, not only a clean power-off; check the halt reason
-reported by `PropertiesVM` when distinguishing shutdown from a crash matters.
-`TeardownVM` and `Quit` do not request a graceful guest shutdown themselves.
-Guest power-event policies still apply; retain the default shutdown `HALT`
-policy for this sequence.
-
-Currently, the only implemented mechanism is the Hyper-V shutdown integration
-component (IC). The VM must be running, Hyper-V enlightenments and VMBus must
-be enabled, and the guest must support and service the request. API-created
-VMs expose the shutdown component and use it as their default shutdown facility
-when both features are enabled. Otherwise, no default facility is available,
-and an unspecified shutdown request returns `FAILED_PRECONDITION`. This
-implementation waits for the guest's acknowledgement before returning success.
-ACPI power-button shutdown is not yet implemented by this RPC. If added, it
-would not imply a guest acknowledgement or guarantee that the guest's
-power-button policy initiates shutdown.
-
-The caller controls the acknowledgement deadline; there is no server-imposed
-timeout. Without a deadline, the request waits for acknowledgement or a channel
-error. Callers should set an RPC timeout on the
-client, not in `ShutdownVMRequest`. For example, a Rust `mesh_rpc` client can
-limit the acknowledgement wait to five seconds. This example assumes an
-initialized `client` in an async context and
-`use openvmm_ttrpc_vmservice as vmservice;`:
-
-```rust,ignore
-let result = client
-    .call()
-    .timeout(Some(std::time::Duration::from_secs(5)))
-    .start(
-        vmservice::Vm::ShutdownVm,
-        vmservice::ShutdownVmRequest::default(),
-    )
-    .await;
-```
-
-For gRPC clients, set the call's deadline/timeout using the client library.
-This limits waiting for the shutdown request response, not completion of the
-guest's shutdown sequence. Give `WaitVM` its own deadline for that wait.
-Disconnecting or dropping the client call does not guarantee that the server
-stops waiting for acknowledgement. Use a deadline to bound that wait.
-Deadline expiry observed before dispatch prevents the IC request from being
-sent. Timing out does not undo a request already delivered to the guest and
-never triggers a fallback to another mechanism or hard power-off.
-
-With the current Hyper-V IC implementation, a missing, paused, or halted VM,
-disabled Hyper-V/VMBus, or an IC that reports not-ready returns
-`FAILED_PRECONDITION`. An IC request already in progress returns
-`ALREADY_EXISTS`; a guest rejection returns `INTERNAL` with the guest status
-code. Deadline expiry maps to `DEADLINE_EXCEEDED`.
+See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
+request fields, shutdown lifecycle.
 
 ## VPCI hotplug
 

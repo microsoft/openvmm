@@ -565,16 +565,10 @@ impl VmService {
 
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
-    default_shutdown_mechanism: Option<ShutdownMechanism>,
     shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     iommufds: Arc<IommufdContexts>,
-}
-
-#[derive(Clone, Copy)]
-enum ShutdownMechanism {
-    HypervIc,
 }
 
 #[derive(Default)]
@@ -1209,16 +1203,15 @@ impl VmService {
 
         let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;
 
-        let (default_shutdown_mechanism, shutdown_rpc) =
-            if config.hypervisor.with_hv && config.vmbus.is_some() {
-                let (send, recv) = mesh::channel();
-                config
-                    .vmbus_devices
-                    .push((DeviceVtl::Vtl0, ShutdownIcHandle { recv }.into_resource()));
-                (Some(ShutdownMechanism::HypervIc), Some(send))
-            } else {
-                (None, None)
-            };
+        let shutdown_rpc = if config.hypervisor.with_hv && config.vmbus.is_some() {
+            let (send, recv) = mesh::channel();
+            config
+                .vmbus_devices
+                .push((DeviceVtl::Vtl0, ShutdownIcHandle { recv }.into_resource()));
+            Some(send)
+        } else {
+            None
+        };
 
         let mut scsi_rpc = None;
         let mut consomme_rpc = None;
@@ -1384,7 +1377,6 @@ impl VmService {
         self.vm_controller_events = Some(event_recv);
         self.controller_task = Some(controller_task);
         self.vm = Some(Arc::new(Vm {
-            default_shutdown_mechanism,
             shutdown_rpc,
             scsi_rpc,
             consomme_rpc,
@@ -1469,6 +1461,14 @@ impl VmService {
         let requested_mechanism = Mechanism::from_i32(request.mechanism)
             .ok_or_else(|| anyhow!(Code::InvalidArgument))
             .with_context(|| format!("unknown shutdown mechanism {}", request.mechanism))?;
+        match requested_mechanism {
+            Mechanism::Unspecified => {
+                return Err(
+                    anyhow!(Code::InvalidArgument).context("shutdown mechanism must be specified")
+                );
+            }
+            Mechanism::HypervIc => {}
+        }
         let vm = self
             .vm
             .as_ref()
@@ -1478,21 +1478,12 @@ impl VmService {
             matches!(self.lifecycle, VmLifecycle::Running),
             anyhow!(Code::FailedPrecondition).context("VM must be running to request shutdown")
         );
-        let mechanism = match requested_mechanism {
-            Mechanism::Unspecified => vm
-                .default_shutdown_mechanism
-                .ok_or_else(|| anyhow!(Code::FailedPrecondition))
-                .context("VM has no default shutdown mechanism")?,
-            Mechanism::HypervIc => ShutdownMechanism::HypervIc,
-        };
-        let send = match mechanism {
-            ShutdownMechanism::HypervIc => vm
-                .shutdown_rpc
-                .as_ref()
-                .ok_or_else(|| anyhow!(Code::FailedPrecondition))
-                .context("Hyper-V IC shutdown requires Hyper-V enlightenments and VMBus")?
-                .clone(),
-        };
+        let send = vm
+            .shutdown_rpc
+            .as_ref()
+            .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+            .context("Hyper-V IC shutdown requires Hyper-V enlightenments and VMBus")?
+            .clone();
         Ok(async move {
             if let Some(reason) = ctx.cancelled().now_or_never() {
                 return Err(
@@ -2731,9 +2722,13 @@ fn build_vhost_user_device(
 }
 
 #[cfg(test)]
-mod shutdown_tests {
+mod tests {
     use super::*;
     use test_with_tracing::test;
+    #[cfg(target_os = "linux")]
+    use vfio_assigned_device_resources::BarAddressConfig;
+    #[cfg(target_os = "linux")]
+    use vmservice::vfio_bar_address::Source;
 
     fn service(
         driver: DefaultDriver,
@@ -2744,9 +2739,6 @@ mod shutdown_tests {
             driver,
             vm: Some(Arc::new(Vm {
                 worker_rpc,
-                default_shutdown_mechanism: shutdown_rpc
-                    .as_ref()
-                    .map(|_| ShutdownMechanism::HypervIc),
                 shutdown_rpc,
                 scsi_rpc: None,
                 consomme_rpc: None,
@@ -2763,39 +2755,42 @@ mod shutdown_tests {
         }
     }
 
+    fn shutdown_request() -> vmservice::ShutdownVmRequest {
+        vmservice::ShutdownVmRequest {
+            mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
+            force: false,
+        }
+    }
+
     #[test]
     fn shutdown_request_acceptance_does_not_halt_or_teardown_vm() {
         DefaultPool::run_with(async |driver| {
-            use vmservice::shutdown_vm_request::Mechanism;
-
-            for mechanism in [Mechanism::Unspecified, Mechanism::HypervIc] {
-                for force in [false, true] {
-                    let (send, mut recv) = mesh::channel();
-                    let mut service = service(driver.clone(), Some(send));
-                    let (response, result) = mesh::oneshot();
-                    service
-                        .handle(
-                            mesh::CancelContext::new(),
-                            vmservice::Vm::ShutdownVm(
-                                vmservice::ShutdownVmRequest {
-                                    mechanism: mechanism as i32,
-                                    force,
-                                },
-                                response,
-                            ),
-                        )
-                        .await;
-                    assert_eq!(service.rpc_tasks.len(), 1);
-                    let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
-                        panic!("expected shutdown request");
-                    };
-                    assert!(matches!(rpc.input().shutdown_type, ShutdownType::PowerOff));
-                    assert_eq!(rpc.input().force, force);
-                    rpc.complete(ShutdownResult::Ok);
-                    result.await.unwrap().unwrap();
-                    assert!(matches!(service.lifecycle, VmLifecycle::Running));
-                    assert!(service.vm.is_some());
-                }
+            for force in [false, true] {
+                let (send, mut recv) = mesh::channel();
+                let mut service = service(driver.clone(), Some(send));
+                let (response, result) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(
+                            vmservice::ShutdownVmRequest {
+                                force,
+                                ..shutdown_request()
+                            },
+                            response,
+                        ),
+                    )
+                    .await;
+                assert_eq!(service.rpc_tasks.len(), 1);
+                let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                    panic!("expected shutdown request");
+                };
+                assert!(matches!(rpc.input().shutdown_type, ShutdownType::PowerOff));
+                assert_eq!(rpc.input().force, force);
+                rpc.complete(ShutdownResult::Ok);
+                result.await.unwrap().unwrap();
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                assert!(service.vm.is_some());
             }
         });
     }
@@ -2863,7 +2858,7 @@ mod shutdown_tests {
                 let (send, mut recv) = mesh::channel();
                 let service = service(driver.clone(), Some(send));
                 let request = service
-                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
                     .unwrap();
                 let guest = async {
                     let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
@@ -2886,7 +2881,7 @@ mod shutdown_tests {
             let vm = service.vm.take();
             let status = grpc_error(
                 service
-                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
                     .err()
                     .unwrap(),
             );
@@ -2895,26 +2890,7 @@ mod shutdown_tests {
             service.vm = vm;
             let status = grpc_error(
                 service
-                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
-                    .err()
-                    .unwrap(),
-            );
-            assert_eq!(status.code, Code::FailedPrecondition as i32);
-            assert!(
-                status
-                    .message
-                    .contains("VM has no default shutdown mechanism")
-            );
-
-            let status = grpc_error(
-                service
-                    .shutdown_vm(
-                        mesh::CancelContext::new(),
-                        vmservice::ShutdownVmRequest {
-                            mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
-                            force: false,
-                        },
-                    )
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
                     .err()
                     .unwrap(),
             );
@@ -2933,7 +2909,7 @@ mod shutdown_tests {
                 service.lifecycle = lifecycle;
                 let status = grpc_error(
                     service
-                        .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                        .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
                         .err()
                         .unwrap(),
                 );
@@ -2945,44 +2921,39 @@ mod shutdown_tests {
     }
 
     #[test]
-    fn shutdown_explicit_mechanism_does_not_require_vm_default() {
+    fn shutdown_unspecified_mechanism_does_not_send() {
         DefaultPool::run_with(async |driver| {
+            use prost::Message;
+
             let (send, mut recv) = mesh::channel();
             let mut service = service(driver, Some(send));
-            Arc::get_mut(service.vm.as_mut().unwrap())
-                .unwrap()
-                .default_shutdown_mechanism = None;
-            let status = grpc_error(
+            for request in [
+                vmservice::ShutdownVmRequest::default(),
+                vmservice::ShutdownVmRequest::decode(&[][..]).unwrap(),
+                vmservice::ShutdownVmRequest::decode(&[0x08, 0x00][..]).unwrap(),
+                vmservice::ShutdownVmRequest {
+                    mechanism: 0,
+                    force: true,
+                },
+            ] {
+                let (response, result) = mesh::oneshot();
                 service
-                    .shutdown_vm(mesh::CancelContext::new(), Default::default())
-                    .err()
-                    .unwrap(),
-            );
-            assert_eq!(status.code, Code::FailedPrecondition as i32);
-            assert!(
-                status
-                    .message
-                    .contains("VM has no default shutdown mechanism")
-            );
-            assert!(recv.next().now_or_never().is_none());
-
-            let request = service
-                .shutdown_vm(
-                    mesh::CancelContext::new(),
-                    vmservice::ShutdownVmRequest {
-                        mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
-                        force: false,
-                    },
-                )
-                .unwrap();
-            let guest = async {
-                let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
-                    panic!("expected shutdown request");
-                };
-                rpc.complete(ShutdownResult::Ok);
-            };
-            let (result, ()) = futures::join!(request, guest);
-            result.unwrap();
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(request, response),
+                    )
+                    .await;
+                let status = result.await.unwrap().unwrap_err();
+                assert_eq!(status.code, Code::InvalidArgument as i32);
+                assert!(
+                    status
+                        .message
+                        .contains("shutdown mechanism must be specified")
+                );
+                assert!(service.rpc_tasks.is_empty());
+                assert!(futures::poll!(recv.next()).is_pending());
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+            }
         });
     }
 
@@ -2993,7 +2964,7 @@ mod shutdown_tests {
             let service = service(driver, Some(send));
             let ctx = mesh::CancelContext::new();
             assert!(ctx.deadline().is_none());
-            let mut request = std::pin::pin!(service.shutdown_vm(ctx, Default::default()).unwrap());
+            let mut request = std::pin::pin!(service.shutdown_vm(ctx, shutdown_request()).unwrap());
             assert!(futures::poll!(&mut request).is_pending());
             let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
                 panic!("expected shutdown request");
@@ -3010,7 +2981,7 @@ mod shutdown_tests {
             let (send, mut recv) = mesh::channel();
             let service = service(driver, Some(send));
             let ctx = mesh::CancelContext::new().with_timeout(Duration::ZERO);
-            let request = service.shutdown_vm(ctx, Default::default()).unwrap();
+            let request = service.shutdown_vm(ctx, shutdown_request()).unwrap();
             let status = grpc_error(request.await.unwrap_err());
             assert_eq!(status.code, Code::DeadlineExceeded as i32);
             assert!(
@@ -3042,10 +3013,10 @@ mod shutdown_tests {
                     );
                     let (send, mut recv) = mesh::channel();
                     let mut service = service(driver.clone(), Some(send));
-                    let request = client.call().timeout(Some(Duration::from_secs(1))).start(
-                        vmservice::Vm::ShutdownVm,
-                        vmservice::ShutdownVmRequest::default(),
-                    );
+                    let request = client
+                        .call()
+                        .timeout(Some(Duration::from_secs(1)))
+                        .start(vmservice::Vm::ShutdownVm, shutdown_request());
                     let (ctx, rpc) = requests.next().await.unwrap();
                     assert!(ctx.deadline().is_some());
                     service.handle(ctx, rpc).await;
@@ -3079,7 +3050,7 @@ mod shutdown_tests {
             let service = service(driver, Some(send));
             drop(recv);
             let result = service
-                .shutdown_vm(mesh::CancelContext::new(), Default::default())
+                .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
                 .unwrap()
                 .await;
             assert!(
@@ -3089,16 +3060,8 @@ mod shutdown_tests {
             );
         });
     }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::*;
-    use test_with_tracing::test;
-    use vfio_assigned_device_resources::BarAddressConfig;
-    use vmservice::vfio_bar_address::Source;
-
     #[test]
+    #[cfg(target_os = "linux")]
     fn guest_power_actions_defaults() {
         use vmservice::vm_config::GuestPowerAction as Action;
 
@@ -3122,6 +3085,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn guest_power_actions_exit_codes() {
         use prost::Message;
         use vmservice::vm_config::GuestPowerAction as Action;
@@ -3178,6 +3142,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn guest_power_actions_existing_and_unknown_actions() {
         use vmservice::vm_config::GuestPowerAction as Action;
         use vmservice::vm_config::GuestPowerActions as Actions;
@@ -3243,6 +3208,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn guest_power_exit_stops_rpc_server() {
         DefaultPool::run_with(async |driver| {
             for code in [0, 5, 255] {
@@ -3269,6 +3235,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn uefi_initial_variables_defaults() {
         for arch in [
             vm_manifest_builder::MachineArch::X86_64,
@@ -3291,6 +3258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn uefi_custom_variables_are_deferred_and_preserved() {
         use prost::Message;
         use vmservice::uefi::initial_variables::SecureBootTemplate;
@@ -3333,6 +3301,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn uefi_custom_variables_file_errors() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing.json");
@@ -3359,6 +3328,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn platform_config_flags() {
         for disable_vmbus in [false, true] {
             for disable_hv in [false, true] {
@@ -3386,6 +3356,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn platform_config_rejects_vmbus_devices() {
         for config in [
             vmservice::VmConfig {
@@ -3419,6 +3390,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn validate_iommufd_contexts() {
         assert!(IommufdContexts::new(vec![]).unwrap().files.is_empty());
         assert!(
@@ -3445,6 +3417,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn iommufd_context_references_share_open_file() {
         use std::io::Seek;
         use std::io::SeekFrom;
@@ -3471,6 +3444,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn vfio_rejects_invalid_iommufd_reference_without_fallback() {
         for id in ["", "undeclared"] {
             let error = build_vfio_device(
@@ -3488,6 +3462,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parse_smmu_config() {
         use openvmm_defs::config::PcieIommuConfig;
         use openvmm_defs::config::SmmuOas;
@@ -3539,6 +3514,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn pcie_topology_iommu_selection() {
         use vmservice::pcie_iommu_config::Kind;
 
@@ -3573,6 +3549,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn pcie_topology_pasid() {
         for pasid in [None, Some(false), Some(true)] {
             let mut attached = None;
@@ -3619,11 +3596,13 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
         vmservice::VfioBarAddress { bar_index, source }
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parse_vfio_bar_address_config() {
         let bars = parse_vfio_bar_addresses(vec![
             vfio_bar_address(0, Some(Source::Host(()))),
@@ -3637,6 +3616,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn reject_invalid_vfio_bar_address_config() {
         assert!(
             parse_vfio_bar_addresses(vec![vfio_bar_address(6, Some(Source::Host(())))]).is_err()
