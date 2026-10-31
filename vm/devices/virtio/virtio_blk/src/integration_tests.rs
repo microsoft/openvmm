@@ -8,18 +8,24 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
 use disk_hook::Disk;
 use disk_hook::HookDisk;
 use futures::future::Either;
 use futures::future::select;
 use guestmem::GuestMemory;
+use guestmem::MemoryRead;
+use guestmem::MemoryWrite;
+use inspect::Inspect;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
+use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -632,8 +638,8 @@ impl DiskIo for BlockingWriteDisk {
         Ok(())
     }
 
-    fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        disk_backend::UnmapBehavior::Ignored
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        UnmapBehavior::Ignored
     }
 }
 
