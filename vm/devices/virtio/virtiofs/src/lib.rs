@@ -1039,11 +1039,11 @@ impl InodeMap {
 
         // Re-insert the root inode.
         let inserted = self.inodes_by_node_id.insert(Arc::clone(&root_inode));
-        if inserted != Some(FUSE_ROOT_ID) {
-            self.inodes_by_node_id.clear();
-            self.inodes_by_key.clear();
-            return;
-        }
+        assert_eq!(
+            inserted,
+            Some(FUSE_ROOT_ID),
+            "root inode ID changed during clear"
+        );
 
         // Rebuild the dedup map with just the root.
         self.inodes_by_key.clear();
@@ -1091,6 +1091,58 @@ mod tests {
 
         assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
         assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn stale_guard_drop_preserves_current_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let stale_file = fs.reserve_file().unwrap();
+        let stale_inode = fs.reserve_inode().unwrap();
+        fs.destroy();
+
+        let current_file = fs.reserve_file().unwrap();
+        let current_inode = fs.reserve_inode().unwrap();
+        assert_eq!(
+            stale_file.reservation.handle,
+            current_file.reservation.handle
+        );
+        assert_eq!(
+            stale_inode.reservation.handle,
+            current_inode.reservation.handle
+        );
+        drop(stale_file);
+        drop(stale_inode);
+
+        assert_eq!(
+            fs.reserve_file().unwrap().reservation.handle,
+            current_file.reservation.handle + 1
+        );
+        assert_eq!(
+            fs.reserve_inode().unwrap().reservation.handle,
+            current_inode.reservation.handle + 1
+        );
+    }
+
+    #[test]
+    fn older_guard_drop_preserves_newer_reservations() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let older_file = fs.reserve_file().unwrap();
+        let older_inode = fs.reserve_inode().unwrap();
+        let newer_file = fs.reserve_file().unwrap();
+        let newer_inode = fs.reserve_inode().unwrap();
+        drop(older_file);
+        drop(older_inode);
+
+        assert_eq!(
+            fs.reserve_file().unwrap().reservation.handle,
+            newer_file.reservation.handle + 1
+        );
+        assert_eq!(
+            fs.reserve_inode().unwrap().reservation.handle,
+            newer_inode.reservation.handle + 1
+        );
     }
 
     #[test]
@@ -1170,6 +1222,16 @@ mod tests {
         fs.destroy();
 
         assert!(fs.get_inode(FUSE_ROOT_ID).is_ok());
+    }
+
+    #[test]
+    #[should_panic(expected = "root inode ID changed during clear")]
+    fn clear_rejects_corrupt_root_allocator() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.inodes.write().inodes_by_node_id.initial_handle = FUSE_ROOT_ID + 1;
+
+        fs.destroy();
     }
 
     #[test]
