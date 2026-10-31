@@ -42,16 +42,17 @@ use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
 use guid::Guid;
 use hardware_key_sealing::HardwareDerivedKeys;
+use hardware_key_sealing::HwKeyProtector;
 use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
+use openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::VmgsProvisioner;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION;
-use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV3;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
 use pal_async::local::LocalDriver;
@@ -81,6 +82,12 @@ impl<T: Into<AttestationErrorInner>> From<T> for Error {
 
 #[derive(Debug, Error)]
 enum AttestationErrorInner {
+    #[error("failed to read hardware key protector from vmgs")]
+    ReadHardwareKeyProtector(#[source] vmgs::ReadFromVmgsError),
+    #[error("invalid IGVM attestation response or context metadata")]
+    KeyReleaseContext(#[source] secure_key_release::RequestVmgsEncryptionKeysError),
+    #[error("cannot suppress attestation with a context-bound hardware key protector")]
+    StatelessContextBoundProtector,
     #[error("read security profile from vmgs")]
     ReadSecurityProfile(#[source] vmgs::ReadFromVmgsError),
     #[error("failed to get derived keys")]
@@ -135,8 +142,8 @@ enum GetDerivedKeysError {
     EncryptionRequiredButNotFound,
     #[error("failed to seal the egress key using hardware derived keys")]
     SealEgressKeyUsingHardwareDerivedKeys(#[source] HardwareKeySealingError),
-    #[error("failed to write to `FileId::HW_KEY_PROTECTOR` in vmgs")]
-    VmgsWriteHardwareKeyProtector(#[source] vmgs::WriteToVmgsError),
+    #[error("failed to derive hardware keys for the egress context")]
+    DeriveHardwareEgressKeys(#[source] hardware_key_sealing::HardwareDerivedKeysError),
     #[error("failed to get derived key by id")]
     GetDerivedKeyById(#[source] GetDerivedKeysByIdError),
     #[error("failed to derive an ingress key")]
@@ -179,6 +186,8 @@ enum UnlockVmgsDataStoreError {
     UpdateVmgsEncryptionKey(#[source] ::vmgs::Error),
     #[error("failed to persist all key protectors")]
     PersistAllKeyProtectors(#[source] PersistAllKeyProtectorsError),
+    #[error("failed to persist hardware key protector")]
+    PersistHardwareKeyProtector(#[source] vmgs::PersistHardwareKeyProtectorError),
 }
 
 #[derive(Debug, Error)]
@@ -187,8 +196,6 @@ enum PersistAllKeyProtectorsError {
     KeyProtector(#[source] vmgs::WriteToVmgsError),
     #[error("failed to write key protector by id to vmgs")]
     KeyProtectorById(#[source] vmgs::WriteToVmgsError),
-    #[error("failed to write hardware key protector to vmgs")]
-    HardwareKeyProtector(#[source] vmgs::WriteToVmgsError),
 }
 
 #[derive(Debug, Error)]
@@ -302,10 +309,9 @@ struct DerivedKeyResult {
     /// The instance of [`GspExtendedStatusFlags`] returned by GSP.
     gsp_extended_status_flags: GspExtendedStatusFlags,
     /// Optional hardware key protector.
-    hardware_key_protector: Option<HardwareKeyProtectorV3>,
-    /// This attempt sealed and successfully wrote its egress DEK's protector
-    /// before unlock. Never inferred from an existing VMGS entry.
-    hardware_key_protector_written: bool,
+    hardware_key_protector: Option<HwKeyProtector>,
+    /// Stored context authenticated by successful hardware unsealing.
+    authenticated_key_release_context_hash: Option<[u8; 32]>,
 }
 
 /// Only returned after this attempt successfully unlocks and persists VMGS.
@@ -313,6 +319,7 @@ struct UnlockResult {
     state_refresh_request: bool,
     /// A freshly sealed protector for the active DEK was written and flushed.
     hardware_sealed: bool,
+    key_release_context_hash: Option<[u8; 32]>,
 }
 
 /// The return values of [`initialize_platform_security`].
@@ -331,6 +338,10 @@ pub struct PlatformAttestationData {
     /// malformed, incompatible, or lowered observation. In that case runtime
     /// hardware resealing must stay disabled; do not lazily initialize after an event.
     pub runtime_tcb_floor: Option<runtime_sealing::RuntimeTcbFloor>,
+    /// Effective context adopted after successful SKR key unwrap or authenticated
+    /// hardware recovery, returned only after successful initialization. The SKR
+    /// value remains host-provided metadata, not a policy authorization assertion.
+    pub key_release_context_hash: Option<[u8; 32]>,
 }
 
 /// The attestation type to use.
@@ -393,6 +404,7 @@ async fn try_unlock_vmgs(
                 ingress_rsa_kek: None,
                 wrapped_des_key: None,
                 key_derivation_svn: report.key_derivation_svn,
+                key_release_context_hash: None,
             })
         }
     } else {
@@ -426,10 +438,14 @@ async fn try_unlock_vmgs(
         ingress_rsa_kek,
         wrapped_des_key,
         key_derivation_svn,
+        key_release_context_hash,
     } = match skr_response {
         Ok(k) => {
             tracing::info!(CVM_ALLOWED, "Successfully retrieved key-encryption key");
             k
+        }
+        Err((e, _)) if e.is_context_failure() => {
+            return Err((AttestationErrorInner::KeyReleaseContext(e), false));
         }
         Err((e, _)) => {
             // Non-fatal, allowing for hardware-based recovery
@@ -493,6 +509,15 @@ async fn try_unlock_vmgs(
         "Deriving keys"
     );
 
+    // Only successful SKR supplies the egress sealing context, which may differ
+    // from the cached ingress context. Never promote the cached request hint
+    // (or a caller-provided snapshot) into this KDF.
+    let mut sealing_config = attestation_vm_config.clone();
+    sealing_config.current_time = None;
+    sealing_config.key_release_context_hash = key_release_context_hash
+        .as_ref()
+        .map(encode_key_release_context_hash);
+
     let derived_keys_result = get_derived_keys(
         get,
         tee_call,
@@ -500,7 +525,7 @@ async fn try_unlock_vmgs(
         &mut key_protector,
         key_protector_by_id,
         bios_guid,
-        attestation_vm_config,
+        &sealing_config,
         vmgs_encrypted,
         ingress_rsa_kek.as_ref(),
         wrapped_des_key.as_deref(),
@@ -527,24 +552,31 @@ async fn try_unlock_vmgs(
 
     tracing::info!("Unlocking VMGS");
 
-    // Capture key identity before consuming Keys. A deferred protector is
-    // persisted by unlock_vmgs_data_store; early writes are tracked explicitly.
-    // Neither a preexisting entry nor success in a failed attempt qualifies.
+    // Only a protector persisted by this successful attempt qualifies for
+    // runtime resealing, not a preexisting entry or a failed attempt.
     let sealed_egress_key = derived_keys_result
         .derived_keys
         .as_ref()
-        .filter(|_| {
-            derived_keys_result.hardware_key_protector.is_some()
-                || derived_keys_result.hardware_key_protector_written
-        })
+        .filter(|_| derived_keys_result.hardware_key_protector.is_some())
         .map(|keys| keys.encrypt_egress);
 
+    let hardware_key_protector = derived_keys_result.hardware_key_protector.map(|protector| {
+        if ingress_rsa_kek.is_some()
+            && !derived_keys_result
+                .key_protector_settings
+                .use_hardware_unlock
+        {
+            HardwareKeyProtectorUpdate::Backup(protector)
+        } else {
+            HardwareKeyProtectorUpdate::Primary(protector)
+        }
+    });
     if let Err(e) = unlock_vmgs_data_store(
         vmgs,
         vmgs_encrypted,
         &mut key_protector,
         key_protector_by_id,
-        derived_keys_result.hardware_key_protector,
+        hardware_key_protector,
         derived_keys_result.derived_keys,
         derived_keys_result.key_protector_settings,
         bios_guid,
@@ -612,6 +644,13 @@ async fn try_unlock_vmgs(
             .gsp_extended_status_flags
             .state_refresh_request(),
         hardware_sealed,
+        // Successful SKR supplies this boot's context even without a hardware
+        // backup. Only a persisted protector carries it across subsequent boots.
+        key_release_context_hash: if ingress_rsa_kek.is_some() {
+            key_release_context_hash
+        } else {
+            derived_keys_result.authenticated_key_release_context_hash
+        },
     })
 }
 
@@ -693,6 +732,29 @@ pub async fn initialize_platform_security(
     let SecurityProfile { mut agent_data } = vmgs::read_security_profile(vmgs)
         .await
         .map_err(AttestationErrorInner::ReadSecurityProfile)?;
+
+    // Load once before any request/retry. The header is an untrusted hint, not
+    // authorization; hardware recovery authenticates it with the protector's
+    // HMAC. Missing/legacy protectors have no hash, regardless of boot number.
+    // Malformed existing protectors must not silently erase a previous binding.
+    let cached_context_hash = match vmgs::read_hardware_key_protector(vmgs).await {
+        Ok(protector) => protector.key_release_context_hash(),
+        Err(vmgs::ReadFromVmgsError::EntryNotFound(_)) => None,
+        Err(e) => return Err(AttestationErrorInner::ReadHardwareKeyProtector(e).into()),
+    };
+    if suppress_attestation && cached_context_hash.is_some() {
+        return Err(AttestationErrorInner::StatelessContextBoundProtector.into());
+    }
+    let mut request_config = attestation_vm_config.clone();
+    request_config.current_time = None;
+    request_config.key_release_context_hash = if suppress_attestation {
+        None
+    } else {
+        cached_context_hash
+            .as_ref()
+            .map(encode_key_release_context_hash)
+    };
+    let attestation_vm_config = &request_config;
 
     // Hardware sealing is *required* (the only source of the VMGS DEK) when all
     // hold: the VM is a CVM (tee_call available), it is stateless
@@ -800,6 +862,7 @@ pub async fn initialize_platform_security(
             agent_data: Some(agent_data.to_vec()),
             guest_secret_key: None,
             runtime_tcb_floor: None,
+            key_release_context_hash: None,
         });
     }
 
@@ -862,6 +925,7 @@ pub async fn initialize_platform_security(
     let UnlockResult {
         state_refresh_request: state_refresh_request_from_gsp,
         hardware_sealed,
+        key_release_context_hash,
     } = loop {
         tracing::info!(CVM_ALLOWED, attempt = i, "attempt to unlock VMGS file");
 
@@ -918,6 +982,7 @@ pub async fn initialize_platform_security(
         agent_data: Some(agent_data.to_vec()),
         guest_secret_key,
         runtime_tcb_floor: boot_tcb_floor.finish().filter(|_| hardware_sealed),
+        key_release_context_hash,
     })
 }
 
@@ -927,16 +992,31 @@ pub async fn initialize_platform_security(
 /// old egress key in the VMGS, whose contents can be controlled by the host.
 /// This key can be used to attempt decryption but must not be used to
 /// re-encrypt the VMGS.
+enum HardwareKeyProtectorUpdate {
+    Primary(HwKeyProtector),
+    Backup(HwKeyProtector),
+}
+
+enum KeyProtectorPersistence {
+    Regular,
+    HardwarePersisted,
+}
+
 async fn unlock_vmgs_data_store(
     vmgs: &mut Vmgs,
     vmgs_encrypted: bool,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
-    hardware_key_protector: Option<HardwareKeyProtectorV3>,
+    hardware_key_protector: Option<HardwareKeyProtectorUpdate>,
     derived_keys: Option<Keys>,
     key_protector_settings: KeyProtectorSettings,
     bios_guid: Guid,
 ) -> Result<(), UnlockVmgsDataStoreError> {
+    let (hardware_key_protector, preserve_regular_protector) = match hardware_key_protector {
+        Some(HardwareKeyProtectorUpdate::Primary(protector)) => (Some(protector), true),
+        Some(HardwareKeyProtectorUpdate::Backup(protector)) => (Some(protector), false),
+        None => (None, false),
+    };
     let mut new_key = false; // Indicate if we need to add a new key after unlock
 
     let Some(Keys {
@@ -1009,9 +1089,19 @@ async fn unlock_vmgs_data_store(
         // Add the new egress key. If we are not provisioning, then this will
         // also remove the old key. This will also remove the inactive key if
         // last time we failed to remove it.
-        vmgs.update_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
+        if let Some(protector) = hardware_key_protector.as_ref() {
+            vmgs::persist_hardware_key_protector(vmgs, protector, Some(&new_egress_key))
+                .await
+                .map_err(UnlockVmgsDataStoreError::PersistHardwareKeyProtector)?;
+        } else {
+            vmgs.update_encryption_key(&new_egress_key, EncryptionAlgorithm::AES_GCM)
+                .await
+                .map_err(UnlockVmgsDataStoreError::UpdateVmgsEncryptionKey)?;
+        }
+    } else if let Some(protector) = hardware_key_protector.as_ref() {
+        vmgs::persist_hardware_key_protector(vmgs, protector, None)
             .await
-            .map_err(UnlockVmgsDataStoreError::UpdateVmgsEncryptionKey)?;
+            .map_err(UnlockVmgsDataStoreError::PersistHardwareKeyProtector)?;
     }
 
     // Persist KP to VMGS
@@ -1019,12 +1109,17 @@ async fn unlock_vmgs_data_store(
         vmgs,
         key_protector,
         key_protector_by_id,
-        hardware_key_protector.as_ref(),
+        if preserve_regular_protector {
+            KeyProtectorPersistence::HardwarePersisted
+        } else {
+            KeyProtectorPersistence::Regular
+        },
         bios_guid,
         key_protector_settings,
     )
     .await
-    .map_err(UnlockVmgsDataStoreError::PersistAllKeyProtectors)
+    .map_err(UnlockVmgsDataStoreError::PersistAllKeyProtectors)?;
+    Ok(())
 }
 
 /// Update data store keys with key protectors.
@@ -1281,7 +1376,17 @@ async fn get_derived_keys(
                         return None;
                     };
 
-                    match HardwareDerivedKeys::derive_key(tee_call, attestation_vm_config, policy) {
+                    // Restore only the stored hash, never a host-supplied VM
+                    // configuration snapshot or the new SKR response context.
+                    // The rest of the current configuration still binds the
+                    // KDF, and unseal_key must authenticate the stored header.
+                    let mut ingress_config = attestation_vm_config.clone();
+                    ingress_config.current_time = None;
+                    ingress_config.key_release_context_hash = hardware_key_protector
+                        .key_release_context_hash()
+                        .as_ref()
+                        .map(encode_key_release_context_hash);
+                    match HardwareDerivedKeys::derive_key(tee_call, &ingress_config, policy) {
                         Ok(hardware_derived_key) => Some(hardware_derived_key),
                         Err(e) => {
                             // non-fatal
@@ -1361,13 +1466,31 @@ async fn get_derived_keys(
             derived_keys.ingress = dek;
             derived_keys.decrypt_egress = None;
 
+            // Unsealing authenticates the old context. A successful SKR may
+            // adopt a new context even when GSP is unavailable; use that new
+            // context to reseal the recovered DEK, not the ingress KDF keys.
+            let authenticated_key_release_context_hash =
+                hardware_key_protector.key_release_context_hash();
+            let egress_hardware_derived_keys = if ingress_rsa_kek.is_some() {
+                let tee = tee_call
+                    .and_then(|tee| tee.supports_get_derived_key())
+                    .ok_or(GetDerivedKeysError::HardwareSealingRequiredButNotSupported)?;
+                let policy = hardware_key_protector
+                    .key_derivation_policy()
+                    .ok_or(GetDerivedKeysError::GetIngressKeyFromHardwareKeyProtectorFailed)?;
+                HardwareDerivedKeys::derive_key(tee, attestation_vm_config, policy)
+                    .map_err(GetDerivedKeysError::DeriveHardwareEgressKeys)?
+            } else {
+                hardware_derived_keys
+            };
+
             let hardware_key_protector = if require_hardware_sealing && is_encrypted {
                 // Generate a new key on every boot for key rotation
                 let mut new_dek = [0u8; AES_GCM_KEY_LENGTH];
                 getrandom::fill(&mut new_dek).expect("rng failure");
 
                 let updated_hardware_key_protector =
-                    hardware_key_sealing::seal_key(&hardware_derived_keys, &new_dek)
+                    hardware_key_sealing::seal_key(&egress_hardware_derived_keys, &new_dek)
                         .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
 
                 derived_keys.encrypt_egress = new_dek;
@@ -1388,9 +1511,9 @@ async fn get_derived_keys(
                     "Using hardware-derived key to recover VMGS DEK"
                 );
 
-                // Re-seal the recovered DEK as a v3 protector (also migrates a
-                // legacy v2 protector to the current format).
-                hardware_key_sealing::seal_key(&hardware_derived_keys, &derived_keys.ingress)
+                // Without SKR, retain the authenticated old context. With SKR,
+                // a newly adopted hash upgrades even legacy recovery to V4.
+                hardware_key_sealing::seal_key(&egress_hardware_derived_keys, &derived_keys.ingress)
                     .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?
             };
 
@@ -1402,7 +1525,7 @@ async fn get_derived_keys(
                 key_protector_settings,
                 gsp_extended_status_flags: gsp_response.extended_status_flags,
                 hardware_key_protector: Some(hardware_key_protector),
-                hardware_key_protector_written: false,
+                authenticated_key_release_context_hash,
             });
         } else {
             if require_hardware_sealing && is_encrypted {
@@ -1496,7 +1619,7 @@ async fn get_derived_keys(
             key_protector_settings,
             gsp_extended_status_flags: gsp_response.extended_status_flags,
             hardware_key_protector: Some(hardware_key_protector),
-            hardware_key_protector_written: false,
+            authenticated_key_release_context_hash: None,
         });
     }
 
@@ -1520,13 +1643,11 @@ async fn get_derived_keys(
                     key_protector_settings,
                     gsp_extended_status_flags: gsp_response.extended_status_flags,
                     hardware_key_protector: None,
-                    hardware_key_protector_written: false,
+                    authenticated_key_release_context_hash: None,
                 });
             }
         }
     }
-
-    let mut hardware_key_protector_written = false;
 
     // Use tenant key (KEK only)
     if no_gsp && no_gsp_by_id {
@@ -1536,26 +1657,20 @@ async fn get_derived_keys(
         derived_keys.decrypt_egress = decrypt_egress_key;
         derived_keys.encrypt_egress = encrypt_egress_key;
 
-        if let Some(hardware_derived_keys) = hardware_derived_keys {
-            let hardware_key_protector = hardware_key_sealing::seal_key(
-                &hardware_derived_keys,
-                &derived_keys.encrypt_egress,
-            )
+        // Keep the candidate in memory until the datastore has been unlocked.
+        // Publish it before retiring the old key during the key handoff.
+        let hardware_key_protector = hardware_derived_keys
+            .as_ref()
+            .map(|keys| hardware_key_sealing::seal_key(keys, &derived_keys.encrypt_egress))
+            .transpose()
             .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
-            vmgs::write_hardware_key_protector(&hardware_key_protector, vmgs)
-                .await
-                .map_err(GetDerivedKeysError::VmgsWriteHardwareKeyProtector)?;
-            hardware_key_protector_written = true;
-
-            tracing::info!(CVM_ALLOWED, "hardware key protector updated (no GSP used)");
-        }
 
         return Ok(DerivedKeyResult {
             derived_keys: Some(derived_keys),
             key_protector_settings,
             gsp_extended_status_flags: gsp_response.extended_status_flags,
-            hardware_key_protector: None,
-            hardware_key_protector_written,
+            hardware_key_protector,
+            authenticated_key_release_context_hash: None,
         });
     }
 
@@ -1596,7 +1711,7 @@ async fn get_derived_keys(
                 key_protector_settings,
                 gsp_extended_status_flags: gsp_response.extended_status_flags,
                 hardware_key_protector: None,
-                hardware_key_protector_written: false,
+                authenticated_key_release_context_hash: None,
             });
         }
 
@@ -1717,22 +1832,12 @@ async fn get_derived_keys(
             .gsp_buffer
             .copy_from_slice(&gsp_response.encrypted_gsp.buffer);
         key_protector.gsp[egress_idx].gsp_length = gsp_response.encrypted_gsp.length;
-
-        if let Some(hardware_derived_keys) = hardware_derived_keys {
-            let hardware_key_protector = hardware_key_sealing::seal_key(
-                &hardware_derived_keys,
-                &derived_keys.encrypt_egress,
-            )
-            .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
-
-            vmgs::write_hardware_key_protector(&hardware_key_protector, vmgs)
-                .await
-                .map_err(GetDerivedKeysError::VmgsWriteHardwareKeyProtector)?;
-            hardware_key_protector_written = true;
-
-            tracing::info!(CVM_ALLOWED, "hardware key protector updated");
-        }
     }
+    let hardware_key_protector = hardware_derived_keys
+        .as_ref()
+        .map(|keys| hardware_key_sealing::seal_key(keys, &derived_keys.encrypt_egress))
+        .transpose()
+        .map_err(GetDerivedKeysError::SealEgressKeyUsingHardwareDerivedKeys)?;
 
     if matches!(
         guest_state_encryption_policy,
@@ -1753,8 +1858,8 @@ async fn get_derived_keys(
         derived_keys: Some(derived_keys),
         key_protector_settings,
         gsp_extended_status_flags: gsp_response.extended_status_flags,
-        hardware_key_protector: None,
-        hardware_key_protector_written,
+        hardware_key_protector,
+        authenticated_key_release_context_hash: None,
     })
 }
 
@@ -1851,7 +1956,7 @@ async fn persist_all_key_protectors(
     vmgs: &mut Vmgs,
     key_protector: &mut KeyProtector,
     key_protector_by_id: &mut KeyProtectorById,
-    hardware_key_protector: Option<&HardwareKeyProtectorV3>,
+    persistence: KeyProtectorPersistence,
     bios_guid: Guid,
     key_protector_settings: KeyProtectorSettings,
 ) -> Result<(), PersistAllKeyProtectorsError> {
@@ -1862,16 +1967,7 @@ async fn persist_all_key_protectors(
             .await
             .map_err(PersistAllKeyProtectorsError::KeyProtectorById)?;
     } else {
-        // When a hardware key protector is present, the VMGS DEK is sealed by the
-        // hardware-derived key (either recovered via hardware unsealing, or
-        // freshly generated/rotated in exclusive hardware sealing mode). In that
-        // case persist the hardware key protector instead of altering the regular
-        // key protector.
-        if let Some(hardware_key_protector) = hardware_key_protector {
-            vmgs::write_hardware_key_protector(hardware_key_protector, vmgs)
-                .await
-                .map_err(PersistAllKeyProtectorsError::HardwareKeyProtector)?;
-        } else {
+        if matches!(persistence, KeyProtectorPersistence::Regular) {
             // Remove ingress KP & DEK, no longer applies to data store
             key_protector.dek[key_protector.active_kp as usize % NUMBER_KP]
                 .dek_buffer
@@ -2013,6 +2109,8 @@ pub mod test_utils {
         pub measurement: [u8; 32],
         /// Mock TCB version returned in attestation reports
         pub tcb_version: u64,
+        /// Number of reports requested, to detect redundant sealing reports.
+        pub report_count: std::sync::atomic::AtomicUsize,
     }
 
     impl MockTeeCall {
@@ -2021,6 +2119,7 @@ pub mod test_utils {
             Self {
                 measurement,
                 tcb_version: 0x1234,
+                report_count: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -2035,6 +2134,8 @@ pub mod test_utils {
             &self,
             report_data: &[u8; REPORT_DATA_SIZE],
         ) -> Result<GetAttestationReportResult, tee_call::Error> {
+            self.report_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut report =
                 [0x6c; openhcl_attestation_protocol::igvm_attest::get::SNP_VM_REPORT_SIZE];
             report[..REPORT_DATA_SIZE].copy_from_slice(report_data);
@@ -2146,7 +2247,7 @@ mod tests {
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    fn test_attestation_config() -> AttestationVmConfig {
+    pub(super) fn test_attestation_config() -> AttestationVmConfig {
         AttestationVmConfig {
             current_time: None,
             root_cert_thumbprint: String::new(),
@@ -2157,6 +2258,7 @@ mod tests {
             tpm_enabled: true,
             tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: true,
+            key_release_context_hash: None,
             filtered_vpci_devices_allowed: false,
             vm_unique_id: String::new(),
             vmgs_provisioner: None,
@@ -2412,6 +2514,22 @@ mod tests {
         }
     }
 
+    fn test_hardware_key_protector() -> HwKeyProtector {
+        let tee = MockTeeCall::new([0x12; 32]);
+        let keys = HardwareDerivedKeys::derive_key(
+            &tee,
+            &test_attestation_config(),
+            KeyDerivationPolicy {
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: tee.tcb_version,
+                },
+                mix_measurement: false,
+            },
+        )
+        .unwrap();
+        hardware_key_sealing::seal_key(&keys, &[0x33; 32]).unwrap()
+    }
+
     fn new_key_protector_by_id(
         id_guid: Option<Guid>,
         ported: Option<u8>,
@@ -2478,6 +2596,7 @@ mod tests {
             tpm_enabled: true,
             tpm_version: AttestationTpmVersion::V138,
             tpm_persisted: true,
+            key_release_context_hash: None,
             hardware_sealing_policy: HardwareSealingPolicy::None,
             filtered_vpci_devices_allowed: false,
             vm_unique_id: String::new(),
@@ -2997,11 +3116,14 @@ mod tests {
             decrypt_gsp_type: GspType::GspById,
             encrypt_gsp_type: GspType::GspById,
         };
+        vmgs::persist_hardware_key_protector(&mut vmgs, &test_hardware_key_protector(), None)
+            .await
+            .unwrap();
         persist_all_key_protectors(
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            Some(&HardwareKeyProtectorV3::new_zeroed()),
+            KeyProtectorPersistence::HardwarePersisted,
             bios_guid,
             key_protector_settings,
         )
@@ -3054,6 +3176,7 @@ mod tests {
                 tpm_enabled: false,
                 tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
+                key_release_context_hash: None,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
                 vm_unique_id: String::new(),
@@ -3089,7 +3212,9 @@ mod tests {
             false,
             &mut key_protector,
             &mut key_protector_by_id,
-            derived.hardware_key_protector,
+            derived
+                .hardware_key_protector
+                .map(HardwareKeyProtectorUpdate::Primary),
             derived.derived_keys,
             derived.key_protector_settings,
             bios_guid,
@@ -3135,6 +3260,7 @@ mod tests {
                 tpm_enabled: false,
                 tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
+                key_release_context_hash: None,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
                 vm_unique_id: String::new(),
@@ -3181,6 +3307,7 @@ mod tests {
                 tpm_enabled: false,
                 tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
+                key_release_context_hash: None,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
                 vm_unique_id: String::new(),
@@ -3253,6 +3380,7 @@ mod tests {
                 tpm_enabled: false,
                 tpm_version: AttestationTpmVersion::V138,
                 tpm_persisted: false,
+                key_release_context_hash: None,
                 hardware_sealing_policy: HardwareSealingPolicy::Hash,
                 filtered_vpci_devices_allowed: true,
                 vm_unique_id: String::new(),
@@ -3377,7 +3505,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            None,
+            KeyProtectorPersistence::Regular,
             bios_guid,
             key_protector_settings,
         )
@@ -3422,7 +3550,7 @@ mod tests {
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            None,
+            KeyProtectorPersistence::Regular,
             bios_guid,
             key_protector_settings,
         )
@@ -3467,11 +3595,14 @@ mod tests {
             encrypt_gsp_type: GspType::None,
         };
 
+        vmgs::persist_hardware_key_protector(&mut vmgs, &test_hardware_key_protector(), None)
+            .await
+            .unwrap();
         persist_all_key_protectors(
             &mut vmgs,
             &mut key_protector,
             &mut key_protector_by_id,
-            Some(&HardwareKeyProtectorV3::new_zeroed()),
+            KeyProtectorPersistence::HardwarePersisted,
             bios_guid,
             key_protector_settings,
         )
@@ -3491,6 +3622,1017 @@ mod tests {
     }
 
     // --- initialize_platform_security tests ---
+
+    /// Reopen the disk between boots so recovery cannot accidentally rely on
+    /// encryption keys cached in an already-unlocked Vmgs instance.
+    #[async_test]
+    async fn context_hash_v4_skr_and_outage_roundtrip(driver: DefaultDriver) {
+        context_hash_rollover_roundtrip(driver, false).await;
+    }
+
+    #[async_test]
+    async fn context_hash_v4_skr_with_gsp_failure_rollover_roundtrip(driver: DefaultDriver) {
+        context_hash_rollover_roundtrip(driver, true).await;
+    }
+
+    async fn context_hash_rollover_roundtrip(driver: DefaultDriver, fail_gsp: bool) {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        let hash_a = [0xa1; 32];
+        let hash_b = [0xb2; 32];
+        let hash_c = [0xc3; 32];
+        // Provision A, roll to B, recover B during an outage, roll to C, recover C.
+        let boots = [
+            (None, hash_a, false),
+            (Some(hash_a), hash_b, false),
+            (Some(hash_b), hash_b, true),
+            (Some(hash_b), hash_c, false),
+            (Some(hash_c), hash_c, true),
+        ];
+        let mut plan = IgvmAgentTestPlan::default();
+        let mut actions = VecDeque::new();
+        for (_, hash, outage) in boots {
+            actions.push_back(if outage {
+                IgvmAgentAction::RespondFailure
+            } else {
+                IgvmAgentAction::RespondSuccessExtendedPayload {
+                    key_release_context_hash: Some(encode_key_release_context_hash(&hash)),
+                }
+            });
+        }
+        plan.insert(IgvmAttestRequestType::KEY_RELEASE_REQUEST, actions);
+        let get = new_test_get(driver, true, Some(plan)).await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let bios_guid = Guid::new_random();
+        let mut config = test_attestation_config();
+        // Caller-supplied context/time must not become the request hint or KDF.
+        config.key_release_context_hash = Some("not a hash".into());
+        config.current_time = Some(123);
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let mut recovery_kp = None;
+        let mut recovery_dek = None;
+        for (boot, (cached, hash, outage)) in boots.into_iter().enumerate() {
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.key_release_context_hash, Some(hash));
+            assert!(vmgs.encrypted());
+
+            // Validate persisted egress keys on a fresh, locked datastore, not
+            // against encryption keys cached by initialize_platform_security.
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert_eq!(
+                protector.version(),
+                openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_4
+            );
+            assert_eq!(protector.key_release_context_hash(), Some(hash));
+            let mut sealing_config = test_attestation_config();
+            sealing_config.key_release_context_hash = Some(encode_key_release_context_hash(&hash));
+            let keys = HardwareDerivedKeys::derive_key(
+                &tee,
+                &sealing_config,
+                protector.key_derivation_policy().unwrap(),
+            )
+            .unwrap();
+            let dek = protector.unseal_key(&keys).unwrap();
+            if let Some(old_hash) = cached.filter(|old_hash| *old_hash != hash) {
+                let mut old_config = test_attestation_config();
+                old_config.key_release_context_hash =
+                    Some(encode_key_release_context_hash(&old_hash));
+                let old_keys = HardwareDerivedKeys::derive_key(
+                    &tee,
+                    &old_config,
+                    protector.key_derivation_policy().unwrap(),
+                )
+                .unwrap();
+                assert!(matches!(
+                    protector.unseal_key(&old_keys),
+                    Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)
+                ));
+            }
+            vmgs.unlock_with_encryption_key(&dek).await.unwrap();
+            if fail_gsp && boot == 0 {
+                // Mark GSP as required after provisioning. The default test
+                // host supplies no GSP, forcing real SKR + hardware recovery
+                // on both subsequent successful releases (A -> B -> C).
+                let mut kp = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+                    .await
+                    .unwrap();
+                let ingress_idx = (kp.active_kp % 2) as usize;
+                kp.gsp[ingress_idx].gsp_length = 1;
+                kp.gsp[ingress_idx].gsp_buffer[0] = 1;
+                vmgs::write_key_protector(&kp, &mut vmgs).await.unwrap();
+                recovery_kp = Some(kp.as_bytes().to_vec());
+                recovery_dek = Some(dek);
+            } else if fail_gsp {
+                // Recovery reseals the same DEK with the successful SKR hash,
+                // and leaves the tenant/GSP protector untouched.
+                assert_eq!(Some(dek), recovery_dek);
+                assert_eq!(
+                    Some(vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap()),
+                    recovery_kp
+                );
+            }
+            if outage {
+                assert_eq!(cached, Some(hash));
+            }
+            assert_eq!(
+                tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+                boot + 1
+            );
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        }
+        assert_eq!(config.current_time, Some(123));
+        assert_eq!(
+            config.key_release_context_hash.as_deref(),
+            Some("not a hash")
+        );
+    }
+
+    #[async_test]
+    async fn context_hash_absent_or_invalid_responses_write_v3(driver: DefaultDriver) {
+        for response in [
+            IgvmAgentAction::RespondSuccessV2,
+            IgvmAgentAction::RespondSuccessExtendedPayload {
+                key_release_context_hash: None,
+            },
+            IgvmAgentAction::RespondSuccessExtendedPayload {
+                key_release_context_hash: Some("bad hash".into()),
+            },
+            IgvmAgentAction::RespondSuccessExtendedPayload {
+                key_release_context_hash: Some(String::new()),
+            },
+        ] {
+            for previously_bound in [false, true] {
+                let disk = new_test_file();
+                let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+                let mut plan = IgvmAgentTestPlan::default();
+                plan.insert(
+                    IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+                    VecDeque::from([
+                        IgvmAgentAction::RespondSuccessV2,
+                        IgvmAgentAction::RespondSuccessV2,
+                        IgvmAgentAction::RespondSuccessV2,
+                    ]),
+                );
+                plan.insert(
+                    IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                    VecDeque::from([
+                        if previously_bound {
+                            IgvmAgentAction::RespondSuccess
+                        } else {
+                            response.clone()
+                        },
+                        response.clone(),
+                        IgvmAgentAction::RespondFailure,
+                    ]),
+                );
+                let get = new_test_get(driver.clone(), true, Some(plan)).await;
+                let tee = MockTeeCall::new([0x12; 32]);
+                let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+                let bios_guid = Guid::new_random();
+                // Missing or invalid context falls back to a legacy protector even
+                // after a V4 boot. An outage on the final boot must still recover.
+                for boot in 0..3 {
+                    let result = initialize_platform_security(
+                        &get.client,
+                        bios_guid,
+                        &test_attestation_config(),
+                        &mut vmgs,
+                        Some(&tee),
+                        false,
+                        ldriver.clone(),
+                        GuestStateEncryptionPolicy::Auto,
+                        true,
+                    )
+                    .await
+                    .unwrap();
+                    let expected_hash = (previously_bound && boot == 0)
+                        .then(|| std::array::from_fn(|index| index as u8));
+                    assert_eq!(result.key_release_context_hash, expected_hash);
+                    assert!(vmgs.encrypted());
+                    let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+                    assert_eq!(
+                        protector.version(),
+                        if expected_hash.is_some() {
+                            openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_4
+                        } else {
+                            openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_3
+                        }
+                    );
+                    assert_eq!(protector.key_release_context_hash(), expected_hash);
+                    assert_eq!(
+                        tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+                        boot + 1
+                    );
+                    drop(vmgs);
+                    vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+                }
+            }
+        }
+    }
+
+    #[async_test]
+    async fn context_hash_failed_initialization_does_not_persist_rollover(driver: DefaultDriver) {
+        for fail_vmgs_unlock in [false, true] {
+            let disk = new_test_file();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            let hash_a = [0xa1; 32];
+            let hash_b = [0xb2; 32];
+            let mut plan = IgvmAgentTestPlan::default();
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccessExtendedPayload {
+                        key_release_context_hash: Some(encode_key_release_context_hash(&hash_a)),
+                    },
+                    IgvmAgentAction::RespondSuccessExtendedPayload {
+                        key_release_context_hash: Some(encode_key_release_context_hash(&hash_b)),
+                    },
+                    IgvmAgentAction::RespondFailure,
+                ]),
+            );
+            let get = new_test_get(driver.clone(), true, Some(plan)).await;
+            let tee = MockTeeCall::new([0x12; 32]);
+            let config = test_attestation_config();
+            let bios_guid = Guid::new_random();
+            let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.key_release_context_hash, Some(hash_a));
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            let mut old_config = config.clone();
+            old_config.key_release_context_hash = Some(encode_key_release_context_hash(&hash_a));
+            let old_keys = HardwareDerivedKeys::derive_key(
+                &tee,
+                &old_config,
+                protector.key_derivation_policy().unwrap(),
+            )
+            .unwrap();
+            let old_dek = protector.unseal_key(&old_keys).unwrap();
+            let wrong_dek = old_dek.map(|byte| byte ^ 0xff);
+            if fail_vmgs_unlock {
+                // Allow SKR and protector unwrap to succeed, but make the
+                // resulting ingress key unable to unlock the actual datastore.
+                vmgs.update_encryption_key(&wrong_dek, EncryptionAlgorithm::AES_GCM)
+                    .await
+                    .unwrap();
+            } else {
+                // Fail the persisted ingress AES unwrap after successful SKR
+                // unwrap of the RSA KEK accompanying candidate B.
+                let mut kp = vmgs::read_key_protector(&mut vmgs, AES_WRAPPED_AES_KEY_LENGTH)
+                    .await
+                    .unwrap();
+                let ingress_idx = (kp.active_kp % 2) as usize;
+                kp.dek[ingress_idx].dek_buffer[0] ^= 1;
+                vmgs::write_key_protector(&kp, &mut vmgs).await.unwrap();
+            }
+            let hw_before = vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
+            let kp_before = vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap();
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await;
+            if fail_vmgs_unlock {
+                assert!(matches!(
+                    result,
+                    Err(Error(AttestationErrorInner::UnlockVmgsDataStore(
+                        UnlockVmgsDataStoreError::VmgsUnlockUsingExistingIngressKey(_)
+                    )))
+                ));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(Error(AttestationErrorInner::GetDerivedKeys(
+                        GetDerivedKeysError::GetKeysFromKeyProtector(
+                            GetKeysFromKeyProtectorError::IngressDekAesUnwrap(_)
+                        )
+                    )))
+                ));
+            }
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+            assert_eq!(
+                vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+                hw_before
+            );
+            assert_eq!(
+                vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap(),
+                kp_before
+            );
+
+            if fail_vmgs_unlock {
+                // Undo only the injected datastore-key fault before testing
+                // outage recovery. Neither protector is repaired or replaced.
+                vmgs.unlock_with_encryption_key(&wrong_dek).await.unwrap();
+                vmgs.update_encryption_key(&old_dek, EncryptionAlgorithm::AES_GCM)
+                    .await
+                    .unwrap();
+                drop(vmgs);
+                vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+            }
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver,
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.key_release_context_hash, Some(hash_a));
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert_eq!(protector.key_release_context_hash(), Some(hash_a));
+            assert_eq!(protector.unseal_key(&old_keys).unwrap(), old_dek);
+            assert_eq!(
+                tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+                3
+            );
+        }
+    }
+
+    #[async_test]
+    async fn context_hash_cached_header_is_not_authorization(driver: DefaultDriver) {
+        // Changing the cached hash, changing the current VM configuration, or
+        // corrupting the stored header must never recover or reseal the DEK.
+        for alteration in 0..3 {
+            let disk = new_test_file();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            let mut plan = IgvmAgentTestPlan::default();
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondFailure,
+                ]),
+            );
+            let get = new_test_get(driver.clone(), true, Some(plan)).await;
+            let tee = MockTeeCall::new([0x12; 32]);
+            let mut config = test_attestation_config();
+            let bios_guid = Guid::new_random();
+            let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+            initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await
+            .unwrap();
+            let mut protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            match alteration {
+                0 => {
+                    let HwKeyProtector::V4(p) = &mut protector else {
+                        panic!("expected V4");
+                    };
+                    p.header.key_release_context_hash[0] ^= 1;
+                }
+                1 => config.secure_boot = !config.secure_boot,
+                _ => {
+                    let HwKeyProtector::V4(p) = &mut protector else {
+                        panic!("expected V4");
+                    };
+                    p.header.length = 0;
+                }
+            }
+            // Raw write intentionally bypasses structural validation.
+            vmgs.write_file(FileId::HW_KEY_PROTECTOR, protector.as_bytes())
+                .await
+                .unwrap();
+            drop(vmgs);
+            let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                false,
+                ldriver,
+                GuestStateEncryptionPolicy::Auto,
+                true,
+            )
+            .await;
+            if alteration == 2 {
+                assert!(matches!(
+                    result,
+                    Err(Error(AttestationErrorInner::ReadHardwareKeyProtector(_)))
+                ));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(Error(AttestationErrorInner::GetDerivedKeys(
+                        GetDerivedKeysError::UnsealIngressKeyUsingHardwareDerivedKeys(
+                            HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed
+                        )
+                    )))
+                ));
+            }
+            assert_eq!(
+                vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+                protector.as_bytes()
+            );
+            assert_eq!(
+                tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+                if alteration == 2 { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[async_test]
+    async fn context_hash_skr_survives_unavailable_hardware_sealing(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let get = new_test_get(driver, true, None).await;
+        let tee = MockTeeCallNoGetDerivedKey;
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let result = initialize_platform_security(
+            &get.client,
+            Guid::new_random(),
+            &test_attestation_config(),
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(vmgs.encrypted());
+        assert!(hardware_key_protector_is_empty(&mut vmgs).await);
+        assert_eq!(
+            result.key_release_context_hash,
+            Some(std::array::from_fn(|index| index as u8))
+        );
+    }
+
+    #[async_test]
+    async fn context_rollover_without_hardware_preserves_skr_availability(driver: DefaultDriver) {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        let hash_a = [0xa1; 32];
+        let hash_b = [0xb2; 32];
+        let mut plan = IgvmAgentTestPlan::default();
+        plan.insert(
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+            VecDeque::from([
+                IgvmAgentAction::RespondSuccessExtendedPayload {
+                    key_release_context_hash: Some(encode_key_release_context_hash(&hash_a)),
+                },
+                IgvmAgentAction::RespondSuccessExtendedPayload {
+                    key_release_context_hash: Some(encode_key_release_context_hash(&hash_b)),
+                },
+                IgvmAgentAction::RespondSuccessExtendedPayload {
+                    key_release_context_hash: Some(encode_key_release_context_hash(&hash_b)),
+                },
+            ]),
+        );
+        let get = new_test_get(driver, true, Some(plan)).await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let bios_guid = Guid::new_random();
+        let config = test_attestation_config();
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        initialize_platform_security(
+            &get.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+        let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+        let mut old_config = config.clone();
+        old_config.key_release_context_hash = Some(encode_key_release_context_hash(&hash_a));
+        let keys = HardwareDerivedKeys::derive_key(
+            &tee,
+            &old_config,
+            protector.key_derivation_policy().unwrap(),
+        )
+        .unwrap();
+        let dek = protector.unseal_key(&keys).unwrap();
+        let kp = vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap();
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        let result = initialize_platform_security(
+            &get.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&MockTeeCallNoGetDerivedKey),
+            false,
+            ldriver.clone(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await;
+        assert_eq!(result.unwrap().key_release_context_hash, Some(hash_b));
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+            protector.as_bytes()
+        );
+        assert!(vmgs.unlock_with_encryption_key(&dek).await.is_err());
+        assert_ne!(vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap(), kp);
+        let result = initialize_platform_security(
+            &get.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.key_release_context_hash, Some(hash_b));
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+        let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+        assert_eq!(protector.key_release_context_hash(), Some(hash_b));
+        let mut recovered_config = config.clone();
+        recovered_config.key_release_context_hash = Some(encode_key_release_context_hash(&hash_b));
+        let keys = HardwareDerivedKeys::derive_key(
+            &tee,
+            &recovered_config,
+            protector.key_derivation_policy().unwrap(),
+        )
+        .unwrap();
+        let dek = protector.unseal_key(&keys).unwrap();
+        vmgs.unlock_with_encryption_key(&dek).await.unwrap();
+    }
+
+    #[async_test]
+    async fn context_backup_is_persisted_when_gsp_rotation_is_incomplete(driver: DefaultDriver) {
+        for already_rotated in [false, true] {
+            let disk = new_test_file();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            let rsa = RsaKeyPair::generate(2048).unwrap();
+            let mut kp = KeyProtector::new_zeroed();
+            for (index, key) in [[0x11; 32], [0x22; 32]].iter().enumerate() {
+                let wrapped = rsa
+                    .oaep_encrypt(key, crypto::HashAlgorithm::Sha256)
+                    .unwrap();
+                kp.dek[index].dek_buffer[..wrapped.len()].copy_from_slice(&wrapped);
+                kp.gsp[index].gsp_length = 1;
+                kp.gsp[index].gsp_buffer[0] = index as u8 + 1;
+            }
+            let mut gsp = get_protocol::GuestStateProtectionResponse {
+                message_header: get_protocol::HeaderGeneric::new(
+                    get_protocol::HostRequests::GUEST_STATE_PROTECTION,
+                ),
+                encrypted_gsp: get_protocol::GspCiphertextContent::new_zeroed(),
+                decrypted_gsp: [
+                    get_protocol::GspCleartextContent {
+                        length: 32,
+                        buffer: [0x33; 64],
+                    },
+                    get_protocol::GspCleartextContent {
+                        length: 32,
+                        buffer: [0x44; 64],
+                    },
+                ],
+                extended_status_flags: GspExtendedStatusFlags::new(),
+            };
+            gsp.encrypted_gsp.length = 1;
+            let get = guest_emulation_transport::test_utilities::new_transport_pair(
+                driver.clone(),
+                Some(vec![TestGetResponses::new(Event::Response(
+                    gsp.as_bytes().to_vec(),
+                ))]),
+                get_protocol::ProtocolVersion::NICKEL_REV2,
+                None,
+                None,
+            )
+            .await;
+            let tee = MockTeeCall::new([0x12; 32]);
+            let policy = KeyDerivationPolicy {
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: tee.tcb_version,
+                },
+                mix_measurement: false,
+            };
+            let mut config = test_attestation_config();
+            let hash_b = [0xb2; 32];
+            config.key_release_context_hash = Some(encode_key_release_context_hash(&hash_b));
+            let bios_guid = Guid::new_random();
+            let mut kp_by_id = new_key_protector_by_id(None, None, false);
+            let result = get_derived_keys(
+                &get.client,
+                Some(&tee),
+                &mut vmgs,
+                &mut kp,
+                &mut kp_by_id,
+                bios_guid,
+                &config,
+                true,
+                Some(&rsa),
+                None,
+                Some(policy),
+                GuestStateEncryptionPolicy::Auto,
+                true,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+            assert!(!result.key_protector_settings.should_write_kp);
+            assert!(!result.key_protector_settings.use_hardware_unlock);
+            let keys = result.derived_keys.as_ref().unwrap();
+            let egress_key = keys.encrypt_egress;
+            let active_key = if already_rotated {
+                keys.decrypt_egress.unwrap()
+            } else {
+                keys.ingress
+            };
+            vmgs.update_encryption_key(&active_key, EncryptionAlgorithm::AES_GCM)
+                .await
+                .unwrap();
+            vmgs::write_key_protector(&kp, &mut vmgs).await.unwrap();
+            let mut old_config = config.clone();
+            old_config.key_release_context_hash =
+                Some(encode_key_release_context_hash(&[0xa1; 32]));
+            let old_keys = HardwareDerivedKeys::derive_key(&tee, &old_config, policy).unwrap();
+            let old_protector = hardware_key_sealing::seal_key(&old_keys, &active_key).unwrap();
+            vmgs::write_hardware_key_protector(&old_protector, &mut vmgs)
+                .await
+                .unwrap();
+            unlock_vmgs_data_store(
+                &mut vmgs,
+                true,
+                &mut kp,
+                &mut kp_by_id,
+                result
+                    .hardware_key_protector
+                    .map(HardwareKeyProtectorUpdate::Backup),
+                result.derived_keys,
+                result.key_protector_settings,
+                bios_guid,
+            )
+            .await
+            .unwrap();
+            drop(vmgs);
+            let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert_eq!(protector.key_release_context_hash(), Some(hash_b));
+            let hardware_keys = HardwareDerivedKeys::derive_key(&tee, &config, policy).unwrap();
+            assert_eq!(protector.unseal_key(&hardware_keys).unwrap(), egress_key);
+            vmgs.unlock_with_encryption_key(&egress_key).await.unwrap();
+        }
+    }
+
+    #[async_test]
+    async fn context_hash_cached_hint_without_unwrap_is_not_returned(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let mut config = test_attestation_config();
+        config.key_release_context_hash = Some(encode_key_release_context_hash(&[9; 32]));
+        let keys = HardwareDerivedKeys::derive_key(
+            &tee,
+            &config,
+            KeyDerivationPolicy {
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: tee.tcb_version,
+                },
+                mix_measurement: false,
+            },
+        )
+        .unwrap();
+        let protector = hardware_key_sealing::seal_key(&keys, &[0x33; 32]).unwrap();
+        vmgs::write_hardware_key_protector(&protector, &mut vmgs)
+            .await
+            .unwrap();
+        let get = new_test_get(driver, false, None).await;
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let result = initialize_platform_security(
+            &get.client,
+            Guid::new_random(),
+            &config,
+            &mut vmgs,
+            None,
+            false,
+            ldriver,
+            GuestStateEncryptionPolicy::None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(!vmgs.encrypted());
+        assert_eq!(result.key_release_context_hash, None);
+        assert_eq!(
+            vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+            protector.as_bytes()
+        );
+    }
+
+    #[async_test]
+    async fn context_hash_skr_with_gsp_failure_upgrades_legacy_recovery(driver: DefaultDriver) {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        let protector = test_hardware_key_protector();
+        let old_policy = protector.key_derivation_policy().unwrap();
+        vmgs::write_hardware_key_protector(&protector, &mut vmgs)
+            .await
+            .unwrap();
+        let dek = [0x33; 32];
+        vmgs.update_encryption_key(&dek, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+
+        // Model successful SKR, but missing GSP needed to derive the actual
+        // datastore key. The tenant-only key intentionally differs from DEK.
+        let rsa = RsaKeyPair::generate(2048).unwrap();
+        let wrapped_key = rsa
+            .oaep_encrypt(&[0x22; 32], crypto::HashAlgorithm::Sha256)
+            .unwrap();
+        let mut kp = KeyProtector::new_zeroed();
+        kp.dek[0].dek_buffer[..wrapped_key.len()].copy_from_slice(&wrapped_key);
+        kp.gsp[0].gsp_length = 1;
+        kp.gsp[0].gsp_buffer[0] = 1;
+        vmgs::write_key_protector(&kp, &mut vmgs).await.unwrap();
+        let original_kp = kp.as_bytes().to_vec();
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+
+        let gsp_response = TestGetResponses::new(Event::Response(
+            get_protocol::GuestStateProtectionResponse {
+                message_header: get_protocol::HeaderGeneric::new(
+                    get_protocol::HostRequests::GUEST_STATE_PROTECTION,
+                ),
+                encrypted_gsp: get_protocol::GspCiphertextContent::new_zeroed(),
+                decrypted_gsp: [get_protocol::GspCleartextContent::new_zeroed();
+                    get_protocol::NUMBER_GSP as usize],
+                extended_status_flags: GspExtendedStatusFlags::new().with_no_rpc_server(true),
+            }
+            .as_bytes()
+            .to_vec(),
+        ));
+        let gsp_by_id_response = TestGetResponses::new(Event::Response(
+            get_protocol::GuestStateProtectionByIdResponse {
+                message_header: get_protocol::HeaderGeneric::new(
+                    get_protocol::HostRequests::GUEST_STATE_PROTECTION_BY_ID,
+                ),
+                seed: get_protocol::GspCleartextContent::new_zeroed(),
+                extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
+            }
+            .as_bytes()
+            .to_vec(),
+        ));
+        let get = guest_emulation_transport::test_utilities::new_transport_pair(
+            driver,
+            Some(vec![gsp_response, gsp_by_id_response]),
+            get_protocol::ProtocolVersion::NICKEL_REV2,
+            None,
+            None,
+        )
+        .await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let mut config = test_attestation_config();
+        let hash = [9; 32];
+        config.key_release_context_hash = Some(encode_key_release_context_hash(&hash));
+        let bios_guid = Guid::new_random();
+        let mut kp_by_id = new_key_protector_by_id(None, None, false);
+        let result = get_derived_keys(
+            &get.client,
+            Some(&tee),
+            &mut vmgs,
+            &mut kp,
+            &mut kp_by_id,
+            bios_guid,
+            &config,
+            true,
+            Some(&rsa),
+            None,
+            // Recovery must retain the cached policy, not depend on a new SVN.
+            None,
+            GuestStateEncryptionPolicy::Auto,
+            true,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        let keys = result.derived_keys.as_ref().unwrap();
+        assert_eq!(keys.ingress, dek);
+        assert_eq!(keys.encrypt_egress, dek);
+        assert_eq!(keys.decrypt_egress, None);
+        assert!(result.key_protector_settings.use_hardware_unlock);
+        assert!(!result.key_protector_settings.should_write_kp);
+        assert_eq!(result.authenticated_key_release_context_hash, None);
+        let resealed = result.hardware_key_protector.as_ref().unwrap();
+        assert_eq!(resealed.key_release_context_hash(), Some(hash));
+        let new_keys = HardwareDerivedKeys::derive_key(&tee, &config, old_policy).unwrap();
+        assert_eq!(resealed.unseal_key(&new_keys).unwrap(), dek);
+
+        unlock_vmgs_data_store(
+            &mut vmgs,
+            true,
+            &mut kp,
+            &mut kp_by_id,
+            result
+                .hardware_key_protector
+                .map(HardwareKeyProtectorUpdate::Primary),
+            result.derived_keys,
+            result.key_protector_settings,
+            bios_guid,
+        )
+        .await
+        .unwrap();
+        drop(vmgs);
+        let mut vmgs = Vmgs::open(disk, None).await.unwrap();
+        let resealed = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+        assert_eq!(
+            resealed.version(),
+            openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_4
+        );
+        assert_eq!(resealed.key_release_context_hash(), Some(hash));
+        let old_keys =
+            HardwareDerivedKeys::derive_key(&tee, &test_attestation_config(), old_policy).unwrap();
+        assert!(resealed.unseal_key(&old_keys).is_err());
+        let recovered_dek = resealed.unseal_key(&new_keys).unwrap();
+        vmgs.unlock_with_encryption_key(&recovered_dek)
+            .await
+            .unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::KEY_PROTECTOR).await.unwrap(),
+            original_kp
+        );
+    }
+
+    #[async_test]
+    async fn context_hash_legacy_recovery_does_not_promote_new_context(driver: DefaultDriver) {
+        let mut vmgs = new_formatted_vmgs().await;
+        let protector = test_hardware_key_protector();
+        vmgs::write_hardware_key_protector(&protector, &mut vmgs)
+            .await
+            .unwrap();
+        let get = new_test_get(driver, false, None).await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let mut config = test_attestation_config();
+        config.key_release_context_hash = Some(encode_key_release_context_hash(&[9; 32]));
+        let mut kp = new_key_protector();
+        let mut kp_by_id = new_key_protector_by_id(None, None, false);
+        let result = get_derived_keys(
+            &get.client,
+            Some(&tee),
+            &mut vmgs,
+            &mut kp,
+            &mut kp_by_id,
+            Guid::new_random(),
+            &config,
+            true,
+            None,
+            None,
+            protector.key_derivation_policy(),
+            GuestStateEncryptionPolicy::Auto,
+            true,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.authenticated_key_release_context_hash, None);
+        assert_eq!(result.derived_keys.unwrap().ingress, [0x33; 32]);
+        let recovered = result.hardware_key_protector.unwrap();
+        assert_eq!(recovered.key_release_context_hash(), None);
+        assert_eq!(
+            recovered.version(),
+            openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_3
+        );
+    }
+
+    #[async_test]
+    async fn context_hash_stateless_writes_v3_and_rejects_v4(driver: DefaultDriver) {
+        let get = new_test_get(driver, false, None).await;
+        let tee = MockTeeCall::new([0x12; 32]);
+        let mut config = test_attestation_config();
+        config.tpm_persisted = false;
+        config.hardware_sealing_policy = HardwareSealingPolicy::Hash;
+        config.key_release_context_hash = Some(encode_key_release_context_hash(&[9; 32]));
+        let bios_guid = Guid::new_random();
+        let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        for boot in 0..2 {
+            let result = initialize_platform_security(
+                &get.client,
+                bios_guid,
+                &config,
+                &mut vmgs,
+                Some(&tee),
+                true,
+                ldriver.clone(),
+                GuestStateEncryptionPolicy::HardwareSealing,
+                true,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.key_release_context_hash, None);
+            let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert_eq!(
+                protector.version(),
+                openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_VERSION_3
+            );
+            assert_eq!(protector.key_release_context_hash(), None);
+            assert_eq!(
+                tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+                boot + 1
+            );
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        }
+        // Even a V4 made with otherwise matching stateless config cannot be
+        // silently converted to V3 without a stateful release response.
+        let keys = HardwareDerivedKeys::derive_key(
+            &tee,
+            &config,
+            KeyDerivationPolicy {
+                svn: tee_call::KeyDerivationSvn::Snp {
+                    tcb_version: tee.tcb_version,
+                },
+                mix_measurement: true,
+            },
+        )
+        .unwrap();
+        let protector = hardware_key_sealing::seal_key(&keys, &[0x33; 32]).unwrap();
+        vmgs::write_hardware_key_protector(&protector, &mut vmgs)
+            .await
+            .unwrap();
+        let result = initialize_platform_security(
+            &get.client,
+            bios_guid,
+            &config,
+            &mut vmgs,
+            Some(&tee),
+            true,
+            ldriver,
+            GuestStateEncryptionPolicy::HardwareSealing,
+            true,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error(AttestationErrorInner::StatelessContextBoundProtector))
+        ));
+        assert_eq!(
+            vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+            protector.as_bytes()
+        );
+        assert_eq!(
+            tee.report_count.load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+    }
 
     #[async_test]
     async fn init_sec_required_stateless_sealing_enrolls_and_rotates(driver: DefaultDriver) {
@@ -3847,9 +4989,14 @@ mod tests {
             let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
             // Readback is test evidence only, never the enrollment decision.
             tee.fail_derivation = false;
+            let mut sealing_config = config.clone();
+            sealing_config.key_release_context_hash = provisioned
+                .key_release_context_hash
+                .as_ref()
+                .map(encode_key_release_context_hash);
             let keys = HardwareDerivedKeys::derive_key(
                 tee.supports_get_derived_key().unwrap(),
-                &config,
+                &sealing_config,
                 old_protector.key_derivation_policy().unwrap(),
             )
             .unwrap();
@@ -3858,7 +5005,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn derived_gsp_tracks_writes_but_gsp_by_id_does_not(driver: DefaultDriver) {
+    async fn derived_gsp_defers_backup_but_gsp_by_id_does_not(driver: DefaultDriver) {
         for use_gsp_by_id in [false, true] {
             for fail_derivation in [false, true] {
                 let mut vmgs = new_formatted_vmgs().await;
@@ -3924,20 +5071,21 @@ mod tests {
                 .await
                 .unwrap();
                 let eligible = !use_gsp_by_id && !fail_derivation;
-                assert_eq!(derived.hardware_key_protector_written, eligible);
-                assert!(derived.hardware_key_protector.is_none());
+                assert_eq!(derived.hardware_key_protector.is_some(), eligible);
                 assert_eq!(derived.key_protector_settings.use_gsp_by_id, use_gsp_by_id);
                 let sealed_key = derived
                     .derived_keys
                     .as_ref()
-                    .filter(|_| derived.hardware_key_protector_written)
+                    .filter(|_| derived.hardware_key_protector.is_some())
                     .map(|keys| keys.encrypt_egress);
                 unlock_vmgs_data_store(
                     &mut vmgs,
                     false,
                     &mut kp,
                     &mut kp_by_id,
-                    derived.hardware_key_protector,
+                    derived
+                        .hardware_key_protector
+                        .map(HardwareKeyProtectorUpdate::Backup),
                     derived.derived_keys,
                     derived.key_protector_settings,
                     bios_guid,
@@ -3985,7 +5133,7 @@ mod tests {
             true,
             &mut key_protector,
             &mut key_protector_by_id,
-            Some(protector),
+            Some(HardwareKeyProtectorUpdate::Primary(protector)),
             Some(Keys {
                 ingress: sealed_dek,
                 decrypt_egress: Some(active_dek),
@@ -4031,10 +5179,7 @@ mod tests {
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([
                     IgvmAgentAction::RespondSuccess,
-                    // RespondFailure and RespondFailureSkipHwUnsealing both
-                    // explicitly set retry=false. NoResponse completes GET
-                    // with an empty response, producing a retryable parse error.
-                    IgvmAgentAction::NoResponse,
+                    IgvmAgentAction::RespondFailureRetry,
                     IgvmAgentAction::RespondSuccess,
                 ]),
             );
@@ -4122,7 +5267,13 @@ mod tests {
             ));
             let keys = HardwareDerivedKeys::derive_key(
                 tee.supports_get_derived_key().unwrap(),
-                &config,
+                &AttestationVmConfig {
+                    key_release_context_hash: recovered
+                        .key_release_context_hash
+                        .as_ref()
+                        .map(encode_key_release_context_hash),
+                    ..config.clone()
+                },
                 policy,
             )
             .unwrap();
@@ -4383,6 +5534,7 @@ mod tests {
         assert_eq!(res.agent_data.unwrap(), agent.agent_data.to_vec());
         // Secure key should be None without pre-provisioning
         assert!(res.guest_secret_key.is_none());
+        assert_eq!(res.key_release_context_hash, None);
     }
 
     #[async_test]

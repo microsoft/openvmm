@@ -74,7 +74,7 @@ async fn provisioned_vmgs() -> (Vmgs, Disk, Arc<Mutex<FlushState>>) {
         false,
         &mut KeyProtector::new_zeroed(),
         &mut new_key_protector_by_id(None, None, false),
-        Some(protector),
+        Some(HardwareKeyProtectorUpdate::Primary(protector)),
         Some(Keys {
             ingress: [0; AES_GCM_KEY_LENGTH],
             decrypt_egress: None,
@@ -357,9 +357,8 @@ async fn run_init_scenario(
             IgvmAttestRequestType::KEY_RELEASE_REQUEST,
             VecDeque::from([
                 IgvmAgentAction::RespondSuccess,
-                // Unlike RespondFailure, this produces a retryable SKR error.
-                // Finalization failure must override that retry indication.
-                IgvmAgentAction::NoResponse,
+                // Finalization failure must override the service retry signal.
+                IgvmAgentAction::RespondFailureRetry,
             ]),
         );
         Some(plan)
@@ -474,7 +473,11 @@ async fn run_init_scenario(
         // against accidentally injecting into an earlier persistence flush.
         assert!(state.writes_at_flush.len() >= 2);
         assert_eq!(state.writes_at_flush.last(), Some(&state.write_count));
-        assert!(state.writes_at_flush[state.writes_at_flush.len() - 2] < state.write_count);
+        assert!(
+            state.writes_at_flush[..state.writes_at_flush.len() - 1]
+                .iter()
+                .any(|&writes| writes < state.write_count)
+        );
         (state.writes_at_flush.clone(), state.write_count)
     };
 
@@ -492,6 +495,10 @@ async fn run_init_scenario(
     }
     let protector_bytes = vmgs.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap();
     let protector = vmgs::read_hardware_key_protector(&mut vmgs).await.unwrap();
+    config.key_release_context_hash = protector
+        .key_release_context_hash()
+        .as_ref()
+        .map(encode_key_release_context_hash);
     let keys = HardwareDerivedKeys::derive_key(
         tee.supports_get_derived_key().unwrap(),
         &config,

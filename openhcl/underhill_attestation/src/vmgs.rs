@@ -4,12 +4,14 @@
 //! Implementation of the helper functions for accessing VMGS entries.
 
 use crate::hardware_key_sealing::HwKeyProtector;
+use cvm_tracing::CVM_ALLOWED;
 use guid::Guid;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::GUEST_SECRET_KEY_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::GuestSecretKey;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV3;
+use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorV4;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtectorById;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
@@ -54,11 +56,73 @@ pub(crate) enum ReadFromVmgsError {
 
 /// Error while writing to vmgs
 #[derive(Debug, Error)]
-#[error("failed to write {file_id:?} to vmgs")]
-pub(crate) struct WriteToVmgsError {
-    #[source]
-    vmgs_err: vmgs::Error,
-    file_id: FileId,
+pub(crate) enum WriteToVmgsError {
+    #[error("failed to write {file_id:?} to vmgs")]
+    WriteToVmgs {
+        #[source]
+        vmgs_err: vmgs::Error,
+        file_id: FileId,
+    },
+    #[error("invalid data format, file id: {0:?}")]
+    InvalidFormat(FileId),
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum PersistHardwareKeyProtectorError {
+    #[error("invalid hardware key protector")]
+    InvalidProtector,
+    #[error("failed to add the new VMGS encryption key")]
+    AddEncryptionKey(#[source] vmgs::Error),
+    #[error("failed to write the hardware key protector")]
+    WriteProtector(#[source] WriteToVmgsError),
+    #[error("failed to flush the hardware key protector")]
+    FlushProtector(#[source] vmgs::Error),
+    #[error("failed to retire the previous VMGS encryption key")]
+    RetireEncryptionKey(#[source] vmgs::Error),
+    #[error("failed to flush retirement of the previous VMGS encryption key")]
+    FlushKeyRetirement(#[source] vmgs::Error),
+}
+
+/// Persist an attestation hardware protector, optionally handing off to a new
+/// VMGS key. The protector must seal the new key, or the active key when no key
+/// change is requested. Keep the prior key slot until the protector is durable.
+/// After an error, reopen or unlock with the persisted recovery key before retrying.
+pub(crate) async fn persist_hardware_key_protector(
+    vmgs: &mut Vmgs,
+    protector: &HwKeyProtector,
+    new_key: Option<&[u8; 32]>,
+) -> Result<(), PersistHardwareKeyProtectorError> {
+    if !protector.has_valid_header() {
+        return Err(PersistHardwareKeyProtectorError::InvalidProtector);
+    }
+    let old_index = if let Some(key) = new_key {
+        vmgs.add_encryption_key(key, vmgs::EncryptionAlgorithm::AES_GCM)
+            .await
+            .map_err(PersistHardwareKeyProtectorError::AddEncryptionKey)?
+    } else {
+        None
+    };
+    write_hardware_key_protector(protector, vmgs)
+        .await
+        .map_err(PersistHardwareKeyProtectorError::WriteProtector)?;
+    vmgs.flush()
+        .await
+        .map_err(PersistHardwareKeyProtectorError::FlushProtector)?;
+    tracelimit::info_ratelimited!(CVM_ALLOWED, "hardware key protector persisted");
+    if let Some(index) = old_index {
+        vmgs.remove_encryption_key(index)
+            .await
+            .map_err(PersistHardwareKeyProtectorError::RetireEncryptionKey)?;
+        vmgs.flush()
+            .await
+            .map_err(PersistHardwareKeyProtectorError::FlushKeyRetirement)?;
+    }
+    tracelimit::info_ratelimited!(
+        CVM_ALLOWED,
+        key_updated = new_key.is_some(),
+        "hardware key protector update completed"
+    );
+    Ok(())
 }
 
 /// Read Key Protector data from the VMGS file. If [`FileId::KEY_PROTECTOR`] doesn't exist yet,
@@ -115,7 +179,7 @@ pub async fn write_key_protector(
     let file_id = FileId::KEY_PROTECTOR;
     vmgs.write_file(file_id, key_protector.as_bytes())
         .await
-        .map_err(|vmgs_err| WriteToVmgsError { vmgs_err, file_id })
+        .map_err(|vmgs_err| WriteToVmgsError::WriteToVmgs { vmgs_err, file_id })
 }
 
 /// Read Key Protector ID from the VMGS file.
@@ -165,7 +229,7 @@ pub async fn write_key_protector_by_id(
         key_protector_by_id.id_guid = bios_guid;
         vmgs.write_file(file_id, key_protector_by_id.as_bytes())
             .await
-            .map_err(|vmgs_err| WriteToVmgsError { vmgs_err, file_id })?
+            .map_err(|vmgs_err| WriteToVmgsError::WriteToVmgs { vmgs_err, file_id })?
     }
 
     Ok(())
@@ -222,41 +286,61 @@ pub async fn read_hardware_key_protector(
     parse_hardware_key_protector(&data)
 }
 
-/// Decode either on-disk layout without interpreting its header or policy.
-/// Callers must validate compatibility before deriving keys or unsealing.
 pub(crate) fn parse_hardware_key_protector(
     data: &[u8],
 ) -> Result<HwKeyProtector, ReadFromVmgsError> {
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_V3_SIZE;
+    use openhcl_attestation_protocol::vmgs as format;
 
     let file_id = FileId::HW_KEY_PROTECTOR;
-    // Dispatch by blob size: the legacy v1/v2 layout and the current v3 layout
-    // have distinct sizes.
-    match data.len() {
-        HW_KEY_PROTECTOR_SIZE => HardwareKeyProtector::read_from_prefix(data)
-            .map(|k| HwKeyProtector::Legacy(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
-        HW_KEY_PROTECTOR_V3_SIZE => HardwareKeyProtectorV3::read_from_prefix(data)
-            .map(|k| HwKeyProtector::V3(k.0)) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id)),
-        size => Err(ReadFromVmgsError::EntrySizeUnexpected {
+    let (version, _) =
+        u32::read_from_prefix(data).map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?;
+    let expected_size = match version {
+        format::HW_KEY_PROTECTOR_VERSION_1 | format::HW_KEY_PROTECTOR_VERSION_2 => {
+            format::HW_KEY_PROTECTOR_SIZE
+        }
+        format::HW_KEY_PROTECTOR_VERSION_3 => format::HW_KEY_PROTECTOR_V3_SIZE,
+        format::HW_KEY_PROTECTOR_VERSION_4 => format::HW_KEY_PROTECTOR_V4_SIZE,
+        _ => return Err(ReadFromVmgsError::InvalidFormat(file_id)),
+    };
+    if data.len() != expected_size {
+        return Err(ReadFromVmgsError::EntrySizeUnexpected {
             file_id,
-            size,
-            expected_size: HW_KEY_PROTECTOR_V3_SIZE,
-        }),
+            size: data.len(),
+            expected_size,
+        });
     }
+    let protector = match version {
+        format::HW_KEY_PROTECTOR_VERSION_1 | format::HW_KEY_PROTECTOR_VERSION_2 => {
+            HardwareKeyProtector::read_from_bytes(data)
+                .map(HwKeyProtector::Legacy)
+                .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
+        }
+        format::HW_KEY_PROTECTOR_VERSION_3 => HardwareKeyProtectorV3::read_from_bytes(data)
+            .map(HwKeyProtector::V3)
+            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?,
+        format::HW_KEY_PROTECTOR_VERSION_4 => HardwareKeyProtectorV4::read_from_bytes(data)
+            .map(HwKeyProtector::V4)
+            .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?,
+        _ => return Err(ReadFromVmgsError::InvalidFormat(file_id)),
+    };
+    if !protector.has_valid_header() {
+        return Err(ReadFromVmgsError::InvalidFormat(file_id));
+    }
+    Ok(protector)
 }
 
-/// Write Key Protector Id (current Id) to the VMGS file.
+/// Validate and write the hardware key protector to the VMGS file.
 pub async fn write_hardware_key_protector(
-    hardware_key_protector: &HardwareKeyProtectorV3,
+    hardware_key_protector: &HwKeyProtector,
     vmgs: &mut Vmgs,
 ) -> Result<(), WriteToVmgsError> {
     let file_id = FileId::HW_KEY_PROTECTOR;
+    if !hardware_key_protector.has_valid_header() {
+        return Err(WriteToVmgsError::InvalidFormat(file_id));
+    }
     vmgs.write_file(file_id, hardware_key_protector.as_bytes())
         .await
-        .map_err(|vmgs_err| WriteToVmgsError { vmgs_err, file_id })
+        .map_err(|vmgs_err| WriteToVmgsError::WriteToVmgs { vmgs_err, file_id })
 }
 
 /// Read the guest secret key from VMGS file.
@@ -294,7 +378,11 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware_key_sealing::{HardwareDerivedKeys, seal_key};
+    use crate::test_utils::MockTeeCall;
+    use disk_backend::Disk;
     use disk_hook::HookDisk;
+    use disklayer_ram::ram_disk;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
@@ -311,8 +399,199 @@ mod tests {
     use openhcl_attestation_protocol::vmgs::KeyProtectorById;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use test_with_tracing::test;
+    use vmgs::EncryptionAlgorithm;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    fn new_test_file() -> Disk {
+        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+    }
+
+    #[derive(Default)]
+    struct HandoffFaultState {
+        operations: usize,
+        fail_at: Option<usize>,
+    }
+
+    #[derive(inspect::Inspect)]
+    struct HandoffFaultDisk {
+        disk: Disk,
+        #[inspect(skip)]
+        state: Arc<Mutex<HandoffFaultState>>,
+    }
+
+    impl HandoffFaultDisk {
+        fn check_fault(&self) -> Result<(), disk_backend::DiskError> {
+            let mut state = self.state.lock();
+            state.operations += 1;
+            if state.fail_at == Some(state.operations) {
+                return Err(disk_backend::DiskError::Io(std::io::Error::other(
+                    "injected key handoff failure",
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    impl disk_backend::DiskIo for HandoffFaultDisk {
+        fn disk_type(&self) -> &str {
+            "key-handoff-test"
+        }
+        fn sector_count(&self) -> u64 {
+            self.disk.sector_count()
+        }
+        fn sector_size(&self) -> u32 {
+            self.disk.sector_size()
+        }
+        fn disk_id(&self) -> Option<[u8; 16]> {
+            self.disk.disk_id()
+        }
+        fn physical_sector_size(&self) -> u32 {
+            self.disk.physical_sector_size()
+        }
+        fn is_fua_respected(&self) -> bool {
+            self.disk.is_fua_respected()
+        }
+        fn is_read_only(&self) -> bool {
+            self.disk.is_read_only()
+        }
+        async fn unmap(
+            &self,
+            sector: u64,
+            count: u64,
+            block_level_only: bool,
+        ) -> Result<(), disk_backend::DiskError> {
+            self.disk.unmap(sector, count, block_level_only).await
+        }
+        fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
+            self.disk.unmap_behavior()
+        }
+        fn optimal_unmap_sectors(&self) -> u32 {
+            self.disk.optimal_unmap_sectors()
+        }
+        async fn wait_resize(&self, sector_count: u64) -> u64 {
+            self.disk.wait_resize(sector_count).await
+        }
+        async fn read_vectored(
+            &self,
+            buffers: &scsi_buffers::RequestBuffers<'_>,
+            sector: u64,
+        ) -> Result<(), disk_backend::DiskError> {
+            self.disk.read_vectored(buffers, sector).await
+        }
+        async fn write_vectored(
+            &self,
+            buffers: &scsi_buffers::RequestBuffers<'_>,
+            sector: u64,
+            fua: bool,
+        ) -> Result<(), disk_backend::DiskError> {
+            self.check_fault()?;
+            self.disk.write_vectored(buffers, sector, fua).await
+        }
+        async fn sync_cache(&self) -> Result<(), disk_backend::DiskError> {
+            self.check_fault()?;
+            self.disk.sync_cache().await
+        }
+    }
+
+    #[async_test]
+    async fn recovery_file_key_handoff_survives_each_io_failure() {
+        let old_key = [0x11; 32];
+        let new_key = [0x22; 32];
+        let tee = MockTeeCall::new([0x12; 32]);
+        let policy = tee_call::KeyDerivationPolicy {
+            svn: tee_call::KeyDerivationSvn::Snp {
+                tcb_version: tee.tcb_version,
+            },
+            mix_measurement: false,
+        };
+        let mut config = crate::tests::test_attestation_config();
+        config.key_release_context_hash = Some(hex::encode([0xa1; 32]));
+        let old_keys = HardwareDerivedKeys::derive_key(&tee, &config, policy).unwrap();
+        let old_protector = seal_key(&old_keys, &old_key).unwrap();
+        config.key_release_context_hash = Some(hex::encode([0xb2; 32]));
+        let new_keys = HardwareDerivedKeys::derive_key(&tee, &config, policy).unwrap();
+        let new_protector = seal_key(&new_keys, &new_key).unwrap();
+        let mut completed = false;
+        let mut failed_stages = [false; 5];
+        for fail_at in 1..100 {
+            let state = Arc::new(Mutex::new(HandoffFaultState::default()));
+            let disk = Disk::new(HandoffFaultDisk {
+                disk: new_test_file(),
+                state: state.clone(),
+            })
+            .unwrap();
+            let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+            vmgs.update_encryption_key(&old_key, EncryptionAlgorithm::AES_GCM)
+                .await
+                .unwrap();
+            write_hardware_key_protector(&old_protector, &mut vmgs)
+                .await
+                .unwrap();
+            vmgs.write_file_encrypted(FileId::TPM_NVRAM, b"preserved guest state")
+                .await
+                .unwrap();
+            *state.lock() = HandoffFaultState {
+                operations: 0,
+                fail_at: Some(fail_at),
+            };
+            let result =
+                persist_hardware_key_protector(&mut vmgs, &new_protector, Some(&new_key)).await;
+            if let Err(error) = &result {
+                let stage = match error {
+                    PersistHardwareKeyProtectorError::AddEncryptionKey(_) => 0,
+                    PersistHardwareKeyProtectorError::WriteProtector(_) => 1,
+                    PersistHardwareKeyProtectorError::FlushProtector(_) => 2,
+                    PersistHardwareKeyProtectorError::RetireEncryptionKey(_) => 3,
+                    PersistHardwareKeyProtectorError::FlushKeyRetirement(_) => 4,
+                    PersistHardwareKeyProtectorError::InvalidProtector => {
+                        panic!("valid fixture rejected")
+                    }
+                };
+                failed_stages[stage] = true;
+            }
+            state.lock().fail_at = None;
+            drop(vmgs);
+            let mut reopened = Vmgs::open(disk.clone(), None).await.unwrap();
+            let recovery = read_hardware_key_protector(&mut reopened).await.unwrap();
+            let key = if recovery.as_bytes() == old_protector.as_bytes() {
+                recovery.unseal_key(&old_keys).unwrap()
+            } else {
+                assert_eq!(recovery.as_bytes(), new_protector.as_bytes());
+                recovery.unseal_key(&new_keys).unwrap()
+            };
+            reopened.unlock_with_encryption_key(&key).await.unwrap();
+            assert_eq!(
+                reopened.read_file(FileId::TPM_NVRAM).await.unwrap(),
+                b"preserved guest state"
+            );
+            if result.is_ok() {
+                assert_eq!(recovery.as_bytes(), new_protector.as_bytes());
+                let mut old = Vmgs::open(disk, None).await.unwrap();
+                assert!(old.unlock_with_encryption_key(&old_key).await.is_err());
+                completed = true;
+                break;
+            }
+            persist_hardware_key_protector(&mut reopened, &new_protector, Some(&new_key))
+                .await
+                .unwrap();
+            drop(reopened);
+            let mut recovered = Vmgs::open(disk, None).await.unwrap();
+            recovered
+                .unlock_with_encryption_key(&new_key)
+                .await
+                .unwrap();
+            assert_eq!(
+                recovered.read_file(FileId::HW_KEY_PROTECTOR).await.unwrap(),
+                new_protector.as_bytes()
+            );
+        }
+        assert!(completed);
+        assert!(failed_stages.into_iter().all(|seen| seen));
+    }
 
     async fn new_formatted_vmgs() -> Vmgs {
         Vmgs::format_new(HookDisk::new(4 * ONE_MEGA_BYTE, 512).into_disk(), None)
@@ -320,23 +599,172 @@ mod tests {
             .unwrap()
     }
 
-    fn new_hardware_key_protector() -> HardwareKeyProtectorV3 {
+    fn new_hardware_key_protector() -> HwKeyProtector {
+        let mut svn = [0; HW_KEY_PROTECTOR_SVN_SIZE];
+        svn[..8].copy_from_slice(&2u64.to_le_bytes());
         let header = HardwareKeyProtectorHeaderV3::new(
             HW_KEY_PROTECTOR_V3_SIZE as u32,
             HW_KEY_PROTECTOR_TEE_TYPE_SNP,
-            [2; HW_KEY_PROTECTOR_SVN_SIZE],
+            svn,
             1,
         );
         let iv = [3; AES_CBC_IV_LENGTH];
         let ciphertext = [4; AES_GCM_KEY_LENGTH];
         let hmac = [5; HMAC_SHA_256_KEY_LENGTH];
 
-        HardwareKeyProtectorV3 {
+        HwKeyProtector::V3(HardwareKeyProtectorV3 {
             header,
             iv,
             ciphertext,
             hmac,
+        })
+    }
+
+    fn new_v4_hardware_key_protector() -> HwKeyProtector {
+        let HwKeyProtector::V3(p) = new_hardware_key_protector() else {
+            unreachable!();
+        };
+        HwKeyProtector::V4(HardwareKeyProtectorV4 {
+            header: openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeaderV4::new(
+                p.header.tee_type,
+                p.header.svn,
+                p.header.mix_measurement,
+                [0x73; 32],
+            ),
+            iv: p.iv,
+            ciphertext: p.ciphertext,
+            hmac: p.hmac,
+        })
+    }
+
+    #[test]
+    fn hardware_key_protector_wire_sizes() {
+        use openhcl_attestation_protocol::vmgs as format;
+
+        assert_eq!(format::HW_KEY_PROTECTOR_SIZE, 104);
+        assert_eq!(HW_KEY_PROTECTOR_V3_SIZE, 128);
+        assert_eq!(format::HW_KEY_PROTECTOR_V4_SIZE, 160);
+        assert_eq!(size_of::<format::HardwareKeyProtectorHeaderV4>(), 80);
+        assert_eq!(std::mem::offset_of!(HardwareKeyProtectorV4, iv), 80);
+        assert_eq!(std::mem::offset_of!(HardwareKeyProtectorV4, ciphertext), 96);
+        assert_eq!(std::mem::offset_of!(HardwareKeyProtectorV4, hmac), 128);
+        for p in [
+            new_hardware_key_protector(),
+            new_v4_hardware_key_protector(),
+        ] {
+            let restored = parse_hardware_key_protector(p.as_bytes()).unwrap();
+            assert_eq!(restored.as_bytes(), p.as_bytes());
+            assert_eq!(
+                restored.key_release_context_hash(),
+                p.key_release_context_hash()
+            );
+            for size in 0..p.as_bytes().len() {
+                assert!(parse_hardware_key_protector(&p.as_bytes()[..size]).is_err());
+            }
+            let mut extended = p.as_bytes().to_vec();
+            extended.push(0);
+            assert!(parse_hardware_key_protector(&extended).is_err());
         }
+    }
+
+    #[async_test]
+    async fn reject_malformed_hardware_key_protector_headers() {
+        let mut vmgs = new_formatted_vmgs().await;
+        // V3 and V4 have identical field offsets before the context hash.
+        // Test unknown/mismatched versions, length, TEE tag, SNP padding,
+        // boolean encoding, and every reserved byte on both read and write.
+        for original in [
+            new_hardware_key_protector(),
+            new_v4_hardware_key_protector(),
+        ] {
+            for (offset, value) in [
+                (0, 0),
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (0, 4),
+                (0, 5),
+                (4, 0),
+                (4, 104),
+                (8, 2),
+                (20, 1),
+                (43, 1),
+                (44, 2),
+                (45, 1),
+                (46, 1),
+                (47, 1),
+            ] {
+                let mut bytes = original.as_bytes().to_vec();
+                if bytes[offset] == value {
+                    continue;
+                }
+                bytes[offset] = value;
+                assert!(parse_hardware_key_protector(&bytes).is_err());
+                let malformed = match &original {
+                    HwKeyProtector::V3(_) => {
+                        HwKeyProtector::V3(HardwareKeyProtectorV3::read_from_bytes(&bytes).unwrap())
+                    }
+                    HwKeyProtector::V4(_) => {
+                        HwKeyProtector::V4(HardwareKeyProtectorV4::read_from_bytes(&bytes).unwrap())
+                    }
+                    HwKeyProtector::Legacy(_) => unreachable!(),
+                };
+                assert!(malformed.key_derivation_policy().is_none());
+                assert!(matches!(
+                    write_hardware_key_protector(&malformed, &mut vmgs).await,
+                    Err(WriteToVmgsError::InvalidFormat(FileId::HW_KEY_PROTECTOR))
+                ));
+                vmgs.write_file(FileId::HW_KEY_PROTECTOR, &bytes)
+                    .await
+                    .unwrap();
+                assert!(read_hardware_key_protector(&mut vmgs).await.is_err());
+            }
+        }
+    }
+
+    #[async_test]
+    async fn write_read_v4_hardware_key_protector() {
+        let mut vmgs = new_formatted_vmgs().await;
+        for tee_type in [
+            HW_KEY_PROTECTOR_TEE_TYPE_SNP,
+            openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_TEE_TYPE_TDX,
+        ] {
+            let HwKeyProtector::V4(mut p) = new_v4_hardware_key_protector() else {
+                unreachable!();
+            };
+            p.header.tee_type = tee_type;
+            if tee_type != HW_KEY_PROTECTOR_TEE_TYPE_SNP {
+                p.header.svn = [0x12; 32];
+            }
+            let p = HwKeyProtector::V4(p);
+            write_hardware_key_protector(&p, &mut vmgs).await.unwrap();
+            let restored = read_hardware_key_protector(&mut vmgs).await.unwrap();
+            assert_eq!(restored.as_bytes(), p.as_bytes());
+            assert_eq!(restored.key_release_context_hash(), Some([0x73; 32]));
+            assert!(restored.key_derivation_policy().is_some());
+        }
+    }
+
+    #[test]
+    fn legacy_v2_metadata_acceptance_is_unchanged() {
+        use openhcl_attestation_protocol::vmgs as format;
+
+        let mut legacy = HardwareKeyProtector::new_zeroed();
+        legacy.header.version = format::HW_KEY_PROTECTOR_VERSION_2;
+        // These were historically ignored (length/reserved), or interpreted
+        // as nonzero == true (mix_measurement). Do not tighten V2 acceptance.
+        legacy.header.length = 0;
+        legacy.header._reserved = [0xff; 7];
+        legacy.header.mix_measurement = 0xff;
+        let parsed = parse_hardware_key_protector(legacy.as_bytes()).unwrap();
+        assert_eq!(parsed.as_bytes(), legacy.as_bytes());
+        assert!(parsed.key_derivation_policy().unwrap().mix_measurement);
+        assert_eq!(parsed.key_release_context_hash(), None);
+        legacy.header.version = format::HW_KEY_PROTECTOR_VERSION_1;
+        let parsed = parse_hardware_key_protector(legacy.as_bytes()).unwrap();
+        assert!(parsed.key_derivation_policy().is_none());
+        legacy.header.version = 99;
+        assert!(parse_hardware_key_protector(legacy.as_bytes()).is_err());
     }
 
     fn new_key_protector() -> KeyProtector {
@@ -555,26 +983,14 @@ mod tests {
             .unwrap();
 
         let found_hardware_key_protector = read_hardware_key_protector(&mut vmgs).await.unwrap();
-        let HwKeyProtector::V3(found_hardware_key_protector) = found_hardware_key_protector else {
-            panic!("expected a v3 hardware key protector");
-        };
-
         assert_eq!(
-            found_hardware_key_protector.header.as_bytes(),
-            hardware_key_protector.header.as_bytes()
-        );
-        assert_eq!(found_hardware_key_protector.iv, hardware_key_protector.iv);
-        assert_eq!(
-            found_hardware_key_protector.ciphertext,
-            hardware_key_protector.ciphertext
-        );
-        assert_eq!(
-            found_hardware_key_protector.hmac,
-            hardware_key_protector.hmac
+            found_hardware_key_protector.as_bytes(),
+            hardware_key_protector.as_bytes()
         );
 
         // Write and then fail to read a hardware key protector with an unexpected size to the VMGS
-        let oversized_hardware_key_protector = [8u8; HW_KEY_PROTECTOR_V3_SIZE + 1];
+        let mut oversized_hardware_key_protector = hardware_key_protector.as_bytes().to_vec();
+        oversized_hardware_key_protector.push(0);
         vmgs.write_file(FileId::HW_KEY_PROTECTOR, &oversized_hardware_key_protector)
             .await
             .unwrap();

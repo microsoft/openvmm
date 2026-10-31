@@ -34,9 +34,13 @@ thiserror.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-parking_lot.workspace = true
 disk_hook.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
+disklayer_ram.workspace = true
+disk_backend.workspace = true
+inspect.workspace = true
+parking_lot.workspace = true
+scsi_buffers.workspace = true
 vmgs = { workspace = true, features = ["encryption", "test_helpers"] }
 vmgs_format.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }

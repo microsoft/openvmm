@@ -8,6 +8,7 @@ use tee_call::GetAttestationReportResult;
 use tee_call::HW_DERIVED_KEY_LENGTH;
 use test_with_tracing::test;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 const DEK: [u8; 32] = [0xab; 32];
 const SNP_SVN: KeyDerivationSvn = KeyDerivationSvn::Snp { tcb_version: 7 };
@@ -144,33 +145,52 @@ fn config(hardware_sealing_policy: HardwareSealingPolicy) -> AttestationVmConfig
         filtered_vpci_devices_allowed: true,
         vm_unique_id: String::new(),
         vmgs_provisioner: None,
+        key_release_context_hash: None,
     }
 }
 
 fn migration_reseals_unchanged_dek(svn: KeyDerivationSvn, policy: HardwareSealingPolicy) {
-    let tee = MutableTee::new(svn);
-    let config = config(policy);
-    let source = create_protector(&tee, &config, &DEK).unwrap();
-    assert!(protector_matches(&tee, &config, &source, &DEK).unwrap());
-    assert!(!protector_matches(&tee, &config, &source, &[0xcd; 32]).unwrap());
+    for context_hash in [None, Some(hex::encode([0x42; 32]))] {
+        let tee = MutableTee::new(svn);
+        let mut config = config(policy);
+        config.key_release_context_hash = context_hash.clone();
+        let source = create_protector(&tee, &config, &DEK).unwrap();
+        assert!(protector_matches(&tee, &config, &source, &DEK).unwrap());
+        assert!(!protector_matches(&tee, &config, &source, &[0xcd; 32]).unwrap());
 
-    // Same object, same SVN, same policy, but a new destination hardware secret.
-    tee.state.lock().secret = [0x73; 32];
-    assert!(!protector_matches(&tee, &config, &source, &DEK).unwrap());
-    let destination = create_protector(&tee, &config, &DEK).unwrap();
-    assert!(protector_matches(&tee, &config, &destination, &DEK).unwrap());
-    assert!(!protector_matches(&tee, &config, &destination, &[0xcd; 32]).unwrap());
-    let protector = parse_hardware_key_protector(&destination).unwrap();
-    assert_eq!(protector.version(), vmgs::HW_KEY_PROTECTOR_VERSION_3);
-    assert_eq!(destination.len(), vmgs::HW_KEY_PROTECTOR_V3_SIZE);
-    assert_eq!(
-        svn_bytes(validated_policy(&protector).unwrap().svn),
-        svn_bytes(svn)
-    );
+        // Same object, same SVN, same policy, but a new destination hardware secret.
+        tee.state.lock().secret = [0x73; 32];
+        assert!(!protector_matches(&tee, &config, &source, &DEK).unwrap());
+        let destination = create_protector(&tee, &config, &DEK).unwrap();
+        assert!(protector_matches(&tee, &config, &destination, &DEK).unwrap());
+        assert!(!protector_matches(&tee, &config, &destination, &[0xcd; 32]).unwrap());
+        let protector = parse_hardware_key_protector(&destination).unwrap();
+        let (version, size) = if context_hash.is_some() {
+            (
+                vmgs::HW_KEY_PROTECTOR_VERSION_4,
+                vmgs::HW_KEY_PROTECTOR_V4_SIZE,
+            )
+        } else {
+            (
+                vmgs::HW_KEY_PROTECTOR_VERSION_3,
+                vmgs::HW_KEY_PROTECTOR_V3_SIZE,
+            )
+        };
+        assert_eq!(protector.version(), version);
+        assert_eq!(destination.len(), size);
+        assert_eq!(
+            protector.key_release_context_hash(),
+            context_hash.map(|_| [0x42; 32])
+        );
+        assert_eq!(
+            svn_bytes(validated_policy(&protector).unwrap().svn),
+            svn_bytes(svn)
+        );
 
-    tee.state.lock().secret = [0x42; 32];
-    assert!(!protector_matches(&tee, &config, &destination, &DEK).unwrap());
-    assert!(protector_matches(&tee, &config, &source, &DEK).unwrap());
+        tee.state.lock().secret = [0x42; 32];
+        assert!(!protector_matches(&tee, &config, &destination, &DEK).unwrap());
+        assert!(protector_matches(&tee, &config, &source, &DEK).unwrap());
+    }
 }
 
 #[test]
