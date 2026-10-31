@@ -565,7 +565,10 @@ async fn broker_device_reset_keeps_quarantined_host_in_waiting_for_disconnect(
     let disconnect_polls_before = harness.handle.disconnect_poll_count();
     harness.handle.disconnect();
     yield_until(|| harness.handle.disconnect_poll_count() > disconnect_polls_before).await;
+    // The quarantined connection's unread input ends with it, so the
+    // replacement host sends its own attachment.
     harness.handle.reconnect();
+    harness.handle.inject_rx_data(&host_attach);
     yield_until(|| harness.handle.tx_data().len() >= control_session_protocol::HEADER_LEN).await;
     assert_eq!(
         decode(&harness.handle.take_tx_data()).record_type,
