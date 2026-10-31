@@ -238,8 +238,10 @@ pub(crate) mod tests {
         contract_with_policy(network, &policy)
     }
 
-    /// Returns the contract of a platform template whose NIC has the identity
-    /// `network` and the complete deny-all policy.
+    /// Returns the contract of a NIC template without sandbox blocks, as a
+    /// snapshot without a tier records one, whose NIC has the identity
+    /// `network` and the complete deny-all policy. A platform template's
+    /// contract adds sandbox blocks, which the network checks don't read.
     fn template_contract_for(
         network: &openvmm_defs::microvm::MicrovmNetworkConfig,
     ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
@@ -549,10 +551,17 @@ pub(crate) mod tests {
     #[cfg(guest_arch = "x86_64")]
     #[test]
     fn a_template_restore_installs_a_new_policy_and_keeps_the_identity() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         let contract = template_contract_for(&network);
         let template =
             openvmm_helpers::snapshot::microvm::microvm_network_template_policy(&network).unwrap();
+        // The tier check is the only one that reads the tier, so one
+        // template, platform or without a tier, takes every policy.
+        for tier in [SNAPSHOT_TIER_PLATFORM, ""] {
+            super::super::restore::validate_network_policy_restore(tier, true).unwrap();
+        }
         for arguments in [
             // A clone without connectivity keeps the template's policy.
             &["--network-egress", "deny", "--host-loopback", "deny"][..],

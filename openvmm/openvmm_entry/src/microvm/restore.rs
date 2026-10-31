@@ -201,8 +201,9 @@ pub(crate) fn restore_packet_base(
 /// platform snapshot's `distro` block keeps its captured capacity, whatever
 /// the length of the image that the restore attaches to it, and
 /// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
-/// platform snapshot admits `--restore-network-policy`, and `--mount-aggregate`
-/// on the filesystem slot that it left dormant.
+/// platform snapshot, or one without a tier, admits
+/// `--restore-network-policy`, and only a platform snapshot admits
+/// `--mount-aggregate` on the filesystem slot that it left dormant.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
@@ -405,18 +406,26 @@ pub(crate) fn prepare_restore(
 }
 
 /// Rejects `--restore-network-policy`, which `restore_network_policy`
-/// reports, for a snapshot of a tier other than the platform tier.
+/// reports, for a snapshot of the `workload-start` or `instance-checkpoint`
+/// tier.
 ///
-/// A platform snapshot is captured before any tenant input. Later tiers carry
-/// a workload that ran under the captured policy, so they keep it.
-fn validate_network_policy_restore(
+/// A platform snapshot is captured before any tenant input. A snapshot
+/// without a tier may hold a workload that has already run, but the option
+/// requires a NIC captured with the complete deny-all, under which that
+/// workload had no connectivity: its endpoint held no flows, listeners, or
+/// forwards, and its guest learned no DNS server, so nothing in the snapshot
+/// depends on the policy, and the restore grants the workload connectivity
+/// that it never had. The later tiers continue a tenant's workload, which
+/// keeps the policy that it was captured with.
+pub(super) fn validate_network_policy_restore(
     snapshot_tier: &str,
     restore_network_policy: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !restore_network_policy
+            || snapshot_tier.is_empty()
             || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
-        "--restore-network-policy requires a platform snapshot"
+        "--restore-network-policy requires a platform snapshot or a snapshot without a tier"
     );
     Ok(())
 }
@@ -910,25 +919,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_a_platform_restore_replaces_the_network_policy() {
+    fn only_a_platform_or_untiered_restore_replaces_the_network_policy() {
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
 
-        for tier in [
-            SNAPSHOT_TIER_PLATFORM,
-            SNAPSHOT_TIER_WORKLOAD_START,
-            SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
-            "",
+        for (tier, replaces) in [
+            (SNAPSHOT_TIER_PLATFORM, true),
+            ("", true),
+            (SNAPSHOT_TIER_WORKLOAD_START, false),
+            (SNAPSHOT_TIER_INSTANCE_CHECKPOINT, false),
         ] {
             validate_network_policy_restore(tier, false).unwrap();
             let replaced = validate_network_policy_restore(tier, true);
-            if tier == SNAPSHOT_TIER_PLATFORM {
+            if replaces {
                 replaced.unwrap();
             } else {
                 assert_eq!(
                     replaced.unwrap_err().to_string(),
-                    "--restore-network-policy requires a platform snapshot"
+                    "--restore-network-policy requires a platform snapshot or a snapshot without a tier",
+                    "{tier}"
                 );
             }
         }
