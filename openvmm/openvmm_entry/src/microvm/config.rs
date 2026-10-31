@@ -563,6 +563,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 VirtioBusCli::Mmio,
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: Some(1),
+                    enable_rx_gso: false,
                     mac_address: config.guest_mac,
                     endpoint,
                     egress_policy: Some(network.policy.clone()),
