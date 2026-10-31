@@ -90,7 +90,7 @@ async fn verify_ms_pacer_binding(
 #[vmm_test_with(
     openvmm,
     requires(windows_partition_reset),
-    configs(uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+    configs(uefi_x64(vhd(windows_datacenter_core_2025_x64)))
 )]
 async fn windows_netvsc_ms_pacer_unbind(
     config: PetriVmBuilder<OpenVmmPetriBackend>,

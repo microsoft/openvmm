@@ -39,7 +39,7 @@ use vmm_test_macros::vmm_test_with;
 // TODO: Remove once #73 is fixed.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_alias_map(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -110,8 +110,9 @@ async fn crash_dump_on_triple_fault(
 /// Boot with a battery and check the OS-reported capacity.
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     uefi_x64(vhd(ubuntu_2504_server_x64)),
+    // We get an empty string on WS2025 for some reason
     uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
 async fn battery_capacity(

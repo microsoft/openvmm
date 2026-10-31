@@ -165,8 +165,8 @@ async fn parse_guest_pci_devices(
 /// guest software in a single segment topology.
 #[openvmm_test(
     linux_direct_x64,
-    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -200,8 +200,8 @@ async fn pcie_root_emulation_single_segment(
 /// multiple PCI device slots.
 #[openvmm_test(
     linux_direct_x64,
-    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -233,8 +233,8 @@ async fn pcie_root_emulation_multi_segment(
 /// ports and the downstream switch ports of other switches.
 #[openvmm_test(
     linux_direct_x64,
-    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
@@ -337,7 +337,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 #[vmm_test_with(
     openvmm,
     requires(windows_partition_reset),
-    configs(uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+    configs(uefi_x64(vhd(windows_datacenter_core_2025_x64)))
 )]
 async fn pcie_hotplug(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -494,7 +494,7 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
 /// (`s0rc0rp0`). The remaining root complexes are intentionally left empty.
 #[openvmm_test(
     uefi_x64(vhd(alpine_3_23_x64)),
-    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     uefi_aarch64(vhd(alpine_3_23_aarch64)),
     uefi_aarch64(vhd(windows_11_enterprise_aarch64))
 )]
@@ -668,7 +668,7 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 #[vmm_test_with(
     openvmm,
     amd,
-    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2504_server_x64)))
 )]
 async fn amd_iommu_mixed_topology(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -754,7 +754,7 @@ async fn amd_iommu_mixed_topology(
 #[vmm_test_with(
     openvmm,
     intel,
-    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2504_server_x64)))
 )]
 async fn intel_vtd_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -766,7 +766,7 @@ async fn intel_vtd_multi_segment(
 #[vmm_test_with(
     openvmm,
     intel,
-    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2404_server_x64)))
+    configs(linux_direct_x64, uefi_x64(vhd(ubuntu_2504_server_x64)))
 )]
 async fn intel_vtd_multi_segment_legacy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -1279,7 +1279,7 @@ async fn verify_net_interfaces(
 /// Uses a prepped Windows image with NetKVM pre-installed and pipette
 /// configured for TCP transport. Boots from PCIe NVMe, uses virtio-net +
 /// consomme for TCP pipette communication.
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2025_x64_no_vmbus_prepped)))]
 async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
         .with_no_vmbus()
@@ -1302,7 +1302,7 @@ async fn boot_no_vmbus_windows(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
 ///
 /// This validates that our virtio-net emulation works with the upstream
 /// virtio-win NetKVM driver on Windows.
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64))[VIRTIO_WINDOWS_DRIVERS])]
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2025_x64))[VIRTIO_WINDOWS_DRIVERS])]
 async fn virtio_net_windows(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (virtio_win,): (petri::ResolvedArtifact<VIRTIO_WINDOWS_DRIVERS>,),

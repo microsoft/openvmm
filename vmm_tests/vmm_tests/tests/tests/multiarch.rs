@@ -104,9 +104,11 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2404_server_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -114,6 +116,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -322,7 +325,7 @@ async fn smbios_dmi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Resu
 /// table-building path covered by `smbios_dmi`. Every Type 1 field the firmware
 /// exposes is overridden so the full blob set is validated.
 #[vmm_test(
-    openvmm_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn smbios_dmi_uefi(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
@@ -592,15 +595,15 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openvmm_pcat_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     ignore(reason = "OpenVMM VBS boot is intermittently unreliable in CI", openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
     ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
@@ -652,7 +655,7 @@ async fn boot_single_proc<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyh
             reason = "virt_whp lacks VPCI LPI interrupt support (Windows)",
             openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))
         ),
-        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
         ignore(
             reason = "Linux initrd lacks a VPCI driver",
             openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
@@ -687,7 +690,7 @@ async fn boot_nvme<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
         ),
         unstable(
             reason = "known WHP lost interrupt bug",
-            openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+            openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))
         ),
         ignore(
             reason = "Linux initrd lacks a VPCI driver",
@@ -715,15 +718,15 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_pcat_x64(vhd(ubuntu_2504_server_x64))),
     ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
     ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
-    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64))),
     ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
-    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))),
     ignore(reason = "framebuffer reboot bug (microsoft/openvmm#74)", openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
@@ -924,13 +927,13 @@ async fn reboot_into_guest_vsm<T: PetriVmmBackend>(
 /// Basic boot test with secure boot enabled and a valid template.
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
@@ -945,13 +948,13 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     noagent,
     configs(
         openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-        openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
         openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
-        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
         openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
         hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
         hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-        hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+        hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
         hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
     )
 )]
@@ -1065,7 +1068,7 @@ async fn efi_diagnostics_info_level<T: PetriVmmBackend>(
 #[vmm_test_with(
     requires(vpci),
     unstable(reason = "Test is flaky on CI, known WHP bug suspected"),
-    configs(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)))
+    configs(openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)))
 )]
 async fn uefi_force_dma_bounce<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,

@@ -158,7 +158,7 @@ macro_rules! define_vmm_tests_built_artifacts {
                 }
             }
 
-            #[derive(Serialize, Deserialize, Default, Debug)]
+            #[derive(Serialize, Deserialize, Default, Debug, Clone)]
             pub struct [<$name Selections>] {$($(
                 pub [<$artifact _ $variant>]: bool,
             )*)*}

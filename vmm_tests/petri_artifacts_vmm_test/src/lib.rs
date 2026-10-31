@@ -685,7 +685,7 @@ pub mod artifacts {
         declare_vmm_test_images! {
             /// Generation 2 windows test image
             GEN2_WINDOWS_DATA_CENTER_CORE2025_X64(
-                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.3476.250306.vhd",
+                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.33674.261024.vhd",
                 32214352384,
                 "Gen2WindowsDataCenterCore2025X64Vhd",
                 SUPPORTS_BLOB_DISK,
@@ -857,9 +857,17 @@ pub mod artifacts {
         // VHDs that are created by pre-preparation automation
 
         declare_prepped_vmm_test_images! {
-            /// Generation 2 windows test image
+            /// Generation 2 windows test image prepped for use in a CVM
             GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED(
-                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.3476.250306-prepped.vhd"
+                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.33674.261024-prepped.vhd"
+            ),
+            /// Generation 2 2022 windows test image prepped for use without VMBUS
+            GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED(
+                "WindowsServer-2022-datacenter-core-smalldisk-g2-20348.1906.230803-no-vmbus-prepped.vhd"
+            ),
+            /// Generation 2 2025 windows test image prepped for use without VMBUS
+            GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_NO_VMBUS_PREPPED(
+                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.33674.261024-no-vmbus-prepped.vhd"
             )
         }
 
@@ -872,16 +880,18 @@ pub mod artifacts {
             }
         }
 
-        declare_prepped_vmm_test_images! {
-            /// Generation 2 windows test image
-            GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED(
-                "WindowsServer-2022-datacenter-core-smalldisk-g2-20348.1906.230803-no-vmbus-prepped.vhd"
-            )
-        }
-
         impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED {
             const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::OS_FLAVOR;
             const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::ARCH;
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_NO_VMBUS_PREPPED {
+            const OS_FLAVOR: OsFlavor = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::OS_FLAVOR;
+            const ARCH: MachineArch = GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::ARCH;
+
+            fn quirks() -> GuestQuirks {
+                GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::quirks()
+            }
         }
     }
 

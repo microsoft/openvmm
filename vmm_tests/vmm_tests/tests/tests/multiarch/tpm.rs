@@ -408,15 +408,15 @@ impl<'a> TpmGuestTests<'a> {
 #[vmm_test(
     ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))),
     ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))),
-    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))),
+    ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(windows_datacenter_core_2025_x64))),
     ignore(reason = "OpenVMM TPM needs OpenSSL, not yet buildable on Windows CI", openvmm_uefi_x64(vhd(ubuntu_2504_server_x64))),
     openvmm_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(alpine_3_23_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
@@ -452,7 +452,7 @@ pub(crate) async fn boot_with_tpm_impl<T: PetriVmmBackend>(
 #[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
 )]
 async fn tpm_ak_cert_persisted<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -484,20 +484,14 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
         .run()
         .await?;
 
-    let guest_binary_path = match os_flavor {
-        // Ubuntu automatically reboots when the TPM is enabled
-        OsFlavor::Linux => {
-            // First boot issues A; the automatic reboot validates A's metadata
-            // and returns no-renewal with poison bytes.
-            TPM_GUEST_TESTS_LINUX_GUEST_PATH
-        }
-        OsFlavor::Windows => {
-            // Reach the no-renewal response explicitly on Windows.
-            agent.reboot().await?;
-            agent = vm.wait_for_reset().await?;
+    // Ubuntu automatically reboots when the TPM is enabled.
+    // WS2025 always reboots automatically.
+    // First boot issues A; the automatic reboot validates A's metadata
+    // and returns no-renewal with poison bytes.
 
-            TPM_GUEST_TESTS_WINDOWS_GUEST_PATH
-        }
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
 
@@ -537,7 +531,7 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
 #[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))[TPM_GUEST_TESTS_WINDOWS_X64],
 )]
 async fn tpm_ak_cert_renewal<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -619,7 +613,7 @@ async fn ak_cert_renewal_impl<U: PetriVmmBackend>(
 /// Test AK cert retry logic.
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
 )]
 async fn tpm_ak_cert_retry<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -634,33 +628,37 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
     tpm_version: PetriTpmVersion,
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
+
+    let (guest_binary_path, igvm_attest_test_config) = match os_flavor {
+        OsFlavor::Linux => {
+            // First boot - expect no AK cert from GED
+            // Second boot - expect get AK cert from GED on the second attempts
+            (
+                TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+                get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            )
+        }
+        OsFlavor::Windows => {
+            // WS25 reboot once at the beginning. `Extended` provides an extra failure to accodate this.
+            // At this point, two AK cert requests are made. One is during tpm
+            // initialization, another one is during boot triggering by a NV read (Windows-specific).
+            // Both requests are expected to fail due to the GED configuration.
+            (
+                TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+                get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
+            )
+        }
+        _ => unreachable!(),
+    };
+
     let (vm, agent) = config
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
         .with_tpm(true)
         .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
-        .modify_backend(|b| {
-            b.with_igvm_attest_test_config(
-                get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
-            )
-        })
+        .modify_backend(move |b| b.with_igvm_attest_test_config(igvm_attest_test_config))
         .run()
         .await?;
-
-    let guest_binary_path = match os_flavor {
-        OsFlavor::Linux => {
-            // First boot - expect no AK cert from GED
-            // Second boot - expect get AK cert from GED on the second attempts
-            TPM_GUEST_TESTS_LINUX_GUEST_PATH
-        }
-        OsFlavor::Windows => {
-            // At this point, two AK cert requests are made. One is during tpm
-            // initialization, another one is during boot triggering by a NV read (Windows-specific).
-            // Both requests are expected to fail due to the GED configuration.
-            TPM_GUEST_TESTS_WINDOWS_GUEST_PATH
-        }
-        _ => unreachable!(),
-    };
 
     let (artifact,) = extra_deps;
     let host_binary_path = artifact.get();
@@ -775,7 +773,7 @@ async fn wait_for_ak_cert_event<U: PetriVmmBackend>(
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -823,7 +821,7 @@ pub(crate) async fn ak_cert_cache_impl<T, S, U: PetriVmmBackend>(
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],

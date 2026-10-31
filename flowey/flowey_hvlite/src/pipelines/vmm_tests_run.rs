@@ -830,11 +830,9 @@ impl ResolvedArtifactSelections {
                 // prep_steps needs actual VHD files on disk to copy them.
                 // Force download even when lazy fetch is enabled.
                 self.force_downloads
-                    .insert(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.into());
-                self.force_downloads
                     .insert(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.into());
             }
-            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID => {
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_NO_VMBUS_PREPPED::GLOBAL_UNIQUE_ID => {
                 self.build
                     .require_openvmm_for(ArtifactTarget::Triple(self.target.clone()))?;
                 self.build
@@ -842,7 +840,7 @@ impl ResolvedArtifactSelections {
                 self.needs_virtio_win_drivers = true;
                 self.prep_steps_variants.insert("no-vmbus".into());
                 self.force_downloads
-                    .insert(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.into());
+                    .insert(test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.into());
             }
 
             // OpenHCL usermode binaries (built as part of IGVM)
