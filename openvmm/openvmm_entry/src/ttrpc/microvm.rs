@@ -754,12 +754,15 @@ impl CreateVm {
                     .authoritative_restore
                     .as_ref()
                     .context("time ABI restore is missing its snapshot")?;
+                // The management RPC refuses snapshots with a NIC, so its
+                // packets carry no network settings.
                 let (generation_id, base) = crate::microvm::restore_packet_base(
                     restore_time.contract(),
                     self.restore_online_vp_count,
                     restore.restore_memory_target_requested,
                     &restore.restore_memory_ranges,
                     gate_required,
+                    None,
                 )?;
                 (
                     generation_id,

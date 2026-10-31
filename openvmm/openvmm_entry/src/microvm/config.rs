@@ -20,6 +20,7 @@ use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_ingress;
 use super::network::microvm_network_endpoint;
+use super::network::microvm_restore_network;
 use super::output::MicrovmOutputDrain;
 use super::output::OutputCompletion;
 use super::output::spawn_output;
@@ -420,9 +421,18 @@ impl<'a> MicrovmConfigBuilder<'a> {
         let (drain, output_drain) = MicrovmOutputDrain::new(Some(output_completion));
         self.resources.output_drain = Some(drain);
         let (generation_id, time_abi_restore) = if self.restore.machine_contract.is_some() {
+            let network = if self.restore.network_settings {
+                let network = self
+                    .network
+                    .as_ref()
+                    .context("a restore that replaces the network policy requires a NIC")?;
+                Some(microvm_restore_network(&network.policy))
+            } else {
+                None
+            };
             let (generation_id, base) = self
                 .restore
-                .time_abi_restore_packet(opt.microvm.restore_processors)?;
+                .time_abi_restore_packet(opt.microvm.restore_processors, network)?;
             (
                 generation_id,
                 Some(self.resources.time_abi_restore_packet(base)),
