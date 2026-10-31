@@ -164,19 +164,45 @@ impl<'a> StopTask<'a> {
     pub async fn until_stopped<F: Future>(&mut self, fut: F) -> Result<F::Output, Cancelled> {
         let mut fut = pin!(fut);
 
-        // Since this is a common fast path, implement the select manually.
+        // Check stop, poll work, then handle wake registration only if pending.
+        // Always-ready loops avoid waker comparisons entirely. Frequently
+        // pending workers reuse registration without a second stop-flag load.
         poll_fn(|cx| {
             if let Err(cancelled) = self.check() {
                 Poll::Ready(Err(cancelled))
             } else if let Poll::Ready(r) = fut.as_mut().poll(cx) {
                 Poll::Ready(Ok(r))
-            } else if Pin::new(&mut *self).poll(cx).is_ready() {
+            } else if self.poll_wait(cx).is_ready() {
                 Poll::Ready(Err(Cancelled))
             } else {
                 Poll::Pending
             }
         })
         .await
+    }
+
+    #[inline]
+    fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // The caller already checked stop. On a cache hit, a request arriving
+        // during work polling wakes this task for another poll.
+        if self
+            .outer_waker
+            .as_ref()
+            .is_some_and(|waker| cx.waker().will_wake(waker))
+        {
+            return Poll::Pending;
+        }
+        if Pin::new(&mut self.inner).poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        self.outer_waker = Some(cx.waker().clone());
+        // Recheck after registering the waker so a concurrent request
+        // cannot leave an interruptible wait asleep.
+        if self.check().is_err() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -185,24 +211,9 @@ impl Future for StopTask<'_> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.check().is_err() {
-            return Poll::Ready(());
-        }
-        if self
-            .outer_waker
-            .as_ref()
-            .is_none_or(|waker| !cx.waker().will_wake(waker))
-        {
-            if Pin::new(&mut self.inner).poll(cx).is_ready() {
-                return Poll::Ready(());
-            }
-            self.outer_waker = Some(cx.waker().clone());
-        }
-        // Recheck after registering the waker so a concurrent request
-        // cannot leave an interruptible wait asleep.
-        if self.check().is_err() {
             Poll::Ready(())
         } else {
-            Poll::Pending
+            self.poll_wait(cx)
         }
     }
 }
@@ -727,6 +738,15 @@ mod tests {
         request_during_registration: AtomicBool,
     }
 
+    #[derive(Default)]
+    struct CountWake(AtomicUsize);
+
+    impl Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     impl CheckSignal {
         fn notify(&self) {
             let waker = self.waker.lock().clone();
@@ -836,14 +856,6 @@ mod tests {
 
     #[test]
     fn wait_caches_registration_and_tracks_executor_waker_changes() {
-        #[derive(Default)]
-        struct CountWake(AtomicUsize);
-        impl Wake for CountWake {
-            fn wake(self: Arc<Self>) {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
         let signal = Arc::new(CheckSignal::default());
         let count = Arc::new(CountWake::default());
         let waker = Waker::from(count.clone());
@@ -869,6 +881,32 @@ mod tests {
             stop.outer_waker = None;
             assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
             assert_eq!(signal.polls.load(Ordering::Relaxed), 3);
+        })
+        .now_or_never();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn cached_wait_observes_stop_on_repoll_when_requested_during_work() {
+        let signal = CheckSignal::default();
+        let count = Arc::new(CountWake::default());
+        let waker = Waker::from(count.clone());
+        let result = run_with_signal(&signal, async |stop| {
+            let mut cx = Context::from_waker(&waker);
+            assert!(Pin::new(&mut *stop).poll(&mut cx).is_pending());
+            let mut polled = false;
+            let work = std::future::poll_fn(|_| -> Poll<()> {
+                assert!(!polled, "stop must prevent polling work again");
+                polled = true;
+                signal.requested.store(true, Ordering::Relaxed);
+                signal.waker.lock().take().unwrap().wake();
+                Poll::Pending
+            });
+            let mut wait = pin!(stop.until_stopped(work));
+            assert!(wait.as_mut().poll(&mut cx).is_pending());
+            assert_eq!(count.0.load(Ordering::Relaxed), 1);
+            assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(Err(_))));
+            assert_eq!(signal.polls.load(Ordering::Relaxed), 1);
         })
         .now_or_never();
         assert!(result.is_some());
