@@ -36,6 +36,8 @@ use zerocopy::Ref;
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(#[from] task_control::Cancelled),
     #[error("out of order packet")]
     UnexpectedPacketOrder,
     #[error("memory access error")]
@@ -342,13 +344,19 @@ impl SimpleVmbusDevice for Video {
         stop: &mut StopTask<'_>,
         channel: &mut VideoChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match channel.process(&mut self.control, &self.dirt_send).await {
+            match channel
+                .process(&mut self.control, &self.dirt_send, &check)
+                .await
+            {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "video error"),
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     fn supports_save_restore(
@@ -408,6 +416,7 @@ impl VideoChannel {
         &mut self,
         framebuffer: &mut Box<dyn FramebufferControl>,
         dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(), Error> {
         process_channel(
             &mut self.channel,
@@ -415,6 +424,7 @@ impl VideoChannel {
             &mut self.packet_buf,
             framebuffer,
             dirt_send,
+            check,
         )
         .await
     }
@@ -426,8 +436,10 @@ async fn process_channel(
     packet_buf: &mut PacketBuffer,
     framebuffer: &mut Box<dyn FramebufferControl>,
     dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+    check: &task_control::StopCheck<'_>,
 ) -> Result<(), Error> {
     loop {
+        check.check()?;
         match state {
             ChannelState::ReadVersion => {
                 let version =
@@ -764,15 +776,20 @@ mod tests {
         driver.spawn("video worker", async move {
             let mut state = ChannelState::ReadVersion;
             let mut packet_buf = PacketBuffer::new();
-            process_channel(
-                &mut channel,
-                &mut state,
-                &mut packet_buf,
-                &mut control,
-                &dirt_send,
-            )
-            .await
-            .or_else(|e| match e {
+            let result = StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
+                process_channel(
+                    &mut channel,
+                    &mut state,
+                    &mut packet_buf,
+                    &mut control,
+                    &dirt_send,
+                    &check,
+                )
+                .await
+            })
+            .await;
+            result.or_else(|e| match e {
                 Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => Ok(()),
                 _ => Err(e),
             })

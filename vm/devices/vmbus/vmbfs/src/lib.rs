@@ -87,7 +87,8 @@ impl SimpleVmbusDevice for VmbfsDevice {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(runner.process(self)).await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -128,17 +129,28 @@ enum Request {
 }
 
 impl VmbfsChannel {
-    async fn process(&mut self, dev: &mut VmbfsDevice) {
-        match self.process_inner(dev).await {
+    async fn process(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
+        match self.process_inner(dev, check).await {
             Ok(()) => {}
+            Err(DeviceError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(error = &err as &dyn std::error::Error, "vmbfs failed");
             }
         }
+        Ok(())
     }
 
-    async fn process_inner(&mut self, dev: &mut VmbfsDevice) -> Result<(), DeviceError> {
+    async fn process_inner(
+        &mut self,
+        dev: &mut VmbfsDevice,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), DeviceError> {
         loop {
+            check.check()?;
             self.pipe
                 .wait_write_ready(protocol::MAX_MESSAGE_SIZE)
                 .await
@@ -309,6 +321,8 @@ fn parse_path(buf: &[u8]) -> Result<String, DeviceError> {
 
 #[derive(Debug, Error)]
 enum DeviceError {
+    #[error("cancelled")]
+    Cancelled(#[from] Cancelled),
     #[error("vmbus pipe error")]
     Pipe(#[source] std::io::Error),
     #[error("message too short")]

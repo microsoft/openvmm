@@ -34,6 +34,8 @@ use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(#[from] task_control::Cancelled),
     #[error("pipe failed")]
     PipeFailure(#[source] std::io::Error),
     #[error("trace message has invalid size {0}")]
@@ -90,15 +92,20 @@ impl SimpleVmbusDevice for GuestEmulationLog {
         stop: &mut StopTask<'_>,
         channel: &mut GelChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            if let Err(err) = channel.process(self).await {
+            if let Err(err) = channel.process(self, &check).await {
+                if let Error::Cancelled(cancelled) = err {
+                    return Err(cancelled);
+                }
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
                     "trace channel failed"
                 );
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     fn supports_save_restore(
@@ -172,9 +179,14 @@ impl<T: RingMem + Unpin> GelChannel<T> {
         Self { channel }
     }
 
-    async fn process(&mut self, _state: &mut GuestEmulationLog) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        _state: &mut GuestEmulationLog,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         let mut buffer = vec![0; get_protocol::TRACE_LOGGING_NOTIFICATION_MAX_SIZE];
         loop {
+            check.check()?;
             let n = self
                 .channel
                 .recv(buffer.as_mut_bytes())

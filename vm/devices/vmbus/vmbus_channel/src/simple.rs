@@ -67,6 +67,9 @@ pub trait SimpleVmbusDevice<M: RingMem = GpadlRingMem>: 'static + Send {
     ) -> Result<Self::Runner, ChannelOpenError>;
 
     /// Runs an open channel until `stop` is signaled.
+    ///
+    /// Check for stop at cancel-safe work boundaries, including when incoming
+    /// packets or outgoing ring space stay continuously ready.
     async fn run(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -135,6 +138,7 @@ impl<T: SimpleVmbusDevice> AsyncRun<T::Runner> for DeviceTask<T> {
         stop: &mut StopTask<'_>,
         runner: &mut T::Runner,
     ) -> Result<(), Cancelled> {
+        stop.check()?;
         self.0.run(stop, runner).await
     }
 }

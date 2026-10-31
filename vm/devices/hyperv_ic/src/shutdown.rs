@@ -104,13 +104,18 @@ impl ShutdownChannel {
         })
     }
 
-    async fn process(&mut self, ic: &mut ShutdownIc) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        ic: &mut ShutdownIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         enum Event {
             StateMachine(anyhow::Result<()>),
             Request(ShutdownRpc),
         }
 
         loop {
+            check.check()?;
             let event = pin!(
                 (
                     once(
@@ -126,7 +131,13 @@ impl ShutdownChannel {
             .unwrap();
             match event {
                 Event::StateMachine(r) => {
-                    r?;
+                    if let Err(err) = r {
+                        tracing::error!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "shutdown ic error"
+                        );
+                        return Ok(());
+                    }
                 }
                 Event::Request(req) => match req {
                     ShutdownRpc::WaitReady(rpc) => match &mut self.state {
@@ -268,18 +279,8 @@ impl SimpleVmbusDevice for ShutdownIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(async {
-            match runner.process(self).await {
-                Ok(()) => {}
-                Err(err) => {
-                    tracing::error!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "shutdown ic error"
-                    )
-                }
-            }
-        })
-        .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
