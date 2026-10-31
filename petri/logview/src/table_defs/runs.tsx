@@ -19,7 +19,9 @@ export const columnWidthMap = {
 };
 
 // Define the columns for the runs table
-export const createColumns = (): ColumnDef<RunData>[] => {
+export const createColumns = (
+  warmRun: (runId: string) => void,
+): ColumnDef<RunData>[] => {
   return [
     {
       id: "status",
@@ -72,6 +74,8 @@ export const createColumns = (): ColumnDef<RunData>[] => {
             to={`/runs/${runKey}`}
             className="common-table-link"
             title={runId}
+            onMouseEnter={() => warmRun(runKey)}
+            onFocus={() => warmRun(runKey)}
           >
             {runId}
           </Link>
