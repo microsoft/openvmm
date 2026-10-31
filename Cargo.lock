@@ -5044,7 +5044,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=517ae1a64aeb990019d809b963ac2c2726080e24#517ae1a64aeb990019d809b963ac2c2726080e24"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=5276f871eb8141149aaa762cdb34d5f4e3291d50#5276f871eb8141149aaa762cdb34d5f4e3291d50"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -9099,6 +9099,7 @@ name = "tpm_protocol"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -11659,6 +11660,31 @@ dependencies = [
  "prost",
  "prost-build",
  "serde",
+]
+
+[[package]]
+name = "vtpm_util"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "crypto",
+ "der",
+ "getrandom 0.4.2",
+ "hex",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
+ "parking_lot",
+ "pkcs1",
+ "tempfile",
+ "test_with_tracing",
+ "tpm_lib",
+ "tpm_protocol",
+ "tpm_resources",
+ "tracing",
+ "tracing-subscriber",
+ "zerocopy",
 ]
 
 [[package]]
