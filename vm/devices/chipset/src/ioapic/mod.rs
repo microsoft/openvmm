@@ -425,12 +425,19 @@ mod save_restore {
             pub(super) index: u8,
             #[mesh(3)]
             pub(super) redirection_entries: Vec<u64>,
+            // Preserve edge-detector history, not ownership of device outputs.
+            #[mesh(4)]
+            pub(super) line_levels: Vec<bool>,
         }
     }
 
     #[derive(Error, Debug)]
     #[error("wrong number of redirection entries")]
     struct WrongNumberOfRedirectionEntries;
+
+    #[derive(Error, Debug)]
+    #[error("wrong number of line levels")]
+    struct WrongNumberOfLineLevels;
 
     impl SaveRestore for IoApicDevice {
         type SavedState = state::SavedState;
@@ -447,6 +454,7 @@ mod save_restore {
 
             Ok(state::SavedState {
                 redirection_entries: irqs.iter().map(|irq| irq.redirection.into()).collect(),
+                line_levels: irqs.iter().map(|irq| irq.line_level).collect(),
                 index: index.0,
                 id: *id,
             })
@@ -455,18 +463,28 @@ mod save_restore {
         fn restore(&mut self, state: state::SavedState) -> Result<(), RestoreError> {
             let state::SavedState {
                 redirection_entries,
+                line_levels,
                 id,
                 index,
             } = state;
             if redirection_entries.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
             }
-            for (n, (state, irq)) in redirection_entries
+            let line_levels = if line_levels.is_empty() {
+                vec![false; self.irqs.len()]
+            } else if line_levels.len() == self.irqs.len() {
+                line_levels
+            } else {
+                return Err(RestoreError::Other(WrongNumberOfLineLevels.into()));
+            };
+            for (n, ((state, line_level), irq)) in redirection_entries
                 .into_iter()
+                .zip(line_levels)
                 .zip(self.irqs.iter_mut())
                 .enumerate()
             {
                 irq.redirection = RedirectionEntry::from(state);
+                irq.line_level = line_level;
                 let request = irq.redirection.as_msi();
                 self.routing.set_route(n as u8, request);
                 irq.registered_request = request;
@@ -474,6 +492,170 @@ mod save_restore {
             self.id = id;
             self.index = IndexRegister(index);
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use chipset_device::interrupt::HandleEoi;
+        use chipset_device::interrupt::LineInterruptTarget;
+        use chipset_resources::ioapic::IoApicRouting;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use test_with_tracing::test;
+
+        const ENTRY_COUNT: u8 = 2;
+        const IRQ: u8 = 1;
+        const VECTOR: u8 = 0x30;
+
+        #[derive(Clone, Default)]
+        struct RecordingRouting {
+            assertions: Arc<Mutex<Vec<u8>>>,
+        }
+
+        impl IoApicRouting for RecordingRouting {
+            fn assert(&self, irq: u8) {
+                self.assertions.lock().push(irq);
+            }
+
+            fn set_route(&self, _irq: u8, _request: Option<(u64, u32)>) {}
+        }
+
+        fn device() -> (IoApicDevice, RecordingRouting) {
+            let routing = RecordingRouting::default();
+            (
+                IoApicDevice::new(ENTRY_COUNT, Box::new(routing.clone())),
+                routing,
+            )
+        }
+
+        fn set_entry(device: &mut IoApicDevice, level: bool, masked: bool) {
+            let entry = RedirectionEntry::new()
+                .with_vector(VECTOR)
+                .with_trigger_mode_level(level)
+                .with_masked(masked);
+            device.write_redirection_register(IRQ * 2, u64::from(entry) as u32);
+        }
+
+        #[test]
+        fn restore_preserves_edge_history() {
+            let (mut source, _) = device();
+            set_entry(&mut source, false, false);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            restored.set_irq(IRQ.into(), true);
+            assert!(routing.assertions.lock().is_empty());
+
+            restored.set_irq(IRQ.into(), false);
+            restored.set_irq(IRQ.into(), true);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_allows_new_rising_edge() {
+            let (mut source, _) = device();
+            set_entry(&mut source, false, false);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            set_entry(&mut restored, false, false);
+            restored.set_irq(IRQ.into(), true);
+            routing.assertions.lock().clear();
+
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+            restored.set_irq(IRQ.into(), true);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_preserves_asserted_level_until_unmasked() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+            set_entry(&mut restored, true, false);
+
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_preserves_remote_irr_until_eoi() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, false);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            restored.set_irq(IRQ.into(), true);
+            assert!(routing.assertions.lock().is_empty());
+
+            restored.handle_eoi(VECTOR.into());
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+            restored.set_irq(IRQ.into(), false);
+            restored.handle_eoi(VECTOR.into());
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_does_not_evaluate_level_interrupts() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let mut state = source.save().expect("save succeeds");
+            state.redirection_entries[IRQ as usize] =
+                RedirectionEntry::from(state.redirection_entries[IRQ as usize])
+                    .with_masked(false)
+                    .into();
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+
+            restored.set_irq(IRQ.into(), true);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_defaults_absent_line_levels_to_deasserted() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let mut state = source.save().expect("save succeeds");
+            state.line_levels.clear();
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            set_entry(&mut restored, true, false);
+
+            assert!(routing.assertions.lock().is_empty());
+        }
+
+        #[test]
+        fn restore_rejects_wrong_number_of_line_levels() {
+            let (mut source, _) = device();
+            let mut state = source.save().expect("save succeeds");
+            state.line_levels.pop();
+
+            let (mut restored, routing) = device();
+            set_entry(&mut restored, false, false);
+            let before = restored.save().expect("save succeeds");
+            let error = restored.restore(state).expect_err("restore must fail");
+
+            assert_eq!(error.to_string(), "wrong number of line levels");
+            let after = restored.save().expect("save succeeds");
+            assert_eq!(after.redirection_entries, before.redirection_entries);
+            assert_eq!(after.line_levels, before.line_levels);
+            assert!(routing.assertions.lock().is_empty());
         }
     }
 }
