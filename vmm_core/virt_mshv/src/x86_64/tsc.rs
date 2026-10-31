@@ -27,6 +27,7 @@ pub(super) fn with_features1(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::x86_64::PartitionCreateOptions;
     use crate::x86_64::partition_create_args;
 
     #[test]
@@ -35,7 +36,11 @@ mod tests {
         assert!(!processor_features1.tsc_deadline_tmr_support());
         assert!(processor_features1.tsc_adjust_support());
         let args = with_features1(
-            partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap(),
+            partition_create_args(
+                &virt::ProtoPartitionIsolation::None,
+                PartitionCreateOptions::default(),
+            )
+            .unwrap(),
         );
         let pt_cpu_fbanks = args.pt_cpu_fbanks;
         assert_eq!(pt_cpu_fbanks[1], !u64::from(processor_features1));
@@ -50,8 +55,11 @@ mod tests {
             (true, super::super::supported_processor_features1()),
             (false, supported_features1()),
         ] {
-            let mut args =
-                partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap();
+            let mut args = partition_create_args(
+                &virt::ProtoPartitionIsolation::None,
+                PartitionCreateOptions::default(),
+            )
+            .unwrap();
             let mut banks = args.pt_cpu_fbanks;
             banks[1] = !u64::from(features1);
             args.pt_cpu_fbanks = banks;

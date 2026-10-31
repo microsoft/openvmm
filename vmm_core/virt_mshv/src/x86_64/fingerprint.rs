@@ -182,7 +182,10 @@ impl LinuxMshv {
         let host = profile_features::host_features(&self.mshv)?;
         let features = profile_features::time_abi_features(profile, host)?;
         let args = time_abi::with_features(
-            super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)?,
+            super::partition_create_args(
+                &virt::ProtoPartitionIsolation::None,
+                super::PartitionCreateOptions::default(),
+            )?,
             features,
         );
         let vmfd = create_vm_with_retry(&self.mshv, &args)?;

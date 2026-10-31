@@ -136,6 +136,12 @@ impl MshvPartitionInner {
             .caps
     }
 
+    /// Returns whether the guest sees hardware virtualization extensions,
+    /// which partition creation fixes, so it is known before finalization.
+    pub(crate) fn nested_virt(&self) -> bool {
+        self.config.nested_virt
+    }
+
     pub(super) fn isolation_type(&self) -> virt::IsolationType {
         if self.isolation.snp().is_some() {
             virt::IsolationType::Snp

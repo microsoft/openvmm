@@ -529,7 +529,7 @@ impl virt::ResetPartition for MshvPartition {
         let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
 
         #[cfg(guest_arch = "x86_64")]
-        if inner.caps.nested_virt && !scrubbed {
+        if inner.nested_virt() && !scrubbed {
             return Err(ErrorInner::NestedResetRequiresScrub.into());
         }
 

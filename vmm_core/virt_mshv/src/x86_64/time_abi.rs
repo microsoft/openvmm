@@ -1713,8 +1713,11 @@ mod tests {
             xsave: 0x3f,
         };
         let args = with_features(
-            super::super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)
-                .unwrap(),
+            super::super::partition_create_args(
+                &virt::ProtoPartitionIsolation::None,
+                super::super::PartitionCreateOptions::default(),
+            )
+            .unwrap(),
             features,
         );
         let banks = args.pt_cpu_fbanks;
@@ -2615,8 +2618,11 @@ mod hw {
         )
         .unwrap();
         let args = with_features(
-            super::super::partition_create_args(&virt::ProtoPartitionIsolation::None, false, false)
-                .unwrap(),
+            super::super::partition_create_args(
+                &virt::ProtoPartitionIsolation::None,
+                super::super::PartitionCreateOptions::default(),
+            )
+            .unwrap(),
             features,
         );
         let vmfd = crate::create_vm_with_retry(&mshv, &args).unwrap();
@@ -2678,8 +2684,7 @@ mod hw {
         ] {
             let mut args = super::super::partition_create_args(
                 &virt::ProtoPartitionIsolation::None,
-                false,
-                false,
+                super::super::PartitionCreateOptions::default(),
             )
             .unwrap();
             let mut banks = args.pt_cpu_fbanks;

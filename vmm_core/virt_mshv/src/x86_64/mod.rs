@@ -805,7 +805,7 @@ impl Hv1 for MshvPartition {
     }
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
-        if self.inner.caps.nested_virt {
+        if self.inner.nested_virt() {
             anyhow::bail!("synic ports are not supported with nested virtualization on MSHV");
         }
         Ok(self.synic_ports.clone())
@@ -1321,7 +1321,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         gva: u64,
         mode: TranslateMode,
     ) -> Result<EmuTranslateResult, EmuTranslateError> {
-        if self.partition.caps.nested_virt {
+        if self.partition.nested_virt() {
             let mut flags =
                 hvdef::hypercall::TranslateGvaControlFlagsX64::new().with_set_page_table_bits(true);
             match mode {
