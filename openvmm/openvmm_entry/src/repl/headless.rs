@@ -8,7 +8,9 @@
 //! control-console capability), the REPL starts no stdio thread and handles
 //! only controller events, until one of them ends the run. With a stdin that
 //! is not a terminal, such as a pipe, the stdio thread reads it without
-//! switching the console to raw mode.
+//! switching the console to raw mode. The end of such a stdin ends the run of
+//! a VM, as the end of a script of commands does, but only the console input
+//! of a microVM, which runs until its guest stops it.
 
 use crate::vm_controller::VmControllerEvent;
 use futures::StreamExt;
@@ -86,6 +88,7 @@ mod tests {
             launch: ReplLaunch {
                 restore_ready_pending: false,
                 stdin_enabled: false,
+                stdin_eof_ends_run: true,
             },
         };
         let mut repl = pin!(run_repl(&driver, resources));
