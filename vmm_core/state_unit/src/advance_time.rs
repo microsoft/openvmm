@@ -26,7 +26,7 @@ impl StateUnits {
                 State::Stopped,
                 StateRequest::AdvanceTime,
                 |_, unit| unit.advances_time.then_some(duration),
-                |unit| &unit.dependencies,
+                |unit| Some(&unit.dependencies),
             )
             .await;
         check(

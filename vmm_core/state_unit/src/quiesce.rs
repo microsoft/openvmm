@@ -116,7 +116,7 @@ impl StateUnits {
                     unit.name,
                 );
                 let name = unit.name.clone();
-                let dependencies = unit.dependents.clone();
+                let dependencies = unit.dependents.iter().copied().collect::<Vec<_>>();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
                 let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
@@ -209,7 +209,7 @@ impl StateUnits {
             ready_set = inner.ready_set(None);
             for (&id, unit) in &mut inner.units {
                 let name = unit.name.clone();
-                let dependencies = unit.dependencies.clone();
+                let dependencies = unit.dependencies.iter().copied().collect::<Vec<_>>();
                 let ready_set = ready_set.clone();
                 let mut context = context.clone();
                 let start = state_change(name.clone(), unit, StateRequest::Start, Some(()));
