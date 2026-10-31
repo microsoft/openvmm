@@ -148,7 +148,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -260,7 +260,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -273,7 +273,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -605,7 +605,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -618,7 +618,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -776,7 +776,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -789,7 +789,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1013,7 +1013,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1026,7 +1026,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1433,7 +1433,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1446,7 +1446,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -1677,7 +1677,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -1690,7 +1690,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2147,7 +2147,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2383,7 +2383,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -2641,7 +2641,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -3858,7 +3858,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job25-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4791,7 +4791,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job29-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5503,7 +5503,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -5593,7 +5593,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -5803,7 +5803,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3-v6
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -5816,7 +5816,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -6827,7 +6827,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3-v7
-    - 1ES.ImageOverride=ubuntu2404-amd64
+    - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -6840,7 +6840,7 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
         curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
