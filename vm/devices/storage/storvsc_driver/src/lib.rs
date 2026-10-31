@@ -109,7 +109,7 @@ pub struct StorvscError(StorvscErrorInner);
 pub(crate) enum StorvscErrorInner {
     /// Worker interrupted for control processing.
     #[error("worker interrupted")]
-    WorkerCancelled(#[source] task_control::Cancelled),
+    WorkerCancelled(task_control::Cancelled),
     /// Packet error.
     #[error("packet error")]
     PacketError(#[source] PacketError),

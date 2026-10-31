@@ -334,13 +334,19 @@ impl Future for ScsiRequest {
 #[derive(Debug, Error)]
 enum WorkerError {
     #[error("cancelled")]
-    Cancelled(#[from] task_control::Cancelled),
+    Cancelled(task_control::Cancelled),
     #[error("packet error")]
     PacketError(#[source] PacketError),
     #[error("queue error")]
     Queue(#[source] queue::Error),
     #[error("queue should have enough space but no longer does")]
     NotEnoughSpace,
+}
+
+impl From<task_control::Cancelled> for WorkerError {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 #[derive(Debug, Error)]

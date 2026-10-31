@@ -35,13 +35,19 @@ use zerocopy::IntoBytes;
 #[derive(Debug, Error)]
 enum Error {
     #[error("cancelled")]
-    Cancelled(#[from] task_control::Cancelled),
+    Cancelled(task_control::Cancelled),
     #[error("pipe failed")]
     PipeFailure(#[source] std::io::Error),
     #[error("trace message has invalid size {0}")]
     InvalidTraceSize(u16),
     #[error("invalid payload length {0}")]
     InvalidPayloadSize(usize),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 /// VMBUS device that implements the host side of the Guest Emulation Log protocol.

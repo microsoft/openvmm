@@ -545,7 +545,7 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
 #[derive(Debug, Error)]
 enum WorkerError {
     #[error("cancelled")]
-    Cancelled(#[from] Cancelled),
+    Cancelled(Cancelled),
     #[error("unexpected packet order")]
     UnexpectedPacketOrder,
     #[error("queue error")]
@@ -558,6 +558,12 @@ enum WorkerError {
     Packet(#[from] PacketError),
     #[error("eject control channel closed")]
     EjectControl(#[source] mesh::RecvError),
+}
+
+impl From<Cancelled> for WorkerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl<T: RingMem> Connection<T> {
