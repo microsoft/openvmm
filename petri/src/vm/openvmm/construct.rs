@@ -272,7 +272,13 @@ impl PetriVmConfigOpenVmm {
             ));
             private_virtio_devices.push((
                 "petri-console-",
-                virtio_resources::console::VirtioConsoleHandle { backend }.into_resource(),
+                virtio_resources::console::VirtioConsoleHandle {
+                    backend,
+                    disconnect_policy:
+                        virtio_resources::console::attachment::VirtioConsoleDisconnectPolicy::Discard,
+                    attachment: None,
+                }
+                .into_resource(),
             ));
         }
 
@@ -903,7 +909,7 @@ impl PetriVmConfigSetupCore<'_> {
                 self.driver,
                 serial0_log_file,
                 serial0_host,
-                serial0,
+                Some(serial0),
             );
         }
 

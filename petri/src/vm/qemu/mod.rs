@@ -661,10 +661,11 @@ mod tests {
         let config = PetriVmConfig {
             name: "test".into(),
             arch: MachineArch::Aarch64,
+            machine_profile: openvmm_defs::microvm::MachineProfile::Standard,
             host_log_levels: None,
             firmware: Firmware::LinuxDirect {
                 kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
-                initrd: ResolvedArtifact::from_local_path("base-initrd".into()),
+                initrd: Some(ResolvedArtifact::from_local_path("base-initrd".into())),
             },
             hibernation_enabled: false,
             ipmi_enabled: false,
