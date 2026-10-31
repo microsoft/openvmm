@@ -1,234 +1,321 @@
 # Attestation and VMGS Protection
 
-This page introduces OpenHCL's attestation flows and directs you to their
-lifecycle and protocol references.
+This page describes boot-time attestation, VM Guest State (VMGS) protection,
+key-release context tracking, and hardware recovery in OpenHCL.
 
-## Attestation flows
-
-OpenHCL uses attestation for two distinct purposes:
-
-- **VM Guest State (VMGS) protection:** secure key release obtains key material
-  used to recover access to encrypted VMGS. Hardware sealing provides local
-  key protection where supported and enabled by the VM configuration.
-- **TPM attestation-key (AK) certification:** the virtual TPM requests a
-  certificate for its AK and can later request renewal. Issuing or retaining
-  this certificate is separate from releasing keys to unlock VMGS.
-
-The host IGVM agent is reached through the Guest Emulation Transport (GET).
-For hardware-attested requests, OpenHCL obtains a TEE report that binds a hash
-of the serialized runtime claims. Binding the claims does not by itself
-authenticate host-supplied metadata or establish certificate trust.
-
-## Reference pages
-
-- [AK Certificate Renewal](ak_cert.md) owns certificate storage, renewal
-  decisions, scheduling, and the guest-report boundary.
-- [IGVM Attestation Protocol](attestation_protocol.md) owns the AK request
-  claims, response framing, signal definitions, and compatibility rules.
-
-## Implementation references
-
-- [`underhill_attestation`][attestation-rustdoc] prepares attestation requests,
-  parses responses, and implements VMGS key protection.
-- [`tee_call`][tee-rustdoc] provides access to hardware attestation and
-  supported key derivation.
-
-[attestation-rustdoc]:
-  https://openvmm.dev/rustdoc/underhill_attestation/index.html
-[tee-rustdoc]:
-  https://openvmm.dev/rustdoc/tee_call/index.html
-
-## Boot and key protection
-
-Depending on the VM's configuration, platform-security initialization obtains
-key material through secure key release (SKR), hardware unsealing, and guest
-state protection services. Hardware sealing can provide either the sole means
-of recovering the VMGS datastore key (DEK) or a recovery path alongside other
-key protectors.
-
-The hardware protector contains the sealed DEK and the security version numbers
-(SVNs) needed to reproduce its hardware-derived key. It is stored in
-`HW_KEY_PROTECTOR` without VMGS-level encryption so it can be read before VMGS
-is unlocked. Its header, including SVN metadata, and encrypted DEK are covered
-by a hardware-keyed HMAC.
-
-Boot unsealing uses the protector's recorded SVN, which can be lower than the
-current hardware SVN. Recovery requires hardware support for that derivation
-and successful protector authentication. This differs from the minimum TCB
-policy used for runtime resealing below.
-
-Ordinary stateless mode bypasses VMGS encryption when hardware sealing is not
-requested. Stateless mode with the `HardwareSealing` encryption policy instead
-requires hardware sealing: it seals a new DEK on provisioning and unseals then
-rotates it on later boots. Unsupported required sealing or failure to derive,
-unseal, write, or finalize the required protector prevents boot from completing.
-
-The main implementation is in
-[`underhill_attestation`](https://openvmm.dev/rustdoc/linux/underhill_attestation/index.html),
-with local hardware access provided by
-[`tee_call`](https://openvmm.dev/rustdoc/linux/tee_call/index.html).
+```admonish note title="See also"
+[IGVM Attestation Protocol](attestation_protocol.md) specifies request and
+response versions, binary framing, JSON envelopes, and context encoding.
+[AK Certificate Renewal](ak_cert.md) covers certificate caching and renewal.
+[Runtime Hardware Resealing](runtime_sealing.md) covers migration recovery,
+runtime TCB floors, and saved-state requirements.
+```
 
 ## Resiliency
 
-### Recovery after live migration
+[Runtime Hardware Resealing](runtime_sealing.md) describes recovery after live
+migration, the trusted runtime TCB floor, lifecycle and saved-state handling,
+and the limits of best-effort hardware recovery.
 
-A hardware-derived sealing key may change when a VM migrates to another host.
-OpenHCL retains the active DEK in protected memory, allowing it to create a
-destination-compatible protector without recovering the DEK from the source
-protector.
+## Boot lifecycle
 
-The GET `NOTIFY_POST_LIVE_MIGRATION` notification triggers this recovery:
+During platform security initialization, OpenHCL obtains the keys needed to
+unlock encrypted VMGS before using its protected state. Secure key release
+(SKR) obtains a tenant key-encryption key through attestation; it is not the
+VMGS data-encryption key (DEK). Key protectors and guest state protection
+(GSP), as required by the encryption scheme, provide the material used to
+recover the DEK. Hardware sealing provides a local recovery path when the
+required services are unavailable.
 
-1. Obtain a local report and check it against the runtime TCB floor.
-2. Derive destination hardware keys and seal the **unchanged** active DEK.
-3. Verify the candidate protector, then write and flush it through the VMGS
-   broker. A defensive active-key check prevents publishing a stale DEK if
-   concurrent key rotation is introduced.
-4. Verify again after persistence to detect hardware or SVN changes during the
-   operation.
+The boot flow is:
 
-Recovery is enabled only when the successful boot-unlock attempt has sealed,
-written, and flushed a hardware protector for the active DEK and established a
-trusted runtime floor under a supported policy. This eligibility comes from
-trusted operation results, not the presence of an entry on disk. An LM event
-maintains an established recovery path; it does not perform first-time sealing.
-Once enabled, recovery can repair a subsequently missing or corrupt protector.
-It neither changes the policy nor rotates the DEK. Hardware calls run off the
-VP and GET executors. GET coalesces notifications received before callback
-registration into one pending event and delivers it when registration completes.
-The worker also latches events received before startup or during recovery.
-Failed attempts retry with bounded backoff. There is no periodic verification;
-after success, the worker waits for another event. Restoring serialized resealer
-state also schedules a durable rewrite, as described below.
+1. Read the security profile and any hardware protector from VMGS. Load the
+   cached context before creating requests or retrying SKR.
+2. For stateful operation, create an ephemeral RSA transfer key and runtime
+   claims. Obtain a TEE report binding the claims hash, then request wrapped
+   key material and perform SKR through the host IGVM agent. Whether wrapped
+   key material is required depends on the existing VMGS state.
+3. Validate the response and unwrap the released key. Derive ingress keys
+   (for existing state) and egress keys (for state to be written), or attempt
+   eligible hardware recovery.
+4. Unlock VMGS and persist the required key/protector updates. Return the
+   successfully adopted context for later attestation claims.
 
-### Runtime TCB floor
+### Stateful and stateless operation
 
-The trusted computing base (TCB) floor prevents runtime resealing at a lower
-accepted security version. Boot establishes it from local reports already
-obtained during platform-security initialization, including reports obtained
-before failed SKR callouts. It is held in protected OpenHCL memory, not loaded
-from host-controlled VMGS metadata.
+Stateful operation uses SKR; hardware sealing is a backup, not a replacement
+for the normal attestation flow. A host request for exclusive hardware
+sealing in stateful mode does not bypass SKR.
 
-Compatible higher observations advance the floor. Retries, persistence failures,
-reset, and normal stop/start cannot lower it. If boot cannot establish a usable
-floor, runtime resealing stays disabled with a warning; existing boot recovery
-behavior is unchanged.
+Stateless operation suppresses SKR and does not adopt a response context.
+Normally it bypasses VMGS encryption. With a supported TEE, an enabled
+hardware sealing policy, and a host `HardwareSealing` encryption request,
+hardware sealing instead becomes the exclusive VMGS protection source.
+That path creates a random DEK and rotates it on subsequent encrypted boots.
+An unusable exclusive hardware sealing configuration fails rather than
+silently disabling encryption.
 
-If optional boot sealing does not succeed, no floor is exported to the runtime
-worker. When hardware sealing is only a backup, finalization failure disables
-runtime recovery without failing boot. When sealing is required, or boot used
-hardware unsealing to recover the DEK, failure to confirm the active sealed key
-or flush completed writes fails boot. The full unlock/key-rotation sequence is
-not automatically retried after this failure because it may already have changed
-the active DEK. Existing protector write/unlock errors retain their handling.
+Opening a context-bound V4 protector with attestation suppressed is rejected
+rather than silently dropping its hash. The legacy runtime claim
+`tpm-persisted` denotes stateful mode, not whether TPM state is actually
+persisted in every configuration.
 
-The comparison is a partial order, not a packed-integer or lexicographic order:
+### Hardware sealing policy
 
-- **SNP:** known TCB components must be non-decreasing within the same supported
-  report version and CPU family/model; reserved bytes must remain equal.
-  For report versions 3–5, Milan/Genoa (family `19h`, models `00h–1Fh`) and
-  Turin (family `1Ah`, models `90h–AFh` and `C0h–CFh`) use distinct typed
-  layouts, as defined by AMD 56860 section 2.3. Report version alone does not
-  select the layout. Version 2 and unknown domains require exact SVN equality;
-  cross-domain transitions are rejected. The floor tracks the reported SVN used
-  for key derivation; it does not enforce the extended TCB added in report v6.
-- **TDX:** CPU SVN components must be non-decreasing. TEE SVN is parsed using
-  the typed `TeeTcbSvn` ABI layout: major SVN (byte 1) identifies the module
-  and must match, including legacy identity 0. Minor SVN (byte 0) and SE_SVN
-  (byte 2) must be non-decreasing; reserved bytes 3–15 must remain equal.
-  Reserved metadata changes are incompatible, not upgrades. This minimum-TCB
-  comparison does not determine Intel security status, which requires
-  authenticated Intel TCB Info.
+The boot configuration selects `HardwareSealingPolicy`. Hardware sealing
+also requires a TEE that supports key derivation.
 
-Candidate verification also checks a fresh report. Its SVN must match the
-candidate exactly, even if the hardware could still derive an older SVN's key.
+| Policy | Hardware derivation behavior |
+| --- | --- |
+| `None` | Does not enable exclusive hardware sealing. |
+| `Hash` | Mix the OpenHCL measurement into the hardware key. |
+| `Signer` | Use measurement-independent derivation where supported. |
 
-CPU SVN comparison uses all 16 unsigned bytes in their original positions:
-every destination byte must be at least its resident floor byte. There is no
-integer conversion or lexicographic ordering; an increase in one byte cannot
-compensate for a decrease in another. Intel PCS
-[Get TDX TCB Info V4][intel-tcb], step 3.a, uses component-wise minima for the
-16 PCK certificate TCB components;
-[Appendix A][intel-tcb-model] describes the components and comparison metadata.
-OpenHCL's raw-report comparison is a local no-decrease policy, not that complete
-appraisal algorithm: it neither maps raw CPU SVN bytes to PCK component
-identities nor establishes cross-platform equivalence or Intel security status.
+`Hash` binds recovery to the measured OpenHCL image. `Signer` permits
+measurement changes, subject to the TEE's identity and SVN constraints and
+the VM configuration binding described below. TDX does not support
+signer-based sealing: exclusive use fails, while stateful SKR can proceed
+without a hardware backup. A protector records the derivation SVN and
+`mix_measurement` policy used to seal it; recovery must use that recorded
+policy, consistent with the current VM configuration.
 
-For SNP, `SnpDomain` retains report version and CPU family/model because the raw
-TCB bytes do not identify their own layout. CPU family/model selects the layout;
-version gates supported report semantics. Exact domain equality is required even
-for identical raw SVNs or CPUs sharing a layout. This conservative restriction
-avoids interpreting one CPU's component bytes using another CPU's meanings.
-See [AMD 56860][amd-snp], revision 1.59, section 2.3, tables 4 and 5.
+## Agent callout optimization
 
-[intel-tcb]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-tdx-v4
-[intel-tcb-model]: https://api.portal.trustedservices.intel.com/content/documentation.html#pcs-tcb-info-model-v3
-[amd-snp]: https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP
+Key-release context tracking supports an agent-side optimization to reduce
+actual SKR service callouts. OpenHCL still sends the IGVM attestation request.
+The agent uses the supplied context as a hint when deciding whether to make
+a service call; OpenHCL does not implement that cache decision or guarantee
+a callout reduction.
 
-### Lifecycle and saved state
+The hardware context binding applies to the stateful SKR recovery backup
+when hardware sealing is available. Stateless hardware-only sealing does
+not use it. Hardware sealing remains optional for successful stateful SKR:
+without it, released context may appear in this boot's runtime claims, but
+cannot be persisted through a hardware protector.
 
-Memory-preserving migration retains the worker and its floor. Stopping the
-worker drains an in-flight recovery attempt. Reset does not request resealing;
-it preserves the floor, existing retries and backoff, and latched notifications.
+An absent or stale hint is not a reason to deny an otherwise valid key
+release. When context is insufficient to use the optimization, the agent
+must use its normal key-release path. Issuing a response does not prove
+the guest has persisted its context. In particular, the next boot can send
+an older hash after a failed write or a boot without sealing support.
 
-The stopped worker saves a versioned protobuf state unit named
-`hardware_reseal`, containing:
+## Context semantics
 
-- The accepted TCB floor: raw SNP TCB and report version/CPU comparison domain,
-  or both raw TDX SVN arrays, including identity and reserved bytes.
-- The serialized VM configuration used by the sealing KDF, checked against the
-  destination configuration rather than used to replace it.
-- Pending recovery, the failure count, and the latched migration notification.
-- Remaining retry and minimum-interval delays, bounded to 60 seconds. These are
-  relative durations, not process-specific clock values.
+The host-provided `key_release_context_hash` is context for key derivation,
+not an authorization decision or an additional security guarantee. The host
+extension has no signed authenticity
+of its own. A successful release and key unwrap permit adoption of the
+context, but do not prove that the service signed or authenticated this
+extension. Existing service-payload checks and key unwrap remain necessary.
 
-No DEK, hardware secret, derived key, or attestation report is saved by this
-worker. Saving does not consume a notification or clear pending work: if another
-unit fails to save, the original worker can resume with its obligations intact.
+The value represents a service-defined SHA-256 digest. OpenHCL validates its
+representation, not its construction. The digest input, key identity, policy
+representation, framing, and any domain separation must be agreed externally
+with the service. The protocol does not specify a concatenation or
+canonicalization algorithm for those inputs. See the protocol's
+[context hash encoding](attestation_protocol.md#context-hash-encoding) for
+the wire representation and normalization rules.
 
-Restore constructs the worker without a floor, then installs the validated saved
-floor before starting. It does not obtain a fresh report to initialize a new
-floor or trust a VMGS protector as its source. Malformed or unsupported state,
-an incompatible TEE or sealing configuration, or a decrease relative to an
-existing resident floor fails restore without replacing that floor. A saved
-worker also requires compatible hardware sealing support and encrypted VMGS.
+## Stateful context lifecycle
 
-Successful restore preserves retry backoff and merges saved notifications with
-notifications received by the new worker. It always schedules a durable rewrite
-when the worker starts, even when the saved worker was idle: hardware can change
-while the worker is absent, including at the same SVN. Fresh reports must
-satisfy the restored floor before any new protector is created. A cached
-matching protector does not discharge a failed-flush obligation.
+1. Before SKR or its retries, OpenHCL reads `HW_KEY_PROTECTOR`. A structurally
+   valid V4 header supplies a cached hash. A missing entry or legacy/V3 entry
+   supplies `None`. Malformed existing protectors are errors, not absence.
+2. The cached hash is an **untrusted hint** until hardware unsealing verifies
+   the HMAC. OpenHCL puts that hint in the new request's runtime claims as
+   `key-release-context-hash`. It does not use a caller-supplied configuration
+   snapshot as the source of the binding.
+3. A successful key-release response may supply a new valid hash, including
+   when the key-release policy changes. It need not equal the cached hint.
+   Missing metadata, including a legacy response, remains valid even if an
+   older V4 protector exists. Invalid optional hashes, including duplicate
+   fields, are discarded as absent with a rate-limited warning that excludes
+   their values. Envelope and service-payload validation remain strict.
+4. The response hash is a candidate until key release, key unwrap, and VMGS
+   initialization succeed. It is then exposed to this boot's later runtime
+   claims. When hardware sealing succeeds, the candidate is included in
+   the replacement V4 protector. The next boot reads the persisted hash,
+   which need not be the last hash the agent issued if sealing was
+   unavailable. A response arriving after report creation cannot
+   retroactively bind that report.
+5. When hardware sealing succeeds, the new protector uses V4 if a context
+   hash is present, or V3 if it is absent. A successful legacy response or
+   extended response whose hash is omitted or discarded produces a V3
+   protector, including after a previous V4 boot. Existing V4 ingress
+   protectors still use their recorded context for authenticated unsealing;
+   they are never stripped of context or relabeled as V3. An all-zero 32-byte
+   hash is a present value,
+   not an absence sentinel. Lack of hardware sealing support does not make
+   successful SKR fail, even if an older V4 protector remains on disk.
 
-If the saved VM has no `hardware_reseal` unit, runtime resealing stays disabled
-after reconstruction. This accommodates state from runtimes that were not
-enrolled or did not support resealer state, without inventing a replacement
-floor. Binaries that cannot interpret this state unit cannot restore an enrolled
-worker's snapshot.
+### Hardware backup persistence
 
-```admonish warning title="Trusted state transfer"
-Protobuf encoding does not authenticate the saved floor. The enclosing transfer
-must preserve integrity, bind the state to the VM, and prevent rollback to an
-older snapshot. The resealer must not load this state from VMGS or
-unauthenticated host metadata. Host-returned servicing state cannot initialize
-this worker with the current transport and is rejected.
+When a replacement hardware protector can be created, the attestation VMGS
+helper adds the new unlock key, writes and flushes the protector, then
+retires the old key slot. Each phase has a distinct error, and successful
+protector persistence and completion are logged at INFO. VMGS itself only
+provides key-slot and flush primitives; it does not own attestation policy.
 
-Resealer serialization does not enable isolated-VM servicing by itself. The
-host-servicing isolation guard and unsupported SNP/TDX VP save/restore paths
-remain in place. A trusted isolated-servicing handoff must satisfy the above
-requirements before enabling that path.
+This is ordered recovery, not an atomic transaction. A failed write or
+flush retains the prior key slot until the replacement protector is
+durable. Reopen or unlock using the persisted recovery protector before
+retrying; the in-memory active slot may already contain the new key. This
+assumes the prior protector recovers the key used to unlock the datastore.
+It cannot repair an already-stale backup or guarantee hardware recovery
+after a boot where no usable backup could be produced.
+
+Hardware backup updates also occur when incomplete GSP rotation suppresses
+regular key-protector updates. Without a replacement backup, normal SKR
+rotation remains available; the old backup can become unusable. Subsequent
+boots then need the normal key-release path. No separate persistent context
+record or service acknowledgment is introduced.
+
+```admonish warning title="Absence is not first-boot authorization"
+A missing or legacy protector is not proof of first boot: it can also occur
+on later boots without a stored hash. Neither a cached host-controlled hint
+nor its absence authorizes initial key release. A report binds the claims
+bytes it contains, not the truth or service authenticity of those claims.
 ```
 
-### Recovery limits
+## Hardware recovery and KDF binding
 
-Cold boot establishes a new runtime lifetime. The floor is not a persistent
-anti-rollback counter and does not prevent replay of an entire VMGS snapshot.
-Rejecting resealing on a lower-TCB destination also cannot undo delivery of the
-resident DEK by migration; migration admission is a separate security boundary.
+For a service outage, existing recovery eligibility and the
+`skip_hw_unsealing` signal still apply. Protocol/context failures instead
+fail closed, as specified in the protocol's
+[failure handling](attestation_protocol.md#limits-and-failure-handling).
 
-```admonish warning
-Recovery is best effort. A missed notification can leave the protector stale,
-and a crash before durable destination resealing can leave hardware-only VMGS
-unrecoverable. Report, derivation, and persistence operations are not atomic
-with migration. Durability also depends on backing storage honoring flushes.
+Recovery restores only the cached hash and recorded hardware derivation
+policy from the protector. The KDF uses the **current remaining VM
+configuration**, with `current_time = None`, and the canonical text encoding
+of the stored hash. It does not restore a historical configuration snapshot.
+Other KDF-bound configuration must still match; changing it can prevent
+recovery even when the hash is unchanged.
+
+Key derivation has two stages:
+
+1. The TEE derives a hardware secret using the recorded SVN and measurement
+   policy. This stage does not take the serialized `AttestationVmConfig`.
+2. OpenHCL uses that secret as the key for HMAC-SHA-256 KBKDF, with label
+   `ISOHWKEY` and the UTF-8 JSON serialization of `AttestationVmConfig` as
+   the KDF context. The 64-byte output is split into a 32-byte AES key and
+   a 32-byte HMAC key used to seal and authenticate the VMGS DEK.
+
+The context hash therefore contributes through the second stage, alongside
+every other serialized VM configuration field. It is not merely metadata in
+the protector, nor is it a separate hardware key-derivation parameter. Its
+canonical lowercase hex string is included when present and omitted when
+absent. The SKR request can include the current host time; the boot sealing
+and recovery paths explicitly set `current_time = None` for the KDF.
+
+```admonish warning title="Keep the KDF configuration consistent"
+Sealing and unsealing must reproduce the same serialized KDF context, not
+just the same hardware secret and context hash. Changes to other bound VM
+settings, JSON field names/order, or optional-field serialization can change
+the AES/HMAC keys. Protector authentication then fails before decryption,
+so hardware recovery cannot recover the DEK.
+
+V4 persists only the context hash, not the complete configuration. The other
+fields are reconstructed from current VM settings. Treat changes to this
+serialization as a key-compatibility change requiring a recovery or migration
+plan; do not bypass HMAC verification to accommodate them.
 ```
+
+Only successful HMAC verification makes the cached hash eligible for
+adoption through hardware recovery. Recovery without successful SKR reseals
+the recovered DEK using the authenticated stored context. If SKR succeeds
+while another required service is unavailable, recovery uses the stored
+ingress context to unseal and the released context for egress sealing. For
+example, a protector bound to A is authenticated and unsealed using A, then
+the recovered DEK is sealed using B from the successful release. This also
+allows an unbound legacy protector to be upgraded to V4. A failed release or
+key unwrap does not adopt its candidate hash; eligible hardware recovery
+continues to use the authenticated stored context.
+
+## Hardware protector formats
+
+V4 `HW_KEY_PROTECTOR` entries store the decoded 32 raw hash bytes, not their
+hex string. Earlier versions contain no context hash. The exact version and
+entry size identify the layout. Protector versions are independent of the
+IGVM response versions.
+
+| Version | Entry size | Header size | Recovery support | New writes |
+| --- | --- | --- | --- | --- |
+| V2 | 104 | 24 | Legacy SNP | No |
+| V3 | 128 | 48 | SNP and TDX, no context hash | Without a hash |
+| V4 | 160 | 80 | SNP and TDX, context-bound | With a hash |
+
+Sizes and offsets in this section are in bytes. V1 shares the 104-byte
+legacy layout but has no usable derivation policy in this implementation.
+
+### V3 and V4 headers
+
+The common V3/V4 header fields have these offsets:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 4 | `version` (3 or 4) |
+| 4 | 4 | `length` (128 or 160) |
+| 8 | 4 | `tee_type` (0 = SNP, 1 = TDX) |
+| 12 | 32 | TEE-specific `svn` |
+| 44 | 1 | `mix_measurement` (0 or 1) |
+| 45 | 3 | Reserved, zero |
+
+For SNP, `svn[0..8]` is the little-endian reported TCB and `svn[8..32]` is
+zero. For TDX, `svn[0..16]` is `TEE_TCB_SVN` and `svn[16..32]` is `CPU_SVN`.
+V4 appends its 32-byte raw context hash at offset 48, making its header
+80 bytes rather than V3's 48 bytes.
+
+### Payload offsets and authentication
+
+| Field | Size | V2 offset | V3 offset | V4 offset |
+| --- | --- | --- | --- | --- |
+| Raw context hash | 32 | Absent | Absent | 48 |
+| AES-CBC IV | 16 | 24 | 48 | 80 |
+| Encrypted key | 32 | 40 | 64 | 96 |
+| HMAC-SHA-256 | 32 | 72 | 96 | 128 |
+
+The HMAC covers the complete header, IV, and ciphertext: bytes `[0, 72)` in
+V2, `[0, 96)` in V3, and `[0, 128)` in V4. Thus V4 authenticates the hash
+and every other header byte. Unsealing verifies the HMAC before decrypting.
+Unknown versions, incorrect entry sizes or lengths, invalid TEE tags,
+invalid measurement flags, or invalid reserved/SNP padding bytes are rejected
+for V3/V4. Legacy metadata retains its historical validation rules.
+
+## Compatibility and rollback
+
+With `Hash` policy, an OpenHCL update that changes the measurement prevents
+unsealing a protector created by the previous image. Stateful operation must
+obtain the required keys through SKR to unlock VMGS and create a replacement
+hardware protector. The stored V4 context hash is still read before SKR:
+the agent can use it as an optimization hint, not proof that hardware
+recovery remains available. A successful release may provide a different
+hash or omit the optional hash for the replacement protector.
+
+```admonish warning title="Replay and binary rollback"
+Successful SKR can update a context hash or omit it for a newly sealed
+legacy protector. Context tracking adds no anti-replay mechanism or
+monotonic freshness counter; an HMAC alone does not prevent replay of old
+valid state. Deleting a protector is not an authenticated reset procedure.
+
+Older binaries without V4 support cannot read a V4 protector. Once V4 is
+persisted, binary rollback can lose hardware recovery and can prevent boot
+when that protector is needed. Do not strip the hash or reinterpret V4 as
+V3 to enable rollback; deployment and recovery plans must account for the
+on-disk version change.
+```
+
+## Implementation references
+
+- [`openhcl_attestation_protocol::vmgs`][vmgs-rustdoc] defines the on-disk
+  protector layouts.
+- [`underhill_attestation`][attestation-rustdoc] implements secure key
+  release, VMGS validation, and hardware sealing/recovery.
+- [`underhill_core`][core-rustdoc] propagates the adopted context to later
+  attestation configuration.
+
+[vmgs-rustdoc]:
+   https://openvmm.dev/rustdoc/openhcl_attestation_protocol/vmgs/index.html
+[attestation-rustdoc]:
+   https://openvmm.dev/rustdoc/underhill_attestation/index.html
+[core-rustdoc]:
+   https://openvmm.dev/rustdoc/underhill_core/index.html
