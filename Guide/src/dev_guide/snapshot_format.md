@@ -50,12 +50,12 @@ bound egress policy. Encoding version 2 includes the static prefix, guest MAC,
 and canonical ARP next-hop set in addition to the policy rules. An absent
 encoding-version field denotes version 1, allowing network snapshots produced
 before endpoint next-hop binding to retain their original digest semantics.
-A platform snapshot whose digest is that of the complete deny-all policy bound
-to its identity, in encoding version 3, or version 4 with IPv6, is a NIC
-template, whose restore may install another policy with
-`--restore-network-policy`. Earlier encodings do not record the host-loopback
-action or the proxy endpoint, so they never identify a template, and the
-format records nothing else for it.
+A platform snapshot, or a snapshot without a tier, whose digest is that of the
+complete deny-all policy bound to its identity, in encoding version 3, or
+version 4 with IPv6, is a NIC template, whose restore may install another
+policy with `--restore-network-policy`. Earlier encodings do not record the
+host-loopback action or the proxy endpoint, so they never identify a template,
+and the format records nothing else for it.
 
 ## Device state (`state.bin`)
 

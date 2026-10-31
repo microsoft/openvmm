@@ -246,8 +246,9 @@ describes the source definitions.
   endpoint-ready RX at the capture boundary, rewind unused guest RX
   descriptors, and recreate a fresh Consomme endpoint generation on restore.
   Restore of a networked snapshot requires `--network-profile portable` and,
-  unless `--restore-network-policy` replaces a platform snapshot's complete
-  deny-all, the same active egress policy rules. The policy digest binds the
+  unless `--restore-network-policy` replaces the complete deny-all of a
+  platform snapshot or of a snapshot without a tier, the same active egress
+  policy rules. The policy digest binds the
   saved static identity, including the IPv6 identity, and its derived ARP
   next hops, which are reconstructed before vCPUs start. A snapshot whose
   network predates IPv6 restores IPv4-only, with its original digest. Native
@@ -464,7 +465,8 @@ describes the source definitions.
   When the snapshot contains virtio-net, restore also requires
   `--network-profile portable`; the snapshot's profile and canonical egress
   policy must match the supplied portable configuration, unless
-  `--restore-network-policy` installs a new policy on a platform snapshot.
+  `--restore-network-policy` installs a new policy on a platform snapshot or
+  a snapshot without a tier.
 
   For sandbox-block snapshots, restore repeats each read-only
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
@@ -501,10 +503,12 @@ describes the source definitions.
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
 * `--restore-entropy`: Accepted for compatibility; it has no effect. Every
-  microVM restore makes restore packet version 4 available on the private
-  portb restore channel. The packet carries 64 bytes of fresh entropy, the
-  online-VP target, the memory-expansion ranges, the downtime, and the TSC
-  rate deviation; the guest must consume it and explicitly reseed its RNG.
+  microVM restore makes restore packet version 4, or version 5 at a restore
+  that replaces the network policy of a snapshot without a tier, available on
+  the private portb restore channel. The packet carries 64 bytes of fresh
+  entropy, the online-VP target, the memory-expansion ranges, the downtime,
+  the TSC rate deviation, and, in version 5, the network settings of the
+  restore's policy; the guest must consume it and explicitly reseed its RNG.
   [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
   the portb status bits, and the time sample.
   Every microVM portb device also reports generation-ID support in status bit
@@ -536,26 +540,34 @@ describes the source definitions.
   for a cold boot, for a paired snapshot or one without sandbox blocks, and
   together with a scratch `--microvm-sandbox-block`. A scratch file, when given
   instead, keeps the exact captured length.
-* `--restore-network-policy`: Restore a platform snapshot's NIC with the
-  network policy of this restore's options rather than the captured one. The
-  snapshot must be a NIC template: a platform snapshot whose NIC was captured
-  with a complete deny-all policy, `--network-egress deny` and
-  `--host-loopback deny` without egress rules, `--network-proxy`, or
+* `--restore-network-policy`: Restore the NIC of a platform snapshot, or of a
+  snapshot without a tier, with the network policy of this restore's options
+  rather than the captured one. The snapshot must be a NIC template: one whose
+  NIC was captured with a complete deny-all policy, `--network-egress deny`
+  and `--host-loopback deny` without egress rules, `--network-proxy`, or
   ingress. Its guest learned no DNS server and announces no listeners, and its
-  endpoint held no flows, listeners, or forwards, so its clones may each
+  endpoint held no flows, listeners, or forwards, so its restores may each
   install their own policy, including `--network-ingress allow`, explicit
-  `--host-loopback allow`, and `--host-loopback-forward`. OpenVMM validates the
-  policy as at a cold boot, binds it to the captured identity, which the NIC
-  keeps, and installs it, with its forwards bound, before any vCPU runs; a
-  policy that fails validation, or a forward that cannot bind its port, fails
-  the restore. A restore that wants no connectivity passes the template's own
-  deny-all. The restore cannot readdress the NIC, and a policy may name IPv6
-  destinations only when the captured identity has IPv6. OpenVMM rejects the
-  option before any vCPU starts for a cold boot, for a snapshot of another
-  tier, for a snapshot without a NIC, and for a NIC captured with any other
-  policy, including one whose digest encoding predates version 3. The guest
-  keeps its captured command line, so it learns its DNS server and whether
-  to announce its listeners from its host, after the restore.
+  `--host-loopback allow`, and `--host-loopback-forward`. A snapshot without a
+  tier may hold a workload that has already run, but under the complete
+  deny-all that workload had no connectivity, so nothing in the snapshot
+  depends on the policy, and such a restore grants the workload connectivity
+  that it never had. OpenVMM validates the policy as at a cold boot, binds it
+  to the captured identity, which the NIC keeps, and installs it, with its
+  forwards bound, before any vCPU runs; a policy that fails validation, or a
+  forward that cannot bind its port, fails the restore. A restore that wants
+  no connectivity passes the template's own deny-all. The restore cannot
+  readdress the NIC, and a policy may name IPv6 destinations only when the
+  captured identity has IPv6. OpenVMM rejects the option before any vCPU
+  starts for a cold boot, for a `workload-start` or `instance-checkpoint`
+  snapshot, for a snapshot without a NIC, and for a NIC captured with any
+  other policy, including one whose digest encoding predates version 3. The
+  guest keeps its captured command line, so it learns its DNS server and
+  whether to announce its listeners after the restore: a platform clone from
+  its host, and the guest of a snapshot without a tier from restore packet
+  version 5, which carries them, and whose restore gates host input until the
+  guest acknowledges that it applied them. A guest that reads restore packet
+  version 4 alone fails such a restore rather than ignore them.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`

@@ -158,6 +158,19 @@ pub(super) fn microvm_ingress(
     }
 }
 
+/// Returns the network settings that the restore packet hands the guest of a
+/// restore that replaces its snapshot's policy with `policy`: the DNS server
+/// and the listener announcement that a cold boot under `policy` names on the
+/// command line, with `virtnet_dns=` and `virtnet_ingress=`.
+pub(super) fn microvm_restore_network(
+    policy: &net_backend_resources::egress::EgressPolicy,
+) -> chipset_resources::microvm_time::RestoreNetwork {
+    chipset_resources::microvm_time::RestoreNetwork {
+        dns_server: policy.gateway_dns_server().map(Into::into),
+        announce_listeners: microvm_ingress(policy).is_some(),
+    }
+}
+
 pub(super) fn microvm_network_endpoint(
     network: &openvmm_defs::microvm::MicrovmNetworkConfig,
     policy: &net_backend_resources::egress::EgressPolicy,
@@ -238,8 +251,10 @@ pub(crate) mod tests {
         contract_with_policy(network, &policy)
     }
 
-    /// Returns the contract of a platform template whose NIC has the identity
-    /// `network` and the complete deny-all policy.
+    /// Returns the contract of a NIC template without sandbox blocks, as a
+    /// snapshot without a tier records one, whose NIC has the identity
+    /// `network` and the complete deny-all policy. A platform template's
+    /// contract adds sandbox blocks, which the network checks don't read.
     fn template_contract_for(
         network: &openvmm_defs::microvm::MicrovmNetworkConfig,
     ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
@@ -549,50 +564,118 @@ pub(crate) mod tests {
     #[cfg(guest_arch = "x86_64")]
     #[test]
     fn a_template_restore_installs_a_new_policy_and_keeps_the_identity() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+
         let network: openvmm_defs::microvm::MicrovmNetworkConfig = "10.0.0.2/24".parse().unwrap();
         let contract = template_contract_for(&network);
         let template =
             openvmm_helpers::snapshot::microvm::microvm_network_template_policy(&network).unwrap();
-        for arguments in [
+        // The tier check is the only one that reads the tier, so one
+        // template, platform or without a tier, takes every policy.
+        for tier in [SNAPSHOT_TIER_PLATFORM, ""] {
+            super::super::restore::validate_network_policy_restore(tier, true).unwrap();
+        }
+        let ipv4_gateway: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+        let ipv6_gateway: std::net::IpAddr = "fd00::a00:1".parse().unwrap();
+        // Each policy, with the DNS server and the listener announcement that
+        // a cold boot under it names, which the restore packet of a snapshot
+        // without a tier hands its guest.
+        for (arguments, dns_server, announce_listeners) in [
             // A clone without connectivity keeps the template's policy.
-            &["--network-egress", "deny", "--host-loopback", "deny"][..],
-            &["--network-egress", "allow"][..],
-            &[
-                "--network-egress",
-                "deny",
-                "--network-egress-allow",
-                "10.0.0.1/32:tcp:8080",
-                "--network-egress-allow",
-                "fd00::a00:1/128:tcp:8080",
-                "--host-loopback",
-                "deny",
-            ][..],
-            &[
-                "--network-egress",
-                "deny",
-                "--allow-endpoint",
-                "192.0.2.7:443",
-            ][..],
-            &[
-                "--network-egress",
-                "deny",
-                "--host-loopback",
-                "deny",
-                "--network-proxy",
-                "10.0.0.1:3128",
-            ][..],
-            &[
-                "--network-egress",
-                "deny",
-                "--host-loopback",
-                "allow",
-                "--host-loopback-forward",
-                "tcp:3000:8080",
-                "--host-loopback-forward",
-                "udp:3000:8080",
-            ][..],
-            &["--network-ingress", "allow"][..],
-            &["--network-ingress", "allow", "--host-loopback", "allow"][..],
+            (
+                &["--network-egress", "deny", "--host-loopback", "deny"][..],
+                None,
+                false,
+            ),
+            (
+                &["--network-egress", "allow"][..],
+                Some(ipv4_gateway),
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--network-egress-allow",
+                    "10.0.0.1/32:tcp:8080",
+                    "--network-egress-allow",
+                    "fd00::a00:1/128:tcp:8080",
+                    "--host-loopback",
+                    "deny",
+                ][..],
+                None,
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--network-egress-allow",
+                    "10.0.0.1/32:udp:53",
+                    "--host-loopback",
+                    "deny",
+                ][..],
+                Some(ipv4_gateway),
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--network-egress-allow",
+                    "fd00::a00:1/128:udp:53",
+                    "--host-loopback",
+                    "deny",
+                ][..],
+                Some(ipv6_gateway),
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--allow-endpoint",
+                    "192.0.2.7:443",
+                ][..],
+                None,
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--host-loopback",
+                    "deny",
+                    "--network-proxy",
+                    "10.0.0.1:3128",
+                ][..],
+                None,
+                false,
+            ),
+            (
+                &[
+                    "--network-egress",
+                    "deny",
+                    "--host-loopback",
+                    "allow",
+                    "--host-loopback-forward",
+                    "tcp:3000:8080",
+                    "--host-loopback-forward",
+                    "udp:3000:8080",
+                ][..],
+                None,
+                true,
+            ),
+            (
+                &["--network-ingress", "allow"][..],
+                Some(ipv4_gateway),
+                true,
+            ),
+            (
+                &["--network-ingress", "allow", "--host-loopback", "allow"][..],
+                Some(ipv4_gateway),
+                true,
+            ),
         ] {
             let options = restore_options(&[&["--restore-network-policy"][..], arguments].concat());
             options.validate_microvm_options().unwrap();
@@ -612,6 +695,14 @@ pub(crate) mod tests {
             assert_eq!(
                 contract_with_policy(&restored.config, &restored.contract_policy).microvm_network,
                 contract.microvm_network,
+                "{arguments:?}"
+            );
+            assert_eq!(
+                microvm_restore_network(&restored.policy),
+                chipset_resources::microvm_time::RestoreNetwork {
+                    dns_server: dns_server.map(Into::into),
+                    announce_listeners,
+                },
                 "{arguments:?}"
             );
         }
