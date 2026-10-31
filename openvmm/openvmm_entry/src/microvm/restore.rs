@@ -15,6 +15,7 @@ use crate::storage_builder::microvm::MicrovmSandboxBlockGeometry;
 use anyhow::Context;
 use chipset_resources::microvm_time::RESTORE_ENTROPY_LEN;
 use chipset_resources::microvm_time::RestoreMemoryRange;
+use chipset_resources::microvm_time::RestoreNetwork;
 use chipset_resources::microvm_time::RestorePacketBase;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use net_backend_resources::egress::EgressPolicy;
@@ -102,6 +103,10 @@ pub(crate) struct MicrovmRestore {
     pub(crate) machine_contract: Option<SnapshotMachineContract>,
     /// Whether the guest must complete post-restore repair before readiness.
     pub(crate) gate_required: bool,
+    /// Whether the restore packet carries the network settings of the
+    /// restore's policy, which the guest applies before it acknowledges the
+    /// gated restore.
+    pub(crate) network_settings: bool,
     /// Whether `--restore-memory` selected an explicit RAM target.
     pub(crate) memory_target_requested: bool,
     /// Fresh private GPA ranges selected for this restore.
@@ -124,12 +129,15 @@ impl MicrovmRestore {
         contract.time.as_ref().zip(contract.cpu_profile.as_ref())
     }
 
-    /// Returns the controller's fields of restore packet version 5 for a time
-    /// ABI restore, and the generation ID they imply. The generation counter
-    /// is the snapshot's plus one.
+    /// Returns the controller's fields of the restore packet for a time ABI
+    /// restore, with `network`, the network settings of the restore's policy
+    /// when [`network_settings`](Self::network_settings) asks for them, which
+    /// make it version 6, and the generation ID they imply. The generation
+    /// counter is the snapshot's plus one.
     pub(crate) fn time_abi_restore_packet(
         &self,
         restore_online_vp_count: Option<u32>,
+        network: Option<RestoreNetwork>,
     ) -> anyhow::Result<([u8; 16], RestorePacketBase)> {
         let (time, _) = self
             .time_abi_records()
@@ -140,21 +148,25 @@ impl MicrovmRestore {
             self.memory_target_requested,
             &self.memory_ranges,
             self.gate_required,
+            network,
         )
     }
 }
 
-/// Returns the controller's fields of restore packet version 5 for a time
-/// ABI restore of a snapshot with the time contract `time`, and the
-/// generation ID they imply. The generation counter is the snapshot's plus
-/// one, and `ack_required` makes the guest acknowledge the restore through
-/// port `0x605`.
+/// Returns the controller's fields of the restore packet for a time ABI
+/// restore of a snapshot with the time contract `time`, and the generation ID
+/// they imply. The generation counter is the snapshot's plus one,
+/// `ack_required` makes the guest acknowledge the restore through port
+/// `0x605`, and `network`, the network settings of a restore that replaces
+/// the network policy of a snapshot without a tier, makes the packet version
+/// 6.
 pub(crate) fn restore_packet_base(
     time: &SnapshotTimeContract,
     restore_online_vp_count: Option<u32>,
     memory_target_requested: bool,
     memory_ranges: &[SnapshotMemoryExpansionRange],
     ack_required: bool,
+    network: Option<RestoreNetwork>,
 ) -> anyhow::Result<([u8; 16], RestorePacketBase)> {
     let generation = time.capture_generation.checked_add(1).ok_or_else(|| {
         virt::time_abi::TimeAbiError::new(
@@ -186,9 +198,9 @@ pub(crate) fn restore_packet_base(
             })
             .collect(),
         entropy,
+        network,
     };
-    base.validate()
-        .context("restore packet version 5 is invalid")?;
+    base.validate().context("restore packet is invalid")?;
     generation_id_create.complete("restore", "generation_id_create", Default::default());
     Ok((microvm_generation_id(&entropy), base))
 }
@@ -201,8 +213,12 @@ pub(crate) fn restore_packet_base(
 /// platform snapshot's `distro` block keeps its captured capacity, whatever
 /// the length of the image that the restore attaches to it, and
 /// `--restore-absent-scratch` attaches its fresh scratch with no file. Only a
-/// platform snapshot admits `--restore-network-policy`, and `--mount-aggregate`
-/// on the filesystem slot that it left dormant.
+/// platform snapshot, or one without a tier, admits
+/// `--restore-network-policy`, and only a platform snapshot admits
+/// `--mount-aggregate` on the filesystem slot that it left dormant. A restore
+/// that replaces the network policy of a snapshot without a tier hands the
+/// guest the new policy's network settings in its restore packet, and gates
+/// host input until the guest has applied them.
 pub(crate) fn prepare_restore(
     opt: &mut Options,
     restore_snapshot: Option<&OpenedSnapshot>,
@@ -211,6 +227,7 @@ pub(crate) fn prepare_restore(
     let mut distro_capacity = None;
     let mut absent_scratch = None;
     let mut restore_gate_required = false;
+    let mut network_settings = false;
     let restore_memory_target_requested = opt.microvm.restore_memory.is_some();
     let mut restore_memory_ranges = Vec::new();
     if let Some(contract) =
@@ -246,6 +263,13 @@ pub(crate) fn prepare_restore(
             &manifest.snapshot_tier,
             opt.microvm.restore_network_policy,
         )?;
+        if restore_packet_carries_network_settings(
+            &manifest.snapshot_tier,
+            opt.microvm.restore_network_policy,
+        ) {
+            network_settings = true;
+            restore_gate_required = true;
+        }
         validate_filesystem_aggregate_restore(
             &manifest.snapshot_tier,
             contract.microvm_filesystem.is_some(),
@@ -396,6 +420,7 @@ pub(crate) fn prepare_restore(
     Ok(MicrovmRestore {
         machine_contract: restore_machine_contract,
         gate_required: restore_gate_required,
+        network_settings,
         memory_target_requested: restore_memory_target_requested,
         memory_ranges: restore_memory_ranges,
         private_scratch_dir,
@@ -405,20 +430,48 @@ pub(crate) fn prepare_restore(
 }
 
 /// Rejects `--restore-network-policy`, which `restore_network_policy`
-/// reports, for a snapshot of a tier other than the platform tier.
+/// reports, for a snapshot of the `workload-start` or `instance-checkpoint`
+/// tier.
 ///
-/// A platform snapshot is captured before any tenant input. Later tiers carry
-/// a workload that ran under the captured policy, so they keep it.
-fn validate_network_policy_restore(
+/// A platform snapshot is captured before any tenant input. A snapshot
+/// without a tier may hold a workload that has already run, but the option
+/// requires a NIC captured with the complete deny-all, under which that
+/// workload had no connectivity: its endpoint held no flows, listeners, or
+/// forwards, and its guest learned no DNS server, so nothing in the snapshot
+/// depends on the policy, and the restore grants the workload connectivity
+/// that it never had. The later tiers continue a tenant's workload, which
+/// keeps the policy that it was captured with.
+pub(super) fn validate_network_policy_restore(
     snapshot_tier: &str,
     restore_network_policy: bool,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         !restore_network_policy
+            || snapshot_tier.is_empty()
             || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
-        "--restore-network-policy requires a platform snapshot"
+        "--restore-network-policy requires a platform snapshot or a snapshot without a tier"
     );
     Ok(())
+}
+
+/// Returns whether the restore packet of a restore of a snapshot of tier
+/// `snapshot_tier` carries the network settings of the restore's policy,
+/// given whether `--restore-network-policy`, which `restore_network_policy`
+/// reports, replaces the snapshot's policy.
+///
+/// A cold boot names the guest's DNS server, and asks the guest to announce
+/// its listeners, on its command line, which a restore keeps, and a NIC
+/// template is captured under the complete deny-all, which asks neither. A
+/// platform clone learns them from its activation, after the restore, but a
+/// snapshot without a tier has no activation, so its restore packet carries
+/// them, as version 6, and the restore gates host input until the guest has
+/// applied them. A guest that reads version 5 alone fails such a restore
+/// rather than ignore them.
+fn restore_packet_carries_network_settings(
+    snapshot_tier: &str,
+    restore_network_policy: bool,
+) -> bool {
+    restore_network_policy && snapshot_tier.is_empty()
 }
 
 /// Rejects `--mount-aggregate`, which `aggregate` reports, on the filesystem
@@ -910,27 +963,50 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_a_platform_restore_replaces_the_network_policy() {
+    fn only_a_platform_or_untiered_restore_replaces_the_network_policy() {
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
+        use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
+
+        for (tier, replaces) in [
+            (SNAPSHOT_TIER_PLATFORM, true),
+            ("", true),
+            (SNAPSHOT_TIER_WORKLOAD_START, false),
+            (SNAPSHOT_TIER_INSTANCE_CHECKPOINT, false),
+        ] {
+            validate_network_policy_restore(tier, false).unwrap();
+            let replaced = validate_network_policy_restore(tier, true);
+            if replaces {
+                replaced.unwrap();
+            } else {
+                assert_eq!(
+                    replaced.unwrap_err().to_string(),
+                    "--restore-network-policy requires a platform snapshot or a snapshot without a tier",
+                    "{tier}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn only_an_untiered_restore_that_replaces_the_policy_carries_network_settings() {
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_INSTANCE_CHECKPOINT;
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM;
         use openvmm_helpers::snapshot::format::SNAPSHOT_TIER_WORKLOAD_START;
 
         for tier in [
             SNAPSHOT_TIER_PLATFORM,
+            "",
             SNAPSHOT_TIER_WORKLOAD_START,
             SNAPSHOT_TIER_INSTANCE_CHECKPOINT,
-            "",
         ] {
-            validate_network_policy_restore(tier, false).unwrap();
-            let replaced = validate_network_policy_restore(tier, true);
-            if tier == SNAPSHOT_TIER_PLATFORM {
-                replaced.unwrap();
-            } else {
-                assert_eq!(
-                    replaced.unwrap_err().to_string(),
-                    "--restore-network-policy requires a platform snapshot"
-                );
-            }
+            assert!(!restore_packet_carries_network_settings(tier, false));
+            // A platform clone learns its settings from its activation.
+            assert_eq!(
+                restore_packet_carries_network_settings(tier, true),
+                tier.is_empty(),
+                "{tier}"
+            );
         }
     }
 
@@ -991,6 +1067,7 @@ pub(crate) mod tests {
         MicrovmRestore {
             machine_contract: Some(contract),
             gate_required: true,
+            network_settings: false,
             memory_target_requested: true,
             memory_ranges: vec![SnapshotMemoryExpansionRange {
                 gpa_start: 0x1_0000_0000,
@@ -1005,7 +1082,7 @@ pub(crate) mod tests {
     #[test]
     fn time_abi_restore_packet_carries_the_controller_fields() {
         let restore = time_abi_restore(6);
-        let (generation_id, base) = restore.time_abi_restore_packet(Some(4)).unwrap();
+        let (generation_id, base) = restore.time_abi_restore_packet(Some(4), None).unwrap();
         assert_eq!(base.generation, 7);
         assert_eq!(base.online_vp_count, 4);
         assert!(base.memory_target && base.ack_required);
@@ -1016,14 +1093,41 @@ pub(crate) mod tests {
                 length: 0x4000_0000,
             }]
         );
+        assert_eq!(base.network, None);
+        assert_eq!(
+            base.version(),
+            chipset_resources::microvm_time::RESTORE_PACKET_VERSION
+        );
         assert_eq!(generation_id, microvm_generation_id(&base.entropy));
-        let (_, other) = restore.time_abi_restore_packet(None).unwrap();
+        let (_, other) = restore.time_abi_restore_packet(None, None).unwrap();
         assert_eq!(other.online_vp_count, 0);
         assert_ne!(other.entropy, base.entropy);
 
-        assert!(restore.time_abi_restore_packet(Some(3)).is_err());
+        // The network settings of an untiered restore that replaces its
+        // policy make the packet version 6.
+        let network = RestoreNetwork {
+            dns_server: Some(chipset_resources::microvm_time::RestoreDnsServer::Ipv4(
+                std::net::Ipv4Addr::new(10, 0, 0, 1),
+            )),
+            announce_listeners: true,
+        };
+        let restore = MicrovmRestore {
+            network_settings: true,
+            ..time_abi_restore(6)
+        };
+        let (_, base) = restore
+            .time_abi_restore_packet(None, Some(network))
+            .unwrap();
+        assert_eq!(base.network, Some(network));
+        assert!(base.ack_required);
+        assert_eq!(
+            base.version(),
+            chipset_resources::microvm_time::RESTORE_PACKET_NETWORK_VERSION
+        );
+
+        assert!(restore.time_abi_restore_packet(Some(3), None).is_err());
         let err = time_abi_restore(u32::MAX)
-            .time_abi_restore_packet(None)
+            .time_abi_restore_packet(None, None)
             .unwrap_err();
         assert!(
             format!("{err:#}").contains("[E_GENERATION_EXHAUSTED]"),
@@ -1031,7 +1135,7 @@ pub(crate) mod tests {
         );
         assert!(
             MicrovmRestore::default()
-                .time_abi_restore_packet(None)
+                .time_abi_restore_packet(None, None)
                 .is_err()
         );
     }
