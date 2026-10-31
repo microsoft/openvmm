@@ -14,8 +14,8 @@ use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_resources::microvm::MicrovmPortbDrain;
 use chipset_resources::microvm::MicrovmPortbTimeAbi;
+use chipset_resources::microvm_time::RestorePacket;
 use chipset_resources::microvm_time::RestorePacketBase;
-use chipset_resources::microvm_time::RestorePacketV5;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use chipset_resources::microvm_time::TimeSample;
 use chipset_resources::microvm_time::TimeSampleSource;
@@ -62,7 +62,7 @@ const STATUS_TIME_SAMPLE_AVAILABLE: u8 =
     chipset_resources::microvm_time::STATUS_TIME_SAMPLE_AVAILABLE;
 const BUFFER_MAX: usize = 1024 * 1024;
 
-/// The restore packet version 5 of a restored VM process.
+/// The restore packet of a restored VM process.
 enum RestorePacketState {
     /// No packet, or the packet was consumed.
     None,
@@ -146,7 +146,7 @@ pub struct MicrovmPortb {
 
 impl MicrovmPortb {
     /// Creates a portb console using `io` as its host endpoint, with the NVX
-    /// time ABI 2 configuration `time_abi`: restore packet version 5 and the
+    /// time ABI 2 configuration `time_abi`: the restore packet and the
     /// time-sample window at port `0xeb`, which stays empty until
     /// [`Self::with_time_sample_source`] provides the host fields of its
     /// samples.
@@ -224,7 +224,7 @@ impl MicrovmPortb {
             if let Some(selected) = time_abi.packet_selected.take() {
                 selected.send(());
             }
-            let packet = RestorePacketV5 { base, time };
+            let packet = RestorePacket { base, time };
             match packet.encode() {
                 Ok(bytes) => self.restore_packet = bytes.into(),
                 Err(error) => {
@@ -1281,6 +1281,7 @@ mod tests {
             generation: 8,
             ranges: Vec::new(),
             entropy: [0x7e; 64],
+            network: None,
         };
         let (send, recv) = mesh::oneshot();
         let mut restored = MicrovmPortb::new(
@@ -1325,7 +1326,7 @@ mod tests {
             IoResult::Ok
         ));
         let bytes = read_record(&mut restored, DATA_PORT, base.encoded_len());
-        assert_eq!(RestorePacketV5::decode(&bytes).unwrap().base, base);
+        assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
     }
 
     #[test]
@@ -1389,6 +1390,7 @@ mod tests {
                 generation: 7,
                 ranges,
                 entropy: [0x5a; 64],
+                network: None,
             };
             let (send, recv) = mesh::oneshot();
             let mut portb = time_abi_portb(Some(
@@ -1416,13 +1418,67 @@ mod tests {
                 IoResult::Ok
             ));
             let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
-            assert_eq!(RestorePacketV5::decode(&bytes).unwrap().base, base);
+            assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
             // Reading the whole packet clears every target.
             assert_eq!(
                 read_status(&mut portb),
                 STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
             );
         }
+    }
+
+    #[test]
+    fn a_restore_packet_with_network_settings_is_version_6() {
+        let base = RestorePacketBase {
+            online_vp_count: 0,
+            memory_target: false,
+            ack_required: true,
+            generation: 7,
+            ranges: Vec::new(),
+            entropy: [0x5a; 64],
+            network: Some(chipset_resources::microvm_time::RestoreNetwork {
+                dns_server: Some(chipset_resources::microvm_time::RestoreDnsServer::Ipv4(
+                    std::net::Ipv4Addr::new(10, 0, 0, 1),
+                )),
+                announce_listeners: true,
+            }),
+        };
+        let (send, recv) = mesh::oneshot();
+        let mut portb = time_abi_portb(Some(
+            chipset_resources::microvm::MicrovmRestorePacketSource {
+                base: base.clone(),
+                time: recv,
+                selected: None,
+            },
+        ));
+        send.send(RestoreTimeRecord {
+            downtime_ns: 0,
+            downtime_utc: false,
+            rate_deviation: 0,
+            test_hooks: false,
+        });
+        // No status bit advertises the settings: the guest reads every packet.
+        assert_eq!(
+            read_status(&mut portb),
+            STATUS_RESTORE_PACKET_AVAILABLE
+                | STATUS_GENERATION_ID_AVAILABLE
+                | STATUS_TIME_SAMPLE_AVAILABLE
+        );
+        assert!(matches!(
+            portb.io_write(STATUS_PORT, &[RESTORE_PACKET_SELECT]),
+            IoResult::Ok
+        ));
+        let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
+        assert_eq!(bytes.len(), 104);
+        assert_eq!(
+            bytes[3],
+            chipset_resources::microvm_time::RESTORE_PACKET_NETWORK_VERSION
+        );
+        assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
+        assert_eq!(
+            read_status(&mut portb),
+            STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
+        );
     }
 
     #[test]
@@ -1583,6 +1639,7 @@ mod tests {
             generation: 7,
             ranges: Vec::new(),
             entropy: [0x3c; 64],
+            network: None,
         };
         let time = RestoreTimeRecord {
             downtime_ns: 1_000_000,
@@ -1625,7 +1682,7 @@ mod tests {
         ));
         assert!(matches!(selected.now_or_never(), Some(Ok(()))));
         let bytes = read_record(&mut portb, DATA_PORT, base.encoded_len());
-        let packet = RestorePacketV5::decode(&bytes).unwrap();
+        let packet = RestorePacket::decode(&bytes).unwrap();
         assert_eq!((packet.base, packet.time), (base, time));
 
         // The packet is consumed once read.
@@ -1652,6 +1709,7 @@ mod tests {
                     generation: 1,
                     ranges: Vec::new(),
                     entropy: [0; 64],
+                    network: None,
                 },
                 time: recv,
                 selected: None,

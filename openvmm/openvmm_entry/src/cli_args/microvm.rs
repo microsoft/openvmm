@@ -274,9 +274,9 @@ impl From<MachineProfileCli> for MachineProfile {
 /// Options of the microVM machine profile.
 #[derive(clap::Args)]
 pub struct MicrovmCli {
-    /// Accepted for compatibility: every microVM restore exposes restore packet
-    /// version 4, which carries fresh entropy, through the private portb restore
-    /// channel.
+    /// Accepted for compatibility: every microVM restore exposes a restore
+    /// packet, version 5, or version 6 with network settings, which carries
+    /// fresh entropy, through the private portb restore channel.
     #[clap(long, requires = "restore_snapshot")]
     pub restore_entropy: bool,
 
