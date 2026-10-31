@@ -46,7 +46,6 @@ use hardware_key_sealing::HwKeyProtector;
 use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::encode_key_release_context_hash;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
@@ -423,13 +422,14 @@ async fn try_unlock_vmgs(
     let skip_hw_unsealing = matches!(
         &skr_response,
         Err((
-            secure_key_release::RequestVmgsEncryptionKeysError::IgvmAgentRejected {
-                request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-                error: igvm_attest::Error::Attestation {
-                    skip_hw_unsealing_signal: true,
-                    ..
-                },
-            },
+            secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::Attestation {
+                        skip_hw_unsealing_signal: true,
+                        ..
+                    },
+                ),
+            ),
             _,
         ))
     );

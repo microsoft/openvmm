@@ -6,7 +6,6 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
-use cvm_tracing::CVM_ALLOWED;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_SCHEMA_VERSION;
@@ -274,13 +273,6 @@ impl IgvmAttestRequestHelper {
 
 /// Verify response header and try to extract IgvmErrorInfo from the header
 pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponseHeader, Error> {
-    parse_response_header_for_request(response, None)
-}
-
-fn parse_response_header_for_request(
-    response: &[u8],
-    request_type: Option<IgvmAttestRequestType>,
-) -> Result<IgvmAttestCommonResponseHeader, Error> {
     // Extract common header fields regardless of header version or request type
     // For V1 request, response buffer should be empty in case of attestation failure
     let header = IgvmAttestCommonResponseHeader::read_from_prefix(response)
@@ -314,41 +306,24 @@ fn parse_response_header_for_request(
     }
 
     // IgvmErrorInfo is added in response header since version 2
-    let error_info_present = header.version >= IgvmAttestResponseVersion::VERSION_2;
-    let igvm_error_info = if error_info_present {
+    if header.version >= IgvmAttestResponseVersion::VERSION_2 {
         // Extract result info from response header
-        IgvmErrorInfo::read_from_prefix(&response[size_of::<IgvmAttestCommonResponseHeader>()..])
-            .map_err(|_| Error::ResponseHeaderInvalidFormat {
-                response_size: response.len(),
-            })?
-            .0 // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
-    } else {
-        IgvmErrorInfo::default()
-    };
-    if let Some(request_type) = request_type {
-        tracelimit::info_ratelimited!(
-            CVM_ALLOWED,
-            ?request_type,
-            response_version = header.version.0,
-            response_size = response.len(),
-            data_size = header.data_size,
-            error_info_present,
-            signal_bitmap = u32::from(igvm_error_info.igvm_signal),
-            extended_payload = igvm_error_info.igvm_signal.extended_payload(),
-            igvm_error_code = igvm_error_info.error_code,
-            igvm_http_status_code = igvm_error_info.http_status_code,
-            retry_signal = igvm_error_info.igvm_signal.retry(),
-            skip_hw_unsealing_signal = igvm_error_info.igvm_signal.skip_hw_unsealing(),
-            "IGVM attestation response header"
-        );
-    }
-    if 0 != igvm_error_info.error_code {
-        Err(Error::Attestation {
-            igvm_error_code: igvm_error_info.error_code,
-            http_status_code: igvm_error_info.http_status_code,
-            retry_signal: igvm_error_info.igvm_signal.retry(),
-            skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
+        let igvm_error_info = IgvmErrorInfo::read_from_prefix(
+            &response[size_of::<IgvmAttestCommonResponseHeader>()..],
+        )
+        .map_err(|_| Error::ResponseHeaderInvalidFormat {
+            response_size: response.len(),
         })?
+        .0; // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
+
+        if 0 != igvm_error_info.error_code {
+            Err(Error::Attestation {
+                igvm_error_code: igvm_error_info.error_code,
+                http_status_code: igvm_error_info.http_status_code,
+                retry_signal: igvm_error_info.igvm_signal.retry(),
+                skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
+            })?
+        }
     }
     Ok(IgvmAttestCommonResponseHeader {
         data_size: header.data_size,
@@ -402,11 +377,7 @@ pub(crate) fn parse_response_payload<E: DeserializeOwned + Default>(
             max_size,
         });
     }
-    let request_type = match expected_type {
-        IgvmAttestResponseRequestType::KeyRelease => IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-        IgvmAttestResponseRequestType::WrappedKey => IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-    };
-    let header = parse_response_header_for_request(response, Some(request_type))?;
+    let header = parse_response_header(response)?;
     let payload = &response[response_header_size(header.version)..header.data_size as usize];
     let payload = std::str::from_utf8(payload).map_err(Error::InvalidResponseUtf8)?;
     let extended_payload = header.version == IgvmAttestResponseVersion::VERSION_2
@@ -504,9 +475,8 @@ fn create_request(
     let mut buffer = Vec::with_capacity(report_size);
     buffer.extend_from_slice(request.as_bytes());
 
-    let mut capability_bitmap = IgvmCapabilityBitMap::new();
     if include_extension {
-        capability_bitmap = IgvmCapabilityBitMap::new()
+        let capability_bitmap = IgvmCapabilityBitMap::new()
             .with_error_code(true)
             .with_retry(true)
             .with_skip_hw_unsealing(true)
@@ -524,21 +494,6 @@ fn create_request(
     }
 
     buffer.extend_from_slice(runtime_claims);
-
-    if matches!(
-        request_type,
-        IgvmAttestRequestType::KEY_RELEASE_REQUEST | IgvmAttestRequestType::WRAPPED_KEY_REQUEST
-    ) {
-        tracelimit::info_ratelimited!(
-            CVM_ALLOWED,
-            ?request_type,
-            request_version = version.0,
-            request_size = buffer.len(),
-            capability_bitmap = u32::from(capability_bitmap),
-            extended_payload = capability_bitmap.extended_payload(),
-            "IGVM attestation request capabilities"
-        );
-    }
 
     Ok(buffer)
 }
@@ -809,65 +764,6 @@ pub(crate) mod tests {
             IgvmAttestResponseRequestType::KeyRelease,
             KEY_RELEASE_RESPONSE_BUFFER_SIZE,
         )
-    }
-
-    #[test]
-    fn key_response_diagnostics_include_agent_errors() {
-        use openhcl_attestation_protocol::igvm_attest::get::{
-            IgvmAttestRequestBase, IgvmAttestRequestDataExt, IgvmSignal,
-        };
-
-        for (request_type, response_type) in [
-            (
-                IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
-                IgvmAttestResponseRequestType::WrappedKey,
-            ),
-            (
-                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
-                IgvmAttestResponseRequestType::KeyRelease,
-            ),
-        ] {
-            let request = create_request(
-                IgvmAttestRequestVersion::VERSION_2,
-                request_type,
-                b"{}",
-                &vec![0; get_report_size(&ReportType::Tdx)],
-                &ReportType::Tdx,
-                IgvmAttestHashType::SHA_256,
-            )
-            .unwrap();
-            let (extension, _) = IgvmAttestRequestDataExt::read_from_prefix(
-                &request[size_of::<IgvmAttestRequestBase>()..],
-            )
-            .unwrap();
-            assert_eq!(u32::from(extension.capability_bitmap), 0x3f);
-            for extended_payload in [false, true] {
-                let response = frame_response(
-                    IgvmAttestResponseVersion::VERSION_2,
-                    &[],
-                    IgvmErrorInfo {
-                        error_code: 712,
-                        igvm_signal: IgvmSignal::new()
-                            .with_skip_hw_unsealing(true)
-                            .with_extended_payload(extended_payload),
-                        ..Default::default()
-                    },
-                );
-                assert!(matches!(
-                    parse_response_payload::<IgvmAttestResponseExtensions>(
-                        &response,
-                        response_type,
-                        KEY_RELEASE_RESPONSE_BUFFER_SIZE,
-                    ),
-                    Err(Error::Attestation {
-                        igvm_error_code: 712,
-                        http_status_code: 0,
-                        retry_signal: false,
-                        skip_hw_unsealing_signal: true,
-                    })
-                ));
-            }
-        }
     }
 
     #[test]
