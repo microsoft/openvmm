@@ -269,6 +269,11 @@ Examples:
     #[clap(short = 'P', long)]
     pub paused: bool,
 
+    /// write structured ptrace syscall logs for each Mesh worker process
+    #[cfg(target_os = "linux")]
+    #[clap(long, value_name = "DIR")]
+    pub worker_trace_dir: Option<PathBuf>,
+
     /// kernel image (when using linux direct boot)
     #[clap(short = 'k', long, value_name = "FILE", default_value = default_value_from_arch_env("OPENVMM_LINUX_DIRECT_KERNEL"))]
     pub kernel: OptionalPathBuf,

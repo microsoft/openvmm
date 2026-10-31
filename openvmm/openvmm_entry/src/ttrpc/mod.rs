@@ -91,6 +91,7 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use sandbox::profiles::SandboxRole;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
 use std::future::Future;
@@ -1311,10 +1312,15 @@ impl VmService {
         let (send, recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
 
-        // Create a VmmMesh for local/in-process workers.
-        let mesh = VmmMesh::new(&self.driver, true)?;
+        // Keep the VM worker in a separate process so its sandbox is applied.
+        let mesh = VmmMesh::new(
+            &self.driver,
+            false,
+            #[cfg(target_os = "linux")]
+            None,
+        )?;
         let vm_host = mesh
-            .make_host("vm", None)
+            .make_sandboxed_host(SandboxRole::Vm, None)
             .await
             .context("spawning vm process failed")?;
 

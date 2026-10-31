@@ -1,0 +1,28 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "sandbox_profiler"
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "sandbox_profiler"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+fs-err.workspace = true
+pal_tracer.workspace = true
+sandbox.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

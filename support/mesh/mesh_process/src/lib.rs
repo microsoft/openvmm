@@ -38,12 +38,8 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 #[cfg(unix)]
 use mesh_remote::InvitationAddress;
-#[cfg(unix)]
-use pal::unix::process::Builder as ProcessBuilder;
 #[cfg(windows)]
 use pal::windows::process;
-#[cfg(windows)]
-use pal::windows::process::Builder as ProcessBuilder;
 #[cfg(unix)]
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
@@ -75,6 +71,7 @@ mod plat {
     pub type IpcNodeDriver = pal_async::DefaultDriver;
 }
 
+use pal_tracer::TraceConfig;
 use plat::IpcNode;
 use plat::IpcNodeDriver;
 
@@ -279,23 +276,6 @@ pub struct Mesh {
     task: Task<()>,
 }
 
-/// Sandbox profile trait used for mesh hosts.
-pub trait SandboxProfile: Send {
-    /// Apply executes in the parent context and configures any sandbox
-    /// features that will be applied to the newly created process via
-    /// the pal builder object.
-    fn apply(&mut self, builder: &mut ProcessBuilder<'_>);
-
-    /// Finalize is intended to execute in the child process context after
-    /// application specific initialization is complete. It's optional as not
-    /// every sandbox profile will need to perform additional sandboxing.
-    /// In addition, the child will need to be aware enough to instantiate its
-    /// sandbox profile and invoke this method.
-    fn finalize(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
 /// Configuration for launching a new process in the mesh.
 pub struct ProcessConfig {
     name: String,
@@ -303,8 +283,9 @@ pub struct ProcessConfig {
     process_args: Vec<OsString>,
     stderr: Option<File>,
     skip_worker_arg: bool,
-    sandbox_profile: Option<Box<dyn SandboxProfile + Sync>>,
+    sandbox_profile: Option<Box<sandbox::Profile>>,
     env_vars: Vec<(OsString, OsString)>,
+    trace_config: Option<Box<TraceConfig>>,
 }
 
 impl ProcessConfig {
@@ -319,23 +300,22 @@ impl ProcessConfig {
             skip_worker_arg: false,
             sandbox_profile: None,
             env_vars: Vec::new(),
+            trace_config: None,
         }
     }
 
-    /// Returns a new process configuration using the current process as the
-    /// process name.
-    pub fn new_with_sandbox(
-        name: impl Into<String>,
-        sandbox_profile: Box<dyn SandboxProfile + Sync>,
-    ) -> Self {
+    /// Returns a new sandboxed process configuration using the current process
+    /// as the process name.
+    pub fn new_with_sandbox(name: impl Into<String>, sandbox_profile: sandbox::Profile) -> Self {
         Self {
             name: name.into(),
             process_name: None,
             process_args: Vec::new(),
             stderr: None,
             skip_worker_arg: false,
-            sandbox_profile: Some(sandbox_profile),
+            sandbox_profile: Some(Box::new(sandbox_profile)),
             env_vars: Vec::new(),
+            trace_config: None,
         }
     }
 
@@ -381,6 +361,19 @@ impl ProcessConfig {
         self.stderr = file;
         self
     }
+
+    /// Enables structured syscall tracing for this process on Linux.
+    pub fn trace(mut self, trace_config: TraceConfig) -> Self {
+        self.trace_config = Some(Box::new(trace_config));
+        self
+    }
+}
+
+#[cfg(unix)]
+enum UnixMeshChild {
+    Normal(pal_async::process::PolledChild<pal::unix::process::Child>),
+    #[cfg(target_os = "linux")]
+    Traced(pal_tracer::TracedChild),
 }
 
 struct MeshInner {
@@ -878,8 +871,19 @@ impl MeshInner {
                 builder.stderr(process::Stdio::Handle(log_file.as_handle()));
             }
 
-            if let Some(mut sandbox_profile) = config.sandbox_profile {
-                sandbox_profile.apply(&mut builder);
+            if let Some(profile) = &config.sandbox_profile {
+                let preparation = sandbox::prepare(
+                    profile,
+                    &sandbox::Identity::default(),
+                    &[(
+                        sandbox::HandleTag(0),
+                        sandbox::RawHandle(directory.as_raw_handle() as usize as u64),
+                    )],
+                )
+                .context("failed to prepare sandboxed Mesh process")?;
+                builder
+                    .apply_sandbox(preparation)
+                    .context("failed to configure sandboxed Mesh process")?;
             }
 
             // Launch the child process on a separate thread to isolate
@@ -937,8 +941,24 @@ impl MeshInner {
                 command.stderr(process::Stdio::Fd(log_file.as_fd()));
             }
 
-            if let Some(mut sandbox_profile) = config.sandbox_profile {
-                sandbox_profile.apply(&mut command);
+            #[cfg(target_os = "linux")]
+            if let Some(trace_config) = config.trace_config.as_ref() {
+                command.set_trace_seccomp_filter(
+                    pal_tracer::build_seccomp_filter(trace_config)
+                        .context("failed to build worker trace filter")?,
+                );
+            }
+
+            if let Some(profile) = &config.sandbox_profile {
+                let preparation = sandbox::prepare(
+                    profile,
+                    &sandbox::Identity::default(),
+                    &[(sandbox::HandleTag(0), sandbox::RawHandle(IPC_FD as u64))],
+                )
+                .context("failed to prepare sandboxed Mesh process")?;
+                command
+                    .apply_sandbox(preparation)
+                    .context("failed to configure sandboxed Mesh process")?;
             }
 
             // Launch the child process on a separate thread to isolate
@@ -948,8 +968,36 @@ impl MeshInner {
             pid = child.id();
             tracing::Span::current().record("pid", pid);
 
-            pal_async::process::PolledChild::<process::Child>::new(&self.node_driver, child)
-                .expect("failed to create process wait")
+            #[cfg(target_os = "linux")]
+            if let Some(trace_config) = config.trace_config {
+                UnixMeshChild::Traced(
+                    pal_tracer::TracedChild::start(child, &name, *trace_config)
+                        .context("failed to start worker tracer")?,
+                )
+            } else {
+                UnixMeshChild::Normal(
+                    pal_async::process::PolledChild::<process::Child>::new(
+                        &self.node_driver,
+                        child,
+                    )
+                    .expect("failed to create process wait"),
+                )
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                anyhow::ensure!(
+                    config.trace_config.is_none(),
+                    "worker syscall tracing is supported only on Linux"
+                );
+                UnixMeshChild::Normal(
+                    pal_async::process::PolledChild::<process::Child>::new(
+                        &self.node_driver,
+                        child,
+                    )
+                    .expect("failed to create process wait"),
+                )
+            }
         };
 
         let id = self.hosts.insert(MeshHostInner {
@@ -992,12 +1040,13 @@ async fn wait_mesh_child(mut child: pal_async::windows::PolledProcess, name: &st
 }
 
 #[cfg(unix)]
-async fn wait_mesh_child(
-    mut child: pal_async::process::PolledChild<pal::unix::process::Child>,
-    name: &str,
-    pid: i32,
-) {
-    match child.wait().await {
+async fn wait_mesh_child(mut child: UnixMeshChild, name: &str, pid: i32) {
+    let result = match &mut child {
+        UnixMeshChild::Normal(child) => child.wait().await,
+        #[cfg(target_os = "linux")]
+        UnixMeshChild::Traced(child) => child.wait().await,
+    };
+    match result {
         Ok(status) if status.code() == Some(0) => {
             tracing::info!(pid, name, "mesh child exited successfully");
         }

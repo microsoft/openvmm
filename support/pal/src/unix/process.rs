@@ -21,43 +21,17 @@ use std::path::PathBuf;
 use std::process::ExitStatus;
 
 #[cfg(target_os = "linux")]
-use caps::CapsHashSet;
-#[cfg(target_os = "linux")]
-use landlock::RulesetCreated;
-#[cfg(target_os = "linux")]
 use seccompiler::SeccompFilter;
-
-/// The different failure modes for sandbox related syscalls.
-#[derive(Copy, Clone, Default)]
-pub enum SandboxFailureMode {
-    /// When a sandbox related syscall fails during process started,
-    /// report no error and continue.
-    Silent,
-    /// When a sandbox related syscall fails during process started,
-    /// report a trace::warn, and continue.
-    Warn,
-    /// When a sandbox related syscall fails during process started,
-    /// report no trace::error, and fail.
-    #[default]
-    Error,
-}
 
 /// A container for linux specific builder options.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 pub struct LinuxBuilder<'a> {
-    clone_flags: libc::c_int,
+    sandbox: Option<sandbox::SandboxProcessConfig>,
     vfork: bool,
+    trace_seccomp_filter: Option<SeccompFilter>,
     setsid: bool,
-    sandbox_failure_mode: SandboxFailureMode,
     controlling_terminal: Option<BorrowedFd<'a>>,
-    permitted_capabilities: Option<CapsHashSet>,
-    effective_capabilities: Option<CapsHashSet>,
-    ambient_capabilities: Option<CapsHashSet>,
-    bounding_capabilities: Option<CapsHashSet>,
-    inheritable_capabilities: Option<CapsHashSet>,
-    landlock_rules: Option<RulesetCreated>,
-    seccomp_filter: Option<SeccompFilter>,
 }
 
 /// A builder for a child process.
@@ -149,7 +123,6 @@ impl<'a> Builder<'a> {
             gid: None,
             #[cfg(target_os = "linux")]
             linux_builder: LinuxBuilder {
-                clone_flags: 0,
                 vfork: true,
                 ..Default::default()
             },
@@ -262,117 +235,61 @@ impl<'a> Builder<'a> {
         self
     }
 
+    /// Applies prepared sandbox launch requirements to the new process.
+    ///
+    /// With user namespace self-mapping, explicit [`Self::setuid`] or
+    /// [`Self::setgid`] requests are unsupported and cause spawning to fail.
+    #[cfg(target_os = "linux")]
+    pub fn apply_sandbox(
+        &mut self,
+        config: sandbox::SandboxProcessConfig,
+    ) -> io::Result<&mut Self> {
+        if self.linux_builder.sandbox.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sandbox configuration has already been applied",
+            ));
+        }
+        if config.windows.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Windows sandbox configuration cannot be applied on Linux",
+            ));
+        }
+        self.linux_builder.sandbox = Some(config);
+        Ok(self)
+    }
+
+    /// Applies prepared sandbox launch requirements to the new process.
+    #[cfg(not(target_os = "linux"))]
+    pub fn apply_sandbox(
+        &mut self,
+        _config: sandbox::SandboxProcessConfig,
+    ) -> io::Result<&mut Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "sandboxed process launch is not implemented on this platform",
+        ))
+    }
+
+    /// Stops the child before installing a tracing seccomp filter and
+    /// executing the new image so a ptrace supervisor can attach.
+    ///
+    /// The filter is compiled in the parent when spawning. Compilation failure
+    /// returns an error without creating a child.
+    ///
+    /// This disables `vfork` because a stopped `vfork` child would indefinitely
+    /// block the spawning thread.
+    #[cfg(target_os = "linux")]
+    pub fn set_trace_seccomp_filter(&mut self, seccomp_filter: SeccompFilter) -> &mut Self {
+        self.linux_builder.trace_seccomp_filter = Some(seccomp_filter);
+        self
+    }
+
     /// Gets whether the new process will vfork or not.
     #[cfg(target_os = "linux")]
     pub fn vfork(&mut self) -> bool {
         self.linux_builder.vfork
-    }
-
-    /// Sets the sandbox failure mode.
-    #[cfg(target_os = "linux")]
-    pub fn set_sandbox_failure_mode(&mut self, mode: SandboxFailureMode) -> &mut Self {
-        self.linux_builder.sandbox_failure_mode = mode;
-        self
-    }
-
-    /// Gets the sandbox failure mode.
-    #[cfg(target_os = "linux")]
-    pub fn sandbox_failure_mode(&mut self) -> SandboxFailureMode {
-        self.linux_builder.sandbox_failure_mode
-    }
-
-    /// Sets the permitted and inheritable capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_permitted_caps(&mut self, caps: CapsHashSet) -> &mut Self {
-        self.linux_builder.permitted_capabilities = Some(caps);
-        self
-    }
-
-    /// Gets the permitted and inheritable capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn permitted_caps(&mut self) -> Option<CapsHashSet> {
-        self.linux_builder.permitted_capabilities.clone()
-    }
-
-    /// Sets the effective capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_effective_caps(&mut self, caps: CapsHashSet) -> &mut Self {
-        self.linux_builder.effective_capabilities = Some(caps);
-        self
-    }
-
-    /// Gets the effective capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn effective_caps(&mut self) -> Option<CapsHashSet> {
-        self.linux_builder.effective_capabilities.clone()
-    }
-
-    /// Sets the ambient capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_ambient_caps(&mut self, caps: CapsHashSet) -> &mut Self {
-        self.linux_builder.ambient_capabilities = Some(caps);
-        self
-    }
-
-    /// Gets the ambient capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn ambient_caps(&mut self) -> Option<CapsHashSet> {
-        self.linux_builder.ambient_capabilities.clone()
-    }
-
-    /// Sets the inheritable capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_inheritable_caps(&mut self, caps: CapsHashSet) -> &mut Self {
-        self.linux_builder.inheritable_capabilities = Some(caps);
-        self
-    }
-
-    /// Gets the inheritable capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn inheritable_caps(&mut self) -> Option<CapsHashSet> {
-        self.linux_builder.inheritable_capabilities.clone()
-    }
-
-    /// Sets the bounding capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_bounding_caps(&mut self, caps: CapsHashSet) -> &mut Self {
-        self.linux_builder.bounding_capabilities = Some(caps);
-        self
-    }
-
-    /// Gets the bounding capabilities of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn bounding_caps(&mut self) -> Option<CapsHashSet> {
-        self.linux_builder.bounding_capabilities.clone()
-    }
-
-    /// Sets the landlock ruleset of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_landlock_rules(&mut self, landlock_rules: RulesetCreated) -> &mut Self {
-        self.linux_builder.landlock_rules = Some(landlock_rules);
-        self
-    }
-
-    /// Gets the landlock ruleset of the new process.
-    #[cfg(target_os = "linux")]
-    pub fn landlock_rules(&mut self) -> Option<RulesetCreated> {
-        self.linux_builder
-            .landlock_rules
-            .as_ref()
-            .map(|ruleset_created| ruleset_created.try_clone().unwrap())
-    }
-
-    /// Sets the seccomp filter for the new process.
-    #[cfg(target_os = "linux")]
-    pub fn set_seccomp_filter(&mut self, seccomp_filter: SeccompFilter) -> &mut Self {
-        self.linux_builder.seccomp_filter = Some(seccomp_filter);
-        self
-    }
-
-    /// Gets the seccomp filter for the new process.
-    #[cfg(target_os = "linux")]
-    pub fn seccomp_filter(&mut self) -> Option<SeccompFilter> {
-        self.linux_builder.seccomp_filter.clone()
     }
 
     /// Creates a new session with the new process as the leader.
@@ -522,118 +439,260 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    fn test_landlock_sandbox() {
-        use crate::sys::SyscallResult;
-        use crate::sys::while_eintr;
-        use landlock::AccessFs;
-        use landlock::PathBeneath;
-        use landlock::PathFd;
-        use landlock::Ruleset;
-        use landlock::RulesetAttr;
-        use landlock::RulesetCreatedAttr;
-        use std::os::unix::prelude::*;
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn test_user_namespace_self_map_with_vfork() {
+        use super::Stdio;
+        use std::io::BufRead;
+        use std::io::BufReader;
+        use std::os::fd::AsFd;
+        use std::os::unix::net::UnixStream;
 
-        let landlock_rules = Ruleset::default()
-            .handle_access(AccessFs::Execute)
-            .unwrap()
-            .create()
-            .unwrap()
-            .add_rule(PathBeneath::new(
-                PathFd::new("/").unwrap(),
-                AccessFs::Execute,
-            ))
+        let (output, child_output) = UnixStream::pair().unwrap();
+        let mut cmd = Builder::new("/bin/sh");
+        let sandbox = sandbox::SandboxProcessConfig {
+            clone_flags: libc::CLONE_NEWUSER as u64,
+            map_current_user: true,
+            ..Default::default()
+        };
+        cmd.arg("-c")
+            .arg("id -u; id -g; sleep 30")
+            .stdout(Stdio::Fd(child_output.as_fd()))
+            .apply_sandbox(sandbox)
             .unwrap();
 
-        let mut cmd = Builder::new("/usr/bin/true");
-        cmd.set_vfork(false);
-        cmd.set_landlock_rules(landlock_rules);
-
         let mut child = cmd.spawn().unwrap();
+        drop(child_output);
 
-        let mut pollfd = libc::pollfd {
-            fd: child.as_fd().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: pollfd holds a valid and open file descriptor.
-        unsafe { while_eintr(|| libc::poll(&mut pollfd, 1, -1).syscall_result()).unwrap() };
-        assert_eq!(pollfd.revents, libc::POLLIN);
-        assert_eq!(child.wait().unwrap().code().unwrap(), 0);
+        let mut output = BufReader::new(output);
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line, "0\n");
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line, "0\n");
+
+        // SAFETY: geteuid and getegid have no safety requirements.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        assert_eq!(
+            std::fs::read_to_string(format!("/proc/{}/uid_map", child.id())).unwrap(),
+            format!("         0 {uid:10}          1\n")
+        );
+        assert_eq!(
+            std::fs::read_to_string(format!("/proc/{}/gid_map", child.id())).unwrap(),
+            format!("         0 {gid:10}          1\n")
+        );
+
+        // SAFETY: child.id() names the live process spawned above.
+        assert_eq!(unsafe { libc::kill(child.id(), libc::SIGKILL) }, 0);
+        child.wait().unwrap();
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn test_sandbox_ipc_namespace_isolation() {
+        // A private fixture namespace ensures the kernel cleans up all IPC
+        // objects even if a test assertion fails.
+        let output = std::process::Command::new("unshare")
+            .args(["--user", "--map-root-user", "--ipc"])
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "unix::process::tests::helper_sandbox_ipc_parent",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env_remove(sandbox::DISABLE_ENV)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "IPC namespace helper failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn helper_sandbox_ipc_parent() {
+        use sandbox::profiles::SandboxRole;
+
+        let objects = sysv_ipc_objects(libc::IPC_CREAT | libc::IPC_EXCL | 0o600)
+            .map(|result| result.unwrap());
+        for role in [SandboxRole::Vm, SandboxRole::Tpm] {
+            for vfork in [true, false] {
+                let preparation =
+                    sandbox::prepare(&role.profile(), &sandbox::Identity::default(), &[]).unwrap();
+                let mut cmd = Builder::new(std::env::current_exe().unwrap());
+                cmd.args([
+                    "--exact",
+                    "unix::process::tests::helper_sandbox_ipc_child",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .set_vfork(vfork)
+                .apply_sandbox(preparation)
+                .unwrap();
+                assert!(
+                    cmd.spawn().unwrap().wait().unwrap().success(),
+                    "{} worker launch (vfork={vfork}) failed",
+                    role.name(),
+                );
+                assert_eq!(
+                    sysv_ipc_objects(0).map(|result| result.unwrap()),
+                    objects,
+                    "worker changed the parent's IPC objects",
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn helper_sandbox_ipc_child() {
+        for (name, result) in ["shared memory", "semaphore", "message queue"]
+            .into_iter()
+            .zip(sysv_ipc_objects(0))
+        {
+            let error = result.expect_err("parent IPC object is visible");
+            assert_eq!(error.raw_os_error(), Some(libc::ENOENT), "{name}: {error}");
+        }
+        for result in sysv_ipc_objects(libc::IPC_CREAT | libc::IPC_EXCL | 0o600) {
+            result.unwrap();
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
+    fn sysv_ipc_objects(flags: libc::c_int) -> [std::io::Result<libc::c_int>; 3] {
+        use crate::sys::SyscallResult;
+
+        const KEY: libc::key_t = 0x5342;
+        // SAFETY: these calls take only integer arguments. The fixed key is
+        // used inside a private fixture or worker IPC namespace.
+        unsafe {
+            [
+                libc::shmget(KEY, 4096, flags).syscall_result(),
+                libc::semget(KEY, 1, flags).syscall_result(),
+                libc::msgget(KEY, flags).syscall_result(),
+            ]
+        }
+        .map(|result| result.map_err(Into::into))
     }
 
     #[test]
     #[cfg(target_os = "linux")]
-    #[cfg(target_arch = "x86_64")]
-    fn test_seccomp_sandbox() {
-        use crate::sys::SyscallResult;
-        use crate::sys::while_eintr;
-        use seccompiler::SeccompAction;
-        use seccompiler::SeccompFilter;
-        use seccompiler::TargetArch;
-        use std::os::unix::prelude::*;
+    fn test_user_namespace_self_map_rejects_explicit_identity() {
+        for (uid, gid) in [
+            (Some(0), None),
+            (None, Some(0)),
+            (Some(1000), None),
+            (None, Some(1000)),
+            (Some(1000), Some(1000)),
+        ] {
+            let mut cmd = Builder::new("/usr/bin/true");
+            if let Some(uid) = uid {
+                cmd.setuid(uid);
+            }
+            if let Some(gid) = gid {
+                cmd.setgid(gid);
+            }
+            cmd.apply_sandbox(sandbox::SandboxProcessConfig {
+                clone_flags: libc::CLONE_NEWUSER as u64,
+                map_current_user: true,
+                ..Default::default()
+            })
+            .unwrap();
+            let error = cmd.spawn().expect_err("explicit identity was accepted");
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
 
-        // This isn't defined in libc MUSL yet.
-        const SYS_RSEQ: libc::c_long = 334;
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_explicit_identity_without_user_namespace() {
+        // SAFETY: geteuid and getegid have no safety requirements.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let mut cmd = Builder::new("/usr/bin/true");
+        cmd.setuid(uid).setgid(gid);
+        assert!(cmd.spawn().unwrap().wait().unwrap().success());
+    }
 
-        // This filter should work for both a dynamically linked `true`
-        // or for a busybox statically linked `true`.
-        let seccomp_filter = SeccompFilter::new(
-            vec![
-                (libc::SYS_execve, vec![]),
-                (libc::SYS_brk, vec![]),
-                (libc::SYS_arch_prctl, vec![]),
-                (libc::SYS_mmap, vec![]),
-                (libc::SYS_access, vec![]),
-                (libc::SYS_openat, vec![]),
-                (libc::SYS_newfstatat, vec![]),
-                (libc::SYS_fstat, vec![]),
-                (libc::SYS_close, vec![]),
-                (libc::SYS_read, vec![]),
-                (libc::SYS_pread64, vec![]),
-                (libc::SYS_set_tid_address, vec![]),
-                (libc::SYS_set_robust_list, vec![]),
-                (SYS_RSEQ, vec![]),
-                (libc::SYS_mprotect, vec![]),
-                (libc::SYS_prlimit64, vec![]),
-                (libc::SYS_munmap, vec![]),
-                (libc::SYS_getrandom, vec![]),
-                (libc::SYS_futex, vec![]),
-                (libc::SYS_write, vec![]),
-                (libc::SYS_exit_group, vec![]),
-                (libc::SYS_readlink, vec![]),
-                (libc::SYS_uname, vec![]),
-                (libc::SYS_getgid, vec![]),
-                (libc::SYS_getuid, vec![]),
-                (libc::SYS_setgid, vec![]),
-                (libc::SYS_setuid, vec![]),
-                (libc::SYS_prctl, vec![]),
-            ]
-            .into_iter()
-            .collect(),
-            // mismatch_action
-            SeccompAction::Log,
-            // match_action
-            SeccompAction::Allow,
-            // target architecture of filter
-            TargetArch::x86_64,
-        )
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_inherited_fd_allowlist() {
+        use std::io::Write;
+        use std::os::fd::AsFd;
+        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+        use std::os::fd::RawFd;
+        use std::os::unix::net::UnixStream;
+
+        const ALLOWED_FD: RawFd = 10;
+
+        let (mut send, receive) = UnixStream::pair().unwrap();
+        let null = std::fs::File::open("/dev/null").unwrap();
+        // SAFETY: null is a valid descriptor and the returned descriptor is
+        // uniquely owned.
+        let leaked_fd = unsafe {
+            let fd = libc::fcntl(null.as_fd().as_raw_fd(), libc::F_DUPFD, 100);
+            assert!(fd >= 100);
+            OwnedFd::from_raw_fd(fd)
+        };
+
+        let mut cmd = Builder::new(std::env::current_exe().unwrap());
+        let sandbox = sandbox::SandboxProcessConfig {
+            inherit_handles: vec![(sandbox::HandleTag(0), sandbox::RawHandle(ALLOWED_FD as u64))],
+            ..Default::default()
+        };
+        cmd.args([
+            "--exact",
+            "unix::process::tests::helper_verify_inherited_fd_allowlist",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PAL_ALLOWED_FD", ALLOWED_FD.to_string())
+        .env("PAL_LEAKED_FD", leaked_fd.as_raw_fd().to_string())
+        .dup_fd(receive.as_fd(), ALLOWED_FD)
+        .apply_sandbox(sandbox)
         .unwrap();
 
-        let mut cmd = Builder::new("/usr/bin/true");
-        cmd.set_vfork(false);
-        cmd.set_seccomp_filter(seccomp_filter);
-
         let mut child = cmd.spawn().unwrap();
+        drop(receive);
+        send.write_all(b"x").unwrap();
+        assert!(child.wait().unwrap().success());
+        // SAFETY: leaked_fd remains owned by this process.
+        assert!(unsafe { libc::fcntl(leaked_fd.as_raw_fd(), libc::F_GETFD) } >= 0);
+    }
 
-        let mut pollfd = libc::pollfd {
-            fd: child.as_fd().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: pollfd holds a valid and open file descriptor.
-        unsafe { while_eintr(|| libc::poll(&mut pollfd, 1, -1).syscall_result()).unwrap() };
-        assert_eq!(pollfd.revents, libc::POLLIN);
-        assert!([None, Some(0)].contains(&child.wait().unwrap().code()));
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn helper_verify_inherited_fd_allowlist() {
+        use std::io::Read;
+        use std::os::fd::FromRawFd;
+        use std::os::fd::OwnedFd;
+        use std::os::fd::RawFd;
+
+        let allowed_fd: RawFd = std::env::var("PAL_ALLOWED_FD").unwrap().parse().unwrap();
+        let leaked_fd: RawFd = std::env::var("PAL_LEAKED_FD").unwrap().parse().unwrap();
+
+        // SAFETY: the parent intentionally transferred ownership of this
+        // descriptor to the child at the configured target number.
+        let allowed = unsafe { OwnedFd::from_raw_fd(allowed_fd) };
+        let mut allowed = std::fs::File::from(allowed);
+        let mut byte = [0];
+        allowed.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [b'x']);
+
+        // SAFETY: F_GETFD only inspects the numeric descriptor.
+        let result = unsafe { libc::fcntl(leaked_fd, libc::F_GETFD) };
+        assert_eq!(result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
     }
 }
