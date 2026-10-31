@@ -6,7 +6,7 @@
 
 #![cfg(any(test, feature = "test_helpers"))]
 
-use core::str::FromStr;
+use der::Decode;
 use der::Encode;
 use x509_cert::builder::CertificateBuilder;
 use x509_cert::name::Name;
@@ -37,23 +37,41 @@ impl x509_cert::builder::profile::BuilderProfile for SelfSignedProfile {
 }
 
 /// Set up a `CertificateBuilder` for a self-signed certificate with the
-/// given distinguished name components, serial number 1, and a validity
-/// range covering all of representable time. The caller invokes `.build()`
-/// with a backend-specific signer to produce the final `Certificate`.
+/// given name, validity and optional AKI, with serial number 1.
+/// The caller invokes `.build()` with a backend-specific signer to produce
+/// the final `Certificate`.
 ///
 /// Returns the builder and the SubjectPublicKeyInfo DER encoding for the
 /// signer adapter.
 pub(super) fn self_signed_builder(
     key: super::X509KeyPair<'_>,
-    country: &str,
-    state: &str,
-    locality: &str,
-    organization: &str,
-    common_name: &str,
+    options: &super::X509SelfSignedOptions<'_>,
 ) -> anyhow::Result<(CertificateBuilder<SelfSignedProfile>, Vec<u8>)> {
-    let name = Name::from_str(&format!(
-        "CN={common_name},O={organization},L={locality},ST={state},C={country}"
-    ))?;
+    use const_oid::db::rfc2256::STATE_OR_PROVINCE_NAME;
+    use const_oid::db::rfc4519::{COMMON_NAME, COUNTRY_NAME, LOCALITY_NAME, ORGANIZATION_NAME};
+    let mut rdns = x509_cert::name::RdnSequence::default();
+    for (oid, value, tag) in [
+        (COUNTRY_NAME, options.country, der::Tag::PrintableString),
+        (STATE_OR_PROVINCE_NAME, options.state, der::Tag::Utf8String),
+        (LOCALITY_NAME, options.locality, der::Tag::Utf8String),
+        (
+            ORGANIZATION_NAME,
+            options.organization,
+            der::Tag::Utf8String,
+        ),
+        (COMMON_NAME, options.common_name, der::Tag::Utf8String),
+    ] {
+        if !value.is_empty() {
+            rdns.push(
+                vec![x509_cert::attr::AttributeTypeAndValue {
+                    oid,
+                    value: der::Any::new(tag, value.as_bytes())?,
+                }]
+                .try_into()?,
+            );
+        }
+    }
+    let name = Name::from_der(&rdns.to_der()?)?;
 
     let spki = match key {
         super::X509KeyPair::Rsa(key) => {
@@ -76,13 +94,16 @@ pub(super) fn self_signed_builder(
     let public_key_der = spki.to_der()?;
 
     let serial_number = x509_cert::serial_number::SerialNumber::from(1u32);
-    let validity = x509_cert::time::Validity::new(
-        der::asn1::GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(0))?.into(),
-        x509_cert::time::Time::INFINITY,
-    );
+    let validity = options.validity()?;
 
     let profile = SelfSignedProfile { subject: name };
-    let builder = CertificateBuilder::new(profile, serial_number, validity, spki)?;
+    let mut builder = CertificateBuilder::new(profile, serial_number, validity, spki)?;
+    if let Some(id) = options.authority_key_identifier {
+        builder.add_extension(&x509_cert::ext::pkix::AuthorityKeyIdentifier {
+            key_identifier: Some(der::asn1::OctetString::new(id)?),
+            ..Default::default()
+        })?;
+    }
     Ok((builder, public_key_der))
 }
 
@@ -117,12 +138,12 @@ pub(super) mod keypair_signer {
         ) -> x509_cert::spki::Result<x509_cert::spki::AlgorithmIdentifierOwned> {
             Ok(match self.key {
                 super::super::X509KeyPair::Rsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
+                    oid: const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION,
                     parameters: Some(der::Any::null()),
                 },
                 #[cfg(symcrypt)]
                 super::super::X509KeyPair::Ecdsa(_) => x509_cert::spki::AlgorithmIdentifierOwned {
-                    oid: der::oid::db::rfc5912::ECDSA_WITH_SHA_384,
+                    oid: const_oid::db::rfc5912::ECDSA_WITH_SHA_384,
                     parameters: None,
                 },
             })

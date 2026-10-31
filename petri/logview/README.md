@@ -69,6 +69,21 @@ npm run preview
 npx eslint .
 ```
 
+## Running Locally
+
+Build and serve the production viewer:
+
+```bash
+npm run build
+npm run preview -- --host 127.0.0.1 --port 4177 --strictPort
+```
+
+Open <http://localhost:4177/test-results/>.
+If the server is on a remote development machine, forward port 4177 first.
+The viewer reads the public results; no Azure credentials or uploads are needed.
+
+Run the automated tests with `npm test`.
+
 ## Project Structure
 
 ```text

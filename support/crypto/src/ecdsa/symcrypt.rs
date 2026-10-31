@@ -150,7 +150,7 @@ impl EcdsaPublicKeyInner {
     pub(crate) fn from_public_key_info(
         spki: &x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
     ) -> Result<Self, EcdsaError> {
-        if spki.algorithm.oid != der::oid::db::rfc5912::ID_EC_PUBLIC_KEY {
+        if spki.algorithm.oid != const_oid::db::rfc5912::ID_EC_PUBLIC_KEY {
             return Err(invalid_err("public key is not an EC key"));
         }
         // Determine the curve from the algorithm's named-curve parameter rather
@@ -159,9 +159,9 @@ impl EcdsaPublicKeyInner {
             .algorithm
             .parameters
             .ok_or_else(|| invalid_err("EC public key has no named curve parameter"))?
-            .decode_as::<der::asn1::ObjectIdentifier>()
+            .decode_as::<const_oid::ObjectIdentifier>()
             .map_err(|e| der_err(e, "decoding the EC curve OID"))?;
-        let curve = if curve_oid == der::oid::db::rfc5912::SECP_384_R_1 {
+        let curve = if curve_oid == const_oid::db::rfc5912::SECP_384_R_1 {
             EcdsaCurve::P384
         } else {
             return Err(invalid_err("public key uses an unsupported EC curve"));
@@ -190,8 +190,8 @@ impl EcdsaPublicKeyInner {
         let point = self.public_key_bytes()?.to_uncompressed_point();
         Ok(x509_cert::spki::SubjectPublicKeyInfoOwned {
             algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
-                oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
-                parameters: Some(der::oid::db::rfc5912::SECP_384_R_1.into()),
+                oid: const_oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+                parameters: Some(const_oid::db::rfc5912::SECP_384_R_1.into()),
             },
             subject_public_key: der::asn1::BitString::from_bytes(&point)
                 .map_err(|e| der_err(e, "encoding the EC public key point"))?,

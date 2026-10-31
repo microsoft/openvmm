@@ -222,9 +222,10 @@ impl Fuse for VirtioFs {
     }
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
+        let options = util::open_flags(flags)?;
         let inode = self.get_inode(request.node_id())?;
-        self.check_open_readonly(&inode, flags)?;
-        let file = inode.open(flags)?;
+        self.check_open_readonly(&inode, options)?;
+        let file = inode.open(options)?;
         let fh = self.insert_file(file);
 
         // TODO: Optionally allow caching.
@@ -237,13 +238,14 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
+        let options = util::create_flags(arg.flags)?;
         if self.is_synthetic_root(request.node_id()) {
             return Err(lx::Error::EROFS);
         }
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let (new_inode, attr, file) =
-            inode.create(name, arg.flags, arg.mode, request.uid(), request.gid())?;
+            inode.create(name, options, arg.mode, request.uid(), request.gid())?;
 
         // Insert the newly created inode; this can return an existing inode if it found a match
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
@@ -371,6 +373,7 @@ impl Fuse for VirtioFs {
 
     fn open_dir(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         if self.is_synthetic_root(request.node_id()) {
+            util::open_flags(flags)?;
             // The synthetic root has no backing handle; hand out a sentinel that
             // read_dir/read_dir_plus/release_dir recognize.
             return Ok(fuse_open_out::new(SYNTHETIC_ROOT_FH, 0));
@@ -544,7 +547,7 @@ impl VirtioFs {
     }
 
     /// Check whether the open flags are permitted on a read-only filesystem.
-    fn check_open_readonly(&self, inode: &VirtioFsInode, flags: u32) -> lx::Result<()> {
+    fn check_open_readonly(&self, inode: &VirtioFsInode, options: i32) -> lx::Result<()> {
         if !inode.readonly() {
             return Ok(());
         }
@@ -555,9 +558,11 @@ impl VirtioFs {
         // If O_CREAT && file_exists => fallthrough to check other checks
         // If O_CREAT && !file_exists => EROFS
         // Other errors that occur while checking file_exists should bubble up
-        if flags & lx::O_CREAT as u32 != 0 {
+        if options & lx::O_CREAT != 0 {
             match inode.get_attr() {
-                Ok(_) if flags & lx::O_EXCL as u32 != 0 => return Err(lx::Error::EEXIST),
+                Ok(_) if options & lx::O_EXCL != 0 => {
+                    return Err(lx::Error::EEXIST);
+                }
                 Ok(_) => {}
                 Err(e) if e == lx::Error::ENOENT => return Err(lx::Error::EROFS),
                 Err(e) => return Err(e),
@@ -566,8 +571,9 @@ impl VirtioFs {
             inode.get_attr()?;
         }
 
-        let access_mode = (flags & lx::O_ACCESS_MASK as u32) as i32;
-        if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
+        if matches!(options & lx::O_ACCESS_MASK, lx::O_WRONLY | lx::O_RDWR)
+            || options & lx::O_TRUNC != 0
+        {
             return Err(lx::Error::EROFS);
         }
 

@@ -139,10 +139,17 @@ pub unsafe fn set_errno(error: i32) {
     }
 }
 
-pub fn libc_stat_fs_to_lx_stat_fs(stat_fs: libc::statfs) -> lx::StatFs {
+pub fn stat_fs(file: &std::fs::File) -> lx::Result<lx::StatFs> {
+    // SAFETY: Calling C API as documented, with no special requirements.
+    let stat_fs = unsafe {
+        let mut stat_fs = mem::zeroed();
+        check_lx_errno(libc::fstatfs(file.as_raw_fd(), &mut stat_fs))?;
+        stat_fs
+    };
+
     // SAFETY: lx::StatFs is identical to libc's version, and padding bytes are not exposed, so just transmute it.
     // N.B. This call won't compile if the two aren't the same size.
-    unsafe { mem::transmute(stat_fs) }
+    Ok(unsafe { mem::transmute::<libc::statfs, lx::StatFs>(stat_fs) })
 }
 
 #[repr(C)]
@@ -167,6 +174,14 @@ pub fn openat(
     };
     let path = path_to_cstr(path)?;
     let creating = flags & libc::O_CREAT != 0 || flags & libc::O_TMPFILE == libc::O_TMPFILE;
+    // O_PATH opens reject data-open flags.
+    let flags = if flags & libc::O_PATH == 0 {
+        // Avoid waiting for a peer if the final component is a FIFO.
+        // TODO: Retain O_PATH handles at lookup to reject special files before data opens.
+        flags | libc::O_NOCTTY | libc::O_NONBLOCK
+    } else {
+        flags
+    };
     let how = OpenHow {
         flags: (flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32 as u64,
         mode: if creating {

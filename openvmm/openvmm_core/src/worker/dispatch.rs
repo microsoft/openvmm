@@ -1407,7 +1407,7 @@ impl InitializedVm {
                 Some(
                     VmgsResource::Disk(_)
                         | VmgsResource::ReprovisionOnFailure(_)
-                        | VmgsResource::Reprovision(_)
+                        | VmgsResource::ReprovisionSingle(_)
                 )
             ) {
                 anyhow::bail!("KVM SNP guest_memfd does not support VMGS disks");
@@ -1661,7 +1661,7 @@ impl InitializedVm {
                 .await
                 .context("failed to open vmgs file")?,
             ),
-            Some(VmgsResource::Reprovision(disk)) => Some(
+            Some(VmgsResource::ReprovisionSingle(disk)) => Some(
                 vmgs::Vmgs::request_format(
                     open_simple_disk(&resolver, disk.disk, false, &driver_source).await?,
                     None,
@@ -2318,24 +2318,29 @@ impl InitializedVm {
                     chipset_builder
                         .arc_mutex_device(device_name)
                         .try_add(|services| {
+                            let mut register_mmio = services.register_mmio();
+                            let mut register_pio = services.register_pio();
                             let root_port_definitions = rc
                                 .ports
                                 .iter()
                                 .map(pcie_topology::build_port_definition)
                                 .collect();
-                            GenericPcieRootComplex::builder(
-                                &mut services.register_mmio(),
+                            let builder = GenericPcieRootComplex::builder(
+                                &mut register_mmio,
+                                &mut register_pio,
                                 rc.start_bus..=rc.end_bus,
                                 ranges.ecam_range,
-                            )
-                            .root_ports(
-                                root_port_definitions,
-                                &msi_conn.msi_target(rc_bus_range, 0),
-                            )
-                            .first_port_device_number(root_port_start_device)
-                            .reserved_device_numbers(reserved_device_numbers)
-                            .chbcr_range(chbcr_range)
-                            .build()
+                            );
+                            builder
+                                .root_ports(
+                                    root_port_definitions,
+                                    &msi_conn.msi_target(rc_bus_range, 0),
+                                )
+                                .legacy_pci_config_io(rc.legacy_pci_config_io)
+                                .first_port_device_number(root_port_start_device)
+                                .reserved_device_numbers(reserved_device_numbers)
+                                .chbcr_range(chbcr_range)
+                                .build()
                         })?;
 
                 // Defer MSI wiring to after IOMMU setup so that

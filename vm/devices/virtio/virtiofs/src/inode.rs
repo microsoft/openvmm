@@ -253,9 +253,8 @@ impl VirtioFsInode {
     }
 
     /// Opens the inode, creating a file object.
-    pub fn open(self: Arc<VirtioFsInode>, flags: u32) -> lx::Result<VirtioFsFile> {
-        let flags = (flags as i32) | lx::O_NOFOLLOW;
-        let file = self.volume.open(&*self.get_path(), flags, None)?;
+    pub fn open(self: Arc<VirtioFsInode>, options: i32) -> lx::Result<VirtioFsFile> {
+        let file = self.volume.open(&*self.get_path(), options, None)?;
         Ok(VirtioFsFile::new(file, self))
     }
 
@@ -263,15 +262,15 @@ impl VirtioFsInode {
     pub fn create(
         &self,
         name: &LxStr,
-        flags: u32,
+        open_options: i32,
         mode: u32,
         uid: u32,
         gid: u32,
     ) -> lx::Result<(VirtioFsInode, fuse_attr, lxutil::LxFile)> {
         let path = self.child_path(name)?;
         let options = LxCreateOptions::new(mode, uid, gid);
-        let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
-        let file = self.volume.open(&path, flags, Some(options))?;
+        let open_options = open_options | lx::O_CREAT;
+        let file = self.volume.open(&path, open_options, Some(options))?;
         let stat = file.fstat()?.into();
         let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);

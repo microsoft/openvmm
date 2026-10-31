@@ -183,15 +183,7 @@ fn test_pkey() -> RsaKeyPair {
 }
 
 fn test_x509(key: &RsaKeyPair) -> X509Certificate {
-    X509Certificate::build_self_signed(
-        key.into(),
-        "US",
-        "Washington",
-        "Redmond",
-        "Example Organization",
-        "example.com",
-    )
-    .unwrap()
+    X509Certificate::build_self_signed(key.into(), &Default::default()).unwrap()
 }
 
 fn test_pkcs7_data(input: &[u8]) -> Vec<u8> {

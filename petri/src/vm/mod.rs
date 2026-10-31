@@ -1864,7 +1864,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let disk = match self.config.vmgs {
             PetriVmgsResource::Disk(disk)
             | PetriVmgsResource::ReprovisionOnFailure(disk)
-            | PetriVmgsResource::Reprovision(disk) => disk,
+            | PetriVmgsResource::ReprovisionSingle(disk) => disk,
             PetriVmgsResource::Ephemeral => PetriVmgsDisk::default(),
         };
         self.config.vmgs = match guest_state_lifetime {
@@ -1872,7 +1872,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             PetriGuestStateLifetime::ReprovisionOnFailure => {
                 PetriVmgsResource::ReprovisionOnFailure(disk)
             }
-            PetriGuestStateLifetime::Reprovision => PetriVmgsResource::Reprovision(disk),
+            PetriGuestStateLifetime::ReprovisionSingle => {
+                PetriVmgsResource::ReprovisionSingle(disk)
+            }
             PetriGuestStateLifetime::Ephemeral => {
                 if !matches!(disk.disk, Disk::Memory(_)) {
                     panic!("attempted to use ephemeral guest state after specifying backing vmgs")
@@ -1888,7 +1890,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => {
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => {
                 vmgs.encryption_policy = policy;
             }
             PetriVmgsResource::Ephemeral => {
@@ -1912,7 +1914,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         match &mut self.config.vmgs {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => {
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => {
                 if !matches!(vmgs.disk, Disk::Memory(_)) {
                     panic!("already specified a backing vmgs file");
                 }
@@ -4080,7 +4082,7 @@ pub enum PetriVmgsResource {
     /// Use disk to store guest state, reformatting if corrupted.
     ReprovisionOnFailure(PetriVmgsDisk),
     /// Format and use disk to store guest state
-    Reprovision(PetriVmgsDisk),
+    ReprovisionSingle(PetriVmgsDisk),
     /// Store guest state in memory
     Ephemeral,
 }
@@ -4091,7 +4093,7 @@ impl PetriVmgsResource {
         match self {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
-            | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => Some(vmgs),
             PetriVmgsResource::Ephemeral => None,
         }
     }
@@ -4116,7 +4118,7 @@ pub enum PetriGuestStateLifetime {
     /// Same as default, except reformat the backing disk if corrupted
     ReprovisionOnFailure,
     /// Same as default, except reformat the backing disk
-    Reprovision,
+    ReprovisionSingle,
     /// Store guest state in memory (no backing disk)
     Ephemeral,
 }

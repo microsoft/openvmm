@@ -687,8 +687,8 @@ mod tests {
         let point = pk.to_uncompressed_point();
         let spki = x509_cert::spki::SubjectPublicKeyInfo {
             algorithm: x509_cert::spki::AlgorithmIdentifier {
-                oid: der::oid::db::rfc5912::ID_EC_PUBLIC_KEY,
-                parameters: Some(der::oid::db::rfc5912::SECP_384_R_1),
+                oid: const_oid::db::rfc5912::ID_EC_PUBLIC_KEY,
+                parameters: Some(const_oid::db::rfc5912::SECP_384_R_1),
             },
             subject_public_key: der::asn1::BitString::from_bytes(&point).unwrap(),
         };
@@ -716,15 +716,12 @@ mod tests {
         assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
 
         invalid_spki.subject_public_key = der::asn1::BitString::from_bytes(&point).unwrap();
-        for parameters in [
-            None,
-            Some(der::asn1::ObjectIdentifier::new_unwrap("1.3.132.0.35")),
-        ] {
+        for parameters in [None, Some(const_oid::db::rfc5912::SECP_521_R_1)] {
             invalid_spki.algorithm.parameters = parameters;
             assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
         }
 
-        invalid_spki.algorithm.parameters = Some(der::oid::db::rfc5912::SECP_384_R_1);
+        invalid_spki.algorithm.parameters = Some(const_oid::db::rfc5912::SECP_384_R_1);
         invalid_spki.algorithm.oid = pkcs1::ALGORITHM_OID;
         assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
     }

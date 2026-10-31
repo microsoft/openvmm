@@ -219,7 +219,7 @@ pub fn github_yaml(
                                 "sudo dnf install -y gcc"
                             }
                             _ => {
-                                "i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let \"i=i+1\"; sleep 1; done;\n    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y"
+                                "i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let \"i=i+1\"; sleep 1; done;\n    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends"
                             }
                         },
                     );

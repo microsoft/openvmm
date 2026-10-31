@@ -558,7 +558,7 @@ fn child_operations_require_directory_parents() {
             assert_eq!(parent.lookup_child(name).err().unwrap(), lx::Error::ENOTDIR);
             assert_eq!(
                 parent
-                    .create(name, lx::O_WRONLY as u32, 0o666, 0, 0)
+                    .create(name, lx::O_WRONLY, 0o666, 0, 0)
                     .err()
                     .unwrap(),
                 lx::Error::ENOTDIR
@@ -630,6 +630,282 @@ async fn fuse_create_rejects_symlink_parent(driver: DefaultDriver) {
 }
 
 #[test]
+fn final_symlinks_are_not_opened_or_created() {
+    for aggregate in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("target"), b"unchanged").unwrap();
+        std::fs::write(tmp.path().join("stale"), b"original").unwrap();
+        let (fs, root_id) = if aggregate {
+            let fs = VirtioFs::new_aggregate();
+            fs.add_child("share", tmp.path(), None).unwrap();
+            let root = fs.lookup_synthetic_root("share".as_ref()).unwrap();
+            (fs, root.nodeid)
+        } else {
+            (VirtioFs::new(tmp.path(), None).unwrap(), FUSE_ROOT_ID)
+        };
+        let root = fs.get_inode(root_id).unwrap();
+        let (stale, _) = root.lookup_child("stale".as_ref()).unwrap();
+        std::fs::rename(tmp.path().join("stale"), tmp.path().join("original")).unwrap();
+        root.symlink("stale".as_ref(), "target".as_ref(), 0, 0)
+            .unwrap();
+        let (link, _) = root
+            .symlink("link".as_ref(), "target".as_ref(), 0, 0)
+            .unwrap();
+        for inode in [std::sync::Arc::new(link), std::sync::Arc::new(stale)] {
+            for flags in [
+                lx::O_RDONLY,
+                lx::O_WRONLY,
+                lx::O_RDWR,
+                lx::O_WRONLY | lx::O_TRUNC,
+            ] {
+                assert_eq!(inode.clone().open(flags).err().unwrap(), lx::Error::ELOOP);
+            }
+        }
+        for name in ["link", "stale"] {
+            for flags in [
+                lx::O_RDONLY,
+                lx::O_WRONLY,
+                lx::O_RDWR,
+                lx::O_WRONLY | lx::O_TRUNC,
+            ] {
+                assert_eq!(
+                    root.create(name.as_ref(), flags, 0o666, 0, 0)
+                        .err()
+                        .unwrap(),
+                    lx::Error::ELOOP
+                );
+            }
+            let (link, _) = root.lookup_child(name.as_ref()).unwrap();
+            assert_eq!(link.read_link().unwrap(), "target");
+        }
+        let (file, _) = root.lookup_child("target".as_ref()).unwrap();
+        let file = std::sync::Arc::new(file);
+        file.open(lx::O_RDONLY).unwrap();
+        root.create("new".as_ref(), lx::O_WRONLY, 0o666, 0, 0)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(tmp.path().join("target")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read(tmp.path().join("original")).unwrap(),
+            b"original"
+        );
+        assert!(tmp.path().join("new").is_file());
+    }
+}
+
+#[async_test]
+async fn fuse_open_and_create_reject_final_symlink(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("target"), b"unchanged").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_SYMLINK,
+        FUSE_ROOT_ID,
+        b"link\0target\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    let open = fuse_open_in::new_zeroed();
+    let mut create = fuse_create_in::new_zeroed();
+    create.mode = 0o666;
+    let mut create_args = create.as_bytes().to_vec();
+    create_args.extend_from_slice(b"link\0");
+    for (opcode, nodeid, args) in [
+        (FUSE_OPEN, entry.nodeid, open.as_bytes()),
+        (FUSE_CREATE, FUSE_ROOT_ID, create_args.as_slice()),
+    ] {
+        let (unique, response) = harness.post_fuse_request(4, opcode, nodeid, args, 256);
+        let (_, used_len) = harness.wait_for_used().await;
+        assert_eq!(used_len, OUT_HEADER_SIZE);
+        let header = harness.read_out_header(response);
+        assert_eq!(header.unique, unique);
+        assert_eq!(header.error, -lx::ELOOP);
+    }
+    assert_eq!(
+        std::fs::read(harness.tmpdir_path().join("target")).unwrap(),
+        b"unchanged"
+    );
+}
+
+#[async_test]
+async fn execute_intent_open_reads_file(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let contents = b"executable";
+    std::fs::write(harness.tmpdir_path().join("file"), contents).unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_LOOKUP,
+        FUSE_ROOT_ID,
+        b"file\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    let mut open = fuse_open_in::new_zeroed();
+    open.flags = (lx::O_RDONLY | lx::O_LARGEFILE) as u32 | 0x20;
+    let (unique, response) = harness.post_fuse_request(
+        4,
+        FUSE_OPEN,
+        entry.nodeid,
+        open.as_bytes(),
+        OUT_HEADER_SIZE + size_of::<fuse_open_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, 0);
+    let opened: fuse_open_out = harness.read_response(response);
+
+    let mut read = fuse_read_in::new_zeroed();
+    read.fh = opened.fh;
+    read.size = contents.len() as u32;
+    let (unique, response) = harness.post_fuse_request(
+        6,
+        FUSE_READ,
+        entry.nodeid,
+        read.as_bytes(),
+        OUT_HEADER_SIZE + read.size,
+    );
+    let (_, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, OUT_HEADER_SIZE + read.size);
+    let header = harness.read_out_header(response);
+    assert_eq!(header.unique, unique);
+    assert_eq!(header.error, 0);
+    let mut actual = vec![0; contents.len()];
+    harness
+        .mem
+        .read_at(response + OUT_HEADER_SIZE as u64, &mut actual)
+        .unwrap();
+    assert_eq!(actual, contents);
+}
+
+#[async_test]
+async fn unsupported_open_flags_do_not_change_files(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("file"), b"unchanged").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_LOOKUP,
+        FUSE_ROOT_ID,
+        b"file\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    for unsupported in [
+        lx::O_NOCTTY as u32,
+        lx::O_CLOEXEC as u32,
+        lx::O_PATH as u32,
+        0x2000,
+        0x400000,
+        1 << 31,
+    ] {
+        let flags = unsupported | (lx::O_WRONLY | lx::O_TRUNC) as u32;
+        let mut open = fuse_open_in::new_zeroed();
+        open.flags = flags;
+        let mut create = fuse_create_in::new_zeroed();
+        create.flags = flags;
+        create.mode = 0o666;
+        let mut existing = create.as_bytes().to_vec();
+        existing.extend_from_slice(b"file\0");
+        let mut new = create.as_bytes().to_vec();
+        new.extend_from_slice(b"new\0");
+        for (opcode, nodeid, args) in [
+            (FUSE_OPEN, entry.nodeid, open.as_bytes()),
+            (FUSE_CREATE, FUSE_ROOT_ID, existing.as_slice()),
+            (FUSE_CREATE, FUSE_ROOT_ID, new.as_slice()),
+            (FUSE_OPEN, u64::MAX, open.as_bytes()),
+            (FUSE_OPENDIR, u64::MAX, open.as_bytes()),
+            (FUSE_CREATE, u64::MAX, new.as_slice()),
+        ] {
+            let (unique, response) = harness.post_fuse_request(4, opcode, nodeid, args, 256);
+            let (_, used_len) = harness.wait_for_used().await;
+            assert_eq!(used_len, OUT_HEADER_SIZE);
+            let header = harness.read_out_header(response);
+            assert_eq!(header.unique, unique);
+            assert_eq!(header.error, -lx::EINVAL);
+        }
+    }
+    assert_eq!(
+        std::fs::read(harness.tmpdir_path().join("file")).unwrap(),
+        b"unchanged"
+    );
+    assert!(!harness.tmpdir_path().join("new").exists());
+}
+
+#[test]
+fn synthetic_root_open_dir_rejects_unsupported_flags() {
+    let fs = VirtioFs::new_aggregate();
+    let mut header = fuse_in_header::new_zeroed();
+    header.len = (size_of::<fuse_in_header>() + size_of::<fuse_open_in>()) as u32;
+    header.opcode = FUSE_OPENDIR;
+    header.nodeid = FUSE_ROOT_ID;
+    for flags in [
+        lx::O_CREAT,
+        lx::O_EXCL,
+        lx::O_NOCTTY,
+        lx::O_CLOEXEC,
+        lx::O_PATH,
+    ] {
+        let mut open = fuse_open_in::new_zeroed();
+        open.flags = flags as u32;
+        let mut data = header.as_bytes().to_vec();
+        data.extend_from_slice(open.as_bytes());
+        let request = fuse::Request::new(data.as_slice()).unwrap();
+
+        assert_eq!(
+            fuse::Fuse::open_dir(&fs, &request, open.flags).unwrap_err(),
+            lx::Error::EINVAL
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn replaced_regular_file_does_not_wait_for_fifo_peer() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("file"), b"original").unwrap();
+    let fs = VirtioFs::new(tmp.path(), None).unwrap();
+    let root = fs.get_inode(FUSE_ROOT_ID).unwrap();
+    let (inode, _) = root.lookup_child("file".as_ref()).unwrap();
+    let inode = std::sync::Arc::new(inode);
+
+    std::fs::remove_file(tmp.path().join("file")).unwrap();
+    root.volume
+        .mknod(
+            "file",
+            lxutil::LxCreateOptions::new(lx::S_IFIFO | 0o600, 0, 0),
+            0,
+        )
+        .unwrap();
+
+    drop(inode.clone().open(lx::O_RDONLY).unwrap());
+    assert_eq!(inode.open(lx::O_WRONLY).err().unwrap(), lx::Error::ENXIO);
+    assert_eq!(
+        root.create("file".as_ref(), lx::O_WRONLY, 0o600, 0, 0)
+            .err()
+            .unwrap(),
+        lx::Error::ENXIO
+    );
+}
+
+#[test]
 #[cfg_attr(
     windows,
     ignore = "requires permission to create native Windows symlinks"
@@ -659,22 +935,13 @@ fn stale_directory_paths_do_not_follow_native_links() {
         std::os::unix::fs::symlink(outside.path(), tmp.path().join("parent")).unwrap();
         assert_eq!(
             parent
-                .create(
-                    "file".as_ref(),
-                    (lx::O_WRONLY | lx::O_TRUNC) as u32,
-                    0o666,
-                    0,
-                    0
-                )
+                .create("file".as_ref(), lx::O_WRONLY | lx::O_TRUNC, 0o666, 0, 0)
                 .err()
                 .unwrap(),
             lx::Error::ELOOP
         );
         assert_eq!(
-            std::sync::Arc::new(file)
-                .open(lx::O_WRONLY as u32)
-                .err()
-                .unwrap(),
+            std::sync::Arc::new(file).open(lx::O_WRONLY).err().unwrap(),
             lx::Error::ELOOP
         );
         let error = root

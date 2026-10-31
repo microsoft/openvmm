@@ -296,15 +296,7 @@ impl LxVolume {
             Some(util::openat(&self.root, path, libc::O_PATH, None)?)
         };
         let file = file.as_ref().unwrap_or(&self.root);
-
-        // SAFETY: Calling C API as documented, with no special requirements.
-        let stat_fs = unsafe {
-            let mut stat_fs = std::mem::zeroed();
-            util::check_lx_errno(libc::fstatfs(file.as_raw_fd(), &mut stat_fs))?;
-            stat_fs
-        };
-
-        Ok(util::libc_stat_fs_to_lx_stat_fs(stat_fs))
+        util::stat_fs(file)
     }
 
     pub fn set_xattr(
@@ -405,6 +397,10 @@ pub struct LxFile {
 }
 
 impl LxFile {
+    pub fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        util::stat_fs(&self.fd)
+    }
+
     pub fn fstat(&self) -> lx::Result<StatEx> {
         util::stat_at(&self.fd, Path::new(""))
     }
@@ -487,6 +483,130 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use test_with_tracing::test;
+
+    #[test]
+    fn opens_do_not_acquire_a_controlling_terminal() {
+        const CHILD: &str = "LXUTIL_TEST_NOCTTY";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "unix::tests::opens_do_not_acquire_a_controlling_terminal",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{status}");
+            return;
+        }
+
+        // SAFETY: Session and signal changes are isolated to this child process.
+        unsafe {
+            assert_ne!(libc::signal(libc::SIGHUP, libc::SIG_IGN), libc::SIG_ERR);
+            assert!(libc::setsid() >= 0);
+        }
+        // SAFETY: Calling the PTY APIs with a valid owned descriptor and output pointer.
+        let (_master, number) = unsafe {
+            let fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
+            assert!(fd >= 0);
+            let master = OwnedFd::from_raw_fd(fd);
+            assert_eq!(libc::grantpt(master.as_raw_fd()), 0);
+            assert_eq!(libc::unlockpt(master.as_raw_fd()), 0);
+            let mut number = 0u32;
+            assert_eq!(
+                libc::ioctl(master.as_raw_fd(), libc::TIOCGPTN, &mut number),
+                0
+            );
+            (master, number)
+        };
+        let name = number.to_string();
+        let volume =
+            LxVolume::new(Path::new("/dev/pts"), &super::super::LxVolumeOptions::new()).unwrap();
+        let _file = volume.open(Path::new(&name), lx::O_RDWR, None).unwrap();
+        // SAFETY: The strings are valid and each successful descriptor is owned below.
+        unsafe {
+            assert_eq!(
+                libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC),
+                -1
+            );
+            assert_eq!(lx::Error::last_os_error(), lx::Error::ENXIO);
+
+            // Prove this PTY can become the controlling terminal without O_NOCTTY.
+            let path = util::path_to_cstr(&Path::new("/dev/pts").join(name)).unwrap();
+            let control = libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            assert!(control >= 0);
+            let _control = OwnedFd::from_raw_fd(control);
+            let tty = libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+            assert!(tty >= 0);
+            let _tty = OwnedFd::from_raw_fd(tty);
+        }
+    }
+
+    #[test]
+    fn fifo_data_opens_do_not_wait_for_peers() {
+        let root = tempfile::tempdir().unwrap();
+        let volume = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new()).unwrap();
+        let options = super::super::LxCreateOptions::new(lx::S_IFIFO | 0o600, 0, 0);
+        volume.mknod(Path::new("fifo"), options, 0).unwrap();
+
+        // Keep a peer while checking flags so a regression fails without hanging.
+        let peer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.path().join("fifo"))
+            .unwrap();
+        for flags in [lx::O_RDONLY, lx::O_WRONLY, lx::O_RDWR] {
+            let file = volume.open(Path::new("fifo"), flags, None).unwrap();
+            // SAFETY: The descriptor is valid and F_GETFL takes no additional argument.
+            let actual = unsafe { libc::fcntl(file.fd.as_raw_fd(), libc::F_GETFL) };
+            assert!(actual >= 0);
+            assert_ne!(actual & libc::O_NONBLOCK, 0);
+        }
+        drop(peer);
+
+        for flags in [lx::O_RDONLY, lx::O_RDWR] {
+            drop(volume.open(Path::new("fifo"), flags, None).unwrap());
+        }
+        for flags in [lx::O_WRONLY, lx::O_WRONLY | lx::O_CREAT] {
+            assert_eq!(
+                volume
+                    .open(Path::new("fifo"), flags, Some(options))
+                    .err()
+                    .unwrap(),
+                lx::Error::ENXIO
+            );
+        }
+    }
+
+    #[test]
+    fn open_options_preserve_linux_io_flags() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let volume = LxVolume::new(root.path(), &super::super::LxVolumeOptions::new()).unwrap();
+        for (sync, expected_sync) in [
+            (lx::O_RDONLY, 0),
+            (lx::O_DSYNC, libc::O_DSYNC),
+            (lx::O_SYNC, libc::O_SYNC),
+            (lx::O_SYNC & !lx::O_DSYNC, libc::O_SYNC),
+        ] {
+            let file = volume
+                .open(
+                    Path::new("file"),
+                    lx::O_RDWR | lx::O_APPEND | lx::O_NONBLOCK | lx::O_NOATIME | sync,
+                    None,
+                )
+                .unwrap();
+            // SAFETY: The descriptor is valid and F_GETFL takes no additional argument.
+            let flags = unsafe { libc::fcntl(file.fd.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(
+                flags & (libc::O_APPEND | libc::O_NONBLOCK | libc::O_NOATIME),
+                libc::O_APPEND | libc::O_NONBLOCK | libc::O_NOATIME
+            );
+            assert_eq!(flags & libc::O_SYNC, expected_sync);
+        }
+    }
 
     #[test]
     fn volume_creation_checks_openat2() {
@@ -659,9 +779,7 @@ mod tests {
         std::fs::rename(&share, root.path().join("original")).unwrap();
         std::os::unix::fs::symlink(outside.path(), &share).unwrap();
         let original_inode = volume.lstat(Path::new("")).unwrap().inode_id;
-        let reopened = volume
-            .open(Path::new(""), lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let reopened = volume.open(Path::new(""), lx::O_DIRECTORY, None).unwrap();
         assert_eq!(reopened.fstat().unwrap().inode_id, original_inode);
         let file = volume.open(Path::new("file"), lx::O_RDONLY, None).unwrap();
         let mut buffer = [0; 6];

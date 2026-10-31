@@ -1602,7 +1602,7 @@ async fn new_underhill_vm(
                 GuestStateLifetimeCli::ReprovisionOnFailure => {
                     GuestStateLifetime::ReprovisionOnFailure
                 }
-                GuestStateLifetimeCli::Reprovision => GuestStateLifetime::Reprovision,
+                GuestStateLifetimeCli::ReprovisionSingle => GuestStateLifetime::Reprovision,
                 GuestStateLifetimeCli::Ephemeral => GuestStateLifetime::Ephemeral,
             };
         }
@@ -2244,6 +2244,12 @@ async fn new_underhill_vm(
         virt::IsolationType::None => None,
     };
 
+    // Validate host-provided config for isolated VMs.
+    if isolation.is_isolated() {
+        validate_isolated_configuration(&dps)
+            .context("invalid host-provided configuration for isolated VM")?;
+    }
+
     // Decrypt VMGS state before the VMGS file is used for anything.
     //
     // `refresh_tpm_seeds` is a host side GSP service configuration
@@ -2258,10 +2264,6 @@ async fn new_underhill_vm(
             // responses via shared memory, which requires both `shared_vis_pages_pool` and
             // `gm.untrusted_dma_memory` to be available.
             let suppress_attestation = dps.general.suppress_attestation.unwrap_or_default();
-            if isolation.is_isolated() {
-                validate_isolated_configuration(&dps)
-                    .context("invalid host-provided configuration for isolated VM")?;
-            }
             underhill_attestation::initialize_platform_security(
                 &get_client,
                 dps.general.bios_guid,

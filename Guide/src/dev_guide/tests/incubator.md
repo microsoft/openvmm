@@ -67,6 +67,12 @@ Omit `--no-pty` and run `/bin/sh` for an interactive session. Pipette must be
 inside the shared directory. Keep the mshv root kernel separate from any
 child VM's kernel, and the native outer OpenVMM separate from guest binaries.
 
+To expose virtual SMT explicitly, set `enable-smt = true` alongside
+`processors` in `[incubator]`. Omission preserves the launcher's default.
+This controls the outer topology, not the child VM's vCPU count. Verify the
+effective hypervisor scheduler in its boot log when comparing ROOT and CORE;
+requesting CORE without SMT can select a classic scheduler instead.
+
 Incubator supplies Petri with a `UefiGuest::Mshv` boot recipe: resolved kernel
 and payload paths plus an owned, prepared initrd. Petri composes and owns the
 temporary boot disk during VM preparation; the separate mshv platform preset

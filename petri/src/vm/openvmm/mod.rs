@@ -197,6 +197,7 @@ pub struct PetriVmConfigOpenVmm {
     arch: MachineArch,
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
+    skip_save_restore: bool,
 
     // Mesh host
     mesh: mesh_process::Mesh,
@@ -402,8 +403,8 @@ async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> 
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
             VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => {
-            VmgsResource::Reprovision(convert_disk(disk).await?)
+        PetriVmgsResource::ReprovisionSingle(disk) => {
+            VmgsResource::ReprovisionSingle(convert_disk(disk).await?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
     })

@@ -35,6 +35,7 @@ impl PetriVmConfigOpenVmm {
             arch,
             host_log_levels,
             mut config,
+            skip_save_restore,
 
             mesh,
 
@@ -61,6 +62,24 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
+        let enable_legacy_pci_config_io =
+            arch == MachineArch::X86_64 && !config.chipset.with_piix4_pci_bus;
+        for root_complex in &mut config.pcie_root_complexes {
+            root_complex.legacy_pci_config_io = enable_legacy_pci_config_io
+                && root_complex.segment == 0
+                && root_complex.start_bus == 0
+                && root_complex.end_bus == u8::MAX;
+        }
+        if config
+            .pcie_root_complexes
+            .iter()
+            .any(|root_complex| root_complex.legacy_pci_config_io)
+        {
+            config
+                .chipset_devices
+                .retain(|device| device.name != "missing-pci");
+        }
+
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
@@ -72,7 +91,8 @@ impl PetriVmConfigOpenVmm {
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
-        let supports_save_restore = !resources.properties.is_openhcl
+        let supports_save_restore = !skip_save_restore
+            && !resources.properties.is_openhcl
             && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)

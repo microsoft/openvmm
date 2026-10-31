@@ -36,6 +36,12 @@ use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
 
 impl PetriVmConfigOpenVmm {
+    /// Skip automatic save/restore verification for devices that do not support it.
+    pub fn without_save_restore(mut self) -> Self {
+        self.skip_save_restore = true;
+        self
+    }
+
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {
@@ -271,6 +277,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso: false,
                     mac_address,
                     endpoint,
                 }
@@ -309,6 +316,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso: false,
                     mac_address,
                     endpoint,
                 }
@@ -553,6 +561,7 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
+                    legacy_pci_config_io: false,
                     low_mmio: PcieMmioRangeConfig::Dynamic {
                         size: LOW_MMIO_SIZE,
                     },

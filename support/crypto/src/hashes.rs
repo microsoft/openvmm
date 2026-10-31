@@ -100,13 +100,13 @@ impl HashAlgorithm {
     /// Returns the hash algorithm named by an RSA signature OID.
     #[cfg(any(symcrypt, rust, all(native, target_os = "macos")))]
     pub(crate) fn from_rsa_signature_oid(
-        oid: der::asn1::ObjectIdentifier,
+        oid: const_oid::ObjectIdentifier,
     ) -> Result<Self, der::Error> {
         match oid {
-            der::oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
-            der::oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
-            der::oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION => Ok(Self::Sha512),
-            der::oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
+            const_oid::db::rfc5912::SHA_256_WITH_RSA_ENCRYPTION => Ok(Self::Sha256),
+            const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION => Ok(Self::Sha384),
+            const_oid::db::rfc5912::SHA_512_WITH_RSA_ENCRYPTION => Ok(Self::Sha512),
+            const_oid::db::rfc5912::SHA_1_WITH_RSA_ENCRYPTION => Ok(Self::Sha1),
             _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
         }
     }
@@ -145,17 +145,17 @@ impl HashAlgorithm {
     /// Returns the hash algorithm named by an ECDSA signature OID.
     #[cfg(symcrypt)]
     pub(crate) fn from_ecdsa_signature_oid(
-        oid: der::asn1::ObjectIdentifier,
+        oid: const_oid::ObjectIdentifier,
     ) -> Result<Self, der::Error> {
         // RFC 3279's ecdsa-with-SHA1 is absent from const-oid's database.
-        const ECDSA_WITH_SHA_1: der::asn1::ObjectIdentifier =
-            der::asn1::ObjectIdentifier::new_unwrap("1.2.840.10045.4.1");
+        const ECDSA_WITH_SHA_1: const_oid::ObjectIdentifier =
+            const_oid::ObjectIdentifier::new_unwrap("1.2.840.10045.4.1");
 
         match oid {
             ECDSA_WITH_SHA_1 => Ok(Self::Sha1),
-            der::oid::db::rfc5912::ECDSA_WITH_SHA_256 => Ok(Self::Sha256),
-            der::oid::db::rfc5912::ECDSA_WITH_SHA_384 => Ok(Self::Sha384),
-            der::oid::db::rfc5912::ECDSA_WITH_SHA_512 => Ok(Self::Sha512),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_256 => Ok(Self::Sha256),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_384 => Ok(Self::Sha384),
+            const_oid::db::rfc5912::ECDSA_WITH_SHA_512 => Ok(Self::Sha512),
             _ => Err(der::ErrorKind::OidUnknown { oid }.to_error()),
         }
     }

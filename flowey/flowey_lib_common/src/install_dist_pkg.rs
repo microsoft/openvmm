@@ -117,7 +117,9 @@ fn install_packages(
 ) -> anyhow::Result<()> {
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => {
-            let mut options = Vec::new();
+            // don't install recommended packages to avoid relying on
+            // dependencies not explicitly listed.
+            let mut options = vec!["--no-install-recommends"];
             if !interactive {
                 // auto accept
                 options.push("-y");

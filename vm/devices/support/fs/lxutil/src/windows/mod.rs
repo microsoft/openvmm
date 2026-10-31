@@ -236,6 +236,11 @@ impl LxVolume {
         mut options: Option<super::LxCreateOptions>,
     ) -> lx::Result<LxFile> {
         assert!(path.is_relative());
+        // NTFS interprets ':' as a stream separator, which this API does not support.
+        // Linux filename colons are escaped by PathExt/PathBufExt before opening.
+        if path.as_os_str().encode_wide().any(|c| c == b':' as u16) {
+            return Err(lx::Error::EINVAL);
+        }
         self.check_sandbox_enforcement(path)?;
         // Convert flags to relevant NT options.
         let desired_access = util::open_flags_to_access_mask(flags);
@@ -247,30 +252,40 @@ impl LxVolume {
             opt.mode = lx::S_IFREG | (opt.mode & 0o7777);
         }
 
-        // Try to open/create the file.
-        let (file, create_result) = self.create_file(
-            path,
-            desired_access,
-            disposition,
-            file_attributes,
-            create_options,
-            options,
-            0,
-        )?;
-
+        let open = |create_options| {
+            self.create_file(
+                path,
+                desired_access,
+                disposition,
+                file_attributes,
+                create_options,
+                options,
+                0,
+            )
+        };
+        // OBJ_DONT_REPARSE rejects links in the kernel; ordinary opens need no stat.
+        let (file, create_result, is_app_exec_alias) =
+            match open(create_options & !FileSystem::FILE_OPEN_REPARSE_POINT) {
+                Ok((file, result)) => (file, result, false),
+                Err(lx::Error::ELOOP | lx::Error::ENXIO) => {
+                    let (file, result) = open(create_options)?;
+                    // Inspect the actual fallback handle before any destructive operation.
+                    let info = fs::query_stat_lx_information(&file, &self.state.fs_context)?;
+                    if util::is_symlink(info.FileAttributes, info.ReparseTag) {
+                        return Err(lx::Error::ELOOP);
+                    }
+                    let is_app_exec_alias = (info.EndOfFile == 0 || flags & lx::O_TRUNC != 0)
+                        && fs::is_app_exec_link(info.FileAttributes, info.ReparseTag);
+                    (file, result, is_app_exec_alias)
+                }
+                Err(err) => return Err(err),
+            };
         // O_TRUNC can't be handled with FILE_OVERWRITE because that clears metadata, so handle
         // it here.
         if flags & lx::O_TRUNC != 0 && create_result != WindowsProgramming::FILE_CREATED as usize {
             fs::truncate(&file, 0)?;
         }
 
-        let is_app_exec_alias = match self.state.get_attributes_by_handle(&file) {
-            Ok(info) => info.is_app_execution_alias,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to get attributes for newly opened file");
-                false
-            }
-        };
         Ok(LxFile {
             handle: file,
             state: Arc::clone(&self.state),
@@ -1233,6 +1248,10 @@ pub struct LxFile {
 }
 
 impl LxFile {
+    pub fn stat_fs(&self) -> lx::Result<lx::StatFs> {
+        fs::get_lx_file_system_attributes(&self.handle, 0)
+    }
+
     pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         let mut info = self.state.get_attributes_by_handle(&self.handle)?;
         *self.is_app_exec_alias.lock() = info.is_app_execution_alias;
@@ -1511,6 +1530,146 @@ mod tests {
     use crate::LxCreateOptions;
     use crate::LxVolumeOptions;
     use test_with_tracing::test;
+
+    #[test]
+    fn ordinary_data_opens_preserve_open_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+
+        for (name, flags) in [
+            ("file", lx::O_RDONLY),
+            ("file", lx::O_RDWR | lx::O_TRUNC),
+            ("created", lx::O_WRONLY | lx::O_CREAT),
+            ("exclusive", lx::O_WRONLY | lx::O_CREAT | lx::O_EXCL),
+            ("dir", lx::O_DIRECTORY),
+            ("", lx::O_DIRECTORY),
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(|| LxCreateOptions::new(0o666, 0, 0));
+            let file = volume.open(Path::new(name), flags, options).unwrap();
+            if flags & lx::O_DIRECTORY == 0 {
+                let expected_size = if flags == lx::O_RDONLY { 4 } else { 0 };
+                assert_eq!(file.fstat().unwrap().file_size, expected_size);
+            }
+        }
+
+        for (name, flags, expected) in [
+            ("missing", lx::O_RDONLY, lx::Error::ENOENT),
+            (
+                "file",
+                lx::O_WRONLY | lx::O_CREAT | lx::O_EXCL,
+                lx::Error::EEXIST,
+            ),
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(|| LxCreateOptions::new(0o666, 0, 0));
+            assert_eq!(
+                volume.open(Path::new(name), flags, options).err().unwrap(),
+                expected
+            );
+        }
+    }
+
+    fn create_app_exec_alias(path: &Path, contents: &[u8]) {
+        std::fs::write(path, contents).unwrap();
+        let handle = std::fs::OpenOptions::new()
+            .access_mode(Foundation::GENERIC_WRITE.0)
+            .custom_flags(W32Fs::FILE_FLAG_OPEN_REPARSE_POINT.0)
+            .open(path)
+            .unwrap();
+        // Version 3: package family, application ID, executable, and application type.
+        let mut data = 3u32.to_le_bytes().to_vec();
+        for field in ["test-package", "test-package!app", r"C:\unused.exe", "0"] {
+            for value in field.encode_utf16().chain([0]) {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let mut reparse = W32Ss::IO_REPARSE_TAG_APPEXECLINK.to_le_bytes().to_vec();
+        reparse.extend_from_slice(&u16::try_from(data.len()).unwrap().to_le_bytes());
+        reparse.extend_from_slice(&0u16.to_le_bytes());
+        reparse.extend_from_slice(&data);
+        util::set_reparse_point(&handle.into(), &reparse).unwrap();
+    }
+
+    #[test]
+    fn app_exec_aliases_preserve_read_and_truncate_semantics() {
+        let root = tempfile::tempdir().unwrap();
+        create_app_exec_alias(&root.path().join("empty"), b"");
+        create_app_exec_alias(&root.path().join("nonempty"), b"data");
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+
+        for (name, flags, expected) in [
+            ("empty", lx::O_RDONLY, b"MZ".as_slice()),
+            ("nonempty", lx::O_RDONLY, b"data".as_slice()),
+            ("nonempty", lx::O_RDWR | lx::O_TRUNC, b"MZ".as_slice()),
+            (
+                "empty",
+                lx::O_RDWR | lx::O_CREAT | lx::O_TRUNC,
+                b"MZ".as_slice(),
+            ),
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(|| LxCreateOptions::new(0o666, 0, 0));
+            let file = volume.open(Path::new(name), flags, options).unwrap();
+            let mut buffer = [0; 8];
+            let count = file.pread(&mut buffer, 0).unwrap();
+            assert_eq!(&buffer[..count], expected);
+        }
+    }
+
+    #[test]
+    fn native_stream_opens_are_rejected_without_effects() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"unchanged").unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        for name in [
+            "file:stream",
+            "file::$DATA",
+            "new:stream",
+            r"dir:stream\child",
+        ] {
+            for flags in [
+                lx::O_RDONLY,
+                lx::O_RDWR | lx::O_TRUNC,
+                lx::O_RDWR | lx::O_CREAT | lx::O_TRUNC,
+            ] {
+                let options = (flags & lx::O_CREAT != 0).then(|| LxCreateOptions::new(0o666, 0, 0));
+                assert_eq!(
+                    volume.open(Path::new(name), flags, options).err().unwrap(),
+                    lx::Error::EINVAL,
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!root.path().join("new").exists());
+    }
+
+    #[test]
+    fn escaped_guest_colons_remain_regular_filenames() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        std::fs::write(root.path().join(r"dir\file"), b"unchanged").unwrap();
+        let volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        let path = Path::from_lx("dir/file:stream").unwrap();
+        let file = volume
+            .open(
+                &path,
+                lx::O_WRONLY | lx::O_CREAT,
+                Some(LxCreateOptions::new(0o666, 0, 0)),
+            )
+            .unwrap();
+        file.pwrite(b"literal", 0, 0).unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join(r"dir\file")).unwrap(),
+            b"unchanged"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("dir").join("file\u{f03a}stream")).unwrap(),
+            b"literal"
+        );
+    }
 
     fn deny_read_ea(handle: &impl AsRawHandle) {
         deny_access(handle, W32Fs::FILE_READ_EA);
@@ -1952,12 +2111,30 @@ mod tests {
         assert!(lx::s_islnk(
             volume.lstat(Path::new("link")).unwrap().mode.into()
         ));
+        assert_eq!(
+            volume
+                .open(Path::new("link"), lx::O_RDONLY, None)
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
+        assert_eq!(
+            volume
+                .open(
+                    Path::new("link"),
+                    lx::O_CREAT | lx::O_RDONLY,
+                    Some(create())
+                )
+                .err()
+                .unwrap(),
+            lx::Error::ELOOP
+        );
         assert_eq!(volume.lstat(path).unwrap_err(), lx::Error::ELOOP);
         assert_eq!(
             volume
                 .open(
                     path,
-                    lx::O_CREAT | lx::O_TRUNC | lx::O_WRONLY | lx::O_NOFOLLOW,
+                    lx::O_CREAT | lx::O_TRUNC | lx::O_WRONLY,
                     Some(create())
                 )
                 .err()
@@ -2074,6 +2251,30 @@ mod tests {
             util::query_information_file(&handle).unwrap();
         assert_eq!(tag.ReparseTag, W32Ss::IO_REPARSE_TAG_SYMLINK);
         assert_eq!(volume.read_link(Path::new("link")).unwrap(), "dir");
+        std::fs::write(root.path().join("file"), b"unchanged").unwrap();
+        std::os::windows::fs::symlink_file("file", root.path().join("filelink")).unwrap();
+        for flags in [
+            lx::O_RDONLY,
+            lx::O_WRONLY | lx::O_TRUNC,
+            lx::O_CREAT | lx::O_WRONLY | lx::O_TRUNC,
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(create);
+            assert_eq!(
+                volume
+                    .open(Path::new("filelink"), flags, options)
+                    .err()
+                    .unwrap(),
+                lx::Error::ELOOP
+            );
+            assert_eq!(
+                std::fs::read_link(root.path().join("filelink")).unwrap(),
+                Path::new("file")
+            );
+        }
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"unchanged"
+        );
         volume
             .rename(Path::new("link"), Path::new(r"dir\link"), 0)
             .unwrap();
