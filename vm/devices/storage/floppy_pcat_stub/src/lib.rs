@@ -485,6 +485,7 @@ impl StubFloppyDiskController {
         register_pio: &mut dyn RegisterPortIoIntercept,
         pio_base_addr: u16,
     ) -> Self {
+        interrupt.set_level(false);
         let mut pio_base = register_pio.new_io_region("floppy base", 6);
         let mut pio_control = register_pio.new_io_region("floppy control", 1);
 

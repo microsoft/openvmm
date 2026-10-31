@@ -115,6 +115,8 @@ impl I8042Device {
     ) -> Self {
         // Activate the input immediately.
         keyboard_input.set_active(true).await;
+        keyboard_interrupt.set_level(false);
+        mouse_interrupt.set_level(false);
         I8042Device {
             trigger_reset: reset,
             keyboard_interrupt,

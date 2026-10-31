@@ -429,6 +429,7 @@ impl PowerManagementDevice {
             this.enable_acpi_mode(acpi_mode.default_pio_dynamic)
         }
 
+        this.check_interrupt_assertion();
         this
     }
 

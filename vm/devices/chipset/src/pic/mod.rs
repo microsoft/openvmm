@@ -59,6 +59,7 @@ struct DualPicStats {
 
 impl DualPic {
     pub fn new(ready: LineInterrupt, port_io: &mut dyn RegisterPortIoIntercept) -> Self {
+        ready.set_level(false);
         let mut primary_region = port_io.new_io_region(
             "primary",
             (PRIMARY_PIC_COMMAND_PORT..=PRIMARY_PIC_DATA_PORT).len() as u16,
@@ -143,6 +144,9 @@ impl ChangeDeviceState for DualPic {
     async fn reset(&mut self) {
         for pic in &mut self.pics {
             pic.reset(false);
+            // VM reset rebuilds inputs at line-set start. Guest ICW resets still
+            // preserve live inputs via Pic::reset.
+            pic.lines = 0;
         }
         self.sync_outputs();
     }

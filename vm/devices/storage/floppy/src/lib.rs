@@ -980,6 +980,7 @@ impl FloppyDiskController {
         disk_drive: DriveRibbon,
         dma: Box<dyn IsaDmaChannel>,
     ) -> Result<Self, NewFloppyDiskControllerError> {
+        interrupt.set_level(false);
         let mut pio_base = register_pio.new_io_region("base", 6);
         let mut pio_control = register_pio.new_io_region("control", 1);
 

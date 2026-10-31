@@ -11,6 +11,10 @@ use std::future::Future;
 pub trait ChangeDeviceState {
     /// Starts a device, allowing it to interact with the guest asynchronously.
     ///
+    /// Interrupt outputs must already have been established during construction,
+    /// reset, or restore. This method may generate new activity, but must not be
+    /// relied on to initialize otherwise unpublished outputs.
+    ///
     /// For example, a device might process work queues that reside in guest
     /// memory on a separate thread.
     ///

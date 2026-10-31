@@ -233,7 +233,7 @@ impl ChangeDeviceState for Rtc {
         self.state = RtcState::new(self.initial_cmos);
 
         self.update_timers();
-        self.update_interrupt_line_level();
+        self.sync_interrupt_line_level();
     }
 }
 
@@ -307,7 +307,7 @@ impl Rtc {
         initial_cmos: Option<[u8; 256]>,
         enlightened_interrupts: bool,
     ) -> Self {
-        Rtc {
+        let rtc = Rtc {
             century_reg: CmosReg(century_reg_idx),
             initial_cmos,
             enlightened_interrupts,
@@ -321,7 +321,9 @@ impl Rtc {
             last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
 
             state: RtcState::new(initial_cmos),
-        }
+        };
+        rtc.sync_interrupt_line_level();
+        rtc
     }
 
     /// (for use by wrapper devices) reference to the raw underlying CMOS data
@@ -460,7 +462,7 @@ impl Rtc {
         self.state.cmos[CmosReg::STATUS_C] =
             status_c.with_irq_alarm(true).with_irq_combined(true).into();
 
-        self.update_interrupt_line_level();
+        self.signal_interrupt();
 
         // re-arm the alarm timer
         self.set_alarm_timer(now)
@@ -496,7 +498,7 @@ impl Rtc {
             .with_irq_combined(true)
             .into();
 
-        self.update_interrupt_line_level();
+        self.signal_interrupt();
     }
 
     fn set_update_timer(&mut self) {
@@ -510,19 +512,24 @@ impl Rtc {
             .with_irq_combined(true)
             .into();
 
-        self.update_interrupt_line_level();
+        self.signal_interrupt();
     }
 
-    /// Synchronizes the line level of the interrupt line with the state of
-    /// status register C.
-    fn update_interrupt_line_level(&self) {
+    /// Signals an interrupt event, forcing an edge for enlightened interrupts.
+    fn signal_interrupt(&self) {
+        let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
+        if self.enlightened_interrupts && status_c.irq_combined() {
+            self.interrupt.set_level(false);
+        }
+        self.sync_interrupt_line_level();
+    }
+
+    /// Reconstructs the output from status register C without forcing an edge.
+    fn sync_interrupt_line_level(&self) {
         let status_c = StatusRegC::from(self.state.cmos[CmosReg::STATUS_C]);
 
         if status_c.irq_update() || status_c.irq_periodic() || status_c.irq_alarm() {
             assert!(status_c.irq_combined());
-            if self.enlightened_interrupts {
-                self.interrupt.set_level(false);
-            }
             self.interrupt.set_level(true);
         } else {
             assert!(!status_c.irq_combined());
@@ -714,7 +721,7 @@ impl Rtc {
                 // clear pending interrupt flags.
                 tracing::debug!("clearing rtc interrupts");
                 self.state.cmos[CmosReg::STATUS_C] = StatusRegC::new().into();
-                self.update_interrupt_line_level();
+                self.sync_interrupt_line_level();
 
                 data.into()
             }
@@ -958,7 +965,7 @@ mod save_restore {
             };
 
             self.update_timers();
-            self.update_interrupt_line_level();
+            self.sync_interrupt_line_level();
 
             Ok(())
         }
@@ -971,6 +978,38 @@ mod tests {
     use local_clock::MockLocalClock;
     use local_clock::MockLocalClockAccessor;
     use test_with_tracing::test;
+
+    #[test]
+    fn restore_enlightened_rtc_publishes_level_without_a_pulse() {
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use vmcore::line_interrupt::LineSetTarget;
+        use vmcore::save_restore::SaveRestore;
+
+        #[derive(Default)]
+        struct RecordingTarget(Mutex<Vec<bool>>);
+
+        impl LineSetTarget for RecordingTarget {
+            fn set_irq(&self, _: u32, high: bool) {
+                self.0.lock().push(high);
+            }
+        }
+
+        let (mut pool, _, _, mut rtc) = new_test_rtc();
+        rtc.enlightened_interrupts = true;
+        rtc.on_periodic_timer();
+        let state = SaveRestore::save(&mut rtc).unwrap();
+        pool.run_until(rtc.reset());
+        let target = Arc::new(RecordingTarget::default());
+        rtc.interrupt = LineInterrupt::new_with_target("rtc", target.clone(), 0);
+        target.0.lock().clear();
+        SaveRestore::restore(&mut rtc, state).unwrap();
+        assert_eq!(*target.0.lock(), [true]);
+
+        target.0.lock().clear();
+        rtc.on_periodic_timer();
+        assert_eq!(*target.0.lock(), [false, true]);
+    }
 
     fn new_test_rtc() -> (
         pal_async::DefaultPool,
