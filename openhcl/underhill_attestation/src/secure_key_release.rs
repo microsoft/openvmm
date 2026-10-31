@@ -23,6 +23,12 @@ use vmgs::Vmgs;
 
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
+    #[error("IGVM agent rejected {request_type:?}")]
+    IgvmAgentRejected {
+        request_type: IgvmAttestRequestType,
+        #[source]
+        error: igvm_attest::Error,
+    },
     #[error("failed to generate or export an RSA transfer key")]
     GenerateTransferKey(#[source] crypto::rsa::RsaError),
     #[error("failed to get a TEE attestation report")]
@@ -56,6 +62,34 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] Pkcs11RsaAesKeyUnwrapError),
+}
+
+impl From<igvm_attest::wrapped_key::WrappedKeyError> for RequestVmgsEncryptionKeysError {
+    fn from(error: igvm_attest::wrapped_key::WrappedKeyError) -> Self {
+        match error {
+            igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                error @ igvm_attest::Error::Attestation { .. },
+            ) => Self::IgvmAgentRejected {
+                request_type: IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+                error,
+            },
+            error => Self::ParseIgvmAttestWrappedKeyResponse(error),
+        }
+    }
+}
+
+impl From<igvm_attest::key_release::KeyReleaseError> for RequestVmgsEncryptionKeysError {
+    fn from(error: igvm_attest::key_release::KeyReleaseError) -> Self {
+        match error {
+            igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                error @ igvm_attest::Error::Attestation { .. },
+            ) => Self::IgvmAgentRejected {
+                request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                error,
+            },
+            error => Self::ParseIgvmAttestKeyReleaseResponse(error),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -212,7 +246,12 @@ pub(crate) async fn request_vmgs_encryption_keys(
                 &rsa_aes_wrapped_key,
                 rsa_aes_key_wrap_384_used,
             )
-            .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
+            .map_err(|e| {
+                (
+                    RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e),
+                    false,
+                )
+            })?;
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),
@@ -221,49 +260,28 @@ pub(crate) async fn request_vmgs_encryption_keys(
             })
         }
         Err(
-            wrapped_key_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
-                igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
-                    igvm_attest::Error::Attestation {
-                        igvm_error_code,
-                        http_status_code,
-                        retry_signal,
-                        ..
-                    },
-                ),
-            ),
-        ) => {
-            tracing::error!(
-                CVM_ALLOWED,
-                igvm_error_code = &igvm_error_code,
-                igvm_http_status_code = &http_status_code,
-                retry_signal = &retry_signal,
-                error = &wrapped_key_attest_error as &dyn std::error::Error,
-                "VMGS key-encryption failed due to igvm attest error"
-            );
-            Err((wrapped_key_attest_error, retry_signal))
-        }
-        Err(
-            key_release_attest_error @ RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
-                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+            agent_error @ RequestVmgsEncryptionKeysError::IgvmAgentRejected {
+                request_type,
+                error:
                     igvm_attest::Error::Attestation {
                         igvm_error_code,
                         http_status_code,
                         retry_signal,
                         skip_hw_unsealing_signal,
                     },
-                ),
-            ),
+            },
         ) => {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 CVM_ALLOWED,
+                ?request_type,
                 igvm_error_code = &igvm_error_code,
                 igvm_http_status_code = &http_status_code,
                 retry_signal = &retry_signal,
                 skip_hw_unsealing_signal = &skip_hw_unsealing_signal,
-                error = &key_release_attest_error as &dyn std::error::Error,
-                "VMGS key-encryption failed due to igvm attest error"
+                error = &agent_error as &dyn std::error::Error,
+                "IGVM agent rejected VMGS key request"
             );
-            Err((key_release_attest_error, retry_signal))
+            Err((agent_error, retry_signal))
         }
         Err(e) => {
             tracing::error!(
@@ -369,7 +387,7 @@ async fn make_igvm_attest_requests(
                     .await;
             }
 
-            return Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e));
+            return Err(e.into());
         }
     };
 
@@ -410,7 +428,7 @@ async fn make_igvm_attest_requests(
             // Notify host for diagnosis.
             get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
 
-            Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))
+            Err(e.into())
         }
     }
 }
@@ -418,6 +436,101 @@ async fn make_igvm_attest_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn agent_rejections_preserve_status_signals_and_error_sources() {
+        use openhcl_attestation_protocol::igvm_attest::get::{
+            IgvmAttestKeyReleaseResponseHeader, IgvmAttestResponseVersion, IgvmErrorInfo,
+            IgvmSignal,
+        };
+        use zerocopy::IntoBytes;
+
+        for retry in [false, true] {
+            for skip in [false, true] {
+                let response = IgvmAttestKeyReleaseResponseHeader {
+                    data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
+                    version: IgvmAttestResponseVersion::VERSION_2,
+                    error_info: IgvmErrorInfo {
+                        error_code: 1103,
+                        http_status_code: 403,
+                        igvm_signal: IgvmSignal::new()
+                            .with_retry(retry)
+                            .with_skip_hw_unsealing(skip),
+                        ..Default::default()
+                    },
+                };
+                let key_error =
+                    igvm_attest::key_release::parse_response(response.as_bytes(), 256).unwrap_err();
+                let wrapped_error = igvm_attest::wrapped_key::parse_response(response.as_bytes())
+                    .err()
+                    .expect("header-only rejection must fail before body parsing");
+                for (request_type, error) in [
+                    (
+                        IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                        RequestVmgsEncryptionKeysError::from(key_error),
+                    ),
+                    (
+                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
+                        RequestVmgsEncryptionKeysError::from(wrapped_error),
+                    ),
+                ] {
+                    assert_eq!(
+                        error.to_string(),
+                        format!("IGVM agent rejected {request_type:?}")
+                    );
+                    assert_eq!(
+                        std::error::Error::source(&error).unwrap().to_string(),
+                        igvm_attest::Error::Attestation {
+                            igvm_error_code: 1103,
+                            http_status_code: 403,
+                            retry_signal: retry,
+                            skip_hw_unsealing_signal: skip,
+                        }
+                        .to_string()
+                    );
+                    assert!(matches!(
+                        error,
+                        RequestVmgsEncryptionKeysError::IgvmAgentRejected {
+                            request_type: actual_type,
+                            error: igvm_attest::Error::Attestation {
+                                igvm_error_code: 1103,
+                                http_status_code: 403,
+                                retry_signal,
+                                skip_hw_unsealing_signal,
+                            },
+                        } if actual_type == request_type
+                            && retry_signal == retry
+                            && skip_hw_unsealing_signal == skip
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_headers_remain_parse_errors() {
+        let key_error = igvm_attest::key_release::parse_response(&[0; 7], 256).unwrap_err();
+        assert!(matches!(
+            RequestVmgsEncryptionKeysError::from(key_error),
+            RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
+                igvm_attest::key_release::KeyReleaseError::ParseHeader(
+                    igvm_attest::Error::ResponseSizeTooSmall { response_size: 7 }
+                )
+            )
+        ));
+        let wrapped_error = igvm_attest::wrapped_key::parse_response(&[0; 7])
+            .err()
+            .unwrap();
+        assert!(matches!(
+            RequestVmgsEncryptionKeysError::from(wrapped_error),
+            RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(
+                igvm_attest::wrapped_key::WrappedKeyError::ParseHeader(
+                    igvm_attest::Error::ResponseSizeTooSmall { response_size: 7 }
+                )
+            )
+        ));
+    }
 
     #[test]
     fn fail_to_unwrap_pkcs11_rsa_aes_with_undersized_wrapped_key_blob() {
