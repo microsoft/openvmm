@@ -6,7 +6,7 @@
 //! can be either in JSON or JSON web token (JWT) format defined by Azure Key Vault (AKV).
 
 use crate::igvm_attest::Error as CommonError;
-use crate::igvm_attest::parse_response_header;
+use crate::igvm_attest::parse_response_header_for_request;
 use crate::jwt::JwtError;
 use crate::jwt::JwtHelper;
 use openhcl_attestation_protocol::igvm_attest::akv;
@@ -57,6 +57,7 @@ pub fn parse_response(
 ) -> Result<KeyReleaseResponse, KeyReleaseError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestKeyReleaseResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
     use zerocopy::FromBytes;
 
@@ -64,7 +65,11 @@ pub fn parse_response(
     const AES_IC_SIZE: usize = 8;
     const CIPHER_TEXT_KEY: &str = r#"{"ciphertext":""}"#;
 
-    let header = parse_response_header(response).map_err(KeyReleaseError::ParseHeader)?;
+    let header = parse_response_header_for_request(
+        response,
+        Some(IgvmAttestRequestType::KEY_RELEASE_REQUEST),
+    )
+    .map_err(KeyReleaseError::ParseHeader)?;
 
     // The `rsa_aes_key_wrap_384_used` signal is only present in the version 2+
     // response header. When absent, fall back to the default (SHA-1) scheme.
