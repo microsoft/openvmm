@@ -3,8 +3,6 @@
 
 //! Native hypervisor contract tests without VM boot or guest artifacts.
 
-#![forbid(unsafe_code)]
-
 #[cfg(all(
     guest_arch = "x86_64",
     guest_is_native,
