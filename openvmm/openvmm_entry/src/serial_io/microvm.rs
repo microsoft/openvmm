@@ -98,11 +98,10 @@ pub fn bind_control_serial(path: &Path) -> io::Result<Resource<SerialBackendHand
     let user_sid = pal::windows::security::user_sid::current_process_user_sid()?;
     let descriptor = format!("D:P(A;;GA;;;SY)(A;;GA;;;{})", user_sid.to_string_sid())
         .parse::<LocalSecurityDescriptor>()?;
-    let pipe = pal::windows::pipe::peer::new_named_pipe_with_security(
+    let pipe = pal::windows::pipe::new_named_pipe_with_security(
         path,
         windows_sys::Win32::Foundation::GENERIC_READ
             | windows_sys::Win32::Foundation::GENERIC_WRITE,
-        pal::windows::pipe::Disposition::Create,
         pal::windows::pipe::PipeMode::Byte,
         &descriptor,
     )?;
@@ -139,7 +138,8 @@ pub fn read_control_capability(mut file: File) -> io::Result<[u8; 32]> {
         use pal::windows::pipe::PipeExt as _;
         use windows_sys::Win32::System::Pipes::PIPE_NOWAIT;
 
-        if !pal::windows::pipe::peer::is_pipe(&file) {
+        // Only a pipe has a pipe state.
+        if file.get_pipe_state().is_err() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "control authentication input is not a one-way pipe",
@@ -427,6 +427,16 @@ mod windows_tests {
         assert_eq!(
             read_control_capability(read).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn control_capability_rejects_non_pipe_input() {
+        assert_eq!(
+            read_control_capability(tempfile::tempfile().unwrap())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
         );
     }
 }
