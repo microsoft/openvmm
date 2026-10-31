@@ -470,19 +470,21 @@ mod save_restore {
             if redirection_entries.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
             }
-            if !line_levels.is_empty() && line_levels.len() != self.irqs.len() {
+            let line_levels = if line_levels.is_empty() {
+                vec![false; self.irqs.len()]
+            } else if line_levels.len() == self.irqs.len() {
+                line_levels
+            } else {
                 return Err(RestoreError::Other(WrongNumberOfLineLevels.into()));
-            }
-            for (n, (state, irq)) in redirection_entries
+            };
+            for (n, ((state, line_level), irq)) in redirection_entries
                 .into_iter()
+                .zip(line_levels)
                 .zip(self.irqs.iter_mut())
                 .enumerate()
             {
                 irq.redirection = RedirectionEntry::from(state);
-                // Older snapshots leave the existing input levels unchanged.
-                if !line_levels.is_empty() {
-                    irq.line_level = line_levels[n];
-                }
+                irq.line_level = line_level;
                 let request = irq.redirection.as_msi();
                 self.routing.set_route(n as u8, request);
                 irq.registered_request = request;
@@ -636,19 +638,6 @@ mod save_restore {
             set_entry(&mut restored, true, false);
 
             assert!(routing.assertions.lock().is_empty());
-        }
-
-        #[test]
-        fn restore_without_history_preserves_existing_levels() {
-            let (mut source, routing) = device();
-            set_entry(&mut source, true, true);
-            source.set_irq(IRQ.into(), true);
-            let mut state = source.save().expect("save succeeds");
-            state.line_levels.clear();
-
-            source.restore(state).expect("restore succeeds");
-            set_entry(&mut source, true, false);
-            assert_eq!(*routing.assertions.lock(), [IRQ]);
         }
 
         #[test]
