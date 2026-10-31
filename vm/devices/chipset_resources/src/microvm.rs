@@ -55,8 +55,8 @@ pub struct MicrovmPortbHandle {
     /// Requests to deliver accepted output before a snapshot capture or before
     /// terminating the VM process.
     pub output_drain: Option<mesh::Receiver<mesh::rpc::FailableRpc<MicrovmPortbDrain, ()>>>,
-    /// NVX time ABI v1 configuration: restore packet version 4 and the time
-    /// samples at port `0xeb`.
+    /// NVX time ABI v1 configuration: the restore packet and the time samples
+    /// at port `0xeb`.
     pub time_abi: MicrovmPortbTimeAbi,
 }
 
@@ -75,7 +75,8 @@ pub struct MicrovmPortbTimeAbi {
     pub restore: Option<MicrovmRestorePacketSource>,
 }
 
-/// The parts of a restore packet version 4.
+/// The parts of a restore packet, version 4, or version 5 when its base
+/// carries network settings.
 #[derive(MeshPayload)]
 pub struct MicrovmRestorePacketSource {
     /// The fields the controller knows before the worker starts.

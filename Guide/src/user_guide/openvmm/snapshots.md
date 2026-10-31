@@ -174,9 +174,11 @@ releasing gated input. The peer must accept and read while resume is in
 progress; on Windows, flush completion waits until the named-pipe peer consumes
 the complete frame.
 
-For a tiered microVM restore, OpenVMM starts device workers with network,
-control, and filesystem input gated. The guest performs post-restore repair
-and writes the existing snapshot port (`0x605`) to acknowledge completion.
+For a tiered microVM restore, and for a restore that replaces the network
+policy of a snapshot without a tier, OpenVMM starts device workers with
+network, control, and filesystem input gated. The guest performs post-restore
+repair and writes the existing snapshot port (`0x605`) to acknowledge
+completion.
 OpenVMM stops at that exact post-write boundary, completes the deferred write
 while the vCPU is stopped, and then releases device input before resuming the
 vCPU. Until then, the guest's virtio-fs requests wait on their virtqueues, so
@@ -223,16 +225,18 @@ the ID from the first 16 bytes of the restore packet's fresh entropy, so the
 guest can reject an unchanged clone identity, reseed Linux, refresh runtime
 identifiers, and acknowledge the input gate without another PMIO transfer.
 
-Every microVM restore exposes restore packet version 4. Status bit 1
-advertises it, and writing `0xa5` to the status port selects it for reading
-from the data port. Its 32-byte little-endian header holds:
+Every microVM restore exposes a restore packet: version 4, or version 5 at a
+restore whose `--restore-network-policy` replaces the network policy of a
+snapshot without a tier. Status bit 1 advertises it, and writing `0xa5` to the
+status port selects it for reading from the data port. Its 32-byte
+little-endian header holds:
 
-- the magic `OVR` and version 4;
+- the magic `OVR` and the version;
 - flags: bit 0, the downtime came from host UTC; bit 1, a memory target;
   bit 2, the guest must acknowledge the restore through port `0x605`; bit 3,
   a test hook is active;
-- the online-VP target (0 for none), the memory-range count, and a reserved
-  zero byte;
+- the online-VP target (0 for none), the memory-range count, and a byte that
+  is reserved and zero in version 4 and is the network byte in version 5;
 - the generation counter (`u32`), which is 0 at cold boot and one more than
   the snapshot's at each restore;
 - the TSC rate deviation (`i32`, ppm scaled by 2^16);
@@ -244,6 +248,19 @@ The `(u64 GPA start, u64 length)` memory ranges and 64 bytes of fresh entropy
 follow the header. Status bits 2, 3, and 4 report an online-VP target, a
 memory target, and one or more memory ranges, so a zero-range target can skip
 post-restore repair.
+
+Version 5 carries the network settings of the restore's policy, which a cold
+boot names on the command line that the restore keeps, and which a NIC
+template's guest never learned: its network byte's bits 0 and 1 give the
+family of the guest's DNS server, 0 for none, 1 for IPv4, or 2 for IPv6, and
+bit 2 asks the guest to announce its listeners, as `virtnet_dns=` and
+`virtnet_ingress=` do at a cold boot; the other bits are zero. A 16-byte DNS
+server follows the entropy: an IPv6 address, or an IPv4 address and 12 zero
+bytes, or zeros without a server. Such a restore requires the guest's
+acknowledgement, which the guest gives once it has applied the settings. A
+guest that reads version 4 alone fails such a restore rather than ignore its
+settings, and every other restore, a platform clone's included, keeps
+version 4.
 
 Status bit 6 advertises the time sample. Writing `0xa7` to the status port
 latches a 16-byte sample: version 1, flags (bit 3: a test hook is active), two
