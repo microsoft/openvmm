@@ -181,7 +181,7 @@ restore flow over both transports:
   absent, or may contain only the matching microVM profile, an optional exact
   processor-count assertion, a `cpu_profile` that the restore accepts (see
   below), serial port 0 host
-  attachment, matching `DevicesConfig.virtio_console` and
+  attachment, matching `DevicesConfig.virtio_consoles` and
   `DevicesConfig.virtiofs_config` attachments, and guest power actions.
   Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
   fields are rejected. A saved listener is reconstructed from the manifest; a saved
@@ -215,8 +215,9 @@ restore flow over both transports:
   managed VM. The peer must accept and read concurrently with `ResumeVM`;
   Windows flush completion waits until the complete frame has been consumed.
 
-On cold boot, `DevicesConfig.virtio_console` may configure one microVM Unix
-socket or named-pipe endpoint. Listener mode recreates the path on restore.
+On cold boot, `DevicesConfig.virtio_consoles` may hold one entry, which
+configures a microVM Unix socket or named-pipe endpoint. Listener mode
+recreates the path on restore.
 Client mode is required and uses a five-second connection timeout
 before vCPUs start. The device uses MMIO `0xd0002000`, IRQ 7, and selects
 `hvc1`; its canonical path and policy become the stable restore attachment.

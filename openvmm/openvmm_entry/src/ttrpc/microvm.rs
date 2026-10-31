@@ -288,10 +288,11 @@ impl CreateVm {
                         && devices.vpmem_disks.is_empty()
                         && devices.nic_config.is_empty()
                         && devices.windows_device.is_empty()
-                        && devices.virtiofs_config.len() <= 1,
+                        && devices.virtiofs_config.len() <= 1
+                        && devices.virtio_consoles.len() <= 1,
                     "restore devices_config may contain only one virtio-fs and one virtio-console attachment"
                 );
-                restore_console_config = devices.virtio_console.clone();
+                restore_console_config = devices.virtio_consoles.first().cloned();
                 restore_filesystem_config = devices.virtiofs_config.first().cloned();
             }
             vmservice::VmConfig {
@@ -611,7 +612,8 @@ impl CreateVm {
                         && devices.vpmem_disks.is_empty()
                         && devices.nic_config.is_empty()
                         && devices.windows_device.is_empty()
-                        && devices.virtiofs_config.len() <= 1,
+                        && devices.virtiofs_config.len() <= 1
+                        && devices.virtio_consoles.len() <= 1,
                     "microVM supports only one fixed virtio-fs and one fixed virtio-console device"
                 );
                 if let Some(filesystem) = devices.virtiofs_config.first() {
@@ -632,7 +634,7 @@ impl CreateVm {
                         },
                     )?;
                 }
-                if let Some(console) = &devices.virtio_console {
+                if let Some(console) = devices.virtio_consoles.first() {
                     anyhow::ensure!(
                         !console.socket_path.is_empty(),
                         "microVM virtio-console requires a socket path"
@@ -660,8 +662,7 @@ impl CreateVm {
             && config
                 .devices_config
                 .as_ref()
-                .and_then(|devices| devices.virtio_console.as_ref())
-                .is_some()
+                .is_some_and(|devices| !devices.virtio_consoles.is_empty())
     }
 
     /// Creates the inert kernel handle used by an authoritative restore.
@@ -1037,7 +1038,7 @@ impl CreateVm {
         for filesystem in std::mem::take(&mut devices.virtiofs_config) {
             self.add_filesystem(config, filesystem)?;
         }
-        if let Some(console) = devices.virtio_console.take() {
+        for console in std::mem::take(&mut devices.virtio_consoles) {
             self.add_console(config, console)?;
         }
         Ok(())
