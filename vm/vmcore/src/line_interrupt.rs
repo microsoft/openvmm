@@ -166,7 +166,11 @@ impl LineInterruptInner {
             tracelimit::warn_ratelimited!(%self, "LineInterrupt not hooked up to any targets!");
         }
         for target in &self.targets {
-            target.inner.set_irq(target.vector, is_high);
+            if self.lines.is_empty() {
+                target.inner.set_unconnected_irq(target.vector);
+            } else {
+                target.inner.set_irq(target.vector, is_high);
+            }
         }
     }
 
@@ -467,7 +471,11 @@ impl LineSet {
                     vector: target_vector,
                 });
                 if line.running {
-                    target.set_irq(target_vector, line.is_high());
+                    if line.lines.is_empty() {
+                        target.set_unconnected_irq(target_vector);
+                    } else {
+                        target.set_irq(target_vector, line.is_high());
+                    }
                 }
             }
         }
@@ -666,6 +674,45 @@ mod tests {
         set.start();
         assert!(target.is_high(0));
         assert!(!target.is_high(1));
+    }
+
+    #[test]
+    fn empty_wire_replay_and_attachment_preserve_non_line_target_state() {
+        for running in [false, true] {
+            let target = TestLineInterruptTarget::new_arc();
+            target.set_irq(0, true);
+            let set = LineSet::new();
+            let line = set.new_line(0, "removed device").unwrap();
+            drop(line);
+            if running {
+                set.start();
+            }
+            set.add_target(0..=0, 0, "shared namespace", target.clone());
+            if !running {
+                set.start();
+            }
+            assert!(target.is_high(0));
+            set.stop();
+        }
+    }
+
+    #[test]
+    fn empty_wire_replay_and_attachment_deassert_pure_line_targets() {
+        for running in [false, true] {
+            let target = Arc::new(RecordingTarget::default());
+            let set = LineSet::new();
+            let line = set.new_line(0, "removed device").unwrap();
+            drop(line);
+            if running {
+                set.start();
+            }
+            set.add_target(0..=0, 0, "line controller", target.clone());
+            if !running {
+                set.start();
+            }
+            assert_eq!(*target.0.lock(), [false]);
+            set.stop();
+        }
     }
 
     #[test]
