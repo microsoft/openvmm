@@ -8632,7 +8632,6 @@ dependencies = [
 name = "task_control"
 version = "0.0.0"
 dependencies = [
- "fast_select",
  "futures",
  "inspect",
  "pal_async",
@@ -10399,6 +10398,7 @@ name = "virtio_blk"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "async-trait",
  "disk_backend",
  "disk_hook",

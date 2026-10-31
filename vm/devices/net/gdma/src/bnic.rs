@@ -503,7 +503,10 @@ impl InspectTaskMut<TxRxTask> for TxRxState {
 }
 
 impl TxRxTask {
-    async fn process(&mut self) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         let max_rx_buf = 256;
 
         enum Event {
@@ -513,6 +516,7 @@ impl TxRxTask {
         }
 
         loop {
+            check.check()?;
             let event = poll_fn(|cx| {
                 // Fill rx before transmitting to avoid rx buffer starvation
                 // (particularly in tests, but seems reasonable in general).
@@ -531,10 +535,14 @@ impl TxRxTask {
                 Poll::Pending
             })
             .await;
-            match event {
-                Event::Sqe(sqe) => self.process_sqe(sqe)?,
-                Event::Rqe(wqe_offset, wqe) => self.process_rqe(wqe, wqe_offset)?,
-                Event::Ready => self.process_backend()?,
+            let result = match event {
+                Event::Sqe(sqe) => self.process_sqe(sqe),
+                Event::Rqe(wqe_offset, wqe) => self.process_rqe(wqe, wqe_offset),
+                Event::Ready => self.process_backend(),
+            };
+            if let Err(err) = result {
+                tracing::error!(err = err.as_ref() as &dyn std::error::Error, "bnic failure");
+                return Ok(());
             }
         }
     }
@@ -738,12 +746,8 @@ impl AsyncRun<TxRxTask> for TxRxState {
         stop: &mut StopTask<'_>,
         task: &mut TxRxTask,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            if let Err(err) = task.process().await {
-                tracing::error!(err = err.as_ref() as &dyn std::error::Error, "bnic failure");
-            }
-        })
-        .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(task.process(&check)).await?
     }
 }
 

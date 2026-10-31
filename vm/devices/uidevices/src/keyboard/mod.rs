@@ -42,6 +42,8 @@ enum Request {
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(#[from] task_control::Cancelled),
     #[error("channel i/o error")]
     Io(#[source] std::io::Error),
     #[error("received out of order packet")]
@@ -155,15 +157,18 @@ impl SimpleVmbusDevice for Keyboard {
         stop: &mut StopTask<'_>,
         channel: &mut KeyboardChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match channel.process(self).await {
+            match channel.process(self, &check).await {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "keyboard error")
                 }
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     fn supports_save_restore(
@@ -224,9 +229,14 @@ impl<T: RingMem + Unpin> KeyboardChannel<T> {
         Self { channel, state }
     }
 
-    async fn process(&mut self, keyboard: &mut Keyboard) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        keyboard: &mut Keyboard,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         let (mut recv, mut send) = MessagePipe::split(&mut self.channel);
         loop {
+            check.check()?;
             match self.state {
                 ChannelState::ReadVersion => {
                     if let Request::ProtocolRequest(version) = recv_packet(&mut recv).await? {
@@ -346,7 +356,12 @@ mod tests {
     ) -> Task<Result<(), Error>> {
         driver.spawn("keyboard worker", async move {
             let mut channel = KeyboardChannel::new(channel, ChannelState::ReadVersion);
-            channel.process(&mut keyboard).await.or_else(|e| match e {
+            let result = StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
+                channel.process(&mut keyboard, &check).await
+            })
+            .await;
+            result.or_else(|e| match e {
                 Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => {
                     tracing::info!("closed");
                     Ok(())

@@ -178,7 +178,8 @@ impl SimpleVmbusDevice for GuestCrashDevice {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(self.process(runner)).await
+        let check = stop.check_handle()?;
+        stop.until_stopped(self.process(runner, &check)).await?
     }
 
     fn supports_save_restore(
@@ -191,162 +192,134 @@ impl SimpleVmbusDevice for GuestCrashDevice {
 }
 
 impl GuestCrashDevice {
-    async fn process(&mut self, channel: &mut GuestCrashChannel) {
-        if let Err(err) = self.process_inner(channel).await {
-            tracing::error!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "guest crash failure"
-            );
+    async fn process(
+        &mut self,
+        channel: &mut GuestCrashChannel,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
+        let mut buffer = vec![0; 16384];
+        loop {
+            check.check()?;
+            if let Err(err) = self.process_message(channel, &mut buffer).await {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "guest crash failure"
+                );
+                return Ok(());
+            }
         }
     }
 
-    async fn process_inner(&mut self, channel: &mut GuestCrashChannel) -> anyhow::Result<()> {
-        let mut buffer = vec![0; 16384];
-        loop {
-            channel.pipe.pipe.wait_write_ready(256).await?;
+    async fn process_message(
+        &mut self,
+        channel: &mut GuestCrashChannel,
+        buffer: &mut [u8],
+    ) -> anyhow::Result<()> {
+        channel.pipe.pipe.wait_write_ready(256).await?;
 
-            match &mut channel.state {
-                ProtocolState::Init => {
-                    let (header, _message) = channel.pipe.recv_message(&mut buffer).await?;
-                    match header.message_type {
-                        crash::MessageType::REQUEST_GET_CAPABILITIES_V1 => {
-                            channel.pipe.send(&crash::DumpCapabilitiesResponseV1 {
-                                header: crash::Header {
-                                    message_type: crash::MessageType::RESPONSE_GET_CAPABILITIES_V1,
-                                    ..header
-                                },
-                                capabilities: crash::Capabilities::new().with_linux_config_v1(true),
-                            })?;
-                        }
-                        crash::MessageType::REQUEST_GET_NIX_DUMP_CONFIG_V1 => {
-                            channel.pipe.send(&crash::DumpConfigResponseV1 {
-                                header: crash::Header {
-                                    message_type:
-                                        crash::MessageType::RESPONSE_GET_NIX_DUMP_CONFIG_V1,
-                                    ..header
-                                },
-                                config: crash::ConfigV1 {
-                                    max_dump_size: self.max_dump_size,
-                                    dump_type: crash::DumpType::ELF,
-                                },
-                            })?;
-                        }
-                        crash::MessageType::REQUEST_NIX_DUMP_START_V1 => {
-                            let (send, recv) = mesh::oneshot();
-                            let recv = self.request_dump.call_failable(|x| x, recv);
-                            channel.state = ProtocolState::DumpRequested {
-                                activity_id: header.activity_id,
-                                done: send,
-                                state: DumpState::OpeningFile { recv },
-                            };
-                        }
-                        message_type => anyhow::bail!("invalid message type {message_type:?}"),
+        match &mut channel.state {
+            ProtocolState::Init => {
+                let (header, _message) = channel.pipe.recv_message(buffer).await?;
+                match header.message_type {
+                    crash::MessageType::REQUEST_GET_CAPABILITIES_V1 => {
+                        channel.pipe.send(&crash::DumpCapabilitiesResponseV1 {
+                            header: crash::Header {
+                                message_type: crash::MessageType::RESPONSE_GET_CAPABILITIES_V1,
+                                ..header
+                            },
+                            capabilities: crash::Capabilities::new().with_linux_config_v1(true),
+                        })?;
                     }
+                    crash::MessageType::REQUEST_GET_NIX_DUMP_CONFIG_V1 => {
+                        channel.pipe.send(&crash::DumpConfigResponseV1 {
+                            header: crash::Header {
+                                message_type: crash::MessageType::RESPONSE_GET_NIX_DUMP_CONFIG_V1,
+                                ..header
+                            },
+                            config: crash::ConfigV1 {
+                                max_dump_size: self.max_dump_size,
+                                dump_type: crash::DumpType::ELF,
+                            },
+                        })?;
+                    }
+                    crash::MessageType::REQUEST_NIX_DUMP_START_V1 => {
+                        let (send, recv) = mesh::oneshot();
+                        let recv = self.request_dump.call_failable(|x| x, recv);
+                        channel.state = ProtocolState::DumpRequested {
+                            activity_id: header.activity_id,
+                            done: send,
+                            state: DumpState::OpeningFile { recv },
+                        };
+                    }
+                    message_type => anyhow::bail!("invalid message type {message_type:?}"),
                 }
-                &mut ProtocolState::DumpRequested {
-                    state: ref mut state @ DumpState::OpeningFile { .. },
-                    activity_id,
-                    ..
-                } => {
-                    let DumpState::OpeningFile { recv } = state else {
-                        unreachable!()
-                    };
-                    let status = match recv.await {
-                        Ok(file) => {
-                            *state = DumpState::Writing {
-                                file,
-                                payload: None,
-                            };
-                            0
+            }
+            &mut ProtocolState::DumpRequested {
+                state: ref mut state @ DumpState::OpeningFile { .. },
+                activity_id,
+                ..
+            } => {
+                let DumpState::OpeningFile { recv } = state else {
+                    unreachable!()
+                };
+                let status = match recv.await {
+                    Ok(file) => {
+                        *state = DumpState::Writing {
+                            file,
+                            payload: None,
+                        };
+                        0
+                    }
+                    Err(err) => {
+                        channel.state = ProtocolState::Failed { activity_id };
+                        tracing::error!(
+                            err = &err as &dyn std::error::Error,
+                            "failed to open crash dump file"
+                        );
+                        -1
+                    }
+                };
+                channel.pipe.send(&crash::DumpStartResponseV1 {
+                    header: crash::Header {
+                        message_type: crash::MessageType::RESPONSE_NIX_DUMP_START_V1,
+                        activity_id,
+                    },
+                    status,
+                })?;
+                return Ok(());
+            }
+            &mut ProtocolState::DumpRequested {
+                state:
+                    DumpState::Writing {
+                        ref mut file,
+                        ref mut payload,
+                        ..
+                    },
+                activity_id,
+                ..
+            } => {
+                if let Some((offset, size)) = *payload {
+                    // Read the payload message.
+                    let message = channel.pipe.recv(buffer).await?;
+                    if size as usize != message.len() {
+                        anyhow::bail!("size mismatch");
+                    }
+                    if self.max_dump_size < offset || self.max_dump_size - offset < size as u64 {
+                        anyhow::bail!("dump file out of range");
+                    }
+
+                    match file
+                        .seek(SeekFrom::Start(offset))
+                        .and_then(|_| file.write_all(message))
+                    {
+                        Ok(()) => {
+                            *payload = None;
                         }
                         Err(err) => {
-                            channel.state = ProtocolState::Failed { activity_id };
                             tracing::error!(
-                                err = &err as &dyn std::error::Error,
-                                "failed to open crash dump file"
+                                error = &err as &dyn std::error::Error,
+                                "failed to write crash data"
                             );
-                            -1
-                        }
-                    };
-                    channel.pipe.send(&crash::DumpStartResponseV1 {
-                        header: crash::Header {
-                            message_type: crash::MessageType::RESPONSE_NIX_DUMP_START_V1,
-                            activity_id,
-                        },
-                        status,
-                    })?;
-                    continue;
-                }
-                &mut ProtocolState::DumpRequested {
-                    state:
-                        DumpState::Writing {
-                            ref mut file,
-                            ref mut payload,
-                            ..
-                        },
-                    activity_id,
-                    ..
-                } => {
-                    if let Some((offset, size)) = *payload {
-                        // Read the payload message.
-                        let message = channel.pipe.recv(&mut buffer).await?;
-                        if size as usize != message.len() {
-                            anyhow::bail!("size mismatch");
-                        }
-                        if self.max_dump_size < offset || self.max_dump_size - offset < size as u64
-                        {
-                            anyhow::bail!("dump file out of range");
-                        }
-
-                        match file
-                            .seek(SeekFrom::Start(offset))
-                            .and_then(|_| file.write_all(message))
-                        {
-                            Ok(()) => {
-                                *payload = None;
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    error = &err as &dyn std::error::Error,
-                                    "failed to write crash data"
-                                );
-                                channel.pipe.send(&crash::DumpWriteResponseV1 {
-                                    header: crash::Header {
-                                        activity_id,
-                                        message_type:
-                                            crash::MessageType::RESPONSE_NIX_DUMP_WRITE_V1,
-                                    },
-                                    status: -1,
-                                })?;
-                                channel.state = ProtocolState::Failed { activity_id };
-                            }
-                        }
-                    } else {
-                        let (header, message) = channel.pipe.recv_message(&mut buffer).await?;
-                        match header.message_type {
-                            crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
-                                let request = crash::DumpWriteRequestV1::read_from_prefix(message)
-                                    .map_err(|_| anyhow!("truncated message"))? // TODO: zerocopy: anyhow! (https://github.com/microsoft/openvmm/issues/759)
-                                    .0;
-                                *payload = Some((request.offset, request.size));
-                            }
-                            crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => {
-                                // Notify the VMM that the crash is done being written.
-                                let ProtocolState::DumpRequested { done, .. } =
-                                    std::mem::replace(&mut channel.state, ProtocolState::Init)
-                                else {
-                                    unreachable!()
-                                };
-                                done.send(());
-                            }
-                            message_type => anyhow::bail!("invalid message type {message_type:?}"),
-                        }
-                    }
-                }
-                &mut ProtocolState::Failed { activity_id } => {
-                    let (header, _message) = channel.pipe.recv_message(&mut buffer).await?;
-                    match header.message_type {
-                        crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
                             channel.pipe.send(&crash::DumpWriteResponseV1 {
                                 header: crash::Header {
                                     activity_id,
@@ -354,12 +327,48 @@ impl GuestCrashDevice {
                                 },
                                 status: -1,
                             })?;
+                            channel.state = ProtocolState::Failed { activity_id };
                         }
-                        crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => {}
+                    }
+                } else {
+                    let (header, message) = channel.pipe.recv_message(buffer).await?;
+                    match header.message_type {
+                        crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
+                            let request = crash::DumpWriteRequestV1::read_from_prefix(message)
+                                .map_err(|_| anyhow!("truncated message"))? // TODO: zerocopy: anyhow! (https://github.com/microsoft/openvmm/issues/759)
+                                .0;
+                            *payload = Some((request.offset, request.size));
+                        }
+                        crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => {
+                            // Notify the VMM that the crash is done being written.
+                            let ProtocolState::DumpRequested { done, .. } =
+                                std::mem::replace(&mut channel.state, ProtocolState::Init)
+                            else {
+                                unreachable!()
+                            };
+                            done.send(());
+                        }
                         message_type => anyhow::bail!("invalid message type {message_type:?}"),
                     }
                 }
             }
+            &mut ProtocolState::Failed { activity_id } => {
+                let (header, _message) = channel.pipe.recv_message(buffer).await?;
+                match header.message_type {
+                    crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
+                        channel.pipe.send(&crash::DumpWriteResponseV1 {
+                            header: crash::Header {
+                                activity_id,
+                                message_type: crash::MessageType::RESPONSE_NIX_DUMP_WRITE_V1,
+                            },
+                            status: -1,
+                        })?;
+                    }
+                    crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => {}
+                    message_type => anyhow::bail!("invalid message type {message_type:?}"),
+                }
+            }
         }
+        Ok(())
     }
 }

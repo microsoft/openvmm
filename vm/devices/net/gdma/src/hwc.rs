@@ -194,109 +194,125 @@ impl HwControl {
         })
     }
 
-    async fn process(&mut self, devices: &mut Devices) -> anyhow::Result<()> {
+    async fn process(
+        &mut self,
+        devices: &mut Devices,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         tracing::info!("starting hwc");
 
         loop {
-            let sqe = poll_fn(|cx| self.state.queues.poll_sq(self.sq_id, cx)).await;
-            let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
-
-            let queues = self.state.queues.clone();
-            let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
-                .map_err(|_| anyhow!("reading tx oob"))?
-                .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
-            if tx_oob.flags3.vscq_id() != self.cq_id {
-                anyhow::bail!(
-                    "mismatched cq id: {} != {}",
-                    tx_oob.flags3.vscq_id(),
-                    self.cq_id
+            check.check()?;
+            if let Err(err) = self.process_request(devices).await {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "hwc failure"
                 );
+                return Ok(());
             }
-
-            if tx_oob.flags4.vsq_id() != self.sq_id {
-                anyhow::bail!(
-                    "mismatched sq id: {} != {}",
-                    tx_oob.flags4.vsq_id(),
-                    self.sq_id
-                );
-            }
-
-            let read = sqe.access(&queues.gm);
-            let hdr: GdmaReqHdr = read
-                .clone()
-                .read_plain()
-                .context("reading request message header")?;
-
-            if hdr.req.msg_size as u64 > PAGE_SIZE64 {
-                anyhow::bail!(
-                    "request message size {} exceeds page size {PAGE_SIZE64}",
-                    hdr.req.msg_size
-                );
-            }
-            if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
-                anyhow::bail!(
-                    "response message size {} exceeds page size {PAGE_SIZE64}",
-                    hdr.resp.msg_size
-                );
-            }
-
-            let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
-            read.skip(size_of_val(&hdr))
-                .context("message size too small")?;
-
-            let mut write = MemoryWrite::limit(rqe.access(&queues.gm), hdr.resp.msg_size as usize);
-            let mut header_write = write.clone();
-            write
-                .skip(size_of::<GdmaRespHdr>())
-                .context("response message too small")?;
-
-            let r = match hdr.req.msg_type >> 16 {
-                0 => self.handle_req(&hdr, read, write),
-                _ => {
-                    // Device specific.
-                    if hdr.dev_id == BNIC_DEV_ID && self.bnic_enabled {
-                        devices
-                            .bnic
-                            .handle_req(&mut self.state, &hdr, read, write)
-                            .await
-                    } else {
-                        Err(anyhow!("unknown device {:?}", hdr.dev_id))
-                    }
-                }
-            };
-
-            let (status, response_len) = match r {
-                Ok(response_len) => (0, response_len),
-                Err(err) => {
-                    tracing::warn!(msg_type = hdr.req.msg_type, dev_id = ?hdr.dev_id, error = err.as_ref() as &dyn std::error::Error, "req error");
-                    (1, 0)
-                }
-            };
-
-            self.state.queues.post_cq(self.cq_id, &[], self.sq_id, true);
-
-            let resp = GdmaRespHdr {
-                response: hdr.resp,
-                dev_id: hdr.dev_id,
-                activity_id: hdr.activity_id,
-                status,
-                reserved: 0,
-            };
-
-            header_write
-                .write(resp.as_bytes())
-                .context("writing response message header")?;
-
-            let rx_oob = HwcRxOob {
-                wqe_addr_low_or_offset: rqe_offset,
-                tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
-                ..FromZeros::new_zeroed()
-            };
-
-            self.state
-                .queues
-                .post_cq(self.cq_id, rx_oob.as_bytes(), self.rq_id, false);
         }
+    }
+
+    async fn process_request(&mut self, devices: &mut Devices) -> anyhow::Result<()> {
+        let sqe = poll_fn(|cx| self.state.queues.poll_sq(self.sq_id, cx)).await;
+        let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
+
+        let queues = self.state.queues.clone();
+        let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
+            .map_err(|_| anyhow!("reading tx oob"))?
+            .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
+        if tx_oob.flags3.vscq_id() != self.cq_id {
+            anyhow::bail!(
+                "mismatched cq id: {} != {}",
+                tx_oob.flags3.vscq_id(),
+                self.cq_id
+            );
+        }
+
+        if tx_oob.flags4.vsq_id() != self.sq_id {
+            anyhow::bail!(
+                "mismatched sq id: {} != {}",
+                tx_oob.flags4.vsq_id(),
+                self.sq_id
+            );
+        }
+
+        let read = sqe.access(&queues.gm);
+        let hdr: GdmaReqHdr = read
+            .clone()
+            .read_plain()
+            .context("reading request message header")?;
+
+        if hdr.req.msg_size as u64 > PAGE_SIZE64 {
+            anyhow::bail!(
+                "request message size {} exceeds page size {PAGE_SIZE64}",
+                hdr.req.msg_size
+            );
+        }
+        if hdr.resp.msg_size as u64 > PAGE_SIZE64 {
+            anyhow::bail!(
+                "response message size {} exceeds page size {PAGE_SIZE64}",
+                hdr.resp.msg_size
+            );
+        }
+
+        let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
+        read.skip(size_of_val(&hdr))
+            .context("message size too small")?;
+
+        let mut write = MemoryWrite::limit(rqe.access(&queues.gm), hdr.resp.msg_size as usize);
+        let mut header_write = write.clone();
+        write
+            .skip(size_of::<GdmaRespHdr>())
+            .context("response message too small")?;
+
+        let r = match hdr.req.msg_type >> 16 {
+            0 => self.handle_req(&hdr, read, write),
+            _ => {
+                // Device specific.
+                if hdr.dev_id == BNIC_DEV_ID && self.bnic_enabled {
+                    devices
+                        .bnic
+                        .handle_req(&mut self.state, &hdr, read, write)
+                        .await
+                } else {
+                    Err(anyhow!("unknown device {:?}", hdr.dev_id))
+                }
+            }
+        };
+
+        let (status, response_len) = match r {
+            Ok(response_len) => (0, response_len),
+            Err(err) => {
+                tracing::warn!(msg_type = hdr.req.msg_type, dev_id = ?hdr.dev_id, error = err.as_ref() as &dyn std::error::Error, "req error");
+                (1, 0)
+            }
+        };
+
+        self.state.queues.post_cq(self.cq_id, &[], self.sq_id, true);
+
+        let resp = GdmaRespHdr {
+            response: hdr.resp,
+            dev_id: hdr.dev_id,
+            activity_id: hdr.activity_id,
+            status,
+            reserved: 0,
+        };
+
+        header_write
+            .write(resp.as_bytes())
+            .context("writing response message header")?;
+
+        let rx_oob = HwcRxOob {
+            wqe_addr_low_or_offset: rqe_offset,
+            tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
+            ..FromZeros::new_zeroed()
+        };
+
+        self.state
+            .queues
+            .post_cq(self.cq_id, rx_oob.as_bytes(), self.rq_id, false);
+        Ok(())
     }
 
     fn handle_req(
@@ -515,14 +531,7 @@ impl AsyncRun<HwControl> for Devices {
         stop: &mut StopTask<'_>,
         hwc: &mut HwControl,
     ) -> Result<(), task_control::Cancelled> {
-        stop.until_stopped(async {
-            if let Err(err) = hwc.process(self).await {
-                tracing::error!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "hwc failure"
-                )
-            }
-        })
-        .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(hwc.process(self, &check)).await?
     }
 }

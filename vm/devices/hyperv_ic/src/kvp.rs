@@ -127,8 +127,8 @@ impl SimpleVmbusDevice for KvpIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(async { runner.process(self).await })
-            .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -162,13 +162,18 @@ impl KvpChannel {
         })
     }
 
-    async fn process(&mut self, ic: &mut KvpIc) -> ! {
+    async fn process(
+        &mut self,
+        ic: &mut KvpIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         enum Event {
             StateMachine(anyhow::Result<()>),
             Request(KvpConnectRpc),
         }
 
         loop {
+            check.check()?;
             let event = pin!(
                 (
                     once(

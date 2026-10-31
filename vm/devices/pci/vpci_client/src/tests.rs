@@ -112,7 +112,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
 
     let mut runner = channel.open(host, GuestMemory::empty()).unwrap();
     let _task = driver.spawn("server", async move {
-        StopTask::run_with(std::future::pending(), async |stop| {
+        StopTask::run_unstoppable(async |stop| {
             let _ = channel.run(stop, &mut runner).await;
         })
         .await
@@ -183,7 +183,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
 
     let mut runner = channel.open(host, GuestMemory::empty()).unwrap();
     let _task = driver.spawn("server", async move {
-        StopTask::run_with(std::future::pending(), async |stop| {
+        StopTask::run_unstoppable(async |stop| {
             let _ = channel.run(stop, &mut runner).await;
         })
         .await

@@ -77,6 +77,8 @@ pub struct ShutdownGuestChannel {
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(#[from] Cancelled),
     #[error("ring buffer error")]
     Ring(#[source] std::io::Error),
     #[error("truncated message")]
@@ -109,8 +111,13 @@ impl ShutdownGuestChannel {
         }
     }
 
-    async fn process(&mut self, ic: &mut ShutdownGuestIc) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        ic: &mut ShutdownGuestIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         loop {
+            check.check()?;
             match read_from_pipe(&mut self.pipe).await {
                 Ok(buf) => {
                     self.handle_host_message(&buf, ic).await;
@@ -384,9 +391,11 @@ impl SimpleVmbusClientDeviceAsync for ShutdownGuestIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match runner.process(self).await {
+            match runner.process(self, &check).await {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
@@ -394,7 +403,8 @@ impl SimpleVmbusClientDeviceAsync for ShutdownGuestIc {
                     )
                 }
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 }

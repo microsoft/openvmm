@@ -132,8 +132,8 @@ impl SimpleVmbusDevice for TimesyncIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(async { runner.process(self).await })
-            .await
+        let check = stop.check_handle()?;
+        stop.until_stopped(runner.process(self, &check)).await?
     }
 
     fn supports_save_restore(
@@ -157,8 +157,13 @@ impl TimesyncChannel {
         })
     }
 
-    async fn process(&mut self, ic: &mut TimesyncIc) -> ! {
+    async fn process(
+        &mut self,
+        ic: &mut TimesyncIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Cancelled> {
         loop {
+            check.check()?;
             if let Err(err) = self.process_state_machine(ic).await {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,

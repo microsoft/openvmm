@@ -35,6 +35,8 @@ use zerocopy::KnownLayout;
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(#[from] task_control::Cancelled),
     #[error("channel i/o error")]
     Io(#[source] std::io::Error),
     #[error("received out of order packet")]
@@ -231,13 +233,16 @@ impl SimpleVmbusDevice for Mouse {
         stop: &mut StopTask<'_>,
         channel: &mut MouseChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match channel.process(self).await {
+            match channel.process(self, &check).await {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "mouse error"),
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     async fn close(&mut self) {
@@ -274,10 +279,15 @@ impl<T: RingMem + Unpin> MouseChannel<T> {
     }
 
     //responds to input from the VNC server and sends mouse information to the guest
-    async fn process(&mut self, mouse: &mut Mouse) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        mouse: &mut Mouse,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         let (mut recv, mut send) = MessagePipe::split(&mut self.channel);
 
         loop {
+            check.check()?;
             match self.state {
                 ChannelState::ReadVersion => {
                     if let Request::ProtocolRequest(version) = recv_packet(&mut recv).await? {
@@ -441,13 +451,17 @@ mod tests {
         channel: MessagePipe<T>,
     ) -> Task<Result<(), Error>> {
         driver.spawn("mouse worker", async move {
-            MouseChannel::new(channel, Default::default())
-                .process(&mut mouse)
-                .await
-                .or_else(|e| match e {
-                    Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => Ok(()),
-                    _ => Err(e),
-                })
+            let result = StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
+                MouseChannel::new(channel, Default::default())
+                    .process(&mut mouse, &check)
+                    .await
+            })
+            .await;
+            result.or_else(|e| match e {
+                Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => Ok(()),
+                _ => Err(e),
+            })
         })
     }
 

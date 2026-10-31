@@ -175,7 +175,7 @@ async fn connect_relay(driver: &DefaultDriver, tdisp_capable: bool) -> TestRelay
     let (host, guest) = vmbus_channel::connected_async_channels(32768);
     let mut runner = channel.open(host, GuestMemory::empty()).unwrap();
     let server = driver.spawn("vpci-server", async move {
-        StopTask::run_with(std::future::pending(), async |stop| {
+        StopTask::run_unstoppable(async |stop| {
             let _ = channel.run(stop, &mut runner).await;
         })
         .await
