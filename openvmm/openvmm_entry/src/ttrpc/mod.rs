@@ -3302,7 +3302,7 @@ mod tests {
     fn uefi_custom_variables_file_errors() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing.json");
-        for path in [std::path::Path::new(""), missing.as_path(), dir.path()] {
+        for path in [Path::new(""), missing.as_path(), dir.path()] {
             let error = build_uefi_manifest(
                 vm_manifest_builder::MachineArch::X86_64,
                 vmservice::Uefi {
