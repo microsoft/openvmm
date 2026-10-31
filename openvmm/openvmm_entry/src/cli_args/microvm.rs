@@ -297,7 +297,8 @@ pub struct MicrovmCli {
     pub restore_absent_scratch: bool,
 
     /// Install this restore's network policy in place of the complete
-    /// deny-all policy that a platform snapshot's NIC was captured with.
+    /// deny-all policy that the NIC of a platform snapshot, or of a snapshot
+    /// without a tier, was captured with.
     ///
     /// The NIC keeps its captured identity. The network policy options of
     /// this restore, which may include `--network-ingress allow`,
