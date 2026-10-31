@@ -27,6 +27,11 @@ service VM {
     // has had PauseVM called on it, or to start a VM that was created with CreateVM.
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
+    // ShutdownVM requests a cooperative guest power-off.
+    // Success does not mean the guest has halted. Use WaitVM to observe a halt
+    // and TeardownVM to release resources.
+    rpc ShutdownVM(ShutdownVMRequest) returns (google.protobuf.Empty);
+
     // WaitVM will block until the VM is either in a halted state or has had all of it's resources freed
     // via TeardownVM.
     rpc WaitVM(google.protobuf.Empty) returns (google.protobuf.Empty);
@@ -64,9 +69,30 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
+// Request cooperative guest power-off through Hyper-V shutdown IC. Requires a
+// running VM with Hyper-V and VMBus enabled and guest shutdown IC support.
+// ACPI power-button shutdown is unsupported.
 //
-// VM lifecycle request/response
-//
+// Success means acknowledgement, not halt. With the default shutdown HALT
+// policy, use WaitVM to await halt, PropertiesVM to check for PowerOff, then
+// TeardownVM to release resources. TeardownVM and Quit do not request shutdown.
+message ShutdownVMRequest {
+    enum Mechanism {
+        // Invalid; a mechanism must be explicitly specified.
+        MECHANISM_UNSPECIFIED = 0;
+        // Explicitly request the Hyper-V shutdown integration component.
+        // It must be available for this VM; no other facility is selected.
+        MECHANISM_HYPERV_IC = 1;
+    }
+
+    // Required. Unspecified (including omitted) and unknown values return
+    // INVALID_ARGUMENT without issuing a shutdown request.
+    Mechanism mechanism = 1;
+    // Set the force bit in the shutdown protocol. Interpretation is guest-specific.
+    // This is not a host-side hard power-off. Omitted means false.
+    bool force = 2;
+}
+
 message DirectBoot {
     string kernel_path = 1;
     string initrd_path = 2;

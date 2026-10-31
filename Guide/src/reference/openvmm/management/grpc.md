@@ -32,6 +32,7 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
+* ShutdownVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -82,6 +83,14 @@ output survives a host crash or power failure.
 If a write fails, OpenVMM logs the error and disconnects the file backend.
 Further console output is discarded; the backend does not automatically retry
 or reopen the file.
+
+## Graceful guest shutdown
+
+`ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
+request fields, shutdown lifecycle.
+
+## VPCI hotplug
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
