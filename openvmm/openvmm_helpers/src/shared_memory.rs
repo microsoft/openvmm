@@ -74,8 +74,6 @@ pub fn file_to_copy_on_write_memory_fd(file: std::fs::File) -> anyhow::Result<Sh
     }
     #[cfg(windows)]
     {
-        Ok(sparse_mmap::new_mappable_from_file_copy_on_write(
-            &file, false,
-        )?)
+        Ok(sparse_mmap::new_mappable_from_file_copy_on_write(&file)?)
     }
 }

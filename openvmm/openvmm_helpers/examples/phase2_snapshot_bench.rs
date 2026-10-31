@@ -145,7 +145,7 @@ fn map_copy_on_write(
     memory_file: std::fs::File,
     memory_size: usize,
 ) -> anyhow::Result<SparseMapping> {
-    let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&memory_file, false)
+    let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&memory_file)
         .context("failed to create copy-on-write memory handle")?;
     let mapping = SparseMapping::new(memory_size).context("failed to reserve memory mapping")?;
     mapping

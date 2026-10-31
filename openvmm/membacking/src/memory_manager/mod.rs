@@ -1065,7 +1065,7 @@ mod tests {
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(&original).unwrap();
         file.sync_all().unwrap();
-        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file, false).unwrap();
+        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file).unwrap();
         let backing = RamBackingRequest::new(vec![MemoryRange::new(0..size)])
             .existing_mappable(mappable.into())
             .file_mapping_mode(FileMappingMode::CopyOnWrite);
@@ -1093,7 +1093,7 @@ mod tests {
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(&original).unwrap();
         file.sync_all().unwrap();
-        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file, false).unwrap();
+        let mappable = sparse_mmap::new_mappable_from_file_copy_on_write(&file).unwrap();
 
         let manager = GuestMemoryBuilder::new()
             .add_backing(
