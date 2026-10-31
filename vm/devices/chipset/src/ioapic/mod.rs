@@ -425,6 +425,7 @@ mod save_restore {
             pub(super) index: u8,
             #[mesh(3)]
             pub(super) redirection_entries: Vec<u64>,
+            // Preserve edge-detector history, not ownership of device outputs.
             #[mesh(4)]
             pub(super) line_levels: Vec<bool>,
         }
@@ -469,25 +470,22 @@ mod save_restore {
             if redirection_entries.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfRedirectionEntries.into()));
             }
-            let line_levels = if line_levels.is_empty() {
-                vec![false; self.irqs.len()]
-            } else if line_levels.len() == self.irqs.len() {
-                line_levels
-            } else {
+            if !line_levels.is_empty() && line_levels.len() != self.irqs.len() {
                 return Err(RestoreError::Other(WrongNumberOfLineLevels.into()));
-            };
-            for (n, ((state, line_level), irq)) in redirection_entries
+            }
+            for (n, (state, irq)) in redirection_entries
                 .into_iter()
-                .zip(line_levels)
                 .zip(self.irqs.iter_mut())
                 .enumerate()
             {
                 irq.redirection = RedirectionEntry::from(state);
-                irq.line_level = line_level;
+                // Older snapshots leave the existing input levels unchanged.
+                if !line_levels.is_empty() {
+                    irq.line_level = line_levels[n];
+                }
                 let request = irq.redirection.as_msi();
                 self.routing.set_route(n as u8, request);
                 irq.registered_request = request;
-                irq.evaluate(self.routing.as_ref(), &mut self.stats, n as u8, false);
             }
             self.id = id;
             self.index = IndexRegister(index);
@@ -498,6 +496,7 @@ mod save_restore {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use chipset_device::interrupt::HandleEoi;
         use chipset_device::interrupt::LineInterruptTarget;
         use chipset_resources::ioapic::IoApicRouting;
         use parking_lot::Mutex;
@@ -529,41 +528,127 @@ mod save_restore {
             )
         }
 
-        fn set_level_entry(device: &mut IoApicDevice, masked: bool) {
+        fn set_entry(device: &mut IoApicDevice, level: bool, masked: bool) {
             let entry = RedirectionEntry::new()
                 .with_vector(VECTOR)
-                .with_trigger_mode_level(true)
+                .with_trigger_mode_level(level)
                 .with_masked(masked);
             device.write_redirection_register(IRQ * 2, u64::from(entry) as u32);
         }
 
         #[test]
-        fn restore_preserves_asserted_level_until_unmasked() {
+        fn restore_preserves_edge_history() {
             let (mut source, _) = device();
-            set_level_entry(&mut source, true);
+            set_entry(&mut source, false, false);
             source.set_irq(IRQ.into(), true);
             let state = source.save().expect("save succeeds");
 
             let (mut restored, routing) = device();
             restored.restore(state).expect("restore succeeds");
-            set_level_entry(&mut restored, false);
+            restored.set_irq(IRQ.into(), true);
+            assert!(routing.assertions.lock().is_empty());
 
+            restored.set_irq(IRQ.into(), false);
+            restored.set_irq(IRQ.into(), true);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_allows_new_rising_edge() {
+            let (mut source, _) = device();
+            set_entry(&mut source, false, false);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            set_entry(&mut restored, false, false);
+            restored.set_irq(IRQ.into(), true);
+            routing.assertions.lock().clear();
+
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+            restored.set_irq(IRQ.into(), true);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_preserves_asserted_level_until_unmasked() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+            set_entry(&mut restored, true, false);
+
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_preserves_remote_irr_until_eoi() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, false);
+            source.set_irq(IRQ.into(), true);
+            let state = source.save().expect("save succeeds");
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            restored.set_irq(IRQ.into(), true);
+            assert!(routing.assertions.lock().is_empty());
+
+            restored.handle_eoi(VECTOR.into());
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+            restored.set_irq(IRQ.into(), false);
+            restored.handle_eoi(VECTOR.into());
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
+        }
+
+        #[test]
+        fn restore_does_not_evaluate_level_interrupts() {
+            let (mut source, _) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let mut state = source.save().expect("save succeeds");
+            state.redirection_entries[IRQ as usize] =
+                RedirectionEntry::from(state.redirection_entries[IRQ as usize])
+                    .with_masked(false)
+                    .into();
+
+            let (mut restored, routing) = device();
+            restored.restore(state).expect("restore succeeds");
+            assert!(routing.assertions.lock().is_empty());
+
+            restored.set_irq(IRQ.into(), true);
             assert_eq!(*routing.assertions.lock(), [IRQ]);
         }
 
         #[test]
         fn restore_defaults_absent_line_levels_to_deasserted() {
             let (mut source, _) = device();
-            set_level_entry(&mut source, true);
+            set_entry(&mut source, true, true);
             source.set_irq(IRQ.into(), true);
             let mut state = source.save().expect("save succeeds");
             state.line_levels.clear();
 
             let (mut restored, routing) = device();
             restored.restore(state).expect("restore succeeds");
-            set_level_entry(&mut restored, false);
+            set_entry(&mut restored, true, false);
 
             assert!(routing.assertions.lock().is_empty());
+        }
+
+        #[test]
+        fn restore_without_history_preserves_existing_levels() {
+            let (mut source, routing) = device();
+            set_entry(&mut source, true, true);
+            source.set_irq(IRQ.into(), true);
+            let mut state = source.save().expect("save succeeds");
+            state.line_levels.clear();
+
+            source.restore(state).expect("restore succeeds");
+            set_entry(&mut source, true, false);
+            assert_eq!(*routing.assertions.lock(), [IRQ]);
         }
 
         #[test]
@@ -572,10 +657,16 @@ mod save_restore {
             let mut state = source.save().expect("save succeeds");
             state.line_levels.pop();
 
-            let (mut restored, _) = device();
+            let (mut restored, routing) = device();
+            set_entry(&mut restored, false, false);
+            let before = restored.save().expect("save succeeds");
             let error = restored.restore(state).expect_err("restore must fail");
 
             assert_eq!(error.to_string(), "wrong number of line levels");
+            let after = restored.save().expect("save succeeds");
+            assert_eq!(after.redirection_entries, before.redirection_entries);
+            assert_eq!(after.line_levels, before.line_levels);
+            assert!(routing.assertions.lock().is_empty());
         }
     }
 }
