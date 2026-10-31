@@ -450,3 +450,223 @@ enum IoState {
     Completed(i32),
     Dropped,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::threadpool::IoInitiator;
+    use crate::threadpool::Worker;
+    use crate::uring::FdWait;
+    use pal_async::task::Spawn;
+    use pal_async::task::TaskQueue;
+    use pal_async::task::task_queue;
+    use pal_async::wait::PollWait;
+    use pal_event::Event;
+    use std::future::poll_fn;
+    use std::sync::Barrier;
+    use std::sync::Weak;
+    use std::task::Wake;
+    use test_with_tracing::test;
+
+    struct WaitRing {
+        ring: IoRing,
+        completions: IoCompletionRing,
+        worker: Arc<Worker>,
+        queue: TaskQueue,
+        initiator: IoInitiator,
+    }
+
+    struct WaitWaker;
+
+    impl Wake for WaitWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    impl WaitRing {
+        fn new() -> Option<Self> {
+            let (ring, completions) = match IoRing::new(8) {
+                Ok(ring) => ring,
+                Err(error) if error.raw_os_error() == Some(libc::ENOSYS) => {
+                    println!("Test case skipped (no IO-Uring support)");
+                    return None;
+                }
+                Err(error) => panic!("failed to create test ring: {error}"),
+            };
+            if !ring.probe(io_uring::opcode::LinkAt::CODE) {
+                println!("Test case skipped (no nonblocking io_uring read support)");
+                return None;
+            }
+            let (queue, scheduler) = task_queue("wait-drop");
+            let worker = Arc::new(Worker::new(
+                8,
+                IoRing {
+                    inner: ring.inner.clone(),
+                },
+            ));
+            let initiator = worker.clone().initiator(scheduler);
+            Some(Self {
+                ring,
+                completions,
+                worker,
+                queue,
+                initiator,
+            })
+        }
+
+        fn arm(&self, event: &Event) -> (FdWait<IoInitiator>, Weak<WaitWaker>, usize) {
+            let mut wait = FdWait::new(self.initiator.clone(), event.as_fd().as_raw_fd(), 8);
+            let waker = Arc::new(WaitWaker);
+            let weak = Arc::downgrade(&waker);
+            let waker = Waker::from(waker);
+            assert!(
+                wait.poll_wait(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            let state = self.ring.inner.state.lock();
+            assert_eq!(state.iocbs.len(), 1);
+            let (index, _) = state.iocbs.iter().next().unwrap();
+            (wait, weak, index)
+        }
+
+        fn assert_read_retained(&self, index: usize) {
+            let state = self.ring.inner.state.lock();
+            let read = state
+                .iocbs
+                .get(index)
+                .expect("read buffer released before completion");
+            assert!(matches!(read.state, IoState::Dropped));
+        }
+
+        fn drain(&mut self) {
+            while self.ring.inner.pending_io_count.load(Ordering::Relaxed) != 0 {
+                self.ring.submit_and_wait();
+                self.completions.process();
+            }
+            let state = self.ring.inner.state.lock();
+            assert!(state.iocbs.is_empty());
+            assert!(state.queue.is_empty());
+            assert!(self.completions.is_empty());
+            assert!(self.completions.results.is_empty());
+        }
+    }
+
+    #[test]
+    fn dropped_wait_cancels_armed_read() {
+        let Some(mut ring) = WaitRing::new() else {
+            return;
+        };
+        let event = Event::new();
+        let (wait, waker, index) = ring.arm(&event);
+        drop(wait);
+        ring.assert_read_retained(index);
+        ring.drain();
+        assert!(waker.upgrade().is_none());
+        event.signal();
+        assert!(event.try_wait());
+    }
+
+    #[test]
+    fn dropped_wait_finishes_pending_cancellation() {
+        let Some(mut ring) = WaitRing::new() else {
+            return;
+        };
+        let event = Event::new();
+        let (mut wait, waker, index) = ring.arm(&event);
+        // Completions are not processed until drain(), so cancellation must pend.
+        assert!(
+            wait.poll_cancel_wait(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        drop(wait);
+        ring.assert_read_retained(index);
+        ring.drain();
+        assert!(waker.upgrade().is_none());
+        event.signal();
+        assert!(event.try_wait());
+    }
+
+    #[test]
+    fn dropped_wait_handles_signal_race() {
+        let Some(mut ring) = WaitRing::new() else {
+            return;
+        };
+        for _ in 0..32 {
+            let event = Event::new();
+            let (wait, waker, index) = ring.arm(&event);
+            let barrier = Barrier::new(2);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    event.signal();
+                });
+                barrier.wait();
+                drop(wait);
+            });
+            ring.assert_read_retained(index);
+            ring.drain();
+            assert!(waker.upgrade().is_none());
+            event.try_wait();
+            event.signal();
+            assert!(event.try_wait());
+        }
+    }
+
+    #[test]
+    fn dropped_wait_releases_unconsumed_completion() {
+        let Some(mut ring) = WaitRing::new() else {
+            return;
+        };
+        let event = Event::new();
+        let (wait, waker, index) = ring.arm(&event);
+        event.signal();
+        ring.ring.submit_and_wait();
+        ring.completions.process();
+        {
+            let state = ring.ring.inner.state.lock();
+            assert!(matches!(state.iocbs[index].state, IoState::Completed(8)));
+        }
+        assert!(!event.try_wait());
+        drop(wait);
+        ring.drain();
+        assert!(waker.upgrade().is_none());
+    }
+
+    #[test]
+    fn dropped_wait_allows_executor_shutdown() {
+        let Some(ring) = WaitRing::new() else {
+            return;
+        };
+        let WaitRing {
+            ring,
+            completions,
+            worker,
+            mut queue,
+            initiator,
+        } = ring;
+        let weak_ring = Arc::downgrade(&ring.inner);
+        let weak_worker = Arc::downgrade(&worker);
+        let event = Event::new();
+        let task_event = event.clone();
+        let task_initiator = initiator.clone();
+        let task_ring = IoRing {
+            inner: ring.inner.clone(),
+        };
+        initiator
+            .spawn("drop-wait", async move {
+                let mut wait = FdWait::new(task_initiator, task_event.as_fd().as_raw_fd(), 8);
+                poll_fn(|cx| {
+                    assert!(wait.poll_wait(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                task_ring.submit();
+                drop(wait);
+            })
+            .detach();
+        drop(initiator);
+        drop(ring);
+        worker.run(completions, queue.run());
+        assert!(weak_worker.upgrade().is_none());
+        assert!(weak_ring.upgrade().is_none());
+    }
+}

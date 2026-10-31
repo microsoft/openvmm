@@ -152,8 +152,10 @@ pub async fn wait_tests(driver: impl Driver) {
     op.await.unwrap();
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
     event.signal();
-    // Kick off a poll.
-    assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    // The signal may already have completed the wait.
+    if let Some(result) = poll_fn(|cx| poller.poll_wait(cx)).now_or_never() {
+        result.unwrap();
+    }
     // Pend so that the poll completes internally.
     pend_once().await;
     // Cancel. For some executors, the signal will be present.
@@ -164,6 +166,7 @@ pub async fn wait_tests(driver: impl Driver) {
     }
     pend_once().await;
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    let _ = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
     drop(poller);
 
     let mut poller = PolledWait::new(&driver, event.clone()).unwrap();
