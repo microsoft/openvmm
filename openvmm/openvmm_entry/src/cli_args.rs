@@ -611,6 +611,9 @@ options:
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
     /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
+    /// Prefix a virtio NIC with `rx_gso:` to advertise guest TCP segmentation
+    /// offload. This is disabled by default until mergeable receive buffers are
+    /// supported.
     ///
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
@@ -3111,6 +3114,7 @@ pub struct NicConfigCli {
     /// MAC address to expose to the guest. A random address is used if omitted.
     pub mac_address: Option<MacAddress>,
     pub max_queues: Option<u16>,
+    pub enable_rx_gso: bool,
     pub underhill: bool,
     pub pcie_port: Option<String>,
 }
@@ -3122,6 +3126,7 @@ impl FromStr for NicConfigCli {
         let mut vtl = DeviceVtl::Vtl0;
         let mut mac_address = None;
         let mut max_queues = None;
+        let mut enable_rx_gso = false;
         let mut underhill = false;
         let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
@@ -3147,6 +3152,7 @@ impl FromStr for NicConfigCli {
                         vtl = DeviceVtl::Vtl2;
                     }
                     "uh" => underhill = true,
+                    "rx_gso" => enable_rx_gso = true,
                     _ => break,
                 }
             }
@@ -3167,6 +3173,7 @@ impl FromStr for NicConfigCli {
             endpoint,
             mac_address,
             max_queues,
+            enable_rx_gso,
             underhill,
             pcie_port,
         })
@@ -4569,9 +4576,17 @@ mod tests {
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
         assert!(config.mac_address.is_none());
         assert!(config.max_queues.is_none());
+        assert!(!config.enable_rx_gso);
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        let config = NicConfigCli::from_str("rx_gso:tap:tap0").unwrap();
+        assert!(config.enable_rx_gso);
+        assert!(matches!(
+            config.endpoint,
+            EndpointConfigCli::Tap { ref name } if name == "tap0"
+        ));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();

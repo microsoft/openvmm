@@ -369,6 +369,9 @@ message VirtioNet {
     NicBackend backend = 2;
     // MAC address for the adapter (e.g. "12-34-56-78-9A-BC").
     string mac_address = 3;
+    // Enable receive GSO advertisement. Defaults to false because virtio-net
+    // does not yet support mergeable receive buffers.
+    bool enable_rx_gso = 4;
 }
 
 // A host network backend, shared across NIC device types (virtio-net, MANA,

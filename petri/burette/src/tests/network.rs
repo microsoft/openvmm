@@ -509,6 +509,7 @@ mod tap {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso: false,
                     mac_address: TAP_MAC_ADDRESS,
                     endpoint,
                 }
