@@ -375,9 +375,13 @@ impl IoRing {
     pub fn poll_io(&self, cx: &mut Context<'_>, idx: usize) -> Poll<(i32, IoMemory)> {
         let mut state = self.inner.state.lock();
         let iocb = &mut state.iocbs[idx];
-        match &mut iocb.state {
+        let _old_waker = match &mut iocb.state {
             IoState::Waiting(old_waker) => {
-                old_waker.clone_from(cx.waker());
+                if old_waker.will_wake(cx.waker()) {
+                    None
+                } else {
+                    Some(std::mem::replace(old_waker, cx.waker().clone()))
+                }
             }
             IoState::Completed(status) => {
                 let status = *status;
@@ -388,7 +392,9 @@ impl IoRing {
             IoState::Dropped => {
                 panic!("polling dropped io");
             }
-        }
+        };
+        // Waker destruction may re-enter the ring.
+        drop(state);
         Poll::Pending
     }
 
@@ -400,9 +406,10 @@ impl IoRing {
     pub fn drop_io(&self, idx: usize) {
         let mut state = self.inner.state.lock();
         let iocb = &mut state.iocbs[idx];
-        match &iocb.state {
-            IoState::Waiting(_) => {
-                iocb.state = IoState::Dropped;
+        match std::mem::replace(&mut iocb.state, IoState::Dropped) {
+            IoState::Waiting(waker) => {
+                drop(state);
+                drop(waker);
             }
             IoState::Completed(_) => {
                 let iocb = state.iocbs.remove(idx);
@@ -476,7 +483,9 @@ mod tests {
         initiator: IoInitiator,
     }
 
-    struct WaitWaker;
+    struct WaitWaker {
+        _wait: Option<FdWait<IoInitiator>>,
+    }
 
     impl Wake for WaitWaker {
         fn wake(self: Arc<Self>) {}
@@ -515,7 +524,7 @@ mod tests {
 
         fn arm(&self, event: &Event) -> (FdWait<IoInitiator>, Weak<WaitWaker>, usize) {
             let mut wait = FdWait::new(self.initiator.clone(), event.as_fd().as_raw_fd(), 8);
-            let waker = Arc::new(WaitWaker);
+            let waker = Arc::new(WaitWaker { _wait: None });
             let weak = Arc::downgrade(&waker);
             let waker = Waker::from(waker);
             assert!(
@@ -629,6 +638,30 @@ mod tests {
         drop(wait);
         ring.drain();
         assert!(waker.upgrade().is_none());
+    }
+
+    #[test]
+    fn dropped_io_releases_reentrant_waker() {
+        let Some(mut ring) = WaitRing::new() else {
+            return;
+        };
+        let event = Event::new();
+        let (wait, nested_waker, _) = ring.arm(&event);
+        let waker = Arc::new(WaitWaker { _wait: Some(wait) });
+        let weak = Arc::downgrade(&waker);
+        // SAFETY: NOP references no external memory.
+        let index = unsafe {
+            ring.ring.new_io(
+                io_uring::opcode::Nop::new().build(),
+                IoMemory::new(()),
+                Waker::from(waker),
+                false,
+            )
+        };
+        ring.ring.drop_io(index);
+        ring.drain();
+        assert!(weak.upgrade().is_none());
+        assert!(nested_waker.upgrade().is_none());
     }
 
     #[test]

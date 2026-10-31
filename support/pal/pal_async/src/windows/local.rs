@@ -112,8 +112,8 @@ impl State {
         }))
     }
 
-    fn remove_handle(&mut self, id: HandleId) {
-        self.entries.remove(id.0);
+    fn remove_handle(&mut self, id: HandleId) -> HandleEntry {
+        self.entries.remove(id.0)
     }
 
     fn poll_handle(&mut self, cx: &mut Context<'_>, id: HandleId) -> Poll<()> {
@@ -384,7 +384,8 @@ pub struct Wait {
 
 impl Drop for Wait {
     fn drop(&mut self) {
-        self.inner.lock_sys_state().remove_handle(self.id);
+        // Waker destruction may re-enter the driver, so defer it until unlocked.
+        let _entry = self.inner.lock_sys_state().remove_handle(self.id);
     }
 }
 

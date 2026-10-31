@@ -259,6 +259,68 @@ pub async fn wait_tests(driver: impl Driver) {
         event.signal();
         assert!(event.try_wait());
     }
+    wait_waker_drop_tests(&driver).await;
+}
+
+async fn wait_waker_drop_tests(driver: &impl Driver) {
+    struct ResourceWaker<T> {
+        resource: Option<T>,
+        dropped: Event,
+    }
+
+    impl<T> Drop for ResourceWaker<T> {
+        fn drop(&mut self) {
+            drop(self.resource.take());
+            self.dropped.signal();
+        }
+    }
+
+    impl<T: Send + Sync> Wake for ResourceWaker<T> {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    async fn check<T: Send + Sync + 'static>(
+        driver: &impl Driver,
+        resource: T,
+        cancel_first: bool,
+    ) {
+        let dropped = Event::new();
+        let mut wait = PolledWait::new(driver, Event::new()).unwrap();
+        let resource_waker = Arc::new(ResourceWaker {
+            resource: Some(resource),
+            dropped: dropped.clone(),
+        });
+        let weak = Arc::downgrade(&resource_waker);
+        let waker = Waker::from(resource_waker);
+        assert!(
+            wait.poll_wait(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        if cancel_first {
+            assert!(!poll_fn(|cx| wait.poll_cancel_wait(cx)).await);
+        }
+        drop(wait);
+        // A backend may retain the registration until asynchronous cleanup.
+        PolledWait::new(driver, dropped)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+    }
+
+    for cancel_first in [false, true] {
+        check(driver, PolledTimer::new(driver), cancel_first).await;
+
+        let mut nested_wait = PolledWait::new(driver, Event::new()).unwrap();
+        assert!(
+            nested_wait
+                .poll_wait(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        check(driver, nested_wait, cancel_first).await;
+    }
 }
 
 /// Runs socket-related tests.
