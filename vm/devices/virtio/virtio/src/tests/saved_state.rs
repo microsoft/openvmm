@@ -390,7 +390,7 @@ async fn mmio_private_state_config_write_triggers_restore(driver: DefaultDriver)
 
 #[async_test]
 async fn pci_private_state_config_triggers_restore(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     const DEVICE_CONFIG_OFFSET: u64 = 64;
@@ -398,16 +398,16 @@ async fn pci_private_state_config_triggers_restore(driver: DefaultDriver) {
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
     source.stop().await;
-    let saved = source.dev.save().unwrap();
+    let saved = source.dev.save().await.unwrap();
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, false);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    destination.dev.restore(saved).unwrap();
+    destination.dev.restore(saved).await.unwrap();
     destination.dev.start_fallible().await.unwrap();
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 0);
 
     destination.stop().await;
-    let resaved = destination.dev.save().unwrap();
+    let resaved = destination.dev.save().await.unwrap();
     assert_eq!(
         resaved
             .device_state
@@ -435,7 +435,7 @@ async fn pci_private_state_config_triggers_restore(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_private_state_config_write_triggers_restore(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     const DEVICE_CONFIG_OFFSET: u64 = 64;
@@ -443,11 +443,11 @@ async fn pci_private_state_config_write_triggers_restore(driver: DefaultDriver) 
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
     source.stop().await;
-    let saved = source.dev.save().unwrap();
+    let saved = source.dev.save().await.unwrap();
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, false);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    destination.dev.restore(saved).unwrap();
+    destination.dev.restore(saved).await.unwrap();
     destination.dev.start_fallible().await.unwrap();
 
     let value = 7u32;
@@ -499,8 +499,8 @@ async fn save_active_private_mmio(
 async fn save_active_private_pci(
     driver: &DefaultDriver,
     test_mem: &Arc<VirtioTestMemoryAccess>,
-) -> <VirtioPciDevice as vmcore::save_restore::SaveRestore>::SavedState {
-    use vmcore::save_restore::SaveRestore;
+) -> <VirtioPciDevice as vmcore::save_restore::AsyncSaveRestore>::SavedState {
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let guest = VirtioTestGuest::new_split(driver, test_mem, 1, 4, true);
     let (device, probe) = PrivateStateTestDevice::new(42, 1, false);
@@ -510,7 +510,7 @@ async fn save_active_private_pci(
         .await;
     assert_eq!(probe.start_count.load(Ordering::Relaxed), 1);
     source.pci_device.stop().await;
-    let saved = source.pci_device.save().unwrap();
+    let saved = source.pci_device.save().await.unwrap();
     assert_eq!(
         saved.queues[0].common.queue_state,
         Some(QueueState {
@@ -550,7 +550,7 @@ async fn mmio_active_private_state_restores_before_queue(driver: DefaultDriver) 
 
 #[async_test]
 async fn pci_active_private_state_restores_before_queue(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let saved = save_active_private_pci(&driver, &test_mem).await;
@@ -558,7 +558,7 @@ async fn pci_active_private_state_restores_before_queue(driver: DefaultDriver) {
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
 
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 1);
     assert_eq!(probe.value_at_start.load(Ordering::Relaxed), 42);
@@ -590,7 +590,7 @@ async fn mmio_active_zero_queue_device_restores_private_state(driver: DefaultDri
 
 #[async_test]
 async fn pci_active_zero_queue_device_restores_private_state(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
@@ -598,11 +598,11 @@ async fn pci_active_zero_queue_device_restores_private_state(driver: DefaultDriv
     yield_and_poll(&mut source).await;
     assert_ne!(source.read_status() & VIRTIO_DRIVER_OK, 0);
     source.stop().await;
-    let saved = source.dev.save().unwrap();
+    let saved = source.dev.save().await.unwrap();
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, false);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    destination.dev.restore(saved).unwrap();
+    destination.dev.restore(saved).await.unwrap();
     destination.dev.start_fallible().await.unwrap();
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 1);
     assert_eq!(probe.value.load(Ordering::Relaxed), 42);
@@ -649,7 +649,7 @@ async fn mmio_staged_kick_starts_after_driver_ok(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_staged_kick_starts_after_driver_ok(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     let test_mem = VirtioTestMemoryAccess::new();
@@ -659,7 +659,7 @@ async fn pci_staged_kick_starts_after_driver_ok(driver: DefaultDriver) {
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
 
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
     destination
         .pci_device
@@ -723,18 +723,18 @@ async fn mmio_reset_discards_pending_private_state(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_reset_discards_pending_private_state(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     const DEVICE_CONFIG_OFFSET: u64 = 64;
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
     source.stop().await;
-    let saved = source.dev.save().unwrap();
+    let saved = source.dev.save().await.unwrap();
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, false);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    destination.dev.restore(saved).unwrap();
+    destination.dev.restore(saved).await.unwrap();
     destination.dev.start_fallible().await.unwrap();
     destination.write_status_zero();
 
@@ -800,18 +800,18 @@ async fn mmio_config_restore_failure_completes_and_retains_state(driver: Default
 
 #[async_test]
 async fn pci_config_restore_failure_completes_and_retains_state(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     const DEVICE_CONFIG_OFFSET: u64 = 64;
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
     source.stop().await;
-    let saved = source.dev.save().unwrap();
+    let saved = source.dev.save().await.unwrap();
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, true);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    destination.dev.restore(saved).unwrap();
+    destination.dev.restore(saved).await.unwrap();
     destination.dev.start_fallible().await.unwrap();
 
     let mut data = [0; 4];
@@ -835,7 +835,7 @@ async fn pci_config_restore_failure_completes_and_retains_state(driver: DefaultD
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 2);
 
     destination.stop().await;
-    let resaved = destination.dev.save().unwrap();
+    let resaved = destination.dev.save().await.unwrap();
     assert_eq!(
         resaved
             .device_state
@@ -925,7 +925,7 @@ async fn mmio_failed_kick_does_not_signal_restored_queue(driver: DefaultDriver) 
 
 #[async_test]
 async fn pci_failed_kick_does_not_signal_restored_queue(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     let test_mem = VirtioTestMemoryAccess::new();
@@ -935,7 +935,7 @@ async fn pci_failed_kick_does_not_signal_restored_queue(driver: DefaultDriver) {
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
 
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
     destination
         .pci_device
@@ -1000,7 +1000,7 @@ async fn mmio_driver_ok_restore_failure_releases_write(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_driver_ok_restore_failure_releases_write(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     let test_mem = VirtioTestMemoryAccess::new();
@@ -1009,7 +1009,7 @@ async fn pci_driver_ok_restore_failure_releases_write(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 1, true);
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
 
     let token = match destination
@@ -1071,7 +1071,7 @@ async fn mmio_reset_discards_staged_kick(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_reset_discards_staged_kick(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const BAR0_BASE: u64 = 0x10000000000;
     let test_mem = VirtioTestMemoryAccess::new();
@@ -1081,7 +1081,7 @@ async fn pci_reset_discards_staged_kick(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 1, false);
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
     destination
         .pci_device
@@ -1137,7 +1137,7 @@ async fn mmio_restore_skips_disabled_zero_address_ring(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_restore_skips_disabled_zero_address_ring(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let mut saved = save_active_private_pci(&driver, &test_mem).await;
@@ -1151,7 +1151,7 @@ async fn pci_restore_skips_disabled_zero_address_ring(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 1, false);
     let mut destination =
         VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
-    destination.pci_device.restore(saved).unwrap();
+    destination.pci_device.restore(saved).await.unwrap();
     destination.pci_device.start_fallible().await.unwrap();
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 0);
     assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
@@ -1159,18 +1159,18 @@ async fn pci_restore_skips_disabled_zero_address_ring(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_restore_rejects_invalid_private_state(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let (source_device, _) = PrivateStateTestDevice::new(42, 0, false);
     let mut source = PciTestTransport::new(Box::new(source_device), &driver, 0);
     source.stop().await;
-    let mut saved = source.dev.save().unwrap();
+    let mut saved = source.dev.save().await.unwrap();
     saved.device_state = Some(vmcore::save_restore::SavedStateBlob::new(
         vmcore::save_restore::NoSavedState,
     ));
 
     let (destination_device, probe) = PrivateStateTestDevice::new(0, 0, false);
     let mut destination = PciTestTransport::new(Box::new(destination_device), &driver, 0);
-    assert!(destination.dev.restore(saved).is_err());
+    assert!(destination.dev.restore(saved).await.is_err());
     assert_eq!(probe.restore_count.load(Ordering::Relaxed), 0);
 }
