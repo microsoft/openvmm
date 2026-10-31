@@ -228,6 +228,7 @@ mod tests {
                 .get_queues(
                     vec![QueueConfig {
                         driver: Box::new(driver.clone()),
+                        enabled_rx_offloads: Default::default(),
                     }],
                     None,
                     &mut queues,
