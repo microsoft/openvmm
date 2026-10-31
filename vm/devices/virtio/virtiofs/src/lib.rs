@@ -229,17 +229,11 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_open_readonly(&inode, options)?;
         let reservation = self.reserve_file()?;
-        let file = match inode.open(options) {
-            Ok(file) => file,
-            Err(err) => {
-                self.release_file_reservation(&reservation);
-                return Err(err);
-            }
-        };
-        self.insert_reserved_file(&reservation, file)?;
+        let file = inode.open(options)?;
+        let fh = reservation.insert(file)?;
 
         // TODO: Optionally allow caching.
-        Ok(fuse_open_out::new(reservation.handle, FOPEN_DIRECT_IO))
+        Ok(fuse_open_out::new(fh, FOPEN_DIRECT_IO))
     }
 
     fn create(
@@ -255,38 +249,19 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let inode_reservation = self.reserve_inode()?;
-        let file_reservation = match self.reserve_file() {
-            Ok(reservation) => reservation,
-            Err(err) => {
-                self.release_inode_reservation(&inode_reservation);
-                return Err(err);
-            }
-        };
+        let file_reservation = self.reserve_file()?;
         let (new_inode, attr, file) =
-            match inode.create(name, options, arg.mode, request.uid(), request.gid()) {
-                Ok(created) => created,
-                Err(err) => {
-                    self.release_file_reservation(&file_reservation);
-                    self.release_inode_reservation(&inode_reservation);
-                    return Err(err);
-                }
-            };
+            inode.create(name, options, arg.mode, request.uid(), request.gid())?;
 
         // Insert the newly created inode; this can return an existing inode if it found a match
         // on the inode number (if this is a non-exclusive create), so make sure to associate the
         // file with the returned inode.
-        let (new_inode, node_id) = match self.insert_reserved_inode(&inode_reservation, new_inode) {
-            Ok(inserted) => inserted,
-            Err(err) => {
-                self.release_file_reservation(&file_reservation);
-                return Err(err);
-            }
-        };
+        let (new_inode, node_id) = inode_reservation.insert(new_inode)?;
         let file = VirtioFsFile::new(file, new_inode);
-        self.insert_reserved_file(&file_reservation, file)?;
+        let fh = file_reservation.insert(file)?;
         Ok(CreateOut {
             entry: fuse_entry_out::new(node_id, ENTRY_TIMEOUT, ATTRIBUTE_TIMEOUT, attr),
-            open: fuse_open_out::new(file_reservation.handle, FOPEN_DIRECT_IO),
+            open: fuse_open_out::new(fh, FOPEN_DIRECT_IO),
         })
     }
 
@@ -302,14 +277,8 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let reservation = self.reserve_inode()?;
-        let (new_inode, attr) = match inode.mkdir(name, arg.mode, request.uid(), request.gid()) {
-            Ok(created) => created,
-            Err(err) => {
-                self.release_inode_reservation(&reservation);
-                return Err(err);
-            }
-        };
-        let (_, node_id) = self.insert_reserved_inode(&reservation, new_inode)?;
+        let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -331,15 +300,9 @@ impl Fuse for VirtioFs {
         self.check_writable(&inode)?;
         let reservation = self.reserve_inode()?;
         let (new_inode, attr) =
-            match inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev) {
-                Ok(created) => created,
-                Err(err) => {
-                    self.release_inode_reservation(&reservation);
-                    return Err(err);
-                }
-            };
+            inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
 
-        let (_, node_id) = self.insert_reserved_inode(&reservation, new_inode)?;
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -360,15 +323,9 @@ impl Fuse for VirtioFs {
         let inode = self.get_inode(request.node_id())?;
         self.check_writable(&inode)?;
         let reservation = self.reserve_inode()?;
-        let (new_inode, attr) = match inode.symlink(name, target, request.uid(), request.gid()) {
-            Ok(created) => created,
-            Err(err) => {
-                self.release_inode_reservation(&reservation);
-                return Err(err);
-            }
-        };
+        let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
-        let (_, node_id) = self.insert_reserved_inode(&reservation, new_inode)?;
+        let (_, node_id) = reservation.insert(new_inode)?;
         Ok(fuse_entry_out::new(
             node_id,
             ENTRY_TIMEOUT,
@@ -715,25 +672,18 @@ impl VirtioFs {
     }
 
     /// Reserve an inode ID before performing an operation that creates a host object.
-    fn reserve_inode(&self) -> lx::Result<HandleReservation> {
-        self.inner.inodes.write().reserve().ok_or(lx::Error::ENOSPC)
-    }
-
-    /// Insert an inode using an ID reserved by [`Self::reserve_inode`].
-    fn insert_reserved_inode(
-        &self,
-        reservation: &HandleReservation,
-        inode: VirtioFsInode,
-    ) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
-        self.inner
+    fn reserve_inode(&self) -> lx::Result<InodeReservation<'_>> {
+        let reservation = self
+            .inner
             .inodes
             .write()
-            .insert_reserved(reservation, inode)
-    }
-
-    /// Release an unused inode ID reservation.
-    fn release_inode_reservation(&self, reservation: &HandleReservation) {
-        self.inner.inodes.write().release_reservation(reservation);
+            .reserve()
+            .ok_or(lx::Error::ENOSPC)?;
+        Ok(InodeReservation {
+            inodes: &self.inner.inodes,
+            reservation,
+            committed: false,
+        })
     }
 
     /// Retrieve the file object with the specified file handle.
@@ -748,30 +698,71 @@ impl VirtioFs {
     }
 
     /// Reserve a file handle before opening or creating a host file.
-    fn reserve_file(&self) -> lx::Result<HandleReservation> {
-        self.inner.files.write().reserve().ok_or(lx::Error::ENOSPC)
-    }
-
-    /// Insert a file using a handle reserved by [`Self::reserve_file`].
-    fn insert_reserved_file(
-        &self,
-        reservation: &HandleReservation,
-        file: VirtioFsFile,
-    ) -> lx::Result<()> {
-        let mut files = self.inner.files.write();
-        files
-            .insert_reserved(reservation, Arc::new(file))
-            .map_err(|_| lx::Error::ENOSPC)
-    }
-
-    /// Release an unused file handle reservation.
-    fn release_file_reservation(&self, reservation: &HandleReservation) {
-        self.inner.files.write().release_reservation(reservation);
+    fn reserve_file(&self) -> lx::Result<FileReservation<'_>> {
+        let reservation = self
+            .inner
+            .files
+            .write()
+            .reserve()
+            .ok_or(lx::Error::ENOSPC)?;
+        Ok(FileReservation {
+            files: &self.inner.files,
+            reservation,
+            committed: false,
+        })
     }
 
     /// Remove the file with the specified node ID.
     fn remove_file(&self, fh: u64) {
         self.inner.files.write().remove(fh);
+    }
+}
+
+struct InodeReservation<'a> {
+    inodes: &'a RwLock<InodeMap>,
+    reservation: HandleReservation,
+    committed: bool,
+}
+
+impl InodeReservation<'_> {
+    fn insert(mut self, inode: VirtioFsInode) -> lx::Result<(Arc<VirtioFsInode>, u64)> {
+        let mut inodes = self.inodes.write();
+        let result = inodes.insert_reserved(&self.reservation, inode)?;
+        self.committed = true;
+        Ok(result)
+    }
+}
+
+impl Drop for InodeReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.inodes.write().release_reservation(&self.reservation);
+        }
+    }
+}
+
+struct FileReservation<'a> {
+    files: &'a RwLock<HandleMap<Arc<VirtioFsFile>>>,
+    reservation: HandleReservation,
+    committed: bool,
+}
+
+impl FileReservation<'_> {
+    fn insert(mut self, file: VirtioFsFile) -> lx::Result<u64> {
+        let mut files = self.files.write();
+        files
+            .insert_reserved(&self.reservation, Arc::new(file))
+            .map_err(|_| lx::Error::ENOSPC)?;
+        self.committed = true;
+        Ok(self.reservation.handle)
+    }
+}
+
+impl Drop for FileReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.files.write().release_reservation(&self.reservation);
+        }
     }
 }
 
@@ -807,12 +798,13 @@ impl<T> HandleMap<T> {
 
     /// Inserts an item into the map, and returns the assigned handle.
     pub fn insert(&mut self, value: T) -> Option<u64> {
-        let reservation = self.reserve()?;
-        if self.insert_reserved(&reservation, value).is_err() {
-            self.release_reservation(&reservation);
+        if !self.can_insert() {
             return None;
         }
-        Some(reservation.handle)
+        let handle = self.next_handle;
+        self.values.insert(handle, value);
+        self.next_handle = handle.checked_add(1).unwrap_or(0);
+        Some(handle)
     }
 
     /// Reserves and returns the next handle.
@@ -1065,8 +1057,109 @@ mod tests {
     use super::HandleMap;
     use super::VirtioFs;
     use fuse::Fuse;
-    use fuse::protocol::FUSE_ROOT_ID;
+    use fuse::Request;
+    use fuse::protocol::*;
     use test_with_tracing::test;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn request(node_id: u64) -> Request {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + 2) as u32,
+            opcode: FUSE_LOOKUP,
+            nodeid: node_id,
+            ..fuse_in_header::new_zeroed()
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend_from_slice(b".\0");
+        Request::new(bytes.as_slice()).unwrap()
+    }
+
+    #[test]
+    fn unused_reservations_release_on_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let file = fs.reserve_file().unwrap();
+        let inode = fs.reserve_inode().unwrap();
+        assert!(matches!(fs.reserve_file(), Err(lx::Error::ENOSPC)));
+        assert!(matches!(fs.reserve_inode(), Err(lx::Error::ENOSPC)));
+        drop(file);
+        drop(inode);
+
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn create_releases_inode_when_file_reservation_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = 0;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let result = fs.create(
+            &request(FUSE_ROOT_ID),
+            lx::LxStr::from_bytes(b"file"),
+            &fuse_create_in::new_zeroed(),
+        );
+
+        assert!(matches!(result, Err(lx::Error::ENOSPC)));
+        assert!(!root.path().join("file").exists());
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn create_releases_both_reservations_on_host_failure() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"original").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        fs.inner.files.write().next_handle = u64::MAX;
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let result = fs.create(
+            &request(FUSE_ROOT_ID),
+            lx::LxStr::from_bytes(b"file"),
+            &fuse_create_in {
+                flags: (lx::O_CREAT | lx::O_EXCL | lx::O_RDWR) as u32,
+                mode: 0o600,
+                ..fuse_create_in::new_zeroed()
+            },
+        );
+
+        assert!(matches!(result, Err(lx::Error::EEXIST)));
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"original"
+        );
+        assert_eq!(fs.reserve_file().unwrap().reservation.handle, u64::MAX);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn deduplicated_inode_releases_unused_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let root_inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let (inode, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (existing, node_id) = fs.insert_inode(inode).unwrap();
+        fs.inner.inodes.write().inodes_by_node_id.next_handle = u64::MAX;
+
+        let reservation = fs.reserve_inode().unwrap();
+        let (inode, _) = root_inode
+            .lookup_child(lx::LxStr::from_bytes(b"file"))
+            .unwrap();
+        let (reused, reused_node_id) = reservation.insert(inode).unwrap();
+
+        assert!(std::sync::Arc::ptr_eq(&existing, &reused));
+        assert_eq!(reused_node_id, node_id);
+        assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
 
     #[test]
     fn direct_root_ignores_forget_across_destroy() {
@@ -1093,14 +1186,11 @@ mod tests {
         assert_eq!(node_id, FUSE_ROOT_ID + 1);
 
         let stale = fs.reserve_file().unwrap();
-        assert_eq!(stale.handle, 1);
+        assert_eq!(stale.reservation.handle, 1);
         let file = inode.open(lx::O_RDONLY as u32).unwrap();
         fs.destroy();
 
-        assert_eq!(
-            fs.insert_reserved_file(&stale, file).unwrap_err(),
-            lx::Error::ENOSPC
-        );
+        assert_eq!(stale.insert(file).unwrap_err(), lx::Error::ENOSPC);
 
         let (inode, _) = fs
             .get_inode(FUSE_ROOT_ID)
@@ -1110,12 +1200,11 @@ mod tests {
         let (inode, node_id) = fs.insert_inode(inode).unwrap();
         assert_eq!(node_id, FUSE_ROOT_ID + 1);
         let current = fs.reserve_file().unwrap();
-        assert_eq!(current.handle, 1);
+        assert_eq!(current.reservation.handle, 1);
         let file = inode.open(lx::O_RDONLY as u32).unwrap();
-        fs.insert_reserved_file(&current, file).unwrap();
+        assert_eq!(current.insert(file).unwrap(), 1);
         let next = fs.reserve_file().unwrap();
-        assert_eq!(next.handle, 2);
-        fs.release_file_reservation(&next);
+        assert_eq!(next.reservation.handle, 2);
     }
 
     #[test]
@@ -1126,14 +1215,14 @@ mod tests {
         let fs = VirtioFs::new(root.path(), None).unwrap();
         let root_inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
         let stale = fs.reserve_inode().unwrap();
-        assert_eq!(stale.handle, FUSE_ROOT_ID + 1);
+        assert_eq!(stale.reservation.handle, FUSE_ROOT_ID + 1);
         let (stale_inode, _) = root_inode
             .lookup_child(lx::LxStr::from_bytes(b"first"))
             .unwrap();
         fs.destroy();
 
         assert!(matches!(
-            fs.insert_reserved_inode(&stale, stale_inode),
+            stale.insert(stale_inode),
             Err(err) if err == lx::Error::ENOSPC
         ));
 
