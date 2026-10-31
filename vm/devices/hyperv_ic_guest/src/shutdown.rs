@@ -78,11 +78,17 @@ pub struct ShutdownGuestChannel {
 #[derive(Debug, Error)]
 enum Error {
     #[error("cancelled")]
-    Cancelled(#[from] Cancelled),
+    Cancelled(Cancelled),
     #[error("ring buffer error")]
     Ring(#[source] std::io::Error),
     #[error("truncated message")]
     TruncatedMessage,
+}
+
+impl From<Cancelled> for Error {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl ShutdownGuestIc {

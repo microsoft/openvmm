@@ -171,9 +171,15 @@ const MAX_IO_QUEUE_DEPTH: usize = 8;
 #[derive(Debug, Error)]
 enum HandlerError {
     #[error("cancelled")]
-    Cancelled(#[from] Cancelled),
+    Cancelled(Cancelled),
     #[error("nvme queue error")]
     Queue(#[from] QueueError),
+}
+
+impl From<Cancelled> for HandlerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl IoHandler {

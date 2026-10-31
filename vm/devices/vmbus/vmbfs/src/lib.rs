@@ -322,7 +322,7 @@ fn parse_path(buf: &[u8]) -> Result<String, DeviceError> {
 #[derive(Debug, Error)]
 enum DeviceError {
     #[error("cancelled")]
-    Cancelled(#[from] Cancelled),
+    Cancelled(Cancelled),
     #[error("vmbus pipe error")]
     Pipe(#[source] std::io::Error),
     #[error("message too short")]
@@ -339,6 +339,12 @@ enum DeviceError {
     InvalidMessageType(protocol::MessageType),
     #[error("read too large")]
     ReadTooLarge,
+}
+
+impl From<Cancelled> for DeviceError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 mod save_restore {

@@ -46,7 +46,7 @@ use zerocopy::KnownLayout;
 #[derive(Debug, Error)]
 enum Error {
     #[error("cancelled")]
-    Cancelled(#[from] task_control::Cancelled),
+    Cancelled(task_control::Cancelled),
     #[error("channel i/o error")]
     Io(#[source] std::io::Error),
     #[error("invalid version during version negotiation")]
@@ -72,6 +72,12 @@ enum Error {
     UnknownHostRequest { request: HostRequests },
     #[error("bad message type {0}")]
     BadMessageType(u8),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 /// Host VMBUS serial device.

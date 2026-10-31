@@ -242,13 +242,19 @@ const BUF_SIZE: usize = 4096;
 #[derive(Debug, thiserror::Error)]
 enum WorkerError {
     #[error("cancelled")]
-    Cancelled(#[from] Cancelled),
+    Cancelled(Cancelled),
     #[error("virtio queue error")]
     Virtio(#[source] std::io::Error),
     #[error("serial I/O error")]
     Serial(#[source] std::io::Error),
     #[error("guest memory error")]
     GuestMemory(#[source] guestmem::GuestMemoryError),
+}
+
+impl From<Cancelled> for WorkerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl ConsoleWorker {

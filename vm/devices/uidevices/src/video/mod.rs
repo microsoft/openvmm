@@ -37,7 +37,7 @@ use zerocopy::Ref;
 #[derive(Debug, Error)]
 enum Error {
     #[error("cancelled")]
-    Cancelled(#[from] task_control::Cancelled),
+    Cancelled(task_control::Cancelled),
     #[error("out of order packet")]
     UnexpectedPacketOrder,
     #[error("memory access error")]
@@ -50,6 +50,12 @@ enum Error {
     Io(#[source] std::io::Error),
     #[error("failed to accept vmbus channel")]
     Accept(#[from] vmbus_channel::offer::Error),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 #[derive(Debug)]

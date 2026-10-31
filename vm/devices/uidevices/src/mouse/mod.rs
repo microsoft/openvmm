@@ -36,7 +36,7 @@ use zerocopy::KnownLayout;
 #[derive(Debug, Error)]
 enum Error {
     #[error("cancelled")]
-    Cancelled(#[from] task_control::Cancelled),
+    Cancelled(task_control::Cancelled),
     #[error("channel i/o error")]
     Io(#[source] std::io::Error),
     #[error("received out of order packet")]
@@ -47,6 +47,12 @@ enum Error {
     UnknownMessageType(u32),
     #[error("accepting vmbus channel")]
     Accept(#[from] vmbus_channel::offer::Error),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 enum Request {
@@ -343,7 +349,11 @@ impl<T: RingMem + Unpin> MouseChannel<T> {
                 ChannelState::Active { version: _ } => {
                     mouse.source.set_active(true).await;
                     let send_fut = pin!(async {
-                        while let Some(mouse_data) = mouse.source.next().await {
+                        loop {
+                            check.check()?;
+                            let Some(mouse_data) = mouse.source.next().await else {
+                                break;
+                            };
                             post_mouse_packet(mouse_data, &mut send).await?;
                         }
                         Ok(())
@@ -409,14 +419,70 @@ async fn post_mouse_packet(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::gated_input;
     use input_core::mesh_input::input_pair;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
     use std::io::ErrorKind;
+    use std::sync::atomic::Ordering;
     use test_with_tracing::test;
     use vmbus_async::pipe::connected_message_pipes;
+    use vmbus_ring::FlatRingMem;
+
+    struct ActiveWorker {
+        mouse: Mouse,
+        channel: MouseChannel<FlatRingMem>,
+    }
+
+    impl task_control::AsyncRun<()> for ActiveWorker {
+        async fn run(
+            &mut self,
+            stop: &mut StopTask<'_>,
+            _: &mut (),
+        ) -> Result<(), task_control::Cancelled> {
+            let check = stop.check_handle()?;
+            match stop
+                .until_stopped(self.channel.process(&mut self.mouse, &check))
+                .await?
+            {
+                Err(Error::Cancelled(cancelled)) => Err(cancelled),
+                result => panic!("unexpected mouse result: {result:?}"),
+            }
+        }
+    }
+
+    #[async_test]
+    async fn stop_interrupts_active_input_before_consuming_next_event(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("mouse-stop");
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (source, gate) = gated_input(Some(MouseData {
+            button_mask: 0,
+            x: 1,
+            y: 2,
+        }));
+        let mut task = task_control::TaskControl::new(ActiveWorker {
+            mouse: Mouse::new(Box::new(source)),
+            channel: MouseChannel::new(
+                host,
+                ChannelState::Active {
+                    version: protocol::SYNTHHID_INPUT_VERSION,
+                },
+            ),
+        });
+        task.insert(&worker_driver, "mouse", ());
+        assert!(task.start());
+        gate.stop(&mut task, &driver).await;
+        assert_eq!(gate.polls.load(Ordering::Relaxed), 1);
+        let mut packet = [0; 256];
+        let n = guest.recv(&mut packet).await.unwrap();
+        let (header, _) = protocol::MessageHeader::read_from_prefix(&packet[..n]).unwrap();
+        assert_eq!(
+            header.message_type,
+            protocol::SYNTHHID_PROTOCOL_INPUT_REPORT
+        );
+    }
 
     #[derive(Debug)]
     enum Packet {

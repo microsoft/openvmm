@@ -53,16 +53,15 @@ pub trait AsyncRun<S>: 'static + Send {
 
 /// The return error from [`AsyncRun::run`] indicating the task has not yet
 /// finished executing.
+///
+/// This is control flow, not an operational error. It deliberately does not
+/// implement [`std::error::Error`], preventing implicit error boxing.
+///
+/// ```compile_fail
+/// let error: Box<dyn std::error::Error> = Box::new(task_control::Cancelled);
+/// ```
 #[derive(Debug)]
 pub struct Cancelled;
-
-impl std::fmt::Display for Cancelled {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("task cancelled for control processing")
-    }
-}
-
-impl std::error::Error for Cancelled {}
 
 /// A future indicating that the task should return for event processing or
 /// because the task was stopped.
