@@ -250,6 +250,8 @@ impl PollWait for Wait {
             }
             WaitState::Waiting(waker) => {
                 if self.tp_wait.cancel() {
+                    let _old = std::mem::replace(&mut *state, WaitState::NotWaiting);
+                    drop(state);
                     // SAFETY: dropping the reference count from poll_wait.
                     unsafe {
                         drop(Arc::from_raw(Arc::as_ptr(&self.inner)));

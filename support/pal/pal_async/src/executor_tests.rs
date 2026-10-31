@@ -11,6 +11,8 @@ use crate::socket::PolledSocket;
 use crate::task::Spawn;
 use crate::task::with_current_task_metadata;
 use crate::timer::Instant;
+use crate::timer::PolledTimer;
+use crate::wait::PolledWait;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
@@ -24,7 +26,10 @@ use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 use std::sync::Arc;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
+use std::task::Waker;
 use std::time::Duration;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
@@ -147,8 +152,10 @@ pub async fn wait_tests(driver: impl Driver) {
     op.await.unwrap();
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
     event.signal();
-    // Kick off a poll.
-    assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    // The signal may already have completed the wait.
+    if let Some(result) = poll_fn(|cx| poller.poll_wait(cx)).now_or_never() {
+        result.unwrap();
+    }
     // Pend so that the poll completes internally.
     pend_once().await;
     // Cancel. For some executors, the signal will be present.
@@ -159,6 +166,161 @@ pub async fn wait_tests(driver: impl Driver) {
     }
     pend_once().await;
     assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    let _ = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+    drop(poller);
+
+    let mut poller = PolledWait::new(&driver, event.clone()).unwrap();
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+    assert!(event.try_wait(), "idle cancellation consumed a signal");
+    assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+    assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    // Let the executor wait on other IO while this wait is cancelled.
+    PolledTimer::new(&driver)
+        .sleep(Duration::from_millis(1))
+        .await;
+    assert!(event.try_wait(), "cancelled wait consumed a new signal");
+    event.signal();
+    poller.wait().await.unwrap();
+
+    // Cancellation must account for a signal exactly once, including when
+    // completion races cancellation and replaces the original wait's waker.
+    for _ in 0..64 {
+        assert!(
+            poller
+                .poll_wait(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        event.signal();
+        let consumed = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+        assert_ne!(consumed, event.try_wait());
+        assert!(!event.try_wait());
+        assert_eq!(
+            poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+            Some(false)
+        );
+        event.signal();
+        poller.wait().await.unwrap();
+    }
+
+    struct SignalOnWake(Event);
+
+    impl Wake for SignalOnWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.signal();
+        }
+    }
+
+    // Observe completion without polling the original wait, so cancellation
+    // also exercises the already-completed state.
+    let wake_event = Event::new();
+    let waker = Waker::from(Arc::new(SignalOnWake(wake_event.clone())));
+    assert!(
+        poller
+            .poll_wait(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    event.signal();
+    PolledWait::new(&driver, wake_event)
+        .unwrap()
+        .wait()
+        .await
+        .unwrap();
+    let consumed = poll_fn(|cx| poller.poll_cancel_wait(cx)).await;
+    #[cfg(windows)]
+    assert!(consumed);
+    assert_ne!(consumed, event.try_wait());
+    assert_eq!(
+        poll_fn(|cx| poller.poll_cancel_wait(cx)).now_or_never(),
+        Some(false)
+    );
+    event.signal();
+    poller.wait().await.unwrap();
+    drop(poller);
+
+    for _ in 0..16 {
+        let mut poller = PolledWait::new(&driver, event.clone()).unwrap();
+        assert!(poll_fn(|cx| poller.poll_wait(cx)).now_or_never().is_none());
+        assert!(!poll_fn(|cx| poller.poll_cancel_wait(cx)).await);
+        drop(poller);
+        event.signal();
+        assert!(event.try_wait());
+    }
+    wait_waker_drop_tests(&driver).await;
+}
+
+async fn wait_waker_drop_tests(driver: &impl Driver) {
+    struct ResourceWaker<T> {
+        resource: Option<T>,
+        dropped: Event,
+    }
+
+    impl<T> Drop for ResourceWaker<T> {
+        fn drop(&mut self) {
+            drop(self.resource.take());
+            self.dropped.signal();
+        }
+    }
+
+    impl<T: Send + Sync> Wake for ResourceWaker<T> {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    async fn check<T: Send + Sync + 'static>(
+        driver: &impl Driver,
+        resource: T,
+        cancel_first: bool,
+    ) {
+        let dropped = Event::new();
+        let mut wait = PolledWait::new(driver, Event::new()).unwrap();
+        let resource_waker = Arc::new(ResourceWaker {
+            resource: Some(resource),
+            dropped: dropped.clone(),
+        });
+        let weak = Arc::downgrade(&resource_waker);
+        let waker = Waker::from(resource_waker);
+        assert!(
+            wait.poll_wait(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(waker);
+        if cancel_first {
+            assert!(!poll_fn(|cx| wait.poll_cancel_wait(cx)).await);
+        }
+        drop(wait);
+        // A backend may retain the registration until asynchronous cleanup.
+        PolledWait::new(driver, dropped)
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        assert!(weak.upgrade().is_none());
+    }
+
+    for cancel_first in [false, true] {
+        check(driver, PolledTimer::new(driver), cancel_first).await;
+
+        let mut nested_wait = PolledWait::new(driver, Event::new()).unwrap();
+        assert!(
+            nested_wait
+                .poll_wait(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        check(driver, nested_wait, cancel_first).await;
+    }
 }
 
 /// Runs socket-related tests.
