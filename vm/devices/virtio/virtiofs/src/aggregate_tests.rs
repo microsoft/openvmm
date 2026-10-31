@@ -4,6 +4,9 @@
 use super::SYNTHETIC_ROOT_FH;
 use crate::VirtioFs;
 use crate::inode;
+use crate::inode::VirtioFsVolume;
+use crate::test_helpers::decode_dir_entries;
+use fuse::Fuse;
 use fuse::protocol::FUSE_ROOT_ID;
 use lxutil::LxVolumeOptions;
 use std::sync::Arc;
@@ -227,4 +230,48 @@ fn add_child_rejected_after_teardown() {
         fs.inner.aggregate().unwrap().registry.read().entries.len(),
         1
     );
+}
+
+#[test]
+fn failed_synthetic_root_readdirplus_returns_entries_holding_references() {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let fs = VirtioFs::new_aggregate();
+    fs.add_child("first", first.path(), None).unwrap();
+    fs.add_child("second", second.path(), None).unwrap();
+    let second_volume_id = fs.inner.aggregate().unwrap().registry.read().entries[1]
+        .volume
+        .id();
+
+    // Look up the first child's root, and fail the second's with a host error.
+    let mut lookup = |volume: Arc<VirtioFsVolume>| {
+        if volume.id() == second_volume_id {
+            Err(lx::Error::EIO)
+        } else {
+            fs.insert_child_root_entry(volume)
+        }
+    };
+
+    // The read stops at the second child, but still returns the first child,
+    // whose entry holds the reference its lookup took.
+    let reply = fs
+        .read_synthetic_root_dir_with(0, 4096, true, &mut lookup)
+        .unwrap();
+    let entries = decode_dir_entries(&reply, true);
+    let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert_eq!(names, [".", "..", "first"]);
+    let node_id = FUSE_ROOT_ID + 1;
+    assert_eq!(entries[2].node_id, node_id);
+
+    // The next read starts at the second child, so the guest gets the error.
+    assert_eq!(
+        fs.read_synthetic_root_dir_with(entries[2].offset, 4096, true, &mut lookup)
+            .unwrap_err(),
+        lx::Error::EIO
+    );
+
+    // The guest's forget for the entry it received releases the first child's
+    // root.
+    fs.forget(node_id, 1);
+    assert!(fs.get_inode(node_id).is_err(), "inode leaked");
 }
