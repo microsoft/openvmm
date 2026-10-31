@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_hook"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+disk_backend.workspace = true
+disklayer_ram.workspace = true
+inspect.workspace = true
+scsi_buffers.workspace = true
+
+[dev-dependencies]
+disk_prwrap.workspace = true
+event-listener.workspace = true
+futures.workspace = true
+guestmem.workspace = true
+pal_async.workspace = true
+parking_lot.workspace = true
+storage_tests.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

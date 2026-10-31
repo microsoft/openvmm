@@ -69,6 +69,7 @@ Available profiles control the VM configuration:
 | `standard` | Full device set, serial agent, shared memory |
 | `quiet-serial` | Like standard but suppresses kernel console |
 | `minimal` | Pipette-as-init, minimal devices, shared memory |
+| `minimal-serial` | Minimal devices with serial console output, shared memory |
 | `minimal-private` | Same as minimal but with private memory (fastest) |
 
 ```bash
@@ -77,7 +78,16 @@ burette run --test boot-time --profile minimal -o report.json
 
 # Custom iteration count and guest RAM
 burette run --test boot-time --iterations 20 --mem-mb 1024
+
+# Boot a 32-vCPU guest, rather than 32 concurrent VMs
+burette run --test boot-time --boot-vps 32 --profile minimal -o boot-32vp.json
 ```
+
+`--boot-vps` defaults to one and applies only to `boot-time`. Keep it, the
+profile, memory size, and guest artifacts fixed when comparing reports.
+The standard profiles include Petri's startup save/restore verification when
+supported. Minimal profiles do not; use `minimal-serial` to measure boot with
+console output but without that verification.
 
 ### Memory overhead
 

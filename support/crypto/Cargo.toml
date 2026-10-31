@@ -74,10 +74,11 @@ signature = { workspace = true, optional = true, features = ["alloc"] }
 x509-cert = { workspace = true, optional = true }
 
 anyhow.workspace = true
+const-oid.workspace = true
+jiff.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-wchar.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",

@@ -165,29 +165,47 @@ impl<'a> MshvProtoPartition<'a> {
             .create_vcpu(0)
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
 
-        // Install intercepts required by both architectures.
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+        // Nested partitions leave HV#1 handling to L0. OpenVMM's intercepts
+        // service its VMBus server, which is unavailable in this mode.
+        if !config.nested_virt {
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
+                    e.into(),
+                )
+            })?;
+        }
 
         // Set up a signal for forcing vcpufd.run() to exit with EINTR.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -469,6 +487,11 @@ impl virt::ResetPartition for MshvPartition {
 
         reset_with_scrub.store(false, Ordering::Release);
         let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
+
+        #[cfg(guest_arch = "x86_64")]
+        if inner.caps.nested_virt && !scrubbed {
+            return Err(ErrorInner::NestedResetRequiresScrub.into());
+        }
 
         #[cfg(guest_arch = "x86_64")]
         for irq in 0..virt::irqcon::IRQ_LINES as u8 {
@@ -910,7 +933,6 @@ enum ErrorInner {
     InvalidSnpVmsaImport,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
-    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get partition property")]
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
@@ -935,8 +957,17 @@ enum ErrorInner {
     ResetState(#[source] Box<virt::state::StateError<Error>>),
     #[error("failed to scrub partition")]
     ScrubPartition(#[source] io::Error),
-    #[error("install intercept failed")]
-    InstallIntercept(#[source] KernelError),
+    #[error("failed to install {0:?} intercept")]
+    InstallIntercept(hvdef::hypercall::HvInterceptType, #[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization reset requires partition scrub support")]
+    NestedResetRequiresScrub,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving nested virtualization state is not supported by MSHV")]
+    NestedStateSaveUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring nested virtualization state is not supported by MSHV")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] KernelError),
@@ -1015,6 +1046,13 @@ fn common_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_intr_ctrl_regs(true)
         .with_access_hypercall_regs(true)
         .with_access_vp_index(true)
+        // access_vp_regs enables HvCallGetVpRegisters / HvCallSetVpRegisters
+        // for the guest. cloud-hypervisor sets this unconditionally in
+        // `make_default_synthetic_features_mask`, and it is required for
+        // nested-virt L1 guests to be recognized as parent partitions by
+        // the mshv Linux driver (which gates /dev/mshv on the
+        // create_partitions privilege that L0 mshv derives from this bit).
+        .with_access_vp_regs(true)
         .with_fast_hypercall_output(true)
         .with_direct_synthetic_timers(true)
         .with_extended_processor_masks(true)

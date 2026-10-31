@@ -53,6 +53,9 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Filesystem operations through the virtio-9p Linux client.
+#[cfg(target_os = "linux")]
+mod plan9;
 /// Tests involving UEFI Secure Boot functionality.
 mod secureboot;
 /// Tests involving TPM functionality
@@ -63,6 +66,8 @@ mod tpm138;
 mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
+/// Tests for VMDK disk functionality.
+mod vmdk;
 /// Tests involving VMGS functionality
 mod vmgs;
 
@@ -133,7 +138,7 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
 #[vmm_test(openvmm_linux_direct_x64, openvmm_linux_direct_aarch64)]
 async fn boot_virtio_vsock(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .with_virtio_vsock()
+        .with_virtio_vsock(true)
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;

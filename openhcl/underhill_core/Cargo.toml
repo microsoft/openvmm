@@ -188,7 +188,7 @@ aarch64defs.workspace = true
 firmware_pcat.workspace = true
 
 [dev-dependencies]
-disklayer_ram.workspace = true
+disk_hook.workspace = true
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 nvme_spec.workspace = true
 page_pool_alloc.workspace = true

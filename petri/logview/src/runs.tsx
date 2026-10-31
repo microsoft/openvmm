@@ -3,11 +3,12 @@
 
 import "./styles/common.css";
 import "./styles/runs.css";
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { RunData } from "./data_defs";
-import { fetchRunData } from "./utils/fetch_runs_data.ts";
+import { fetchRunData, fetchRunDetails } from "./utils/fetch_runs_data.ts";
+import { usePrefetchQueue } from "./utils/prefetch";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
 import { Link, useSearchParams } from "react-router";
@@ -50,9 +51,39 @@ export function Runs(): React.JSX.Element {
   // Check if the query succeeded but returned no data (not due to filtering, not during loading)
   const hasNoData = isSuccess && runs.length === 0;
 
+  const prefetchQueue = usePrefetchQueue("runs");
+  const warmRun = useCallback(
+    (runId: string, priority = false) => {
+      prefetchQueue.add(
+        {
+          queryKey: ["runDetails", runId],
+          queryFn: (signal) => fetchRunDetails(runId, signal),
+        },
+        priority,
+      );
+    },
+    [prefetchQueue],
+  );
+  useEffect(() => {
+    const recent = [...runs].sort(
+      (a, b) => b.creationTime.getTime() - a.creationTime.getTime(),
+    );
+    const candidates = [
+      ...recent.filter((run) => run.metadata.petriFailed > 0).slice(0, 7),
+      ...recent.slice(0, 10),
+      ...recent.filter((run) => run.metadata.ghBranch === "main").slice(0, 7),
+    ];
+    for (const name of new Set(candidates.map((run) => run.name))) {
+      warmRun(name.replace(/^attempts\//, ""));
+    }
+  }, [runs, warmRun]);
+
   // Get the table definition (columns and default sorting)
   const [sorting, setSorting] = useState<SortingState>(defaultSorting);
-  const columns = useMemo(() => createColumns(), []);
+  const columns = useMemo(
+    () => createColumns((runId) => warmRun(runId, true)),
+    [warmRun],
+  );
   const filteredRuns = useMemo(
     () => filterRuns(runs, branchFilter, searchFilter),
     [runs, branchFilter, searchFilter],

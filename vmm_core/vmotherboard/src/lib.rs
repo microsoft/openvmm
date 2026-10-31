@@ -34,21 +34,21 @@ use std::sync::Arc;
 use vm_resource::Resource;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 
 /// A supertrait of `ChipsetDevice` that requires devices to also support
-/// InspectMut and SaveRestore.
+/// InspectMut and asynchronous save/restore.
 ///
 /// We don't want to put these bounds on `ChipsetDevice` directly, as that would
 /// tightly couple `ChipsetDevice` devices with OpenVMM-specific infrastructure,
 /// making it difficult to share device implementations across VMMs.
 pub trait VmmChipsetDevice:
-    ChipsetDevice + InspectMut + ProtobufSaveRestore + ChangeDeviceState
+    ChipsetDevice + InspectMut + AsyncProtobufSaveRestore + ChangeDeviceState
 {
 }
 
 impl<T> VmmChipsetDevice for T where
-    T: ChipsetDevice + InspectMut + ProtobufSaveRestore + ChangeDeviceState
+    T: ChipsetDevice + InspectMut + AsyncProtobufSaveRestore + ChangeDeviceState
 {
 }
 

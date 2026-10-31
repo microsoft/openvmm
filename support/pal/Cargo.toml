@@ -82,6 +82,9 @@ features = [
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 
+[target.'cfg(unix)'.dev-dependencies]
+tempfile.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 caps.workspace = true
 seccompiler.workspace = true

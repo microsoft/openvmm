@@ -30,9 +30,13 @@
 //!    will be converted to [`SavedStateBlob`]; the infrastructure will find any
 //!    dependent types. But it doesn't hurt to put it on other types, too.
 //!
-//! 3. Typically, you implement the [`SaveRestore`] trait. This trait allows you
-//!    to specify your associated saved state type and to implement `save` and
+//! 3. Typically, you implement [`AsyncSaveRestore`]. This trait allows you to
+//!    specify your associated saved state type and to implement `save` and
 //!    `restore` methods that act on this type.
+//!
+//!    New code should use this trait even if it doesn't need to await anything
+//!    yet. It will eventually replace [`SaveRestore`]. Existing synchronous
+//!    implementations are adapted automatically and can migrate over time.
 //!
 //!    For some device types (such as vmbus devices), you may need to use a
 //!    device-specific trait that provides additional parameters. But the
@@ -69,6 +73,7 @@
 /// ```
 pub use save_restore_derive::SavedStateRoot;
 
+use async_trait::async_trait;
 use mesh::payload;
 use mesh::payload::DefaultEncoding;
 use mesh::payload::DescribedProtobuf;
@@ -76,9 +81,14 @@ use mesh::payload::Protobuf;
 use mesh::payload::encoding::ImpossibleField;
 use mesh::payload::message::ProtobufAny;
 use mesh::payload::protofile::MessageDescription;
+use std::future::Future;
 
 /// Implemented by objects which can be saved/restored with an associated
 /// type that can be serialized as a protobuf message.
+///
+/// New code should implement [`AsyncSaveRestore`] instead. This trait is kept
+/// for existing implementations to migrate over time and will eventually be
+/// removed.
 pub trait SaveRestore {
     /// The concrete saved state type.
     type SavedState;
@@ -87,6 +97,43 @@ pub trait SaveRestore {
     fn save(&mut self) -> Result<Self::SavedState, SaveError>;
     /// Restores the object's state.
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError>;
+}
+
+/// Asynchronous save/restore with a concrete saved state type.
+///
+/// Use this trait for new code, even when no asynchronous work is needed yet.
+/// It will eventually be the only typed save/restore interface.
+///
+/// Types implementing [`SaveRestore`] are adapted automatically. To migrate a
+/// type to native asynchronous save/restore, replace its `SaveRestore`
+/// implementation with this trait; the blanket implementation prevents
+/// implementing both on the same type.
+pub trait AsyncSaveRestore {
+    /// The concrete saved state type.
+    type SavedState: Send;
+
+    /// Saves the object's state.
+    fn save(&mut self) -> impl Send + Future<Output = Result<Self::SavedState, SaveError>>;
+    /// Restores the object's state.
+    fn restore(
+        &mut self,
+        state: Self::SavedState,
+    ) -> impl Send + Future<Output = Result<(), RestoreError>>;
+}
+
+impl<T: SaveRestore + Send> AsyncSaveRestore for T
+where
+    T::SavedState: Send,
+{
+    type SavedState = T::SavedState;
+
+    async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        SaveRestore::save(self)
+    }
+
+    async fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+        SaveRestore::restore(self, state)
+    }
 }
 
 /// Convenience type for objects that do not support being saved.
@@ -112,6 +159,19 @@ pub trait ProtobufSaveRestore {
     fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
     /// Restore the object.
     fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
+}
+
+/// Object-safe asynchronous save/restore using protobuf-encoded state.
+///
+/// Implement [`AsyncSaveRestore`] for typed state; its protobuf encoding and
+/// decoding are provided automatically. Implement this trait directly only
+/// when the state is already an opaque blob, such as for a remote device.
+#[async_trait]
+pub trait AsyncProtobufSaveRestore: Send {
+    /// Saves the object's state.
+    async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
+    /// Restores the object's state.
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
 }
 
 /// An opaque saved state blob, encoded as a protobuf message.
@@ -148,11 +208,25 @@ where
     T::SavedState: 'static + Send + SavedStateRoot,
 {
     fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
-        self.save().map(SavedStateBlob::new)
+        SaveRestore::save(self).map(SavedStateBlob::new)
     }
 
     fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-        self.restore(state.parse()?)
+        SaveRestore::restore(self, state.parse()?)
+    }
+}
+
+#[async_trait]
+impl<T: AsyncSaveRestore + Send> AsyncProtobufSaveRestore for T
+where
+    T::SavedState: 'static + SavedStateRoot,
+{
+    async fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
+        AsyncSaveRestore::save(self).await.map(SavedStateBlob::new)
+    }
+
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
+        AsyncSaveRestore::restore(self, state.parse()?).await
     }
 }
 
@@ -242,5 +316,85 @@ pub mod private {
                     Some(&protofile::message_description::<$ident>());
             };
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::executor::block_on;
+    use test_with_tracing::test;
+
+    #[derive(Debug, Protobuf, SavedStateRoot)]
+    #[mesh(package = "test.save_restore")]
+    struct State {
+        #[mesh(1)]
+        value: u32,
+    }
+
+    struct Device(u32);
+
+    impl SaveRestore for Device {
+        type SavedState = State;
+
+        fn save(&mut self) -> Result<State, SaveError> {
+            if self.0 == u32::MAX {
+                return Err(SaveError::NotSupported);
+            }
+            Ok(State { value: self.0 })
+        }
+
+        fn restore(&mut self, state: State) -> Result<(), RestoreError> {
+            if state.value == u32::MAX {
+                return Err(RestoreError::SavedStateNotSupported);
+            }
+            self.0 = state.value;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn synchronous_state_is_compatible_with_async_adapter() {
+        block_on(async {
+            let mut device = Device(42);
+            let legacy = ProtobufSaveRestore::save(&mut device).unwrap();
+            let asynchronous = AsyncProtobufSaveRestore::save(&mut device).await.unwrap();
+            assert_eq!(payload::encode(legacy), payload::encode(asynchronous));
+
+            let state = ProtobufSaveRestore::save(&mut device).unwrap();
+            let mut restored = Device(0);
+            let erased: &mut dyn AsyncProtobufSaveRestore = &mut restored;
+            erased.restore(state).await.unwrap();
+            let state = erased.save().await.unwrap();
+            assert_eq!(state.parse::<State>().unwrap().value, 42);
+            ProtobufSaveRestore::restore(&mut device, state).unwrap();
+            assert_eq!(device.0, 42);
+        });
+    }
+
+    #[test]
+    fn async_adapter_preserves_errors() {
+        block_on(async {
+            assert!(matches!(
+                AsyncProtobufSaveRestore::save(&mut Device(u32::MAX)).await,
+                Err(SaveError::NotSupported)
+            ));
+
+            let mut device = Device(7);
+            assert!(matches!(
+                AsyncProtobufSaveRestore::restore(
+                    &mut device,
+                    SavedStateBlob::new(State { value: u32::MAX })
+                )
+                .await,
+                Err(RestoreError::SavedStateNotSupported)
+            ));
+            assert!(matches!(
+                AsyncProtobufSaveRestore::restore(&mut device, SavedStateBlob::new(NoSavedState))
+                    .await,
+                Err(RestoreError::ProtobufDecode(_))
+            ));
+            assert_eq!(device.0, 7);
+        });
     }
 }

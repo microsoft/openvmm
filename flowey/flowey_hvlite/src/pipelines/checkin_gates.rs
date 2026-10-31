@@ -1933,6 +1933,7 @@ impl IntoPipeline for CheckinGatesCli {
             });
 
             let vmm_tests_run_job = vmm_tests_run_job.finish();
+            // The Windows SNP tests are unstable, so don't require them to pass before merging a PR.
             if label != "x64-windows-amd-snp" {
                 all_jobs.push(vmm_tests_run_job);
             }

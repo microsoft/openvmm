@@ -3,6 +3,7 @@
 
 //! SHA-384 implementation using the macOS CommonCrypto API.
 
+use super::SHA_384_OUTPUT_SIZE_BYTES;
 use std::ffi::c_int;
 
 // Opaque storage for a CommonCrypto `CC_SHA512_CTX` (SHA-384 shares the
@@ -41,8 +42,8 @@ impl Sha384 {
         }
     }
 
-    pub fn finish(mut self) -> [u8; 48] {
-        let mut out = [0u8; 48];
+    pub fn finish(mut self) -> [u8; SHA_384_OUTPUT_SIZE_BYTES] {
+        let mut out = [0u8; SHA_384_OUTPUT_SIZE_BYTES];
         // SAFETY: ctx is initialized and owned; out is a 48-byte buffer
         // matching the SHA-384 digest size.
         unsafe {
