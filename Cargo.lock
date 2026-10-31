@@ -6625,6 +6625,7 @@ dependencies = [
  "once_cell",
  "pal",
  "pal_async",
+ "pal_event",
  "parking_lot",
  "slab",
  "smallbox",

@@ -60,8 +60,8 @@ impl State {
         })
     }
 
-    fn remove_fd(&mut self, index: usize) {
-        self.entries.remove(index);
+    fn remove_fd(&mut self, index: usize) -> FdEntry {
+        self.entries.remove(index)
     }
 
     fn poll_fd(
@@ -180,7 +180,8 @@ pub struct FdReady {
 
 impl Drop for FdReady {
     fn drop(&mut self) {
-        self.inner.lock_sys_state().remove_fd(self.index);
+        // Waker destruction may re-enter the driver, so defer it until unlocked.
+        let _entry = self.inner.lock_sys_state().remove_fd(self.index);
     }
 }
 
