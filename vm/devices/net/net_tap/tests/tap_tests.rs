@@ -541,6 +541,7 @@ mod tap_tests {
         let (mut pool, mem) = make_pool();
         let config = vec![QueueConfig {
             driver: Box::new(driver.clone()),
+            enabled_rx_offloads: Default::default(),
         }];
         let mut queues = Vec::new();
         endpoint

@@ -80,6 +80,7 @@ async fn endpoint_policy_proxy_arps_only_bound_on_link_targets(driver: DefaultDr
         .get_queues(
             vec![QueueConfig {
                 driver: Box::new(driver),
+                enabled_rx_offloads: Default::default(),
             }],
             None,
             &mut queues,
@@ -270,6 +271,7 @@ impl IngressHarness {
             .get_queues(
                 vec![QueueConfig {
                     driver: Box::new(driver.clone()),
+                    enabled_rx_offloads: Default::default(),
                 }],
                 None,
                 &mut queues,

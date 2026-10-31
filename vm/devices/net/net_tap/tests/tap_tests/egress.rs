@@ -61,6 +61,7 @@ pub(super) async fn test_tap_endpoint_policy_forwards_on_link_arp(driver: Defaul
         .get_queues(
             vec![QueueConfig {
                 driver: Box::new(driver),
+                enabled_rx_offloads: Default::default(),
             }],
             None,
             &mut queues,
