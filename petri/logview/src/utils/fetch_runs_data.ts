@@ -15,6 +15,7 @@ import {
   fetchMissingPRTitles,
   getAllGithubPullRequests,
 } from "./fetch_git_data";
+import { fetchRunManifest } from "./fetch_run_manifest";
 
 const GET_RUNS_URL =
   "https://openvmmghtestresults.blob.core.windows.net/results?restype=container&comp=list&showonly=files&include=metadata&prefix=attempts/";
@@ -258,6 +259,9 @@ export async function fetchRunDetails(
   signal?: AbortSignal,
 ): Promise<RunDetailsData> {
   try {
+    const manifest = await fetchRunManifest(runNumber, signal);
+    if (manifest) return manifest;
+
     const xmlDataArray: string[] = [];
     let continuationToken: string | null = null;
 
