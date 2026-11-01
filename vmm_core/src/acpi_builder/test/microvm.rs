@@ -33,6 +33,7 @@ fn test_microvm_smp_madt_matches_shared_mp_table() {
         let mp_table = loader::mptable::build_config_table(&loader::mptable::MpTableConfig {
             apic_ids: &apic_ids,
             level_triggered_irqs: &[],
+            ioapic_inputs: 24,
         })
         .unwrap();
         let mp_ids = mp_table[44..44 + apic_ids.len() * 20]
