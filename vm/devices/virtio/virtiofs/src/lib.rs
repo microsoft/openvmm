@@ -1249,7 +1249,7 @@ mod tests {
 
         let stale = fs.reserve_file().unwrap();
         assert_eq!(stale.reservation.handle, 1);
-        let file = inode.open(lx::O_RDONLY as u32).unwrap();
+        let file = inode.open(lx::O_RDONLY).unwrap();
         fs.destroy();
 
         assert_eq!(stale.insert(file).unwrap_err(), lx::Error::ENOSPC);
@@ -1263,7 +1263,7 @@ mod tests {
         assert_eq!(node_id, FUSE_ROOT_ID + 1);
         let current = fs.reserve_file().unwrap();
         assert_eq!(current.reservation.handle, 1);
-        let file = inode.open(lx::O_RDONLY as u32).unwrap();
+        let file = inode.open(lx::O_RDONLY).unwrap();
         assert_eq!(current.insert(file).unwrap(), 1);
         let next = fs.reserve_file().unwrap();
         assert_eq!(next.reservation.handle, 2);
