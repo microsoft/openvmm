@@ -180,6 +180,9 @@ const NANOS_PER_TICK: u64 = 838;
 
 impl Timer {
     fn new(enabled_at_reset: bool, interrupt: Option<LineInterrupt>) -> Self {
+        if let Some(interrupt) = &interrupt {
+            interrupt.set_level(false);
+        }
         Self {
             enabled_at_reset,
             interrupt,

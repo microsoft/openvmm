@@ -980,6 +980,7 @@ impl FloppyDiskController {
         disk_drive: DriveRibbon,
         dma: Box<dyn IsaDmaChannel>,
     ) -> Result<Self, NewFloppyDiskControllerError> {
+        interrupt.set_level(false);
         let mut pio_base = register_pio.new_io_region("base", 6);
         let mut pio_control = register_pio.new_io_region("control", 1);
 
@@ -2228,6 +2229,65 @@ mod save_restore {
             self.rt.interrupt.set_level(interrupt_level);
 
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::isa_dma_channel::FloatingDmaChannel;
+    use vmcore::line_interrupt::LineSet;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    #[async_test]
+    async fn restore_publishes_interrupt_before_polling() {
+        let new_device = |line| {
+            FloppyDiskController::new(
+                GuestMemory::empty(),
+                line,
+                &mut ExternallyManagedPortIoIntercepts,
+                0x3f0,
+                DriveRibbon::None,
+                Box::new(FloatingDmaChannel),
+            )
+            .unwrap()
+        };
+        for pending in [false, true] {
+            let mut source = new_device(LineInterrupt::detached());
+            if pending {
+                source.raise_interrupt(true);
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let set = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                set.add_target(0..=0, 0, "irq", target.clone());
+                let mut dev = new_device(set.new_line(0, "floppy").unwrap());
+                if reset {
+                    dev.raise_interrupt(true);
+                    set.reset();
+                    ChangeDeviceState::reset(&mut dev).await;
+                }
+                dev.restore(saved.parse().unwrap()).unwrap();
+                assert!(!target.is_high(0));
+                set.start();
+                assert_eq!(target.is_high(0), pending);
+                dev.lower_interrupt();
+                assert!(!target.is_high(0));
+                dev.raise_interrupt(true);
+                assert!(target.is_high(0));
+                set.stop();
+                set.reset();
+                ChangeDeviceState::reset(&mut dev).await;
+                set.start();
+                assert!(!target.is_high(0));
+            }
         }
     }
 }

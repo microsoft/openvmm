@@ -1449,6 +1449,69 @@ mod tests {
     }
 
     #[test]
+    fn restore_publishes_interrupt_before_polling() {
+        use vmcore::line_interrupt::LineSet;
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+
+        let mut pool = pal_async::DefaultPool::new();
+        let new_serial = |line| {
+            SerialPl011::new(
+                "com1".into(),
+                PL011_SERIAL0_BASE,
+                line,
+                Box::new(SerialIoMock::new()),
+                None,
+            )
+            .unwrap()
+        };
+        for (pending, enabled) in [(false, true), (true, true), (true, false)] {
+            let mut source = new_serial(LineInterrupt::detached());
+            write(&mut source, Register::UARTIMSC, UARTINT_TX);
+            write(&mut source, Register::UARTICR, 0x7ff);
+            if pending {
+                write(&mut source, Register::UARTDR, b'x'.into());
+                source.poll_device(&mut Context::from_waker(Waker::noop()));
+                assert_ne!(read(&mut source, Register::UARTRIS) & UARTINT_TX, 0);
+            }
+            if !enabled {
+                write(&mut source, Register::UARTIMSC, 0);
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let set = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                set.add_target(0..=0, 0, "irq", target.clone());
+                let mut serial = new_serial(set.new_line(0, "uart").unwrap());
+                set.start();
+                assert!(!target.is_high(0));
+                set.stop();
+                if reset {
+                    set.reset();
+                    pool.run_until(serial.reset());
+                }
+                serial.restore(saved.parse().unwrap()).unwrap();
+                assert!(
+                    !target.is_high(0),
+                    "restore must not reach a stopped target"
+                );
+                set.start();
+                assert_eq!(target.is_high(0), pending && enabled);
+                if pending && !enabled {
+                    write(&mut serial, Register::UARTIMSC, UARTINT_TX);
+                    assert!(target.is_high(0), "masked pending interrupt must survive");
+                }
+                set.stop();
+                set.reset();
+                pool.run_until(serial.reset());
+                set.start();
+                assert!(!target.is_high(0), "reset must discard pending interrupts");
+            }
+        }
+    }
+
+    #[test]
     fn tx_interrupt_asserts_after_broken_pipe_drain() {
         let serial_io = SerialIoMock::with_write_error(ErrorKind::BrokenPipe);
         let mut serial = SerialPl011::new(

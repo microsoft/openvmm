@@ -3487,6 +3487,131 @@ mod tests {
         dev
     }
 
+    #[pal_async::async_test]
+    async fn restore_publishes_wired_interrupts_before_processing() {
+        use vmcore::line_interrupt::LineSet;
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::save_restore::SavedStateBlob;
+
+        let initial_target = TestLineInterruptTarget::new_arc();
+        let evtq = LineInterrupt::new_with_target("EVTQ", initial_target.clone(), 0);
+        let gerror = LineInterrupt::new_with_target("GERROR", initial_target.clone(), 1);
+        evtq.set_level(true);
+        gerror.set_level(true);
+        let mut initial_device = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::allocate(0x4_0000),
+            &test_config(),
+            Some(evtq),
+            Some(gerror),
+        );
+        assert!(
+            !initial_target.is_high(0) && !initial_target.is_high(1),
+            "construction must publish low"
+        );
+        write64(
+            &mut initial_device,
+            EVENTQ_BASE,
+            QueueBase::new()
+                .with_log2size(TEST_EVTQ_LOG2SIZE)
+                .with_addr_bits(TEST_EVTQ_GPA >> 5)
+                .into(),
+        );
+        write32(
+            &mut initial_device,
+            CR0,
+            Cr0::new().with_eventqen(true).into(),
+        );
+        write32(
+            &mut initial_device,
+            IRQ_CTRL,
+            IrqCtrl::new()
+                .with_eventq_irqen(true)
+                .with_gerror_irqen(true)
+                .into(),
+        );
+        initial_device
+            .shared_state
+            .write_event(EvtEntry::translation_fault(1, 0x2000, false));
+        initial_device.shared_state.toggle_cmdq_err();
+        assert!(initial_target.is_high(0) && initial_target.is_high(1));
+        initial_device.reset().await;
+        assert!(
+            !initial_target.is_high(0) && !initial_target.is_high(1),
+            "reset must publish low on both outputs"
+        );
+
+        for (pending, enabled) in [(false, true), (true, true), (true, false)] {
+            let mut source = make_evtq_test_device();
+            if pending {
+                source
+                    .shared_state
+                    .write_event(EvtEntry::translation_fault(1, 0x2000, false));
+                source.shared_state.toggle_cmdq_err();
+            }
+            write32(
+                &mut source,
+                IRQ_CTRL,
+                IrqCtrl::new()
+                    .with_eventq_irqen(enabled)
+                    .with_gerror_irqen(enabled)
+                    .into(),
+            );
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let set = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                set.add_target(0..=1, 0, "SPIs", target.clone());
+                let mut dev = SmmuDevice::new(
+                    TEST_MMIO_BASE,
+                    source.guest_memory.clone(),
+                    &test_config(),
+                    Some(set.new_line(0, "EVTQ").unwrap()),
+                    Some(set.new_line(1, "GERROR").unwrap()),
+                );
+                if reset {
+                    set.reset();
+                    dev.reset().await;
+                }
+                dev.restore(saved.parse().unwrap()).unwrap();
+                assert!(!target.is_high(0) && !target.is_high(1));
+                set.start();
+                assert_eq!(target.is_high(0), pending && enabled, "EVTQ, reset={reset}");
+                assert_eq!(
+                    target.is_high(1),
+                    pending && enabled,
+                    "GERROR, reset={reset}"
+                );
+                set.stop();
+                set.reset();
+                dev.reset().await;
+                set.start();
+                assert!(
+                    !target.is_high(0) && !target.is_high(1),
+                    "reset must discard both pending interrupts"
+                );
+                set.stop();
+                set.reset();
+                dev.reset().await;
+                dev.restore(saved.parse().unwrap()).unwrap();
+                set.start();
+                assert_eq!(
+                    read32_page1(&mut dev, EVENTQ_PROD_PAGE1),
+                    u32::from(pending)
+                );
+                write32_page1(&mut dev, EVENTQ_CONS_PAGE1, u32::from(pending));
+                let error = read32(&mut dev, GERROR);
+                write32(&mut dev, GERRORN, error);
+                assert!(!target.is_high(0) && !target.is_high(1));
+                set.stop();
+                set.reset();
+                dev.reset().await;
+                set.start();
+                assert!(!target.is_high(0) && !target.is_high(1));
+            }
+        }
+    }
+
     #[test]
     fn test_evtq_write_and_read() {
         let mut dev = make_evtq_test_device();

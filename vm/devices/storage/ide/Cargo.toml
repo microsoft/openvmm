@@ -29,8 +29,11 @@ tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
+chipset.workspace = true
+chipset_resources.workspace = true
 disk_file.workspace = true
 pal_async.workspace = true
+parking_lot.workspace = true
 scsidisk.workspace = true
 test_with_tracing.workspace = true
 

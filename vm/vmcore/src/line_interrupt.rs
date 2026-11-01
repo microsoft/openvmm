@@ -2,6 +2,12 @@
 // Licensed under the MIT License.
 
 //! Infrastructure to support line interrupts.
+//!
+//! Devices own their output levels and must establish them during construction,
+//! reset, and restore. Targets own interrupt recognition and its saved history.
+//! A stopped [`LineSet`] caches publications without calling targets. Starting
+//! it replays the final levels after targets have started and before producers
+//! start. Pulses completed while the set is stopped are not replayed.
 
 #![forbid(unsafe_code)]
 
@@ -37,20 +43,30 @@ pub enum NewLineError {
 /// trampling on one another's IRQ lines if you're not careful.
 pub trait LineSetTarget: Send + Sync {
     /// Set an interrupt line state.
+    ///
+    /// Called with the source wire locked. A target must not synchronously
+    /// publish back onto that same wire.
     fn set_irq(&self, vector: u32, high: bool);
+
+    /// Initializes an input with no connected source when replaying line state.
+    ///
+    /// Pure line controllers should deassert the input. The default leaves it
+    /// untouched because a target's namespace can also contain non-line
+    /// interrupts whose pending state must not be cleared.
+    fn set_unconnected_irq(&self, _vector: u32) {}
 }
 
 #[derive(Debug)]
 struct Line {
     debug_label: Cow<'static, str>,
-    is_high: bool,
+    is_high: Option<bool>,
 }
 
 impl Line {
     fn new(debug_label: Cow<'static, str>) -> Self {
         Self {
             debug_label,
-            is_high: false,
+            is_high: None,
         }
     }
 }
@@ -76,6 +92,7 @@ struct LineInterruptInner {
     lines: BTreeMap<u8, Line>,
     fresh_line_key: u8,
     vector: u32,
+    running: bool,
 }
 
 impl Display for LineInterruptInner {
@@ -92,7 +109,7 @@ impl Display for LineInterruptInner {
             if i != 0 {
                 write!(f, ",")?;
             }
-            write!(f, "{}({})", line.debug_label, line.is_high)?;
+            write!(f, "{}({:?})", line.debug_label, line.is_high)?;
         }
         write!(f, "]")?;
         Ok(())
@@ -118,12 +135,42 @@ impl Inspect for LineInterruptInner {
 }
 
 impl LineInterruptInner {
-    fn new(debug_label: Cow<'static, str>, vector: u32, targets: Vec<Target>) -> Self {
+    fn new(
+        debug_label: Cow<'static, str>,
+        vector: u32,
+        targets: Vec<Target>,
+        running: bool,
+    ) -> Self {
         Self {
             targets,
             lines: [(0, Line::new(debug_label))].into_iter().collect(),
             fresh_line_key: 1,
             vector,
+            running,
+        }
+    }
+
+    fn is_high(&self) -> bool {
+        self.lines.values().any(|line| line.is_high == Some(true))
+    }
+
+    fn unpublished_sources(&self) -> impl Iterator<Item = &Line> {
+        self.lines
+            .values()
+            .filter(|line| !self.targets.is_empty() && line.is_high.is_none())
+    }
+
+    fn publish(&self) {
+        let is_high = self.is_high();
+        if is_high && self.targets.is_empty() {
+            tracelimit::warn_ratelimited!(%self, "LineInterrupt not hooked up to any targets!");
+        }
+        for target in &self.targets {
+            if self.lines.is_empty() {
+                target.inner.set_unconnected_irq(target.vector);
+            } else {
+                target.inner.set_irq(target.vector, is_high);
+            }
         }
     }
 
@@ -209,6 +256,7 @@ impl LineInterrupt {
                 lines: [(0, Line::new("detached".into()))].into_iter().collect(),
                 fresh_line_key: 1,
                 vector: 0,
+                running: true,
             })),
             line_key: 0,
         }
@@ -224,6 +272,7 @@ impl LineInterrupt {
     /// # let (label, target, vector) = ("", todo!(), 0);
     /// let set = LineSet::new();
     /// set.add_target(0..=0, vector, "target", target);
+    /// set.start();
     /// set.new_line(0, label)
     /// # };
     /// ```
@@ -235,6 +284,7 @@ impl LineInterrupt {
         let set = LineSet::new();
         let debug_label = debug_label.into();
         set.add_target(0..=0, vector, debug_label.as_ref(), target);
+        set.start();
         set.new_line(0, debug_label).unwrap()
     }
 
@@ -254,23 +304,19 @@ impl LineInterrupt {
         })
     }
 
-    /// Sets the line level high or low.
+    /// Sets the device's output high or low.
+    ///
+    /// This establishes the output even when the value is low. While the owning
+    /// line set is stopped, the value is cached without notifying targets.
     pub fn set_level(&self, high: bool) {
         let mut inner = self.inner.lock();
         inner
             .lines
             .get_mut(&self.line_key)
             .expect("line_key is always valid")
-            .is_high = high;
-
-        let is_high = inner.lines.iter().any(|(_, line)| line.is_high);
-
-        if is_high && inner.targets.is_empty() {
-            tracelimit::warn_ratelimited!(%inner, "LineInterrupt not hooked up to any targets!");
-        }
-
-        for target in inner.targets.iter() {
-            target.inner.set_irq(target.vector, is_high);
+            .is_high = Some(high);
+        if inner.running {
+            inner.publish();
         }
     }
 }
@@ -298,6 +344,7 @@ pub struct LineSet {
 
 #[derive(Inspect, Default)]
 struct LineSetState {
+    running: bool,
     #[inspect(with = "inspect_mappings")]
     targets: Vec<TargetMapping>,
     #[inspect(iter_by_key)]
@@ -331,10 +378,70 @@ fn inspect_mappings(mappings: &[TargetMapping]) -> impl '_ + Inspect {
 }
 
 impl LineSet {
-    /// Creates a new line set.
+    /// Creates a stopped line set with no published outputs.
     pub fn new() -> Self {
         Self {
             state: Default::default(),
+        }
+    }
+
+    /// Replays current levels and enables synchronous forwarding.
+    ///
+    /// Targets must already be started, and producers must not start until this
+    /// returns. Unpublished attached sources are warned about and treated as
+    /// low. Replay is serialized with publications and target attachment.
+    pub fn start(&self) {
+        let mut state = self.state.lock();
+        assert!(!state.running);
+        state.running = true;
+        for line in state.lines.values() {
+            let mut line = line.lock();
+            for source in line.unpublished_sources() {
+                tracelimit::warn_ratelimited!(
+                    vector = line.vector,
+                    source = %source.debug_label,
+                    "interrupt source did not publish a level before start"
+                );
+            }
+            line.running = true;
+            line.publish();
+        }
+        // Unwired inputs are inactive, including inputs whose source was removed
+        // when restoring into a different device topology.
+        for mapping in &state.targets {
+            for vector in mapping.source_range.clone() {
+                if !state.lines.contains_key(&vector) {
+                    mapping.target.set_unconnected_irq(
+                        vector - mapping.source_range.start() + mapping.target_start,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Disables forwarding without changing outputs or publication validity.
+    ///
+    /// Producers must stop before this is called, and targets stop afterward.
+    pub fn stop(&self) {
+        let mut state = self.state.lock();
+        assert!(state.running);
+        state.running = false;
+        for line in state.lines.values() {
+            line.lock().running = false;
+        }
+    }
+
+    /// Marks outputs unpublished for a new reset epoch.
+    ///
+    /// Must be called while stopped, before producers reset and publish their
+    /// outputs. Restoring must follow construction or reset, not old VM state.
+    pub fn reset(&self) {
+        let state = self.state.lock();
+        assert!(!state.running);
+        for line in state.lines.values() {
+            for source in line.lock().lines.values_mut() {
+                source.is_high = None;
+            }
         }
     }
 
@@ -357,17 +464,25 @@ impl LineSet {
         for (&vector, line) in &mut state.lines {
             if source_range.contains(&vector) {
                 let target_vector = vector - source_range.start() + target_start;
-                let is_high = {
-                    let mut line = line.lock();
-                    line.targets.push(Target {
-                        debug_label: debug_label.clone(),
-                        inner: target.clone(),
-                        vector: target_vector,
-                    });
-                    line.lines.iter().any(|(_, line)| line.is_high)
-                };
-                if is_high {
-                    target.set_irq(target_vector, true);
+                let mut line = line.lock();
+                line.targets.push(Target {
+                    debug_label: debug_label.clone(),
+                    inner: target.clone(),
+                    vector: target_vector,
+                });
+                if line.running {
+                    if line.lines.is_empty() {
+                        target.set_unconnected_irq(target_vector);
+                    } else {
+                        target.set_irq(target_vector, line.is_high());
+                    }
+                }
+            }
+        }
+        if state.running {
+            for vector in source_range.clone() {
+                if !state.lines.contains_key(&vector) {
+                    target.set_unconnected_irq(vector - source_range.start() + target_start);
                 }
             }
         }
@@ -422,6 +537,7 @@ impl LineSet {
                             vector: vector - mapping.source_range.start() + mapping.target_start,
                         })
                         .collect(),
+                    state.running,
                 )));
                 entry.insert(inner.clone());
                 LineInterrupt { inner, line_key: 0 }
@@ -492,6 +608,190 @@ pub mod test_helpers {
 mod tests {
     use super::*;
     use crate::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use test_with_tracing::test;
+
+    #[derive(Default)]
+    struct RecordingTarget(Mutex<Vec<bool>>);
+
+    impl LineSetTarget for RecordingTarget {
+        fn set_irq(&self, _: u32, high: bool) {
+            self.0.lock().push(high);
+        }
+
+        fn set_unconnected_irq(&self, vector: u32) {
+            self.set_irq(vector, false);
+        }
+    }
+
+    #[test]
+    fn stopped_publications_replay_only_the_final_level() {
+        let target = Arc::new(RecordingTarget::default());
+        let set = LineSet::new();
+        let line = set.new_line(0, "device").unwrap();
+        line.set_level(true);
+        line.set_level(false);
+        set.add_target(0..=0, 0, "target", target.clone());
+        assert!(target.0.lock().is_empty());
+
+        set.start();
+        assert_eq!(*target.0.lock(), [false]);
+        line.set_level(true);
+        assert_eq!(*target.0.lock(), [false, true]);
+
+        set.stop();
+        line.set_level(false);
+        line.set_level(true);
+        assert_eq!(*target.0.lock(), [false, true]);
+        set.start();
+        assert_eq!(*target.0.lock(), [false, true, true]);
+    }
+
+    #[test]
+    fn stopped_drop_and_unwired_inputs_replay_low() {
+        let target = Arc::new(RecordingTarget::default());
+        let set = LineSet::new();
+        set.add_target(0..=1, 0, "target", target.clone());
+        let line = set.new_line(0, "device").unwrap();
+        line.set_level(true);
+        set.start();
+        assert_eq!(*target.0.lock(), [true, false]);
+
+        set.stop();
+        drop(line);
+        assert_eq!(*target.0.lock(), [true, false]);
+        set.start();
+        assert_eq!(*target.0.lock(), [true, false, false, false]);
+    }
+
+    #[test]
+    fn replay_does_not_clear_non_line_target_state() {
+        let target = TestLineInterruptTarget::new_arc();
+        target.set_irq(0, true);
+        let set = LineSet::new();
+        set.add_target(0..=1, 0, "shared namespace", target.clone());
+        let line = set.new_line(1, "device").unwrap();
+        line.set_level(false);
+        set.start();
+        assert!(target.is_high(0));
+        assert!(!target.is_high(1));
+    }
+
+    #[test]
+    fn empty_wire_replay_and_attachment_preserve_non_line_target_state() {
+        for running in [false, true] {
+            let target = TestLineInterruptTarget::new_arc();
+            target.set_irq(0, true);
+            let set = LineSet::new();
+            let line = set.new_line(0, "removed device").unwrap();
+            drop(line);
+            if running {
+                set.start();
+            }
+            set.add_target(0..=0, 0, "shared namespace", target.clone());
+            if !running {
+                set.start();
+            }
+            assert!(target.is_high(0));
+            set.stop();
+        }
+    }
+
+    #[test]
+    fn empty_wire_replay_and_attachment_deassert_pure_line_targets() {
+        for running in [false, true] {
+            let target = Arc::new(RecordingTarget::default());
+            let set = LineSet::new();
+            let line = set.new_line(0, "removed device").unwrap();
+            drop(line);
+            if running {
+                set.start();
+            }
+            set.add_target(0..=0, 0, "line controller", target.clone());
+            if !running {
+                set.start();
+            }
+            assert_eq!(*target.0.lock(), [false]);
+            set.stop();
+        }
+    }
+
+    #[test]
+    fn publication_validity_is_per_source_and_survives_pause() {
+        let set = LineSet::new();
+        set.add_target(0..=0, 0, "target", Arc::new(RecordingTarget::default()));
+        let a = set.new_line(0, "a").unwrap();
+        let b = set.new_line(0, "b").unwrap();
+        a.set_level(true);
+        {
+            let inner = a.inner.lock();
+            assert!(inner.is_high());
+            assert_eq!(
+                inner
+                    .unpublished_sources()
+                    .map(|line| line.debug_label.as_ref())
+                    .collect::<Vec<_>>(),
+                ["b"]
+            );
+        }
+        b.set_level(false);
+        set.start();
+        set.stop();
+        assert!(a.inner.lock().unpublished_sources().next().is_none());
+
+        set.reset();
+        assert_eq!(a.inner.lock().unpublished_sources().count(), 2);
+        a.set_level(false);
+        b.set_level(false);
+        assert!(a.inner.lock().unpublished_sources().next().is_none());
+    }
+
+    #[test]
+    fn attachment_and_start_replay_hold_the_wire_lock() {
+        use std::sync::mpsc;
+
+        struct BlockingTarget {
+            entered: mpsc::SyncSender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+
+        impl LineSetTarget for BlockingTarget {
+            fn set_irq(&self, _: u32, _: bool) {
+                self.entered.send(()).unwrap();
+                self.release.lock().recv().unwrap();
+            }
+        }
+
+        for running in [false, true] {
+            let set = Arc::new(LineSet::new());
+            let line = set.new_line(0, "device").unwrap();
+            line.set_level(true);
+            if running {
+                set.start();
+            }
+            let (entered_send, entered_recv) = mpsc::sync_channel(0);
+            let (release_send, release_recv) = mpsc::sync_channel(0);
+            let target = Arc::new(BlockingTarget {
+                entered: entered_send,
+                release: Mutex::new(release_recv),
+            });
+            let task = std::thread::spawn({
+                let set = set.clone();
+                move || {
+                    set.add_target(0..=0, 0, "target", target);
+                    if !running {
+                        set.start();
+                    }
+                }
+            });
+            entered_recv.recv().unwrap();
+            let wire_locked = line.inner.try_lock().is_none();
+            release_send.send(()).unwrap();
+            task.join().unwrap();
+            assert!(wire_locked);
+            // Do not notify the blocking target again during cleanup.
+            set.stop();
+        }
+    }
 
     #[test]
     fn basic() {
@@ -521,6 +821,8 @@ mod tests {
         let line = line_set.new_line(2, "line").unwrap();
 
         line_set.add_target(1..=5, 7, "intcon1", intcon1.clone());
+        line.set_level(false);
+        line_set.start();
         line.set_level(true);
         line_set.add_target(2..=2, 3, "intcon2", intcon2.clone());
 
@@ -538,6 +840,9 @@ mod tests {
         let line00 = line_set.new_line(0, "line00").unwrap();
         let line01 = line_set.new_line(0, "line01").unwrap();
 
+        line00.set_level(false);
+        line01.set_level(false);
+        line_set.start();
         line00.set_level(true);
         assert!(intcon.is_high(0));
         line01.set_level(true);
@@ -558,6 +863,9 @@ mod tests {
         let line00 = line_set.new_line(0, "line00").unwrap();
         let line01 = line_set.new_line(0, "line01").unwrap();
 
+        line00.set_level(false);
+        line01.set_level(false);
+        line_set.start();
         line00.set_level(true);
         assert!(intcon.is_high(0));
         line01.set_level(true);
@@ -576,6 +884,8 @@ mod tests {
         line_set.add_target(0..=0, 0, "intcon", intcon.clone());
 
         let _line00 = line_set.new_line(0, "line00").unwrap();
+        _line00.set_level(false);
+        line_set.start();
 
         for _ in 0..1000 {
             let line01 = line_set.new_line(0, "line01").unwrap();

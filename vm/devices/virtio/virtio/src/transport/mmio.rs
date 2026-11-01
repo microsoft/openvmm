@@ -116,6 +116,7 @@ impl VirtioMmioDevice {
         mmio_len: u64,
     ) -> std::io::Result<Self> {
         let traits = device.traits();
+        interrupt.set_level(false);
         let interrupt_state = Arc::new(Mutex::new(InterruptState {
             interrupt,
             status: 0,

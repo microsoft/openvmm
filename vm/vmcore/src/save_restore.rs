@@ -96,6 +96,10 @@ pub trait SaveRestore {
     /// Saves the object's state.
     fn save(&mut self) -> Result<Self::SavedState, SaveError>;
     /// Restores the object's state.
+    ///
+    /// The destination must be stopped and newly constructed or successfully
+    /// reset. Restore does not support overwriting previously running or
+    /// restored state without a reset.
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError>;
 }
 
@@ -115,6 +119,9 @@ pub trait AsyncSaveRestore {
     /// Saves the object's state.
     fn save(&mut self) -> impl Send + Future<Output = Result<Self::SavedState, SaveError>>;
     /// Restores the object's state.
+    ///
+    /// The destination must be stopped and newly constructed or successfully
+    /// reset. After a restore attempt, reset before attempting another restore.
     fn restore(
         &mut self,
         state: Self::SavedState,
