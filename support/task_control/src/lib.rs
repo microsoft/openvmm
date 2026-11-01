@@ -3,6 +3,85 @@
 
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
+//!
+//! # Worker cancellation
+//!
+//! [`TaskControl`] requests cancellation for stop, inspection, and updates.
+//! Return `Err(Cancelled)` to hand control back with unfinished work; `Ok(())`
+//! means the worker is permanently finished until removed and reinserted.
+//!
+//! An `await` need not return `Pending`. If a wrapped loop keeps making progress
+//! in one poll, [`StopTask::until_stopped`] cannot interrupt it from outside.
+//! Choose the wrapping style below to match your work loop. In both examples,
+//! `process` is a bounded synchronous step.
+//!
+//! ## Per-operation waits
+//!
+//! Wrap each interruptible wait when its poll and the work between waits are
+//! bounded. The wrapper checks stop even when every wait is immediately ready.
+//!
+//! ```rust
+//! use futures::{Stream, StreamExt};
+//! use task_control::{Cancelled, StopTask};
+//!
+//! async fn run<T>(
+//!     stop: &mut StopTask<'_>,
+//!     items: &mut (impl Stream<Item = T> + Unpin),
+//!     mut process: impl FnMut(T),
+//! ) -> Result<(), Cancelled> {
+//!     loop {
+//!         let Some(item) = stop.until_stopped(items.next()).await? else {
+//!             return Ok(());
+//!         };
+//!         process(item);
+//!     }
+//! }
+//! ```
+//!
+//! ## Whole-loop waits
+//!
+//! When wrapping the whole loop, obtain a [`StopCheck`] before borrowing `stop`
+//! for the wait. Check it before fetching each new unit of work. The wrapper
+//! interrupts blocked waits; the checks interrupt continuously ready work.
+//!
+//! ```rust
+//! use futures::{Stream, StreamExt};
+//! use task_control::{Cancelled, StopTask};
+//!
+//! async fn run<T>(
+//!     stop: &mut StopTask<'_>,
+//!     items: &mut (impl Stream<Item = T> + Unpin),
+//!     mut process: impl FnMut(T),
+//! ) -> Result<(), Cancelled> {
+//!     let check = stop.check_handle()?;
+//!     stop.until_stopped(async {
+//!         loop {
+//!             check.check()?;
+//!             let Some(item) = items.next().await else {
+//!                 return Ok(());
+//!             };
+//!             process(item);
+//!         }
+//!     })
+//!     .await?
+//! }
+//! ```
+//!
+//! ## Choosing check boundaries
+//!
+//! - Check between bounded batches rather than inside every item. Queue capacity
+//!   is not a bound if buffers or credits can be recycled while draining.
+//! - Cover nested loops and each concurrent branch, not just worker entry. A
+//!   shared helper can instead return after one bounded step to a checked caller.
+//! - Keep accepted I/O and partial progress in the task or its state across
+//!   awaits. Finish required queue publication and coordinator handoffs before
+//!   returning cancellation; do not put a check between consuming work and
+//!   recording the state needed to resume it.
+//!
+//! Keep cancellation separate from operational failures. Do not catch and log
+//! `Cancelled` and then return `Ok(())`, which prevents the worker from resuming.
+//! A synchronous check does not interrupt an outstanding wait or yield the
+//! executor; use `until_stopped` for waits that must be interruptible.
 
 #![forbid(unsafe_code)]
 
@@ -24,6 +103,9 @@ use std::task::Waker;
 
 /// A method implemented by a task that can be run and stopped, storing
 /// transient state in `S`.
+///
+/// See the [worker cancellation guide](crate#worker-cancellation) for wrapping
+/// examples and check placement.
 pub trait AsyncRun<S>: 'static + Send {
     /// Runs the task.
     ///
@@ -65,6 +147,8 @@ pub struct Cancelled;
 
 /// A future indicating that the task should return for event processing or
 /// because the task was stopped.
+///
+/// See the [worker cancellation guide](crate#worker-cancellation).
 pub struct StopTask<'a> {
     inner: &'a mut (dyn 'a + Send + Future<Output = ()> + Unpin),
     requested: &'a AtomicBool,

@@ -8,6 +8,10 @@
 pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
 pub use hyperv_ic_protocol::shutdown::INTERFACE_ID;
 
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod tests;
+
 use guid::Guid;
 use hyperv_ic_protocol::FRAMEWORK_VERSION_1;
 use hyperv_ic_protocol::FRAMEWORK_VERSION_3;
@@ -67,12 +71,12 @@ enum ShutdownGuestChannelState {
 
 /// Established channel between guest and host.
 #[derive(InspectMut)]
-pub struct ShutdownGuestChannel {
+pub struct ShutdownGuestChannel<M: RingMem = MemoryBlockRingBuffer> {
     /// Current state.
     state: ShutdownGuestChannelState,
     /// Vmbus pipe to the host.
     #[inspect(mut)]
-    pipe: MessagePipe<MemoryBlockRingBuffer>,
+    pipe: MessagePipe<M>,
 }
 
 #[derive(Debug, Error)]
@@ -109,8 +113,8 @@ impl ShutdownGuestIc {
     }
 }
 
-impl ShutdownGuestChannel {
-    fn new(pipe: MessagePipe<MemoryBlockRingBuffer>) -> Self {
+impl<M: RingMem + Unpin> ShutdownGuestChannel<M> {
+    fn new(pipe: MessagePipe<M>) -> Self {
         Self {
             state: ShutdownGuestChannelState::NegotiateVersion,
             pipe,

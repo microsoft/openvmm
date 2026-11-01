@@ -7,6 +7,10 @@ use crate::common::IcPipe;
 use crate::common::NegotiateState;
 use crate::common::Versions;
 use anyhow::Context;
+#[cfg(test)]
+#[path = "kvp_tests.rs"]
+mod tests;
+
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -38,6 +42,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -61,9 +66,9 @@ pub struct KvpIc {
 
 #[doc(hidden)]
 #[derive(InspectMut)]
-pub struct KvpChannel {
+pub struct KvpChannel<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pipe: IcPipe,
+    pipe: IcPipe<M>,
     state: ChannelState,
 }
 
@@ -150,9 +155,9 @@ impl KvpIc {
     }
 }
 
-impl KvpChannel {
+impl<M: RingMem + Unpin> KvpChannel<M> {
     fn new(
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         restore_state: Option<ChannelState>,
     ) -> Result<Self, ChannelOpenError> {
         let pipe = IcPipe::new(channel)?;
