@@ -12,6 +12,8 @@ mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
+#[cfg(test)]
+mod test_helpers;
 mod util;
 pub mod virtio;
 mod virtio_util;
