@@ -38,19 +38,20 @@ To run these examples using a pre-compiled copy of OpenVMM, swap `cargo run
 
 ### microVM sandbox block devices
 
-`--machine microvm` is the only microVM profile. It assigns up to three
-read-only lower layers and one writable scratch device to fixed virtio-mmio
+`--machine microvm` is the only microVM profile. It assigns one read-only
+`distro` layer and one writable scratch device to fixed virtio-mmio
 locations:
 
 | Role | Access | MMIO address | IRQ |
 | --- | --- | ---: | ---: |
 | `distro` | read-only | `0xd0003000` | 4 |
-| `runtime` | read-only | `0xd0004000` | 12 |
-| `custom` | read-only | `0xd0005000` | 9 |
 | `scratch` | writable | `0xd0006000` | 11 |
 
-Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. Lower-layer
-roles require the normal disk `,ro` option and a non-empty topology must end
+The windows `0xd0004000` and `0xd0005000` between them, and IRQs 9 and 12,
+stay unassigned, so that no slot moves.
+
+Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. The `distro`
+role requires the normal disk `,ro` option and a non-empty topology must end
 with `scratch`, except for the RAM-backed overlay layout described below;
 ordinary `--virtio-blk` is intentionally rejected.
 For example:
@@ -58,15 +59,13 @@ For example:
 ```shell
 openvmm --machine microvm --kernel vmlinux --initrd initramfs.cpio.gz \
   --microvm-sandbox-block distro:file:distro.erofs,ro \
-  --microvm-sandbox-block runtime:file:runtime.erofs,ro \
-  --microvm-sandbox-block custom:file:custom.erofs,ro \
   --microvm-sandbox-block scratch:file:scratch.img
 ```
 
 Capture and restore support cached regular raw files. Capture records
-the role, access mode, exact geometry, and SHA-256 of every read-only layer. A
-normal snapshot request pairs the writable scratch as `scratch.img`; restore
-accepts the read-only layer arguments again and creates a private scratch copy
+the role, access mode, exact geometry, and SHA-256 of the read-only `distro`
+layer. A normal snapshot request pairs the writable scratch as `scratch.img`;
+restore accepts the `distro` argument again and creates a private scratch copy
 from that artifact. A pre-mount request may select fresh-scratch policy instead,
 in which case restore requires a new writable scratch file of matching size.
 
