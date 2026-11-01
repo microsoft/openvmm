@@ -288,3 +288,66 @@ impl<T: RingMem + Unpin> GelChannel<T> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use task_control::AsyncRun;
+    use task_control::TaskControl;
+    use test_with_tracing::test;
+    use vmbus_channel::test_helpers::GatedRingMem;
+    use vmbus_channel::test_helpers::gated_channels;
+    use vmbus_channel::test_helpers::stop_with_timeout;
+    use zerocopy::FromZeros;
+
+    struct Worker(GelChannel<GatedRingMem>);
+
+    impl AsyncRun<()> for Worker {
+        async fn run(
+            &mut self,
+            stop: &mut StopTask<'_>,
+            _: &mut (),
+        ) -> Result<(), task_control::Cancelled> {
+            let check = stop.check_handle()?;
+            match stop
+                .until_stopped(self.0.process(&mut GuestEmulationLog::new(), &check))
+                .await?
+            {
+                Err(Error::Cancelled(cancelled)) => Err(cancelled),
+                result => panic!("unexpected log worker result: {result:?}"),
+            }
+        }
+    }
+
+    #[async_test]
+    async fn stop_bounds_ready_trace_messages_and_restart_retains_channel(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("gel-stop");
+        let (host, guest, gate) = gated_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let json = br#"{"target":"test","level":"INFO","fields":{"message":"message"}}"#;
+        let header = get_protocol::TraceLoggingNotificationHeader {
+            message: get_protocol::TraceLoggingBufferOffset {
+                size: json.len() as u16,
+                offset: 0,
+            },
+            ..FromZeros::new_zeroed()
+        };
+        let message = [header.as_bytes(), json].concat();
+        guest.try_send(&message).unwrap();
+        guest.try_send(&message).unwrap();
+        let mut task = TaskControl::new(Worker(GelChannel::new(MessagePipe::new(host).unwrap())));
+        task.insert(&worker_driver, "gel", ());
+        assert!(task.start());
+        gate.stop(&mut task, &driver).await;
+        let mut buffer = [0; 256];
+        let remaining = task.task_mut().0.channel.recv(&mut buffer).now_or_never();
+        assert_eq!(remaining.unwrap().unwrap(), message.len());
+        assert_eq!(&buffer[..message.len()], message.as_slice());
+
+        assert!(task.start());
+        stop_with_timeout(&mut task, &driver).await;
+    }
+}

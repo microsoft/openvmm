@@ -7,6 +7,9 @@
 
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use inspect::Inspect;
 use inspect::InspectMut;

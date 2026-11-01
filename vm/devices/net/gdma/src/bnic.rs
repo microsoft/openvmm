@@ -754,6 +754,253 @@ impl AsyncRun<TxRxTask> for TxRxState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers as helper;
+    use gdma_defs::Cqe;
+    use gdma_defs::WqDoorbellValue;
+    use net_backend::TxError;
+    use pal_async::DefaultPool;
+    use parking_lot::Mutex;
+    use std::task::Context;
+    use test_with_tracing::test;
+
+    #[derive(Default)]
+    struct BackendState {
+        ready_budget: usize,
+        ready_processed: usize,
+        tx_accepted: usize,
+        tx_done: bool,
+        rx: Option<RxId>,
+    }
+
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct TestQueue {
+        state: Arc<Mutex<BackendState>>,
+        tx_hook: Arc<helper::StopHook>,
+        rx_hook: Arc<helper::StopHook>,
+        ready_hook: Arc<helper::StopHook>,
+        synchronous_tx: bool,
+    }
+
+    impl Queue for TestQueue {
+        fn poll_ready(&mut self, _: &mut Context<'_>, _: &mut dyn BufferAccess) -> Poll<()> {
+            let mut state = self.state.lock();
+            if state.ready_budget == 0 {
+                return Poll::Pending;
+            }
+            state.ready_budget -= 1;
+            Poll::Ready(())
+        }
+
+        fn rx_avail(&mut self, _: &mut dyn BufferAccess, ids: &[RxId]) {
+            assert_eq!(ids.len(), 1);
+            assert!(self.state.lock().rx.replace(ids[0]).is_none());
+            self.rx_hook.fire();
+        }
+
+        fn rx_poll(
+            &mut self,
+            pool: &mut dyn BufferAccess,
+            packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            let mut state = self.state.lock();
+            state.ready_processed += 1;
+            let count = if let Some(id) = state.rx.take() {
+                let data = [0x5a; 60];
+                pool.write_packet(
+                    id,
+                    &RxMetadata {
+                        len: data.len(),
+                        ..Default::default()
+                    },
+                    &data,
+                );
+                packets[0] = id;
+                1
+            } else {
+                0
+            };
+            drop(state);
+            self.ready_hook.fire();
+            Ok(count)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let mut state = self.state.lock();
+            state.tx_accepted += 1;
+            if !self.synchronous_tx {
+                assert!(!std::mem::replace(&mut state.tx_done, true));
+            }
+            drop(state);
+            self.tx_hook.fire();
+            Ok((self.synchronous_tx, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _: &mut dyn BufferAccess,
+            packets: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            if std::mem::take(&mut self.state.lock().tx_done) {
+                packets[0] = TxId(0);
+                Ok(1)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+
+    fn task(queues: Arc<Queues>, epqueue: TestQueue) -> TxRxTask {
+        let sq_id = queues.alloc_wq(true, helper::region(helper::SQ)).unwrap();
+        let rq_id = queues.alloc_wq(false, helper::region(helper::RQ)).unwrap();
+        let eq_id = queues.alloc_eq(helper::region(helper::EQ), 0).unwrap();
+        let cq_id = queues.alloc_cq(helper::region(helper::CQ), eq_id).unwrap();
+        TxRxTask {
+            pool: GuestBuffers {
+                gm: queues.gm.clone(),
+                rx_packets: Slab::new(),
+            },
+            queues,
+            epqueue: Box::new(epqueue),
+            sq_id,
+            sq_cq_id: cq_id,
+            rq_id,
+            rq_cq_id: cq_id,
+            tx_segment_buffer: Vec::new(),
+            rx_buf_count: 0,
+        }
+    }
+
+    fn backend() -> TestQueue {
+        TestQueue {
+            state: Arc::new(Mutex::new(BackendState {
+                ready_budget: 8,
+                ..Default::default()
+            })),
+            tx_hook: Arc::new(helper::StopHook::default()),
+            rx_hook: Arc::new(helper::StopHook::default()),
+            ready_hook: Arc::new(helper::StopHook::default()),
+            synchronous_tx: true,
+        }
+    }
+
+    fn completion(queues: &Queues, index: u64) -> Cqe {
+        queues
+            .gm
+            .read_plain(helper::CQ + index * size_of::<Cqe>() as u64)
+            .unwrap()
+    }
+
+    #[test]
+    fn ready_backend_cancellation_stops_before_the_next_iteration_and_resumes() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        let state = epqueue.state.clone();
+        let hook = epqueue.ready_hook.clone();
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control
+            .lock()
+            .insert(pool.driver(), "gdma-ready", task(queues, epqueue));
+        for expected in 1..=2 {
+            let signal = hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().ready_processed, expected);
+        }
+    }
+
+    #[test]
+    fn accepted_transmit_is_completed_across_cancellation() {
+        for synchronous_tx in [true, false] {
+            let mut pool = DefaultPool::new();
+            let queues = helper::queues(&pool, None);
+            let mut epqueue = backend();
+            epqueue.synchronous_tx = synchronous_tx;
+            let state = epqueue.state.clone();
+            let tx_hook = epqueue.tx_hook.clone();
+            let ready_hook = epqueue.ready_hook.clone();
+            let task = task(queues.clone(), epqueue);
+            let len = helper::write_wqe(
+                &queues,
+                helper::SQ,
+                ManaTxShortOob::new().as_bytes(),
+                0x5000,
+                60,
+            );
+            queues.doorbell_sq(WqDoorbellValue::new().with_id(task.sq_id).with_tail(len));
+            let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+            control.lock().insert(pool.driver(), "gdma-tx", task);
+            let signal = tx_hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().tx_accepted, 1);
+            assert_eq!(state.lock().ready_processed, 0);
+            assert_eq!(
+                completion(&queues, 0).params.owner_count(),
+                u8::from(synchronous_tx)
+            );
+
+            let signal = ready_hook.arm(&control);
+            assert!(control.lock().start());
+            helper::stopped(&mut pool, &control, signal);
+            assert_eq!(state.lock().tx_accepted, 1);
+            let cqe = completion(&queues, 0);
+            assert_eq!(cqe.params.owner_count(), 1);
+            assert!(cqe.params.is_send_wq());
+            let oob = ManaTxCompOob::read_from_prefix(&cqe.data).unwrap().0;
+            assert_eq!(oob.cqe_hdr.cqe_type(), CQE_TX_OKAY);
+            assert_eq!(completion(&queues, 1).params.owner_count(), 0);
+        }
+    }
+
+    #[test]
+    fn accepted_receive_survives_stop_and_publishes_completion_before_cancelling() {
+        let mut pool = DefaultPool::new();
+        let queues = helper::queues(&pool, None);
+        let epqueue = backend();
+        let rx_hook = epqueue.rx_hook.clone();
+        let ready_hook = epqueue.ready_hook.clone();
+        let task = task(queues.clone(), epqueue);
+        let len = helper::write_wqe(&queues, helper::RQ, &[], 0x5000, 128);
+        queues.doorbell_rq(WqDoorbellValue::new().with_id(task.rq_id).with_tail(len));
+        let control = Arc::new(Mutex::new(TaskControl::new(TxRxState)));
+        control.lock().insert(pool.driver(), "gdma-rx", task);
+        let signal = rx_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        {
+            let control = control.lock();
+            let task = control.state().unwrap();
+            assert_eq!(task.rx_buf_count, 1);
+            assert_eq!(task.pool.rx_packets.len(), 1);
+        }
+        assert_eq!(completion(&queues, 0).params.owner_count(), 0);
+
+        let signal = ready_hook.arm(&control);
+        assert!(control.lock().start());
+        helper::stopped(&mut pool, &control, signal);
+        let control = control.lock();
+        let task = control.state().unwrap();
+        assert_eq!(task.rx_buf_count, 0);
+        assert!(task.pool.rx_packets.is_empty());
+        let cqe = completion(&queues, 0);
+        assert_eq!(cqe.params.owner_count(), 1);
+        assert!(!cqe.params.is_send_wq());
+        assert_eq!(cqe.params.wq_number(), task.rq_id);
+        let oob = ManaRxcompOob::read_from_prefix(&cqe.data).unwrap().0;
+        assert_eq!(oob.cqe_hdr.cqe_type(), CQE_RX_OKAY);
+        assert_eq!(oob.ppi[0].pkt_len, 60);
+        assert_eq!(oob.rx_wqe_offset, 0);
+        let mut data = [0; 60];
+        queues.gm.read_at(0x5000, &mut data).unwrap();
+        assert_eq!(data, [0x5a; 60]);
+        assert_eq!(completion(&queues, 1).params.owner_count(), 0);
+    }
 
     #[test]
     fn lso_ipv4_offloads_header_checksums_the_guest_did_not_request() {

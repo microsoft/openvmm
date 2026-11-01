@@ -6,6 +6,10 @@
 use crate::common::IcPipe;
 use crate::common::NegotiateState;
 use crate::common::Versions;
+#[cfg(test)]
+#[path = "timesync_tests.rs"]
+mod tests;
+
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use hyperv_ic_protocol::timesync as proto;
@@ -24,6 +28,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::NoSavedState;
 use zerocopy::IntoBytes;
@@ -45,9 +50,9 @@ pub struct TimesyncIc {
 
 #[doc(hidden)]
 #[derive(InspectMut)]
-pub struct TimesyncChannel {
+pub struct TimesyncChannel<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pipe: IcPipe,
+    pipe: IcPipe<M>,
     state: ChannelState,
 }
 
@@ -145,9 +150,9 @@ impl SimpleVmbusDevice for TimesyncIc {
     }
 }
 
-impl TimesyncChannel {
+impl<M: RingMem + Unpin> TimesyncChannel<M> {
     fn new(
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         restore_state: Option<ChannelState>,
     ) -> Result<Self, ChannelOpenError> {
         let pipe = IcPipe::new(channel)?;

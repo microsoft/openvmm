@@ -31,6 +31,7 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateNotSupported;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -47,19 +48,19 @@ pub struct GuestCrashDevice {
 
 /// The internal guest crash channel.
 #[derive(InspectMut)]
-pub struct GuestCrashChannel {
+pub struct GuestCrashChannel<M: RingMem = GpadlRingMem> {
     #[inspect(mut)]
-    pipe: GuestCrashPipe,
+    pipe: GuestCrashPipe<M>,
     state: ProtocolState,
 }
 
 #[derive(InspectMut)]
-struct GuestCrashPipe {
+struct GuestCrashPipe<M: RingMem> {
     #[inspect(flatten, mut)]
-    pipe: MessagePipe<GpadlRingMem>,
+    pipe: MessagePipe<M>,
 }
 
-impl GuestCrashPipe {
+impl<M: RingMem + Unpin> GuestCrashPipe<M> {
     fn send<T: IntoBytes + Immutable + KnownLayout>(&mut self, data: &T) -> std::io::Result<()> {
         self.pipe.try_send(data.as_bytes())
     }
@@ -192,9 +193,9 @@ impl SimpleVmbusDevice for GuestCrashDevice {
 }
 
 impl GuestCrashDevice {
-    async fn process(
+    async fn process<M: RingMem + Unpin>(
         &mut self,
-        channel: &mut GuestCrashChannel,
+        channel: &mut GuestCrashChannel<M>,
         check: &task_control::StopCheck<'_>,
     ) -> Result<(), Cancelled> {
         let mut buffer = vec![0; 16384];
@@ -210,9 +211,9 @@ impl GuestCrashDevice {
         }
     }
 
-    async fn process_message(
+    async fn process_message<M: RingMem + Unpin>(
         &mut self,
-        channel: &mut GuestCrashChannel,
+        channel: &mut GuestCrashChannel<M>,
         buffer: &mut [u8],
     ) -> anyhow::Result<()> {
         channel.pipe.pipe.wait_write_ready(256).await?;
@@ -370,5 +371,227 @@ impl GuestCrashDevice {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use futures::StreamExt;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::io::Read;
+    use task_control::AsyncRun;
+    use task_control::TaskControl;
+    use test_with_tracing::test;
+    use vmbus_channel::RawAsyncChannel;
+    use vmbus_channel::connected_async_channels;
+    use vmbus_channel::test_helpers::gated_channels;
+    use vmbus_channel::test_helpers::stop_with_timeout;
+    use vmbus_channel::test_helpers::with_timeout;
+
+    struct Worker<M: RingMem> {
+        device: GuestCrashDevice,
+        channel: GuestCrashChannel<M>,
+    }
+
+    impl<M: RingMem + Unpin + Sync + 'static> AsyncRun<()> for Worker<M> {
+        async fn run(&mut self, stop: &mut StopTask<'_>, _: &mut ()) -> Result<(), Cancelled> {
+            let check = stop.check_handle()?;
+            stop.until_stopped(self.device.process(&mut self.channel, &check))
+                .await?
+        }
+    }
+
+    fn worker<M: RingMem>(
+        channel: RawAsyncChannel<M>,
+        request_dump: mesh::Sender<FailableRpc<mesh::OneshotReceiver<()>, File>>,
+    ) -> Worker<M> {
+        Worker {
+            device: GuestCrashDevice::new(request_dump, 64),
+            channel: GuestCrashChannel {
+                pipe: GuestCrashPipe {
+                    pipe: MessagePipe::new(channel).unwrap(),
+                },
+                state: ProtocolState::Init,
+            },
+        }
+    }
+
+    fn header(message_type: crash::MessageType, activity_id: Guid) -> crash::Header {
+        crash::Header {
+            activity_id,
+            message_type,
+        }
+    }
+
+    async fn receive<M: RingMem + Unpin>(
+        guest: &mut MessagePipe<M>,
+        driver: &DefaultDriver,
+    ) -> Vec<u8> {
+        let mut response = vec![0; 256];
+        let n = with_timeout(driver, guest.recv(&mut response))
+            .await
+            .unwrap();
+        response.truncate(n);
+        response
+    }
+
+    #[async_test]
+    async fn stop_bounds_ready_messages_and_restart_preserves_unread_request(
+        driver: DefaultDriver,
+    ) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("crash-ready-stop");
+        let (host, guest, gate) = gated_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let activity_id = Guid::from_slice(&[1; 16]);
+        let request = header(crash::MessageType::REQUEST_GET_CAPABILITIES_V1, activity_id);
+        guest.try_send(request.as_bytes()).unwrap();
+        guest.try_send(request.as_bytes()).unwrap();
+        let (send, _recv) = mesh::channel();
+        let mut task = TaskControl::new(worker(host, send));
+        task.insert(&worker_driver, "crash", ());
+        assert!(task.start());
+        gate.stop(&mut task, &driver).await;
+        let response = receive(&mut guest, &driver).await;
+        let response = crash::DumpCapabilitiesResponseV1::read_from_prefix(&response)
+            .unwrap()
+            .0;
+        assert_eq!(
+            { response.header.message_type },
+            crash::MessageType::RESPONSE_GET_CAPABILITIES_V1
+        );
+        let capabilities = response.capabilities;
+        assert!(capabilities.linux_config_v1());
+        let mut buffer = [0; 256];
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+
+        assert!(task.start());
+        let response = receive(&mut guest, &driver).await;
+        let response = crash::DumpCapabilitiesResponseV1::read_from_prefix(&response)
+            .unwrap()
+            .0;
+        assert_eq!({ response.header.activity_id }, activity_id);
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+    }
+
+    #[async_test]
+    async fn stop_while_opening_dump_does_not_repeat_request_on_restart(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("crash-open-stop");
+        let (host, guest) = connected_async_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let activity_id = Guid::from_slice(&[2; 16]);
+        guest
+            .try_send(header(crash::MessageType::REQUEST_NIX_DUMP_START_V1, activity_id).as_bytes())
+            .unwrap();
+        let (send, mut requests) = mesh::channel();
+        let mut task = TaskControl::new(worker(host, send));
+        task.insert(&worker_driver, "crash", ());
+        assert!(task.start());
+        let request = with_timeout(&driver, requests.next()).await.unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(matches!(
+            &task.task().channel.state,
+            ProtocolState::DumpRequested {
+                state: DumpState::OpeningFile { .. },
+                ..
+            }
+        ));
+
+        let (done, response) = request.split();
+        response.complete(Ok(tempfile::tempfile().unwrap()));
+        assert!(task.start());
+        let response = receive(&mut guest, &driver).await;
+        let response = crash::DumpStartResponseV1::read_from_prefix(&response)
+            .unwrap()
+            .0;
+        assert_eq!({ response.status }, 0);
+        assert!(requests.next().now_or_never().is_none());
+        guest
+            .try_send(
+                header(
+                    crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1,
+                    activity_id,
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        with_timeout(&driver, done).await.unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(matches!(&task.task().channel.state, ProtocolState::Init));
+    }
+
+    #[async_test]
+    async fn stop_after_write_header_preserves_payload_and_completion(driver: DefaultDriver) {
+        let (_thread, worker_driver) =
+            pal_async::DefaultPool::spawn_on_thread("crash-payload-stop");
+        let (host, guest, gate) = gated_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        let activity_id = Guid::from_slice(&[3; 16]);
+        guest
+            .try_send(header(crash::MessageType::REQUEST_NIX_DUMP_START_V1, activity_id).as_bytes())
+            .unwrap();
+        let (send, mut requests) = mesh::channel();
+        let mut task = TaskControl::new(worker(host, send));
+        task.insert(&worker_driver, "crash", ());
+        assert!(task.start());
+        gate.resume();
+        let request = with_timeout(&driver, requests.next()).await.unwrap();
+        let (done, response) = request.split();
+        let mut file = tempfile::tempfile().unwrap();
+        response.complete(Ok(file.try_clone().unwrap()));
+        let response = receive(&mut guest, &driver).await;
+        assert_eq!(
+            {
+                crash::DumpStartResponseV1::read_from_prefix(&response)
+                    .unwrap()
+                    .0
+                    .status
+            },
+            0
+        );
+
+        gate.rearm();
+        let write = crash::DumpWriteRequestV1 {
+            header: header(crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1, activity_id),
+            offset: 11,
+            size: 5,
+        };
+        guest.try_send(write.as_bytes()).unwrap();
+        gate.stop(&mut task, &driver).await;
+        assert!(matches!(
+            &task.task().channel.state,
+            ProtocolState::DumpRequested {
+                state: DumpState::Writing {
+                    payload: Some((11, 5)),
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert!(requests.next().now_or_never().is_none());
+
+        guest.try_send(b"crash").unwrap();
+        guest
+            .try_send(
+                header(
+                    crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1,
+                    activity_id,
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert!(task.start());
+        with_timeout(&driver, done).await.unwrap();
+        stop_with_timeout(&mut task, &driver).await;
+        let mut payload = [0; 5];
+        file.seek(SeekFrom::Start(11)).unwrap();
+        file.read_exact(&mut payload).unwrap();
+        assert_eq!(&payload, b"crash");
+        assert_eq!(file.metadata().unwrap().len(), 16);
+        assert!(matches!(&task.task().channel.state, ProtocolState::Init));
     }
 }

@@ -20,6 +20,9 @@ mod protocol;
 pub mod resolver;
 pub mod single_file_backing;
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -32,6 +35,7 @@ use vmbus_channel::bus::OfferParams;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
+use vmbus_ring::RingMem;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
@@ -102,10 +106,10 @@ impl SimpleVmbusDevice for VmbfsDevice {
 
 #[doc(hidden)] // used as an associated type in a trait but not part of the public API
 #[derive(InspectMut)]
-pub struct VmbfsChannel {
+pub struct VmbfsChannel<M: RingMem = GpadlRingMem> {
     state: State,
     #[inspect(mut)]
-    pipe: vmbus_async::pipe::MessagePipe<GpadlRingMem>,
+    pipe: vmbus_async::pipe::MessagePipe<M>,
     // A scratch buffer for reading messages. This is allocated once and reused for each message.
     // It does not hold any meaningful state.
     buf: Vec<u8>,
@@ -128,7 +132,7 @@ enum Request {
     },
 }
 
-impl VmbfsChannel {
+impl<M: RingMem + Unpin> VmbfsChannel<M> {
     async fn process(
         &mut self,
         dev: &mut VmbfsDevice,
