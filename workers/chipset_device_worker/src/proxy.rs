@@ -23,6 +23,7 @@ use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+use futures::FutureExt;
 use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -267,7 +268,18 @@ impl PollDevice for ChipsetDeviceProxy {
 
 impl ChangeDeviceState for ChipsetDeviceProxy {
     fn start(&mut self) {
-        self.req_send.send(DeviceRequest::Start)
+        self.req_send
+            .send(DeviceRequest::Start(mesh::rpc::Rpc::detached(())))
+    }
+
+    async fn start_fallible(&mut self) -> anyhow::Result<()> {
+        start_remote_device(
+            self.req_send.clone(),
+            &mut self.gm_proxy,
+            &mut self.enc_gm_proxy,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn stop(&mut self) {
@@ -287,6 +299,21 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
         self.in_flight_writes.clear();
         while self.resp_recv.try_recv().is_ok() {}
     }
+}
+
+async fn start_remote_device(
+    req_send: mesh::Sender<DeviceRequest>,
+    gm_proxy: &mut GuestMemoryProxy,
+    enc_gm_proxy: &mut GuestMemoryProxy,
+) -> anyhow::Result<()> {
+    let mut start = std::pin::pin!(req_send.call_failable(DeviceRequest::Start, ()));
+    std::future::poll_fn(|cx| {
+        gm_proxy.poll(cx);
+        enc_gm_proxy.poll(cx);
+        start.poll_unpin(cx)
+    })
+    .await?;
+    Ok(())
 }
 
 #[async_trait]
@@ -312,9 +339,11 @@ impl AsyncProtobufSaveRestore for ChipsetDeviceProxy {
 #[cfg(test)]
 mod tests {
     use super::ChipsetDeviceProxy;
+    use super::start_remote_device;
     use crate::RemoteDynamicResolvers;
     use crate::guestmem::GuestMemoryProxy;
     use crate::protocol::DeviceInit;
+    use crate::protocol::DeviceRequest;
     use crate::worker::RemoteChipsetDeviceHandleParams;
     use crate::worker::RemoteChipsetDeviceWorker;
     use crate::worker::RemoteChipsetDeviceWorkerParameters;
@@ -522,5 +551,42 @@ mod tests {
         proxy.worker.join().await.unwrap();
         assert!(proxy.save().await.is_err());
         assert!(proxy.restore(state(0)).await.is_err());
+    }
+
+    #[test]
+    fn start_services_guest_memory_requests() {
+        let gm = GuestMemory::allocate(4096);
+        gm.write_at(0, &[0x12]).unwrap();
+        let encrypted_gm = GuestMemory::allocate(4096);
+        encrypted_gm.write_at(0, &[0x34]).unwrap();
+
+        let (mut gm_proxy, gm_remote) = GuestMemoryProxy::new(gm);
+        let (mut enc_gm_proxy, enc_gm_remote) = GuestMemoryProxy::new(encrypted_gm);
+        let gm_remote = gm_remote.build("remote_gm");
+        let enc_gm_remote = enc_gm_remote.build("remote_enc_gm");
+        let (req_send, mut req_recv) = mesh::channel();
+
+        let worker = std::thread::spawn(move || {
+            let request = pal_async::local::block_on(req_recv.recv()).unwrap();
+            let DeviceRequest::Start(rpc) = request else {
+                panic!("unexpected request");
+            };
+            rpc.handle_failable_sync(|()| -> anyhow::Result<()> {
+                let mut data = [0];
+                gm_remote.read_at(0, &mut data)?;
+                assert_eq!(data, [0x12]);
+                enc_gm_remote.read_at(0, &mut data)?;
+                assert_eq!(data, [0x34]);
+                Ok(())
+            });
+        });
+
+        pal_async::local::block_on(start_remote_device(
+            req_send,
+            &mut gm_proxy,
+            &mut enc_gm_proxy,
+        ))
+        .unwrap();
+        worker.join().unwrap();
     }
 }
