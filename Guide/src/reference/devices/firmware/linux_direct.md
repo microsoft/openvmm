@@ -27,7 +27,9 @@ uncompressed ELF kernel, but selects an ACPI-free platform mode. OpenVMM places
 an Intel MP 1.4 floating pointer at `0x0`, its configuration table at `0x400`,
 the bootstrap GDT at `0x1000`, `boot_params` at `0x2000`, and the command line
 in the 64-KiB region starting at `0x20000`. The MP table describes contiguous
-APIC IDs, the ISA bus, the IOAPIC, and legacy IRQ routing. No RSDP, ACPI table,
+APIC IDs, the ISA bus, the IOAPIC, and the routing of each of the IOAPIC's 24
+inputs: the ISA IRQs, and inputs 16 through 23, which the PIC does not see, as
+active-high, edge-triggered interrupts of their own numbers. No RSDP, ACPI table,
 SMBIOS anchor, or SMBIOS structure table is imported.
 
 On AArch64, pass the uncompressed `Image` file (not `Image.gz`).

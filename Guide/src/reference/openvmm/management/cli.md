@@ -71,8 +71,9 @@ describes the source definitions.
   notification suppression. No device offers `VIRTIO_F_ACCESS_PLATFORM`, since
   the microVM has no IOMMU, and no console offers its size. Firmware, ACPI,
   SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested virtualization, and
-  other devices are rejected. Linux discovers contiguous APIC IDs and the
-  IOAPIC from Intel MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at
+  other devices are rejected. Linux discovers contiguous APIC IDs, the IOAPIC,
+  and the routing of its 24 inputs from Intel MP 1.4 tables at `0x0` and
+  `0x400`; `boot_params` is at
   `0x2000`, the command line starts at `0x20000`, and no ACPI or SMBIOS data is
   exposed. Host-driven save/restore, pulse-save/restore, and worker restart
   remain unavailable.
