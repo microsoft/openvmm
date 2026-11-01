@@ -187,6 +187,7 @@ pub(super) fn load_linux_x86_mptable(
         &vm.gm,
         &apic_ids,
         &openvmm_defs::microvm::MICROVM_LEVEL_TRIGGERED_IRQS,
+        openvmm_defs::microvm::MICROVM_IOAPIC_INPUTS,
         &reserved_memory_ranges,
     )?)
 }

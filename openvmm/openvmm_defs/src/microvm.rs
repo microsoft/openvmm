@@ -222,6 +222,10 @@ pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
 }
 /// The microVM publishes no level-triggered virtio IRQs in its MP table.
 pub const MICROVM_LEVEL_TRIGGERED_IRQS: [u32; 0] = [];
+/// The inputs of the microVM's IOAPIC, the generic IOAPIC of its chipset,
+/// every one of which its MP table routes: the first 16 carry the ISA IRQs,
+/// which the PIC also sees, and the IOAPIC alone sees inputs 16 through 23.
+pub const MICROVM_IOAPIC_INPUTS: u8 = chipset_resources::ioapic::IOAPIC_NUM_ENTRIES;
 
 /// The stable role of a microVM sandbox block device.
 #[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -2672,6 +2676,14 @@ mod tests {
             assert!(!irqs.contains(&unused), "IRQ {unused} is in use");
         }
         assert!(MICROVM_LEVEL_TRIGGERED_IRQS.is_empty());
+    }
+
+    #[test]
+    fn microvm_ioapic_inputs_have_backend_routes() {
+        // The MP table routes every input of the IOAPIC, and every backend
+        // keeps a route for each: KVM claims a GSI, and MSHV and WHP a route.
+        assert_eq!(MICROVM_IOAPIC_INPUTS, 24);
+        assert_eq!(usize::from(MICROVM_IOAPIC_INPUTS), virt::irqcon::IRQ_LINES);
     }
 
     #[test]
