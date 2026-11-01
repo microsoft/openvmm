@@ -472,6 +472,8 @@ impl LoadedVm {
     }
 }
 
+/// Returns the fixed slot of the microVM virtio device `id`: its MMIO window,
+/// interrupt, exact guest-visible feature mask, and interrupt-status delivery.
 fn virtio_mmio_config(
     id: &str,
     sandbox_blocks: &[openvmm_defs::microvm::MicrovmSandboxBlockConfig],
@@ -479,10 +481,11 @@ fn virtio_mmio_config(
     filesystem_index: &mut usize,
     chipset_mmio: ChipsetMmioRanges,
 ) -> anyhow::Result<(u64, u64, u32, u64, VirtioMmioInterruptMode)> {
-    let (start, irq) = match id {
+    let (start, irq, features) = match id {
         "virtio-net" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
             openvmm_defs::microvm::microvm_virtio_net_irq(None)?,
+            openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
         ),
         // The configuration orders virtio-fs devices by slot.
         "virtiofs" => {
@@ -490,22 +493,32 @@ fn virtio_mmio_config(
                 .get(*filesystem_index)
                 .context("microVM has more virtio-fs devices than fixed slots")?;
             *filesystem_index += 1;
-            (slot.mmio_base, slot.irq)
+            (
+                slot.mmio_base,
+                slot.irq,
+                openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES,
+            )
         }
         "virtio-console" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ,
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_FEATURES,
         ),
         openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID => (
             openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
+            openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_FEATURES,
         ),
         "virtio-blk" => {
             let block = sandbox_blocks
                 .get(*sandbox_block_index)
                 .context("microVM virtio-blk device has no sandbox role")?;
             *sandbox_block_index += 1;
-            (block.role.mmio_base(), block.role.irq())
+            (
+                block.role.mmio_base(),
+                block.role.irq(),
+                openvmm_defs::microvm::microvm_sandbox_block_features(block.role),
+            )
         }
         _ => anyhow::bail!("unsupported microVM virtio device '{id}' reached worker construction"),
     };
@@ -517,23 +530,11 @@ fn virtio_mmio_config(
                 .is_some_and(|end| end <= chipset_mmio.low.end()),
         "microVM virtio slot for '{id}' is outside the fixed low-MMIO aperture"
     );
-    let disabled_features = match id {
-        "virtio-net" => !openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
-        "virtiofs" => !openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES,
-        "virtio-blk" => {
-            let block = sandbox_blocks
-                .iter()
-                .find(|block| block.role.mmio_base() == start)
-                .context("microVM block slot has no role")?;
-            !openvmm_defs::microvm::microvm_sandbox_block_features(block.role)
-        }
-        _ => 1 << 34,
-    };
     let interrupt_mode = VirtioMmioInterruptMode::SharedStatus {
         status_gpa: openvmm_defs::microvm::microvm_virtio_status_gpa(start)
             .context("microVM slot has no shared-status word")?,
     };
-    Ok((start, len, irq, disabled_features, interrupt_mode))
+    Ok((start, len, irq, features, interrupt_mode))
 }
 
 /// The guest memory that the microVM e820 map reserves inside RAM besides the
@@ -602,7 +603,7 @@ impl<'a> VirtioMmioSlots<'a> {
         id: &str,
         device: ResolvedVirtioDevice,
     ) -> anyhow::Result<()> {
-        let (mmio_start, mmio_len, irq, disabled_features, interrupt_mode) = virtio_mmio_config(
+        let (mmio_start, mmio_len, irq, features, interrupt_mode) = virtio_mmio_config(
             id,
             self.sandbox_blocks,
             &mut self.sandbox_block_index,
@@ -625,7 +626,7 @@ impl<'a> VirtioMmioSlots<'a> {
                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                 mmio_start,
                 mmio_len,
-                disabled_features,
+                !features,
                 interrupt_mode,
             )
             .context("failed to create the virtio-mmio transport")?;
@@ -801,5 +802,161 @@ pub(super) fn x86_topology_builder(
         Ok(vm_topology::processor::TopologyBuilder::new_x86())
     } else {
         Ok(vm_topology::processor::TopologyBuilder::from_host_topology()?)
+    }
+}
+
+// The microVM runs on Linux and Windows hosts alone, where its NIC has an
+// interrupt.
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod tests {
+    use super::virtio_mmio_config;
+    use crate::worker::memory_layout::ChipsetMmioRanges;
+    use chipset_device::io::IoResult;
+    use chipset_device::mmio::MmioIntercept;
+    use guestmem::GuestMemory;
+    use inspect::InspectMut;
+    use memory_range::MemoryRange;
+    use openvmm_defs::microvm::MicrovmSandboxBlockConfig;
+    use openvmm_defs::microvm::MicrovmSandboxBlockRole;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use virtio::DeviceTraits;
+    use virtio::QueueResources;
+    use virtio::VirtioDevice;
+    use virtio::VirtioMmioDevice;
+    use virtio::queue::QueueState;
+    use virtio::spec::VirtioDeviceFeatures;
+    use virtio::spec::mmio::VirtioMmioRegister;
+    use vmcore::line_interrupt::LineInterrupt;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    /// A device that offers every feature, so that its transport offers the
+    /// guest exactly the features that the microVM configuration admits.
+    #[derive(InspectMut)]
+    struct EveryFeatureDevice;
+
+    impl VirtioDevice for EveryFeatureDevice {
+        fn traits(&self) -> DeviceTraits {
+            DeviceTraits {
+                device_features: VirtioDeviceFeatures::from_bits(u64::MAX),
+                max_queues: 1,
+                ..Default::default()
+            }
+        }
+
+        async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+            0
+        }
+
+        async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+
+        async fn start_queue(
+            &mut self,
+            _idx: u16,
+            _resources: QueueResources,
+            _features: &VirtioDeviceFeatures,
+            _initial_state: Option<QueueState>,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("the test never starts a queue")
+        }
+
+        async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+            None
+        }
+    }
+
+    /// Returns the numbers of the feature bits that the transport at
+    /// `mmio_base` offers the guest, read as a driver reads them, one 32-bit
+    /// bank at a time.
+    fn offered_feature_bits(device: &mut VirtioMmioDevice, mmio_base: u64) -> Vec<u32> {
+        let select = mmio_base + u64::from(VirtioMmioRegister::DEVICE_FEATURES_SEL.0);
+        let register = mmio_base + u64::from(VirtioMmioRegister::DEVICE_FEATURES.0);
+        let mut features = 0;
+        for bank in 0..2u32 {
+            assert!(matches!(
+                device.mmio_write(select, &bank.to_le_bytes()),
+                IoResult::Ok
+            ));
+            let mut value = [0; 4];
+            assert!(matches!(
+                device.mmio_read(register, &mut value),
+                IoResult::Ok
+            ));
+            features |= u64::from(u32::from_le_bytes(value)) << (32 * bank);
+        }
+        (0..u64::BITS)
+            .filter(|bit| features & (1 << bit) != 0)
+            .collect()
+    }
+
+    #[async_test]
+    async fn microvm_devices_offer_exactly_their_feature_masks(driver: DefaultDriver) {
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        // The memory holds the page of the slots' shared interrupt-status
+        // words.
+        let gm = GuestMemory::allocate(
+            (openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_GPA
+                + openvmm_defs::microvm::MICROVM_SHARED_STATUS_PAGE_SIZE) as usize,
+        );
+        let chipset_mmio = ChipsetMmioRanges {
+            low: MemoryRange::new(0xc000_0000..0x1_0000_0000),
+            high: MemoryRange::EMPTY,
+            vtl2: MemoryRange::EMPTY,
+        };
+        let blocks = [
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Distro,
+                read_only: true,
+            },
+            MicrovmSandboxBlockConfig {
+                role: MicrovmSandboxBlockRole::Scratch,
+                read_only: false,
+            },
+        ];
+        let mut sandbox_block_index = 0;
+        let mut filesystem_index = 0;
+        // Each device in the order of the slots of its kind, with its window
+        // and the features that the guest sees.
+        let devices: [(&str, u64, &[u32]); 6] = [
+            ("virtio-net", 0xd000_0000, &[5, 32]),
+            ("virtiofs", 0xd000_1000, &[28, 29, 32, 33]),
+            ("virtio-console", 0xd000_2000, &[0, 28, 29, 32, 33]),
+            ("virtio-blk", 0xd000_3000, &[2, 5, 6, 9, 10, 28, 29, 32, 33]),
+            ("virtio-blk", 0xd000_6000, &[2, 6, 9, 10, 28, 29, 32, 33]),
+            (
+                openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID,
+                0xd000_7000,
+                &[0, 28, 29, 32, 33],
+            ),
+        ];
+        for (id, mmio_base, bits) in devices {
+            let (start, len, _irq, features, interrupt_mode) = virtio_mmio_config(
+                id,
+                &blocks,
+                &mut sandbox_block_index,
+                &mut filesystem_index,
+                chipset_mmio,
+            )
+            .unwrap();
+            assert_eq!(start, mmio_base, "{id}");
+            let mut device = VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
+                Box::new(EveryFeatureDevice),
+                &driver_source.simple(),
+                gm.clone(),
+                LineInterrupt::detached(),
+                None,
+                start,
+                len,
+                !features,
+                interrupt_mode,
+            )
+            .unwrap();
+            assert_eq!(
+                offered_feature_bits(&mut device, start),
+                bits,
+                "{id} at {start:#x}"
+            );
+        }
     }
 }
