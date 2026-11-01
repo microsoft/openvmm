@@ -78,3 +78,46 @@ async fn test_save_inventory_uses_unit_snapshot(driver: DefaultDriver) {
     assert_eq!(states[0].name, "removed");
     assert_eq!(inventory, ["removed"]);
 }
+
+#[async_test]
+async fn test_inventory_after_unit_removal(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let c = units
+        .add("c")
+        .spawn(&driver, |recv| {
+            run_unit(
+                TestUnit {
+                    support_saved_state: true,
+                    ..Default::default()
+                },
+                recv,
+            )
+        })
+        .unwrap();
+    let b = units
+        .add("b")
+        .depends_on(c.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    let _a = units
+        .add("a")
+        .depends_on(b.handle())
+        .depends_on(c.handle())
+        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
+        .unwrap();
+    let full_inventory = units.inventory();
+    assert_eq!(full_inventory, ["a", "b", "c"]);
+
+    // Removing a unit with dependency edges in both directions drops it from
+    // the inventory.
+    b.remove().await;
+    assert_eq!(units.inventory(), ["a", "c"]);
+    assert!(units.validate_inventory(&full_inventory).is_err());
+
+    let (states, inventory) = units.save_with_inventory().await.unwrap();
+    assert_eq!(inventory, ["a", "c"]);
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].name, "c");
+    units.validate_inventory(&inventory).unwrap();
+    units.restore(states).await.unwrap();
+}
