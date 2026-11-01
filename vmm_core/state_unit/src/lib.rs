@@ -30,6 +30,8 @@
 
 #![forbid(unsafe_code)]
 
+mod inventory;
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -526,7 +528,7 @@ impl StateUnits {
         assert!(!self.running);
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
-        let r = self
+        let (r, _) = self
             .run_op(
                 "reset",
                 None,
@@ -547,10 +549,17 @@ impl StateUnits {
     ///
     /// Panics if running.
     pub async fn save(&mut self) -> Result<Vec<SavedStateUnit>, StateTransitionError> {
+        let (states, _) = self.save_inner().await?;
+        Ok(states)
+    }
+
+    async fn save_inner(
+        &mut self,
+    ) -> Result<(Vec<SavedStateUnit>, ReadySet), StateTransitionError> {
         assert!(!self.running);
         // Save can occur in any order since it will not observably mutate
         // state.
-        let r = self
+        let (r, ready_set) = self
             .run_op(
                 "save",
                 None,
@@ -570,7 +579,7 @@ impl StateUnits {
             })
         })?;
 
-        Ok(states)
+        Ok((states, ready_set))
     }
 
     /// Restores all the state units.
@@ -613,7 +622,7 @@ impl StateUnits {
 
         check("restore", r)?;
 
-        let r = self
+        let (r, _) = self
             .run_op(
                 "restore",
                 None,
@@ -672,7 +681,7 @@ impl StateUnits {
         request: impl Copy + FnOnce(Rpc<I, R>) -> StateRequest,
         mut input: impl FnMut(u64, &Unit) -> Option<I>,
         mut deps: impl FnMut(&Unit) -> Option<&BTreeSet<u64>>,
-    ) -> Vec<(Arc<str>, R)> {
+    ) -> (Vec<(Arc<str>, R)>, ReadySet) {
         let mut done = Vec::new();
         let ready_set;
         {
@@ -756,7 +765,7 @@ impl StateUnits {
                 );
             }
         }
-        r
+        (r, ready_set)
     }
 }
 
@@ -1020,6 +1029,8 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod inventory;
+
     use super::StateUnit;
     use super::StateUnits;
     use crate::run_unit;
