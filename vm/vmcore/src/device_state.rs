@@ -27,6 +27,32 @@ pub trait ChangeDeviceState {
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
 
+    /// Stops accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// [`ChangeDeviceState::resume_input`] may be called even if this method
+    /// returns an error or its completion is not observed.
+    ///
+    /// For chipset devices backed by `ArcMutexChipsetDeviceUnit`, this hook
+    /// runs with the chipset device lock held while vCPUs may still issue
+    /// MMIO/PIO. Guest accesses wait for the hook to return. The hook must
+    /// therefore complete promptly and must not await work that requires the
+    /// same device lock, which would deadlock.
+    fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`ChangeDeviceState::quiesce_input`]
+    /// completed and idempotent across repeated recovery attempts.
+    ///
+    /// On `ArcMutexChipsetDeviceUnit`, this also runs with the chipset device
+    /// lock held while vCPUs may access the device. It must complete promptly
+    /// and must not await work that requires that lock.
+    fn resume_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
+
     /// Stops a device's asynchronous work.
     ///
     /// After this returns, the device must not process any additional work. It
