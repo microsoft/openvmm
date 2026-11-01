@@ -500,8 +500,10 @@ mod save_restore {
         use super::*;
         use chipset_device::interrupt::HandleEoi;
         use chipset_device::interrupt::LineInterruptTarget;
+        use chipset_resources::ioapic::IOAPIC_NUM_ENTRIES;
         use chipset_resources::ioapic::IoApicRouting;
         use parking_lot::Mutex;
+        use std::collections::BTreeMap;
         use std::sync::Arc;
         use test_with_tracing::test;
 
@@ -512,6 +514,7 @@ mod save_restore {
         #[derive(Clone, Default)]
         struct RecordingRouting {
             assertions: Arc<Mutex<Vec<u8>>>,
+            routes: Arc<Mutex<BTreeMap<u8, Option<(u64, u32)>>>>,
         }
 
         impl IoApicRouting for RecordingRouting {
@@ -519,7 +522,9 @@ mod save_restore {
                 self.assertions.lock().push(irq);
             }
 
-            fn set_route(&self, _irq: u8, _request: Option<(u64, u32)>) {}
+            fn set_route(&self, irq: u8, request: Option<(u64, u32)>) {
+                self.routes.lock().insert(irq, request);
+            }
         }
 
         fn device() -> (IoApicDevice, RecordingRouting) {
@@ -656,6 +661,47 @@ mod save_restore {
             assert_eq!(after.redirection_entries, before.redirection_entries);
             assert_eq!(after.line_levels, before.line_levels);
             assert!(routing.assertions.lock().is_empty());
+        }
+
+        #[test]
+        fn restore_routes_the_inputs_past_the_isa_irqs() {
+            // The generic IOAPIC's inputs past the 16 ISA IRQs, which the PIC
+            // does not see, deliver edges and keep their routes across a
+            // restore like the others.
+            let inputs = 16..IOAPIC_NUM_ENTRIES;
+            let source_routing = RecordingRouting::default();
+            let mut source =
+                IoApicDevice::new(IOAPIC_NUM_ENTRIES, Box::new(source_routing.clone()));
+            for input in inputs.clone() {
+                let entry = RedirectionEntry::new().with_vector(VECTOR + input);
+                source.write_redirection_register(input * 2, u64::from(entry) as u32);
+                source.set_irq(input.into(), true);
+                source.set_irq(input.into(), false);
+            }
+            assert_eq!(
+                *source_routing.assertions.lock(),
+                inputs.clone().collect::<Vec<_>>()
+            );
+            let state = source.save().expect("save succeeds");
+            assert_eq!(
+                state.redirection_entries.len(),
+                usize::from(IOAPIC_NUM_ENTRIES)
+            );
+
+            let routing = RecordingRouting::default();
+            let mut restored = IoApicDevice::new(IOAPIC_NUM_ENTRIES, Box::new(routing.clone()));
+            restored.restore(state).expect("restore succeeds");
+            for input in inputs.clone() {
+                let route = routing.routes.lock().get(&input).copied().flatten();
+                assert!(route.is_some(), "input {input} has no route");
+                assert_eq!(
+                    route,
+                    source_routing.routes.lock().get(&input).copied().flatten()
+                );
+                restored.set_irq(input.into(), true);
+                restored.set_irq(input.into(), false);
+            }
+            assert_eq!(*routing.assertions.lock(), inputs.collect::<Vec<_>>());
         }
     }
 }
