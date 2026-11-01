@@ -333,12 +333,20 @@ impl Future for ScsiRequest {
 
 #[derive(Debug, Error)]
 enum WorkerError {
+    #[error("cancelled")]
+    Cancelled(task_control::Cancelled),
     #[error("packet error")]
     PacketError(#[source] PacketError),
     #[error("queue error")]
     Queue(#[source] queue::Error),
     #[error("queue should have enough space but no longer does")]
     NotEnoughSpace,
+}
+
+impl From<task_control::Cancelled> for WorkerError {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -852,13 +860,15 @@ impl<T: 'static + Send + Sync + RingMem> AsyncRun<Worker<T>> for WorkerState {
         stop: &mut StopTask<'_>,
         worker: &mut Worker<T>,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         let fut = async {
             if worker.inner.channel_index == 0 {
-                worker.process_primary().await
+                worker.process_primary(&check).await
             } else {
                 // Wait for initialization to end before processing any
                 // subchannel packets.
                 let protocol_version = loop {
+                    check.check()?;
                     let listener = worker.inner.protocol.ready.listen();
                     if let ProtocolState::Ready { version, .. } =
                         *worker.inner.protocol.state.read()
@@ -870,12 +880,13 @@ impl<T: 'static + Send + Sync + RingMem> AsyncRun<Worker<T>> for WorkerState {
                 };
                 worker
                     .inner
-                    .process_ready(&mut worker.queue, protocol_version)
+                    .process_ready(&mut worker.queue, protocol_version, &check)
                     .await
             }
         };
 
         match stop.until_stopped(fut).await? {
+            Err(WorkerError::Cancelled(cancelled)) => return Err(cancelled),
             Ok(_) => {}
             Err(e) => tracing::error!(error = e.as_error(), "process_packets error"),
         }
@@ -919,14 +930,19 @@ const MAX_VMBUS_PACKET_SIZE: usize = ring::PacketSize::in_band(
 
 impl<T: RingMem> Worker<T> {
     /// Processes the protocol state machine.
-    async fn process_primary(&mut self) -> Result<(), WorkerError> {
+    async fn process_primary(
+        &mut self,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), WorkerError> {
         loop {
+            check.check()?;
             let current_state = *self.inner.protocol.state.read();
             match current_state {
                 ProtocolState::Ready { version, .. } => {
                     break loop {
+                        check.check()?;
                         select_biased! {
-                            r = self.inner.process_ready(&mut self.queue, version).fuse() => break r,
+                            r = self.inner.process_ready(&mut self.queue, version, check).fuse() => break r,
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
@@ -1158,9 +1174,10 @@ impl WorkerInner {
         &mut self,
         queue: &mut Queue<M>,
         protocol_version: Version,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(), WorkerError> {
         self.request_size = protocol_version.max_request_size();
-        poll_fn(|cx| self.poll_process_ready(cx, queue)).await
+        poll_fn(|cx| self.poll_process_ready(cx, queue, check)).await
     }
 
     /// Processes packets and SCSI completions after protocol negotiation has finished.
@@ -1168,6 +1185,7 @@ impl WorkerInner {
         &mut self,
         cx: &mut Context<'_>,
         queue: &mut Queue<M>,
+        check: &task_control::StopCheck<'_>,
     ) -> Poll<Result<(), WorkerError>> {
         self.stats.wakes.increment();
 
@@ -1176,7 +1194,10 @@ impl WorkerInner {
         let mut total_submissions = 0;
         let poll_mode_queue_depth = self.controller.poll_mode_queue_depth.load(Relaxed) as usize;
 
-        loop {
+        let cancelled = 'processing: loop {
+            if let Err(cancelled) = check.check() {
+                break Some(cancelled);
+            }
             // Drive IOs forward and collect completions.
             'outer: while !self.scsi_requests_states.is_empty() {
                 {
@@ -1212,9 +1233,12 @@ impl WorkerInner {
                 }
             }
 
-            let mut submissions = 0;
+            let previous_submissions = total_submissions;
             // Process new requests.
             'outer: loop {
+                if let Err(cancelled) = check.check() {
+                    break 'processing Some(cancelled);
+                }
                 if self.scsi_requests_states.len() >= self.max_io_queue_depth {
                     break;
                 }
@@ -1259,19 +1283,19 @@ impl WorkerInner {
                     };
 
                     if self.handle_packet(&mut writer, &packet)? {
-                        submissions += 1;
+                        total_submissions += 1;
                     }
                 }
             }
 
             // Loop around to poll the IOs if any new IOs were submitted.
-            if submissions == 0 {
+            if total_submissions == previous_submissions {
                 // No need to poll again.
-                break;
+                break None;
             }
-            total_submissions += submissions;
-        }
+        };
 
+        // Account for completed batches before propagating cancellation.
         if total_submissions != 0 || total_completions != 0 {
             self.stats.ios_submitted.add(total_submissions);
             self.stats
@@ -1285,6 +1309,9 @@ impl WorkerInner {
             self.stats.wakes_spurious.increment();
         }
 
+        if let Some(cancelled) = cancelled {
+            return Poll::Ready(Err(cancelled.into()));
+        }
         Poll::Pending
     }
 

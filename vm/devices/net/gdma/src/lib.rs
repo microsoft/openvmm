@@ -9,6 +9,8 @@ mod dma;
 mod hwc;
 mod queues;
 pub mod resolver;
+#[cfg(test)]
+mod test_helpers;
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;

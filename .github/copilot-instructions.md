@@ -46,6 +46,13 @@ If `cargo xtask fmt --fix` still fails after auto-fixes, fix the remaining
 reported issues manually and re-run until it succeeds. Do not run individual
 `--pass` commands afterward.
 
+## Device Worker Cancellation
+
+When changing `TaskControl` workers or forwarded VMBus device workers, read the
+worker cancellation guide in `support/task_control/src/lib.rs`. Follow its
+wrapping examples and check-placement rules, including nested loops and
+preservation of accepted work.
+
 ## Trust Boundaries & Safety
 
 Both OpenVMM and OpenHCL process data from untrusted sources. Code must

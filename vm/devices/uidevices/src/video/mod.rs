@@ -36,6 +36,8 @@ use zerocopy::Ref;
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(task_control::Cancelled),
     #[error("out of order packet")]
     UnexpectedPacketOrder,
     #[error("memory access error")]
@@ -48,6 +50,12 @@ enum Error {
     Io(#[source] std::io::Error),
     #[error("failed to accept vmbus channel")]
     Accept(#[from] vmbus_channel::offer::Error),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 #[derive(Debug)]
@@ -342,13 +350,19 @@ impl SimpleVmbusDevice for Video {
         stop: &mut StopTask<'_>,
         channel: &mut VideoChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match channel.process(&mut self.control, &self.dirt_send).await {
+            match channel
+                .process(&mut self.control, &self.dirt_send, &check)
+                .await
+            {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "video error"),
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     fn supports_save_restore(
@@ -408,6 +422,7 @@ impl VideoChannel {
         &mut self,
         framebuffer: &mut Box<dyn FramebufferControl>,
         dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(), Error> {
         process_channel(
             &mut self.channel,
@@ -415,6 +430,7 @@ impl VideoChannel {
             &mut self.packet_buf,
             framebuffer,
             dirt_send,
+            check,
         )
         .await
     }
@@ -426,8 +442,10 @@ async fn process_channel(
     packet_buf: &mut PacketBuffer,
     framebuffer: &mut Box<dyn FramebufferControl>,
     dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+    check: &task_control::StopCheck<'_>,
 ) -> Result<(), Error> {
     loop {
+        check.check()?;
         match state {
             ChannelState::ReadVersion => {
                 let version =
@@ -630,6 +648,7 @@ async fn process_channel(
 mod tests {
     use super::*;
     use framebuffer::FRAMEBUFFER_SIZE;
+    use futures::FutureExt;
     use guestmem::MappableGuestMemory;
     use guestmem::MappedMemoryRegion;
     use guestmem::MemoryMapper;
@@ -643,7 +662,82 @@ mod tests {
     use std::io::ErrorKind;
     use std::sync::Arc;
     use vmbus_async::pipe::connected_message_pipes;
+    use vmbus_channel::test_helpers::GatedRingMem;
+    use vmbus_channel::test_helpers::gated_channels;
+    use vmbus_channel::test_helpers::stop_with_timeout;
+    use vmbus_channel::test_helpers::with_timeout;
     use vmbus_ring::RingMem;
+
+    struct StoppableWorker {
+        channel: MessagePipe<GatedRingMem>,
+        state: ChannelState,
+        packets: PacketBuffer,
+        control: Box<dyn FramebufferControl>,
+    }
+
+    impl task_control::AsyncRun<()> for StoppableWorker {
+        async fn run(
+            &mut self,
+            stop: &mut StopTask<'_>,
+            _: &mut (),
+        ) -> Result<(), task_control::Cancelled> {
+            let check = stop.check_handle()?;
+            match stop
+                .until_stopped(process_channel(
+                    &mut self.channel,
+                    &mut self.state,
+                    &mut self.packets,
+                    &mut self.control,
+                    &None,
+                    &check,
+                ))
+                .await?
+            {
+                Err(Error::Cancelled(cancelled)) => Err(cancelled),
+                result => panic!("unexpected video worker result: {result:?}"),
+            }
+        }
+    }
+
+    #[async_test]
+    async fn stop_preserves_pending_version_response_and_restart(driver: DefaultDriver) {
+        let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("video-stop");
+        let (host, guest, gate) = gated_channels(16384);
+        let mut guest = MessagePipe::new(guest).unwrap();
+        for _ in 0..2 {
+            send_packet(
+                &mut guest,
+                protocol::MESSAGE_VERSION_REQUEST,
+                &protocol::VersionRequestMessage {
+                    version: protocol::Version::new(0, 0),
+                },
+            )
+            .await;
+        }
+        let (_device, control, _view) = framebuffer_fixture();
+        let mut task = task_control::TaskControl::new(StoppableWorker {
+            channel: MessagePipe::new(host).unwrap(),
+            state: ChannelState::ReadVersion,
+            packets: PacketBuffer::new(),
+            control,
+        });
+        task.insert(&worker_driver, "video", ());
+        assert!(task.start());
+        gate.stop(&mut task, &driver).await;
+        assert!(matches!(
+            &task.task().state,
+            ChannelState::WriteVersion { .. }
+        ));
+        let mut buffer = [0; 256];
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+        assert!(task.start());
+        let packet = with_timeout(&driver, recv_bytes(&mut guest)).await;
+        let (header, _) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_VERSION_RESPONSE);
+        with_timeout(&driver, recv_bytes(&mut guest)).await;
+        stop_with_timeout(&mut task, &driver).await;
+        assert!(guest.recv(&mut buffer).now_or_never().is_none());
+    }
 
     struct TestGuestMemory;
 
@@ -764,15 +858,20 @@ mod tests {
         driver.spawn("video worker", async move {
             let mut state = ChannelState::ReadVersion;
             let mut packet_buf = PacketBuffer::new();
-            process_channel(
-                &mut channel,
-                &mut state,
-                &mut packet_buf,
-                &mut control,
-                &dirt_send,
-            )
-            .await
-            .or_else(|e| match e {
+            let result = StopTask::run_unstoppable(async |stop| {
+                let check = stop.check_handle().unwrap();
+                process_channel(
+                    &mut channel,
+                    &mut state,
+                    &mut packet_buf,
+                    &mut control,
+                    &dirt_send,
+                    &check,
+                )
+                .await
+            })
+            .await;
+            result.or_else(|e| match e {
                 Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => Ok(()),
                 _ => Err(e),
             })

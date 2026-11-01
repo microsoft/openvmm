@@ -107,6 +107,9 @@ pub struct StorvscError(StorvscErrorInner);
 /// Inner errors from storvsc.
 #[derive(Debug, Error)]
 pub(crate) enum StorvscErrorInner {
+    /// Worker interrupted for control processing.
+    #[error("worker interrupted")]
+    WorkerCancelled(task_control::Cancelled),
     /// Packet error.
     #[error("packet error")]
     PacketError(#[source] PacketError),
@@ -253,14 +256,18 @@ impl<T: 'static + Send + Sync + RingMem> AsyncRun<Storvsc<T>> for StorvscState {
         stop: &mut StopTask<'_>,
         worker: &mut Storvsc<T>,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         let fut = async {
             if !worker.has_negotiated {
                 worker.negotiate().await?;
             }
-            worker.process_main().await
+            worker.process_main(&check).await
         };
 
         match stop.until_stopped(fut).await? {
+            Err(StorvscError(StorvscErrorInner::WorkerCancelled(cancelled))) => {
+                return Err(cancelled);
+            }
             Ok(_) => {}
             Err(err) => tracing::error!(error = err.as_error(), "storvsc run error"),
         }
@@ -369,8 +376,11 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
     }
 
     /// Main loop to poll for and handle new operations and incoming completions for operations
-    async fn process_main(&mut self) -> Result<(), StorvscError> {
-        match self.inner.process_main(&mut self.queue).await {
+    async fn process_main(
+        &mut self,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), StorvscError> {
+        match self.inner.process_main(&mut self.queue, check).await {
             Ok(_) => Ok(()),
             Err(StorvscError(StorvscErrorInner::Queue(err2))) => {
                 if err2.is_closed_error() {
@@ -387,8 +397,15 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
 }
 
 impl StorvscInner {
-    async fn process_main<M: RingMem>(&mut self, queue: &mut Queue<M>) -> Result<(), StorvscError> {
+    async fn process_main<M: RingMem>(
+        &mut self,
+        queue: &mut Queue<M>,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), StorvscError> {
         loop {
+            check
+                .check()
+                .map_err(|cancelled| StorvscError(StorvscErrorInner::WorkerCancelled(cancelled)))?;
             enum Event<'a, M: RingMem> {
                 NewRequestReceived(Result<StorvscRequest, RecvError>),
                 VmbusPacketReceived(Result<PacketRef<'a, M>, queue::Error>),

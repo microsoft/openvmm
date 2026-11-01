@@ -8,6 +8,10 @@
 pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
 pub use hyperv_ic_protocol::shutdown::INTERFACE_ID;
 
+#[cfg(test)]
+#[path = "shutdown_tests.rs"]
+mod tests;
+
 use guid::Guid;
 use hyperv_ic_protocol::FRAMEWORK_VERSION_1;
 use hyperv_ic_protocol::FRAMEWORK_VERSION_3;
@@ -67,20 +71,28 @@ enum ShutdownGuestChannelState {
 
 /// Established channel between guest and host.
 #[derive(InspectMut)]
-pub struct ShutdownGuestChannel {
+pub struct ShutdownGuestChannel<M: RingMem = MemoryBlockRingBuffer> {
     /// Current state.
     state: ShutdownGuestChannelState,
     /// Vmbus pipe to the host.
     #[inspect(mut)]
-    pipe: MessagePipe<MemoryBlockRingBuffer>,
+    pipe: MessagePipe<M>,
 }
 
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("ring buffer error")]
     Ring(#[source] std::io::Error),
     #[error("truncated message")]
     TruncatedMessage,
+}
+
+impl From<Cancelled> for Error {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl ShutdownGuestIc {
@@ -101,16 +113,21 @@ impl ShutdownGuestIc {
     }
 }
 
-impl ShutdownGuestChannel {
-    fn new(pipe: MessagePipe<MemoryBlockRingBuffer>) -> Self {
+impl<M: RingMem + Unpin> ShutdownGuestChannel<M> {
+    fn new(pipe: MessagePipe<M>) -> Self {
         Self {
             state: ShutdownGuestChannelState::NegotiateVersion,
             pipe,
         }
     }
 
-    async fn process(&mut self, ic: &mut ShutdownGuestIc) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        ic: &mut ShutdownGuestIc,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         loop {
+            check.check()?;
             match read_from_pipe(&mut self.pipe).await {
                 Ok(buf) => {
                     self.handle_host_message(&buf, ic).await;
@@ -384,9 +401,11 @@ impl SimpleVmbusClientDeviceAsync for ShutdownGuestIc {
         stop: &mut StopTask<'_>,
         runner: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match runner.process(self).await {
+            match runner.process(self, &check).await {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
@@ -394,7 +413,8 @@ impl SimpleVmbusClientDeviceAsync for ShutdownGuestIc {
                     )
                 }
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 }

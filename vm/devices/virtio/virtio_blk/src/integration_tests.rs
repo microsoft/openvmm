@@ -10,6 +10,7 @@
 use crate::VirtioBlkDevice;
 use disk_backend::UnmapBehavior;
 use disk_hook::Disk;
+use disk_hook::DiskOperation;
 use disk_hook::HookDisk;
 use futures::future::Either;
 use futures::future::select;
@@ -20,7 +21,17 @@ use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::task::Context;
+use std::task::Poll;
+use std::task::Waker;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
@@ -33,6 +44,7 @@ use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
 use virtio::test_helpers::init_used_ring;
 use virtio::test_helpers::make_available;
+use virtio::test_helpers::read_used_idx;
 use virtio::test_helpers::wait_for_used;
 use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
@@ -213,8 +225,8 @@ impl TestHarness {
     ///   desc 1 (readable): data to write
     ///   desc 2 (writable): 1-byte status
     ///
-    /// Returns the head descriptor index.
-    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) {
+    /// Returns the GPA of the status byte.
+    fn post_write_request(&mut self, head_desc: u16, sector: u64, data: &[u8]) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
         let data_gpa = self.alloc_data(data.len() as u32);
         let status_gpa = self.alloc_data(1);
@@ -277,6 +289,7 @@ impl TestHarness {
             &mut self.avail_idx,
         );
         self.queue_event.signal();
+        status_gpa
     }
 
     /// Build a flush request descriptor chain.
@@ -529,6 +542,20 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
         .into_disk()
 }
 
+struct RequeueResources {
+    mem: GuestMemory,
+    queue_event: Event,
+    avail_idx: AtomicU16,
+}
+
+impl RequeueResources {
+    fn make_ready(&self) {
+        let mut avail_idx = self.avail_idx.fetch_add(1, Ordering::SeqCst);
+        make_available(&self.mem, AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail_idx);
+        self.queue_event.signal();
+    }
+}
+
 /// Awaits `fut`, panicking with `msg` if it does not complete within `timeout`.
 async fn with_timeout<F: Future>(
     driver: &DefaultDriver,
@@ -541,6 +568,127 @@ async fn with_timeout<F: Future>(
         Either::Left((output, _)) => output,
         Either::Right(_) => panic!("{msg}"),
     }
+}
+
+#[async_test]
+async fn stop_drains_one_accepted_write_exactly_once(driver: DefaultDriver) {
+    let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-drain");
+    let write_calls = Arc::new(AtomicUsize::new(0));
+    let (write_started, write_started_recv) = std::sync::mpsc::channel();
+    let (release_write, release_write_recv) = async_channel::bounded(1);
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_async_hook({
+            let write_calls = write_calls.clone();
+            move |op| {
+                let hold = matches!(op, DiskOperation::Write { .. })
+                    && write_calls.fetch_add(1, Ordering::SeqCst) == 0;
+                if hold {
+                    write_started.send(()).unwrap();
+                }
+                let release_write = release_write_recv.clone();
+                async move {
+                    if hold {
+                        release_write.recv().await.unwrap();
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .into_disk();
+    let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false, None);
+    harness.enable().await;
+    let status_gpa = harness.post_write_request(0, 0, &[0xa5; 512]);
+    write_started_recv
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    let stopped = {
+        let mut stop = pin!(harness.device.stop_queue(0));
+        assert!(
+            stop.as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        release_write.send(()).await.unwrap();
+        with_timeout(
+            &driver,
+            Duration::from_secs(5),
+            "stop failed to drain accepted I/O",
+            stop,
+        )
+        .await
+    };
+    assert!(stopped.is_some());
+    assert_eq!(harness.wait_for_used().await, (0, 1));
+    assert_eq!(harness.read_status(status_gpa), VIRTIO_BLK_S_OK);
+    assert_eq!(write_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(read_used_idx(&harness.mem, USED_ADDR), 1);
+}
+
+#[async_test]
+async fn stop_preempts_continuously_ready_queue(driver: DefaultDriver) {
+    let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-ready");
+    let resources = Arc::new(OnceLock::<RequeueResources>::new());
+    let keep_requeueing = Arc::new(AtomicBool::new(true));
+    let (write_started, write_started_recv) = std::sync::mpsc::channel();
+    let disk = HookDisk::new(64 * 1024, 512)
+        .with_sync_hook({
+            let resources = resources.clone();
+            let keep_requeueing = keep_requeueing.clone();
+            let write_calls = AtomicUsize::new(0);
+            move |op| {
+                if matches!(op, DiskOperation::Write { .. }) {
+                    if write_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        write_started.send(()).unwrap();
+                    }
+                    // Keep the loop ready before the current request finishes.
+                    if keep_requeueing.load(Ordering::SeqCst) {
+                        resources.get().unwrap().make_ready();
+                    }
+                }
+                Ok(())
+            }
+        })
+        .into_disk();
+    let mut harness = TestHarness::with_device_driver(&driver, &device_driver, disk, false, None);
+    assert!(
+        resources
+            .set(RequeueResources {
+                mem: harness.mem.clone(),
+                queue_event: harness.queue_event.clone(),
+                avail_idx: AtomicU16::new(1),
+            })
+            .is_ok()
+    );
+    harness.enable().await;
+    harness.post_write_request(0, 0, &[0xa5; 512]);
+    write_started_recv
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    let mut stop = pin!(harness.device.stop_queue(0));
+    let mut timer = PolledTimer::new(&driver);
+    let mut timeout = pin!(timer.sleep(Duration::from_secs(5)));
+    let stopped = poll_fn(|cx| {
+        if let Poll::Ready(stopped) = stop.as_mut().poll(cx) {
+            Poll::Ready(Some(stopped))
+        } else if timeout.as_mut().poll(cx).is_ready() {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    keep_requeueing.store(false, Ordering::SeqCst);
+    let Some(stopped) = stopped else {
+        with_timeout(
+            &driver,
+            Duration::from_secs(5),
+            "stop failed after requeueing ended",
+            stop,
+        )
+        .await;
+        panic!("stop was starved by continuously ready work");
+    };
+    assert!(stopped.is_some());
 }
 
 /// Write 1 sector then read it back. Verifies basic write and read roundtrip.
