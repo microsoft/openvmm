@@ -19,7 +19,9 @@ impl LoadedVm {
         let was_running = self.pause().await;
         let result = self.dump_state_inner(file).await;
         if was_running {
-            self.resume().await;
+            self.resume()
+                .await
+                .context("failed to resume VM after dump")?;
         }
         result
     }

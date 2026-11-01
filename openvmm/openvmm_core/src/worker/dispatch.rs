@@ -401,7 +401,7 @@ impl Worker for VmWorker {
             LOADED_VM.store(&vm);
 
             if running {
-                vm.resume().await;
+                vm.resume().await?;
             }
             Ok(Self {
                 vm,
@@ -3693,13 +3693,16 @@ impl LoadedVmInner {
 
 impl LoadedVm {
     #[tracing::instrument(name = "resume_vm", target = "openvmm::perf", skip_all)]
-    async fn resume(&mut self) -> bool {
+    async fn resume(&mut self) -> anyhow::Result<bool> {
         if self.running {
-            return false;
+            return Ok(false);
         }
-        self.state_units.start().await;
+        self.state_units
+            .start()
+            .await
+            .context("VM state units failed to start")?;
         self.running = true;
-        true
+        Ok(true)
     }
 
     async fn pause(&mut self) -> bool {
@@ -3738,7 +3741,10 @@ impl LoadedVm {
         let stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
 
         // Start state units so device config space is accessible.
-        self.state_units.start().await;
+        self.state_units
+            .start()
+            .await
+            .context("failed to start devices for PCI resource assignment")?;
 
         let result = ecam_config_access::assign_pci_resources_for_root_complexes(
             &self.inner.chipset,
@@ -3824,7 +3830,13 @@ impl LoadedVm {
                             }
                             Err(err) => {
                                 if stopped {
-                                    self.state_units.start().await;
+                                    if let Err(start_error) = self.state_units.start().await {
+                                        self.running = false;
+                                        rpc.complete(Err(RemoteError::new(start_error.context(
+                                            "worker restart failed and the VM could not resume",
+                                        ))));
+                                        continue;
+                                    }
                                 }
                                 rpc.complete(Err(RemoteError::new(err)));
                             }
@@ -3849,7 +3861,9 @@ impl LoadedVm {
                         rpc.handle(async |()| self.inner.partition_unit.clear_halt().await)
                             .await
                     }
-                    VmRpc::Resume(rpc) => rpc.handle(async |()| self.resume().await).await,
+                    VmRpc::Resume(rpc) => {
+                        rpc.handle_failable(async |()| self.resume().await).await
+                    }
                     VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
                     VmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
@@ -3897,7 +3911,15 @@ impl LoadedVm {
                             )
                             .await?;
                             self.inner.vmbus_devices.push(device);
-                            self.state_units.start_stopped_units().await;
+                            if let Err(error) = self.state_units.start_stopped_units().await {
+                                let device = self
+                                    .inner
+                                    .vmbus_devices
+                                    .pop()
+                                    .expect("device was just pushed");
+                                drop(device.remove().await);
+                                return Err(error);
+                            }
                             anyhow::Ok(())
                         })
                         .await
@@ -3926,7 +3948,7 @@ impl LoadedVm {
                             self.save_reset_restore().await?;
 
                             if paused {
-                                self.resume().await;
+                                self.resume().await?;
                             }
                             Ok(())
                         })
@@ -4043,7 +4065,15 @@ impl LoadedVm {
                             // MSI. The guest may begin probing config space
                             // immediately after receiving the interrupt, so
                             // the device must be ready first.
-                            self.state_units.start_stopped_units().await;
+                            if let Err(error) = self.state_units.start_stopped_units().await {
+                                let (_, unit, _) = self
+                                    .inner
+                                    .pcie_hotplug_devices
+                                    .pop()
+                                    .expect("device was just pushed");
+                                unit.remove().await;
+                                return Err(error);
+                            }
 
                             // Now attach the device and notify the guest.
                             if let Err(e) = rc.lock().hotplug_add_device(
@@ -4406,7 +4436,7 @@ impl LoadedVm {
         }
 
         if resume {
-            self.resume().await;
+            self.resume().await?;
         }
         Ok(())
     }
