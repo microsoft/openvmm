@@ -22,7 +22,12 @@ use std::fmt::Write as _;
 use vmotherboard::options::BaseChipsetManifest;
 
 /// The persisted microVM ABI version.
-pub const MICROVM_ABI_VERSION_2: u32 = 2;
+///
+/// Version 3 offers no device `VIRTIO_F_ACCESS_PLATFORM`, since the microVM
+/// has no IOMMU, and no console `VIRTIO_CONSOLE_F_SIZE`, both of which
+/// version 2 offered. A snapshot of version 2 records those feature masks, so
+/// restore refuses it by its version, before it compares the devices.
+pub const MICROVM_ABI_VERSION_3: u32 = 3;
 /// Linux memory-block granularity used for microVM restore-time expansion.
 pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -69,15 +74,17 @@ pub const MICROVM_VIRTIO_FS_IRQ: u32 = 6;
 pub const MICROVM_VIRTIO_NET_KVM_IRQ: u32 = 10;
 /// Fixed microVM virtio-net interrupt on WHP.
 pub const MICROVM_VIRTIO_NET_WHP_IRQ: u32 = 5;
-// The virtio 1.2 feature bits that the exact microVM feature masks name.
+// The virtio 1.2 feature bits that the exact microVM feature masks name. The
+// masks leave out `VIRTIO_F_ACCESS_PLATFORM` (bit 33), which the virtio
+// transport offers every device, since the microVM has no IOMMU to translate a
+// device's DMA, and the console size, `VIRTIO_CONSOLE_F_SIZE` (bit 0), which
+// the virtio-console device offers with a size of 0 columns and 0 rows.
 /// Indirect descriptors.
 const VIRTIO_F_INDIRECT_DESC: u64 = 1 << 28;
 /// Event-index notification suppression.
 const VIRTIO_F_EVENT_IDX: u64 = 1 << 29;
 /// A virtio 1.0 device.
 const VIRTIO_F_VERSION_1: u64 = 1 << 32;
-/// Device DMA that the platform's IOMMU translates.
-const VIRTIO_F_ACCESS_PLATFORM: u64 = 1 << 33;
 /// The NIC's MAC address.
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 /// A per-request segment limit.
@@ -90,8 +97,6 @@ const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
 const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
 /// The block device's topology.
 const VIRTIO_BLK_F_TOPOLOGY: u64 = 1 << 10;
-/// The console's size.
-const VIRTIO_CONSOLE_F_SIZE: u64 = 1 << 0;
 /// The ring features of every microVM virtio device but the NIC: split
 /// virtqueues with indirect descriptors and event-index notification
 /// suppression, of a virtio 1.0 device.
@@ -100,23 +105,20 @@ const MICROVM_VIRTIO_SPLIT_RING_FEATURES: u64 =
 /// Exact microVM virtio-net feature mask: MAC and virtio version 1.
 pub const MICROVM_VIRTIO_NET_FEATURES: u64 = VIRTIO_NET_F_MAC | VIRTIO_F_VERSION_1;
 /// Exact microVM virtio-fs feature mask: indirect descriptors, event index,
-/// virtio version 1, and access-platform.
-pub const MICROVM_VIRTIO_FS_FEATURES: u64 =
-    MICROVM_VIRTIO_SPLIT_RING_FEATURES | VIRTIO_F_ACCESS_PLATFORM;
+/// and virtio version 1.
+pub const MICROVM_VIRTIO_FS_FEATURES: u64 = MICROVM_VIRTIO_SPLIT_RING_FEATURES;
 /// Exact feature mask of both microVM virtio consoles, the boot console and
-/// the control console: the console size, indirect descriptors, event index,
-/// virtio version 1, and access-platform.
-pub const MICROVM_VIRTIO_CONSOLE_FEATURES: u64 =
-    VIRTIO_CONSOLE_F_SIZE | MICROVM_VIRTIO_SPLIT_RING_FEATURES | VIRTIO_F_ACCESS_PLATFORM;
+/// the control console: indirect descriptors, event index, and virtio version
+/// 1.
+pub const MICROVM_VIRTIO_CONSOLE_FEATURES: u64 = MICROVM_VIRTIO_SPLIT_RING_FEATURES;
 /// Exact feature mask of the writable `scratch` virtio-blk role: the segment
-/// limit, block size, flush, topology, indirect descriptors, event index,
-/// virtio version 1, and access-platform.
+/// limit, block size, flush, topology, indirect descriptors, event index, and
+/// virtio version 1.
 pub const MICROVM_VIRTIO_SCRATCH_BLK_FEATURES: u64 = VIRTIO_BLK_F_SEG_MAX
     | VIRTIO_BLK_F_BLK_SIZE
     | VIRTIO_BLK_F_FLUSH
     | VIRTIO_BLK_F_TOPOLOGY
-    | MICROVM_VIRTIO_SPLIT_RING_FEATURES
-    | VIRTIO_F_ACCESS_PLATFORM;
+    | MICROVM_VIRTIO_SPLIT_RING_FEATURES;
 /// Exact feature mask of the read-only `distro` virtio-blk role: the
 /// `scratch` role's features, and read-only.
 pub const MICROVM_VIRTIO_DISTRO_BLK_FEATURES: u64 =
@@ -2712,23 +2714,27 @@ mod tests {
     fn microvm_virtio_feature_masks_are_exact() {
         let masks = [
             (MICROVM_VIRTIO_NET_FEATURES, vec![5, 32]),
-            (MICROVM_VIRTIO_FS_FEATURES, vec![28, 29, 32, 33]),
-            (MICROVM_VIRTIO_CONSOLE_FEATURES, vec![0, 28, 29, 32, 33]),
+            (MICROVM_VIRTIO_FS_FEATURES, vec![28, 29, 32]),
+            (MICROVM_VIRTIO_CONSOLE_FEATURES, vec![28, 29, 32]),
             (
                 microvm_sandbox_block_features(MicrovmSandboxBlockRole::Distro),
-                vec![2, 5, 6, 9, 10, 28, 29, 32, 33],
+                vec![2, 5, 6, 9, 10, 28, 29, 32],
             ),
             (
                 microvm_sandbox_block_features(MicrovmSandboxBlockRole::Scratch),
-                vec![2, 6, 9, 10, 28, 29, 32, 33],
+                vec![2, 6, 9, 10, 28, 29, 32],
             ),
         ];
         for (features, bits) in masks {
             assert_eq!(feature_bits(features), bits);
-            // Every device is a virtio 1.0 device with split virtqueues.
+            // Every device is a virtio 1.0 device with split virtqueues, and
+            // the microVM has no IOMMU.
             assert_ne!(features & VIRTIO_F_VERSION_1, 0);
             assert_eq!(features & (1 << 34), 0, "packed virtqueues are offered");
+            assert_eq!(features & (1 << 33), 0, "access-platform is offered");
         }
+        // The consoles report no size.
+        assert_eq!(MICROVM_VIRTIO_CONSOLE_FEATURES & 1, 0);
         assert_eq!(
             microvm_sandbox_block_features(MicrovmSandboxBlockRole::Distro),
             MICROVM_VIRTIO_DISTRO_BLK_FEATURES

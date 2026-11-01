@@ -917,17 +917,19 @@ mod tests {
         let mut sandbox_block_index = 0;
         let mut filesystem_index = 0;
         // Each device in the order of the slots of its kind, with its window
-        // and the features that the guest sees.
+        // and the features that the guest sees: never access-platform, which
+        // the transport offers every device, nor the console size, which the
+        // virtio-console device offers.
         let devices: [(&str, u64, &[u32]); 6] = [
             ("virtio-net", 0xd000_0000, &[5, 32]),
-            ("virtiofs", 0xd000_1000, &[28, 29, 32, 33]),
-            ("virtio-console", 0xd000_2000, &[0, 28, 29, 32, 33]),
-            ("virtio-blk", 0xd000_3000, &[2, 5, 6, 9, 10, 28, 29, 32, 33]),
-            ("virtio-blk", 0xd000_6000, &[2, 6, 9, 10, 28, 29, 32, 33]),
+            ("virtiofs", 0xd000_1000, &[28, 29, 32]),
+            ("virtio-console", 0xd000_2000, &[28, 29, 32]),
+            ("virtio-blk", 0xd000_3000, &[2, 5, 6, 9, 10, 28, 29, 32]),
+            ("virtio-blk", 0xd000_6000, &[2, 6, 9, 10, 28, 29, 32]),
             (
                 openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID,
                 0xd000_7000,
-                &[0, 28, 29, 32, 33],
+                &[28, 29, 32],
             ),
         ];
         for (id, mmio_base, bits) in devices {

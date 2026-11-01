@@ -92,7 +92,9 @@ NUMA, xAPIC mode, and contiguous APIC IDs `0..N-1`; APIC ID 0 is the BSP.
 Custom socket, SMT, APIC, x2APIC, and NUMA options are rejected.
 
 The microVM uses fixed virtio device slots and sandbox block roles. Its
-persisted ABI and boot layout remain value 2. The
+persisted ABI is value 3 and its boot layout value 2. Each fixed virtio device
+offers an exact feature mask, which never includes `VIRTIO_F_ACCESS_PLATFORM`,
+since the microVM has no IOMMU, nor packed virtqueues. The
 MP floating pointer begins at `0x0`, the MP configuration table at `0x400`,
 the boot GDT at `0x1000`, and the Linux zero page at `0x2000`. No ACPI MADT or
 SMBIOS data is exposed.
