@@ -18,6 +18,7 @@ use spec::ENTRY_TYPE_PROCESSOR;
 use spec::FLOATING_POINTER_SIGNATURE;
 use spec::FloatingPointer;
 use spec::INTERRUPT_FLAG_ACTIVE_HIGH;
+use spec::INTERRUPT_FLAG_EDGE_TRIGGERED;
 use spec::INTERRUPT_FLAG_LEVEL_TRIGGERED;
 use spec::INTERRUPT_TYPE_INT;
 use spec::IO_APIC_FLAG_ENABLED;
@@ -89,6 +90,10 @@ pub struct MpTableConfig<'a> {
     pub apic_ids: &'a [u32],
     /// ISA IRQs, 0 through 15, described as active-high, level-triggered.
     pub level_triggered_irqs: &'a [u32],
+    /// The number of inputs of the IOAPIC: at least the 16 that carry the ISA
+    /// IRQs. The table routes each input past those as an active-high,
+    /// edge-triggered interrupt of its own number, which the PIC does not see.
+    pub ioapic_inputs: u8,
 }
 
 /// Fully constructed MP 1.4 data.
@@ -136,6 +141,9 @@ pub enum Error {
     /// ISA IRQs are limited to 0 through 15.
     #[error("MP table IRQ {0} is outside the ISA range")]
     InvalidIrq(u32),
+    /// The IOAPIC's first 16 inputs carry the ISA IRQs.
+    #[error("MP table IOAPIC has {0} inputs; the ISA IRQs need 16")]
+    TooFewIoApicInputs(u8),
 }
 
 /// Builds the MP floating pointer and configuration table.
@@ -169,11 +177,17 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
     {
         return Err(Error::InvalidIrq(irq));
     }
+    if config.ioapic_inputs < ISA_IRQ_COUNT {
+        return Err(Error::TooFewIoApicInputs(config.ioapic_inputs));
+    }
+    // One bus, one IOAPIC, and an interrupt source for every ISA IRQ but the
+    // PIC cascade (IRQ 2) and for every IOAPIC input past the ISA IRQs.
     let entry_count = u16::try_from(
         config
             .apic_ids
             .len()
             .checked_add(ISA_INTERRUPT_ROUTING_ENTRY_COUNT)
+            .and_then(|count| count.checked_add(usize::from(config.ioapic_inputs - ISA_IRQ_COUNT)))
             .ok_or(Error::TooManyEntries)?,
     )
     .map_err(|_| Error::TooManyEntries)?;
@@ -247,9 +261,25 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
         };
     }
 
+    // An input past the ISA IRQs has no bus convention to conform to, so its
+    // entry states its polarity and trigger. Linux takes the source IRQ of a
+    // non-PCI bus, here the input's own number, as the interrupt's number.
+    let inputs = (ISA_IRQ_COUNT..config.ioapic_inputs)
+        .map(|input| IoInterruptEntry {
+            entry_type: ENTRY_TYPE_IO_INTERRUPT,
+            interrupt_type: INTERRUPT_TYPE_INT,
+            flags: (INTERRUPT_FLAG_ACTIVE_HIGH | INTERRUPT_FLAG_EDGE_TRIGGERED).into(),
+            source_bus_id: ISA_BUS_ID,
+            source_bus_irq: input,
+            destination_io_apic_id: io_apic_id,
+            destination_io_apic_intin: input,
+        })
+        .collect::<Vec<_>>();
+
     let table_len = size_of::<ConfigTableHeader>()
         + processors.as_bytes().len()
-        + size_of::<IsaInterruptRouting>();
+        + size_of::<IsaInterruptRouting>()
+        + inputs.as_bytes().len();
     let mut header = ConfigTableHeader {
         signature: CONFIG_TABLE_SIGNATURE,
         base_table_length: u16::try_from(table_len)
@@ -262,8 +292,20 @@ pub fn build_config_table(config: &MpTableConfig<'_>) -> Result<Vec<u8>, Error> 
         local_apic_address: APIC_BASE_ADDRESS.into(),
         ..FromZeros::new_zeroed()
     };
-    header.checksum = checksum(&[header.as_bytes(), processors.as_bytes(), routing.as_bytes()]);
-    Ok([header.as_bytes(), processors.as_bytes(), routing.as_bytes()].concat())
+    let parts = [
+        header.as_bytes(),
+        processors.as_bytes(),
+        routing.as_bytes(),
+        inputs.as_bytes(),
+    ];
+    header.checksum = checksum(&parts);
+    Ok([
+        header.as_bytes(),
+        processors.as_bytes(),
+        routing.as_bytes(),
+        inputs.as_bytes(),
+    ]
+    .concat())
 }
 
 /// Returns the byte that makes the sum of `parts` and itself zero.
@@ -281,6 +323,24 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
+    /// The inputs of the microVM's IOAPIC.
+    const IOAPIC_INPUTS: u8 = 24;
+
+    /// Returns the interrupt-source entries of `table`, which describes
+    /// `processor_count` processors, in table order.
+    fn interrupt_sources(
+        table: &[u8],
+        processor_count: usize,
+    ) -> Vec<[u8; size_of::<IoInterruptEntry>()]> {
+        table[size_of::<ConfigTableHeader>() + size_of::<ProcessorEntry>() * processor_count..]
+            .chunks_exact(size_of::<IoInterruptEntry>())
+            .map(|entry| entry.try_into().unwrap())
+            .filter(|entry: &[u8; size_of::<IoInterruptEntry>()]| {
+                entry[0] == ENTRY_TYPE_IO_INTERRUPT
+            })
+            .collect()
+    }
+
     #[test]
     fn builds_valid_checksums_and_processor_entries() {
         for processor_count in [1usize, 2, 4, 8, 15] {
@@ -288,6 +348,7 @@ mod tests {
             let tables = build(&MpTableConfig {
                 apic_ids: &apic_ids,
                 level_triggered_irqs: &[4, 5, 6, 7],
+                ioapic_inputs: IOAPIC_INPUTS,
             })
             .unwrap();
 
@@ -304,9 +365,11 @@ mod tests {
             assert_eq!(checksum(&[table]), 0);
             let (header, rest) = ConfigTableHeader::ref_from_prefix(table).unwrap();
             assert_eq!(usize::from(header.base_table_length.get()), table.len());
+            // The processors, the bus, the IOAPIC, and 23 interrupt sources:
+            // 15 ISA IRQs and inputs 16 through 23.
             assert_eq!(
                 usize::from(header.entry_count.get()),
-                processor_count + ISA_INTERRUPT_ROUTING_ENTRY_COUNT
+                processor_count + ISA_INTERRUPT_ROUTING_ENTRY_COUNT + 8
             );
             let (processors, rest) =
                 <[ProcessorEntry]>::ref_from_prefix_with_elems(rest, processor_count).unwrap();
@@ -316,10 +379,11 @@ mod tests {
                 let bootstrap = if index == 0 { CPU_FLAG_BOOTSTRAP } else { 0 };
                 assert_eq!(processor.cpu_flags, CPU_FLAG_ENABLED | bootstrap);
             }
-            let routing = IsaInterruptRouting::ref_from_bytes(rest).unwrap();
+            let (routing, rest) = IsaInterruptRouting::ref_from_prefix(rest).unwrap();
             assert_eq!(routing.io_apic.entry_type, ENTRY_TYPE_IO_APIC);
             assert_eq!(routing.io_apic.io_apic_id, processor_count as u8);
-            for entry in &routing.interrupts {
+            let inputs = <[IoInterruptEntry]>::ref_from_bytes_with_elems(rest, 8).unwrap();
+            for entry in routing.interrupts.iter().chain(inputs) {
                 assert_eq!(entry.entry_type, ENTRY_TYPE_IO_INTERRUPT);
                 assert_eq!(entry.destination_io_apic_id, processor_count as u8);
             }
@@ -333,6 +397,7 @@ mod tests {
         let tables = build(&MpTableConfig {
             apic_ids: &[0, 1],
             level_triggered_irqs: &[5],
+            ioapic_inputs: 16,
         })
         .unwrap();
         let hex = |bytes: &[u8]| {
@@ -381,11 +446,61 @@ mod tests {
     }
 
     #[test]
+    fn routes_every_ioapic_input() {
+        let table = build_config_table(&MpTableConfig {
+            apic_ids: &[0, 1],
+            level_triggered_irqs: &[5],
+            ioapic_inputs: IOAPIC_INPUTS,
+        })
+        .unwrap();
+        // Each entry: type, interrupt type, flags, source bus, source IRQ,
+        // destination IOAPIC, and destination input. The IOAPIC takes ID 2,
+        // after the processors. The PIT's IRQ 0 reaches input 2, and IRQ 2,
+        // the PIC cascade, has no entry.
+        let mut expected = vec![[3, 0, 0, 0, 0, 0, 2, 2]];
+        for irq in 1..16 {
+            if irq != 2 {
+                let flags = if irq == 5 { 0x0d } else { 0 };
+                expected.push([3, 0, flags, 0, 0, irq, 2, irq]);
+            }
+        }
+        // The inputs past the ISA IRQs are active high and edge triggered.
+        for input in 16..24 {
+            expected.push([3, 0, 0x05, 0, 0, input, 2, input]);
+        }
+        assert_eq!(interrupt_sources(&table, 2), expected);
+    }
+
+    #[test]
+    fn routes_the_isa_irqs_alone_without_further_inputs() {
+        let table = build_config_table(&MpTableConfig {
+            apic_ids: &[0],
+            level_triggered_irqs: &[],
+            ioapic_inputs: 16,
+        })
+        .unwrap();
+        assert_eq!(
+            table.len(),
+            size_of::<ConfigTableHeader>()
+                + size_of::<ProcessorEntry>()
+                + size_of::<IsaInterruptRouting>()
+        );
+        let sources = interrupt_sources(&table, 1);
+        assert_eq!(sources.len(), 15);
+        assert!(
+            sources
+                .iter()
+                .all(|source| source[5] < 16 && source[7] < 16)
+        );
+    }
+
+    #[test]
     fn rejects_invalid_inputs() {
         assert_eq!(
             build(&MpTableConfig {
                 apic_ids: &[],
                 level_triggered_irqs: &[],
+                ioapic_inputs: IOAPIC_INPUTS,
             }),
             Err(Error::NoProcessors)
         );
@@ -393,6 +508,7 @@ mod tests {
             build(&MpTableConfig {
                 apic_ids: &[0, 2],
                 level_triggered_irqs: &[],
+                ioapic_inputs: IOAPIC_INPUTS,
             }),
             Err(Error::InvalidApicId { .. })
         ));
@@ -400,14 +516,24 @@ mod tests {
             build(&MpTableConfig {
                 apic_ids: &[0],
                 level_triggered_irqs: &[16],
+                ioapic_inputs: IOAPIC_INPUTS,
             }),
             Err(Error::InvalidIrq(16))
+        );
+        assert_eq!(
+            build(&MpTableConfig {
+                apic_ids: &[0],
+                level_triggered_irqs: &[],
+                ioapic_inputs: 15,
+            }),
+            Err(Error::TooFewIoApicInputs(15))
         );
         let apic_ids = (0..16).collect::<Vec<_>>();
         assert_eq!(
             build(&MpTableConfig {
                 apic_ids: &apic_ids,
                 level_triggered_irqs: &[],
+                ioapic_inputs: IOAPIC_INPUTS,
             }),
             Err(Error::NoIoApicId {
                 processor_count: 16
@@ -418,6 +544,7 @@ mod tests {
             build(&MpTableConfig {
                 apic_ids: &apic_ids,
                 level_triggered_irqs: &[],
+                ioapic_inputs: IOAPIC_INPUTS,
             }),
             Err(Error::ApicIdTooLarge {
                 index: 256,

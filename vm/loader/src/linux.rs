@@ -1819,6 +1819,7 @@ mod tests {
         let config = mptable::MpTableConfig {
             apic_ids: &[0],
             level_triggered_irqs: &[],
+            ioapic_inputs: 16,
         };
         let error = mptable_boot::load_x86_mptable(
             &mut importer,

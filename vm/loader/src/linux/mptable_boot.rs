@@ -707,6 +707,7 @@ mod tests {
         mptable::MpTableConfig {
             apic_ids,
             level_triggered_irqs: &[4, 5, 6, 7],
+            ioapic_inputs: 24,
         }
     }
 
