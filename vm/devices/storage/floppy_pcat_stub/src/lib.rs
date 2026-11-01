@@ -709,3 +709,53 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineSet;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    #[async_test]
+    async fn restore_publishes_interrupt_before_polling() {
+        let new_device = |line| {
+            StubFloppyDiskController::new(line, &mut ExternallyManagedPortIoIntercepts, 0x3f0)
+        };
+        for pending in [false, true] {
+            let mut source = new_device(LineInterrupt::detached());
+            if pending {
+                source.raise_interrupt(true);
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let set = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                set.add_target(0..=0, 0, "irq", target.clone());
+                let mut dev = new_device(set.new_line(0, "floppy").unwrap());
+                if reset {
+                    dev.raise_interrupt(true);
+                    set.reset();
+                    ChangeDeviceState::reset(&mut dev).await;
+                }
+                dev.restore(saved.parse().unwrap()).unwrap();
+                assert!(!target.is_high(0));
+                set.start();
+                assert_eq!(target.is_high(0), pending);
+                dev.lower_interrupt();
+                assert!(!target.is_high(0));
+                dev.raise_interrupt(true);
+                assert!(target.is_high(0));
+                set.stop();
+                set.reset();
+                ChangeDeviceState::reset(&mut dev).await;
+                set.start();
+                assert!(!target.is_high(0));
+            }
+        }
+    }
+}

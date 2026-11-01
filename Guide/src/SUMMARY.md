@@ -175,6 +175,7 @@
     - [CPU Scheduling](./reference/architecture/openhcl/cpu_scheduling.md)
     - [IGVM](./reference/architecture/openhcl/igvm.md)
   - [Device Architecture](./reference/architecture/devices.md)
+    - [Line Interrupts](./reference/architecture/devices/line-interrupts.md)
     - [Storage Pipeline](./reference/architecture/devices/storage.md)
 
 ---

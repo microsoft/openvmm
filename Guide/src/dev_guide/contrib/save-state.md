@@ -40,13 +40,11 @@ restore, including after a failure. Saving restored state before starting the VM
 is supported; restoring that snapshot still requires a fresh or reset
 destination.
 
-Devices own their interrupt outputs. Establish each output high or low during
-construction, reset, and restore, before the VM starts. Interrupt controllers
-preserve the history needed to interpret those levels. The line manager caches
-outputs while stopped and forwards the final shared-wire levels after targets
-start and before producers start. Pulses completed while stopped are not
-replayed. An unpublished source triggers a warning at start and is treated as
-low; this diagnostic does not prove that a published level matches saved state.
+For devices with interrupt outputs, restore must establish each output before
+the VM starts, without processing new work. Producers save the state determining
+their outputs; targets save the history needed to recognize interrupts. See
+[Line interrupts](../../reference/architecture/devices/line-interrupts.md)
+for ownership, lifecycle ordering, and pulse behavior.
 
 ### Synchronous and asynchronous implementations
 

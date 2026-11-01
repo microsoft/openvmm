@@ -23,5 +23,9 @@ bitfield-struct.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+pal_async.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

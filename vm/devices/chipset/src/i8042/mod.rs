@@ -610,3 +610,85 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use input_core::mesh_input::input_pair;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::line_interrupt::LineSet;
+    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    fn write_command(dev: &mut I8042Device, command: ControllerCommand, value: u8) {
+        dev.io_write(ControllerPort::COMMAND.0, &[command.0])
+            .unwrap();
+        dev.io_write(ControllerPort::DATA.0, &[value]).unwrap();
+    }
+
+    #[async_test]
+    async fn restore_publishes_both_interrupts_before_polling() {
+        for (command, vector) in [
+            (ControllerCommand::WRITE_OUTPUT_BUFFER, 1),
+            (ControllerCommand::WRITE_AUX_OUTPUT_BUFFER, 12),
+        ] {
+            for enabled in [false, true] {
+                let (input, _sink) = input_pair();
+                let mut source = I8042Device::new(
+                    Box::new(|| panic!("unexpected reset")),
+                    LineInterrupt::detached(),
+                    LineInterrupt::detached(),
+                    Box::new(input),
+                )
+                .await;
+                write_command(
+                    &mut source,
+                    ControllerCommand::WRITE_COMMAND_BYTE,
+                    if enabled { 3 } else { 0 },
+                );
+                write_command(&mut source, command, 0x42);
+                let saved = SavedStateBlob::new(source.save().unwrap());
+
+                for reset in [false, true] {
+                    let set = LineSet::new();
+                    let target = TestLineInterruptTarget::new_arc();
+                    set.add_target(1..=1, 1, "keyboard", target.clone());
+                    set.add_target(12..=12, 12, "mouse", target.clone());
+                    let (input, _sink) = input_pair();
+                    let mut dev = I8042Device::new(
+                        Box::new(|| panic!("unexpected reset")),
+                        set.new_line(1, "keyboard").unwrap(),
+                        set.new_line(12, "mouse").unwrap(),
+                        Box::new(input),
+                    )
+                    .await;
+                    if reset {
+                        write_command(&mut dev, command, 0x13);
+                        set.reset();
+                        dev.reset().await;
+                    }
+                    dev.restore(saved.parse().unwrap()).unwrap();
+                    assert!(!target.is_high(1) && !target.is_high(12));
+                    set.start();
+                    assert_eq!(target.is_high(1), enabled && vector == 1);
+                    assert_eq!(target.is_high(12), enabled && vector == 12);
+                    assert_eq!(dev.state.output_buffer, 0x42);
+                    let mut data = [0];
+                    dev.io_read(ControllerPort::DATA.0, &mut data).unwrap();
+                    assert_eq!(data, [0x42]);
+                    assert!(!target.is_high(1) && !target.is_high(12));
+                    write_command(&mut dev, ControllerCommand::WRITE_COMMAND_BYTE, 3);
+                    write_command(&mut dev, command, 0x55);
+                    assert!(target.is_high(vector));
+                    set.stop();
+                    set.reset();
+                    dev.reset().await;
+                    set.start();
+                    assert!(!target.is_high(1) && !target.is_high(12));
+                }
+            }
+        }
+    }
+}

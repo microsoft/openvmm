@@ -746,6 +746,91 @@ mod saved_state {
 
         const BASE: u16 = 0x1000;
 
+        struct GpeTarget(parking_lot::Mutex<PowerManagementDevice>);
+
+        impl vmcore::line_interrupt::LineSetTarget for GpeTarget {
+            fn set_irq(&self, vector: u32, high: bool) {
+                self.0.lock().set_irq(vector, high);
+            }
+        }
+
+        #[async_test]
+        async fn gpe_pulses_latch_and_restore_sci_before_start(driver: DefaultDriver) {
+            use std::sync::Arc;
+            use vmcore::line_interrupt::LineSet;
+            use vmcore::save_restore::SavedStateBlob;
+
+            for enabled in [false, true] {
+                let sci = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                sci.add_target(0..=0, 0, "SCI", target.clone());
+                let (_time, pm) = new_pm(&driver, sci.new_line(0, "pm").unwrap()).await;
+                let pm = Arc::new(GpeTarget(parking_lot::Mutex::new(pm)));
+                let gpe = LineSet::new();
+                gpe.add_target(0..=0, 0, "GPE", pm.clone());
+                let line = gpe.new_line(0, "generation ID").unwrap();
+                line.set_level(false);
+                sci.start();
+                gpe.start();
+                write(
+                    &mut pm.0.lock(),
+                    DynReg::GEN_PURPOSE_ENABLE,
+                    u16::from(enabled),
+                );
+                line.set_level(true);
+                line.set_level(false);
+                assert_eq!(gpe_status(&mut pm.0.lock()), 1);
+                assert_eq!(target.is_high(0), enabled);
+                let saved = SavedStateBlob::new(pm.0.lock().save().unwrap());
+
+                gpe.stop();
+                sci.stop();
+                gpe.reset();
+                sci.reset();
+                let (_fresh_time, mut destination) =
+                    new_pm(&driver, sci.new_line(0, "restored pm").unwrap()).await;
+                destination.reset().await;
+                destination.restore(saved.parse().unwrap()).unwrap();
+                *pm.0.lock() = destination;
+                line.set_level(false);
+                sci.start();
+                assert_eq!(
+                    target.is_high(0),
+                    enabled,
+                    "SCI must be restored without polling"
+                );
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    1,
+                    "low replay must not clear the latch"
+                );
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_ENABLE, 1);
+                assert!(target.is_high(0));
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_STATUS, 1);
+                assert!(!target.is_high(0));
+
+                gpe.stop();
+                line.set_level(true);
+                line.set_level(false);
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    0,
+                    "a completed stopped pulse is lost"
+                );
+                gpe.stop();
+                line.set_level(true);
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    1,
+                    "a sustained stopped assertion survives"
+                );
+                assert!(target.is_high(0));
+            }
+        }
+
         struct PioRegion(Option<u16>);
 
         impl ControlPortIoIntercept for PioRegion {
