@@ -43,6 +43,8 @@ pub const MICROVM_CONSOLE_COMMAND_LINE: &str = "earlycon=xe9 console=hvc1 reboot
 pub const MICROVM_COMMAND_LINE_MAX_SIZE: usize = 2048;
 /// Fixed distro virtio-blk MMIO base.
 pub const MICROVM_VIRTIO_BLK_MMIO_BASE: u64 = 0xd000_3000;
+/// Fixed scratch virtio-blk MMIO base.
+pub const MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE: u64 = 0xd000_6000;
 /// Reserved microVM virtio-net MMIO base.
 pub const MICROVM_VIRTIO_NET_MMIO_BASE: u64 = 0xd000_0000;
 /// Reserved MMIO base of the microVM virtio-fs slot.
@@ -55,12 +57,6 @@ pub const MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE: u64 = 0xd000_7000;
 pub const MICROVM_VIRTIO_MMIO_LEN: u64 = 0x1000;
 /// Fixed distro virtio-blk interrupt.
 pub const MICROVM_VIRTIO_BLK_IRQ: u32 = 4;
-/// Fixed virtio-blk interrupt for the runtime lower layer.
-///
-/// IRQ 8 is exclusively owned by the microVM RTC.
-pub const MICROVM_VIRTIO_RUNTIME_BLK_IRQ: u32 = 12;
-/// Fixed virtio-blk interrupt for the custom lower layer.
-pub const MICROVM_VIRTIO_CUSTOM_BLK_IRQ: u32 = 9;
 /// Fixed virtio-blk interrupt for the writable scratch layer.
 pub const MICROVM_VIRTIO_SCRATCH_BLK_IRQ: u32 = 11;
 /// Fixed microVM virtio-console interrupt.
@@ -93,14 +89,18 @@ pub const MICROVM_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingress=allow";
 /// host loopback; see [`net_backend_resources::ingress`].
 pub const MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingress=host-loopback";
 /// MicroVM virtio MMIO reservations in stable device order.
-pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 8] = [
+///
+/// Each slot keeps its place whether or not the slots before it are present.
+/// The windows at `0xd0004000` and `0xd0005000`, which held the retired
+/// `runtime` and `custom` sandbox layers, stay unassigned, as do IRQs 12 and 9
+/// and the shared-status words at offsets `0x10` and `0x14`: the slots after
+/// them kept their places.
+pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 6] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
     MICROVM_VIRTIO_FS_MMIO_BASE,
     MICROVM_VIRTIO_CONSOLE_MMIO_BASE,
     MICROVM_VIRTIO_BLK_MMIO_BASE,
-    0xd000_4000,
-    0xd000_5000,
-    0xd000_6000,
+    MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE,
     MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
 ];
 
@@ -136,12 +136,10 @@ pub const MICROVM_FILESYSTEM_SLOTS: [MicrovmFilesystemSlot; 1] = [MicrovmFilesys
     mmio_base: MICROVM_VIRTIO_FS_MMIO_BASE,
     irq: MICROVM_VIRTIO_FS_IRQ,
 }];
-/// Fixed sandbox virtio-blk MMIO slots in layer order.
-pub const MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES: [u64; 4] = [
+/// Fixed sandbox virtio-blk MMIO slots in role order.
+pub const MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES: [u64; 2] = [
     MICROVM_VIRTIO_BLK_MMIO_BASE,
-    0xd000_4000,
-    0xd000_5000,
-    0xd000_6000,
+    MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE,
 ];
 /// Guest-physical base of the shared virtio interrupt-status page.
 pub const MICROVM_SHARED_STATUS_PAGE_GPA: u64 = 0x3_0000;
@@ -155,10 +153,6 @@ pub const MICROVM_VIRTIO_FS_STATUS_OFFSET: u64 = 0x04;
 pub const MICROVM_VIRTIO_CONSOLE_STATUS_OFFSET: u64 = 0x08;
 /// Shared-status offset for the distro virtio-blk slot.
 pub const MICROVM_VIRTIO_DISTRO_BLK_STATUS_OFFSET: u64 = 0x0c;
-/// Shared-status offset for the runtime virtio-blk slot.
-pub const MICROVM_VIRTIO_RUNTIME_BLK_STATUS_OFFSET: u64 = 0x10;
-/// Shared-status offset for the custom virtio-blk slot.
-pub const MICROVM_VIRTIO_CUSTOM_BLK_STATUS_OFFSET: u64 = 0x14;
 /// Shared-status offset for the scratch virtio-blk slot.
 pub const MICROVM_VIRTIO_SCRATCH_BLK_STATUS_OFFSET: u64 = 0x18;
 /// Shared-status offset for the dedicated control virtio-console.
@@ -171,9 +165,7 @@ pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
         MICROVM_VIRTIO_FS_MMIO_BASE => MICROVM_VIRTIO_FS_STATUS_OFFSET,
         MICROVM_VIRTIO_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONSOLE_STATUS_OFFSET,
         MICROVM_VIRTIO_BLK_MMIO_BASE => MICROVM_VIRTIO_DISTRO_BLK_STATUS_OFFSET,
-        0xd000_4000 => MICROVM_VIRTIO_RUNTIME_BLK_STATUS_OFFSET,
-        0xd000_5000 => MICROVM_VIRTIO_CUSTOM_BLK_STATUS_OFFSET,
-        0xd000_6000 => MICROVM_VIRTIO_SCRATCH_BLK_STATUS_OFFSET,
+        MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE => MICROVM_VIRTIO_SCRATCH_BLK_STATUS_OFFSET,
         MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONTROL_CONSOLE_STATUS_OFFSET,
         _ => return None,
     };
@@ -185,12 +177,8 @@ pub const MICROVM_LEVEL_TRIGGERED_IRQS: [u32; 0] = [];
 /// The stable role of a microVM sandbox block device.
 #[derive(MeshPayload, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MicrovmSandboxBlockRole {
-    /// The lowest, widest-shared read-only layer.
+    /// The read-only base operating-system layer.
     Distro,
-    /// The read-only runtime layer above the distro layer.
-    Runtime,
-    /// The optional read-only customer layer above the runtime layer.
-    Custom,
     /// The writable overlayfs upper and work directories.
     Scratch,
 }
@@ -200,8 +188,6 @@ impl MicrovmSandboxBlockRole {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Distro => "distro",
-            Self::Runtime => "runtime",
-            Self::Custom => "custom",
             Self::Scratch => "scratch",
         }
     }
@@ -215,8 +201,6 @@ impl MicrovmSandboxBlockRole {
     pub const fn irq(self) -> u32 {
         match self {
             Self::Distro => MICROVM_VIRTIO_BLK_IRQ,
-            Self::Runtime => MICROVM_VIRTIO_RUNTIME_BLK_IRQ,
-            Self::Custom => MICROVM_VIRTIO_CUSTOM_BLK_IRQ,
             Self::Scratch => MICROVM_VIRTIO_SCRATCH_BLK_IRQ,
         }
     }
@@ -229,9 +213,7 @@ impl MicrovmSandboxBlockRole {
     const fn index(self) -> usize {
         match self {
             Self::Distro => 0,
-            Self::Runtime => 1,
-            Self::Custom => 2,
-            Self::Scratch => 3,
+            Self::Scratch => 1,
         }
     }
 }
@@ -1201,7 +1183,7 @@ fn validate_microvm_sandbox_blocks(
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         blocks.len() <= MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES.len(),
-        "microVM permits at most three read-only layers and one writable scratch device"
+        "microVM permits at most one read-only distro layer and one writable scratch device"
     );
     for (index, block) in blocks.iter().enumerate() {
         anyhow::ensure!(
@@ -2604,19 +2586,15 @@ mod tests {
                 read_only: true,
             },
             MicrovmSandboxBlockConfig {
-                role: MicrovmSandboxBlockRole::Runtime,
-                read_only: true,
-            },
-            MicrovmSandboxBlockConfig {
-                role: MicrovmSandboxBlockRole::Custom,
-                read_only: true,
-            },
-            MicrovmSandboxBlockConfig {
                 role: MicrovmSandboxBlockRole::Scratch,
                 read_only: false,
             },
         ];
         validate_microvm_sandbox_blocks(&blocks, false).unwrap();
+        assert_eq!(
+            MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES,
+            [0xd000_3000, 0xd000_6000]
+        );
 
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
         append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &blocks)
@@ -2626,8 +2604,6 @@ mod tests {
             format!(
                 "{MICROVM_BASE_COMMAND_LINE} \
                  virtio_mmio.device=0x1000@0xd0003000:4 \
-                virtio_mmio.device=0x1000@0xd0004000:12 \
-                 virtio_mmio.device=0x1000@0xd0005000:9 \
                  virtio_mmio.device=0x1000@0xd0006000:11"
             )
         );
@@ -2649,9 +2625,22 @@ mod tests {
     }
 
     #[test]
-    fn microvm_block_irqs_avoid_rtc_and_are_edge_triggered() {
-        assert_eq!(MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ, 3);
-        assert_eq!(MICROVM_VIRTIO_RUNTIME_BLK_IRQ, 12);
+    fn microvm_virtio_irqs_avoid_unused_lines_and_are_edge_triggered() {
+        let irqs = [
+            MICROVM_VIRTIO_NET_KVM_IRQ,
+            MICROVM_VIRTIO_NET_WHP_IRQ,
+            MICROVM_VIRTIO_FS_IRQ,
+            MICROVM_VIRTIO_CONSOLE_IRQ,
+            MicrovmSandboxBlockRole::Distro.irq(),
+            MicrovmSandboxBlockRole::Scratch.irq(),
+            MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
+        ];
+        assert_eq!(irqs, [10, 5, 6, 7, 4, 11, 3]);
+        // The RTC owns IRQ 8. IRQs 12, 9, and 13 of the retired runtime and
+        // custom layers and second virtio-fs slot stay unused.
+        for unused in [8, 9, 12, 13] {
+            assert!(!irqs.contains(&unused), "IRQ {unused} is in use");
+        }
         assert!(MICROVM_LEVEL_TRIGGERED_IRQS.is_empty());
     }
 
@@ -2662,11 +2651,13 @@ mod tests {
             (MICROVM_VIRTIO_FS_MMIO_BASE, 0x3_0004),
             (MICROVM_VIRTIO_CONSOLE_MMIO_BASE, 0x3_0008),
             (MICROVM_VIRTIO_BLK_MMIO_BASE, 0x3_000c),
-            (MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[1], 0x3_0010),
-            (MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[2], 0x3_0014),
-            (MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[3], 0x3_0018),
+            (MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE, 0x3_0018),
             (MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE, 0x3_001c),
         ];
+        assert_eq!(
+            slots.map(|(mmio_base, _)| mmio_base),
+            MICROVM_VIRTIO_MMIO_BASES
+        );
         for (mmio_base, expected_gpa) in slots {
             assert_eq!(microvm_virtio_status_gpa(mmio_base), Some(expected_gpa));
             assert_eq!(expected_gpa % size_of::<u32>() as u64, 0);
@@ -2674,6 +2665,9 @@ mod tests {
                 expected_gpa < MICROVM_SHARED_STATUS_PAGE_GPA + MICROVM_SHARED_STATUS_PAGE_SIZE
             );
         }
+        // The windows of the retired runtime and custom layers are free.
+        assert_eq!(microvm_virtio_status_gpa(0xd000_4000), None);
+        assert_eq!(microvm_virtio_status_gpa(0xd000_5000), None);
         // The window of the retired second virtio-fs slot is free.
         assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
         assert_eq!(microvm_virtio_status_gpa(0xd000_9000), None);
@@ -3208,84 +3202,36 @@ mod tests {
 
     #[test]
     fn microvm_sandbox_block_validation_rejects_invalid_layouts() {
-        assert!(
-            validate_microvm_sandbox_blocks(
-                &[MicrovmSandboxBlockConfig {
-                    role: MicrovmSandboxBlockRole::Scratch,
-                    read_only: true,
-                }],
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_microvm_sandbox_blocks(
-                &[
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Runtime,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Distro,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Scratch,
-                        read_only: false,
-                    },
-                ],
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_microvm_sandbox_blocks(
-                &[
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Distro,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Distro,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Scratch,
-                        read_only: false,
-                    },
-                ],
-                false
-            )
-            .is_err()
-        );
-        assert!(
-            validate_microvm_sandbox_blocks(
-                &[
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Distro,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Runtime,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Custom,
-                        read_only: true,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Scratch,
-                        read_only: false,
-                    },
-                    MicrovmSandboxBlockConfig {
-                        role: MicrovmSandboxBlockRole::Scratch,
-                        read_only: false,
-                    },
-                ],
-                false
-            )
-            .is_err()
-        );
+        let distro = MicrovmSandboxBlockConfig {
+            role: MicrovmSandboxBlockRole::Distro,
+            read_only: true,
+        };
+        let scratch = MicrovmSandboxBlockConfig {
+            role: MicrovmSandboxBlockRole::Scratch,
+            read_only: false,
+        };
+        let read_only_scratch = MicrovmSandboxBlockConfig {
+            read_only: true,
+            ..scratch
+        };
+        for (blocks, error) in [
+            (vec![read_only_scratch], "must be writable"),
+            (vec![scratch, distro], "unique and in fixed order"),
+            (vec![distro, distro], "unique and in fixed order"),
+            (
+                vec![distro, distro, scratch],
+                "at most one read-only distro layer and one writable scratch device",
+            ),
+            (
+                vec![distro, scratch, scratch],
+                "at most one read-only distro layer and one writable scratch device",
+            ),
+        ] {
+            let message = validate_microvm_sandbox_blocks(&blocks, false)
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(error), "{blocks:?}: {message}");
+        }
     }
 
     #[test]
