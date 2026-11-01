@@ -24,7 +24,7 @@ use openvmm_defs::config::NumaNode;
 use openvmm_defs::config::NumaTopology;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::X86TopologyConfig;
-use openvmm_defs::microvm::MICROVM_ABI_VERSION_2;
+use openvmm_defs::microvm::MICROVM_ABI_VERSION_3;
 use openvmm_defs::microvm::MachineProfile;
 use openvmm_defs::microvm::build_microvm_command_line;
 use openvmm_defs::worker::SharedMemoryFd;
@@ -1443,8 +1443,8 @@ fn openvmm_machine_profile(profile: vmservice::vm_config::MachineProfile) -> Mac
 
 fn ttrpc_machine_profile(abi_version: u32) -> anyhow::Result<vmservice::vm_config::MachineProfile> {
     anyhow::ensure!(
-        abi_version == MICROVM_ABI_VERSION_2,
-        "unsupported microVM ABI version {abi_version}; this OpenVMM supports version {MICROVM_ABI_VERSION_2}"
+        abi_version == MICROVM_ABI_VERSION_3,
+        "unsupported microVM ABI version {abi_version}; this OpenVMM supports version {MICROVM_ABI_VERSION_3}"
     );
     Ok(vmservice::vm_config::MachineProfile::Microvm)
 }
@@ -1773,20 +1773,24 @@ mod tests {
 
     #[test]
     fn ttrpc_microvm_profile_preserves_wire_identity_and_processor_policy() {
-        assert_eq!(
-            vmservice::vm_config::MachineProfile::Microvm as i32,
-            MICROVM_ABI_VERSION_2 as i32
-        );
+        // The profile keeps its numeric value 2, which clients send, whatever
+        // microVM ABI version it selects; the ABI version is a snapshot's.
+        assert_eq!(vmservice::vm_config::MachineProfile::Microvm as i32, 2);
         assert_eq!(
             openvmm_machine_profile(vmservice::vm_config::MachineProfile::Microvm),
             OpenvmmMachineProfile::Microvm
         );
         assert_eq!(
-            ttrpc_machine_profile(MICROVM_ABI_VERSION_2).unwrap(),
+            ttrpc_machine_profile(MICROVM_ABI_VERSION_3).unwrap(),
             vmservice::vm_config::MachineProfile::Microvm
         );
         assert!(vmservice::vm_config::MachineProfile::from_i32(1).is_none());
+        // Snapshots of microVM ABI versions 1 and 2 are unsupported.
         assert!(ttrpc_machine_profile(1).is_err());
+        assert_eq!(
+            ttrpc_machine_profile(2).unwrap_err().to_string(),
+            "unsupported microVM ABI version 2; this OpenVMM supports version 3"
+        );
 
         for processor_count in [1, 2, 4, 8] {
             assert!(openvmm_defs::microvm::microvm_processor_count_supported(
