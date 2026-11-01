@@ -192,5 +192,7 @@ const_assert_eq!(size_of::<IoInterruptEntry>(), 8);
 pub const INTERRUPT_TYPE_INT: u8 = 0;
 /// Polarity PO = 01b, active high (Table 4-10).
 pub const INTERRUPT_FLAG_ACTIVE_HIGH: u16 = 0b01;
+/// Trigger mode EL = 01b, edge-triggered (Table 4-10).
+pub const INTERRUPT_FLAG_EDGE_TRIGGERED: u16 = 0b01 << 2;
 /// Trigger mode EL = 11b, level-triggered (Table 4-10).
 pub const INTERRUPT_FLAG_LEVEL_TRIGGERED: u16 = 0b11 << 2;
