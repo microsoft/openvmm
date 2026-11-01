@@ -138,7 +138,6 @@ impl<T: SimpleVmbusDevice> AsyncRun<T::Runner> for DeviceTask<T> {
         stop: &mut StopTask<'_>,
         runner: &mut T::Runner,
     ) -> Result<(), Cancelled> {
-        stop.check()?;
         self.0.run(stop, runner).await
     }
 }
