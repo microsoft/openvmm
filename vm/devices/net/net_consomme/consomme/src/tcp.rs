@@ -61,7 +61,6 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
@@ -725,9 +724,7 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 #[derive(Inspect)]
 struct TcpListener {
     #[inspect(skip)]
-    socket: PolledSocket<Socket>,
-    #[inspect(skip)]
-    _driver: Option<Arc<dyn Driver>>,
+    socket: Option<PolledSocket<Socket>>,
     host_port: u16,
 }
 
@@ -965,6 +962,24 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
+        self.inner.tcp.listeners.retain(|key, listener| {
+            let socket = listener.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    listener.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        guest_port = key.guest_port,
+                        family = %key.family,
+                        "failed to update driver for tcp listener"
+                    );
+                    false
+                }
+            }
+        });
         self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
@@ -1158,9 +1173,7 @@ impl<T: Client> Access<'_, T> {
                 return Err(BindError::PortAlreadyBound(guest_port));
             }
             hash_map::Entry::Vacant(e) => {
-                let driver_keepalive = self.client.driver_keepalive();
-                let listener =
-                    TcpListener::from_socket(self.client.driver(), driver_keepalive, socket)?;
+                let listener = TcpListener::from_socket(self.client.driver(), socket)?;
                 e.insert(listener);
             }
         };
@@ -2988,11 +3001,7 @@ impl TcpListener {
     ///
     /// The socket must already be bound to an address. This method will call
     /// `listen` on it.
-    pub fn from_socket(
-        driver: &dyn Driver,
-        driver_keepalive: Option<Arc<dyn Driver>>,
-        socket: Socket,
-    ) -> Result<Self, BindError> {
+    pub fn from_socket(driver: &dyn Driver, socket: Socket) -> Result<Self, BindError> {
         let Some(host_port) = socket
             .local_addr()
             .map_err(BindError::Io)?
@@ -3013,8 +3022,7 @@ impl TcpListener {
             return Err(BindError::Io(err));
         }
         Ok(Self {
-            socket,
-            _driver: driver_keepalive,
+            socket: Some(socket),
             host_port,
         })
     }
@@ -3023,7 +3031,8 @@ impl TcpListener {
         &mut self,
         cx: &mut Context<'_>,
     ) -> Result<Option<(Socket, SocketAddr)>, DropReason> {
-        match self.socket.poll_accept(cx) {
+        let socket = self.socket.as_mut().unwrap();
+        match socket.poll_accept(cx) {
             Poll::Ready(r) => match r {
                 Ok((socket, address)) => match address.as_socket() {
                     Some(addr) => Ok(Some((socket, addr))),
@@ -3037,7 +3046,7 @@ impl TcpListener {
                     }
                 },
                 Err(_) => {
-                    let err = take_socket_error(&self.socket);
+                    let err = take_socket_error(socket);
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
                         host_port = self.host_port,

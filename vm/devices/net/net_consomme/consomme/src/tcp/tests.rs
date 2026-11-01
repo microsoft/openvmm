@@ -14,7 +14,6 @@ use crate::dns_resolver;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use pal_async::DefaultDriver;
-use pal_async::DefaultPool;
 use pal_async::socket::PolledSocket;
 use pal_async::timer::Instant;
 use parking_lot::Mutex;
@@ -35,7 +34,6 @@ use std::time::Duration;
 
 struct TestClient {
     driver: DefaultDriver,
-    driver_keepalive: Option<Arc<dyn Driver>>,
     received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
     rx_buffers: Option<usize>,
 }
@@ -259,7 +257,6 @@ impl TestClient {
     fn new(driver: DefaultDriver) -> Self {
         Self {
             driver,
-            driver_keepalive: None,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: None,
         }
@@ -268,7 +265,6 @@ impl TestClient {
     fn with_rx_buffers(driver: DefaultDriver, rx_buffers: usize) -> Self {
         Self {
             driver,
-            driver_keepalive: None,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: Some(rx_buffers),
         }
@@ -282,10 +278,6 @@ impl TestClient {
 impl Client for TestClient {
     fn driver(&self) -> &dyn Driver {
         &self.driver
-    }
-
-    fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
-        self.driver_keepalive.clone()
     }
 
     fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
@@ -1097,11 +1089,8 @@ async fn test_tcp_overlapping_retransmit(driver: DefaultDriver) {
 /// TCP connection is forwarded to the guest as a SYN packet.
 #[pal_async::async_test]
 async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
-    let (old_thread, old_driver) = DefaultPool::spawn_on_thread("consomme-old-tcp-listener-driver");
-    let old_driver = Arc::new(old_driver);
     let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
-    let mut client = TestClient::new((*old_driver).clone());
-    client.driver_keepalive = Some(old_driver.clone());
+    let mut client = TestClient::new(driver.clone());
 
     let guest_port = 7777;
     let received = client.received_packets.clone();
@@ -1128,14 +1117,6 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
             "listener should be registered"
         );
     }
-
-    client.driver = driver.clone();
-    client.driver_keepalive = Some(Arc::new(driver.clone()));
-    drop(old_driver);
-    assert!(
-        !old_thread.is_finished(),
-        "the listener must retain its original driver"
-    );
 
     // Connect from a host-side client to trigger the listener.
     let connector = std::net::TcpStream::connect(host_addr).unwrap();
@@ -1167,37 +1148,17 @@ async fn test_tcp_bind_port_forward(driver: DefaultDriver) {
     }
 
     // Verify the SYN targets the correct guest port.
-    {
-        let packets = received.lock();
-        let syn_pkt = packets
-            .iter()
-            .find(|p| {
-                TcpTestHarness::is_tcp_packet(p)
-                    .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
-            })
-            .expect("should have received a SYN");
-        let (_, _, tcp) = parse_tcp_packet(syn_pkt);
-        assert_eq!(tcp.dst_port, guest_port);
-        assert_eq!(tcp.control, TcpControl::Syn);
-    }
-
-    drop(connector);
-    consomme
-        .access(&mut client)
-        .unbind_tcp_port(IpVersion::Ipv4, guest_port)
-        .unwrap();
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while !old_thread.is_finished() && std::time::Instant::now() < deadline {
-        pal_async::timer::PolledTimer::new(&driver)
-            .sleep(Duration::from_millis(10))
-            .await;
-    }
-    assert!(
-        old_thread.is_finished(),
-        "the listener driver must be released when the listener is unbound"
-    );
-    old_thread.join().unwrap();
+    let packets = received.lock();
+    let syn_pkt = packets
+        .iter()
+        .find(|p| {
+            TcpTestHarness::is_tcp_packet(p)
+                .is_some_and(|t| t.control == TcpControl::Syn && t.dst_port == guest_port)
+        })
+        .expect("should have received a SYN");
+    let (_, _, tcp) = parse_tcp_packet(syn_pkt);
+    assert_eq!(tcp.dst_port, guest_port);
+    assert_eq!(tcp.control, TcpControl::Syn);
 }
 
 /// Test that an accepted connection sends its initial SYN after RX capacity

@@ -67,7 +67,6 @@ use std::net::Ipv4Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
-use std::sync::Arc;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -522,14 +521,6 @@ pub trait Client {
     /// OS sockets) and remove this.
     fn driver(&self) -> &dyn Driver;
 
-    /// Returns a strong reference that keeps the driver's executor alive.
-    ///
-    /// Long-lived IO registrations that cannot be safely moved between drivers
-    /// retain this reference for their lifetime.
-    fn driver_keepalive(&self) -> Option<Arc<dyn Driver>> {
-        None
-    }
-
     /// Transmits a packet to the client.
     ///
     /// If `checksum.ipv4`, `checksum.tcp`, or `checksum.udp` are set, then the
@@ -941,12 +932,14 @@ impl<T: Client> Access<'_, T> {
         self.poll_icmp(cx);
     }
 
-    /// Update all sockets to use the new client's IO driver. This must be
-    /// called if the previous driver is no longer usable or if the client
-    /// otherwise wants existing connections to be polled on a new IO driver.
+    /// Updates all sockets and timers to use the new client's IO driver.
+    ///
+    /// This must be called if the previous driver is no longer usable or if the
+    /// client otherwise wants existing connections to be polled on a new IO driver.
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
+        self.refresh_icmp_driver();
     }
 
     /// Sends an Ethernet frame to the network.
