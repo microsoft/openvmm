@@ -1428,8 +1428,6 @@ pub fn microvm_machine_contract(
     for block in &sandbox_blocks {
         let role = match block.role.as_str() {
             "distro" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
-            "runtime" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Runtime,
-            "custom" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Custom,
             "scratch" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
             role => anyhow::bail!("snapshot sandbox block role '{role}' is unsupported"),
         };
@@ -1980,16 +1978,13 @@ pub(super) fn validate_machine_contract_shape(
 
     if !contract.microvm_sandbox_blocks.is_empty() {
         anyhow::ensure!(
-            contract.microvm_sandbox_blocks.len() >= 2
-                && contract.microvm_sandbox_blocks.len() <= 4,
-            "microVM snapshot must contain one to three layers and scratch"
+            contract.microvm_sandbox_blocks.len() == 2,
+            "microVM snapshot must contain a distro layer and scratch"
         );
         let mut previous_role = None;
         for block in &contract.microvm_sandbox_blocks {
             let role = match block.role.as_str() {
                 "distro" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Distro,
-                "runtime" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Runtime,
-                "custom" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Custom,
                 "scratch" => openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch,
                 role => anyhow::bail!("snapshot sandbox block role '{role}' is unsupported"),
             };
@@ -2802,7 +2797,7 @@ mod tests {
             openvmm_defs::microvm::MICROVM_VIRTIO_BLK_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_BLK_IRQ,
             openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
-            openvmm_defs::microvm::MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[3],
+            openvmm_defs::microvm::MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE,
             openvmm_defs::microvm::MICROVM_VIRTIO_SCRATCH_BLK_IRQ,
             openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
             openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE,
@@ -2865,7 +2860,7 @@ mod tests {
                 ),
                 virtio_state_unit_name(
                     "virtio-blk",
-                    openvmm_defs::microvm::MICROVM_VIRTIO_SANDBOX_BLOCK_MMIO_BASES[3],
+                    openvmm_defs::microvm::MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE,
                 ),
                 virtio_state_unit_name(
                     "virtio-control-console",
@@ -4790,7 +4785,51 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("one to three layers and scratch")
+                .contains("must contain a distro layer and scratch")
         );
+    }
+
+    #[test]
+    fn abi_v2_contract_rejects_the_retired_runtime_and_custom_layers() {
+        let scratch = vec![0x5a_u8; 1024];
+        for role in ["runtime", "custom"] {
+            // In place of the distro layer.
+            let mut manifest = paired_scratch_manifest(&scratch);
+            manifest
+                .machine_contract
+                .as_mut()
+                .unwrap()
+                .microvm_sandbox_blocks[0]
+                .role = role.to_owned();
+            let contract = manifest.machine_contract.clone().unwrap();
+            let error = validate_microvm_machine_contract(&manifest, &contract)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "snapshot sandbox block role '{role}' is unsupported"
+                )),
+                "{error}"
+            );
+
+            // Above the distro layer.
+            let mut manifest = paired_scratch_manifest(&scratch);
+            let blocks = &mut manifest
+                .machine_contract
+                .as_mut()
+                .unwrap()
+                .microvm_sandbox_blocks;
+            let mut layer = blocks[0].clone();
+            layer.role = role.to_owned();
+            blocks.insert(1, layer);
+            let contract = manifest.machine_contract.clone().unwrap();
+            let error = validate_microvm_machine_contract(&manifest, &contract)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("must contain a distro layer and scratch"),
+                "{error}"
+            );
+        }
     }
 }
