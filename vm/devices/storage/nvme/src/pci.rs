@@ -403,18 +403,28 @@ impl NvmeController {
         };
     }
 
+    /// Applies the register updates for a finished enable.
+    fn complete_enable(&mut self) {
+        self.registers.csts.set_rdy(true);
+    }
+
+    /// Applies the register updates for a finished controller reset.
+    fn complete_controller_reset(&mut self) {
+        // AQA, ASQ, and ACQ are not reset by controller reset.
+        self.registers.csts = 0.into();
+        self.registers.cc = 0.into();
+        self.registers.interrupt_mask = 0;
+    }
+
     fn get_csts(&mut self) -> u32 {
         if !self.registers.cc.en() && self.registers.csts.rdy() {
             // Keep trying to disable.
             if self.workers.poll_controller_reset() {
-                // AQA, ASQ, and ACQ are not reset by controller reset.
-                self.registers.csts = 0.into();
-                self.registers.cc = 0.into();
-                self.registers.interrupt_mask = 0;
+                self.complete_controller_reset();
             }
         } else if self.registers.cc.en() && !self.registers.csts.rdy() {
             if self.workers.poll_enabled() {
-                self.registers.csts.set_rdy(true);
+                self.complete_enable();
             }
         }
 
@@ -431,9 +441,22 @@ impl NvmeController {
 }
 
 impl ChangeDeviceState for NvmeController {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        self.workers.start();
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // Finish a pending enable or reset so the stopped controller is
+        // either fully enabled or fully disabled.
+        if self.registers.cc.en() && !self.registers.csts.rdy() {
+            self.workers.wait_enabled().await;
+            self.complete_enable();
+        } else if !self.registers.cc.en() && self.registers.csts.rdy() {
+            self.workers.wait_controller_reset().await;
+            self.complete_controller_reset();
+        }
+        self.workers.stop().await;
+    }
 
     async fn reset(&mut self) {
         let Self {
