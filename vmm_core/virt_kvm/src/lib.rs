@@ -128,6 +128,13 @@ struct KvmPartitionInner {
     bsp_cpuid: Vec<kvm::kvm_cpuid_entry2>,
     #[inspect(skip)]
     vps: Vec<KvmVpInner>,
+    /// The guest TSC offset every vp was given by the latest alignment of the counter to the
+    /// reference clock, or `None` when the kernel cannot set it directly or the partition has
+    /// no reference time element (see `recorded_tsc_offset`). A vp's `Tsc` state write puts
+    /// that vp back on this offset rather than storing a counter value.
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    aligned_tsc_offset: Mutex<Option<u64>>,
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
     caps: virt::PartitionCapabilities,
