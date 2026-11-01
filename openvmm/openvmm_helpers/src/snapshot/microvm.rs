@@ -1525,7 +1525,7 @@ pub fn microvm_machine_contract(
 
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
-        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
+        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
         source_hypervisor: source_hypervisor.to_owned(),
         effective_command_line: String::new(),
         effective_command_line_sha256: Vec::new(),
@@ -1564,7 +1564,7 @@ pub fn requires_post_restore_gate(manifest: &SnapshotManifest) -> bool {
     manifest.machine_contract.as_ref().is_some_and(|contract| {
         matches!(
             contract.microvm_abi_version,
-            openvmm_defs::microvm::MICROVM_ABI_VERSION_2
+            openvmm_defs::microvm::MICROVM_ABI_VERSION_3
         )
     }) && !manifest.snapshot_tier.is_empty()
 }
@@ -1585,10 +1585,10 @@ pub fn validate_supported_microvm_contract(
     contract: &SnapshotMachineContract,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        contract.microvm_abi_version == openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
+        contract.microvm_abi_version == openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
         "snapshot microVM ABI version {} is unsupported; this OpenVMM supports version {}",
         contract.microvm_abi_version,
-        openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
+        openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
     );
     anyhow::ensure!(
         contract.boot_layout_version == MICROVM_BOOT_LAYOUT_VERSION,
@@ -2486,7 +2486,7 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
 pub(super) fn test_machine_contract() -> SnapshotMachineContract {
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
-        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_2,
+        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
         source_hypervisor: "whp".to_owned(),
         effective_command_line: String::new(),
         effective_command_line_sha256: Vec::new(),
@@ -3404,7 +3404,9 @@ mod tests {
         assert_eq!(console.ranges[0].length, 0x1000);
         assert_eq!(console.irq, Some(7));
         assert_eq!(console.transport, "virtio-mmio");
-        assert_eq!(console.feature_banks, [0x3000_0001, 0x0000_0003]);
+        // Indirect descriptors, event index, and virtio version 1: no console
+        // size and no access-platform.
+        assert_eq!(console.feature_banks, [0x3000_0000, 0x0000_0001]);
         assert_eq!(console.queue_max_sizes, [256, 256]);
         assert_eq!(contract.attachments, [microvm_console_attachment()]);
     }
@@ -3431,6 +3433,22 @@ mod tests {
         assert_eq!(control.transport, "virtio-mmio");
         assert_eq!(control.feature_banks, boot.feature_banks);
         assert_eq!(control.queue_max_sizes, [256, 256]);
+        // The sandbox blocks between the consoles offer the segment limit,
+        // block size, flush, topology, the ring features, and virtio version
+        // 1, and the distro layer is read-only: no access-platform.
+        let blocks = contract
+            .devices
+            .iter()
+            .filter(|device| device.kind == "virtio-blk")
+            .map(|device| (device.stable_id.as_str(), device.feature_banks.as_slice()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            blocks,
+            [
+                ("blk:sandbox:distro", &[0x3000_0664, 0x0000_0001][..]),
+                ("blk:sandbox:scratch", &[0x3000_0644, 0x0000_0001][..]),
+            ]
+        );
         assert_eq!(
             contract.attachments,
             [
@@ -3767,7 +3785,7 @@ mod tests {
             assert_eq!(filesystem_device.ranges[0].length, 0x1000);
             assert_eq!(filesystem_device.irq, Some(6));
             assert_eq!(filesystem_device.transport, "virtio-mmio");
-            assert_eq!(filesystem_device.feature_banks, [0x3000_0000, 0x0000_0003]);
+            assert_eq!(filesystem_device.feature_banks, [0x3000_0000, 0x0000_0001]);
             assert_eq!(filesystem_device.queue_count, 2);
             assert_eq!(filesystem_device.queue_max_sizes, [256, 256]);
             assert_eq!(
@@ -4023,6 +4041,29 @@ mod tests {
         manifest.machine_contract = Some(contract);
         let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(err.to_string().contains("ABI version 1 is unsupported"));
+    }
+
+    #[test]
+    fn abi_v2_contracts_are_refused_by_their_version() {
+        // Version 2 offered access-platform on every device but the NIC, and
+        // the console size, so a console of version 2 records other feature
+        // banks than one of version 3. Restore refuses such a contract by its
+        // version, before it compares the devices.
+        const REFUSAL: &str =
+            "snapshot microVM ABI version 2 is unsupported; this OpenVMM supports version 3";
+        let mut contract = generated_console_contract();
+        contract.microvm_abi_version = 2;
+        contract.devices.last_mut().unwrap().feature_banks = vec![0x3000_0001, 0x0000_0003];
+        let err = validate_supported_microvm_contract(&contract).unwrap_err();
+        assert_eq!(err.to_string(), REFUSAL);
+
+        let mut manifest = test_manifest();
+        let expected = test_machine_contract();
+        let mut contract = expected.clone();
+        contract.microvm_abi_version = 2;
+        manifest.machine_contract = Some(contract);
+        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
+        assert_eq!(err.to_string(), REFUSAL);
     }
 
     #[test]
@@ -4418,7 +4459,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_v2_snapshot_tier_contract_is_canonical() {
+    fn abi_v3_snapshot_tier_contract_is_canonical() {
         let scratch = vec![0x5a; 512];
         let mut manifest = paired_scratch_manifest(&scratch);
         validate_manifest_contents(&manifest).unwrap();
@@ -4770,7 +4811,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_v2_contract_rejects_scratch_without_a_lower_layer() {
+    fn abi_v3_contract_rejects_scratch_without_a_lower_layer() {
         let scratch = vec![0x5a_u8; 1024];
         let mut manifest = paired_scratch_manifest(&scratch);
         manifest
@@ -4790,7 +4831,7 @@ mod tests {
     }
 
     #[test]
-    fn abi_v2_contract_rejects_the_retired_runtime_and_custom_layers() {
+    fn abi_v3_contract_rejects_the_retired_runtime_and_custom_layers() {
         let scratch = vec![0x5a_u8; 1024];
         for role in ["runtime", "custom"] {
             // In place of the distro layer.

@@ -64,12 +64,18 @@ describes the source definitions.
   `nvx_control_tty=hvc2` token. The reserved slot and resource identity do not
   expose a live control endpoint. Both consoles
   remain virtio-console devices from the guest's perspective. Ordinary
-  `--virtio-blk` is rejected. All use split rings. Firmware, ACPI, SMBIOS, PCI,
-  VMBus, UARTs, graphics, isolation, nested virtualization, and other devices
-  are rejected. Linux discovers contiguous APIC IDs and the IOAPIC from Intel
-  MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at `0x2000`, the command
-  line starts at `0x20000`, and no ACPI or SMBIOS data is exposed. Host-driven
-  save/restore, pulse-save/restore, and worker restart remain unavailable.
+  `--virtio-blk` is rejected. All use split rings, and each offers an exact
+  feature mask of virtio 1.0 features: the NIC its MAC address; the block
+  roles a segment limit, block size, flush, and topology, and `distro`
+  read-only; and every device but the NIC indirect descriptors and event-index
+  notification suppression. No device offers `VIRTIO_F_ACCESS_PLATFORM`, since
+  the microVM has no IOMMU, and no console offers its size. Firmware, ACPI,
+  SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested virtualization, and
+  other devices are rejected. Linux discovers contiguous APIC IDs and the
+  IOAPIC from Intel MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at
+  `0x2000`, the command line starts at `0x20000`, and no ACPI or SMBIOS data is
+  exposed. Host-driven save/restore, pulse-save/restore, and worker restart
+  remain unavailable.
 
   `microvm` may also expose a dedicated control virtio-console at MMIO
   `0xd0007000`, IRQ 3. It requires the boot virtio-console, preserves
@@ -94,7 +100,10 @@ describes the source definitions.
   ```admonish warning title="microVM migration"
   The canonical `microvm` spelling now selects the contract formerly exposed
   as `microvm-v2`; the `microvm-v2` selector and the former ABI-v1 behavior are
-  removed. Snapshot ABI and boot layout remain numeric value 2.
+  removed. Snapshots record microVM ABI value 3 and boot layout value 2. ABI
+  value 3 offers no device `VIRTIO_F_ACCESS_PLATFORM` and no console
+  `VIRTIO_CONSOLE_F_SIZE`, which value 2 offered, so restore refuses a
+  snapshot of value 2, which must be recaptured.
   ```
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
   at MMIO `0xd0000000`. KVM and MSHV use IRQ 10; WHP uses IRQ 5. Prefixes
