@@ -360,40 +360,63 @@ async fn test_ttrpc_shutdown_windows_guest(
         .await
         .unwrap();
 
-    // The shutdown request stays queued until Windows boots and opens the IC
-    // channel, so the per-call deadline must cover the boot rather than a
-    // single acknowledgement round trip. A timed-out request may already have
-    // been delivered, so it is not retried.
     const WINDOWS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
     CancelContext::new()
         .with_timeout(WINDOWS_BOOT_TIMEOUT)
         .until_cancelled(async {
             let mut timer = pal_async::timer::PolledTimer::new(&driver);
             loop {
-                match client
+                let response = client
                     .call()
-                    .timeout(Some(WINDOWS_BOOT_TIMEOUT))
+                    .timeout(Some(Duration::from_secs(5)))
                     .start(
-                        vmservice::Vm::ShutdownVm,
-                        vmservice::ShutdownVmRequest {
-                            mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
-                            force: false,
+                        inspect_proto::InspectService::Inspect,
+                        inspect_proto::InspectRequest {
+                            path: "vm/shutdown_ic:b6650ff7-33bc-4840-8048-e0676786f393/state"
+                                .into(),
+                            depth: 1,
                         },
                     )
                     .await
-                {
-                    Err(status)
-                        if status.code == mesh_rpc::service::Code::FailedPrecondition as i32
-                            && status.message.contains("shutdown IC not ready") =>
-                    {
-                        timer.sleep(Duration::from_millis(100)).await;
+                    .map_err(|status| {
+                        anyhow::anyhow!("shutdown IC inspection failed: {status:?}")
+                    })?;
+                match response.result {
+                    inspect::Node::Dir(entries) => {
+                        if entries.iter().any(|entry| entry.name == "ready") {
+                            break Ok(());
+                        }
                     }
-                    result => break result,
+                    inspect::Node::Failed(
+                        inspect::Error::NotFound | inspect::Error::Unresolved,
+                    )
+                    | inspect::Node::Unevaluated => {}
+                    state => {
+                        anyhow::bail!("unexpected shutdown IC inspection result: {state}");
+                    }
                 }
+                timer.sleep(Duration::from_millis(100)).await;
             }
         })
         .await
-        .context("timed out waiting for Windows shutdown IC readiness")?
+        .context("timed out waiting for Windows shutdown IC readiness")??;
+
+    // Match Petri's send_enlightened_shutdown: guests can drop requests sent
+    // immediately after IC readiness, so allow boot to settle first.
+    pal_async::timer::PolledTimer::new(&driver)
+        .sleep(Duration::from_secs(10))
+        .await;
+    client
+        .call()
+        .timeout(Some(Duration::from_secs(30)))
+        .start(
+            vmservice::Vm::ShutdownVm,
+            vmservice::ShutdownVmRequest {
+                mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
+                force: false,
+            },
+        )
+        .await
         .unwrap();
     client
         .call()
