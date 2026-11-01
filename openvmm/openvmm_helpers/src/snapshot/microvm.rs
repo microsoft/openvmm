@@ -987,6 +987,11 @@ fn memory_expansion_prefix(
     Ok(prefix)
 }
 
+/// Returns the feature banks of an exact virtio feature mask, in bank order.
+fn feature_banks(features: u64) -> Vec<u32> {
+    vec![features as u32, (features >> 32) as u32]
+}
+
 /// Returns the snapshot device of a fixed virtio-fs slot.
 fn microvm_filesystem_device(
     slot: &openvmm_defs::microvm::MicrovmFilesystemSlot,
@@ -1004,10 +1009,7 @@ fn microvm_filesystem_device(
         }],
         irq: Some(slot.irq),
         transport: "virtio-mmio".to_owned(),
-        feature_banks: vec![
-            openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES as u32,
-            (openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES >> 32) as u32,
-        ],
+        feature_banks: feature_banks(openvmm_defs::microvm::MICROVM_VIRTIO_FS_FEATURES),
         queue_count: 2,
         queue_max_sizes: vec![256, 256],
     }
@@ -1300,10 +1302,7 @@ pub fn microvm_machine_contract(
             )],
             irq: Some(irq),
             transport: "virtio-mmio".to_owned(),
-            feature_banks: vec![
-                openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES as u32,
-                (openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES >> 32) as u32,
-            ],
+            feature_banks: feature_banks(openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES),
             queue_count: 2,
             queue_max_sizes: vec![256, 256],
         });
@@ -1418,7 +1417,7 @@ pub fn microvm_machine_contract(
             )],
             irq: Some(openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_IRQ),
             transport: "virtio-mmio".to_owned(),
-            feature_banks: vec![0x3000_0001, 0x0000_0003],
+            feature_banks: feature_banks(openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_FEATURES),
             queue_count: 2,
             queue_max_sizes: vec![256, 256],
         });
@@ -1444,7 +1443,6 @@ pub fn microvm_machine_contract(
             "microVM sandbox block '{}' is missing from the effective command line",
             block.role
         );
-        let features = openvmm_defs::microvm::microvm_sandbox_block_features(role);
         devices.push(SnapshotDevice {
             stable_id: format!("blk:sandbox:{}", role.as_str()),
             state_unit_name: format!("virtio-blk-{}", role.mmio_base()),
@@ -1456,7 +1454,9 @@ pub fn microvm_machine_contract(
             )],
             irq: Some(role.irq()),
             transport: "virtio-mmio".to_owned(),
-            feature_banks: vec![features as u32, (features >> 32) as u32],
+            feature_banks: feature_banks(openvmm_defs::microvm::microvm_sandbox_block_features(
+                role,
+            )),
             queue_count: 1,
             queue_max_sizes: vec![256],
         });
@@ -1516,7 +1516,7 @@ pub fn microvm_machine_contract(
             )],
             irq: Some(openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ),
             transport: "virtio-mmio".to_owned(),
-            feature_banks: vec![0x3000_0001, 0x0000_0003],
+            feature_banks: feature_banks(openvmm_defs::microvm::MICROVM_VIRTIO_CONSOLE_FEATURES),
             queue_count: 2,
             queue_max_sizes: vec![256, 256],
         });

@@ -69,11 +69,58 @@ pub const MICROVM_VIRTIO_FS_IRQ: u32 = 6;
 pub const MICROVM_VIRTIO_NET_KVM_IRQ: u32 = 10;
 /// Fixed microVM virtio-net interrupt on WHP.
 pub const MICROVM_VIRTIO_NET_WHP_IRQ: u32 = 5;
+// The virtio 1.2 feature bits that the exact microVM feature masks name.
+/// Indirect descriptors.
+const VIRTIO_F_INDIRECT_DESC: u64 = 1 << 28;
+/// Event-index notification suppression.
+const VIRTIO_F_EVENT_IDX: u64 = 1 << 29;
+/// A virtio 1.0 device.
+const VIRTIO_F_VERSION_1: u64 = 1 << 32;
+/// Device DMA that the platform's IOMMU translates.
+const VIRTIO_F_ACCESS_PLATFORM: u64 = 1 << 33;
+/// The NIC's MAC address.
+const VIRTIO_NET_F_MAC: u64 = 1 << 5;
+/// A per-request segment limit.
+const VIRTIO_BLK_F_SEG_MAX: u64 = 1 << 2;
+/// A read-only block device.
+const VIRTIO_BLK_F_RO: u64 = 1 << 5;
+/// The block device's logical block size.
+const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
+/// A write-back cache with explicit flush.
+const VIRTIO_BLK_F_FLUSH: u64 = 1 << 9;
+/// The block device's topology.
+const VIRTIO_BLK_F_TOPOLOGY: u64 = 1 << 10;
+/// The console's size.
+const VIRTIO_CONSOLE_F_SIZE: u64 = 1 << 0;
+/// The ring features of every microVM virtio device but the NIC: split
+/// virtqueues with indirect descriptors and event-index notification
+/// suppression, of a virtio 1.0 device.
+const MICROVM_VIRTIO_SPLIT_RING_FEATURES: u64 =
+    VIRTIO_F_INDIRECT_DESC | VIRTIO_F_EVENT_IDX | VIRTIO_F_VERSION_1;
 /// Exact microVM virtio-net feature mask: MAC and virtio version 1.
-pub const MICROVM_VIRTIO_NET_FEATURES: u64 = (1 << 5) | (1 << 32);
+pub const MICROVM_VIRTIO_NET_FEATURES: u64 = VIRTIO_NET_F_MAC | VIRTIO_F_VERSION_1;
 /// Exact microVM virtio-fs feature mask: indirect descriptors, event index,
 /// virtio version 1, and access-platform.
-pub const MICROVM_VIRTIO_FS_FEATURES: u64 = (1 << 28) | (1 << 29) | (1 << 32) | (1 << 33);
+pub const MICROVM_VIRTIO_FS_FEATURES: u64 =
+    MICROVM_VIRTIO_SPLIT_RING_FEATURES | VIRTIO_F_ACCESS_PLATFORM;
+/// Exact feature mask of both microVM virtio consoles, the boot console and
+/// the control console: the console size, indirect descriptors, event index,
+/// virtio version 1, and access-platform.
+pub const MICROVM_VIRTIO_CONSOLE_FEATURES: u64 =
+    VIRTIO_CONSOLE_F_SIZE | MICROVM_VIRTIO_SPLIT_RING_FEATURES | VIRTIO_F_ACCESS_PLATFORM;
+/// Exact feature mask of the writable `scratch` virtio-blk role: the segment
+/// limit, block size, flush, topology, indirect descriptors, event index,
+/// virtio version 1, and access-platform.
+pub const MICROVM_VIRTIO_SCRATCH_BLK_FEATURES: u64 = VIRTIO_BLK_F_SEG_MAX
+    | VIRTIO_BLK_F_BLK_SIZE
+    | VIRTIO_BLK_F_FLUSH
+    | VIRTIO_BLK_F_TOPOLOGY
+    | MICROVM_VIRTIO_SPLIT_RING_FEATURES
+    | VIRTIO_F_ACCESS_PLATFORM;
+/// Exact feature mask of the read-only `distro` virtio-blk role: the
+/// `scratch` role's features, and read-only.
+pub const MICROVM_VIRTIO_DISTRO_BLK_FEATURES: u64 =
+    MICROVM_VIRTIO_SCRATCH_BLK_FEATURES | VIRTIO_BLK_F_RO;
 /// MicroVM client console reconnect timeout.
 pub const MICROVM_CONSOLE_RECONNECT_TIMEOUT_MS: u64 = 5_000;
 /// Resource identity of the microVM control virtio-console device.
@@ -218,31 +265,12 @@ impl MicrovmSandboxBlockRole {
     }
 }
 
-/// Returns the fixed virtio-blk feature mask for a sandbox role.
+/// Returns the exact virtio-blk feature mask of a sandbox role.
 pub const fn microvm_sandbox_block_features(role: MicrovmSandboxBlockRole) -> u64 {
-    const RING_INDIRECT_DESC: u64 = 1 << 28;
-    const RING_EVENT_IDX: u64 = 1 << 29;
-    const VERSION_1: u64 = 1 << 32;
-    const ACCESS_PLATFORM: u64 = 1 << 33;
-    const BLK_SEG_MAX: u64 = 1 << 2;
-    const BLK_READ_ONLY: u64 = 1 << 5;
-    const BLK_SIZE: u64 = 1 << 6;
-    const BLK_FLUSH: u64 = 1 << 9;
-    const BLK_TOPOLOGY: u64 = 1 << 10;
-
-    RING_INDIRECT_DESC
-        | RING_EVENT_IDX
-        | VERSION_1
-        | ACCESS_PLATFORM
-        | BLK_SEG_MAX
-        | BLK_SIZE
-        | BLK_FLUSH
-        | BLK_TOPOLOGY
-        | if role.is_read_only() {
-            BLK_READ_ONLY
-        } else {
-            0
-        }
+    match role {
+        MicrovmSandboxBlockRole::Distro => MICROVM_VIRTIO_DISTRO_BLK_FEATURES,
+        MicrovmSandboxBlockRole::Scratch => MICROVM_VIRTIO_SCRATCH_BLK_FEATURES,
+    }
 }
 
 /// The immutable role and access mode of a microVM sandbox block device.
@@ -2671,6 +2699,44 @@ mod tests {
         // The window of the retired second virtio-fs slot is free.
         assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
         assert_eq!(microvm_virtio_status_gpa(0xd000_9000), None);
+    }
+
+    /// Returns the numbers of the feature bits that `features` sets.
+    fn feature_bits(features: u64) -> Vec<u32> {
+        (0..u64::BITS)
+            .filter(|bit| features & (1 << bit) != 0)
+            .collect()
+    }
+
+    #[test]
+    fn microvm_virtio_feature_masks_are_exact() {
+        let masks = [
+            (MICROVM_VIRTIO_NET_FEATURES, vec![5, 32]),
+            (MICROVM_VIRTIO_FS_FEATURES, vec![28, 29, 32, 33]),
+            (MICROVM_VIRTIO_CONSOLE_FEATURES, vec![0, 28, 29, 32, 33]),
+            (
+                microvm_sandbox_block_features(MicrovmSandboxBlockRole::Distro),
+                vec![2, 5, 6, 9, 10, 28, 29, 32, 33],
+            ),
+            (
+                microvm_sandbox_block_features(MicrovmSandboxBlockRole::Scratch),
+                vec![2, 6, 9, 10, 28, 29, 32, 33],
+            ),
+        ];
+        for (features, bits) in masks {
+            assert_eq!(feature_bits(features), bits);
+            // Every device is a virtio 1.0 device with split virtqueues.
+            assert_ne!(features & VIRTIO_F_VERSION_1, 0);
+            assert_eq!(features & (1 << 34), 0, "packed virtqueues are offered");
+        }
+        assert_eq!(
+            microvm_sandbox_block_features(MicrovmSandboxBlockRole::Distro),
+            MICROVM_VIRTIO_DISTRO_BLK_FEATURES
+        );
+        assert_eq!(
+            microvm_sandbox_block_features(MicrovmSandboxBlockRole::Scratch),
+            MICROVM_VIRTIO_SCRATCH_BLK_FEATURES
+        );
     }
 
     #[test]
