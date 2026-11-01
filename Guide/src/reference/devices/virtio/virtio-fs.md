@@ -47,7 +47,7 @@ fixes the remaining guest-visible configuration:
 | Transport | virtio-mmio at `0xd0001000` |
 | Interrupt | IRQ 6 |
 | Queues | One high-priority and one request queue |
-| Features | Indirect descriptors, event index, version 1, access-platform |
+| Features | Indirect descriptors, event index, version 1 |
 | DAX window | None |
 | Cache policy | Zero entry and attribute lifetimes |
 | File policy | Direct I/O |
