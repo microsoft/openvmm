@@ -125,7 +125,12 @@ impl TeeCallGetDerivedKey for MutableTee {
         context.push(u8::from(policy.mix_measurement));
         // Model independently changing hardware identity with unchanged SVN and
         // measurement. Do not derive the secret solely from the requested SVN.
-        Ok(crypto::hmac_sha_256::hmac_sha_256(&state.secret, &context).unwrap())
+        Ok(
+            crypto::hmac::hmac(&state.secret, &context, crypto::HashAlgorithm::Sha256)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        )
     }
 }
 
@@ -462,10 +467,13 @@ fn legacy_protector(tee: &MutableTee, config: &AttestationVmConfig) -> vmgs::Har
         ciphertext: v3.ciphertext,
         hmac: [0; vmgs::HMAC_SHA_256_KEY_LENGTH],
     };
-    legacy.hmac = crypto::hmac_sha_256::hmac_sha_256(
+    legacy.hmac = crypto::hmac::hmac(
         &keys[vmgs::AES_CBC_KEY_LENGTH..],
         &legacy.as_bytes()[..std::mem::offset_of!(vmgs::HardwareKeyProtector, hmac)],
+        crypto::HashAlgorithm::Sha256,
     )
+    .unwrap()
+    .try_into()
     .unwrap();
     legacy
 }
