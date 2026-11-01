@@ -149,7 +149,7 @@ impl VmController {
             );
             anyhow::ensure!(
                 self.microvm.resources.sandbox_block_sources.is_empty()
-                    || (self.microvm.resources.sandbox_block_sources.len() >= 2
+                    || (self.microvm.resources.sandbox_block_sources.len() == 2
                         && self
                             .microvm
                             .resources
@@ -159,7 +159,7 @@ impl VmController {
                                 source.role
                                     == openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch
                             })),
-                "microVM snapshot requires either no blocks or at least one lower layer and scratch"
+                "microVM snapshot requires either no blocks or a distro layer and scratch"
             );
             if self.microvm.resources.sandbox_block_sources.is_empty() {
                 anyhow::ensure!(

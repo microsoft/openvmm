@@ -57,9 +57,10 @@ describes the source definitions.
   binds HostFs to it;
   one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
   IRQ 7 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
-  exposes fixed distro, runtime, custom, and scratch slots starting at MMIO
-  `0xd0003000`. The profile also reserves MMIO `0xd0007000`, IRQ 3 for the
-  dedicated control console (`hvc2`), selected by the host-owned
+  exposes the fixed `distro` slot at MMIO `0xd0003000`, IRQ 4 and the fixed
+  `scratch` slot at MMIO `0xd0006000`, IRQ 11. The windows between them and
+  IRQs 9 and 12 stay unassigned. The profile also reserves MMIO `0xd0007000`,
+  IRQ 3 for the dedicated control console (`hvc2`), selected by the host-owned
   `nvx_control_tty=hvc2` token. The reserved slot and resource identity do not
   expose a live control endpoint. Both consoles
   remain virtio-console devices from the guest's perspective. Ordinary
@@ -468,11 +469,11 @@ describes the source definitions.
   `--restore-network-policy` installs a new policy on a platform snapshot or
   a snapshot without a tier.
 
-  For sandbox-block snapshots, restore repeats each read-only
+  For sandbox-block snapshots, restore repeats the read-only `distro`
   `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
   must match the manifest, with two exceptions for a platform snapshot: its
-  read-only layers are unbound, and its `distro` block keeps the captured
-  capacity over an image that may be shorter. Such an image must have the
+  `distro` layer is unbound, and it keeps the captured capacity over an image
+  that may be shorter. Such an image must have the
   captured logical and physical block sizes, reads past its end return zeros,
   and OpenVMM never resizes, pads, or writes it; a longer image is rejected.
   A paired snapshot supplies scratch internally from

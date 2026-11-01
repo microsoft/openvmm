@@ -361,10 +361,10 @@ pub struct MicrovmCli {
 
     /// Attach a fixed-role microVM sandbox block device.
     ///
-    /// The value is `<role>:<disk>`, where the roles are `distro`, `runtime`,
-    /// `custom`, and `scratch`. Lower-layer roles must use `,ro`; `scratch`
-    /// must be writable. The profile assigns each role a fixed virtio-mmio
-    /// address and IRQ independent of option order.
+    /// The value is `<role>:<disk>`, where the role is `distro` or `scratch`.
+    /// `distro` must use `,ro`; `scratch` must be writable. The profile assigns
+    /// each role a fixed virtio-mmio address and IRQ independent of option
+    /// order.
     #[clap(long, value_name = "ROLE:DISK")]
     pub microvm_sandbox_block: Vec<MicrovmSandboxBlockCli>,
 
@@ -734,11 +734,9 @@ impl FromStr for MicrovmSandboxBlockCli {
             .context("expected ROLE:DISK for --microvm-sandbox-block")?;
         let role = match role {
             "distro" => MicrovmSandboxBlockRole::Distro,
-            "runtime" => MicrovmSandboxBlockRole::Runtime,
-            "custom" => MicrovmSandboxBlockRole::Custom,
             "scratch" => MicrovmSandboxBlockRole::Scratch,
             _ => anyhow::bail!(
-                "unknown microVM sandbox block role '{role}'; expected distro, runtime, custom, or scratch"
+                "unknown microVM sandbox block role '{role}'; expected distro or scratch"
             ),
         };
         Ok(Self {
@@ -1119,8 +1117,8 @@ impl Options {
             "microVM requires --microvm-sandbox-block instead of --virtio-blk"
         );
         anyhow::ensure!(
-            self.microvm.microvm_sandbox_block.len() <= 4,
-            "microVM permits at most three read-only layers and one writable scratch device"
+            self.microvm.microvm_sandbox_block.len() <= 2,
+            "microVM permits at most one read-only distro layer and one writable scratch device"
         );
         let has_filesystem =
             self.microvm.microvm_mount.is_some() || self.microvm.microvm_mount_aggregate.is_some();
@@ -1770,14 +1768,35 @@ mod tests {
             "--microvm-sandbox-block",
             "distro:mem:1M,ro",
             "--microvm-sandbox-block",
-            "runtime:mem:1M,ro",
-            "--microvm-sandbox-block",
-            "custom:mem:1M,ro",
-            "--microvm-sandbox-block",
             "scratch:mem:1M",
         ])
         .unwrap();
         valid.validate_microvm_options().unwrap();
+
+        // The retired runtime and custom layers are unknown roles.
+        for role in ["runtime", "custom"] {
+            let block = format!("{role}:mem:1M,ro");
+            let error = Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                &block,
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ])
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                error.contains(&format!(
+                    "unknown microVM sandbox block role '{role}'; expected distro or scratch"
+                )),
+                "{error}"
+            );
+        }
 
         for args in [
             vec![
@@ -1797,6 +1816,17 @@ mod tests {
                 "distro:mem:1M,ro",
                 "--microvm-sandbox-block",
                 "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ],
+            vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
                 "--microvm-sandbox-block",
                 "scratch:mem:1M",
             ],
