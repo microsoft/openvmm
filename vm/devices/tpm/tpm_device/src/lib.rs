@@ -1682,6 +1682,7 @@ impl ChipsetDevice for Tpm {
 
 impl PollDevice for Tpm {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.waker = Some(cx.waker().clone());
         self.poll_store_writes(cx);
         self.poll_ak_cert_request(cx)
     }
@@ -2840,6 +2841,10 @@ mod tests {
     }
 
     async fn new_gated_tpm() -> GatedTpm {
+        new_gated_tpm_with_ak_cert(TpmAkCertType::None).await
+    }
+
+    async fn new_gated_tpm_with_ak_cert(ak_cert_type: TpmAkCertType) -> GatedTpm {
         let armed = Arc::new(AtomicBool::new(false));
         let (ppi_permits, ppi_recv) = mesh::channel();
         let (nvram_permits, nvram_recv) = mesh::channel();
@@ -2861,7 +2866,7 @@ mod tests {
             Box::new(|| std::time::Duration::new(0, 0)),
             false,
             false,
-            TpmAkCertType::None,
+            ak_cert_type,
             None,
             None,
             false,
@@ -2953,6 +2958,52 @@ mod tests {
                 .pending_ppi_operation,
             PpiOperation(5)
         );
+    }
+
+    #[async_test]
+    async fn ppi_write_after_empty_ak_certificate_wakes_device() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits: _nvram_permits,
+        } = new_gated_tpm_with_ak_cert(TpmAkCertType::Trusted(
+            Arc::new(TestRequestAkCertHelper),
+            Some(true),
+        ))
+        .await;
+        let waker = Arc::new(CountingWaker::default());
+        let task_waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
+
+        // The certificate provider returns an empty response on the initial poll.
+        tpm.poll_device(&mut cx);
+        let before = waker.0.load(Ordering::SeqCst);
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+            &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes(),
+        )
+        .unwrap();
+        let mut token =
+            match tpm.io_write(port + TPM_DEVICE_IO_PORT_DATA_OFFSET, &5u32.to_le_bytes()) {
+                IoResult::Defer(token) => token,
+                _ => panic!("a PPI write must defer its I/O"),
+            };
+        assert!(
+            waker.0.load(Ordering::SeqCst) > before,
+            "a deferred write must schedule polling after an empty certificate response"
+        );
+
+        tpm.poll_device(&mut cx);
+        assert!(token.poll_write(&mut cx).is_pending());
+        let before = waker.0.load(Ordering::SeqCst);
+        ppi_permits.send(());
+        assert!(
+            waker.0.load(Ordering::SeqCst) > before,
+            "the store must wake the device when it can finish"
+        );
+        complete(&mut tpm, &mut token).await;
     }
 
     /// Committing NVRAM after a register write defers the I/O until the store
