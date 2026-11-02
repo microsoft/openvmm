@@ -469,7 +469,7 @@ impl Fuse for VirtioFs {
     }
 
     fn fsync_dir(&self, request: &Request, fh: u64, flags: u32) -> lx::Result<()> {
-        self.fsync(request, fh, flags)
+        self.fsync(request, fh, flags & !FUSE_FSYNC_FDATASYNC)
     }
 
     fn get_xattr(&self, request: &Request, name: &lx::LxStr, size: u32) -> lx::Result<Vec<u8>> {
@@ -1610,6 +1610,29 @@ mod tests {
         assert!(Arc::ptr_eq(&existing, &reused));
         assert_eq!(reused_node_id, node_id);
         assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
+    }
+
+    #[test]
+    fn fsync_dir_ignores_fdatasync_flag() {
+        let root = tempfile::tempdir().unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let request = request(FUSE_ROOT_ID);
+        let open = fs
+            .open_dir(&request, (lx::O_RDONLY | lx::O_DIRECTORY) as u32)
+            .unwrap();
+
+        for flags in [0, FUSE_FSYNC_FDATASYNC] {
+            fs.fsync_dir(&request, open.fh, flags).unwrap();
+        }
+
+        fs.release_dir(
+            &request,
+            &fuse_release_in {
+                fh: open.fh,
+                ..fuse_release_in::new_zeroed()
+            },
+        )
+        .unwrap();
     }
 
     #[test]
