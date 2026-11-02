@@ -2192,6 +2192,67 @@ async fn rx_mergeable_nonconsecutive_packet_completions(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn rx_mergeable_restart_retires_completion_gaps(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(mergeable_features())
+        .await;
+    let mut gpas = Vec::new();
+    for id in 0..4 {
+        gpas.push(harness.post_rx_buffer_and_signal(id, 40));
+        handle.wait_for_rx_pending().await;
+    }
+    let completed_payload = [0x22; 16];
+    handle.inject_rx_packet_for(RxId(2), &completed_payload);
+    harness.settle().await;
+    assert!(harness.try_read_rx_used().is_none());
+
+    harness.request_endpoint_restart();
+    handle = harness.wait_for_recreated_queue().await;
+    handle.wait_for_rx_pending().await;
+    assert_eq!(
+        handle
+            .rx_pending
+            .lock()
+            .iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>(),
+        [3]
+    );
+    for expected in [(0, 0), (1, 0), (2, NET_HEADER_SIZE + 16)] {
+        assert_eq!(harness.wait_for_rx_used().await, expected);
+    }
+    assert_rx_payload(&harness.mem, gpas[2], &completed_payload);
+    assert!(harness.try_read_rx_used().is_none());
+
+    for (id, gpa) in gpas[..2].iter_mut().enumerate() {
+        *gpa = harness.post_rx_buffer_and_signal(id as u16, 40);
+        handle.wait_for_rx_pending().await;
+    }
+    let payload: Vec<u8> = (0..80).collect();
+    handle.inject_mergeable_rx_packet(
+        3,
+        &payload,
+        RxMetadata {
+            len: payload.len(),
+            ..Default::default()
+        },
+    );
+    for expected in [(3, 40), (0, 40), (1, 12)] {
+        assert_eq!(harness.wait_for_rx_used().await, expected);
+    }
+    assert_eq!(read_virtio_header(&harness.mem, gpas[3]).num_buffers, 3);
+    let mut readback = [0; 80];
+    harness
+        .mem
+        .read_at(gpas[3] + u64::from(NET_HEADER_SIZE), &mut readback[..28])
+        .unwrap();
+    harness.mem.read_at(gpas[0], &mut readback[28..68]).unwrap();
+    harness.mem.read_at(gpas[1], &mut readback[68..]).unwrap();
+    assert_eq!(readback.as_slice(), payload);
+}
+
+#[async_test]
 async fn rx_mergeable_gso_and_restart_order(driver: DefaultDriver) {
     for offload in [
         RxOffload::default(),

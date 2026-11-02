@@ -831,11 +831,29 @@ impl Coordinator {
         assert_eq!(queues.len(), self.workers.len());
 
         for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
-            let state = &mut worker.state_mut().unwrap().active_state;
+            let worker_state = worker.state_mut().unwrap();
+            let state = &mut worker_state.active_state;
+            let virtio_state = &mut worker_state.virtio_state;
             let n = state
                 .pending_rx_packets
                 .fill_ready(&mut state.data.rx_ready);
-            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
+            let mut ready = &state.data.rx_ready[..n];
+            // Retire the prefix blocking buffered completions before reposting.
+            // Otherwise, a merged packet could cross a gap in consumption order.
+            while virtio_state.rx_in_order.outstanding() > ready.len() {
+                let Some((&id, rest)) = ready.split_first() else {
+                    return Err(WorkerError::InvalidRxBuffer);
+                };
+                let (work, _, _) = state.pending_rx_packets.take_rx_work(id);
+                virtio_state.rx_in_order.complete(
+                    &mut virtio_state.rx_queue,
+                    work.into_completion(),
+                    0,
+                );
+                state.stats.rx_dropped.increment();
+                ready = rest;
+            }
+            queue.rx_avail(&mut state.pending_rx_packets, ready);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
