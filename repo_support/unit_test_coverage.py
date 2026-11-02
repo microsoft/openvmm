@@ -723,6 +723,8 @@ def gaps_query(report, passed, limit):
     files = []
     remaining = limit
     for name, production, missing in candidates[:limit]:
+        if remaining == 0:
+            break
         ranges = line_ranges(missing)
         selected = ranges[:remaining]
         remaining -= len(selected)

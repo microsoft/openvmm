@@ -696,9 +696,19 @@ class GitQueryTests(unittest.TestCase):
         self.assertEqual(bounded["lines_without_passing_evidence"], 8)
         self.assertEqual(len(bounded["files"]), 1)
         self.assertEqual(len(bounded["files"][0]["ranges"]), 1)
-        bounded = coverage.query(path, root=self.root, gaps=True, limit=2)["gaps"]
-        self.assertEqual(sum(len(file["ranges"]) for file in bounded["files"]), 2)
-        self.assertTrue(bounded["files"][1]["truncated"])
+        for limit, paths in (
+            (2, ["tracked.rs"]),
+            (3, ["tracked.rs", "a.rs"]),
+            (4, ["tracked.rs", "a.rs", "z.rs"]),
+        ):
+            with self.subTest(limit=limit):
+                bounded = coverage.query(path, root=self.root, gaps=True, limit=limit)["gaps"]
+                self.assertEqual([file["path"] for file in bounded["files"]], paths)
+                self.assertTrue(all(file["ranges"] for file in bounded["files"]))
+                self.assertEqual(sum(len(file["ranges"]) for file in bounded["files"]), limit)
+                self.assertEqual(bounded["files_with_gaps"], 3)
+                self.assertEqual(bounded["lines_without_passing_evidence"], 8)
+                self.assertEqual(bounded["truncated"], limit < 4)
 
     def test_empty_gaps_require_passing_evidence_and_known_source_metadata(self):
         path = self.report()
