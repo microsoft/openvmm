@@ -196,7 +196,7 @@ async fn boot_no_vmbus(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
 async fn acpi_shutdown_linux_direct(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let (mut vm, agent) = config.with_no_hv().with_no_vmbus().run().await?;
+    let (mut vm, agent) = config.run().await?;
 
     let mut handler = agent
         .command("sh")
@@ -256,7 +256,7 @@ exit 1
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn acpi_shutdown(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let (mut vm, agent) = config.with_no_hv().run().await?;
+    let (mut vm, agent) = config.run().await?;
     agent.ping().await?;
     vm.backend().send_acpi_shutdown().await?;
     vm.wait_for_clean_teardown().await
