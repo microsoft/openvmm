@@ -371,10 +371,13 @@ class GitQueryTests(unittest.TestCase):
                      patch.object(coverage, "collect_run", side_effect=collect_run) as collect, \
                      patch.object(coverage, "collect_source_map"), \
                      patch("sys.stdout", new_callable=io.StringIO) as stdout, \
-                     patch("sys.stderr", new_callable=io.StringIO):
+                     patch("sys.stderr", new_callable=io.StringIO) as stderr:
                     if host in coverage.SUPPORTED_TARGETS:
                         self.assertEqual(coverage.collect(plan, output), 0)
-                        result = json.loads(stdout.getvalue())
+                        self.assertIn("Production lines reached by passing tests:", stdout.getvalue())
+                        self.assertNotIn('"schema_version"', stdout.getvalue())
+                        self.assertIn(f"Report: {output / 'report.json'}", stderr.getvalue())
+                        result = coverage.query(output / "report.json", root=self.root)
                         self.assertEqual(result["target"], target)
                         self.assertEqual(result["host"], host)
                         self.assertEqual(collect.call_args.args[5:7], (
@@ -428,6 +431,36 @@ class GitQueryTests(unittest.TestCase):
         self.assertTrue(bounded["patch"]["truncated"])
         self.assertEqual(bounded["coverage"], query["coverage"])
         self.assertEqual(bounded["sources"], query["sources"])
+
+    def test_collection_summary_distinguishes_execution_from_passing_evidence(self):
+        (self.root / "tracked.rs").write_text(
+            self.source.replace("{ 1 }", "{ 101 }").replace("{ 2 }", "{ 202 }")
+            .replace("{ 4 }", "{ 404 }")
+        )
+        path = self.report()
+        report = json.loads(path.read_text())
+        report["test_outcome"] = "failed"
+        report["files"]["tracked.rs"].update({"2": True, "4": False})
+        report["source_map"]["files"]["tracked.rs"]["ranges"] = [
+            [1, 3, "production"], [4, 4, "unknown"], [5, 100, "production"],
+        ]
+        coverage.write_json(path, report)
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            coverage.print_collection_summary(coverage.query(path, changed=True, root=self.root))
+        text = stdout.getvalue()
+        self.assertIn("Changed production lines reached by passing tests: 1/2 (50.0%)", text)
+        self.assertIn("Executed production lines without passing-test evidence: 1", text)
+        self.assertIn("Unclassified measured lines: 1", text)
+        self.assertIn("query --changed", text)
+        self.assertNotIn('"schema_version"', text)
+
+    def test_collection_summary_does_not_call_an_empty_patch_covered(self):
+        path = self.report(state="incomplete")
+        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            coverage.print_collection_summary(coverage.query(path, changed=True, root=self.root))
+        self.assertIn("no measured lines", stdout.getvalue())
+        self.assertIn("Issue: missing profile", stdout.getvalue())
+        self.assertNotIn("100", stdout.getvalue())
 
     def test_rename_maps_only_edited_new_side_lines(self):
         destination = self.root / "renamed é space.rs"

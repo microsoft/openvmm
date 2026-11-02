@@ -72,9 +72,11 @@ in one command:
 cargo xflowey unit-test-coverage -p memory_range --base origin/main
 ```
 
-This prints bounded JSON containing coverage of changed Rust lines, their
-covering tests, uncovered ranges, and unmeasured files. Use `query` without
-`--changed` for absolute coverage. The comparison is
+This prints a short readable summary of changed production lines reached by
+passing tests, any unmeasured changes, and the report location. Run
+`python3 repo_support/unit_test_coverage.py query --changed` for structured
+JSON with covering tests and gap ranges, or `query` without `--changed` for
+absolute coverage. The comparison is
 from the merge base of the selected revision and HEAD to the working tree:
 committed branch changes, staged/unstaged edits, and nonignored untracked Rust
 files are included. Deletions do not contribute new executable lines.
@@ -93,8 +95,9 @@ reuses old execution counts. Instrumented builds use a separate reusable cache
 under `target/unit-coverage-build/<target>/<configuration>/`; normal builds
 are unchanged. Different target architectures do not share this cache.
 
-The command prints the path to `report.json` and emits a JSON query result.
-Subsequent queries automatically use the latest local collection attempt:
+Collection prints a readable summary rather than dumping JSON. The full data
+is retained in `report.json`; explicit query commands emit JSON for agents
+and scripts and automatically use the latest local collection attempt:
 
 ```bash
 python3 repo_support/unit_test_coverage.py query

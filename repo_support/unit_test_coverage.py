@@ -553,16 +553,49 @@ def collect(plan_path, output):
         report["test_outcome"] = test_outcome(report)
         report["summary"] = summarize(report["files"])
         write_json(output / "report.json", report)
-        print(json.dumps({
-            "report": str(output / "report.json"),
-            "collection_state": report["collection_state"],
-            "test_outcome": report["test_outcome"],
-            "summary": report["summary"],
-        }), file=sys.stderr)
-    print(json.dumps(query(
+        print(
+            f"Coverage: {report['collection_state']}; tests: {report['test_outcome']}",
+            file=sys.stderr,
+        )
+        print(f"Report: {output / 'report.json'}", file=sys.stderr)
+    print_collection_summary(query(
         output / "report.json", changed=plan.get("base") is not None, root=root,
-    )))
+    ))
     return 0 if report["collection_state"] == "complete" and report["test_outcome"] == "passed" else 1
+
+
+def print_collection_summary(result):
+    for issue in result["issues"][:3]:
+        print(f"Issue: {issue}")
+    if len(result["issues"]) > 3:
+        print(f"... and {len(result['issues']) - 3} more issues (see report)")
+    production = result["sources"]["selected_production"]
+    passing = production["passing_attempts"]
+    changed = result["view"] == "changed"
+    label = "Changed production" if changed else "Production"
+    if passing["measured_lines"]:
+        detail = (
+            f"{passing['covered_lines']}/{passing['measured_lines']} "
+            f"({passing['line_percent']:.1f}%)"
+        )
+    else:
+        detail = "no measured lines"
+    print(f"{label} lines reached by passing tests: {detail}")
+    without_passing = production["execution"]["covered_lines"] - passing["covered_lines"]
+    if without_passing:
+        print(f"Executed production lines without passing-test evidence: {without_passing}")
+    unknown = result["sources"]["unclassified"]["execution"]["measured_lines"]
+    if unknown:
+        print(f"Unclassified measured lines: {unknown}")
+    if changed:
+        patch = result["patch"]
+        if patch["unmapped_lines"] or patch["unmeasured_files"]:
+            print(
+                f"Unmapped changed lines: {patch['unmapped_lines']}; "
+                f"unmeasured changed files: {patch['unmeasured_files']}"
+            )
+    command = "python3 repo_support/unit_test_coverage.py query"
+    print(f"JSON details: {command}" + (" --changed" if changed else ""))
 
 
 def summarize(files):
