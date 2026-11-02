@@ -91,6 +91,9 @@ pub enum KvmError {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to create virtual device")]
+    NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
 }
 
 #[derive(Inspect)]
@@ -161,6 +164,8 @@ struct KvmPartitionInner {
     gic_nr_irqs: u32,
     #[cfg(guest_arch = "x86_64")]
     synic_ports: virt::synic::SynicPortMap,
+    #[cfg(guest_arch = "x86_64")]
+    software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
 }
 
 // TODO: Chunk this up into smaller types.
