@@ -5958,6 +5958,61 @@ fn write_packed_descriptor(
 }
 
 #[async_test]
+async fn split_queue_rejects_out_of_range_descriptor_head(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [BOUND_TEST_QUEUE_SIZE, u16::MAX] {
+        for peek in [false, true] {
+            let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+            let mut avail = 0;
+            make_available(
+                &mem,
+                BOUND_TEST_AVAIL_ADDR,
+                BOUND_TEST_QUEUE_SIZE,
+                head,
+                &mut avail,
+            );
+
+            let result = if peek {
+                queue.try_peek().map(|_| ())
+            } else {
+                queue.try_next().map(|_| ())
+            };
+            let error = result.expect_err("an out-of-range descriptor head must be rejected");
+            assert!(matches!(
+                queue_error(&error),
+                Some(QueueError::InvalidDescriptorIndex(index)) if *index == head
+            ));
+            assert!(matches!(queue.try_next(), Ok(None)));
+            assert!(matches!(queue.try_peek(), Ok(None)));
+        }
+    }
+}
+
+#[async_test]
+async fn split_queue_accepts_descriptor_head_boundaries(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [0, BOUND_TEST_QUEUE_SIZE - 1] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+        let mut avail = 0;
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            head,
+            &mut avail,
+        );
+
+        assert!(queue.try_peek().unwrap().is_some());
+        let work = queue.try_next().unwrap().unwrap();
+        assert_eq!(work.descriptor_index(), head);
+        queue.complete(work, 0);
+        assert!(queue.try_next().unwrap().is_none());
+    }
+}
+
+#[async_test]
 async fn split_queue_rejects_too_many_in_flight(driver: DefaultDriver) {
     let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
     make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE + 1, 0);
