@@ -129,8 +129,59 @@ impl Bufs {
 #[cfg(test)]
 mod receive_tests {
     use super::*;
+    use crate::Queue;
+    use crate::TxMetadata;
+    use crate::TxSegment;
+    use crate::TxSegmentType;
+    use crate::loopback::LoopbackQueue;
     use std::collections::VecDeque;
     use test_with_tracing::test;
+
+    #[test]
+    fn loopback_keeps_single_buffer_receives() {
+        let mem = GuestMemory::allocate(0x10000);
+        let mut pool = Bufs::new(mem.clone()).with_mergeable_buffers();
+        let ids = [RxId(7), RxId(3), RxId(1)];
+        for &id in &ids {
+            pool.set_capacity(id, 32);
+        }
+        let mut queue = LoopbackQueue {
+            rx_avail: VecDeque::new(),
+            rx_done: VecDeque::new(),
+        };
+        queue.rx_avail(&mut pool, &ids);
+        let data = [0x5a; 64];
+        mem.write_at(0, &data).unwrap();
+        let segment = TxSegment {
+            ty: TxSegmentType::Head(TxMetadata {
+                segment_count: 1,
+                len: data.len() as u32,
+                ..Default::default()
+            }),
+            gpa: 0,
+            len: data.len() as u32,
+        };
+        assert_eq!(
+            queue
+                .tx_avail(&mut pool, &[segment.clone(), segment])
+                .unwrap(),
+            (true, 2)
+        );
+        let mut output = [RxId(0)];
+        for id in &ids[..2] {
+            let completions = queue.rx_poll(&mut pool, &mut output).unwrap();
+            assert_eq!(completions.len(), 1);
+            assert_eq!(completions[0].id.0, id.0);
+            assert_eq!(completions[0].buffer_count.get(), 1);
+            assert_eq!(output[0].0, id.0);
+            assert_eq!(pool.rx_metadata(*id).unwrap().len, data.len());
+            let mut readback = [0; 64];
+            mem.read_at(u64::from(id.0) * 2048, &mut readback).unwrap();
+            assert_eq!(readback, data);
+        }
+        assert!(queue.rx_poll(&mut pool, &mut output).unwrap().is_empty());
+        assert_eq!(queue.rx_avail.front().unwrap().0, 1);
+    }
 
     #[test]
     fn mergeable_capacity_and_completion_boundaries() {

@@ -1375,15 +1375,12 @@ impl Worker {
         }
 
         let mut buffer_offset = 0;
-        let mut batch = Vec::new();
         for completion in &completions {
             let buffer_count = completion.buffer_count.get() as usize;
             let ready_ids = &state.data.rx_ready[buffer_offset..buffer_offset + buffer_count];
             assert_eq!(ready_ids[0].0, completion.id.0);
             let mut packet_dropped = false;
-            if let [id] = ready_ids
-                && (completions.len() == 1 || !self.negotiated_features.mrg_rxbuf())
-            {
+            if let [id] = ready_ids {
                 let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*id);
                 packet_dropped = dropped;
                 self.virtio_state.rx_in_order.complete(
@@ -1392,17 +1389,20 @@ impl Worker {
                     bytes,
                 );
             } else {
-                let start = batch.len();
+                let mut batch = Vec::with_capacity(buffer_count);
                 for &ready_id in ready_ids {
                     let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(ready_id);
                     packet_dropped |= dropped;
                     batch.push((work.into_completion(), bytes));
                 }
                 if packet_dropped {
-                    for (_, bytes) in &mut batch[start..] {
+                    for (_, bytes) in &mut batch {
                         *bytes = 0;
                     }
                 }
+                self.virtio_state
+                    .rx_in_order
+                    .complete_batch(&mut self.virtio_state.rx_queue, batch);
             }
             buffer_offset += buffer_count;
             if packet_dropped {
@@ -1411,14 +1411,6 @@ impl Worker {
                 state.stats.rx_packets.increment();
             }
         }
-        if !batch.is_empty() {
-            // Mergeable backends complete buffers in posting order, so publish
-            // all packets from this poll with one used-ring update.
-            self.virtio_state
-                .rx_in_order
-                .complete_batch(&mut self.virtio_state.rx_queue, batch);
-        }
-
         state
             .stats
             .rx_packets_per_wake

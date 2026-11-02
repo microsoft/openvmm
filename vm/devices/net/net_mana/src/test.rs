@@ -1018,13 +1018,10 @@ async fn test_endpoint(
             }
             _ => {}
         }
-        let completions = queues[0]
+        rx_packets_n += queues[0]
             .rx_poll(&mut pool, &mut rx_packets[rx_packets_n..])
-            .unwrap();
-        rx_packets_n += completions
-            .iter()
-            .map(|completion| completion.buffer_count.get() as usize)
-            .sum::<usize>();
+            .unwrap()
+            .len();
         // GDMA Errors generate a TryReturn error, ignored here.
         tx_done_n += queues[0]
             .tx_poll(&mut pool, &mut tx_done[tx_done_n..])

@@ -2158,6 +2158,40 @@ fn mergeable_features() -> VirtioDeviceFeatures {
 }
 
 #[async_test]
+async fn rx_mergeable_nonconsecutive_packet_completions(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(mergeable_features())
+        .await;
+    let mut gpas = Vec::new();
+    for id in 0..3 {
+        gpas.push(harness.post_rx_buffer_and_signal(id, 128));
+        handle.wait_for_rx_pending().await;
+    }
+    let payloads: [&[u8]; 3] = [b"packet-zero", b"packet-one", b"packet-two"];
+    handle.inject_rx_packet_for(RxId(0), payloads[0]);
+    handle.inject_rx_packet_for(RxId(2), payloads[2]);
+    assert_eq!(
+        harness.wait_for_rx_used().await,
+        (0, NET_HEADER_SIZE + payloads[0].len() as u32)
+    );
+    harness.settle().await;
+    assert!(harness.try_read_rx_used().is_none());
+
+    handle.inject_rx_packet_for(RxId(1), payloads[1]);
+    for (id, payload) in payloads.iter().enumerate().skip(1) {
+        assert_eq!(
+            harness.wait_for_rx_used().await,
+            (id as u16, NET_HEADER_SIZE + payload.len() as u32)
+        );
+    }
+    for (gpa, payload) in gpas.into_iter().zip(payloads) {
+        assert_eq!(read_virtio_header(&harness.mem, gpa).num_buffers, 1);
+        assert_rx_payload(&harness.mem, gpa, payload);
+    }
+}
+
+#[async_test]
 async fn rx_mergeable_gso_and_restart_order(driver: DefaultDriver) {
     for offload in [
         RxOffload::default(),

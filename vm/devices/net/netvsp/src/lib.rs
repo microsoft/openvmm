@@ -5601,24 +5601,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
         epqueue: &mut dyn net_backend::Queue,
         pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
-        let completions = epqueue
+        let n = epqueue
             .rx_poll(pool, &mut data.rx_ready)
-            .map_err(WorkerError::Endpoint)?;
+            .map_err(WorkerError::Endpoint)?
+            .len();
 
-        if completions.is_empty() {
+        if n == 0 {
             return Ok(false);
         }
 
-        let packet_count = completions.len();
-        let buffer_count: usize = completions
-            .iter()
-            .map(|completion| completion.buffer_count.get() as usize)
-            .sum();
-
-        state
-            .stats
-            .rx_packets_per_wake
-            .add_sample(packet_count as u64);
+        state.stats.rx_packets_per_wake.add_sample(n as u64);
         state.stats.rx_vlan_packets.add(pool.take_rx_vlan_count());
 
         if self.packet_filter == rndisprot::NDIS_PACKET_TYPE_NONE {
@@ -5630,15 +5622,13 @@ impl<T: 'static + RingMem> NetChannel<T> {
             // Under high load this will eventually lead to no available RxIds,
             // which will cause the backend to drop the packets instead of
             // processing them here.
-            state
-                .pending_rx_packets
-                .extend(&data.rx_ready[..buffer_count]);
-            state.stats.rx_dropped_filtered.add(packet_count as u64);
+            state.pending_rx_packets.extend(&data.rx_ready[..n]);
+            state.stats.rx_dropped_filtered.add(n as u64);
             return Ok(false);
         }
 
         let transaction_id = data.rx_ready[0].0.into();
-        let ready_ids = data.rx_ready[..buffer_count].iter().map(|&RxId(id)| id);
+        let ready_ids = data.rx_ready[..n].iter().map(|&RxId(id)| id);
 
         state.rx_bufs.allocate(ready_ids.clone()).unwrap();
 
@@ -5657,16 +5647,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
         )? {
             None => {
                 // packet was sent
-                state.stats.rx_packets.add(packet_count as u64);
+                state.stats.rx_packets.add(n as u64);
             }
             Some(_) => {
                 // Ring buffer is full. Drop the packets and free the rx
                 // buffers. When the ring has limited space, the main loop will
                 // stop polling for receive packets.
-                state.stats.rx_dropped_ring_full.add(packet_count as u64);
+                state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
-                epqueue.rx_avail(pool, &data.rx_ready[..buffer_count]);
+                epqueue.rx_avail(pool, &data.rx_ready[..n]);
             }
         }
 

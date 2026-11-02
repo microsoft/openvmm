@@ -33,6 +33,7 @@ mod tap_tests {
     use net_tap::TapEndpoint;
     use net_tap::tap;
     use pal_async::DefaultDriver;
+    use pal_async::timer::PolledTimer;
     use std::future::poll_fn;
     use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
@@ -449,6 +450,7 @@ mod tap_tests {
         for id in [7, 1, 3, 5] {
             pool.set_capacity(RxId(id), 64);
         }
+        let mut timer = PolledTimer::new(&driver);
         let mut queues = Vec::new();
         endpoint
             .get_queues(
@@ -467,10 +469,22 @@ mod tap_tests {
         frame[..14].copy_from_slice(&[
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 1, 0x88, 0xb5,
         ]);
+        let mut oversized_frame = frame.clone();
+        oversized_frame.resize(256, 0x5a);
+        send_ethernet_frame("tap0", &oversized_frame);
         send_ethernet_frame("tap0", &frame);
         send_ethernet_frame("tap0", &frame);
         send_ethernet_frame("tap0", &frame[..60]);
-        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let deadline = pal_async::timer::Instant::now() + std::time::Duration::from_secs(5);
+        poll_fn(|cx| {
+            let ready = queue.poll_ready(cx, &mut pool);
+            assert!(
+                ready.is_ready() || timer.poll_until(cx, deadline).is_pending(),
+                "oversized frame stalled TAP reception"
+            );
+            ready
+        })
+        .await;
         assert!(
             queue
                 .rx_poll(&mut pool, &mut [RxId(0); 1])
@@ -479,21 +493,27 @@ mod tap_tests {
         );
         let mut ids = [RxId(0); 3];
         let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
-        assert_eq!(completions.len(), 1);
+        assert_eq!(completions.len(), 2);
         assert_eq!(completions[0].buffer_count.get(), 2);
         assert_eq!(completions[0].id.0, 7);
         assert_eq!([ids[0].0, ids[1].0], [7, 1]);
+        assert_eq!(completions[1].buffer_count.get(), 1);
+        assert_eq!(completions[1].id.0, 3);
+        assert_eq!(ids[2].0, 3);
         let mut readback = [0; 128];
         mem.read_at(7 * 2048, &mut readback[..64]).unwrap();
         mem.read_at(2048, &mut readback[64..]).unwrap();
         assert_eq!(readback.as_slice(), frame);
-        assert!(pool.rx_metadata(RxId(3)).is_none());
+        assert_eq!(pool.rx_metadata(RxId(3)).unwrap().len, 60);
+        mem.read_at(3 * 2048, &mut readback[..60]).unwrap();
+        assert_eq!(&readback[..60], &frame[..60]);
 
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(queue.poll_ready(&mut cx, &mut pool).is_pending());
         assert!(queue.rx_poll(&mut pool, &mut ids).unwrap().is_empty());
-        queue.rx_avail(&mut pool, &[RxId(5)]);
-        assert!(queue.poll_ready(&mut cx, &mut pool).is_ready());
+        queue.rx_avail(&mut pool, &[RxId(3), RxId(5)]);
+        send_ethernet_frame("tap0", &frame);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
         let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].buffer_count.get(), 2);
@@ -503,6 +523,7 @@ mod tap_tests {
         assert_eq!(readback.as_slice(), frame);
 
         queue.rx_avail(&mut pool, &[RxId(9)]);
+        send_ethernet_frame("tap0", &frame[..60]);
         poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
         let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
         assert_eq!(completions.len(), 1);

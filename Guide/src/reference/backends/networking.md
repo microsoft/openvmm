@@ -114,9 +114,11 @@ guest RAM directly.
 
 ### Mergeable receive buffers
 
-Virtio-net advertises `VIRTIO_NET_F_MRG_RXBUF`. When negotiated, the TAP,
-Consomme, DirectIO, and loopback backends can distribute a packet across
-consecutive receive buffers rather than requiring one large buffer.
+Virtio-net advertises `VIRTIO_NET_F_MRG_RXBUF`. When negotiated, the TAP and
+Consomme backends can distribute a packet across consecutive receive buffers
+rather than requiring one large buffer. Other backends retain single-buffer
+receive behavior. Packet capture supports multi-buffer receives when wrapping
+TAP or Consomme.
 
 Following [Virtio 1.2, sections 5.1.6.3-4](
 https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html), only the first
@@ -128,11 +130,11 @@ together, with one notification subject to interrupt suppression.
 Each mergeable buffer must hold at least the 12-byte header; the first buffer
 may contain only that header. Headers and packet data may themselves span
 direct or indirect descriptor chains. Backend restarts preserve buffer order.
-If the available buffers cannot hold a packet, TAP retains that frame and
-waits for more buffers before reading another frame. This lets the frontend
-publish completed receives and the guest replenish its buffers without
-dropping coalesced packets at the end of a receive batch. Other software
-backends drop the packet without consuming or skipping any buffers.
+If the available buffers cannot hold a packet, TAP and Consomme drop the packet
+without consuming or skipping any buffers. TAP continues reading subsequent
+frames, so a frame larger than the guest's posted receive capacity cannot stall
+reception. Coalesced packets can be dropped during temporary buffer shortages
+as well.
 
 When receive GSO is enabled, virtio-net advertises
 1,024 receive-queue entries instead of 256. Coalesced packets can consume many

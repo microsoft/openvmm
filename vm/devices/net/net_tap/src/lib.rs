@@ -220,7 +220,6 @@ struct TapQueue {
     tap: Option<tap::PolledTap>,
     inner: Inner,
     buffer: Box<[u8]>,
-    pending_rx: Option<RxMetadata>,
     enabled_rx_offloads: RxOffloadSupport,
     stale_offload_recovery: StaleOffloadRecovery,
     read_since_pending: bool,
@@ -267,7 +266,6 @@ impl TapQueue {
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; TAP_READ_BUFFER_LEN].into_boxed_slice(),
-            pending_rx: None,
             enabled_rx_offloads,
             stale_offload_recovery,
             read_since_pending: false,
@@ -289,25 +287,6 @@ impl Queue for TapQueue {
 
         let mut packets_processed = 0;
         while !self.inner.rx_free.is_empty() {
-            if let Some(metadata) = &self.pending_rx {
-                if pool.supports_multiple_buffers()
-                    && net_backend::rx_packet_buffer_count(pool, &self.inner.rx_free, metadata.len)
-                        .is_none()
-                {
-                    break;
-                }
-                if let Some(ids) = net_backend::write_rx_packet(
-                    pool,
-                    &mut self.inner.rx_free,
-                    metadata,
-                    &[&self.buffer
-                        [size_of::<VirtioNetHdr>()..size_of::<VirtioNetHdr>() + metadata.len]],
-                ) {
-                    self.inner.rx_ready.push_back(ids);
-                }
-                self.pending_rx = None;
-                continue;
-            }
             if packets_processed == MAX_RX_PACKETS_PER_POLL {
                 cx.waker().wake_by_ref();
                 break;
@@ -332,11 +311,18 @@ impl Queue for TapQueue {
                     ) else {
                         continue;
                     };
-                    self.pending_rx = Some(RxMetadata {
-                        offset: 0,
-                        len: frame_len,
-                        ..rx_meta
-                    });
+                    if let Some(ids) = net_backend::write_rx_packet(
+                        pool,
+                        &mut self.inner.rx_free,
+                        &RxMetadata {
+                            offset: 0,
+                            len: frame_len,
+                            ..rx_meta
+                        },
+                        &[frame],
+                    ) {
+                        self.inner.rx_ready.push_back(ids);
+                    }
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::warn!(error = &err as &dyn std::error::Error, "tap rx error");
