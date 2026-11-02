@@ -1080,7 +1080,7 @@ mod tests {
         Request::new(bytes.as_slice()).unwrap()
     }
 
-    fn read_directory(
+    pub(super) fn read_directory(
         fs: &VirtioFs,
         file: &super::VirtioFsFile,
         mut offset: u64,

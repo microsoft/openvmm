@@ -77,7 +77,9 @@ impl VirtioFsFile {
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
         let mut file = self.file.write();
-        if !plus && self.inode.volume.is_sandbox() {
+        let check_sandbox = !plus && self.inode.volume.is_sandbox();
+        let check_children = check_sandbox && !self.inode.volume.supports_stable_file_id();
+        if check_sandbox && !check_children {
             // Revalidate the directory and its ancestors once per request.
             // Child filtering uses the host enumeration's metadata snapshot.
             self.inode.check_directory_handle(&file)?;
@@ -115,9 +117,7 @@ impl VirtioFsFile {
 
                 Ok(buffer.dir_entry_plus(&entry.name, entry.offset as u64, fuse_entry))
             } else {
-                // Plain readdir needs only the directory entries, not child
-                // attributes or lookup references. Let subsequent lookups
-                // check access to the children.
+                // Plain readdir does not take FUSE lookup references.
                 //
                 // Use the current file's inode number for . and .. entries.
                 // On Windows inode_nr is 0 for these; on Linux it may be
@@ -126,6 +126,18 @@ impl VirtioFsFile {
                 let inode_nr = if entry.name == "." || entry.name == ".." {
                     self_inode_nr
                 } else {
+                    // Without reliable IDs, retain the previous pathname-based
+                    // sandbox checks rather than rejecting directory reads.
+                    if check_children {
+                        match self.inode.lookup_child(&entry.name) {
+                            Ok(_) => {}
+                            Err(err) if err == lx::Error::EACCES || err == lx::Error::ENOENT => {
+                                entry_count -= 1;
+                                return Ok(true);
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
                     // Children share this directory's volume, so apply its
                     // guest inode mapping to match lookup/readdirplus.
                     self.inode.guest_ino(entry.inode_nr)
