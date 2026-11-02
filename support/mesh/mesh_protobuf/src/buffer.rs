@@ -68,6 +68,7 @@ impl Buffer for Buf<'_> {
 }
 
 #[cfg(feature = "std")]
+#[expect(clippy::std_instead_of_core)]
 impl Buffer for std::io::Cursor<&mut [u8]> {
     unsafe fn unwritten(&mut self) -> &mut [MaybeUninit<u8>] {
         let pos = core::cmp::min(self.position(), self.get_ref().len() as u64) as usize;
@@ -189,6 +190,7 @@ where
 }
 
 #[cfg(test)]
+#[expect(clippy::std_instead_of_core)]
 mod tests {
     use super::write_with;
     use alloc::vec;
