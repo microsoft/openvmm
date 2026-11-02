@@ -1018,12 +1018,7 @@ impl virt::Hypervisor for Whp {
 
         #[cfg(guest_arch = "x86_64")]
         if config.time_abi.is_some() {
-            time_abi::validate_partition(
-                isolation,
-                config.hv_config.is_some(),
-                nested_virt,
-                user_mode_apic,
-            )?;
+            time_abi::validate_partition(isolation, config.hv_config.is_some(), user_mode_apic)?;
         }
 
         let vtl0 = VtlPartition::new(
@@ -1639,15 +1634,8 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        #[cfg(guest_arch = "x86_64")]
-        let time_abi = config
-            .time_abi
-            .as_ref()
-            .map(|time_abi| {
-                time_abi::WhpTimeAbi::configure(time_abi, &mut whp_config, &mut extended_exits)
-            })
-            .transpose()?;
-
+        // Nested virtualization goes first, so that a time ABI partition's
+        // feature banks, which then offer it, apply to a nested partition.
         #[cfg(guest_arch = "x86_64")]
         if nested_virt {
             match whp_config.set_property(whp::PartitionProperty::NestedVirtualization(true)) {
@@ -1659,7 +1647,31 @@ impl VtlPartition {
                     return Err(err).for_op("enable nested virtualization");
                 }
             }
+            // A time ABI partition offers the feature in its banks, which
+            // WHP offers only on a host that can nest.
+            if config.time_abi.is_some()
+                && !whp::capabilities::processor_features()
+                    .for_op("get processor features")?
+                    .bank1
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES1::NestedVirtSupport)
+            {
+                return Err(Error::NestedVirtUnsupported);
+            }
         }
+
+        #[cfg(guest_arch = "x86_64")]
+        let time_abi = config
+            .time_abi
+            .as_ref()
+            .map(|time_abi| {
+                time_abi::WhpTimeAbi::configure(
+                    time_abi,
+                    &mut whp_config,
+                    &mut extended_exits,
+                    nested_virt,
+                )
+            })
+            .transpose()?;
 
         #[cfg(guest_arch = "x86_64")]
         {

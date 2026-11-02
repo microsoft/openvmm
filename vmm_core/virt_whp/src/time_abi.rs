@@ -8,9 +8,11 @@
 //! It meets the time ABI's backend obligations with these WHP mechanisms:
 //!
 //! - **Partition.** No Hyper-V guest interface (so no synthetic processor
-//!   features), the in-hypervisor (offloaded) APIC, no isolation, no VTL2,
-//!   and no nested virtualization. Without synthetic features WHP reports no
-//!   hypervisor CPUID leaf and serves no synthetic MSR of its own.
+//!   features), the in-hypervisor (offloaded) APIC, no isolation, and no
+//!   VTL2. Without synthetic features WHP reports no hypervisor CPUID leaf
+//!   and serves no synthetic MSR of its own. Nested virtualization needs
+//!   none of them, so a time ABI partition may have it: the effective CPUID
+//!   then sets VMX, and the feature banks offer WHP's nested virtualization.
 //! - **Processor features.** Both feature banks and the XSAVE features derive
 //!   from the partition's CPU profile ([`profile_features`]), without the
 //!   TSC-deadline timer, `IA32_TSC_ADJUST`, or APERF/MPERF. WHP's default
@@ -211,11 +213,15 @@ impl WhpTimeAbi {
     /// The processor feature banks and the XSAVE features derive from the
     /// CPU profile `config.cpu_profile` ([`profile_features`]), and
     /// `config.cpuid`, the complete effective CPUID, becomes the CPUID results
-    /// ([`cpuid_results`]) and the exits ([`cpuid_exits`]).
+    /// ([`cpuid_results`]) and the exits ([`cpuid_exits`]). A partition with
+    /// `nested_virt` also offers WHP's nested virtualization feature, which
+    /// presents VMX where the effective CPUID sets it; the profile's policy
+    /// clears VMX, so the profile alone never offers it.
     pub(crate) fn configure(
         config: &TimeAbiConfig,
         whp_config: &mut whp::PartitionConfig,
         extended_exits: &mut WHV_EXTENDED_VM_EXITS,
+        nested_virt: bool,
     ) -> Result<Self, TimeAbiError> {
         let profile = &config.cpu_profile;
 
@@ -257,6 +263,10 @@ impl WhpTimeAbi {
         let mut features = available;
         features.bank0 = WHV_PROCESSOR_FEATURES(derived.banks[0]);
         features.bank1 = WHV_PROCESSOR_FEATURES1(derived.banks[1]);
+        if nested_virt {
+            // The partition checked that WHP offers the feature.
+            features.bank1 |= WHV_PROCESSOR_FEATURES1::NestedVirtSupport;
+        }
         let features = processor_features(features);
         let xsave = derived.xsave;
         whp_config
@@ -418,12 +428,12 @@ pub(crate) fn unlisted_cpuid<E>(
 
 /// Fails unless the partition can carry the time ABI: no isolation, no
 /// Hyper-V guest interface (whose synthetic processor features would serve
-/// the identity CPUID and MSRs natively, and which VTL2 requires), no nested
-/// virtualization, and the offloaded APIC.
+/// the identity CPUID and MSRs natively, and which VTL2 requires), and the
+/// offloaded APIC. Nested virtualization needs none of these, so a time ABI
+/// partition may have it.
 pub(crate) fn validate_partition(
     isolation: IsolationType,
     hv_configured: bool,
-    nested_virt: bool,
     user_mode_apic: bool,
 ) -> Result<(), TimeAbiError> {
     if isolation != IsolationType::None {
@@ -434,11 +444,6 @@ pub(crate) fn validate_partition(
     if hv_configured {
         return Err(routing_error(
             "the WHP time ABI cannot be combined with the Hyper-V guest interface",
-        ));
-    }
-    if nested_virt {
-        return Err(routing_error(
-            "the WHP time ABI cannot be combined with nested virtualization",
         ));
     }
     if user_mode_apic {
@@ -1719,41 +1724,34 @@ mod tests {
         msrs
     }
 
+    /// The time ABI refuses isolation, the Hyper-V guest interface, and the
+    /// user-mode APIC. It needs none of them for nested virtualization, which
+    /// `validate_partition` therefore no longer takes.
     #[test]
     fn partition_validation_rejects_unsupported_configurations() {
-        validate_partition(IsolationType::None, false, false, false).unwrap();
-        for (isolation, hv, nested, user_mode_apic, code) in [
+        validate_partition(IsolationType::None, false, false).unwrap();
+        for (isolation, hv, user_mode_apic, code) in [
             (
                 IsolationType::Vbs,
                 false,
                 false,
-                false,
                 TimeAbiCode::IdentityRouting,
             ),
             (
                 IsolationType::None,
                 true,
                 false,
-                false,
                 TimeAbiCode::IdentityRouting,
             ),
             (
                 IsolationType::None,
-                false,
-                true,
-                false,
-                TimeAbiCode::IdentityRouting,
-            ),
-            (
-                IsolationType::None,
-                false,
                 false,
                 true,
                 TimeAbiCode::LapicRateUnavailable,
             ),
         ] {
             assert_eq!(
-                validate_partition(isolation, hv, nested, user_mode_apic)
+                validate_partition(isolation, hv, user_mode_apic)
                     .unwrap_err()
                     .code,
                 code
@@ -2488,6 +2486,14 @@ mod whp_tests {
     /// profile, configured as `VtlPartition::new` configures one, or `None`
     /// on a host outside the pinned generations, where the tests skip.
     fn partition(vp_count: u32) -> Option<Partition> {
+        partition_with(vp_count, false)
+    }
+
+    /// Returns [`partition`]'s partition, with nested virtualization if
+    /// `nested_virt` is set, or `None` where the tests skip: on a host
+    /// outside the pinned generations, and for nested virtualization, on a
+    /// host whose CPU profile is not Intel's or whose WHP does not offer it.
+    fn partition_with(vp_count: u32, nested_virt: bool) -> Option<Partition> {
         let profile = match cpu_profile::select_auto(&cpu_profile::HostCpuSignature::current()) {
             Ok(profile) => PartitionProfile::pinned(profile.id()).unwrap(),
             Err(err) => {
@@ -2495,9 +2501,18 @@ mod whp_tests {
                 return None;
             }
         };
+        if nested_virt && profile.cpu_vendor() != CpuVendor::Intel {
+            // No profile of AMD's CPUs describes SVM, so they refuse nested
+            // virtualization with `E_PROFILE_UNSUPPORTED`.
+            println!(
+                "skipped: nested virtualization needs an Intel CPU profile, not {}",
+                profile.id()
+            );
+            return None;
+        }
         let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
         let effective =
-            virt::time_abi::cpuid::effective_cpuid(&profile, &topology, false).unwrap();
+            virt::time_abi::cpuid::effective_cpuid(&profile, &topology, nested_virt).unwrap();
         let config = TimeAbiConfig {
             cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(&effective)),
             msrs: Arc::new(TimeAbiMsrs::new()),
@@ -2507,8 +2522,22 @@ mod whp_tests {
         whp_config
             .set_property(whp::PartitionProperty::ProcessorCount(vp_count))
             .unwrap();
+        if nested_virt {
+            let offered = whp::capabilities::processor_features()
+                .unwrap()
+                .bank1
+                .is_set(WHV_PROCESSOR_FEATURES1::NestedVirtSupport);
+            if !offered {
+                println!("skipped: WHP offers no nested virtualization on this host");
+                return None;
+            }
+            whp_config
+                .set_property(whp::PartitionProperty::NestedVirtualization(true))
+                .unwrap();
+        }
         let mut exits = WHV_EXTENDED_VM_EXITS(0);
-        let time_abi = WhpTimeAbi::configure(&config, &mut whp_config, &mut exits).unwrap();
+        let time_abi =
+            WhpTimeAbi::configure(&config, &mut whp_config, &mut exits, nested_virt).unwrap();
         whp_config
             .set_property(whp::PartitionProperty::LocalApicEmulationMode(
                 whp::abi::WHvX64LocalApicEmulationModeXApic,
@@ -2554,11 +2583,24 @@ mod whp_tests {
     #[test]
     #[ignore = "requires WHP"]
     fn partition_meets_the_static_obligations() {
+        check_static_obligations(false);
+    }
+
+    /// A partition with nested virtualization meets the same obligations:
+    /// WHP still answers the identity range past the exits, its nested
+    /// virtualization leaves included, with zeros, and VP 0 sees VMX.
+    #[test]
+    #[ignore = "requires WHP with nested virtualization"]
+    fn nested_partition_meets_the_static_obligations() {
+        check_static_obligations(true);
+    }
+
+    fn check_static_obligations(nested_virt: bool) {
         let Some(Partition {
             partition,
             time_abi,
             ..
-        }) = partition(4)
+        }) = partition_with(4, nested_virt)
         else {
             return;
         };
@@ -2591,8 +2633,16 @@ mod whp_tests {
                 .unwrap()
                 .is_set(WHV_X64_MSR_EXIT_BITMAP::UnhandledMsrs)
         );
+        // VMX, `CPUID.1:ECX[5]`, follows nested virtualization.
+        let vmx = native(&partition, 1, 0).unwrap()[2] & (1 << 5) != 0;
+        assert_eq!(vmx, nested_virt);
+        assert_eq!(
+            WHV_PROCESSOR_FEATURES1(time_abi.features_bank1)
+                .is_set(WHV_PROCESSOR_FEATURES1::NestedVirtSupport),
+            nested_virt
+        );
         println!(
-            "tsc_hz {} bank1 {:#x} native 0x80000007 {:#x?}",
+            "tsc_hz {} bank1 {:#x} native 0x80000007 {:#x?} vmx {vmx}",
             partition.tsc_frequency().unwrap(),
             time_abi.features_bank1,
             native(&partition, 0x8000_0007, 0).unwrap()
@@ -2607,13 +2657,25 @@ mod whp_tests {
     #[test]
     #[ignore = "requires WHP"]
     fn host_profile_configures_the_partition() {
+        check_host_profile_configures_the_partition(false);
+    }
+
+    /// A partition with nested virtualization presents its effective CPUID,
+    /// VMX included, on every VP.
+    #[test]
+    #[ignore = "requires WHP with nested virtualization"]
+    fn host_profile_configures_a_nested_partition() {
+        check_host_profile_configures_the_partition(true);
+    }
+
+    fn check_host_profile_configures_the_partition(nested_virt: bool) {
         const VP_COUNT: u32 = 4;
         let Some(Partition {
             partition,
             time_abi,
             topology,
             effective,
-        }) = partition(VP_COUNT)
+        }) = partition_with(VP_COUNT, nested_virt)
         else {
             return;
         };
