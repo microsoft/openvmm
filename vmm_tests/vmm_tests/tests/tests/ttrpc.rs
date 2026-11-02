@@ -1419,6 +1419,7 @@ async fn test_ttrpc_interface(
                         vmservice::Vm::RemoveVpciDevice,
                         vmservice::RemoveVpciDeviceRequest {
                             instance_id: instance_id.to_string(),
+                            eject_timeout_ms: Some(5_000),
                         },
                     )
                     .await
@@ -2361,6 +2362,7 @@ fn pcie_root_port(
         name: name.to_string(),
         hotplug,
         attention_button: hotplug,
+        eject_timeout_ms: hotplug.then_some(30_000),
         attached,
         devfn: None,
         acs_capabilities_supported: None,
@@ -2619,6 +2621,7 @@ async fn validate_vpci_virtio_fs_hotplug(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
                 instance_id: second_instance_id.to_string(),
+                eject_timeout_ms: Some(5_000),
             },
         )
         .await
@@ -2636,6 +2639,7 @@ async fn validate_vpci_virtio_fs_hotplug(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
                 instance_id: first_instance_id.to_string(),
+                eject_timeout_ms: Some(5_000),
             },
         )
         .await
@@ -2646,6 +2650,7 @@ async fn validate_vpci_virtio_fs_hotplug(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
                 instance_id: first_instance_id.to_string(),
+                eject_timeout_ms: Some(5_000),
             },
         )
         .await
@@ -2979,6 +2984,7 @@ async fn validate_vpci_pmem_hotplug(
             vmservice::Vm::RemoveVpciDevice,
             vmservice::RemoveVpciDeviceRequest {
                 instance_id: second_instance_id.to_string(),
+                eject_timeout_ms: Some(5_000),
             },
         )
         .await

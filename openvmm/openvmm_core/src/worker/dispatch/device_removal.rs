@@ -9,9 +9,6 @@ use openvmm_defs::rpc::VmRpc;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
 use std::future::Future;
-use std::time::Duration;
-
-pub(super) const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
 
 /// Tracks one independently owned removal while the VM serves diagnostics.
 #[derive(Default)]
@@ -64,19 +61,20 @@ pub(super) fn can_run_during_device_removal(rpc: &VmRpc) -> bool {
     )
 }
 
-pub(super) enum VpciEjectResult {
+pub(super) enum PciEjectResult {
     Complete(anyhow::Result<()>),
     TimedOut,
 }
 
-pub(super) async fn wait_for_vpci_eject(
-    driver: &(impl pal_async::driver::Driver + ?Sized),
+pub(super) async fn wait_for_pci_eject(
+    mut timer: PolledTimer,
     eject: impl Future<Output = anyhow::Result<()>>,
-    grace_period: Duration,
-) -> VpciEjectResult {
-    let eject = eject.map(VpciEjectResult::Complete);
-    let mut timer = PolledTimer::new(driver);
-    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
+    deadline: pal_async::timer::Instant,
+) -> PciEjectResult {
+    let eject = eject.map(PciEjectResult::Complete);
+    let timeout = timer
+        .sleep_until(deadline)
+        .map(|_| PciEjectResult::TimedOut);
     (eject, timeout).race().await
 }
 
@@ -104,7 +102,7 @@ mod tests {
             mesh::rpc::Rpc::detached(())
         )));
         assert!(!can_run_during_device_removal(&VmRpc::RemovePcieDevice(
-            mesh::rpc::Rpc::detached(("test".into(), false))
+            mesh::rpc::Rpc::detached((mesh::CancelContext::new(), "test".into(), false))
         )));
         assert_eq!(driver.spawn("control-request", async { 42 }).await, 42);
         assert!(removal.is_pending());

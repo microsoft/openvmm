@@ -687,7 +687,8 @@ impl Halt {
             .expect("too many halt clears");
     }
 
-    fn is_halted(&self) -> bool {
+    /// Returns whether any outstanding halt request prevents VP execution.
+    pub fn is_halted(&self) -> bool {
         self.state.lock().halt_count != 0
     }
 

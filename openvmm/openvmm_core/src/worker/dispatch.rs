@@ -12,10 +12,9 @@ mod pcie_wiring;
 mod smmu_wiring;
 
 use self::device_removal::DeviceRemovalState;
-use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
-use self::device_removal::VpciEjectResult;
+use self::device_removal::PciEjectResult;
 use self::device_removal::can_run_during_device_removal;
-use self::device_removal::wait_for_vpci_eject;
+use self::device_removal::wait_for_pci_eject;
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
@@ -45,6 +44,7 @@ use floppy_resources::FloppyDiskConfig;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::executor::block_on;
+use futures::future::poll_fn;
 use futures::future::try_join_all;
 use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
@@ -60,6 +60,7 @@ use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
 use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
+use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::payload::Protobuf;
@@ -91,6 +92,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
+use openvmm_defs::rpc::RemovePcieDeviceError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
@@ -101,7 +103,9 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
+use parking_lot::Mutex;
 use pci_core::PciInterruptPin;
+use pci_core::capabilities::pci_express::PcieEjectError;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
 use scsi_core::ResolveScsiDeviceHandleParams;
@@ -110,7 +114,9 @@ use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::future::Future;
 use std::sync::Arc;
@@ -188,22 +194,379 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
-const PCIE_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(30);
-
-enum PciEjectResult {
-    Complete(anyhow::Result<()>),
-    TimedOut,
+enum Event {
+    WorkerRpc(Result<WorkerRpc<RestartState>, mesh::RecvError>),
+    VmRpc(Result<VmRpc, mesh::RecvError>),
+    Halt(Result<HaltReason, mesh::RecvError>),
+    PcieEject(String, Result<(), RemovePcieDeviceError>),
+    VpciEject(guid::Guid, PciEjectResult),
+    DeviceRemoved,
 }
 
-async fn wait_for_pci_eject(
-    driver: &(impl pal_async::driver::Driver + ?Sized),
-    eject: impl Future<Output = anyhow::Result<()>>,
-    grace_period: Duration,
-) -> PciEjectResult {
-    let eject = eject.map(PciEjectResult::Complete);
-    let mut timer = PolledTimer::new(driver);
-    let timeout = timer.sleep(grace_period).map(|_| PciEjectResult::TimedOut);
-    (eject, timeout).race().await
+#[derive(Default)]
+struct DeferredVmStateChanges {
+    rpc: Option<QueuedVmRpc>,
+    restart: Option<mesh::rpc::FailableRpc<(), RestartState>>,
+    buffered_rpcs: VecDeque<QueuedVmRpc>,
+}
+
+struct QueuedVmRpc {
+    rpc: VmRpc,
+    cancellation: Option<CancelContext>,
+}
+
+impl QueuedVmRpc {
+    fn new(rpc: VmRpc) -> Self {
+        let cancellation = match &rpc {
+            VmRpc::RemovePcieDevice(rpc) => Some(rpc.input().0.clone()),
+            _ => None,
+        };
+        Self { rpc, cancellation }
+    }
+
+    fn poll_cancelled(&mut self, cx: &mut std::task::Context<'_>) -> Option<mesh::CancelReason> {
+        let ctx = self.cancellation.as_mut()?;
+        match ctx.cancelled().poll_unpin(cx) {
+            std::task::Poll::Ready(reason) => Some(reason),
+            std::task::Poll::Pending => None,
+        }
+    }
+
+    fn cancel(self, reason: mesh::CancelReason) {
+        let VmRpc::RemovePcieDevice(rpc) = self.rpc else {
+            unreachable!("only queued PCIe removal has a cancellation context");
+        };
+        let (_, response) = rpc.split();
+        response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+    }
+}
+
+impl DeferredVmStateChanges {
+    fn is_pending(&self) -> bool {
+        self.rpc.is_some() || self.restart.is_some()
+    }
+
+    fn take_ready(&mut self, eject_pending: bool) -> Option<Event> {
+        if eject_pending {
+            return None;
+        }
+        if let Some(rpc) = self.rpc.take() {
+            return Some(Event::VmRpc(Ok(rpc.rpc)));
+        }
+        self.restart
+            .take()
+            .map(|rpc| Event::WorkerRpc(Ok(WorkerRpc::Restart(rpc))))
+    }
+
+    fn poll_cancellations(&mut self, cx: &mut std::task::Context<'_>) -> bool {
+        let mut cancelled = false;
+        if let Some(reason) = self.rpc.as_mut().and_then(|rpc| rpc.poll_cancelled(cx)) {
+            self.rpc.take().expect("polled queued RPC").cancel(reason);
+            cancelled = true;
+        }
+        let mut index = 0;
+        while index < self.buffered_rpcs.len() {
+            if let Some(reason) = self.buffered_rpcs[index].poll_cancelled(cx) {
+                self.buffered_rpcs
+                    .remove(index)
+                    .expect("queued RPC exists")
+                    .cancel(reason);
+                cancelled = true;
+            } else {
+                index += 1;
+            }
+        }
+        cancelled
+    }
+
+    fn prepend_buffered_rpcs(&mut self, receiver: mesh::Receiver<VmRpc>) -> mesh::Receiver<VmRpc> {
+        if self.buffered_rpcs.is_empty() {
+            return receiver;
+        }
+        let (sender, receiver_with_buffer) = mesh::channel();
+        for rpc in self.buffered_rpcs.drain(..) {
+            sender.send(rpc.rpc);
+        }
+        // Bridge after prepending so queued and future RPCs keep their order on restart.
+        receiver.bridge(sender);
+        receiver_with_buffer
+    }
+}
+
+fn waits_for_vpci_ejection(rpc: &VmRpc) -> bool {
+    match rpc {
+        VmRpc::Pause(_)
+        | VmRpc::Reset(_)
+        | VmRpc::Save(_)
+        | VmRpc::PulseSaveRestore(_)
+        | VmRpc::DumpState(_)
+        | VmRpc::Resume(_)
+        | VmRpc::AddPcieDevice(_)
+        | VmRpc::RemovePcieDevice(_)
+        | VmRpc::AddVpciDevice(_)
+        | VmRpc::AddVmbusDevice(_) => true,
+        VmRpc::CompleteReloadIgvm(rpc) => *rpc.input(),
+        _ => false,
+    }
+}
+
+struct PendingVpciEject {
+    response: mesh::rpc::FailableRpc<(), ()>,
+    wait: Task<PciEjectResult>,
+    eject_timeout: Duration,
+}
+
+fn poll_vpci_ejections(
+    pending: &mut HashMap<guid::Guid, PendingVpciEject>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<(guid::Guid, PciEjectResult)> {
+    for (instance_id, eject) in pending {
+        if let std::task::Poll::Ready(result) = eject.wait.poll_unpin(cx) {
+            return std::task::Poll::Ready((*instance_id, result));
+        }
+    }
+    std::task::Poll::Pending
+}
+
+fn cancel_vpci_ejections(pending: &mut HashMap<guid::Guid, PendingVpciEject>, reason: &str) {
+    for (instance_id, eject) in pending.drain() {
+        eject.response.fail(anyhow::anyhow!(
+            "VPCI removal interrupted for instance '{instance_id}': {reason}"
+        ));
+    }
+}
+
+async fn complete_vpci_removal(
+    instance_id: guid::Guid,
+    pending: PendingVpciEject,
+    result: PciEjectResult,
+    remove: impl Future<Output = anyhow::Result<()>>,
+) {
+    match result {
+        PciEjectResult::Complete(Ok(())) => {}
+        PciEjectResult::Complete(Err(error)) => tracing::warn!(
+            %instance_id,
+            error = <anyhow::Error as AsRef<
+                dyn std::error::Error + Send + Sync,
+            >>::as_ref(&error),
+            "VPCI eject failed; forcing removal"
+        ),
+        PciEjectResult::TimedOut => tracing::warn!(
+            %instance_id,
+            timeout_ms = %pending.eject_timeout.as_millis(),
+            "VPCI eject timed out; forcing removal"
+        ),
+    }
+    pending
+        .response
+        .complete(remove.await.map_err(RemoteError::new));
+}
+
+async fn next_vm_event(
+    rpc_recv: &mut mesh::Receiver<VmRpc>,
+    worker_rpc: &mut mesh::Receiver<WorkerRpc<RestartState>>,
+    halt_recv: &mut mesh::Receiver<HaltReason>,
+    pending_pcie: &mut HashMap<String, PendingPcieEject>,
+    pending_vpci: &mut HashMap<guid::Guid, PendingVpciEject>,
+    deferred: &mut DeferredVmStateChanges,
+    device_removal: &mut DeviceRemovalState,
+) -> Event {
+    loop {
+        let removal_pending = device_removal.is_pending();
+        if let Some(event) = deferred.take_ready(!pending_vpci.is_empty() || removal_pending) {
+            return event;
+        }
+        let event = {
+            let a = poll_fn(|cx| {
+                if deferred.poll_cancellations(cx) {
+                    return std::task::Poll::Ready(None);
+                }
+                if !deferred.is_pending() && !removal_pending {
+                    if let Some(rpc) = deferred.buffered_rpcs.pop_front() {
+                        return std::task::Poll::Ready(Some(Event::VmRpc(Ok(rpc.rpc))));
+                    }
+                }
+                rpc_recv.poll_recv(cx).map(|rpc| Some(Event::VmRpc(rpc)))
+            });
+            let b = worker_rpc.recv().map(|rpc| Some(Event::WorkerRpc(rpc)));
+            let c = halt_recv.recv().map(|halt| Some(Event::Halt(halt)));
+            let d = poll_fn(|cx| {
+                if removal_pending {
+                    std::task::Poll::Pending
+                } else {
+                    poll_pcie_ejections(pending_pcie, cx)
+                }
+            })
+            .map(|(port_name, result)| Some(Event::PcieEject(port_name, result)));
+            let e = poll_fn(|cx| {
+                if removal_pending {
+                    std::task::Poll::Pending
+                } else {
+                    poll_vpci_ejections(pending_vpci, cx)
+                }
+            })
+            .map(|(instance_id, result)| Some(Event::VpciEject(instance_id, result)));
+            let f = device_removal.wait().map(|()| Some(Event::DeviceRemoved));
+            (b, c, f, e, d, a).race().await
+        };
+        let Some(event) = event else {
+            continue;
+        };
+        match event {
+            Event::VmRpc(Ok(rpc))
+                if (deferred.is_pending() && !matches!(&rpc, VmRpc::ClearHalt(_)))
+                    || (removal_pending && !can_run_during_device_removal(&rpc)) =>
+            {
+                deferred.buffered_rpcs.push_back(QueuedVmRpc::new(rpc));
+            }
+            Event::VmRpc(Ok(rpc)) if !pending_vpci.is_empty() && waits_for_vpci_ejection(&rpc) => {
+                assert!(!deferred.is_pending());
+                deferred.rpc = Some(QueuedVmRpc::new(rpc));
+            }
+            Event::WorkerRpc(Ok(WorkerRpc::Restart(rpc)))
+                if !pending_vpci.is_empty() || removal_pending =>
+            {
+                if deferred.restart.is_some() {
+                    rpc.fail(anyhow::anyhow!("VM worker restart is already pending"));
+                } else {
+                    deferred.restart = Some(rpc);
+                }
+            }
+            event => return event,
+        }
+    }
+}
+
+type PcieEjectResponse = mesh::rpc::Rpc<(), Result<(), RemovePcieDeviceError>>;
+
+struct PendingPcieEject {
+    response: Arc<Mutex<Option<PcieEjectResponse>>>,
+    ctx: CancelContext,
+    completion: mesh::OneshotReceiver<()>,
+    deadline: pal_async::timer::Instant,
+    timeout: Task<()>,
+}
+
+impl PendingPcieEject {
+    fn new(
+        driver: &(impl pal_async::driver::Driver + Spawn),
+        port_name: &str,
+        response: PcieEjectResponse,
+        completion: mesh::OneshotReceiver<()>,
+        deadline: pal_async::timer::Instant,
+        ctx: CancelContext,
+    ) -> Self {
+        let response = Arc::new(Mutex::new(Some(response)));
+        let timeout = driver.spawn("pcie-eject-timeout", {
+            let response = response.clone();
+            let port_name = port_name.to_owned();
+            let mut timer = PolledTimer::new(driver);
+            let mut ctx = ctx.clone();
+            async move {
+                let error = (
+                    ctx.cancelled().map(RemovePcieDeviceError::Cancelled),
+                    timer
+                        .sleep_until(deadline)
+                        .map(|_| pcie_eject_timeout_error(&port_name)),
+                )
+                    .race()
+                    .await;
+                let response = response.lock().take();
+                if let Some(response) = response {
+                    response.complete(Err(error));
+                }
+            }
+        });
+        Self {
+            response,
+            ctx,
+            completion,
+            deadline,
+            timeout,
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.response.lock().is_some()
+    }
+
+    fn take_response(&self) -> Option<PcieEjectResponse> {
+        self.response.lock().take()
+    }
+
+    fn claim_response(&mut self, port_name: &str) -> Option<PcieEjectResponse> {
+        let response = self.take_response()?;
+        let error = if let Some(reason) = self.ctx.cancelled().now_or_never() {
+            Some(RemovePcieDeviceError::Cancelled(reason))
+        } else if pal_async::timer::Instant::now() >= self.deadline {
+            Some(pcie_eject_timeout_error(port_name))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            response.complete(Err(error));
+            None
+        } else {
+            Some(response)
+        }
+    }
+}
+
+fn pcie_eject_timeout_error(port_name: &str) -> RemovePcieDeviceError {
+    RemoteError::new(anyhow::anyhow!(
+        "PCIe ejection timed out for port '{port_name}'; device remains attached"
+    ))
+    .into()
+}
+
+fn ensure_pcie_eject_running(running: bool, halt: &Halt) -> anyhow::Result<()> {
+    anyhow::ensure!(running, "VM must be running for orderly PCIe removal");
+    anyhow::ensure!(
+        !halt.is_halted(),
+        "VM is halted and cannot acknowledge orderly PCIe removal"
+    );
+    Ok(())
+}
+
+fn poll_pcie_ejections(
+    pending: &mut HashMap<String, PendingPcieEject>,
+    cx: &mut std::task::Context<'_>,
+) -> std::task::Poll<(String, Result<(), RemovePcieDeviceError>)> {
+    for (port_name, eject) in pending {
+        if let Some(reason) = eject.ctx.cancelled().now_or_never() {
+            return std::task::Poll::Ready((
+                port_name.clone(),
+                Err(RemovePcieDeviceError::Cancelled(reason)),
+            ));
+        }
+        if pal_async::timer::Instant::now() >= eject.deadline
+            || eject.timeout.poll_unpin(cx).is_ready()
+        {
+            return std::task::Poll::Ready((
+                port_name.clone(),
+                Err(pcie_eject_timeout_error(port_name)),
+            ));
+        }
+        if let std::task::Poll::Ready(result) = eject.completion.poll_unpin(cx) {
+            return std::task::Poll::Ready((
+                port_name.clone(),
+                result
+                    .context("PCIe ejection was interrupted")
+                    .map_err(|error| RemoteError::new(error).into()),
+            ));
+        }
+    }
+    std::task::Poll::Pending
+}
+
+fn cancel_pcie_ejections(pending: &mut HashMap<String, PendingPcieEject>, reason: &str) {
+    for (port_name, eject) in pending.drain() {
+        if let Some(response) = eject.take_response() {
+            response.complete(Err(RemoteError::new(anyhow::anyhow!(
+                "PCIe ejection interrupted for port '{port_name}': {reason}; device remains attached"
+            )).into()));
+        }
+    }
 }
 
 /// Creates a thread to run low-performance devices on.
@@ -789,17 +1152,57 @@ fn resolve_proto_partition_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mesh::rpc::RpcSend;
     use test_with_tracing::test;
+
+    async fn pcie_removal_rpc() -> (
+        PcieEjectResponse,
+        mesh::rpc::PendingFailableRpc<(), RemovePcieDeviceError>,
+    ) {
+        let (send, mut recv) = mesh::channel();
+        let removal = send.call_failable(
+            VmRpc::RemovePcieDevice,
+            (CancelContext::new(), "rp0".into(), true),
+        );
+        let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+            panic!("expected PCIe removal");
+        };
+        (rpc.split().1, removal)
+    }
 
     #[pal_async::async_test]
     async fn pci_eject_wait_times_out(driver: DefaultDriver) {
-        let result = wait_for_pci_eject(&driver, std::future::pending(), Duration::ZERO).await;
+        let result = wait_for_pci_eject(
+            PolledTimer::new(&driver),
+            std::future::pending(),
+            pal_async::timer::Instant::now(),
+        )
+        .await;
         assert!(matches!(result, PciEjectResult::TimedOut));
     }
 
     #[pal_async::async_test]
+    async fn pci_eject_wait_uses_requested_timeout(driver: DefaultDriver) {
+        let timeout = Duration::from_millis(10);
+        let started = std::time::Instant::now();
+        let result = wait_for_pci_eject(
+            PolledTimer::new(&driver),
+            std::future::pending(),
+            pal_async::timer::Instant::now().saturating_add(timeout),
+        )
+        .await;
+        assert!(matches!(result, PciEjectResult::TimedOut));
+        assert!(started.elapsed() >= timeout);
+    }
+
+    #[pal_async::async_test]
     async fn pci_eject_wait_reports_guest_completion(driver: DefaultDriver) {
-        let result = wait_for_pci_eject(&driver, async { Ok(()) }, Duration::from_secs(1)).await;
+        let result = wait_for_pci_eject(
+            PolledTimer::new(&driver),
+            async { Ok(()) },
+            pal_async::timer::Instant::now().saturating_add(Duration::from_secs(1)),
+        )
+        .await;
         assert!(matches!(result, PciEjectResult::Complete(Ok(()))));
     }
 
@@ -808,12 +1211,995 @@ mod tests {
         let (send, recv) = mesh::oneshot::<()>();
         drop(send);
         let result = wait_for_pci_eject(
-            &driver,
+            PolledTimer::new(&driver),
             async { recv.await.context("ejection interrupted") },
-            Duration::from_secs(1),
+            pal_async::timer::Instant::now().saturating_add(Duration::from_secs(1)),
         )
         .await;
         assert!(matches!(result, PciEjectResult::Complete(Err(_))));
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_wait_does_not_block_queued_vm_rpc(driver: DefaultDriver) {
+        let (send, mut recv) = mesh::channel();
+        let removal = send.call_failable(
+            VmRpc::RemovePcieDevice,
+            (CancelContext::new(), "rp0".into(), true),
+        );
+        let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+            panic!("expected PCIe removal");
+        };
+        let (_, response) = rpc.split();
+        let (_complete, completion) = mesh::oneshot();
+        let mut pending = HashMap::from([(
+            "rp0".into(),
+            PendingPcieEject::new(
+                &driver,
+                "rp0",
+                response,
+                completion,
+                pal_async::timer::Instant::now()
+                    .saturating_add(Duration::from_millis(u64::from(u32::MAX))),
+                CancelContext::new(),
+            ),
+        )]);
+        let pause = send.call(VmRpc::Pause, ());
+        let message = (
+            recv.recv().map(Some),
+            poll_fn(|cx| poll_pcie_ejections(&mut pending, cx)).map(|_| None),
+        )
+            .race()
+            .await;
+        let Some(Ok(VmRpc::Pause(rpc))) = message else {
+            panic!("VM RPC must remain responsive during a pending ejection");
+        };
+        cancel_pcie_ejections(&mut pending, "VM is pausing");
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+        assert!(format!("{:#}", removal.await.unwrap_err()).contains("VM is pausing"));
+        assert!(pending.is_empty());
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_poll_tracks_each_port_and_completion(driver: DefaultDriver) {
+        let (_never_complete, never_completion) = mesh::oneshot();
+        let (complete, completion) = mesh::oneshot();
+        let deadline = pal_async::timer::Instant::now().saturating_add(Duration::from_secs(30));
+        let mut pending = HashMap::from([
+            (
+                "rp0".into(),
+                PendingPcieEject::new(
+                    &driver,
+                    "rp0",
+                    mesh::rpc::Rpc::detached(()),
+                    never_completion,
+                    deadline,
+                    CancelContext::new(),
+                ),
+            ),
+            (
+                "rp1".into(),
+                PendingPcieEject::new(
+                    &driver,
+                    "rp1",
+                    mesh::rpc::Rpc::detached(()),
+                    completion,
+                    deadline,
+                    CancelContext::new(),
+                ),
+            ),
+        ]);
+        assert!(
+            poll_pcie_ejections(
+                &mut pending,
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            )
+            .is_pending()
+        );
+        complete.send(());
+        let (port_name, result) = poll_fn(|cx| poll_pcie_ejections(&mut pending, cx)).await;
+        assert_eq!(port_name, "rp1");
+        assert!(result.is_ok());
+        pending
+            .remove(&port_name)
+            .unwrap()
+            .take_response()
+            .unwrap()
+            .complete(Ok(()));
+        assert!(pending.contains_key("rp0"));
+        cancel_pcie_ejections(&mut pending, "VM is resetting");
+        assert!(pending.is_empty());
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_timeout_replies_without_dispatch_polling(driver: DefaultDriver) {
+        for guest_completed in [false, true] {
+            let (send, mut recv) = mesh::channel();
+            let removal = send.call_failable(
+                VmRpc::RemovePcieDevice,
+                (CancelContext::new(), "rp0".into(), true),
+            );
+            let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected PCIe removal");
+            };
+            let (_, response) = rpc.split();
+            let (complete, completion) = mesh::oneshot();
+            let timeout = Duration::from_millis(10);
+            let started = pal_async::timer::Instant::now();
+            let mut pending = HashMap::from([(
+                "rp0".into(),
+                PendingPcieEject::new(
+                    &driver,
+                    "rp0",
+                    response,
+                    completion,
+                    started.saturating_add(timeout),
+                    CancelContext::new(),
+                ),
+            )]);
+            if guest_completed {
+                complete.send(());
+            }
+
+            // Model an inline RPC handler that never polls pending ejections.
+            let mut watchdog = PolledTimer::new(&driver);
+            let result = (
+                removal.map(Some),
+                watchdog.sleep(Duration::from_secs(1)).map(|_| None),
+            )
+                .race()
+                .await
+                .expect("ejection timeout must reply while dispatch is busy");
+            assert!(pal_async::timer::Instant::now().saturating_sub(started) >= timeout);
+            let error = format!("{:#}", result.unwrap_err());
+            assert!(error.contains("PCIe ejection timed out for port 'rp0'"));
+            assert!(error.contains("device remains attached"));
+
+            let (port_name, result) = poll_fn(|cx| poll_pcie_ejections(&mut pending, cx)).await;
+            assert_eq!(port_name, "rp0");
+            assert!(matches!(result, Err(RemovePcieDeviceError::Failed(_))));
+            assert!(
+                pending
+                    .remove(&port_name)
+                    .unwrap()
+                    .take_response()
+                    .is_none()
+            );
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_poll_uses_deadline_before_timer_task_runs(driver: DefaultDriver) {
+        let (complete, completion) = mesh::oneshot();
+        complete.send(());
+        let mut pending = HashMap::from([(
+            "rp0".into(),
+            PendingPcieEject::new(
+                &driver,
+                "rp0",
+                mesh::rpc::Rpc::detached(()),
+                completion,
+                pal_async::timer::Instant::now(),
+                CancelContext::new(),
+            ),
+        )]);
+        let result = poll_pcie_ejections(
+            &mut pending,
+            &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        );
+        assert!(matches!(
+            result,
+            std::task::Poll::Ready((_, Err(RemovePcieDeviceError::Failed(_))))
+        ));
+        cancel_pcie_ejections(&mut pending, "VM is stopping");
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_claimed_response_cannot_be_cancelled_or_time_out(driver: DefaultDriver) {
+        for cancel_after_claim in [false, true] {
+            let (response, removal) = pcie_removal_rpc().await;
+            let (ctx, mut cancel) = CancelContext::new().with_cancel();
+            let (_complete, completion) = mesh::oneshot();
+            let timeout = if cancel_after_claim {
+                Duration::from_secs(30)
+            } else {
+                Duration::from_millis(10)
+            };
+            let deadline = pal_async::timer::Instant::now().saturating_add(timeout);
+            let mut pending =
+                PendingPcieEject::new(&driver, "rp0", response, completion, deadline, ctx);
+            let response = pending.claim_response("rp0").unwrap();
+            if cancel_after_claim {
+                cancel.cancel();
+            }
+            let mut watchdog = PolledTimer::new(&driver);
+            let result = (
+                pending.timeout.map(|()| true),
+                watchdog.sleep(Duration::from_secs(1)).map(|_| false),
+            )
+                .race()
+                .await;
+            assert!(result, "request guard must finish without responding twice");
+            response.complete(Ok(()));
+            removal.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn pcie_ejection_requires_running_and_unhalted_guest() {
+        let (halt, _recv) = Halt::new();
+        assert!(ensure_pcie_eject_running(false, &halt).is_err());
+        ensure_pcie_eject_running(true, &halt).unwrap();
+        halt.halt(HaltReason::PowerOff);
+        assert!(
+            ensure_pcie_eject_running(true, &halt)
+                .unwrap_err()
+                .to_string()
+                .contains("VM is halted")
+        );
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_retry_ignores_finished_map_entry(driver: DefaultDriver) {
+        let (response, removal) = pcie_removal_rpc().await;
+        let (old_complete, completion) = mesh::oneshot();
+        let mut pending = HashMap::from([(
+            "rp0".into(),
+            PendingPcieEject::new(
+                &driver,
+                "rp0",
+                response,
+                completion,
+                pal_async::timer::Instant::now().saturating_add(Duration::from_millis(10)),
+                CancelContext::new(),
+            ),
+        )]);
+        pending.retain(|_, eject| eject.is_pending());
+        removal.await.unwrap_err();
+        assert!(pending.contains_key("rp0"));
+        assert!(!pending.get("rp0").is_some_and(PendingPcieEject::is_pending));
+
+        let (response, retry) = pcie_removal_rpc().await;
+        let (complete, completion) = mesh::oneshot();
+        pending.insert(
+            "rp0".into(),
+            PendingPcieEject::new(
+                &driver,
+                "rp0",
+                response,
+                completion,
+                pal_async::timer::Instant::now().saturating_add(Duration::from_secs(30)),
+                CancelContext::new(),
+            ),
+        );
+        old_complete.send(());
+        assert!(
+            poll_pcie_ejections(
+                &mut pending,
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            )
+            .is_pending()
+        );
+        complete.send(());
+        let (port_name, result) = poll_fn(|cx| poll_pcie_ejections(&mut pending, cx)).await;
+        result.unwrap();
+        pending
+            .remove(&port_name)
+            .unwrap()
+            .claim_response(&port_name)
+            .unwrap()
+            .complete(Ok(()));
+        retry.await.unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_cancellation_replies_without_dispatch_polling(driver: DefaultDriver) {
+        for expired_deadline in [false, true] {
+            let (response, removal) = pcie_removal_rpc().await;
+            let (mut ctx, mut cancel) = CancelContext::new().with_cancel();
+            if expired_deadline {
+                ctx = ctx.with_timeout(Duration::ZERO);
+            }
+            let (complete, completion) = mesh::oneshot();
+            let mut pending = PendingPcieEject::new(
+                &driver,
+                "rp0",
+                response,
+                completion,
+                pal_async::timer::Instant::now().saturating_add(Duration::from_secs(30)),
+                ctx,
+            );
+            if !expired_deadline {
+                cancel.cancel();
+            }
+            let mut watchdog = PolledTimer::new(&driver);
+            let result = (
+                removal.map(Some),
+                watchdog.sleep(Duration::from_secs(1)).map(|_| None),
+            )
+                .race()
+                .await
+                .expect("cancellation must reply while dispatch is busy");
+            let reason = if expired_deadline {
+                mesh::CancelReason::DeadlineExceeded
+            } else {
+                mesh::CancelReason::Cancelled
+            };
+            assert!(matches!(
+                result,
+                Err(mesh::rpc::RpcError::Call(RemovePcieDeviceError::Cancelled(actual))) if actual == reason
+            ));
+            complete.send(());
+            assert!(pending.claim_response("rp0").is_none());
+            assert!(!pending.is_pending());
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_eject_cancellation_wins_until_response_is_claimed(driver: DefaultDriver) {
+        for cancel_before_poll in [false, true] {
+            let (response, removal) = pcie_removal_rpc().await;
+            let (ctx, mut cancel) = CancelContext::new().with_cancel();
+            let (complete, completion) = mesh::oneshot();
+            let mut pending = HashMap::from([(
+                "rp0".into(),
+                PendingPcieEject::new(
+                    &driver,
+                    "rp0",
+                    response,
+                    completion,
+                    pal_async::timer::Instant::now().saturating_add(Duration::from_secs(30)),
+                    ctx,
+                ),
+            )]);
+            complete.send(());
+            if cancel_before_poll {
+                cancel.cancel();
+            }
+            let (port_name, result) = poll_fn(|cx| poll_pcie_ejections(&mut pending, cx)).await;
+            if cancel_before_poll {
+                assert!(matches!(result, Err(RemovePcieDeviceError::Cancelled(_))));
+            } else {
+                result.unwrap();
+                cancel.cancel();
+            }
+            let mut pending = pending.remove(&port_name).unwrap();
+            assert!(pending.claim_response(&port_name).is_none());
+            assert!(matches!(
+                removal.await,
+                Err(mesh::rpc::RpcError::Call(RemovePcieDeviceError::Cancelled(
+                    mesh::CancelReason::Cancelled
+                )))
+            ));
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_removal_context_survives_mesh_serialization(_driver: DefaultDriver) {
+        let (send, mut recv) = mesh::channel();
+        let (ctx, mut cancel) = CancelContext::new()
+            .with_timeout(Duration::from_secs(1))
+            .with_cancel();
+        let removal = send.call_failable(VmRpc::RemovePcieDevice, (ctx, "rp0".into(), true));
+        let encoded = mesh::OwnedMessage::new(recv.recv().await.unwrap()).serialize();
+        let request = mesh::OwnedMessage::serialized(encoded)
+            .parse::<VmRpc>()
+            .unwrap();
+        let VmRpc::RemovePcieDevice(rpc) = request else {
+            panic!("expected PCIe removal");
+        };
+        let ((mut ctx, port_name, orderly), response) = rpc.split();
+        assert_eq!(port_name, "rp0");
+        assert!(orderly);
+        assert!(ctx.deadline().is_some());
+        cancel.cancel();
+        let reason = ctx.cancelled().await;
+        assert_eq!(reason, mesh::CancelReason::Cancelled);
+        response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+        assert!(matches!(
+            removal.await,
+            Err(mesh::rpc::RpcError::Call(RemovePcieDeviceError::Cancelled(
+                mesh::CancelReason::Cancelled
+            )))
+        ));
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_deadline_does_not_restart_when_first_polled(driver: DefaultDriver) {
+        let deadline = pal_async::timer::Instant::now().saturating_add(Duration::from_millis(10));
+        let mut wait = Box::pin(wait_for_pci_eject(
+            PolledTimer::new(&driver),
+            std::future::pending(),
+            deadline,
+        ));
+        PolledTimer::new(&driver).sleep_until(deadline).await;
+        assert!(matches!(
+            futures::poll!(&mut wait),
+            std::task::Poll::Ready(PciEjectResult::TimedOut)
+        ));
+    }
+
+    struct VpciDispatchTest {
+        rpc_send: mesh::Sender<VmRpc>,
+        rpc_recv: mesh::Receiver<VmRpc>,
+        worker_send: mesh::Sender<WorkerRpc<RestartState>>,
+        worker_recv: mesh::Receiver<WorkerRpc<RestartState>>,
+        _halt_send: mesh::Sender<HaltReason>,
+        halt_recv: mesh::Receiver<HaltReason>,
+        pending_pcie: HashMap<String, PendingPcieEject>,
+        pending_vpci: HashMap<guid::Guid, PendingVpciEject>,
+        deferred: DeferredVmStateChanges,
+        device_removal: DeviceRemovalState,
+    }
+
+    impl VpciDispatchTest {
+        fn new() -> Self {
+            let (rpc_send, rpc_recv) = mesh::channel();
+            let (worker_send, worker_recv) = mesh::channel();
+            let (halt_send, halt_recv) = mesh::channel();
+            Self {
+                rpc_send,
+                rpc_recv,
+                worker_send,
+                worker_recv,
+                _halt_send: halt_send,
+                halt_recv,
+                pending_pcie: HashMap::new(),
+                pending_vpci: HashMap::new(),
+                deferred: DeferredVmStateChanges::default(),
+                device_removal: DeviceRemovalState::default(),
+            }
+        }
+
+        async fn next(&mut self) -> Event {
+            next_vm_event(
+                &mut self.rpc_recv,
+                &mut self.worker_recv,
+                &mut self.halt_recv,
+                &mut self.pending_pcie,
+                &mut self.pending_vpci,
+                &mut self.deferred,
+                &mut self.device_removal,
+            )
+            .await
+        }
+
+        async fn add_eject(
+            &mut self,
+            driver: &DefaultDriver,
+            eject_timeout: Duration,
+        ) -> (
+            mesh::OneshotSender<()>,
+            pal_async::timer::Instant,
+            mesh::rpc::PendingFailableRpc<(), RemoteError>,
+        ) {
+            let instance_id = guid::Guid::new_random();
+            let removal = self
+                .rpc_send
+                .call_failable(VmRpc::RemoveVpciDevice, (instance_id, eject_timeout));
+            let VmRpc::RemoveVpciDevice(rpc) = self.rpc_recv.recv().await.unwrap() else {
+                panic!("expected VPCI removal");
+            };
+            let (_, response) = rpc.split();
+            let (started_send, started) = mesh::oneshot();
+            let (eject_send, eject) = mesh::oneshot::<()>();
+            let deadline = pal_async::timer::Instant::now().saturating_add(eject_timeout);
+            let wait = driver.spawn(
+                "vpci-test-eject",
+                wait_for_pci_eject(
+                    PolledTimer::new(driver),
+                    async move {
+                        started_send.send(());
+                        eject.await.context("guest ejection channel closed")
+                    },
+                    deadline,
+                ),
+            );
+            started.await.unwrap();
+            self.pending_vpci.insert(
+                instance_id,
+                PendingVpciEject {
+                    response,
+                    wait,
+                    eject_timeout,
+                },
+            );
+            (eject_send, deadline, removal)
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn queued_pcie_removal_cancellation_does_not_wait_for_vpci(driver: DefaultDriver) {
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(2))
+            .until_cancelled(async {
+                for buffered in [false, true] {
+                    for expired_deadline in [false, true] {
+                        for orderly in [false, true] {
+                            let mut vm = VpciDispatchTest::new();
+                            let (_acknowledgement, _, _vpci_removal) = vm
+                                .add_eject(&driver, Duration::from_millis(u64::from(u32::MAX)))
+                                .await;
+                            let _pause = if buffered {
+                                let pause = vm.rpc_send.call(VmRpc::Pause, ());
+                                assert!(vm.next().now_or_never().is_none());
+                                Some(pause)
+                            } else {
+                                None
+                            };
+                            let ctx = if expired_deadline {
+                                CancelContext::new().with_timeout(Duration::from_millis(50))
+                            } else {
+                                CancelContext::new()
+                            };
+                            let (ctx, mut cancel) = ctx.with_cancel();
+                            let removal = vm.rpc_send.call_failable(
+                                VmRpc::RemovePcieDevice,
+                                (ctx, "rp0".into(), orderly),
+                            );
+                            assert!(vm.next().now_or_never().is_none());
+                            if !expired_deadline {
+                                cancel.cancel();
+                            }
+                            let result = (vm.next().map(|_| None), removal.map(Some))
+                                .race()
+                                .await
+                                .expect("cancelled PCIe removal must reply before VPCI completes");
+                            let Err(mesh::rpc::RpcError::Call(RemovePcieDeviceError::Cancelled(
+                                reason,
+                            ))) = result
+                            else {
+                                panic!("expected a typed PCIe cancellation reply");
+                            };
+                            assert_eq!(
+                                reason,
+                                if expired_deadline {
+                                    mesh::CancelReason::DeadlineExceeded
+                                } else {
+                                    mesh::CancelReason::Cancelled
+                                }
+                            );
+                            assert!(vm.pending_pcie.is_empty());
+                            assert_eq!(vm.pending_vpci.len(), 1);
+                            assert!(vm.deferred.buffered_rpcs.is_empty());
+                            assert_eq!(vm.deferred.rpc.is_some(), buffered);
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("queued PCIe cancellation was blocked by the VPCI guest wait");
+    }
+
+    #[pal_async::async_test]
+    async fn consuming_teardown_defers_state_changes_but_not_diagnostics(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (release, completion) = mesh::oneshot();
+        vm.device_removal.start(&driver, async move {
+            completion.await.unwrap();
+        });
+        let mut pause = Box::pin(vm.rpc_send.call(VmRpc::Pause, ()));
+        let read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (0, 4));
+        let Event::VmRpc(Ok(VmRpc::ReadMemory(rpc))) = vm.next().await else {
+            panic!("diagnostics must remain serviceable during consuming teardown");
+        };
+        rpc.complete(Ok(vec![1, 2, 3, 4]));
+        assert_eq!(read.await.unwrap(), [1, 2, 3, 4]);
+        assert!(futures::poll!(&mut pause).is_pending());
+        assert!(vm.next().now_or_never().is_none());
+        release.send(());
+        assert!(matches!(vm.next().await, Event::DeviceRemoved));
+        let Event::VmRpc(Ok(VmRpc::Pause(rpc))) = vm.next().await else {
+            panic!("expected pause after consuming teardown");
+        };
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+    }
+
+    #[pal_async::async_test]
+    async fn pcie_completion_waits_for_existing_consuming_teardown(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (response, removal) = pcie_removal_rpc().await;
+        let (complete, completion) = mesh::oneshot();
+        vm.pending_pcie.insert(
+            "rp0".into(),
+            PendingPcieEject::new(
+                &driver,
+                "rp0",
+                response,
+                completion,
+                pal_async::timer::Instant::now().saturating_add(Duration::from_secs(30)),
+                CancelContext::new(),
+            ),
+        );
+        complete.send(());
+        let (release, completion) = mesh::oneshot();
+        vm.device_removal.start(&driver, async move {
+            completion.await.unwrap();
+        });
+        assert!(vm.next().now_or_never().is_none());
+        release.send(());
+        assert!(matches!(vm.next().await, Event::DeviceRemoved));
+        let Event::PcieEject(port_name, result) = vm.next().await else {
+            panic!("expected PCIe completion after existing cleanup");
+        };
+        result.unwrap();
+        let mut pending = vm.pending_pcie.remove(&port_name).unwrap();
+        pending.claim_response(&port_name).unwrap().complete(Ok(()));
+        removal.await.unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_preserves_guest_ejection_wait(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (first, _, first_removal) = vm.add_eject(&driver, Duration::from_secs(30)).await;
+        let (second, _, second_removal) = vm.add_eject(&driver, Duration::from_secs(30)).await;
+        let mut pause = Box::pin(vm.rpc_send.call(VmRpc::Pause, ()));
+        let reset = vm.rpc_send.call_failable(VmRpc::Reset, ());
+        assert!(vm.next().now_or_never().is_none());
+        assert!(matches!(
+            vm.deferred.rpc.as_ref().map(|rpc| &rpc.rpc),
+            Some(VmRpc::Pause(_))
+        ));
+        assert!(futures::poll!(&mut pause).is_pending());
+        let mut removed = Vec::new();
+        for acknowledgement in [first, second] {
+            acknowledgement.send(());
+            let Event::VpciEject(id, result) = vm.next().await else {
+                panic!("state transition overtook pending VPCI ejection");
+            };
+            assert!(matches!(&result, PciEjectResult::Complete(Ok(()))));
+            let pending = vm.pending_vpci.remove(&id).unwrap();
+            complete_vpci_removal(id, pending, result, async {
+                removed.push(id);
+                Ok(())
+            })
+            .await;
+            if !vm.pending_vpci.is_empty() {
+                assert!(vm.next().now_or_never().is_none());
+                assert!(futures::poll!(&mut pause).is_pending());
+            }
+        }
+        first_removal.await.unwrap();
+        second_removal.await.unwrap();
+        assert_eq!(removed.len(), 2);
+        let Event::VmRpc(Ok(VmRpc::Pause(rpc))) = vm.next().await else {
+            panic!("expected deferred pause");
+        };
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+        let Event::VmRpc(Ok(VmRpc::Reset(rpc))) = vm.next().await else {
+            panic!("later reset must stay behind pause");
+        };
+        rpc.complete(Ok(()));
+        reset.await.unwrap();
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_preserves_ejection_deadline(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (_acknowledgement, deadline, removal) =
+            vm.add_eject(&driver, Duration::from_millis(100)).await;
+        let pause = vm.rpc_send.call(VmRpc::Pause, ());
+        let Event::VpciEject(id, result) = vm.next().await else {
+            panic!("state transition overtook the ejection timeout");
+        };
+        assert!(matches!(&result, PciEjectResult::TimedOut));
+        assert!(pal_async::timer::Instant::now() >= deadline);
+        let pending = vm.pending_vpci.remove(&id).unwrap();
+        complete_vpci_removal(id, pending, result, async { Ok(()) }).await;
+        removal.await.unwrap();
+        let Event::VmRpc(Ok(VmRpc::Pause(rpc))) = vm.next().await else {
+            panic!("expected pause after timed out removal");
+        };
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_keeps_worker_stop_responsive(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (_acknowledgement, _, removal) = vm
+            .add_eject(&driver, Duration::from_millis(u64::from(u32::MAX)))
+            .await;
+        let mut pause = Box::pin(vm.rpc_send.call(VmRpc::Pause, ()));
+        assert!(vm.next().now_or_never().is_none());
+        vm.worker_send.send(WorkerRpc::Stop);
+        assert!(matches!(
+            vm.next().await,
+            Event::WorkerRpc(Ok(WorkerRpc::Stop))
+        ));
+        assert!(futures::poll!(&mut pause).is_pending());
+        cancel_vpci_ejections(&mut vm.pending_vpci, "VM is stopping");
+        assert!(format!("{:#}", removal.await.unwrap_err()).contains("VM is stopping"));
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_keeps_worker_inspection_responsive(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (_acknowledgement, _, _removal) = vm
+            .add_eject(&driver, Duration::from_millis(u64::from(u32::MAX)))
+            .await;
+        let mut pause = Box::pin(vm.rpc_send.call(VmRpc::Pause, ()));
+        assert!(vm.next().now_or_never().is_none());
+        let mut inspection =
+            inspect::inspect("", inspect::send(&vm.worker_send, WorkerRpc::Inspect));
+        let Event::WorkerRpc(Ok(WorkerRpc::Inspect(request))) = vm.next().await else {
+            panic!("inspection must remain responsive while VPCI ejection is pending");
+        };
+        request.respond(|response| {
+            response.field("waiting", true);
+        });
+        inspection.resolve().await;
+        assert_eq!(
+            inspection.results().json().to_string(),
+            r#"{"waiting":true}"#
+        );
+        assert!(futures::poll!(&mut pause).is_pending());
+        assert_eq!(vm.pending_vpci.len(), 1);
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_reports_duplicate_worker_restart(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (_acknowledgement, _, _removal) = vm.add_eject(&driver, Duration::from_secs(30)).await;
+        vm.worker_send
+            .send(WorkerRpc::Restart(mesh::rpc::Rpc::detached(())));
+        assert!(vm.next().now_or_never().is_none());
+        let duplicate = vm.worker_send.call_failable(WorkerRpc::Restart, ());
+        assert!(vm.next().now_or_never().is_none());
+        let Err(mesh::rpc::RpcError::Call(error)) = duplicate.await else {
+            panic!("a duplicate worker restart must return an explicit error");
+        };
+        assert!(format!("{error:#}").contains("restart is already pending"));
+        assert!(vm.deferred.restart.is_some());
+    }
+
+    #[test]
+    fn vpci_state_change_waiting_matches_guest_lifecycle() {
+        for rpc in [
+            VmRpc::Resume(mesh::rpc::Rpc::detached(())),
+            VmRpc::Pause(mesh::rpc::Rpc::detached(())),
+            VmRpc::Reset(mesh::rpc::Rpc::detached(())),
+            VmRpc::Save(mesh::rpc::Rpc::detached(())),
+            VmRpc::PulseSaveRestore(mesh::rpc::Rpc::detached(())),
+            VmRpc::DumpState(mesh::rpc::Rpc::detached(
+                File::open(std::env::current_exe().unwrap()).unwrap(),
+            )),
+            VmRpc::CompleteReloadIgvm(mesh::rpc::Rpc::detached(true)),
+        ] {
+            assert!(waits_for_vpci_ejection(&rpc));
+        }
+        for rpc in [
+            VmRpc::ClearHalt(mesh::rpc::Rpc::detached(())),
+            VmRpc::ReadMemory(mesh::rpc::Rpc::detached((0, 4))),
+            VmRpc::CompleteReloadIgvm(mesh::rpc::Rpc::detached(false)),
+        ] {
+            assert!(!waits_for_vpci_ejection(&rpc));
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_deferred_pause_keeps_halt_recovery_serviceable(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (acknowledgement, _, removal) = vm
+            .add_eject(&driver, Duration::from_millis(u64::from(u32::MAX)))
+            .await;
+        let mut pause = Box::pin(vm.rpc_send.call(VmRpc::Pause, ()));
+        assert!(vm.next().now_or_never().is_none());
+        vm._halt_send.send(HaltReason::PowerOff);
+        assert!(matches!(
+            vm.next().await,
+            Event::Halt(Ok(HaltReason::PowerOff))
+        ));
+        let reset = vm.rpc_send.call_failable(VmRpc::Reset, ());
+        let read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (0, 4));
+        let clear = vm.rpc_send.call(VmRpc::ClearHalt, ());
+        let Some(Event::VmRpc(Ok(VmRpc::ClearHalt(rpc)))) = vm.next().now_or_never() else {
+            panic!("halt recovery was blocked behind the deferred state change");
+        };
+        rpc.complete(true);
+        assert!(clear.await.unwrap());
+        assert!(futures::poll!(&mut pause).is_pending());
+        assert_eq!(vm.pending_vpci.len(), 1);
+
+        acknowledgement.send(());
+        let Event::VpciEject(id, result) = vm.next().await else {
+            panic!("expected guest ejection after halt recovery");
+        };
+        assert!(matches!(&result, PciEjectResult::Complete(Ok(()))));
+        let pending = vm.pending_vpci.remove(&id).unwrap();
+        complete_vpci_removal(id, pending, result, async { Ok(()) }).await;
+        removal.await.unwrap();
+        let Event::VmRpc(Ok(VmRpc::Pause(rpc))) = vm.next().await else {
+            panic!("expected pause after ejection");
+        };
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+        let Event::VmRpc(Ok(VmRpc::Reset(rpc))) = vm.next().await else {
+            panic!("reset must remain behind pause");
+        };
+        rpc.complete(Ok(()));
+        reset.await.unwrap();
+        let Event::VmRpc(Ok(VmRpc::ReadMemory(rpc))) = vm.next().await else {
+            panic!("later requests must remain ordered behind reset");
+        };
+        rpc.complete(Ok(vec![1, 2, 3, 4]));
+        assert_eq!(read.await.unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_state_transition_keeps_later_requests_for_restart(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (acknowledgement, _, removal) = vm.add_eject(&driver, Duration::from_secs(30)).await;
+        let pause = vm.rpc_send.call(VmRpc::Pause, ());
+        assert!(vm.next().now_or_never().is_none());
+        vm.worker_send
+            .send(WorkerRpc::Restart(mesh::rpc::Rpc::detached(())));
+        assert!(vm.next().now_or_never().is_none());
+        assert!(vm.deferred.restart.is_some());
+        let read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (0, 4));
+        let second_read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (4, 4));
+        let clear = vm.rpc_send.call(VmRpc::ClearHalt, ());
+        let Event::VmRpc(Ok(VmRpc::ClearHalt(rpc))) = vm.next().await else {
+            panic!("halt recovery must remain available during deferred restart");
+        };
+        rpc.complete(true);
+        assert!(clear.await.unwrap());
+        assert_eq!(vm.deferred.buffered_rpcs.len(), 2);
+        acknowledgement.send(());
+        let Event::VpciEject(id, result) = vm.next().await else {
+            panic!("expected VPCI ejection before deferred state changes");
+        };
+        let pending = vm.pending_vpci.remove(&id).unwrap();
+        complete_vpci_removal(id, pending, result, async { Ok(()) }).await;
+        removal.await.unwrap();
+        let Event::VmRpc(Ok(VmRpc::Pause(rpc))) = vm.next().await else {
+            panic!("expected pause before worker restart");
+        };
+        rpc.complete(true);
+        assert!(pause.await.unwrap());
+        assert!(matches!(
+            vm.next().await,
+            Event::WorkerRpc(Ok(WorkerRpc::Restart(_)))
+        ));
+        let queued_read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (8, 4));
+        let receiver = vm.deferred.prepend_buffered_rpcs(vm.rpc_recv);
+        let encoded = mesh::OwnedMessage::new((receiver,)).serialize();
+        let (mut restored_rpc,) = mesh::OwnedMessage::serialized(encoded)
+            .parse::<(mesh::Receiver<VmRpc>,)>()
+            .unwrap();
+        let future_read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (12, 4));
+        for (address, data) in [
+            (0, [1, 2, 3, 4]),
+            (4, [5, 6, 7, 8]),
+            (8, [9, 10, 11, 12]),
+            (12, [13, 14, 15, 16]),
+        ] {
+            let VmRpc::ReadMemory(rpc) = restored_rpc.recv().await.unwrap() else {
+                panic!("later VM request must remain available after restart");
+            };
+            let (input, response) = rpc.split();
+            assert_eq!(input, (address, 4));
+            response.complete(Ok(data.to_vec()));
+        }
+        assert_eq!(read.await.unwrap(), [1, 2, 3, 4]);
+        assert_eq!(second_read.await.unwrap(), [5, 6, 7, 8]);
+        assert_eq!(queued_read.await.unwrap(), [9, 10, 11, 12]);
+        assert_eq!(future_read.await.unwrap(), [13, 14, 15, 16]);
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_deferred_restart_failure_preserves_buffered_requests(driver: DefaultDriver) {
+        let mut vm = VpciDispatchTest::new();
+        let (acknowledgement, _, removal) = vm.add_eject(&driver, Duration::from_secs(30)).await;
+        let restart = vm.worker_send.call_failable(WorkerRpc::Restart, ());
+        assert!(vm.next().now_or_never().is_none());
+        let read = vm.rpc_send.call_failable(VmRpc::ReadMemory, (0, 4));
+        assert!(vm.next().now_or_never().is_none());
+
+        acknowledgement.send(());
+        let Event::VpciEject(id, result) = vm.next().await else {
+            panic!("expected ejection before restart");
+        };
+        let pending = vm.pending_vpci.remove(&id).unwrap();
+        complete_vpci_removal(id, pending, result, async { Ok(()) }).await;
+        removal.await.unwrap();
+        let Event::WorkerRpc(Ok(WorkerRpc::Restart(rpc))) = vm.next().await else {
+            panic!("expected deferred restart");
+        };
+        rpc.fail(anyhow::anyhow!("test restart failed"));
+        let Err(error) = restart.await else {
+            panic!("the deferred restart must report its failure");
+        };
+        assert!(format!("{error:#}").contains("test restart failed"));
+        let Event::VmRpc(Ok(VmRpc::ReadMemory(rpc))) = vm.next().await else {
+            panic!("the old worker must retain buffered requests after restart failure");
+        };
+        rpc.complete(Ok(vec![1, 2, 3, 4]));
+        assert_eq!(read.await.unwrap(), [1, 2, 3, 4]);
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_removal_always_tears_down_after_ejection_wait(driver: DefaultDriver) {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        for outcome in 0..3 {
+            let (send, mut recv) = mesh::channel();
+            let instance_id = guid::Guid::new_random();
+            let eject_timeout = if outcome == 2 {
+                Duration::ZERO
+            } else {
+                Duration::from_secs(1)
+            };
+            let removal = send.call_failable(VmRpc::RemoveVpciDevice, (instance_id, eject_timeout));
+            let VmRpc::RemoveVpciDevice(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected VPCI removal");
+            };
+            let (_, response) = rpc.split();
+            let wait = driver.spawn(
+                "vpci-test-eject",
+                wait_for_pci_eject(
+                    PolledTimer::new(&driver),
+                    async move {
+                        match outcome {
+                            0 => Ok(()),
+                            1 => anyhow::bail!("guest ejection failed"),
+                            _ => std::future::pending().await,
+                        }
+                    },
+                    pal_async::timer::Instant::now().saturating_add(eject_timeout),
+                ),
+            );
+            let mut pending = HashMap::from([(
+                instance_id,
+                PendingVpciEject {
+                    response,
+                    wait,
+                    eject_timeout,
+                },
+            )]);
+            let (id, result) = poll_fn(|cx| poll_vpci_ejections(&mut pending, cx)).await;
+            assert_eq!(id, instance_id);
+            match (&result, outcome) {
+                (PciEjectResult::Complete(Ok(())), 0)
+                | (PciEjectResult::Complete(Err(_)), 1)
+                | (PciEjectResult::TimedOut, 2) => {}
+                _ => panic!("unexpected ejection outcome"),
+            }
+            let removed = Arc::new(AtomicBool::new(false));
+            let record = removed.clone();
+            let pending = pending.remove(&id).unwrap();
+            complete_vpci_removal(id, pending, result, async move {
+                record.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            removal.await.unwrap();
+            assert!(removed.load(Ordering::SeqCst));
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn vpci_removal_reports_teardown_failure(driver: DefaultDriver) {
+        let (send, mut recv) = mesh::channel();
+        let instance_id = guid::Guid::new_random();
+        let removal = send.call_failable(VmRpc::RemoveVpciDevice, (instance_id, Duration::ZERO));
+        let VmRpc::RemoveVpciDevice(rpc) = recv.recv().await.unwrap() else {
+            panic!("expected VPCI removal");
+        };
+        let (_, response) = rpc.split();
+        let pending = PendingVpciEject {
+            response,
+            wait: driver.spawn("vpci-test-eject", async { PciEjectResult::TimedOut }),
+            eject_timeout: Duration::ZERO,
+        };
+        complete_vpci_removal(instance_id, pending, PciEjectResult::TimedOut, async {
+            anyhow::bail!("device teardown failed")
+        })
+        .await;
+        assert!(format!("{:#}", removal.await.unwrap_err()).contains("device teardown failed"));
     }
 
     fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
@@ -976,6 +2362,7 @@ struct LoadedVmInner {
 
     // relay halt messages to the client, which decides what to do about them.
     halt_recv: mesh::Receiver<HaltReason>,
+    halt_vps: Arc<Halt>,
     client_notify_send: mesh::Sender<HaltReason>,
     chipset: Arc<vmotherboard::Chipset>,
     /// Instantiated IOMMU devices (ACPI configs + per-RC shared state),
@@ -988,6 +2375,7 @@ struct LoadedVmInner {
     ioapic_iommu_rid: Option<u16>,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    pcie_eject_timeouts: HashMap<String, Duration>,
     /// Sources for SRAT generic-initiator entries, one per
     /// [`PcieGenericInitiatorConfig`](openvmm_defs::config::PcieGenericInitiatorConfig).
     /// Each holds the port's live bus-range handle, read at ACPI-build time
@@ -2247,6 +3635,19 @@ impl InitializedVm {
         }
         let mut deferred_msi_conns: Vec<DeferredMsiConn> = Vec::new();
 
+        let mut pcie_eject_timeouts = HashMap::new();
+        for port in cfg
+            .pcie_root_complexes
+            .iter()
+            .flat_map(|rc| &rc.ports)
+            .chain(cfg.pcie_switches.iter().flat_map(|switch| &switch.ports))
+        {
+            if let Some(hotplug) = port.hotplug {
+                if let Some(timeout) = hotplug.attention_button {
+                    pcie_eject_timeouts.insert(port.name.clone(), timeout);
+                }
+            }
+        }
         let (mut pcie_host_bridges, pcie_root_complexes) = {
             pcie_topology::validate_pcie_root_complexes(&cfg.pcie_root_complexes)?;
             let mut pcie_host_bridges = Vec::new();
@@ -2433,8 +3834,7 @@ impl InitializedVm {
             bus_range: pci_core::bus_range::AssignedBusRange,
             rc_idx: usize,
         }
-        let mut port_info: std::collections::HashMap<Arc<str>, PortInfo> =
-            std::collections::HashMap::new();
+        let mut port_info: HashMap<Arc<str>, PortInfo> = HashMap::new();
         for (rc_idx, (hb, rc)) in pcie_host_bridges
             .iter()
             .zip(pcie_root_complexes.iter())
@@ -3173,7 +4573,7 @@ impl InitializedVm {
             partition.clone().into_vm_partition(),
             PartitionUnitParams {
                 processor_topology: &processor_topology,
-                halt_vps,
+                halt_vps: halt_vps.clone(),
                 halt_request_recv,
                 client_notify_send: halt_send,
                 vtl_guest_memory: [
@@ -3265,6 +4665,7 @@ impl InitializedVm {
                 #[cfg(target_os = "linux")]
                 vfio_cdev_inspect,
                 halt_recv,
+                halt_vps,
                 client_notify_send,
                 chipset: chipset.chipset.clone(),
                 iommu_devices,
@@ -3272,6 +4673,7 @@ impl InitializedVm {
                 ioapic_iommu_rid,
                 pcie_host_bridges,
                 pcie_root_complexes,
+                pcie_eject_timeouts,
                 generic_initiator_sources,
                 pcie_hotplug_devices: Vec::new(),
                 dynamic_vpci_devices: Vec::new(),
@@ -3726,6 +5128,130 @@ impl LoadedVmInner {
 }
 
 impl LoadedVm {
+    fn request_vpci_eject(
+        &self,
+        instance_id: guid::Guid,
+        eject_timeout: Duration,
+    ) -> anyhow::Result<Task<PciEjectResult>> {
+        let entry = self
+            .inner
+            .dynamic_vpci_devices
+            .iter()
+            .find(|entry| entry.instance_id == instance_id)
+            .with_context(|| {
+                format!("no dynamically added VPCI device with instance ID '{instance_id}'")
+            })?;
+        let driver = self.inner.driver_source.simple();
+        let deadline = pal_async::timer::Instant::now().saturating_add(eject_timeout);
+        Ok(driver.spawn(
+            "vpci-eject",
+            wait_for_pci_eject(PolledTimer::new(&driver), entry.device.eject(), deadline),
+        ))
+    }
+
+    fn remove_vpci_device(
+        &mut self,
+        instance_id: guid::Guid,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + Send + use<>> {
+        let index = self
+            .inner
+            .dynamic_vpci_devices
+            .iter()
+            .position(|entry| entry.instance_id == instance_id)
+            .with_context(|| {
+                format!("no dynamically added VPCI device with instance ID '{instance_id}'")
+            })?;
+        let entry = self.inner.dynamic_vpci_devices.remove(index);
+        Ok(async move {
+            entry.device.remove().await;
+            Ok(())
+        })
+    }
+
+    fn request_pcie_eject(
+        &self,
+        port_name: &str,
+    ) -> anyhow::Result<(mesh::OneshotReceiver<()>, pal_async::timer::Instant)> {
+        ensure_pcie_eject_running(self.running, &self.inner.halt_vps)?;
+        anyhow::ensure!(
+            self.inner
+                .pcie_hotplug_devices
+                .iter()
+                .any(|(name, _, _)| name == port_name),
+            "no hot-added device on port '{port_name}' (only dynamically added devices can be hot-removed)"
+        );
+        let eject_timeout = *self
+            .inner
+            .pcie_eject_timeouts
+            .get(port_name)
+            .ok_or(PcieEjectError::AttentionButtonUnsupported)?;
+        let deadline = pal_async::timer::Instant::now().saturating_add(eject_timeout);
+        let rc = self
+            .inner
+            .pcie_root_complexes
+            .iter()
+            .find(|rc| {
+                rc.lock()
+                    .downstream_ports()
+                    .iter()
+                    .any(|p| p.name.as_ref() == port_name)
+            })
+            .with_context(|| format!("port '{port_name}' not found in any root complex"))?;
+        let completion = rc.lock().request_hotplug_remove_device(port_name)?;
+        Ok((completion, deadline))
+    }
+
+    fn remove_pcie_device(
+        &mut self,
+        port_name: &str,
+        orderly: bool,
+    ) -> anyhow::Result<impl Future<Output = ()> + Send + use<>> {
+        if orderly {
+            ensure_pcie_eject_running(self.running, &self.inner.halt_vps)?;
+        }
+        let idx = self.inner.pcie_hotplug_devices.iter()
+            .position(|(name, _, _)| name == port_name)
+            .with_context(|| format!(
+                "no hot-added device on port '{port_name}' (only dynamically added devices can be hot-removed)"
+            ))?;
+        let rc = self
+            .inner
+            .pcie_root_complexes
+            .iter()
+            .find(|rc| {
+                rc.lock()
+                    .downstream_ports()
+                    .iter()
+                    .any(|p| p.name.as_ref() == port_name)
+            })
+            .with_context(|| format!("port '{port_name}' not found in any root complex"))?;
+        // Config accesses take this same lock, so the final slot check and
+        // detach cannot race a guest power-on write.
+        rc.lock().hotplug_remove_device(port_name, orderly)?;
+        let (_, unit, device) = self.inner.pcie_hotplug_devices.remove(idx);
+        Ok(async move {
+            unit.remove().await;
+            drop(device);
+        })
+    }
+
+    fn start_pcie_removal(
+        &mut self,
+        driver: &impl Spawn,
+        device_removal: &mut DeviceRemovalState,
+        port_name: &str,
+        orderly: bool,
+        response: PcieEjectResponse,
+    ) {
+        match self.remove_pcie_device(port_name, orderly) {
+            Ok(removal) => device_removal.start(driver, async move {
+                removal.await;
+                response.complete(Ok(()));
+            }),
+            Err(error) => response.complete(Err(RemoteError::new(error).into())),
+        }
+    }
+
     #[tracing::instrument(name = "resume_vm", target = "openvmm::perf", skip_all)]
     async fn resume(&mut self) -> bool {
         if self.running {
@@ -3795,13 +5321,6 @@ impl LoadedVm {
         mut rpc_recv: mesh::Receiver<VmRpc>,
         mut worker_rpc: mesh::Receiver<WorkerRpc<RestartState>>,
     ) {
-        enum Event {
-            WorkerRpc(Result<WorkerRpc<RestartState>, mesh::RecvError>),
-            VmRpc(Result<VmRpc, mesh::RecvError>),
-            Halt(Result<HaltReason, mesh::RecvError>),
-            DeviceRemoved,
-        }
-
         // Start a task to handle state unit inspections by filtering the worker
         // RPC requests. This is done so that inspect on state units works even
         // during state transitions.
@@ -3822,42 +5341,31 @@ impl LoadedVm {
         });
         let mut worker_rpc = worker_rpc_recv;
         let mut device_removal = DeviceRemovalState::default();
-        let mut deferred = VecDeque::new();
+        let mut pending_ejections = HashMap::<String, PendingPcieEject>::new();
+        let mut pending_vpci_ejections = HashMap::<guid::Guid, PendingVpciEject>::new();
+        let mut deferred = DeferredVmStateChanges::default();
 
         loop {
-            let queued = if !device_removal.is_pending() {
-                deferred.pop_front()
-            } else {
-                None
-            };
-            let event: Event = if let Some(event) = queued {
-                event
-            } else {
-                let a = rpc_recv.recv().map(Event::VmRpc);
-                let b = worker_rpc.recv().map(Event::WorkerRpc);
-                let c = self.inner.halt_recv.recv().map(Event::Halt);
-                let d = device_removal.wait().map(|()| Event::DeviceRemoved);
-                (a, b, c, d).race().await
-            };
-
-            let wait_for_removal = match &event {
-                Event::WorkerRpc(Ok(WorkerRpc::Restart(_))) => true,
-                Event::VmRpc(Ok(rpc)) => !can_run_during_device_removal(rpc),
-                _ => false,
-            };
-            if device_removal.is_pending() && wait_for_removal {
-                deferred.push_back(event);
-                continue;
-            }
-
+            pending_ejections.retain(|_, eject| eject.is_pending());
+            let event = next_vm_event(
+                &mut rpc_recv,
+                &mut worker_rpc,
+                &mut self.inner.halt_recv,
+                &mut pending_ejections,
+                &mut pending_vpci_ejections,
+                &mut deferred,
+                &mut device_removal,
+            )
+            .await;
             match event {
                 Event::DeviceRemoved => {}
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
                     WorkerRpc::Restart(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM worker is restarting");
                         let mut stopped = false;
-                        // First run the non-destructive operations.
+                        // Validate restart support before stopping the VM.
                         let r = async {
                             let shared_memory = self.inner.memory_manager.shared_memory_backing();
                             if shared_memory.is_none() {
@@ -3873,6 +5381,7 @@ impl LoadedVm {
                         .await;
                         match r {
                             Ok((shared_memory, saved_state)) => {
+                                let rpc_recv = deferred.prepend_buffered_rpcs(rpc_recv);
                                 rpc.complete(Ok(self
                                     .serialize(rpc_recv, shared_memory, saved_state)
                                     .await));
@@ -3901,6 +5410,7 @@ impl LoadedVm {
                 Event::VmRpc(Err(_)) => break,
                 Event::VmRpc(Ok(message)) => match message {
                     VmRpc::Reset(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM is resetting");
                         rpc.handle_failable(async |()| self.reset(true).await).await
                     }
                     VmRpc::ClearHalt(rpc) => {
@@ -3908,8 +5418,12 @@ impl LoadedVm {
                             .await
                     }
                     VmRpc::Resume(rpc) => rpc.handle(async |()| self.resume().await).await,
-                    VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
+                    VmRpc::Pause(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM is pausing");
+                        rpc.handle(async |()| self.pause().await).await
+                    }
                     VmRpc::Save(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM state is being saved");
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
                             .await
                     }
@@ -3996,6 +5510,7 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::PulseSaveRestore(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM state is being restored");
                         rpc.handle(async |()| {
                             if !self.inner.partition.supports_reset() {
                                 return Err(PulseSaveRestoreError::ResetNotSupported);
@@ -4014,6 +5529,7 @@ impl LoadedVm {
                         rpc.handle_failable_sync(|file| self.start_reload_igvm(&file))
                     }
                     VmRpc::CompleteReloadIgvm(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM is reloading");
                         rpc.handle_failable(async |complete| {
                             self.complete_reload_igvm(complete).await
                         })
@@ -4044,6 +5560,10 @@ impl LoadedVm {
                     }
                     VmRpc::AddPcieDevice(rpc) => {
                         rpc.handle_failable(async |(port_name, resource)| {
+                            anyhow::ensure!(
+                                !pending_ejections.get(&port_name).is_some_and(PendingPcieEject::is_pending),
+                                "PCIe ejection is already pending for port '{port_name}'"
+                            );
                             // Find the root complex and its index for the named port.
                             let (rc_idx, rc) = self.inner.pcie_root_complexes.iter()
                                 .enumerate()
@@ -4139,54 +5659,60 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemovePcieDevice(rpc) => {
-                        let ((port_name, orderly), response) = rpc.split();
-                        let device = async {
-                            anyhow::ensure!(!orderly || self.running, "VM must be running for orderly PCIe removal");
-                            // Only allow removing dynamically hot-added devices.
-                            // Statically-attached devices don't have a tracked unit
-                            // and removing them would leave their state unit/MMIO
-                            // registrations running.
-                            let idx = self.inner.pcie_hotplug_devices.iter()
-                                .position(|(name, _, _)| name == &port_name)
-                                .ok_or_else(|| anyhow::anyhow!(
-                                    "no hot-added device on port '{}' (only dynamically added devices can be hot-removed)",
-                                    port_name
-                                ))?;
-
-                            // Find the root complex containing the target port
-                            let rc = self.inner.pcie_root_complexes.iter()
-                                .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|p| p.name.as_ref() == port_name.as_str())
-                                })
-                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
-
-                            if orderly {
-                                let completion = rc.lock().request_hotplug_remove_device(&port_name)?;
-                                let driver = self.inner.driver_source.simple();
-                                match wait_for_pci_eject(
-                                    &driver,
-                                    async { completion.await.context("PCIe ejection was interrupted") },
-                                    PCIE_EJECT_GRACE_PERIOD,
-                                ).await {
-                                    PciEjectResult::Complete(result) => result?,
-                                    PciEjectResult::TimedOut => anyhow::bail!(
-                                        "PCIe ejection timed out for port '{port_name}'; device remains attached"
-                                    ),
+                        let ((mut ctx, port_name, orderly), response) = rpc.split();
+                        if let Some(reason) = ctx.cancelled().now_or_never() {
+                            response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+                        } else if orderly {
+                            let result = if pending_ejections.get(&port_name).is_some_and(PendingPcieEject::is_pending) {
+                                Err(anyhow::anyhow!("PCIe ejection is already pending for port '{port_name}'"))
+                            } else {
+                                self.request_pcie_eject(&port_name)
+                            };
+                            match result {
+                                Ok((mut completion, deadline)) => {
+                                    // An already powered-off slot can be removed even with a zero timeout.
+                                    if let Some(result) = (&mut completion).now_or_never() {
+                                        match result {
+                                            Ok(()) => {
+                                                if let Some(reason) = ctx.cancelled().now_or_never() {
+                                                    response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+                                                    continue;
+                                                }
+                                                self.start_pcie_removal(
+                                                    driver, &mut device_removal,
+                                                    &port_name, true, response,
+                                                );
+                                            }
+                                            Err(error) => response.complete(Err(RemoteError::new(
+                                                anyhow::Error::from(error)
+                                                    .context("PCIe ejection was interrupted")
+                                            ).into())),
+                                        }
+                                    } else {
+                                        let pending = PendingPcieEject::new(
+                                            &self.inner.driver_source.simple(),
+                                            &port_name,
+                                            response,
+                                            completion,
+                                            deadline,
+                                            ctx,
+                                        );
+                                        pending_ejections.insert(port_name, pending);
+                                    }
+                                }
+                                Err(error) => response.complete(Err(RemoteError::new(error).into())),
+                            }
+                        } else {
+                            if let Some(pending) = pending_ejections.remove(&port_name) {
+                                if let Some(response) = pending.take_response() {
+                                    response.complete(Err(RemoteError::new(anyhow::anyhow!(
+                                        "PCIe ejection interrupted for port '{port_name}': surprise removal was requested"
+                                    )).into()));
                                 }
                             }
-                            rc.lock().hotplug_remove_device(&port_name, orderly)?;
-
-                            // Remove and stop the device unit
-                            let (_, unit, device) = self.inner.pcie_hotplug_devices.remove(idx);
-                            anyhow::Ok((unit, device))
-                        }.await;
-                        match device {
-                            Ok((unit, device)) => device_removal.start(driver, async move {
-                                unit.remove().await;
-                                drop(device);
-                                response.complete(Ok(()));
-                            }),
-                            Err(error) => response.complete(Err(RemoteError::new(error))),
+                            self.start_pcie_removal(
+                                driver, &mut device_removal, &port_name, false, response,
+                            );
                         }
                     }
                     VmRpc::AddVpciDevice(rpc) => {
@@ -4255,58 +5781,76 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemoveVpciDevice(rpc) => {
-                        let (instance_id, response) = rpc.split();
-                        let Some(index) = self.inner.dynamic_vpci_devices.iter()
-                            .position(|entry| entry.instance_id == instance_id)
-                        else {
-                            response.complete(Err(RemoteError::new(anyhow::anyhow!(
-                                "no dynamically added VPCI device with instance ID '{instance_id}'"
-                            ))));
-                            continue;
-                        };
-                        let entry = self.inner.dynamic_vpci_devices.remove(index);
-                        let running = self.running;
-                        let device_driver = self.inner.driver_source.simple();
-                        device_removal.start(driver, async move {
-                            if running {
-                                let eject_result = wait_for_vpci_eject(
-                                    &device_driver,
-                                    entry.device.eject(),
-                                    VPCI_EJECT_GRACE_PERIOD,
-                                )
-                                .await;
-                                match eject_result {
-                                    VpciEjectResult::Complete(Ok(())) => {}
-                                    VpciEjectResult::Complete(Err(error)) => tracing::warn!(
-                                        %instance_id,
-                                        error = <anyhow::Error as AsRef<
-                                            dyn std::error::Error + Send + Sync,
-                                        >>::as_ref(&error),
-                                        "VPCI eject failed; forcing removal"
-                                    ),
-                                    VpciEjectResult::TimedOut => tracing::warn!(
-                                        %instance_id,
-                                        timeout_ms = VPCI_EJECT_GRACE_PERIOD.as_millis() as u64,
-                                        "VPCI eject timed out; forcing removal"
-                                    ),
+                        let ((instance_id, eject_timeout), response) = rpc.split();
+                        match pending_vpci_ejections.entry(instance_id) {
+                            Entry::Occupied(_) => response.fail(anyhow::anyhow!(
+                                "VPCI ejection is already pending \
+                                 for instance '{instance_id}'"
+                            )),
+                            Entry::Vacant(entry) => {
+                                if self.running {
+                                    match self.request_vpci_eject(instance_id, eject_timeout) {
+                                        Ok(wait) => {
+                                            entry.insert(PendingVpciEject {
+                                                response,
+                                                wait,
+                                                eject_timeout,
+                                            });
+                                        }
+                                        Err(error) => response.fail(error),
+                                    }
+                                } else {
+                                    match self.remove_vpci_device(instance_id) {
+                                        Ok(removal) => device_removal.start(driver, async move {
+                                            let result = removal.await.map_err(RemoteError::new);
+                                            response.complete(result);
+                                        }),
+                                        Err(error) => response.fail(error),
+                                    }
                                 }
                             }
-                            entry.device.remove().await;
-                            response.complete(Ok(()));
-                        });
+                        }
                     }
                     VmRpc::DumpState(rpc) => {
+                        cancel_pcie_ejections(&mut pending_ejections, "VM state is being dumped");
                         rpc.handle_failable(async |file| self.dump_state(file).await)
                             .await
                     }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
+                    cancel_pcie_ejections(&mut pending_ejections, "VM halted");
                     self.inner.client_notify_send.send(reason);
+                }
+                Event::PcieEject(port_name, result) => {
+                    let mut pending = pending_ejections.remove(&port_name).expect("pending ejection was polled");
+                    if let Some(response) = pending.claim_response(&port_name) {
+                        // Claim the response before detaching so timeout cannot report an attached device.
+                        drop(pending);
+                        match result {
+                            Ok(()) => self.start_pcie_removal(
+                                driver, &mut device_removal, &port_name, true, response,
+                            ),
+                            Err(error) => response.complete(Err(error)),
+                        }
+                    }
+                }
+                Event::VpciEject(instance_id, result) => {
+                    let pending = pending_vpci_ejections.remove(&instance_id)
+                        .expect("pending VPCI ejection was polled");
+                    let removal = self.remove_vpci_device(instance_id);
+                    device_removal.start(driver, complete_vpci_removal(
+                        instance_id,
+                        pending,
+                        result,
+                        async move { removal?.await },
+                    ));
                 }
             }
         }
 
+        cancel_pcie_ejections(&mut pending_ejections, "VM is stopping");
+        cancel_vpci_ejections(&mut pending_vpci_ejections, "VM is stopping");
         device_removal.drain().await;
         self.pause().await;
         self.teardown_chipset_devices().await;

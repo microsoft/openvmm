@@ -287,8 +287,8 @@ pub struct PcieRootComplexConfig {
 /// Hotplug capabilities for a PCIe port.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, MeshPayload)]
 pub struct PcieHotplugConfig {
-    /// Enables attention button ejection.
-    pub attention_button: bool,
+    /// Enables attention button ejection with the supplied maximum wait.
+    pub attention_button: Option<std::time::Duration>,
 }
 
 /// Configuration for a single PCIe port — either a root-complex root port or a
