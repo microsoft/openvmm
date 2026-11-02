@@ -104,7 +104,8 @@ collection is never silently replaced by older successful results.
 
 Queries emit JSON with file summaries or measured lines and their covering
 tests, including configuration-run names, attempts, and pass/fail results.
-`--limit` bounds file/line results and each line's covering-test list; truncation
+`--limit` bounds file/line results, changed-hunk summaries, and each line's
+covering-test list; hunks list at most five covering attempts. Truncation
 is explicit. Paths are relative to the repository root. Files absent from the
 report are **unmeasured**, not covered. Source lines absent within a measured
 file may be non-executable or compiled out. Patch queries compact those lines
@@ -113,7 +114,7 @@ outside the measured-line percentage. Uncovered measured lines are also
 summarized as `uncovered_ranges`. Non-Rust changes are counted separately.
 No measured changed lines means a null percentage, not 100%.
 
-The version-1 report records HEAD plus a hash of tracked changes and nonignored
+The version-2 report records HEAD plus a hash of tracked changes and nonignored
 untracked content, so dirty-tree results are not mislabeled as committed PR
 coverage. It also records the compiler/tool versions, exact build arguments,
 test filter, and collection state. Changes during collection invalidate the
@@ -122,8 +123,13 @@ change they emit a `stale_coverage` JSON error and exit with code 2, instructing
 the agent to recollect. Run queries from the repository being reviewed.
 `--allow-stale` permits explicit historical inspection, labels the result stale,
 and cannot be combined with `--changed`.
-Keep failed or incomplete reports distinct from successful collections;
-the command exits unsuccessfully on test failures or missing coverage data.
+Collection and test results are independent: `collection_state: complete`
+means the selected attempts and their profiles were collected, not that tests
+passed. `test_outcome` reports the suite result separately. A failed test can
+produce complete coverage; a passing suite can have incomplete profiles.
+The command still exits unsuccessfully on either test failures or missing
+coverage data. Version-1 reports remain readable, but an old `incomplete` state
+becomes an unknown collection status because it did not separate these causes.
 
 The result directory retains the effective nextest configuration, inventories,
 matching test binaries, per-attempt raw/indexed profiles, and LCOV exports.
@@ -132,10 +138,28 @@ configuration; the repository configuration is not modified. Existing target
 runners are composed inside the coverage wrapper. Existing nextest run-wrappers
 are rejected rather than silently replaced.
 
+Start with `review_summary` for selected-package production coverage and the
+number of measured production lines without passing evidence. For `--changed`,
+this summary describes the patch and also reports unmapped changes and
+unmeasured files. Changed-hunk summaries associate ranges with covering tests.
+Package selection remains explicit; the comparison base never selects packages.
+
 Coverage includes repository source linked into the selected test binaries,
-including unit-test code and workspace dependencies. Percentages are not a
-production-only or workspace-wide metric. Counts include failed attempts;
-per-line test outcomes let agents distinguish those from passing-test evidence.
+including unit-test code and workspace dependencies. The aggregate percentage
+is not a production-only or workspace-wide metric. Separate `sources` views
+partition selected-package production, dependency production, test source,
+auxiliary code (examples/build scripts), and unclassified source. Classification
+uses Cargo targets and Rust syntax, including `#[cfg(test)]` modules, rather
+than filenames. Unresolved path-based modules, macro item bodies, ambiguous
+conditional compilation, and parse failures remain unclassified; classification
+issues are reported. This is not compiler-expanded semantic classification.
+Historical reports without this metadata remain unclassified.
+
+Every coverage view distinguishes all-attempt `execution` from
+`passing_attempts`. A line hit only by a failed test has execution evidence but
+no passing evidence. A passing retry counts as a passing attempt, not proof of
+a non-flaky test or successful overall suite. Neither metric proves an assertion
+checked the line's behavior.
 Doctests, separately built child binaries, Petri/VM tests, and branch coverage
 are not included yet. No data is uploaded or published.
 

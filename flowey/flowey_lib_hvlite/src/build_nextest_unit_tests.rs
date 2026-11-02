@@ -100,7 +100,7 @@ impl FlowNode for Node {
         let ambient_deps = vec![ctx.reqv(crate::install_openvmm_rust_build_essential::Request)];
 
         let test_packages = ctx.emit_rust_stepv("determine unit test exclusions", |ctx| {
-            let xtask = xtask.claim(ctx);
+            let xtask = xtask.clone().claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
             move |rt| {
                 let xtask = rt.read(xtask);
@@ -277,6 +277,7 @@ impl FlowNode for Node {
             match build_mode {
                 BuildNextestUnitTestMode::Coverage { options, done, .. } => {
                     ctx.req(crate::collect_unit_test_coverage::Request {
+                        xtask: xtask.clone(),
                         runs,
                         options,
                         working_dir: openvmm_repo_path.clone(),

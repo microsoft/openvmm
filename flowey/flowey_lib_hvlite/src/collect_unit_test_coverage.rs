@@ -15,6 +15,7 @@ pub struct Options {
 
 flowey_request! {
     pub struct Request {
+        pub xtask: ReadVar<crate::build_xtask::XtaskOutput>,
         pub runs: Vec<(String, NextestBuildParams)>,
         pub options: Options,
         pub working_dir: ReadVar<PathBuf>,
@@ -46,6 +47,7 @@ impl FlowNode for Node {
         let toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
         let nextest = ctx.reqv(flowey_lib_common::install_cargo_nextest::Request);
         for Request {
+            xtask,
             runs,
             options,
             working_dir,
@@ -60,12 +62,17 @@ impl FlowNode for Node {
                 let flags = flags.clone().claim(ctx);
                 let toolchain = toolchain.clone().claim(ctx);
                 let working_dir = working_dir.claim(ctx);
+                let xtask = xtask.claim(ctx);
                 let runs: Vec<_> = runs
                     .into_iter()
                     .map(|(name, params)| (name, params.claim(ctx)))
                     .collect();
                 move |rt| {
                     let working_dir = rt.read(working_dir);
+                    let xtask = match rt.read(xtask) {
+                        crate::build_xtask::XtaskOutput::LinuxBin { bin, .. } => bin,
+                        crate::build_xtask::XtaskOutput::WindowsBin { exe, .. } => exe,
+                    };
                     let toolchain = rt.read(toolchain);
                     let script = working_dir.join("repo_support/unit_test_coverage.py");
                     let mut config = fs_err::read_to_string(
@@ -136,6 +143,7 @@ impl FlowNode for Node {
                             "filter": options.filter,
                             "nextest_config": config_file,
                             "base": options.base,
+                            "xtask": xtask,
                         }))?,
                     )?;
                     let output = options.output;
