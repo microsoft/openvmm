@@ -324,7 +324,7 @@ struct PageTableBuilderInner {
 
 /// A builder for an x64 identity-mapped page table
 pub struct PageTableBuilder<'a> {
-    /// parameters to the page table builder, stored seperately s.t. they can be easily cloned and copied
+    /// parameters to the page table builder, stored separately s.t. they can be easily cloned and copied
     inner: PageTableBuilderInner,
     /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
     page_table: &'a mut [PageTable],
