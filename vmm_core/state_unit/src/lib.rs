@@ -382,7 +382,15 @@ pub struct SavedStateUnit {
 pub struct StateTransitionError {
     op: &'static str,
     #[source]
-    error: anyhow::Error,
+    error: StateTransitionErrorKind,
+}
+
+#[derive(Debug, Error)]
+enum StateTransitionErrorKind {
+    #[error(transparent)]
+    Units(UnitErrorSet),
+    #[error("restore requires a newly constructed or successfully reset destination")]
+    RestoreRequiresReset,
 }
 
 fn extract<T, E: Into<anyhow::Error>, U>(
@@ -407,7 +415,7 @@ fn extract<T, E: Into<anyhow::Error>, U>(
     } else {
         Err(StateTransitionError {
             op,
-            error: UnitErrorSet(errors).into(),
+            error: StateTransitionErrorKind::Units(UnitErrorSet(errors)),
         })
     }
 }
@@ -434,10 +442,6 @@ impl Display for UnitErrorSet {
 }
 
 impl std::error::Error for UnitErrorSet {}
-
-#[derive(Debug, Error)]
-#[error("restore requires a newly constructed or successfully reset destination")]
-struct RestoreRequiresReset;
 
 impl StateUnits {
     /// Creates a new instance with no initial units.
@@ -599,7 +603,7 @@ impl StateUnits {
         if !self.restore_allowed {
             return Err(StateTransitionError {
                 op: "restore",
-                error: RestoreRequiresReset.into(),
+                error: StateTransitionErrorKind::RestoreRequiresReset,
             });
         }
 
@@ -1042,16 +1046,14 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
-    use super::RestoreRequiresReset;
+    use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
-    use super::UnitErrorSet;
     use crate::run_unit;
     use inspect::InspectMut;
     use mesh::payload::Protobuf;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
-    use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -1206,7 +1208,10 @@ mod tests {
 
         let state = units.save().await.unwrap();
         let err = units.restore(state).await.unwrap_err();
-        assert!(err.source().unwrap().is::<RestoreRequiresReset>());
+        assert!(matches!(
+            err.error,
+            StateTransitionErrorKind::RestoreRequiresReset
+        ));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
 
         units.reset().await.unwrap();
@@ -1241,11 +1246,9 @@ mod tests {
             .unwrap();
         let state = units.save().await.unwrap();
         let err = units.restore(state).await.unwrap_err();
-        let unit_errors = err
-            .source()
-            .unwrap()
-            .downcast_ref::<UnitErrorSet>()
-            .unwrap();
+        let StateTransitionErrorKind::Units(unit_errors) = err.error else {
+            panic!("expected named unit failures");
+        };
         assert_eq!(unit_errors.0.len(), 1);
         assert_eq!(unit_errors.0[0].0.as_ref(), "device");
         let state = units.save().await.unwrap();
