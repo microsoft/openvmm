@@ -1442,7 +1442,11 @@ impl Tpm {
         // get_ak_cert takes this waker to schedule the next request. Refresh it
         // before polling so even an immediately ready result and early return
         // leave a waker available for the following renewal.
-        self.waker = Some(cx.waker().clone());
+        if let Some(waker) = &mut self.waker {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
         if let Some(async_ak_cert_request) = self.async_ak_cert_request.as_mut() {
             let is_renew = async_ak_cert_request.is_renew;
             let has_cert = async_ak_cert_request.has_cert;
@@ -1682,11 +1686,6 @@ impl ChipsetDevice for Tpm {
 
 impl PollDevice for Tpm {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        if let Some(waker) = &mut self.waker {
-            waker.clone_from(cx.waker());
-        } else {
-            self.waker = Some(cx.waker().clone());
-        }
         self.poll_store_writes(cx);
         self.poll_ak_cert_request(cx)
     }
@@ -2519,7 +2518,7 @@ mod tests {
             has_cert,
             fut: Box::pin(std::future::ready(Ok(response))),
         }));
-        tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(Waker::noop()));
+        tpm.poll_ak_cert_request(&mut Context::from_waker(Waker::noop()));
         assert!(tpm.async_ak_cert_request.is_none());
         assert!(tpm.waker.is_some());
     }
@@ -2529,7 +2528,7 @@ mod tests {
         #[derive(Default)]
         struct WakeCounter(AtomicUsize);
 
-        impl std::task::Wake for WakeCounter {
+        impl Wake for WakeCounter {
             fn wake(self: Arc<Self>) {
                 self.0.fetch_add(1, Ordering::Relaxed);
             }
@@ -2573,7 +2572,7 @@ mod tests {
 
                 let next = Arc::new(WakeCounter::default());
                 let waker = Waker::from(next.clone());
-                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                tpm.poll_ak_cert_request(&mut Context::from_waker(&waker));
                 assert!(tpm.async_ak_cert_request.is_none());
                 assert!(tpm.waker.as_ref().unwrap().will_wake(&waker));
 
@@ -2581,7 +2580,7 @@ mod tests {
                 assert!(tpm.async_ak_cert_request.is_some());
                 assert_eq!(next.0.load(Ordering::Relaxed), 1);
                 assert_eq!(previous.0.load(Ordering::Relaxed), 1);
-                tpm.poll_ak_cert_request(&mut std::task::Context::from_waker(&waker));
+                tpm.poll_ak_cert_request(&mut Context::from_waker(&waker));
                 assert!(tpm.async_ak_cert_request.is_none());
             }
         }
@@ -3065,7 +3064,7 @@ mod tests {
             nvram_permits: _nvram_permits,
             ..
         } = new_gated_tpm_with_ak_cert(TpmAkCertType::Trusted(
-            Arc::new(TestRequestAkCertHelper),
+            Arc::new(TestRequestAkCertHelper::default()),
             Some(true),
         ))
         .await;
