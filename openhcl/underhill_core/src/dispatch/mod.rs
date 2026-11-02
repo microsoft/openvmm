@@ -326,7 +326,17 @@ impl LoadedVm {
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
-                        let state = async {
+                        enum RestartOutcome<R, S> {
+                            Restart(R, S),
+                            // The restart failed, but the VM is back in its
+                            // previous state, so this worker can keep serving.
+                            Recovered,
+                            // The restart failed and the VM could not be
+                            // resumed, so this worker cannot serve any more.
+                            Unrecoverable,
+                        }
+
+                        let outcome = async {
                             let running = self.stop().await;
                             match self
                                 .save(
@@ -337,7 +347,7 @@ impl LoadedVm {
                                 )
                                 .await
                             {
-                                Ok(servicing_state) => Some((rpc, servicing_state)),
+                                Ok(servicing_state) => RestartOutcome::Restart(rpc, servicing_state),
                                 Err(err) => {
                                     if running {
                                         if let Err(start_error) = self.start(None).await {
@@ -346,24 +356,31 @@ impl LoadedVm {
                                                     "worker restart failed ({err:#}) and the VM could not resume"
                                                 )),
                                             )));
-                                            return None;
+                                            return RestartOutcome::Unrecoverable;
                                         }
                                     }
                                     rpc.complete(Err(RemoteError::new(err)));
-                                    None
+                                    RestartOutcome::Recovered
                                 }
                             }
                         }
                         .instrument(tracing::info_span!("restart", CVM_ALLOWED))
                         .await;
 
-                        if let Some((rpc, servicing_state)) = state {
-                            break Some(LoadedVmState {
-                                restart_rpc: rpc,
-                                servicing_state,
-                                vm_rpc,
-                                control_send: self.control_send.lock().take().unwrap(),
-                            });
+                        match outcome {
+                            RestartOutcome::Restart(rpc, servicing_state) => {
+                                break Some(LoadedVmState {
+                                    restart_rpc: rpc,
+                                    servicing_state,
+                                    vm_rpc,
+                                    control_send: self.control_send.lock().take().unwrap(),
+                                });
+                            }
+                            RestartOutcome::Recovered => {}
+                            // The error has already completed the RPC. Tear
+                            // down through the common path rather than keep a
+                            // worker whose state units can no longer run.
+                            RestartOutcome::Unrecoverable => break None,
                         }
                     }
                     WorkerRpc::Inspect(deferred) => deferred.respond(|resp| {
@@ -438,7 +455,9 @@ impl LoadedVm {
                             rpc.complete(Err(RemoteError::new(
                                 error.context("failed to resume VM after save"),
                             )));
-                            continue;
+                            // The state units rolled back and cannot run
+                            // again, so tear down rather than keep this worker.
+                            break None;
                         }
                         rpc.complete(result.map(mesh::payload::encode).map_err(RemoteError::new));
                     }
