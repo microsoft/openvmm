@@ -1682,7 +1682,11 @@ impl ChipsetDevice for Tpm {
 
 impl PollDevice for Tpm {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
-        self.waker = Some(cx.waker().clone());
+        if let Some(waker) = &mut self.waker {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
         self.poll_store_writes(cx);
         self.poll_ak_cert_request(cx)
     }
