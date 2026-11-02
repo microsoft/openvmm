@@ -219,14 +219,19 @@ impl AsyncRun<ConsoleWorkerState> for ConsoleWorker {
         stop: &mut task_control::StopTask<'_>,
         state: &mut ConsoleWorkerState,
     ) -> Result<(), Cancelled> {
-        stop.until_stopped(self.run_loop(state)).await.map(|r| {
-            if let Err(err) = r {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "virtio-console worker loop failed"
-                );
+        let check = stop.check_handle()?;
+        match stop.until_stopped(self.run_loop(state, &check)).await? {
+            Err(WorkerError::Cancelled(cancelled)) => Err(cancelled),
+            result => {
+                if let Err(err) = result {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "virtio-console worker loop failed"
+                    );
+                }
+                Ok(())
             }
-        })
+        }
     }
 }
 
@@ -235,6 +240,8 @@ const BUF_SIZE: usize = 4096;
 
 #[derive(Debug, thiserror::Error)]
 enum WorkerError {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("virtio queue error")]
     Virtio(#[source] std::io::Error),
     #[error("serial I/O error")]
@@ -243,13 +250,23 @@ enum WorkerError {
     GuestMemory(#[source] guestmem::GuestMemoryError),
 }
 
+impl From<Cancelled> for WorkerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
+}
+
 impl ConsoleWorker {
     /// Core worker loop.
     ///
     /// Note that this must be cancel safe--it could be stopped at any await point.
     /// So, be careful not to leave any state in a weird intermediate state across
     /// an await point.
-    async fn run_loop(&mut self, state: &mut ConsoleWorkerState) -> Result<(), WorkerError> {
+    async fn run_loop(
+        &mut self,
+        state: &mut ConsoleWorkerState,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), WorkerError> {
         let mut connected: bool = self.io.is_connected();
         let receiveq = &mut state.receiveq;
         let transmitq = &mut state.transmitq;
@@ -262,6 +279,7 @@ impl ConsoleWorker {
             std::future::pending::<()>().await;
         }
         loop {
+            check.check()?;
             if !connected {
                 // Wait for the backend to connect, discarding any guest tx data
                 // in the meantime.
@@ -276,6 +294,7 @@ impl ConsoleWorker {
                         std::future::pending().await
                     };
                     loop {
+                        check.check()?;
                         let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
                         let work = work.consume();
                         transmitq.complete(work, 0);
@@ -291,16 +310,18 @@ impl ConsoleWorker {
                     | futures::future::Either::Right((result, _)) => result?,
                 };
             } else {
-                let rx = direct::receive(receiveq, &io, mem);
+                let rx = direct::receive(receiveq, &io, mem, check);
                 let tx = async {
                     let Some(transmitq) = transmitq.as_mut() else {
                         std::future::pending().await
                     };
                     'tx: loop {
+                        check.check()?;
                         let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
                         let readable_len = work.readable_length() as usize;
                         let mut buf = [0u8; BUF_SIZE];
                         while *partial_transmit < readable_len {
+                            check.check()?;
                             let n = work
                                 .read_at_offset(*partial_transmit as u64, mem, &mut buf)
                                 .map_err(WorkerError::GuestMemory)?;
