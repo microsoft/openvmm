@@ -45,7 +45,7 @@ fixes the remaining guest-visible configuration:
 | Stable ID | `fs:microvm0` |
 | Tag | `microvm` |
 | Transport | virtio-mmio at `0xd0001000` |
-| Interrupt | IRQ 6 |
+| Interrupt | IRQ 17, an IOAPIC input past the ISA IRQs |
 | Queues | One high-priority and one request queue |
 | Features | Indirect descriptors, event index, version 1 |
 | DAX window | None |

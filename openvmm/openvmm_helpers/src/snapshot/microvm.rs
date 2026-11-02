@@ -1271,11 +1271,11 @@ pub fn microvm_machine_contract(
                 && attachment.reconnect_timeout_ms == 0,
             "microVM network attachment has an unsupported endpoint policy"
         );
-        let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor))?;
         let discovery = format!(
-            "virtio_mmio.device={:#x}@{:#x}:{irq}",
+            "virtio_mmio.device={:#x}@{:#x}:{}",
             openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
+            openvmm_defs::microvm::MICROVM_VIRTIO_NET_IRQ,
         );
         let tokens = effective_command_line
             .split_ascii_whitespace()
@@ -1300,7 +1300,7 @@ pub fn microvm_machine_contract(
                 openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
                 openvmm_defs::microvm::MICROVM_VIRTIO_MMIO_LEN,
             )],
-            irq: Some(irq),
+            irq: Some(openvmm_defs::microvm::MICROVM_VIRTIO_NET_IRQ),
             transport: "virtio-mmio".to_owned(),
             feature_banks: feature_banks(openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES),
             queue_count: 2,
@@ -2702,9 +2702,8 @@ mod tests {
         mode: net_backend_resources::egress::EgressPolicyMode,
     ) -> SnapshotMachineContract {
         let egress_policy = network.bind_egress_policy(mode).unwrap();
-        let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
         let command_line = format!(
-            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0000000:{irq} {}",
+            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0000000:16 {}",
             network.command_line_fragment_with_dns(egress_policy.gateway_dns_server())
         );
         microvm_machine_contract(
@@ -2748,7 +2747,7 @@ mod tests {
         microvm_machine_contract(
             "whp",
             MICROVM_BOOT_LAYOUT_VERSION,
-            "earlycon=xe9 console=hvc1 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0002000:7"
+            "earlycon=xe9 console=hvc1 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0002000:18"
                 .to_owned(),
             None,
             false,
@@ -2903,7 +2902,7 @@ mod tests {
         filesystem: &openvmm_defs::microvm::MicrovmFilesystemConfig,
     ) -> SnapshotMachineContract {
         let command_line = format!(
-            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6 {}",
+            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:17 {}",
             filesystem.command_line_fragment(&openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0])
         );
         microvm_machine_contract(
@@ -2952,7 +2951,7 @@ mod tests {
         microvm_machine_contract(
             "whp",
             MICROVM_BOOT_LAYOUT_VERSION,
-            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:6"
+            "earlycon=xe9 console=hvc0 reboot=t panic=-1 virtio_mmio.device=0x1000@0xd0001000:17"
                 .to_owned(),
             None,
             true,
@@ -3133,7 +3132,7 @@ mod tests {
         );
         // The contract requires the slot's discovery token once and the
         // bootstrap tokens exactly.
-        let discovery = " virtio_mmio.device=0x1000@0xd0001000:6";
+        let discovery = " virtio_mmio.device=0x1000@0xd0001000:17";
         for invalid in [
             command_line.replace(discovery, ""),
             command_line.replace(discovery, &format!("{discovery}{discovery}")),
@@ -3402,7 +3401,7 @@ mod tests {
         assert_eq!(console.state_unit_name, "virtio-console-3489669120");
         assert_eq!(console.ranges[0].start, 0xd000_2000);
         assert_eq!(console.ranges[0].length, 0x1000);
-        assert_eq!(console.irq, Some(7));
+        assert_eq!(console.irq, Some(18));
         assert_eq!(console.transport, "virtio-mmio");
         // Indirect descriptors, event index, and virtio version 1: no console
         // size and no access-platform.
@@ -3429,7 +3428,7 @@ mod tests {
         assert_eq!(control.state_unit_name, "virtio-control-console-3489689600");
         assert_eq!(control.ranges[0].start, 0xd000_7000);
         assert_eq!(control.ranges[0].length, 0x1000);
-        assert_eq!(control.irq, Some(3));
+        assert_eq!(control.irq, Some(23));
         assert_eq!(control.transport, "virtio-mmio");
         assert_eq!(control.feature_banks, boot.feature_banks);
         assert_eq!(control.queue_max_sizes, [256, 256]);
@@ -3467,15 +3466,15 @@ mod tests {
     }
 
     #[test]
-    fn generated_microvm_network_contract_has_backend_specific_fixed_abi() {
-        for (source_hypervisor, irq) in [("kvm", 10), ("mshv", 10), ("whp", 5)] {
+    fn generated_microvm_network_contract_has_one_fixed_abi_on_every_backend() {
+        for source_hypervisor in ["kvm", "mshv", "whp"] {
             let contract = generated_network_contract(source_hypervisor);
             let network_device = contract.devices.last().unwrap();
             assert_eq!(network_device.stable_id, "net:microvm0");
             assert_eq!(network_device.state_unit_name, "virtio-net-3489660928");
             assert_eq!(network_device.ranges[0].start, 0xd000_0000);
             assert_eq!(network_device.ranges[0].length, 0x1000);
-            assert_eq!(network_device.irq, Some(irq));
+            assert_eq!(network_device.irq, Some(16));
             assert_eq!(network_device.transport, "virtio-mmio");
             assert_eq!(network_device.feature_banks, [0x20, 0x1]);
             assert_eq!(network_device.queue_count, 2);
@@ -3783,7 +3782,7 @@ mod tests {
             assert_eq!(filesystem_device.state_unit_name, "virtiofs-3489665024");
             assert_eq!(filesystem_device.ranges[0].start, 0xd000_1000);
             assert_eq!(filesystem_device.ranges[0].length, 0x1000);
-            assert_eq!(filesystem_device.irq, Some(6));
+            assert_eq!(filesystem_device.irq, Some(17));
             assert_eq!(filesystem_device.transport, "virtio-mmio");
             assert_eq!(filesystem_device.feature_banks, [0x3000_0000, 0x0000_0001]);
             assert_eq!(filesystem_device.queue_count, 2);
@@ -3828,7 +3827,7 @@ mod tests {
         assert_eq!(filesystem.stable_id, "fs:microvm0");
         assert_eq!(filesystem.state_unit_name, "virtiofs-3489665024");
         assert_eq!(filesystem.ranges[0].start, 0xd000_1000);
-        assert_eq!(filesystem.irq, Some(6));
+        assert_eq!(filesystem.irq, Some(17));
     }
 
     #[test]
@@ -4046,14 +4045,17 @@ mod tests {
     #[test]
     fn abi_v2_contracts_are_refused_by_their_version() {
         // Version 2 offered access-platform on every device but the NIC, and
-        // the console size, so a console of version 2 records other feature
-        // banks than one of version 3. Restore refuses such a contract by its
-        // version, before it compares the devices.
+        // the console size, and put the console on IRQ 7, so a console of
+        // version 2 records other feature banks and another interrupt than one
+        // of version 3. Restore refuses such a contract by its version, before
+        // it compares the devices.
         const REFUSAL: &str =
             "snapshot microVM ABI version 2 is unsupported; this OpenVMM supports version 3";
         let mut contract = generated_console_contract();
         contract.microvm_abi_version = 2;
-        contract.devices.last_mut().unwrap().feature_banks = vec![0x3000_0001, 0x0000_0003];
+        let console = contract.devices.last_mut().unwrap();
+        console.feature_banks = vec![0x3000_0001, 0x0000_0003];
+        console.irq = Some(7);
         let err = validate_supported_microvm_contract(&contract).unwrap_err();
         assert_eq!(err.to_string(), REFUSAL);
 
@@ -4747,10 +4749,10 @@ mod tests {
             "earlycon=xe9 console=hvc1 reboot=t panic=-1 \
                   nvx_sandbox=1 nvx_config=0xd0010000,65536 nr_cpus=2 \
                  nvx_snapshot_tier=platform \
-                 virtio_mmio.device=0x1000@0xd0002000:7 \
-                 virtio_mmio.device=0x1000@0xd0003000:4 \
-                 virtio_mmio.device=0x1000@0xd0006000:11 \
-             virtio_mmio.device=0x1000@0xd0007000:3 \
+                 virtio_mmio.device=0x1000@0xd0002000:18 \
+                 virtio_mmio.device=0x1000@0xd0003000:19 \
+                 virtio_mmio.device=0x1000@0xd0006000:22 \
+             virtio_mmio.device=0x1000@0xd0007000:23 \
              nvx_control_tty=hvc2"
         );
         validate_manifest_contents(&manifest).unwrap();
