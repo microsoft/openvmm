@@ -37,6 +37,7 @@ struct TestClient {
     received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
     rx_buffers: Option<usize>,
     rx_capacity: usize,
+    rx_checksum: bool,
     rx_gso: [bool; 2],
     received_checksums: Vec<ChecksumState>,
 }
@@ -263,6 +264,7 @@ impl TestClient {
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: None,
             rx_capacity: 1514,
+            rx_checksum: false,
             rx_gso: [false; 2],
             received_checksums: Vec::new(),
         }
@@ -274,6 +276,7 @@ impl TestClient {
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: Some(rx_buffers),
             rx_capacity: 1514,
+            rx_checksum: false,
             rx_gso: [false; 2],
             received_checksums: Vec::new(),
         }
@@ -306,6 +309,10 @@ impl Client for TestClient {
         }
     }
 
+    fn rx_checksum_supported(&self) -> bool {
+        self.rx_checksum
+    }
+
     fn rx_gso_supported(&self, ipv6: bool) -> bool {
         self.rx_gso[usize::from(ipv6)]
     }
@@ -314,16 +321,20 @@ impl Client for TestClient {
 #[pal_async::async_test]
 async fn test_tcp_receive_gso(driver: DefaultDriver) {
     for ipv6 in [false, true] {
-        for (capacity, gso, window, payload_len) in [
-            (65536, false, 10000, 5001),
-            (65536, true, 10000, 5001),
-            (1514, true, 10000, 5001),
-            (65536, true, 2000, 5001),
-            (65536, true, 10000, 1000),
-            (100000, true, 100000, 90001),
+        for (capacity, gso, partial, window, payload_len) in [
+            (65536, false, false, 10000, 5001),
+            (65536, false, true, 10000, 5001),
+            (1514, false, true, 10000, 5001),
+            (65536, true, false, 10000, 5001),
+            (65536, true, true, 10000, 5001),
+            (1514, true, false, 10000, 5001),
+            (65536, true, false, 2000, 5001),
+            (65536, true, false, 10000, 1000),
+            (100000, true, false, 100000, 90001),
         ] {
             let mut client = TestClient::new(driver.clone());
             client.rx_capacity = capacity;
+            client.rx_checksum = partial;
             client.rx_gso[usize::from(ipv6)] = gso;
             // Enable the other family's offload even in the disabled case.
             client.rx_gso[usize::from(!ipv6)] = true;
@@ -397,10 +408,22 @@ async fn test_tcp_receive_gso(driver: DefaultDriver) {
                     saw_gso = true;
                     assert!(gso);
                     assert_eq!(state.tso, Some(1460));
-                    let completed = !checksum::data(tcp.as_ref());
-                    tcp.set_checksum(completed);
                 } else {
                     assert!(state.tso.is_none());
+                }
+                assert_eq!(state.partial, partial || state.tso.is_some());
+                if state.partial {
+                    assert_eq!(
+                        tcp.checksum(),
+                        checksum::pseudo_header(
+                            &ft.dst.ip().into(),
+                            &ft.src.ip().into(),
+                            IpProtocol::Tcp,
+                            tcp_data.len() as u32,
+                        )
+                    );
+                    let completed = !checksum::data(tcp.as_ref());
+                    tcp.set_checksum(completed);
                 }
                 assert!(tcp.verify_checksum(&ft.dst.ip().into(), &ft.src.ip().into()));
             }
@@ -413,6 +436,84 @@ async fn test_tcp_receive_gso(driver: DefaultDriver) {
                 saw_gso,
                 gso && capacity > 1514 && payload_len.min(window) > 1460
             );
+        }
+    }
+}
+
+#[pal_async::async_test]
+async fn test_tcp_receive_partial_checksum_without_payload(driver: DefaultDriver) {
+    for ipv6 in [false, true] {
+        for partial in [false, true] {
+            for control in [
+                TcpControl::Syn,
+                TcpControl::Fin,
+                TcpControl::Rst,
+                TcpControl::None,
+            ] {
+                let mut client = TestClient::new(driver.clone());
+                client.rx_checksum = partial;
+                let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+                let ft = FourTuple {
+                    src: if ipv6 {
+                        "[fd00::2]:1234"
+                    } else {
+                        "10.0.0.2:1234"
+                    }
+                    .parse()
+                    .unwrap(),
+                    dst: if ipv6 { "[fd00::1]:80" } else { "10.0.0.1:80" }
+                        .parse()
+                        .unwrap(),
+                };
+                let tcp = TcpRepr {
+                    src_port: ft.dst.port(),
+                    dst_port: ft.src.port(),
+                    control,
+                    seq_number: TcpSeqNumber(1000),
+                    ack_number: Some(TcpSeqNumber(2000)),
+                    window_len: 4096,
+                    window_scale: None,
+                    max_seg_size: (control == TcpControl::Syn).then_some(1460),
+                    sack_permitted: false,
+                    sack_ranges: [None; 3],
+                    timestamp: None,
+                    payload: &[],
+                };
+                Sender {
+                    ft: &ft,
+                    client: &mut client,
+                    state: &mut consomme.state,
+                }
+                .send_packet(&tcp, None, None);
+
+                let state = &client.received_checksums[0];
+                assert_eq!(state.partial, partial);
+                assert!(state.tso.is_none());
+                let packets = client.received_packets.lock();
+                let offset = ETHERNET_HEADER_LEN
+                    + if ipv6 {
+                        IPV6_HEADER_LEN
+                    } else {
+                        IPV4_HEADER_LEN
+                    };
+                let mut bytes = packets[0][offset..].to_vec();
+                let mut packet = TcpPacket::new_unchecked(&mut bytes[..]);
+                assert_eq!(packet.header_len() as usize, tcp.header_len());
+                if partial {
+                    assert_eq!(
+                        packet.checksum(),
+                        checksum::pseudo_header(
+                            &ft.dst.ip().into(),
+                            &ft.src.ip().into(),
+                            IpProtocol::Tcp,
+                            tcp.header_len() as u32,
+                        )
+                    );
+                    let completed = !checksum::data(packet.as_ref());
+                    packet.set_checksum(completed);
+                }
+                assert!(packet.verify_checksum(&ft.dst.ip().into(), &ft.src.ip().into()));
+            }
         }
     }
 }

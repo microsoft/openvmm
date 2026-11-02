@@ -24,6 +24,7 @@ impl ConsommeQueue {
                 ipv4: meta.flags.offload_ip_header_checksum(),
                 tcp: meta.flags.offload_tcp_checksum(),
                 udp: meta.flags.offload_udp_checksum(),
+                partial: false,
                 tso: meta
                     .flags
                     .offload_tcp_segmentation()
