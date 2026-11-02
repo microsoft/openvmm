@@ -43,6 +43,21 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+## Request cancellation
+
+Both transports forward request deadlines into the request context. gRPC also
+supports cancellation through a stream reset or connection loss. Native ttrpc
+cancels on an observed socket hangup or I/O error. On Windows, a graceful
+disconnect may report only read EOF. EOF does not cancel accepted requests
+because clients can close their write side while continuing to read replies.
+Windows clients must supply request deadlines for bounded cancellation.
+
+The unary ttrpc protocol has no per request cancellation message. Dropping a
+native client call after sending it abandons the result locally but does not
+cancel remote work. Use a request deadline when remote work must be bounded.
+Cancellation support also depends on the RPC. Orderly PCIe removal handles these
+signals until device detachment begins.
+
 ## Virtio-console file output
 
 `VmService` can write a virtio-console stream directly to a host file. Set the
@@ -103,6 +118,14 @@ hypervisor backend must support virtual devices. The caller supplies the
 guest-visible instance ID in `AddVpciDeviceRequest.instance_id` and uses the
 same ID for `RemoveVpciDevice`. The response is empty. Removing an unknown
 or previously removed instance ID returns an error.
+
+`RemoveVpciDeviceRequest.eject_timeout_ms` is required for every removal request
+and has no default. It limits the wait for guest ejection while the VM is
+running. On timeout or guest ejection error, removal is still forced. Removing
+while paused does not wait for guest ejection. A temporary halt of a running VM
+does not bypass the wait. Zero proceeds without waiting. Pause, reset and save
+operations wait for pending removals to finish without shortening the supplied
+timeout. `TeardownVM` or `Quit` can interrupt the wait by stopping the VM.
 
 Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe

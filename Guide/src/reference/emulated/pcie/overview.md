@@ -72,15 +72,20 @@ and fires the hotplug notification.
 defaults to `false`, removing the device without guest
 acknowledgement, including while the VM is paused.
 
-With `orderly=true`, removal requires a running guest that is not halted, a port with
-`attention_button` and guest attention button events and hotplug
-interrupts enabled. The RPC waits up to 30 seconds for ejection.
-Timeout or cancellation while waiting for ejection returns an error and leaves the device attached. Once removal starts it runs to completion. Retrying
-after a timeout does not send another attention button event,
-which could cancel ejection. If the guest completes ejection after
-a timeout, retry the RPC to finish removal. Alternatively, request
-surprise removal with `orderly=false` without waiting for guest
-teardown.
+With `orderly=true`, removal requires a running guest that is not halted and a
+port with `attention_button`. Signaling a new ejection requires guest attention
+button events and hotplug interrupts to be enabled. Configure
+`eject_timeout_ms` beside `attention_button` on the port through CLI or
+`CreateVM`.
+There is no default timeout. Zero checks for completion without waiting.
+Timeout or supported cancellation while waiting for ejection returns an error
+and leaves the device attached. See
+[request cancellation](../../openvmm/management/grpc.md#request-cancellation)
+for the signals supported by each management transport. Once removal starts
+it runs to completion. Retrying after a timeout does not send another attention
+button event, which could cancel ejection. If the guest completes ejection after
+a timeout, retry the RPC to finish removal. Alternatively, request surprise
+removal with `orderly=false` without waiting for guest teardown.
 
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)

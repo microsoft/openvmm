@@ -54,6 +54,8 @@ pub enum VmRpc {
     ///
     /// Tuple is (instance_id, eject_timeout). While running, waits up to the
     /// supplied duration for guest ejection before forcing removal.
+    /// VM operations that stop, reset or save the guest wait for pending removal
+    /// without shortening the supplied duration.
     RemoveVpciDevice(FailableRpc<(Guid, Duration), ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
