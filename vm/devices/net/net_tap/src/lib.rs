@@ -32,6 +32,7 @@ use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
+use net_backend::VlanMetadata;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -47,6 +48,10 @@ const MAX_TAP_FRAME_LEN: usize =
 // read buffer to that contract rather than adding overflow detection.
 const TAP_READ_BUFFER_LEN: usize = size_of::<VirtioNetHdr>() + MAX_TAP_FRAME_LEN;
 const MAX_RX_PACKETS_PER_POLL: usize = 64;
+/// The destination and source MAC addresses, which an 802.1Q tag follows.
+const ETHERNET_ADDRESSES_LEN: usize = 12;
+const ETH_P_8021Q: u16 = 0x8100;
+const VLAN_TAG_LEN: u16 = 4;
 
 // TODO: These virtio net header types duplicate definitions in virtio_net.
 // Consider extracting a shared `virtio_net_header` crate if more consumers
@@ -304,28 +309,42 @@ impl Queue for TapQueue {
                 Poll::Ready(Ok(read_len)) => {
                     self.read_since_pending = true;
                     packets_processed += 1;
-                    let (hdr, frame) = VirtioNetHdr::read_from_prefix(&self.buffer[..read_len])
+                    let (mut hdr, frame) = VirtioNetHdr::read_from_prefix(&self.buffer[..read_len])
                         .expect("TAP packet is missing the vnet header");
                     assert!(
                         !frame.is_empty(),
                         "TAP packet is missing the Ethernet frame"
                     );
-                    let frame_len = frame.len();
-                    assert_vnet_hdr_contract(&hdr, frame_len);
-                    let Some(rx_meta) = parse_vnet_hdr_for_queue(
+                    assert_vnet_hdr_contract(&hdr, frame.len());
+                    let strip_tag = self.enabled_rx_offloads.vlan && has_vlan_tag(frame);
+                    if strip_tag && hdr.flags.needs_csum() {
+                        // The kernel's offset counts the tag.
+                        hdr.csum_start = hdr.csum_start.saturating_sub(VLAN_TAG_LEN);
+                    }
+                    let Some(mut rx_meta) = parse_vnet_hdr_for_queue(
                         &hdr,
                         self.enabled_rx_offloads,
                         &self.stale_offload_recovery,
                     ) else {
                         continue;
                     };
+                    // Stripped here because the capacity check has to judge the frame the
+                    // guest gets: with the tag, a full-size frame does not fit an MTU buffer.
+                    let frame = if strip_tag {
+                        let frame_start = size_of::<VirtioNetHdr>();
+                        rx_meta.vlan =
+                            Some(strip_vlan_tag(&mut self.buffer[frame_start..read_len]));
+                        &self.buffer[frame_start + usize::from(VLAN_TAG_LEN)..read_len]
+                    } else {
+                        frame
+                    };
                     let capacity = pool.capacity(rx);
-                    if frame_len <= capacity as usize {
+                    if frame.len() <= capacity as usize {
                         pool.write_packet(
                             rx,
                             &RxMetadata {
                                 offset: 0,
-                                len: frame_len,
+                                len: frame.len(),
                                 ..rx_meta
                             },
                             frame,
@@ -638,6 +657,27 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
     }
 }
 
+/// Whether a frame has an outer 802.1Q tag. An outer 802.1ad tag has no out-of-band form, so it
+/// stays in the frame.
+fn has_vlan_tag(frame: &[u8]) -> bool {
+    frame.len() >= ETHERNET_VLAN_HEADER_LEN as usize
+        && frame[ETHERNET_ADDRESSES_LEN..ETHERNET_ADDRESSES_LEN + 2] == ETH_P_8021Q.to_be_bytes()
+}
+
+/// Takes the tag out of a frame [`has_vlan_tag`] accepted, moving the MAC addresses over it. The
+/// frame then starts 4 bytes later.
+fn strip_vlan_tag(frame: &mut [u8]) -> VlanMetadata {
+    let tci = u16::from_be_bytes([
+        frame[ETHERNET_ADDRESSES_LEN + 2],
+        frame[ETHERNET_ADDRESSES_LEN + 3],
+    ]);
+    frame.copy_within(..ETHERNET_ADDRESSES_LEN, usize::from(VLAN_TAG_LEN));
+    VlanMetadata::new()
+        .with_priority((tci >> 13) as u8)
+        .with_drop_eligible_indicator(tci & (1 << 12) != 0)
+        .with_vlan_id(tci & 0xfff)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum InvalidRxMetadata {
     UnsupportedGsoProtocol,
@@ -841,6 +881,7 @@ mod tests {
             checksum: true,
             tcpv4_gso: true,
             tcpv6_gso: true,
+            vlan: false,
         }
     }
 
@@ -1076,6 +1117,7 @@ mod tests {
                 checksum: true,
                 tcpv4_gso: false,
                 tcpv6_gso: true,
+                vlan: false,
             },
         );
         assert!(recovery.permits(&InvalidRxMetadata::UnsupportedGsoOffload(
@@ -1103,6 +1145,7 @@ mod tests {
                     checksum: true,
                     tcpv4_gso: false,
                     tcpv6_gso: true,
+                    vlan: false,
                 },
                 &recovery,
             )
@@ -1121,6 +1164,7 @@ mod tests {
                     checksum: true,
                     tcpv4_gso: false,
                     tcpv6_gso: true,
+                    vlan: false,
                 },
                 &recovery,
             )
@@ -1136,6 +1180,7 @@ mod tests {
                 checksum: false,
                 tcpv4_gso: true,
                 tcpv6_gso: true,
+                vlan: false,
             },
         );
         assert!(recovery.permits(&InvalidRxMetadata::UnsupportedChecksumOffload));

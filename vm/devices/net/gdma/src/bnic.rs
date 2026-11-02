@@ -392,7 +392,11 @@ impl BasicNic {
                                 .get_queues(
                                     vec![QueueConfig {
                                         driver: Box::new(state.queues.driver.clone()),
-                                        enabled_rx_offloads: Default::default(),
+                                        // The guest reads the tag from the completion.
+                                        enabled_rx_offloads: net_backend::RxOffloadSupport {
+                                            vlan: true,
+                                            ..Default::default()
+                                        },
                                     }],
                                     None,
                                     &mut queues,
