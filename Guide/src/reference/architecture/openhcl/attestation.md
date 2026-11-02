@@ -34,9 +34,9 @@ authenticate host-supplied metadata or establish certificate trust.
   supported key derivation.
 
 [attestation-rustdoc]:
-  https://openvmm.dev/rustdoc/underhill_attestation/index.html
+  https://openvmm.dev/rustdoc/linux/underhill_attestation/index.html
 [tee-rustdoc]:
-  https://openvmm.dev/rustdoc/tee_call/index.html
+  https://openvmm.dev/rustdoc/linux/tee_call/index.html
 
 ## Boot and key protection
 
