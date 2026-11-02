@@ -705,6 +705,7 @@ impl net_backend::Queue for ConsommeQueue {
                 ipv4: meta.flags.offload_ip_header_checksum(),
                 tcp: meta.flags.offload_tcp_checksum(),
                 udp: meta.flags.offload_udp_checksum(),
+                partial: false,
                 tso: meta
                     .flags
                     .offload_tcp_segmentation()
@@ -903,6 +904,15 @@ impl consomme::Client for Client<'_> {
                     mss,
                     Some(start as u16),
                 )
+            } else if checksum.partial {
+                assert!(self.rx_checksum_supported() && (checksum.tcp != checksum.udp));
+                let start = ETHERNET_HEADER_LEN
+                    + if checksum.ipv4 {
+                        IPV4_HEADER_LEN
+                    } else {
+                        IPV6_HEADER_LEN
+                    };
+                RxOffload::checksum(start as u16, if checksum.tcp { 16 } else { 6 })
             } else {
                 RxOffload::default()
             };
@@ -916,7 +926,7 @@ impl consomme::Client for Client<'_> {
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_checksum: if checksum.tso.is_some() {
+                    l4_checksum: if checksum.partial {
                         RxChecksumState::Unknown
                     } else if checksum.tcp || checksum.udp {
                         RxChecksumState::Good
@@ -950,8 +960,12 @@ impl consomme::Client for Client<'_> {
         }
     }
 
-    fn rx_gso_supported(&self, ipv6: bool) -> bool {
+    fn rx_checksum_supported(&self) -> bool {
         self.enabled_rx_offloads.checksum
+    }
+
+    fn rx_gso_supported(&self, ipv6: bool) -> bool {
+        self.rx_checksum_supported()
             && if ipv6 {
                 self.enabled_rx_offloads.tcpv6_gso
             } else {
