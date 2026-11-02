@@ -190,7 +190,7 @@ where
 }
 
 #[cfg(test)]
-#[expect(clippy::std_instead_of_core)]
+#[cfg_attr(feature = "std", expect(clippy::std_instead_of_core))]
 mod tests {
     use super::write_with;
     use alloc::vec;
