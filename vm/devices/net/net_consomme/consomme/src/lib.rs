@@ -932,12 +932,14 @@ impl<T: Client> Access<'_, T> {
         self.poll_icmp(cx);
     }
 
-    /// Update all sockets to use the new client's IO driver. This must be
-    /// called if the previous driver is no longer usable or if the client
-    /// otherwise wants existing connections to be polled on a new IO driver.
+    /// Updates all sockets and timers to use the new client's IO driver.
+    ///
+    /// This must be called if the previous driver is no longer usable or if the
+    /// client otherwise wants existing connections to be polled on a new IO driver.
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
+        self.refresh_icmp_driver();
     }
 
     /// Sends an Ethernet frame to the network.
