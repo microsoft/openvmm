@@ -102,6 +102,8 @@ struct PmState {
     general_purpose_status: u16,
     #[inspect(hex)]
     general_purpose_enable: u16,
+    // None retains legacy replay semantics until reset, including across saves.
+    line_levels: Option<u16>,
     #[inspect(hex)]
     processor_control: u32,
     #[inspect(hex)]
@@ -125,6 +127,7 @@ impl PmState {
             control: 0,
             general_purpose_status: 0,
             general_purpose_enable: 0,
+            line_levels: Some(0),
             processor_control: 0,
             device_status: 0,
             global_status: 0,
@@ -429,6 +432,7 @@ impl PowerManagementDevice {
             this.enable_acpi_mode(acpi_mode.default_pio_dynamic)
         }
 
+        this.check_interrupt_assertion();
         this
     }
 
@@ -609,9 +613,23 @@ impl PortIoIntercept for PowerManagementDevice {
 /// section 4.7.1 in the ACPI 2.0 spec.
 impl LineInterruptTarget for PowerManagementDevice {
     fn set_irq(&mut self, vector: u32, high: bool) {
+        if let Some(levels) = &mut self.state.line_levels {
+            *levels = (*levels & !(1 << vector)) | (u16::from(high) << vector);
+        }
         // Latch the bit; it can only be cleared by the guest.
         self.state.general_purpose_status |= (high as u16) << vector;
         self.check_interrupt_assertion();
+    }
+
+    fn replay_irq(&mut self, vector: u32, high: bool) {
+        if self
+            .state
+            .line_levels
+            .is_some_and(|levels| (levels & (1 << vector) != 0) == high)
+        {
+            return;
+        }
+        self.set_irq(vector, high);
     }
 
     fn valid_lines(&self) -> &[std::ops::RangeInclusive<u32>] {
@@ -656,6 +674,8 @@ mod saved_state {
             pub global_control: u32,
             #[mesh(12)]
             pub device_control: u32,
+            #[mesh(13)]
+            pub line_levels: Option<u16>,
         }
     }
 
@@ -670,6 +690,7 @@ mod saved_state {
                 control,
                 general_purpose_status,
                 general_purpose_enable,
+                line_levels,
                 processor_control,
                 device_status,
                 global_status,
@@ -685,6 +706,7 @@ mod saved_state {
                 control,
                 general_purpose_status,
                 general_purpose_enable,
+                line_levels,
                 processor_control,
                 device_status,
                 global_status,
@@ -704,6 +726,7 @@ mod saved_state {
                 control,
                 general_purpose_status,
                 general_purpose_enable,
+                line_levels,
                 processor_control,
                 device_status,
                 global_status,
@@ -719,6 +742,7 @@ mod saved_state {
                 control,
                 general_purpose_status,
                 general_purpose_enable,
+                line_levels,
                 processor_control,
                 device_status,
                 global_status,
@@ -744,6 +768,182 @@ mod saved_state {
         use vmcore::vmtime::VmTimeKeeper;
 
         const BASE: u16 = 0x1000;
+
+        struct GpeTarget(parking_lot::Mutex<PowerManagementDevice>);
+
+        impl vmcore::line_interrupt::LineSetTarget for GpeTarget {
+            fn replay_irq(&self, vector: u32, high: bool) {
+                self.0.lock().replay_irq(vector, high);
+            }
+
+            fn set_irq(&self, vector: u32, high: bool) {
+                self.0.lock().set_irq(vector, high);
+            }
+        }
+
+        #[async_test]
+        async fn replay_preserves_cleared_gpe_status_and_legacy_behavior(driver: DefaultDriver) {
+            use std::sync::Arc;
+            use vmcore::line_interrupt::LineSet;
+            use vmcore::save_restore::SavedStateBlob;
+
+            for legacy in [false, true] {
+                let (_source_time, mut source) = new_pm(&driver, LineInterrupt::detached()).await;
+                write(&mut source, DynReg::GEN_PURPOSE_ENABLE, 1);
+                source.set_irq(0, true);
+                write(&mut source, DynReg::GEN_PURPOSE_STATUS, 1);
+                let mut saved = source.save().unwrap();
+                if legacy {
+                    saved.line_levels = None;
+                }
+                let saved = SavedStateBlob::new(saved);
+
+                let sci = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                sci.add_target(0..=0, 0, "SCI", target.clone());
+                let (_time, mut destination) =
+                    new_pm(&driver, sci.new_line(0, "pm").unwrap()).await;
+                destination.restore(saved.parse().unwrap()).unwrap();
+                let saved_again = SavedStateBlob::new(destination.save().unwrap());
+                destination.reset().await;
+                destination.restore(saved_again.parse().unwrap()).unwrap();
+                let pm = Arc::new(GpeTarget(parking_lot::Mutex::new(destination)));
+                let gpe = LineSet::new();
+                gpe.add_target(0..=0, 0, "GPE", pm.clone());
+                let line = gpe.new_line(0, "device").unwrap();
+                line.set_level(true);
+                sci.start();
+                assert!(!target.is_high(0));
+                gpe.start();
+                assert_eq!(gpe_status(&mut pm.0.lock()), u16::from(legacy));
+                assert_eq!(target.is_high(0), legacy);
+
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_STATUS, 1);
+                gpe.stop();
+                gpe.start();
+                assert_eq!(gpe_status(&mut pm.0.lock()), u16::from(legacy));
+
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_STATUS, 1);
+                // Ordinary repeated-high publications still latch status.
+                line.set_level(true);
+                assert_eq!(gpe_status(&mut pm.0.lock()), 1);
+                assert!(target.is_high(0));
+                line.set_level(false);
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_STATUS, 1);
+                gpe.stop();
+                line.set_level(true);
+                gpe.start();
+                assert_eq!(gpe_status(&mut pm.0.lock()), 1);
+                assert!(target.is_high(0));
+                gpe.stop();
+                sci.stop();
+            }
+        }
+
+        #[async_test]
+        async fn restored_gpe_inputs_recognize_only_replay_changes(driver: DefaultDriver) {
+            use vmcore::save_restore::SavedStateBlob;
+
+            for history in [false, true] {
+                for current in [false, true] {
+                    let (_source_time, mut source) =
+                        new_pm(&driver, LineInterrupt::detached()).await;
+                    source.set_irq(8, history);
+                    write(&mut source, DynReg::GEN_PURPOSE_STATUS, 1 << 8);
+                    let saved = SavedStateBlob::new(source.save().unwrap());
+                    let (_time, mut destination) = new_pm(&driver, LineInterrupt::detached()).await;
+                    destination.restore(saved.parse().unwrap()).unwrap();
+                    destination.replay_irq(8, current);
+                    assert_eq!(
+                        gpe_status(&mut destination),
+                        u16::from(!history && current) << 8
+                    );
+                    write(&mut destination, DynReg::GEN_PURPOSE_STATUS, 1 << 8);
+                    let saved_again = SavedStateBlob::new(destination.save().unwrap());
+                    destination.reset().await;
+                    destination.restore(saved_again.parse().unwrap()).unwrap();
+                    destination.replay_irq(8, true);
+                    assert_eq!(gpe_status(&mut destination), u16::from(!current) << 8);
+                }
+            }
+        }
+
+        #[async_test]
+        async fn gpe_pulses_latch_and_restore_sci_before_start(driver: DefaultDriver) {
+            use std::sync::Arc;
+            use vmcore::line_interrupt::LineSet;
+            use vmcore::save_restore::SavedStateBlob;
+
+            for enabled in [false, true] {
+                let sci = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                sci.add_target(0..=0, 0, "SCI", target.clone());
+                let (_time, pm) = new_pm(&driver, sci.new_line(0, "pm").unwrap()).await;
+                let pm = Arc::new(GpeTarget(parking_lot::Mutex::new(pm)));
+                let gpe = LineSet::new();
+                gpe.add_target(0..=0, 0, "GPE", pm.clone());
+                let line = gpe.new_line(0, "generation ID").unwrap();
+                line.set_level(false);
+                sci.start();
+                gpe.start();
+                write(
+                    &mut pm.0.lock(),
+                    DynReg::GEN_PURPOSE_ENABLE,
+                    u16::from(enabled),
+                );
+                line.set_level(true);
+                line.set_level(false);
+                assert_eq!(gpe_status(&mut pm.0.lock()), 1);
+                assert_eq!(target.is_high(0), enabled);
+                let saved = SavedStateBlob::new(pm.0.lock().save().unwrap());
+
+                gpe.stop();
+                sci.stop();
+                gpe.reset();
+                sci.reset();
+                let (_fresh_time, mut destination) =
+                    new_pm(&driver, sci.new_line(0, "restored pm").unwrap()).await;
+                destination.reset().await;
+                destination.restore(saved.parse().unwrap()).unwrap();
+                *pm.0.lock() = destination;
+                line.set_level(false);
+                sci.start();
+                assert_eq!(
+                    target.is_high(0),
+                    enabled,
+                    "SCI must be restored without polling"
+                );
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    1,
+                    "low replay must not clear the latch"
+                );
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_ENABLE, 1);
+                assert!(target.is_high(0));
+                write(&mut pm.0.lock(), DynReg::GEN_PURPOSE_STATUS, 1);
+                assert!(!target.is_high(0));
+
+                gpe.stop();
+                line.set_level(true);
+                line.set_level(false);
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    0,
+                    "a completed stopped pulse is lost"
+                );
+                gpe.stop();
+                line.set_level(true);
+                gpe.start();
+                assert_eq!(
+                    gpe_status(&mut pm.0.lock()),
+                    1,
+                    "a sustained stopped assertion survives"
+                );
+                assert!(target.is_high(0));
+            }
+        }
 
         struct PioRegion(Option<u16>);
 

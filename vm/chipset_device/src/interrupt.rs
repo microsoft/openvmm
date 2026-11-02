@@ -10,6 +10,14 @@ pub trait LineInterruptTarget {
     /// Set an interrupt line state.
     fn set_irq(&mut self, vector: u32, high: bool);
 
+    /// Reconcile an input with its final level when line forwarding starts.
+    ///
+    /// Targets may use saved input history to avoid recognizing an unchanged
+    /// level again. Ordinary publications still call `set_irq`.
+    fn replay_irq(&mut self, vector: u32, high: bool) {
+        self.set_irq(vector, high);
+    }
+
     /// Returns the valid vector ranges for this target.
     fn valid_lines(&self) -> &[RangeInclusive<u32>];
 }

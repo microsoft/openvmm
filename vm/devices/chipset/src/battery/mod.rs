@@ -114,6 +114,7 @@ pub struct BatteryDevice {
 impl BatteryDevice {
     /// Create a new battery device
     pub fn new(platform: BatteryRuntimeDeps, base_addr: u64) -> Self {
+        platform.notify_interrupt.set_level(false);
         BatteryDevice {
             rt: platform,
             mmio_region: (
@@ -398,7 +399,67 @@ mod save_restore {
 mod tests {
     use super::*;
     use futures::task::Context;
+    use test_with_tracing::test;
     use vmcore::line_interrupt::LineInterrupt;
+
+    #[test]
+    fn restore_publishes_notification_before_polling() {
+        use vmcore::line_interrupt::LineSet;
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+
+        let mut pool = pal_async::DefaultPool::new();
+        for pending in [false, true] {
+            let (mut source, tx) = create_test_platform();
+            send_update(&mut source, HostBatteryUpdate::default(), &tx);
+            if !pending {
+                source.write_register(
+                    RegisterOffset::BATTERY_ACPI_NOTIFY_CLEAR,
+                    ACPI_DEVICE_NOTIFY_VALID_BITS,
+                );
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let set = LineSet::new();
+                let target = TestLineInterruptTarget::new_arc();
+                set.add_target(0..=0, 0, "irq", target.clone());
+                let (tx, rx) = mesh::channel();
+                let mut battery = BatteryDevice::new(
+                    BatteryRuntimeDeps {
+                        battery_status_recv: rx,
+                        notify_interrupt: set.new_line(0, "battery").unwrap(),
+                    },
+                    BATTERY_MMIO_REGION_BASE_ADDRESS_X64,
+                );
+                set.start();
+                assert!(!target.is_high(0));
+                set.stop();
+                if reset {
+                    set.reset();
+                    pool.run_until(battery.reset());
+                }
+                // A queued update must not be consumed by restore.
+                tx.send(HostBatteryUpdate::default());
+                battery.restore(saved.parse().unwrap()).unwrap();
+                assert!(!target.is_high(0));
+                set.start();
+                assert_eq!(target.is_high(0), pending);
+                battery.write_register(
+                    RegisterOffset::BATTERY_ACPI_NOTIFY_CLEAR,
+                    ACPI_DEVICE_NOTIFY_VALID_BITS,
+                );
+                assert!(!target.is_high(0));
+                battery.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
+                assert!(target.is_high(0));
+                set.stop();
+                set.reset();
+                pool.run_until(battery.reset());
+                set.start();
+                assert!(!target.is_high(0));
+            }
+        }
+    }
 
     fn create_test_platform() -> (BatteryDevice, mesh::Sender<HostBatteryUpdate>) {
         let (tx, rx) = mesh::channel::<HostBatteryUpdate>();

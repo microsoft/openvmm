@@ -1143,6 +1143,7 @@ impl Channel {
             ChannelType::Secondary => 1,
         };
 
+        interrupt.set_level(false);
         Ok(Self {
             drives: [
                 primary_media
@@ -1887,6 +1888,125 @@ mod tests {
                         .interrupt()
                 );
             }
+        }
+    }
+
+    #[async_test]
+    async fn restored_pending_irq_does_not_generate_an_ioapic_edge() {
+        use chipset::ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS;
+        use chipset::ioapic::IoApicDevice;
+        use chipset_device::interrupt::LineInterruptTarget;
+        use chipset_device::mmio::MmioIntercept;
+        use chipset_resources::ioapic::IoApicRouting;
+        use parking_lot::Mutex;
+        use vmcore::line_interrupt::LineSet;
+        use vmcore::line_interrupt::LineSetTarget;
+        use vmcore::save_restore::SaveRestore;
+
+        #[derive(Clone, Default)]
+        struct Routing(Arc<Mutex<usize>>);
+
+        impl IoApicRouting for Routing {
+            fn assert(&self, _: u8) {
+                *self.0.lock() += 1;
+            }
+
+            fn set_route(&self, _: u8, _: Option<(u64, u32)>) {}
+        }
+
+        struct Target(Arc<Mutex<IoApicDevice>>);
+
+        impl LineSetTarget for Target {
+            fn set_irq(&self, vector: u32, high: bool) {
+                self.0.lock().set_irq(vector, high);
+            }
+        }
+
+        fn wire() -> (LineSet, Arc<Mutex<IoApicDevice>>, Routing) {
+            let routing = Routing::default();
+            let mut ioapic = IoApicDevice::new(1, Box::new(routing.clone()));
+            let base = IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS;
+            ioapic.mmio_write(base, &[0x10]).unwrap();
+            ioapic
+                .mmio_write(base + 0x10, &0x30u32.to_ne_bytes())
+                .unwrap();
+            let ioapic = Arc::new(Mutex::new(ioapic));
+            let set = LineSet::new();
+            set.add_target(0..=0, 0, "ioapic", Arc::new(Target(ioapic.clone())));
+            (set, ioapic, routing)
+        }
+
+        fn controller(file: &NamedTempFile, drive: u8, interrupt: LineInterrupt) -> IdeDevice {
+            let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+            let mut drives = [None, None];
+            drives[usize::from(drive)] = Some(DriveMedia::hard_disk(disk));
+            IdeDevice::new(
+                GuestMemory::allocate(16 * 1024),
+                &mut ExternallyManagedPortIoIntercepts,
+                drives,
+                [None, None],
+                interrupt,
+                LineInterrupt::detached(),
+            )
+            .unwrap()
+        }
+
+        for drive in [0, 1] {
+            let file = NamedTempFile::new().unwrap();
+            file.as_file().set_len(1024 * 1024).unwrap();
+            let (set, ioapic, routing) = wire();
+            let mut ide = controller(&file, drive, set.new_line(0, "ide").unwrap());
+            set.start();
+            ide.start();
+            let path = IdePath { channel: 0, drive };
+            ide.io_write(
+                IdeIoPort::PRI_DEVICE_HEAD.0,
+                &[DeviceHeadReg::new().with_dev(drive != 0).into_bits()],
+            )
+            .unwrap();
+            execute_command(&mut ide, &path, IdeCommand::IDENTIFY_DEVICE.0);
+            assert!(
+                ide.channels[0].drives[usize::from(drive)]
+                    .as_ref()
+                    .unwrap()
+                    .interrupt_pending()
+            );
+            assert_eq!(*routing.0.lock(), 1);
+            ide.stop().await;
+            set.stop();
+
+            // IRQ synchronization must not relatch the independently saved
+            // bus-master status as post_drive_access would.
+            ide.channels[0]
+                .bus_master_state
+                .status_reg
+                .set_interrupt(false);
+            let status = ide.channels[0].bus_master_state.status_reg.into_bits();
+            let saved = SaveRestore::save(&mut ide).unwrap();
+            let saved_ioapic = SaveRestore::save(&mut *ioapic.lock()).unwrap();
+
+            let (restored_set, restored_ioapic, restored_routing) = wire();
+            let mut restored = controller(&file, drive, restored_set.new_line(0, "ide").unwrap());
+            SaveRestore::restore(&mut *restored_ioapic.lock(), saved_ioapic).unwrap();
+            SaveRestore::restore(&mut restored, saved).unwrap();
+            assert!(
+                restored.channels[0].drives[usize::from(drive)]
+                    .as_ref()
+                    .unwrap()
+                    .interrupt_pending()
+            );
+            assert_eq!(
+                restored.channels[0].bus_master_state.status_reg.into_bits(),
+                status
+            );
+            assert_eq!(*restored_routing.0.lock(), 0);
+
+            restored_set.start();
+            restored.start();
+            restored.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
+            assert_eq!(*restored_routing.0.lock(), 0);
+            restored.stop().await;
+            restored_set.stop();
         }
     }
 
