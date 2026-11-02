@@ -448,7 +448,7 @@ impl OpenOptions {
         path16.push(0);
         let mut handle = std::ptr::null_mut();
 
-        // SAFETY: All structs are correctly initalized, the path has a null
+        // SAFETY: All structs are correctly initialized, the path has a null
         // terminator, and we validate the result immediately.
         unsafe {
             chk_win32(virtdisk::OpenVirtualDisk(
@@ -517,7 +517,7 @@ impl Vhd {
         };
         let mut handle = std::ptr::null_mut();
 
-        // SAFETY: All structs are correctly initalized, the path has a null
+        // SAFETY: All structs are correctly initialized, the path has a null
         // terminator, and we validate the result immediately.
         unsafe {
             chk_win32(virtdisk::CreateVirtualDisk(
@@ -570,7 +570,7 @@ impl Vhd {
 
         let mut handle = std::ptr::null_mut();
 
-        // SAFETY: All structs are correctly initalized, the path has a null
+        // SAFETY: All structs are correctly initialized, the path has a null
         // terminator, and we validate the result immediately.
         unsafe {
             chk_win32(virtdisk::CreateVirtualDisk(
