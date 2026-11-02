@@ -525,9 +525,8 @@ pub trait Client {
     ///
     /// If `checksum.ipv4`, `checksum.tcp`, or `checksum.udp` are set, then the
     /// packet contains an IPv4 header, TCP header, and/or UDP header with a
-    /// valid checksum.
-    ///
-    /// TODO: support >MTU sized packets (RSC/LRO/GRO).
+    /// valid checksum, except that a TCP GSO packet (`checksum.tso` is set)
+    /// contains a pseudo-header partial TCP checksum for the client to complete.
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState);
 
     /// Transmits a packet whose bytes are provided as multiple discontiguous
@@ -557,11 +556,18 @@ pub trait Client {
     /// Specifies the maximum size for the next call to `recv`.
     ///
     /// This is the MTU including the Ethernet frame header. This must be at
-    /// least [`MIN_MTU`].
+    /// least [`MIN_MTU`]. When [`Client::rx_gso_supported`] is true, larger
+    /// buffers allow TCP data to be coalesced into a single GSO packet.
     ///
     /// Return 0 to indicate that there are no buffers available for receiving
     /// data.
     fn rx_mtu(&mut self) -> usize;
+
+    /// Whether the client can receive TCP GSO packets with partial checksums
+    /// for the specified IP version. Disabled by default.
+    fn rx_gso_supported(&self, _ipv6: bool) -> bool {
+        false
+    }
 }
 
 /// Specifies the checksum state for a packet being transmitted.
@@ -570,8 +576,8 @@ pub struct ChecksumState {
     /// On receive, the data has a valid IPv4 header checksum. On send, the
     /// checksum should be ignored.
     pub ipv4: bool,
-    /// On receive, the data has a valid TCP checksum. On send, the checksum
-    /// should be ignored.
+    /// On receive, the data has a valid TCP checksum, or a pseudo-header
+    /// partial checksum when `tso` is set. On send, the checksum should be ignored.
     pub tcp: bool,
     /// On receive, the data has a valid UDP checksum. On send, the checksum
     /// should be ignored.
@@ -932,12 +938,14 @@ impl<T: Client> Access<'_, T> {
         self.poll_icmp(cx);
     }
 
-    /// Update all sockets to use the new client's IO driver. This must be
-    /// called if the previous driver is no longer usable or if the client
-    /// otherwise wants existing connections to be polled on a new IO driver.
+    /// Updates all sockets and timers to use the new client's IO driver.
+    ///
+    /// This must be called if the previous driver is no longer usable or if the
+    /// client otherwise wants existing connections to be polled on a new IO driver.
     pub fn refresh_driver(&mut self) {
         self.refresh_tcp_driver();
         self.refresh_udp_driver();
+        self.refresh_icmp_driver();
     }
 
     /// Sends an Ethernet frame to the network.

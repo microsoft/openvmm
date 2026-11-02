@@ -33,12 +33,12 @@
 
 #![forbid(unsafe_code)]
 
+mod direct;
 pub mod resolver;
 mod spec;
 #[cfg(test)]
 mod tests;
 
-use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures_concurrency::future::Race as _;
 use guestmem::GuestMemory;
@@ -49,7 +49,6 @@ use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
-use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -292,73 +291,7 @@ impl ConsoleWorker {
                     | futures::future::Either::Right((result, _)) => result?,
                 };
             } else {
-                let rx = async {
-                    let Some(receiveq) = receiveq.as_mut() else {
-                        poll_fn(|cx| io.lock().poll_disconnect(cx))
-                            .await
-                            .map_err(WorkerError::Serial)?;
-                        return Ok(false);
-                    };
-                    'rx: loop {
-                        let work = {
-                            let mut wait_work = pin!(receiveq.peek());
-                            poll_fn(|cx| {
-                                if let Poll::Ready(work) = wait_work.as_mut().poll(cx) {
-                                    return Poll::Ready(
-                                        work.map(Some).map_err(WorkerError::Virtio),
-                                    );
-                                }
-                                io.lock().poll_disconnect(cx).map(|result| {
-                                    result.map(|()| None).map_err(WorkerError::Serial)
-                                })
-                            })
-                            .await?
-                        };
-                        let Some(work) = work else {
-                            break 'rx Ok(false);
-                        };
-                        let writeable_len = work
-                            .payload()
-                            .iter()
-                            .filter(|p| p.writeable)
-                            .map(|p| p.length as usize)
-                            .sum::<usize>();
-                        if writeable_len == 0 {
-                            // Guest posted a zero-length buffer; complete it
-                            // immediately without calling poll_read (which
-                            // would return Ok(0) and look like a disconnect).
-                            let work = work.consume();
-                            receiveq.complete(work, 0);
-                            continue 'rx;
-                        }
-                        let n = BUF_SIZE.min(writeable_len);
-                        let mut buf = [0u8; BUF_SIZE];
-                        match poll_fn(|cx| Pin::new(&mut **io.lock()).poll_read(cx, &mut buf[..n]))
-                            .await
-                        {
-                            Ok(0) => {
-                                // Backend disconnected.
-                                break 'rx Ok(false);
-                            }
-                            Ok(n) => {
-                                let work = work.consume();
-                                if let Err(err) = work.write(mem, &buf[..n]) {
-                                    tracelimit::error_ratelimited!(
-                                        error = &err as &dyn std::error::Error,
-                                        "failed to write to guest receive buffer"
-                                    );
-                                    receiveq.complete(work, 0);
-                                } else {
-                                    receiveq.complete(work, n as u32);
-                                }
-                            }
-                            Err(_) => {
-                                // Disconnect on error, like other serial impls.
-                                break 'rx Ok(false);
-                            }
-                        }
-                    }
-                };
+                let rx = direct::receive(receiveq, &io, mem);
                 let tx = async {
                     let Some(transmitq) = transmitq.as_mut() else {
                         std::future::pending().await
