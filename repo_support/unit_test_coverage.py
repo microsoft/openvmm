@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -20,6 +21,14 @@ import time
 
 SCHEMA_VERSION = 1
 PROFILE_DIR_ENV = "OPENVMM_UNIT_COVERAGE_PROFILES"
+
+
+class StaleCoverageError(ValueError):
+    """Coverage belongs to a different source snapshot than the current checkout."""
+
+    def __init__(self, freshness):
+        super().__init__("coverage is stale; rerun cargo xflowey unit-test-coverage")
+        self.freshness = freshness
 
 
 def write_json(path, value):
@@ -40,6 +49,12 @@ def write_json(path, value):
 
 def capture(args, *, cwd, env=None):
     return subprocess.check_output(args, cwd=cwd, env=env, text=True)
+
+
+def repository_root():
+    return Path(capture(
+        ["git", "rev-parse", "--show-toplevel"], cwd=Path.cwd(),
+    ).strip()).resolve()
 
 
 def source_snapshot(root, excluded=()):
@@ -68,7 +83,125 @@ def source_snapshot(root, excluded=()):
             with path.open("rb") as stream:
                 for block in iter(lambda: stream.read(65536), b""):
                     digest.update(block)
-    return {"head": head, "dirty": dirty, "snapshot_sha256": digest.hexdigest()}
+    return {
+        "head": head,
+        "dirty": dirty,
+        "snapshot_sha256": digest.hexdigest(),
+        "excluded_paths": sorted({
+            path.relative_to(root).as_posix()
+            for path in excluded if path.is_relative_to(root)
+        }),
+    }
+
+
+def snapshot_exclusions(report, root):
+    paths = []
+    for name in report["source"].get("excluded_paths", []):
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts or not path.parts:
+            raise ValueError(f"invalid snapshot exclusion: {name!r}")
+        paths.append(root / path)
+    return paths
+
+
+def check_freshness(report, root):
+    current = source_snapshot(root, snapshot_exclusions(report, root))
+    matches = all(
+        current[key] == report["source"][key]
+        for key in ("head", "dirty", "snapshot_sha256")
+    )
+    return {"state": "current" if matches else "stale", "current_source": current}
+
+
+def resolve_report(root, report_path=None):
+    if report_path is not None:
+        return Path(report_path).resolve()
+    pointer = root / "target/unit-coverage/latest.json"
+    if not pointer.is_file():
+        raise ValueError("no local coverage report; run cargo xflowey unit-test-coverage first")
+    latest = json.loads(pointer.read_text(encoding="utf-8"))
+    if latest["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("unsupported latest-report index schema")
+    path = Path(latest["report"])
+    if not path.is_file():
+        raise ValueError("the latest report was removed; collect coverage again")
+    return path
+
+
+def resolve_comparison(root, base):
+    if base is None:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+            cwd=root, text=True, capture_output=True,
+        )
+        if result.returncode:
+            raise ValueError("no PR base recorded or origin/HEAD configured; supply --base <revision>")
+        base = result.stdout.strip()
+    resolved = capture(
+        ["git", "rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"], cwd=root,
+    ).strip()
+    merge_base = capture(["git", "merge-base", "HEAD", resolved], cwd=root).strip()
+    return {"requested": base, "resolved": resolved, "merge_base": merge_base}
+
+
+def changed_source_lines(root, comparison, excluded=()):
+    """Return new-side Rust lines, including staged, unstaged, and untracked changes."""
+    merge_base = comparison["merge_base"]
+    git_diff = [
+        "git", "--no-pager", "diff", "--no-ext-diff", "--no-textconv",
+        "--no-color", "--find-renames",
+    ]
+    records = subprocess.check_output(
+        git_diff + ["--name-status", "-z", merge_base, "--"], cwd=root,
+    ).split(b"\0")
+    changed = {}
+    other_files = 0
+    deleted_files = 0
+    position = 0
+    while position < len(records) and records[position]:
+        status = records[position].decode("ascii")
+        position += 1
+        names = [os.fsdecode(records[position])]
+        position += 1
+        if status[0] in ("R", "C"):
+            names.append(os.fsdecode(records[position]))
+            position += 1
+        name = names[-1]
+        if status[0] == "D":
+            deleted_files += 1
+            continue
+        if Path(name).suffix != ".rs":
+            other_files += 1
+            continue
+        text = capture(
+            git_diff + ["--unified=0", "--inter-hunk-context=0", merge_base, "--", *names],
+            cwd=root,
+        )
+        lines = set()
+        for match in re.finditer(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", text, re.MULTILINE):
+            start = int(match[1])
+            count = int(match[2]) if match[2] is not None else 1
+            lines.update(range(start, start + count))
+        changed[name] = lines
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=root,
+    ).split(b"\0")
+    for raw in filter(None, untracked):
+        name = os.fsdecode(raw)
+        path = root / name
+        if any(path.is_relative_to(directory) for directory in excluded):
+            continue
+        if path.suffix != ".rs":
+            other_files += 1
+            continue
+        # A symlink's Git diff describes its target name, not Rust source lines.
+        if path.is_symlink():
+            changed[name] = set()
+            continue
+        data = path.read_bytes()
+        count = data.count(b"\n") + int(bool(data) and not data.endswith(b"\n"))
+        changed[name] = set(range(1, count + 1))
+    return changed, other_files, deleted_files
 
 
 def parse_environment(text):
@@ -282,7 +415,7 @@ def collect_run(root, output, plan, run, cargo, llvm_cov, llvm_profdata, source_
 
 def collect(plan_path, output):
     started = time.monotonic()
-    root = Path(capture(["git", "rev-parse", "--show-toplevel"], cwd=Path.cwd()).strip()).resolve()
+    root = repository_root()
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()  # Never reuse execution counts from an earlier invocation.
@@ -292,7 +425,9 @@ def collect(plan_path, output):
     write_json(output / "plan.json", plan)
     cargo = ["cargo"] + ([f"+{plan['toolchain']}"] if plan["toolchain"] else [])
     rustc = ["rustc"] + ([f"+{plan['toolchain']}"] if plan["toolchain"] else [])
-    excluded = [output, root / "target" / "unit-coverage-build"]
+    excluded = [
+        output, root / "target/unit-coverage-build", root / "target/unit-coverage",
+    ]
     snapshot = source_snapshot(root, excluded)
     source_files = {
         name for name in capture(
@@ -322,7 +457,13 @@ def collect(plan_path, output):
         "issues": [],
     }
     write_json(output / "report.json", report)
+    latest = root / "target/unit-coverage/latest.json"
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    # Point to the newest attempt even if it fails; never fall back to old success.
+    write_json(latest, {"schema_version": SCHEMA_VERSION, "report": str(output / "report.json")})
     try:
+        if plan.get("base") is not None:
+            report["comparison"] = resolve_comparison(root, plan["base"])
         report["rustc"] = capture(rustc + ["-vV"], cwd=root).strip()
         report["cargo_llvm_cov"] = capture(cargo + ["llvm-cov", "--version"], cwd=root).strip()
         sysroot = Path(capture(rustc + ["--print", "sysroot"], cwd=root).strip())
@@ -355,6 +496,9 @@ def collect(plan_path, output):
             "state": report["state"],
             "summary": report["summary"],
         }), file=sys.stderr)
+    print(json.dumps(query(
+        output / "report.json", changed=plan.get("base") is not None, root=root,
+    )))
     return 0 if report["state"] == "complete" and report["all_tests_passed"] else 1
 
 
@@ -368,7 +512,87 @@ def summarize(files):
     }
 
 
-def query(report_path, file=None, start=None, end=None, limit=100):
+def line_details(report, name, number, hit, limit):
+    tests = [
+        {key: test[key] for key in
+         ("id", "run", "binary_id", "name", "attempt", "result")}
+        for test in report["tests"] if number in test["covered"].get(name, [])
+    ]
+    return {
+        "line": number, "covered": hit, "tests": tests[:limit],
+        "tests_truncated": len(tests) > limit,
+    }
+
+
+def line_ranges(numbers):
+    ranges = []
+    for number in sorted(numbers):
+        if ranges and number == ranges[-1][1] + 1:
+            ranges[-1][1] = number
+        else:
+            ranges.append([number, number])
+    return ranges
+
+
+def changed_query(report, root, comparison, limit):
+    changed, other_files, deleted_files = changed_source_lines(
+        root, comparison, snapshot_exclusions(report, root),
+    )
+    files = []
+    measured = {}
+    unmapped = 0
+    unmeasured_files = 0
+    remaining = limit
+    for name, numbers in sorted(changed.items()):
+        coverage = {int(number): hit for number, hit in report["files"].get(name, {}).items()}
+        hits = {number: coverage[number] for number in numbers if number in coverage}
+        measured[name] = hits
+        unmapped += len(numbers - coverage.keys())
+        unmeasured_files += int(bool(numbers) and name not in report["files"])
+        if len(files) >= limit:
+            continue
+        selected = sorted(hits)[:remaining]
+        remaining -= len(selected)
+        unmapped_ranges = line_ranges(numbers - coverage.keys())
+        uncovered_ranges = line_ranges(number for number, hit in hits.items() if not hit)
+        files.append({
+            "path": name,
+            "measurement": (
+                "no-line-changes" if not numbers else
+                "measured" if name in report["files"] else "unmeasured"
+            ),
+            "changed_lines": len(numbers),
+            "unmapped_lines": len(numbers - coverage.keys()),
+            "unmapped_ranges": unmapped_ranges[:limit],
+            "uncovered_ranges": uncovered_ranges[:limit],
+            "summary": summarize({name: hits}),
+            "lines": [
+                line_details(report, name, number, coverage.get(number), limit)
+                for number in selected
+            ],
+            "truncated": (
+                len(selected) < len(hits)
+                or len(unmapped_ranges) > limit or len(uncovered_ranges) > limit
+            ),
+        })
+    return {
+        "comparison": comparison,
+        "diff": "merge-base-to-worktree-including-untracked",
+        "summary": summarize(measured),
+        "changed_rust_lines": sum(len(lines) for lines in changed.values()),
+        "unmapped_lines": unmapped,
+        "unmeasured_files": unmeasured_files,
+        "non_rust_files": other_files,
+        "deleted_files": deleted_files,
+        "files": files,
+        "truncated": len(files) < len(changed) or any(file["truncated"] for file in files),
+    }
+
+
+def query(report_path=None, file=None, start=None, end=None, limit=100, *,
+          changed=False, base=None, root=None, allow_stale=False):
+    root = Path(root).resolve() if root is not None else repository_root()
+    report_path = resolve_report(root, report_path)
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     if report["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"unsupported coverage schema: {report['schema_version']}")
@@ -378,12 +602,31 @@ def query(report_path, file=None, start=None, end=None, limit=100):
         raise ValueError("--end requires --start and must not precede it")
     if not 1 <= limit <= 1000:
         raise ValueError("--limit must be between 1 and 1000")
+    if base is not None and not changed:
+        raise ValueError("--base requires --changed")
+    if changed and (file is not None or start is not None or allow_stale):
+        raise ValueError("--changed cannot be combined with --file, line ranges, or --allow-stale")
+    freshness = check_freshness(report, root)
+    if freshness["state"] != "current" and not allow_stale:
+        raise StaleCoverageError(freshness)
     result = {
         key: report[key] for key in
         ("schema_version", "source", "family", "origin", "target", "state",
-         "all_tests_passed", "scope", "issues", "summary")
+         "all_tests_passed", "scope", "issues")
     }
-    if file is None:
+    result["summary"] = summarize(report["files"])
+    result["report"] = str(report_path)
+    result["freshness"] = freshness
+    if changed:
+        comparison = (
+            report["comparison"] if base is None and "comparison" in report
+            else resolve_comparison(root, base)
+        )
+        result["patch"] = changed_query(report, root, comparison, limit)
+        freshness = check_freshness(report, root)
+        if freshness["state"] != "current":
+            raise StaleCoverageError(freshness)
+    elif file is None:
         names = sorted(report["files"])
         result["files"] = [
             {"path": name, **summarize({name: report["files"][name]})}
@@ -400,19 +643,10 @@ def query(report_path, file=None, start=None, end=None, limit=100):
             if (start is None or int(number) >= start)
             and (end is None or int(number) <= end)
         )
-        result["lines"] = []
-        for number, hit in selected[:limit]:
-            tests = [
-                {key: test[key] for key in
-                 ("id", "run", "binary_id", "name", "attempt", "result")}
-                for test in report["tests"] if number in test["covered"].get(name, [])
-            ]
-            result["lines"].append({
-                "line": number,
-                "covered": hit,
-                "tests": tests[:limit],
-                "tests_truncated": len(tests) > limit,
-            })
+        result["lines"] = [
+            line_details(report, name, number, hit, limit)
+            for number, hit in selected[:limit]
+        ]
         result["truncated"] = len(selected) > limit
     return result
 
@@ -426,19 +660,29 @@ def main(argv=None):
     wrapper = commands.add_parser("nextest-runner", help=argparse.SUPPRESS)
     wrapper.add_argument("args", nargs=argparse.REMAINDER)
     reader = commands.add_parser("query", help="query a local coverage report as JSON")
-    reader.add_argument("--report", type=Path, required=True)
+    reader.add_argument("--report", type=Path, help="report path (defaults to the latest local attempt)")
     reader.add_argument("--file", help="repository-relative source path")
     reader.add_argument("--start", type=int)
     reader.add_argument("--end", type=int)
     reader.add_argument("--limit", type=int, default=100)
+    reader.add_argument("--changed", action="store_true", help="report changed Rust lines and covering tests")
+    reader.add_argument("--base", help="base revision (defaults to the recorded base or origin/HEAD)")
+    reader.add_argument("--allow-stale", action="store_true", help="inspect historical data without claiming freshness")
     args = parser.parse_args(argv)
     try:
         if args.command == "collect":
             return collect(args.plan, args.output)
         if args.command == "nextest-runner":
             return nextest_runner(args.args)
-        print(json.dumps(query(args.report, args.file, args.start, args.end, args.limit)))
+        print(json.dumps(query(
+            args.report, args.file, args.start, args.end, args.limit,
+            changed=args.changed, base=args.base, allow_stale=args.allow_stale,
+        )))
         return 0
+    except StaleCoverageError as error:
+        print(json.dumps({"error": "stale_coverage", "message": str(error),
+                          "freshness": error.freshness}))
+        return 2
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         print(f"unit coverage: {error}", file=sys.stderr)
         return 1

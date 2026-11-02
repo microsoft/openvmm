@@ -20,6 +20,10 @@ pub struct UnitTestCoverageCli {
     #[clap(short = 'E', long)]
     filter: Option<String>,
 
+    /// Also report changed-line coverage against the merge base of this revision and HEAD.
+    #[clap(long)]
+    base: Option<String>,
+
     /// Fresh result directory. Defaults to a unique directory under target/unit-coverage.
     #[clap(long)]
     output: Option<PathBuf>,
@@ -97,6 +101,7 @@ impl IntoPipeline for UnitTestCoverageCli {
                     options: Options {
                         output,
                         filter: self.filter,
+                        base: self.base,
                     },
                     done: ctx.new_done_handle(),
                 },

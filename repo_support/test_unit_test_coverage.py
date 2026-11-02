@@ -6,6 +6,7 @@
 """Tests for coverage provenance, source-line aggregation, and JSON queries."""
 
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -66,7 +67,8 @@ class CoverageTests(unittest.TestCase):
                 "attempt": 1, "result": "failed", "covered": {"src/lib.rs": [11]},
             }],
         }
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(coverage, "check_freshness", return_value={"state": "current"}):
             path = Path(directory) / "report.json"
             coverage.write_json(path, report)
             result = coverage.query(path, "src/lib.rs", 10, 11)
@@ -184,6 +186,148 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["files"], {"lib.rs": {1: False}})
             self.assertEqual(report["tests"][0]["profile_state"], "missing")
             self.assertIn("missing profile", report["issues"][0])
+
+
+class GitQueryTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.git("init", "-q")
+        (self.root / ".gitignore").write_text("/target/\n")
+        self.source = "".join(
+            f"fn value_{number}() -> u32 {{ {number} }}\n" for number in range(1, 13)
+        )
+        (self.root / "tracked.rs").write_text(self.source)
+        (self.root / "deleted.rs").write_text("fn deleted() {}\n")
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Coverage Test", "-c",
+             "user.email=coverage@example.invalid", "-c", "core.hooksPath=/dev/null", *args],
+            cwd=self.root, text=True,
+        )
+
+    def commit(self):
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+
+    def report(self, name="run", *, state="complete"):
+        output = self.root / "target/unit-coverage" / name
+        output.mkdir(parents=True)
+        report = {
+            "schema_version": 1,
+            "source": coverage.source_snapshot(self.root, [self.root / "target/unit-coverage"]),
+            "family": "unit", "origin": "local", "target": "x86_64-unknown-linux-gnu",
+            "state": state, "all_tests_passed": state == "complete", "scope": {},
+            "issues": [] if state == "complete" else ["missing profile"],
+            "files": {"tracked.rs": {"1": True, "2": False, "13": False}},
+            "tests": [{
+                "id": "test1", "run": "base", "binary_id": "crate", "name": "covers_first",
+                "attempt": 1, "result": "passed", "covered": {"tracked.rs": [1]},
+            }],
+            "comparison": coverage.resolve_comparison(self.root, self.base),
+        }
+        coverage.write_json(output / "report.json", report)
+        return output / "report.json"
+
+    def test_patch_combines_committed_staged_unstaged_and_untracked_changes(self):
+        source = self.root / "tracked.rs"
+        source.write_text(self.source.replace("{ 1 }", "{ 101 }"))
+        self.commit()
+        source.write_text(source.read_text() + "fn added() {}\n")
+        self.git("add", "tracked.rs")
+        source.write_text(source.read_text().replace("{ 2 }", "{ 202 }"))
+        (self.root / 'new "quoted" café.rs').write_text("fn extra() {\n}\n")
+        (self.root / "notes.md").write_text("not executable Rust\n")
+        (self.root / "deleted.rs").unlink()
+        path = self.report()
+        result = coverage.query(path, changed=True, root=self.root)["patch"]
+        self.assertEqual(result["changed_rust_lines"], 5)
+        self.assertEqual(result["summary"]["measured_lines"], 3)
+        self.assertEqual(result["summary"]["covered_lines"], 1)
+        self.assertEqual(result["unmapped_lines"], 2)
+        self.assertEqual(result["unmeasured_files"], 1)
+        self.assertEqual(result["non_rust_files"], 1)
+        self.assertEqual(result["deleted_files"], 1)
+        tracked = next(file for file in result["files"] if file["path"] == "tracked.rs")
+        self.assertEqual([line["line"] for line in tracked["lines"]], [1, 2, 13])
+        self.assertEqual(tracked["lines"][0]["tests"][0]["name"], "covers_first")
+        self.assertEqual(tracked["uncovered_ranges"], [[2, 2], [13, 13]])
+        unmeasured = next(file for file in result["files"] if file["path"] != "tracked.rs")
+        self.assertEqual(unmeasured["lines"], [])
+        self.assertEqual(unmeasured["unmapped_ranges"], [[1, 2]])
+        bounded = coverage.query(path, changed=True, root=self.root, limit=1)["patch"]
+        self.assertTrue(bounded["truncated"])
+        self.assertEqual(bounded["summary"], result["summary"])
+
+    def test_rename_maps_only_edited_new_side_lines(self):
+        destination = self.root / "renamed é space.rs"
+        (self.root / "tracked.rs").rename(destination)
+        destination.write_text(self.source.replace("{ 4 }", "{ 404 }"))
+        self.git("add", "-A")
+        comparison = coverage.resolve_comparison(self.root, self.base)
+        changed, _, _ = coverage.changed_source_lines(self.root, comparison)
+        self.assertEqual(changed, {"renamed é space.rs": {4}})
+
+    def test_empty_patch_and_deletion_only_patch_are_not_100_percent(self):
+        path = self.report()
+        result = coverage.query(path, changed=True, root=self.root)["patch"]
+        self.assertEqual(result["changed_rust_lines"], 0)
+        self.assertIsNone(result["summary"]["line_percent"])
+        (self.root / "deleted.rs").unlink()
+        path = self.report("deleted-only")
+        result = coverage.query(path, changed=True, root=self.root)["patch"]
+        self.assertEqual(result["deleted_files"], 1)
+        self.assertIsNone(result["summary"]["line_percent"])
+
+    def test_stale_queries_fail_and_historical_override_is_explicit(self):
+        (self.root / "untracked.rs").write_text("fn before() {}\n")
+        path = self.report()
+        (self.root / "untracked.rs").write_text("fn after() {}\n")
+        with self.assertRaises(coverage.StaleCoverageError):
+            coverage.query(path, root=self.root)
+        historical = coverage.query(path, root=self.root, allow_stale=True)
+        self.assertEqual(historical["freshness"]["state"], "stale")
+        with self.assertRaises(ValueError):
+            coverage.query(path, root=self.root, allow_stale=True, changed=True)
+        with patch.object(coverage, "repository_root", return_value=self.root), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(coverage.main(["query", "--report", str(path)]), 2)
+            self.assertEqual(json.loads(stdout.getvalue())["error"], "stale_coverage")
+
+    def test_latest_points_to_newest_attempt_even_when_it_is_incomplete(self):
+        previous = self.report("previous")
+        newest = self.report("newest", state="incomplete")
+        index = self.root / "target/unit-coverage/latest.json"
+        coverage.write_json(index, {"schema_version": 1, "report": str(newest)})
+        result = coverage.query(root=self.root)
+        self.assertEqual(result["report"], str(newest))
+        self.assertEqual(result["state"], "incomplete")
+        newest.unlink()
+        self.assertTrue(previous.is_file())
+        with self.assertRaisesRegex(ValueError, "latest report was removed"):
+            coverage.query(root=self.root)
+
+    def test_default_base_uses_configured_origin_head_not_a_guessed_branch(self):
+        with self.assertRaisesRegex(ValueError, "supply --base"):
+            coverage.resolve_comparison(self.root, None)
+        self.git("update-ref", "refs/remotes/origin/trunk", self.base)
+        self.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        self.assertEqual(
+            coverage.resolve_comparison(self.root, None)["resolved"], self.base,
+        )
+
+    def test_source_changes_during_patch_query_are_rejected(self):
+        path = self.report()
+        with patch.object(
+            coverage, "check_freshness",
+            side_effect=[{"state": "current"}, {"state": "stale"}],
+        ):
+            with self.assertRaises(coverage.StaleCoverageError):
+                coverage.query(path, changed=True, root=self.root)
 
 
 if __name__ == "__main__":

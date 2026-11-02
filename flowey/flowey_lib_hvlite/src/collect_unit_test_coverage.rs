@@ -10,6 +10,7 @@ use flowey_lib_common::run_cargo_nextest_run::build_params::NextestBuildParams;
 pub struct Options {
     pub output: PathBuf,
     pub filter: Option<String>,
+    pub base: Option<String>,
 }
 
 flowey_request! {
@@ -134,6 +135,7 @@ impl FlowNode for Node {
                             "toolchain": toolchain,
                             "filter": options.filter,
                             "nextest_config": config_file,
+                            "base": options.base,
                         }))?,
                     )?;
                     let output = options.output;

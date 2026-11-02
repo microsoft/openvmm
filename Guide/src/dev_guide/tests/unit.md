@@ -58,6 +58,20 @@ rustup component add llvm-tools-preview
 cargo xflowey unit-test-coverage -p memory_range -p headervec
 ```
 
+For an agent's edit/test/review loop, collect and report changed-line coverage
+in one command:
+
+```bash
+cargo xflowey unit-test-coverage -p memory_range --base origin/main
+```
+
+This prints bounded JSON containing absolute coverage and changed Rust lines,
+their covering tests, uncovered lines, and unmeasured files. The comparison is
+from the merge base of the selected revision and HEAD to the working tree:
+committed branch changes, staged/unstaged edits, and nonignored untracked Rust
+files are included. Deletions do not contribute new executable lines.
+Coverage gaps are advisory, not a percentage gate.
+
 Python 3.9 or newer is required. Flowey uses the active Rust toolchain, its
 normal build-dependency setup, CI unit-test package exclusions, and CI feature
 selections. Missing build dependencies can be installed with
@@ -70,31 +84,45 @@ unique directory is created under `target/unit-coverage/`. The command never
 reuses old execution counts. Instrumented builds use a separate reusable cache
 under `target/unit-coverage-build/`; normal builds are unchanged.
 
-The command prints the path to `report.json`. Query that report without parsing
-logs or downloading HTML:
+The command prints the path to `report.json` and emits a JSON query result.
+Subsequent queries automatically use the latest local collection attempt:
 
 ```bash
-python3 repo_support/unit_test_coverage.py query \
-    --report target/my-coverage/report.json
+python3 repo_support/unit_test_coverage.py query
+
+python3 repo_support/unit_test_coverage.py query --changed
 
 python3 repo_support/unit_test_coverage.py query \
-    --report target/my-coverage/report.json \
     --file vm/vmcore/memory_range/src/lib.rs --start 100 --end 140
 ```
+
+`query --changed` uses the recorded comparison base. Without a recorded base,
+it resolves the configured `origin/HEAD`; use `--base <revision>` to override
+that choice. It does not guess the default branch. `--report <path>` selects
+an explicit report instead of the latest attempt. A newer failed/incomplete
+collection is never silently replaced by older successful results.
 
 Queries emit JSON with file summaries or measured lines and their covering
 tests, including configuration-run names, attempts, and pass/fail results.
 `--limit` bounds file/line results and each line's covering-test list; truncation
 is explicit. Paths are relative to the repository root. Files absent from the
 report are **unmeasured**, not covered. Source lines absent within a measured
-file may be non-executable or compiled out.
+file may be non-executable or compiled out. Patch queries compact those lines
+into inclusive `unmapped_ranges`, with an `unmapped_lines` count; they are
+outside the measured-line percentage. Uncovered measured lines are also
+summarized as `uncovered_ranges`. Non-Rust changes are counted separately.
+No measured changed lines means a null percentage, not 100%.
 
 The version-1 report records HEAD plus a hash of tracked changes and nonignored
 untracked content, so dirty-tree results are not mislabeled as committed PR
 coverage. It also records the compiler/tool versions, exact build arguments,
 test filter, and collection state. Changes during collection invalidate the
-snapshot. A report remains evidence for its recorded snapshot, not subsequent
-edits. Keep failed or incomplete reports distinct from successful collections;
+snapshot. Queries check freshness automatically: after source edits or a HEAD
+change they emit a `stale_coverage` JSON error and exit with code 2, instructing
+the agent to recollect. Run queries from the repository being reviewed.
+`--allow-stale` permits explicit historical inspection, labels the result stale,
+and cannot be combined with `--changed`.
+Keep failed or incomplete reports distinct from successful collections;
 the command exits unsuccessfully on test failures or missing coverage data.
 
 The result directory retains the effective nextest configuration, inventories,
@@ -108,8 +136,8 @@ Coverage includes repository source linked into the selected test binaries,
 including unit-test code and workspace dependencies. Percentages are not a
 production-only or workspace-wide metric. Counts include failed attempts;
 per-line test outcomes let agents distinguish those from passing-test evidence.
-Doctests, separately built child binaries, Petri/VM tests, branch coverage, and
-PR diff reporting are not included yet. No data is uploaded or published.
+Doctests, separately built child binaries, Petri/VM tests, and branch coverage
+are not included yet. No data is uploaded or published.
 
 The collector/reader regression tests run without coverage-tool installation:
 
