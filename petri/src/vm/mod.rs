@@ -2562,6 +2562,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Removes a PCIe device, waiting for guest teardown only when `orderly` is true.
+    /// OpenVMM cancels pending ejection if this future is dropped before removal starts.
     pub async fn remove_pcie_device(
         &mut self,
         port_name: String,

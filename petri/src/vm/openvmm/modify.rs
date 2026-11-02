@@ -667,25 +667,19 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Enables attention button ejection on an existing hotplug port.
+    /// Enables attention button ejection on an existing hotplug root port.
     pub fn with_pcie_attention_button(mut self, port_name: &str) -> Self {
         let port = self
             .config
             .pcie_root_complexes
             .iter_mut()
             .flat_map(|rc| &mut rc.ports)
-            .chain(
-                self.config
-                    .pcie_switches
-                    .iter_mut()
-                    .flat_map(|switch| &mut switch.ports),
-            )
             .find(|port| port.name == port_name)
-            .expect("PCIe port must exist before enabling attention button support");
+            .expect("PCIe root port must exist before enabling attention button support");
         port.hotplug
             .as_mut()
             .expect("attention button support requires hotplug")
-            .attention_button = true;
+            .attention_button = Some(std::time::Duration::from_secs(30));
         self
     }
 
@@ -809,5 +803,86 @@ impl PetriVmConfigOpenVmm {
             (!allow).then_some(openvmm_defs::config::LateMapVtl0MemoryPolicy::InjectException);
 
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Firmware;
+    use crate::PetriLogSource;
+    use crate::PetriVmArtifacts;
+    use crate::PetriVmBuilder;
+    use crate::ResolvedArtifact;
+    use crate::UefiConfig;
+    use crate::UefiGuest;
+    use crate::vm::openvmm::OpenVmmPetriBackend;
+    use pal_async::DefaultDriver;
+    use pal_async::DefaultPool;
+    use petri_artifacts_common::tags::MachineArch;
+    use test_with_tracing::test;
+
+    async fn pcie_config(
+        driver: &DefaultDriver,
+        path: &std::path::Path,
+    ) -> anyhow::Result<PetriVmConfigOpenVmm> {
+        let firmware = path.join("firmware");
+        fs_err::write(&firmware, [])?;
+        let logs = PetriLogSource::file_only(path)?;
+        let openvmm = ResolvedArtifact::from_local_path("unused-openvmm".into());
+        let builder = PetriVmBuilder::minimal(
+            "pcie",
+            &logs,
+            PetriVmArtifacts {
+                backend: OpenVmmPetriBackend::from_binary("unused-openvmm".into()),
+                firmware: Firmware::Uefi {
+                    uefi_firmware: ResolvedArtifact::from_local_path(firmware),
+                    guest: UefiGuest::None,
+                    uefi_config: UefiConfig::default(),
+                },
+                arch: MachineArch::host(),
+                agent_image: None,
+                openhcl_agent_image: None,
+                pipette_binary: None,
+                nested_test: None,
+            },
+            driver,
+        )?;
+        let properties = builder.properties();
+        PetriVmConfigOpenVmm::new(&openvmm, builder.config, &builder.resources, &properties).await
+    }
+
+    #[test]
+    fn pcie_attention_button_enables_root_port() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        DefaultPool::run_with(async |driver| {
+            let config = pcie_config(&driver, temp.path())
+                .await?
+                .with_pcie_root_topology(1, 1, 1)
+                .with_pcie_attention_button("s0rc0rp0");
+            assert_eq!(
+                config.config.pcie_root_complexes[0].ports[0]
+                    .hotplug
+                    .unwrap()
+                    .attention_button,
+                Some(std::time::Duration::from_secs(30))
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[should_panic(expected = "PCIe root port must exist before enabling attention button support")]
+    fn pcie_attention_button_rejects_switch_downstream_port() {
+        let temp = tempfile::tempdir().unwrap();
+        DefaultPool::run_with(async |driver| {
+            pcie_config(&driver, temp.path())
+                .await?
+                .with_pcie_root_topology(1, 1, 1)
+                .with_pcie_switch("s0rc0rp0", "sw0", 1, true)
+                .with_pcie_attention_button("sw0-downstream-0");
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
     }
 }

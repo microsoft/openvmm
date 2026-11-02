@@ -692,8 +692,12 @@ message PciePort {
     // Advertise End-to-End TLP Prefix support for downstream PASID use.
     // Defaults to false. All downstream ports of a switch must agree.
     bool pasid = 6;
-    // Enable attention button ejection. Requires hotplug. Defaults to false.
+    // Enable attention button ejection on a root port. Requires hotplug.
+    // Not supported on switch downstream ports. Defaults to false.
     bool attention_button = 7;
+    // Maximum wait for orderly ejection. Required with attention_button.
+    // No default. Zero checks for completion without waiting.
+    optional uint32 eject_timeout_ms = 8;
 }
 
 // A PCIe switch: a set of downstream ports, each of which may have its own
@@ -1142,8 +1146,9 @@ message RemovePcieDeviceRequest {
     // Name of the PCIe port whose device should be removed.
     string port_name = 1;
     // Wait for guest teardown using the port attention button. Requires a
-    // running VM and attention_button on the port. Timeout leaves the device
-    // attached. Defaults to false, which performs surprise removal.
+    // running VM and attention_button with eject_timeout_ms configured on
+    // the port. Timeout leaves the device attached. Defaults to false, which
+    // performs surprise removal.
     bool orderly = 2;
 }
 
@@ -1160,4 +1165,7 @@ message AddVpciDeviceRequest {
 message RemoveVpciDeviceRequest {
     // Instance ID supplied to AddVpciDevice.
     string instance_id = 1;
+    // Required. No default. Maximum wait for guest ejection while running.
+    // On timeout the device is forcibly removed. Zero does not wait.
+    optional uint32 eject_timeout_ms = 2;
 }

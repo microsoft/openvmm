@@ -11,6 +11,7 @@ use pci_core::dma::DmaTarget;
 use pci_core::msi::MsiConnection;
 use pci_core::msi::SignalMsi;
 use state_unit::StateUnits;
+use std::future::Future;
 use std::sync::Arc;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
@@ -50,8 +51,9 @@ pub struct DynamicVpciDevice {
 
 impl DynamicVpciDevice {
     /// Requests device ejection and waits for the guest to acknowledge it.
-    pub async fn eject(&self) -> anyhow::Result<()> {
-        self.eject.eject().await
+    pub fn eject(&self) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let eject = self.eject.clone();
+        async move { eject.eject().await }
     }
 
     /// Removes the VPCI bus before removing its underlying PCI device.

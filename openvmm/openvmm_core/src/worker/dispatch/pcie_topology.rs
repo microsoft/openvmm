@@ -26,7 +26,7 @@ fn build_port_settings(port_cfg: &PciePortConfig) -> PciePortSettings {
     PciePortSettings {
         attention_button: port_cfg
             .hotplug
-            .is_some_and(|hotplug| hotplug.attention_button),
+            .is_some_and(|hotplug| hotplug.attention_button.is_some()),
         acs_capabilities_supported: port_cfg
             .acs_capabilities_supported
             .unwrap_or(DEFAULT_ACS_CAP_MASK),
@@ -118,7 +118,7 @@ mod tests {
             None,
             Some(PcieHotplugConfig::default()),
             Some(PcieHotplugConfig {
-                attention_button: true,
+                attention_button: Some(std::time::Duration::from_secs(30)),
             }),
         ] {
             let port = PciePortConfig {
@@ -132,7 +132,7 @@ mod tests {
             let definition = build_port_definition(&port);
             assert_eq!(
                 definition.settings.attention_button,
-                hotplug.is_some_and(|config| config.attention_button)
+                hotplug.is_some_and(|config| config.attention_button.is_some())
             );
             assert_eq!(definition.hotplug, hotplug.is_some());
         }

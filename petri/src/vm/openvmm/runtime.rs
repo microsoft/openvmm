@@ -333,6 +333,7 @@ impl PetriVmOpenVmm {
     );
     petri_vm_fn!(
         /// Removes a PCIe device, waiting for guest teardown only when `orderly` is true.
+        /// Dropping this future cancels pending ejection before removal starts.
         pub async fn remove_pcie_device(
             &mut self,
             port_name: String,

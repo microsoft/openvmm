@@ -13,6 +13,7 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use std::fmt;
 use std::fs::File;
+use std::time::Duration;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -40,15 +41,20 @@ pub enum VmRpc {
     AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Ejects a dynamically added PCIe device from the named port.
     ///
-    /// Tuple is (port_name, orderly). When orderly is false, performs surprise
-    /// removal. Otherwise requires a running VM and attention button support,
-    /// and replies after guest acknowledgement and device teardown.
-    /// Timeout returns an error without detaching the endpoint.
-    RemovePcieDevice(FailableRpc<(String, bool), ()>),
+    /// Tuple is (cancel_context, port_name, orderly). When orderly is false,
+    /// performs surprise removal. Orderly removal requires attention button
+    /// support and a running guest that is not halted. It replies after guest
+    /// acknowledgement and device teardown.
+    /// Timeout or cancellation before removal returns an error without detaching
+    /// the endpoint.
+    RemovePcieDevice(Rpc<(CancelContext, String, bool), Result<(), RemovePcieDeviceError>>),
     /// Hot-add a VPCI device to VTL0 at runtime with the supplied instance ID.
     AddVpciDevice(FailableRpc<(Guid, Resource<PciDeviceHandleKind>), ()>),
-    /// Hot-remove a dynamically added VPCI device by instance ID.
-    RemoveVpciDevice(FailableRpc<Guid, ()>),
+    /// Removes a dynamically added VPCI device by instance ID.
+    ///
+    /// Tuple is (instance_id, eject_timeout). While running, waits up to the
+    /// supplied duration for guest ejection before forcing removal.
+    RemoveVpciDevice(FailableRpc<(Guid, Duration), ()>),
     /// Dump VM state (VP registers + memory) to a `.vmrs` file.
     ///
     /// The worker pauses the VM internally, collects state, and restores
@@ -56,6 +62,14 @@ pub enum VmRpc {
     /// handle to write to (typically a temporary file that gets renamed
     /// into place on success).
     DumpState(FailableRpc<File, ()>),
+}
+
+#[derive(Debug, MeshPayload, thiserror::Error)]
+pub enum RemovePcieDeviceError {
+    #[error(transparent)]
+    Cancelled(#[from] mesh::CancelReason),
+    #[error(transparent)]
+    Failed(#[from] RemoteError),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

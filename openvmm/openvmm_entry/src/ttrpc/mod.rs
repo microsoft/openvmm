@@ -23,6 +23,7 @@ use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
 use crate::cli_args::ProvisionCondition;
 use crate::cli_args::parse_pcie_hotplug;
+use crate::cli_args::parse_pcie_switch_hotplug;
 use crate::meshworker::VmmMesh;
 use crate::serial_io::bind_serial;
 use crate::serial_io::connect_serial;
@@ -91,6 +92,7 @@ use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
+use openvmm_defs::rpc::RemovePcieDeviceError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
@@ -394,6 +396,8 @@ impl Worker for TtrpcWorker {
                 wait_vm_response: None,
                 lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
+                state_changes: Default::default(),
+                deferred_lifecycle: Default::default(),
                 transport: self.transport,
                 registry: FdRegistry::default(),
             };
@@ -460,6 +464,7 @@ impl VmService {
                 WorkerRpc(Result<WorkerRpc<()>, mesh::RecvError>),
                 ControllerEvent(Option<VmControllerEvent>),
                 WaitVmCancelled(CancelReason),
+                StateChange(PendingVmStateChange, Result<bool, mesh::rpc::RpcError>),
             }
 
             let action = futures::select! { // merge semantics
@@ -468,6 +473,8 @@ impl VmService {
                 r = recv.recv().fuse() => Action::WorkerRpc(r),
                 e = ctrl_fut.fuse() => Action::ControllerEvent(e),
                 reason = wait_cancel_fut.fuse() => Action::WaitVmCancelled(reason.unwrap()),
+                change = std::future::poll_fn(|cx| self.poll_state_change(cx)).fuse() =>
+                    Action::StateChange(change.0, change.1),
             };
 
             // Restore controller events (unless the channel closed).
@@ -478,6 +485,7 @@ impl VmService {
             }
 
             match action {
+                Action::StateChange(change, result) => self.finish_state_change(change, result),
                 Action::VmService(message) => match *message {
                     Some((ctx, message)) => match self.handle(ctx, message).await {
                         HandleAction::None => (),
@@ -527,6 +535,7 @@ impl VmService {
             }
         };
 
+        self.cancel_state_changes("server shutting down");
         // If the controller is still alive (non-Quit exit), shut it down.
         if !quit {
             if let Some(controller) = self.vm_controller.take() {
@@ -758,10 +767,29 @@ struct VmService {
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
     lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
+    state_changes: std::collections::VecDeque<PendingVmStateChange>,
+    deferred_lifecycle: std::collections::VecDeque<(mesh::CancelContext, vmservice::Vm)>,
     transport: ResolvedTransport,
     /// Registry of file descriptors passed in over the fd-passing protocol,
     /// resolvable by name (e.g. for tap NIC backends).
     registry: FdRegistry,
+}
+
+struct PendingVmStateChange {
+    vm: Arc<Vm>,
+    running: bool,
+    response: mesh::OneshotSender<Result<(), Status>>,
+    result: mesh::rpc::PendingRpc<bool>,
+}
+
+fn fail_lifecycle_request(request: vmservice::Vm, error: Status) {
+    let response = match request {
+        vmservice::Vm::PauseVm(_, response)
+        | vmservice::Vm::ResumeVm(_, response)
+        | vmservice::Vm::ShutdownVm(_, response) => response,
+        _ => unreachable!("only lifecycle requests are deferred"),
+    };
+    response.send(Err(error));
 }
 
 fn grpc_error(err: anyhow::Error) -> Status {
@@ -795,6 +823,11 @@ enum HandleAction {
 
 impl VmService {
     async fn handle(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
+        while let Some((change, result)) =
+            std::future::poll_fn(|cx| self.poll_state_change(cx)).now_or_never()
+        {
+            self.finish_state_change(change, result);
+        }
         tracing::debug!(?request, "request");
         match request {
             vmservice::Vm::CreateVm(request, response) => {
@@ -804,6 +837,7 @@ impl VmService {
                 response.send(map_grpc(self.teardown_vm().await))
             }
             vmservice::Vm::Quit((), response) => {
+                self.cancel_state_changes("VM quit");
                 // Shut down the controller (which stops and joins the worker).
                 // Drop the VM's device RPC channels first; see `teardown_vm`.
                 self.vm.take();
@@ -826,15 +860,17 @@ impl VmService {
             vmservice::Vm::PropertiesVm(_request, response) => {
                 response.send(Ok(self.build_properties()));
             }
-            vmservice::Vm::PauseVm((), response) => {
-                response.send(map_grpc(self.pause_vm().await));
-            }
-            vmservice::Vm::ResumeVm((), response) => {
-                response.send(map_grpc(self.resume_vm().await));
-            }
-            vmservice::Vm::ShutdownVm(request, response) => {
-                let r = self.shutdown_vm(ctx, request);
-                self.start_rpc(response, r);
+            request @ (vmservice::Vm::PauseVm(..)
+            | vmservice::Vm::ResumeVm(..)
+            | vmservice::Vm::ShutdownVm(..)) => {
+                if !self.deferred_lifecycle.is_empty()
+                    || (matches!(&request, vmservice::Vm::ShutdownVm(..))
+                        && !self.state_changes.is_empty())
+                {
+                    self.deferred_lifecycle.push_back((ctx, request));
+                } else {
+                    self.start_lifecycle_request(ctx, request);
+                }
             }
             vmservice::Vm::WaitVm((), response) => {
                 if self.vm.is_none() {
@@ -856,7 +892,7 @@ impl VmService {
                 self.start_rpc(response, r);
             }
             vmservice::Vm::RemovePcieDevice(request, response) => {
-                let r = self.remove_pcie_device(request);
+                let r = self.remove_pcie_device(ctx, request);
                 self.start_rpc(response, r);
             }
             vmservice::Vm::AddVpciDevice(request, response) => {
@@ -1458,6 +1494,7 @@ impl VmService {
 
     async fn teardown_vm(&mut self) -> anyhow::Result<()> {
         let controller = self.vm_controller.take().context("vm not created")?;
+        self.cancel_state_changes("VM torn down");
         // Drop the VM's device RPC channels before waiting on the controller.
         // A live `ScsiControllerRequest` sender keeps the detached storvsp task
         // running, which in turn stops the VM worker from ever finishing its
@@ -1616,30 +1653,118 @@ impl VmService {
         })
     }
 
-    async fn pause_vm(&mut self) -> anyhow::Result<()> {
-        let vm = self.vm.clone().context("VM not created yet")?;
-        vm.worker_rpc
-            .call(VmRpc::Pause, ())
-            .await
-            .map(drop)
-            .context("pause failed")?;
-        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-            self.lifecycle = VmLifecycle::Paused;
-        }
-        Ok(())
+    fn start_state_change(
+        &mut self,
+        running: bool,
+        response: mesh::OneshotSender<Result<(), Status>>,
+    ) {
+        let Some(vm) = self.vm.clone() else {
+            response.send(Err(grpc_error(anyhow!("VM not created yet"))));
+            return;
+        };
+        let result = if running {
+            vm.worker_rpc.call(VmRpc::Resume, ())
+        } else {
+            vm.worker_rpc.call(VmRpc::Pause, ())
+        };
+        self.state_changes.push_back(PendingVmStateChange {
+            vm,
+            running,
+            response,
+            result,
+        });
     }
 
-    async fn resume_vm(&mut self) -> anyhow::Result<()> {
-        let vm = self.vm.clone().context("VM not created yet")?;
-        vm.worker_rpc
-            .call(VmRpc::Resume, ())
-            .await
-            .map(drop)
-            .context("resume failed")?;
-        if !matches!(self.lifecycle, VmLifecycle::Halted(_)) {
-            self.lifecycle = VmLifecycle::Running;
+    fn start_lifecycle_request(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) {
+        match request {
+            vmservice::Vm::PauseVm((), response) => self.start_state_change(false, response),
+            vmservice::Vm::ResumeVm((), response) => self.start_state_change(true, response),
+            vmservice::Vm::ShutdownVm(request, response) => {
+                let result = self.shutdown_vm(ctx, request);
+                self.start_rpc(response, result);
+            }
+            _ => unreachable!("only lifecycle requests are deferred"),
         }
-        Ok(())
+    }
+
+    fn advance_deferred_lifecycle(&mut self) {
+        while self.state_changes.is_empty() {
+            let Some((mut ctx, request)) = self.deferred_lifecycle.pop_front() else {
+                break;
+            };
+            if let Some(reason) = ctx.cancelled().now_or_never() {
+                fail_lifecycle_request(request, grpc_error(anyhow!(reason)));
+            } else {
+                self.start_lifecycle_request(ctx, request);
+            }
+        }
+    }
+
+    fn poll_state_change(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<(PendingVmStateChange, Result<bool, mesh::rpc::RpcError>)> {
+        let mut index = 0;
+        while index < self.deferred_lifecycle.len() {
+            if let std::task::Poll::Ready(reason) =
+                self.deferred_lifecycle[index].0.cancelled().poll_unpin(cx)
+            {
+                let (_, request) = self
+                    .deferred_lifecycle
+                    .remove(index)
+                    .expect("queued lifecycle request exists");
+                fail_lifecycle_request(request, grpc_error(anyhow!(reason)));
+            } else {
+                index += 1;
+            }
+        }
+        let Some(change) = self.state_changes.front_mut() else {
+            return std::task::Poll::Pending;
+        };
+        let result = std::task::ready!(change.result.poll_unpin(cx));
+        let change = self.state_changes.pop_front().expect("polled state change");
+        std::task::Poll::Ready((change, result))
+    }
+
+    fn finish_state_change(
+        &mut self,
+        change: PendingVmStateChange,
+        result: Result<bool, mesh::rpc::RpcError>,
+    ) {
+        let result = result.map(drop).context(if change.running {
+            "resume failed"
+        } else {
+            "pause failed"
+        });
+        if result.is_ok()
+            && self
+                .vm
+                .as_ref()
+                .is_some_and(|vm| Arc::ptr_eq(vm, &change.vm))
+            && !matches!(self.lifecycle, VmLifecycle::Halted(_))
+        {
+            self.lifecycle = if change.running {
+                VmLifecycle::Running
+            } else {
+                VmLifecycle::Paused
+            };
+        }
+        change.response.send(map_grpc(result));
+        self.advance_deferred_lifecycle();
+    }
+
+    fn cancel_state_changes(&mut self, reason: &str) {
+        for change in self.state_changes.drain(..) {
+            change.response.send(Err(grpc_error(
+                anyhow!(CancelReason::Cancelled).context(reason.to_owned()),
+            )));
+        }
+        for (_, request) in self.deferred_lifecycle.drain(..) {
+            fail_lifecycle_request(
+                request,
+                grpc_error(anyhow!(CancelReason::Cancelled).context(reason.to_owned())),
+            );
+        }
     }
 
     fn handle_controller_event(&mut self, event: VmControllerEvent) -> Option<i32> {
@@ -1656,6 +1781,7 @@ impl VmService {
                 return Some(code);
             }
             VmControllerEvent::WorkerStopped { error } => {
+                self.cancel_state_changes("VM worker stopped");
                 if let Some(err) = &error {
                     tracing::error!(error = %err, "VM worker stopped with error");
                 } else {
@@ -1705,8 +1831,12 @@ impl VmService {
 
     fn remove_pcie_device(
         &self,
+        mut ctx: mesh::CancelContext,
         request: vmservice::RemovePcieDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        if let Some(reason) = ctx.cancelled().now_or_never() {
+            return Err(reason.into());
+        }
         let recv = self
             .vm
             .as_ref()
@@ -1714,9 +1844,17 @@ impl VmService {
             .worker_rpc
             .call_failable(
                 VmRpc::RemovePcieDevice,
-                (request.port_name, request.orderly),
+                (ctx, request.port_name, request.orderly),
             );
-        Ok(async move { recv.await.map_err(anyhow::Error::from) })
+        Ok(async move {
+            // Only the worker can cancel safely before committing device removal.
+            match recv.await {
+                Err(mesh::rpc::RpcError::Call(RemovePcieDeviceError::Cancelled(reason))) => {
+                    Err(reason.into())
+                }
+                result => result.map_err(anyhow::Error::from),
+            }
+        })
     }
 
     fn add_vpci_device(
@@ -1749,6 +1887,11 @@ impl VmService {
         &self,
         request: vmservice::RemoveVpciDeviceRequest,
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        let eject_timeout = Duration::from_millis(u64::from(
+            request
+                .eject_timeout_ms
+                .context("eject_timeout_ms is required for VPCI removal")?,
+        ));
         let instance_id = request
             .instance_id
             .parse()
@@ -1758,7 +1901,7 @@ impl VmService {
             .as_ref()
             .context("VM not created yet")?
             .worker_rpc
-            .call_failable(VmRpc::RemoveVpciDevice, instance_id);
+            .call_failable(VmRpc::RemoveVpciDevice, (instance_id, eject_timeout));
         Ok(async move { recv.await.map_err(anyhow::Error::from) })
     }
 
@@ -2378,6 +2521,7 @@ async fn build_pcie_topology(
                 name: port_name,
                 hotplug,
                 attention_button,
+                eject_timeout_ms,
                 attached,
                 devfn,
                 acs_capabilities_supported,
@@ -2388,7 +2532,7 @@ async fn build_pcie_topology(
                 devfn: devfn
                     .map(|d| d.try_into().context("devfn out of range"))
                     .transpose()?,
-                hotplug: parse_pcie_hotplug(hotplug, attention_button)
+                hotplug: parse_pcie_hotplug(hotplug, attention_button, eject_timeout_ms)
                     .with_context(|| format!("invalid PCIe port '{port_name}'"))?,
                 acs_capabilities_supported: acs_capabilities_supported
                     .map(|acs| acs.try_into().context("ACS capability mask out of range"))
@@ -2499,6 +2643,7 @@ fn walk_pcie_attachment(
                     name: downstream_name,
                     hotplug,
                     attention_button,
+                    eject_timeout_ms,
                     attached,
                     devfn,
                     acs_capabilities_supported,
@@ -2509,7 +2654,7 @@ fn walk_pcie_attachment(
                     devfn: devfn
                         .map(|d| d.try_into().context("devfn out of range"))
                         .transpose()?,
-                    hotplug: parse_pcie_hotplug(hotplug, attention_button)
+                    hotplug: parse_pcie_switch_hotplug(hotplug, attention_button, eject_timeout_ms)
                         .with_context(|| format!("invalid PCIe port '{downstream_name}'"))?,
                     acs_capabilities_supported: acs_capabilities_supported
                         .map(|acs| acs.try_into().context("ACS capability mask out of range"))
@@ -3059,6 +3204,8 @@ mod tests {
             wait_vm_response: None,
             lifecycle: VmLifecycle::Running,
             rpc_tasks: Vec::new(),
+            state_changes: Default::default(),
+            deferred_lifecycle: Default::default(),
             transport: ResolvedTransport::Auto,
             registry: FdRegistry::default(),
         }
@@ -3076,6 +3223,600 @@ mod tests {
             mechanism: vmservice::shutdown_vm_request::Mechanism::Acpi as i32,
             force: false,
         }
+    }
+
+    #[test]
+    fn vpci_removal_requires_explicit_timeout() {
+        DefaultPool::run_with(async |driver| {
+            let service = service(driver, None);
+            assert!(
+                service
+                    .remove_vpci_device(vmservice::RemoveVpciDeviceRequest {
+                        instance_id: Guid::new_random().to_string(),
+                        eject_timeout_ms: None,
+                    })
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("eject_timeout_ms is required")
+            );
+        });
+    }
+
+    #[test]
+    fn vpci_removal_forwards_zero_and_maximum_timeouts() {
+        DefaultPool::run_with(async |driver| {
+            for timeout_ms in [0, 1, 5_000, u32::MAX] {
+                let (service, mut recv) = pcie_service(driver.clone());
+                let instance_id = Guid::new_random();
+                let removal = service
+                    .remove_vpci_device(vmservice::RemoveVpciDeviceRequest {
+                        instance_id: instance_id.to_string(),
+                        eject_timeout_ms: Some(timeout_ms),
+                    })
+                    .unwrap();
+                let VmRpc::RemoveVpciDevice(rpc) = recv.recv().await.unwrap() else {
+                    panic!("expected VPCI removal");
+                };
+                let ((id, timeout), response) = rpc.split();
+                assert_eq!(id, instance_id);
+                assert_eq!(timeout, Duration::from_millis(u64::from(timeout_ms)));
+                response.complete(Ok(()));
+                removal.await.unwrap();
+            }
+        });
+    }
+
+    fn pcie_service(driver: DefaultDriver) -> (VmService, mesh::Receiver<VmRpc>) {
+        let mut service = service(driver, None);
+        let (send, recv) = mesh::channel();
+        Arc::get_mut(service.vm.as_mut().unwrap())
+            .unwrap()
+            .worker_rpc = send;
+        (service, recv)
+    }
+
+    #[test]
+    fn pending_pause_keeps_management_and_teardown_serviceable() {
+        DefaultPool::run_with(async |driver| {
+            for quit in [false, true] {
+                let (mut service, mut worker) = pcie_service(driver.clone());
+                let (shutdown_send, _guest) = mesh::channel();
+                Arc::get_mut(service.vm.as_mut().unwrap())
+                    .unwrap()
+                    .shutdown_rpc = Some(shutdown_send);
+                let (controller, mut controller_recv) = mesh::channel();
+                service.vm_controller = Some(controller);
+                service.controller_task = Some(driver.spawn("pause-test-controller", async move {
+                    assert!(matches!(
+                        controller_recv.recv().await.unwrap(),
+                        VmControllerRpc::Quit
+                    ));
+                }));
+                let (response, result) = mesh::oneshot();
+                assert!(
+                    service
+                        .handle(
+                            mesh::CancelContext::new(),
+                            vmservice::Vm::PauseVm((), response)
+                        )
+                        .now_or_never()
+                        .is_some(),
+                    "pause blocked the management loop"
+                );
+                let VmRpc::Pause(pending) = worker.recv().await.unwrap() else {
+                    panic!("expected worker pause");
+                };
+                let (response, shutdown) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(shutdown_request(), response),
+                    )
+                    .await;
+                let (response, capabilities) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::CapabilitiesVm((), response),
+                    )
+                    .await;
+                capabilities.await.unwrap().unwrap();
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                let (response, stopped) = mesh::oneshot();
+                let request = if quit {
+                    vmservice::Vm::Quit((), response)
+                } else {
+                    vmservice::Vm::TeardownVm((), response)
+                };
+                service.handle(mesh::CancelContext::new(), request).await;
+                stopped.await.unwrap().unwrap();
+                assert_eq!(
+                    result.await.unwrap().unwrap_err().code,
+                    Code::Cancelled as i32
+                );
+                assert!(service.state_changes.is_empty());
+                assert!(service.deferred_lifecycle.is_empty());
+                assert_eq!(
+                    shutdown.await.unwrap().unwrap_err().code,
+                    Code::Cancelled as i32
+                );
+                pending.complete(false);
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_waits_for_resume_and_precedes_later_pause() {
+        DefaultPool::run_with(async |driver| {
+            let (mut service, mut worker) = pcie_service(driver);
+            let (send, mut guest) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .shutdown_rpc = Some(send);
+            service.lifecycle = VmLifecycle::Paused;
+            let (response, resumed) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::ResumeVm((), response),
+                )
+                .await;
+            let VmRpc::Resume(resume) = worker.recv().await.unwrap() else {
+                panic!("expected resume");
+            };
+            let (response, mut shutdown) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::ShutdownVm(shutdown_request(), response),
+                )
+                .await;
+            assert!(
+                (&mut shutdown).now_or_never().is_none(),
+                "shutdown checked stale lifecycle state before resume completed"
+            );
+            let (response, paused) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::PauseVm((), response),
+                )
+                .await;
+            assert!(
+                worker.recv().now_or_never().is_none(),
+                "later pause overtook shutdown"
+            );
+            resume.complete(true);
+            let (change, result) = std::future::poll_fn(|cx| service.poll_state_change(cx)).await;
+            service.finish_state_change(change, result);
+            resumed.await.unwrap().unwrap();
+            let ShutdownRpc::Shutdown(rpc) = guest.recv().await.unwrap() else {
+                panic!("expected shutdown after resume");
+            };
+            rpc.complete(ShutdownResult::Ok);
+            service.rpc_tasks.pop().unwrap().await;
+            shutdown.await.unwrap().unwrap();
+            let VmRpc::Pause(pause) = worker.recv().await.unwrap() else {
+                panic!("expected the later pause");
+            };
+            pause.complete(true);
+            let (change, result) = std::future::poll_fn(|cx| service.poll_state_change(cx)).await;
+            service.finish_state_change(change, result);
+            paused.await.unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn shutdown_checks_lifecycle_after_pending_pause() {
+        DefaultPool::run_with(async |driver| {
+            let (mut service, mut worker) = pcie_service(driver);
+            let (send, mut guest) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .shutdown_rpc = Some(send);
+            let (response, paused) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::PauseVm((), response),
+                )
+                .await;
+            let VmRpc::Pause(pause) = worker.recv().await.unwrap() else {
+                panic!("expected pause");
+            };
+            let (response, shutdown) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::ShutdownVm(shutdown_request(), response),
+                )
+                .await;
+            pause.complete(true);
+            let (change, result) = std::future::poll_fn(|cx| service.poll_state_change(cx)).await;
+            service.finish_state_change(change, result);
+            paused.await.unwrap().unwrap();
+            let status = shutdown
+                .now_or_never()
+                .expect("shutdown must finish its lifecycle check after pause")
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(guest.recv().now_or_never().is_none());
+        });
+    }
+
+    #[test]
+    fn deferred_shutdown_observes_cancellation_and_deadline() {
+        use futures_concurrency::future::Race;
+
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(2))
+                .until_cancelled(async {
+                    for expired_deadline in [false, true] {
+                        let (mut service, mut worker) = pcie_service(driver.clone());
+                        let (send, mut guest) = mesh::channel();
+                        Arc::get_mut(service.vm.as_mut().unwrap())
+                            .unwrap()
+                            .shutdown_rpc = Some(send);
+                        service.lifecycle = VmLifecycle::Paused;
+                        let (response, _resumed) = mesh::oneshot();
+                        service
+                            .handle(
+                                mesh::CancelContext::new(),
+                                vmservice::Vm::ResumeVm((), response),
+                            )
+                            .await;
+                        let VmRpc::Resume(_resume) = worker.recv().await.unwrap() else {
+                            panic!("expected pending resume");
+                        };
+                        let ctx = if expired_deadline {
+                            mesh::CancelContext::new().with_timeout(Duration::from_millis(50))
+                        } else {
+                            mesh::CancelContext::new()
+                        };
+                        let (ctx, mut cancel) = ctx.with_cancel();
+                        let (response, shutdown) = mesh::oneshot();
+                        service
+                            .handle(ctx, vmservice::Vm::ShutdownVm(shutdown_request(), response))
+                            .await;
+                        if !expired_deadline {
+                            cancel.cancel();
+                        }
+                        let result = (
+                            std::future::poll_fn(|cx| service.poll_state_change(cx)).map(|_| None),
+                            shutdown.map(Some),
+                        )
+                            .race()
+                            .await
+                            .expect("resume must remain pending");
+                        let status = result.unwrap().unwrap_err();
+                        assert_eq!(
+                            status.code,
+                            if expired_deadline {
+                                Code::DeadlineExceeded as i32
+                            } else {
+                                Code::Cancelled as i32
+                            }
+                        );
+                        assert!(service.deferred_lifecycle.is_empty());
+                        assert_eq!(service.state_changes.len(), 1);
+                        assert!(guest.recv().now_or_never().is_none());
+                    }
+                })
+                .await
+                .expect("deferred shutdown ignored cancellation");
+        });
+    }
+
+    #[test]
+    fn pause_resume_completion_preserves_lifecycle_order() {
+        DefaultPool::run_with(async |driver| {
+            let (mut service, mut worker) = pcie_service(driver);
+            let (response, paused) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::PauseVm((), response),
+                )
+                .await;
+            let (response, resumed) = mesh::oneshot();
+            service
+                .handle(
+                    mesh::CancelContext::new(),
+                    vmservice::Vm::ResumeVm((), response),
+                )
+                .await;
+            let VmRpc::Pause(pause) = worker.recv().await.unwrap() else {
+                panic!("expected pause before resume");
+            };
+            let VmRpc::Resume(resume) = worker.recv().await.unwrap() else {
+                panic!("expected resume");
+            };
+            resume.complete(true);
+            assert!(
+                std::future::poll_fn(|cx| service.poll_state_change(cx))
+                    .now_or_never()
+                    .is_none()
+            );
+            pause.complete(true);
+            let (change, result) = std::future::poll_fn(|cx| service.poll_state_change(cx)).await;
+            service.finish_state_change(change, result);
+            assert!(matches!(service.lifecycle, VmLifecycle::Paused));
+            paused.await.unwrap().unwrap();
+            let (change, result) = std::future::poll_fn(|cx| service.poll_state_change(cx)).await;
+            service.finish_state_change(change, result);
+            resumed.await.unwrap().unwrap();
+            assert!(matches!(service.lifecycle, VmLifecycle::Running));
+        });
+    }
+
+    #[test]
+    fn pcie_removal_errors_survive_worker_serialization() {
+        for reason in [CancelReason::Cancelled, CancelReason::DeadlineExceeded] {
+            let encoded =
+                mesh::OwnedMessage::new(RemovePcieDeviceError::Cancelled(reason)).serialize();
+            assert!(encoded.resources.is_empty());
+            let error = mesh::OwnedMessage::serialized(encoded)
+                .parse::<RemovePcieDeviceError>()
+                .unwrap();
+            assert!(matches!(error, RemovePcieDeviceError::Cancelled(actual) if actual == reason));
+        }
+        let expected = "port does not support attention button ejection";
+        let encoded = mesh::OwnedMessage::new(RemovePcieDeviceError::Failed(RemoteError::new(
+            anyhow!(expected),
+        )))
+        .serialize();
+        let error = mesh::OwnedMessage::serialized(encoded)
+            .parse::<RemovePcieDeviceError>()
+            .unwrap();
+        assert_eq!(error.to_string(), expected);
+    }
+
+    fn pcie_removal_request() -> vmservice::RemovePcieDeviceRequest {
+        vmservice::RemovePcieDeviceRequest {
+            port_name: "rp0".into(),
+            orderly: true,
+        }
+    }
+
+    #[test]
+    fn pcie_removal_expired_or_cancelled_context_does_not_dispatch() {
+        DefaultPool::run_with(async |driver| {
+            for expired in [false, true] {
+                let (service, mut recv) = pcie_service(driver.clone());
+                let (mut ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
+                let expected = if expired {
+                    ctx = ctx.with_timeout(Duration::ZERO);
+                    Code::DeadlineExceeded
+                } else {
+                    cancel.cancel();
+                    Code::Cancelled
+                };
+                let error = service
+                    .remove_pcie_device(ctx, pcie_removal_request())
+                    .err()
+                    .expect("cancelled removal must fail before dispatch");
+                assert_eq!(grpc_error(error).code, expected as i32);
+                assert!(
+                    recv.next().now_or_never().is_none(),
+                    "cancelled removal must not enqueue a worker request"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn pcie_removal_worker_owns_cancellation_until_detach_commit() {
+        DefaultPool::run_with(async |driver| {
+            for committed in [false, true] {
+                let (service, mut recv) = pcie_service(driver.clone());
+                let (ctx, mut cancel) = mesh::CancelContext::new().with_cancel();
+                let mut request = std::pin::pin!(
+                    service
+                        .remove_pcie_device(ctx, pcie_removal_request())
+                        .unwrap()
+                );
+                let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                    panic!("expected PCIe removal");
+                };
+                let ((mut ctx, port_name, orderly), response) = rpc.split();
+                assert_eq!(port_name, "rp0");
+                assert!(orderly);
+                cancel.cancel();
+                let reason = ctx.cancelled().await;
+                assert!(futures::poll!(&mut request).is_pending());
+                if committed {
+                    response.complete(Ok(()));
+                    request.await.unwrap();
+                } else {
+                    response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+                    assert_eq!(
+                        grpc_error(request.await.unwrap_err()).code,
+                        Code::Cancelled as i32
+                    );
+                }
+            }
+        });
+    }
+
+    #[cfg(feature = "ttrpc")]
+    fn assert_ttrpc_disconnect_result(result: anyhow::Result<()>) {
+        if let Err(error) = result {
+            let kind = error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind);
+            assert!(
+                matches!(
+                    kind,
+                    Some(
+                        std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::UnexpectedEof
+                    )
+                ),
+                "unexpected server error after disconnect: {error:#}"
+            );
+        }
+    }
+
+    #[cfg(feature = "ttrpc")]
+    #[test]
+    fn pcie_removal_deadline_over_ttrpc() {
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut server = mesh_rpc::Server::new();
+                    let mut requests = server.add_service::<vmservice::Vm>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("pcie-removal-test-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let client = mesh_rpc::Client::new(
+                        &driver,
+                        mesh_rpc::client::ExistingConnection::new(
+                            pal_async::socket::PolledSocket::new(&driver, client_socket).unwrap(),
+                        ),
+                    );
+                    let (mut service, mut recv) = pcie_service(driver.clone());
+                    let request = client
+                        .call()
+                        .timeout(Some(Duration::from_secs(1)))
+                        .start(vmservice::Vm::RemovePcieDevice, pcie_removal_request());
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    service.handle(ctx, rpc).await;
+                    let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                        panic!("expected PCIe removal");
+                    };
+                    let ((mut ctx, _, _), response) = rpc.split();
+                    assert!(ctx.deadline().is_some());
+                    let reason = ctx.cancelled().await;
+                    assert_eq!(reason, CancelReason::DeadlineExceeded);
+                    response.complete(Err(RemovePcieDeviceError::Cancelled(reason)));
+                    service.rpc_tasks.pop().unwrap().await;
+                    assert_eq!(
+                        request.await.unwrap_err().code,
+                        Code::DeadlineExceeded as i32
+                    );
+                    client.shutdown().await;
+                    server_task.await.unwrap();
+                })
+                .await
+                .expect("PCIe removal did not handle the request deadline");
+        });
+    }
+
+    #[cfg(feature = "ttrpc")]
+    #[test]
+    fn pcie_removal_dropped_native_call_does_not_cancel_remote_request() {
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut server = mesh_rpc::Server::new();
+                    let mut requests = server.add_service::<vmservice::Vm>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("pcie-call-drop-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let client = mesh_rpc::Client::new(
+                        &driver,
+                        mesh_rpc::client::ExistingConnection::new(
+                            pal_async::socket::PolledSocket::new(&driver, client_socket).unwrap(),
+                        ),
+                    );
+                    let (mut service, mut recv) = pcie_service(driver.clone());
+                    let abandoned = client
+                        .call()
+                        .start(vmservice::Vm::RemovePcieDevice, pcie_removal_request());
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    assert!(ctx.deadline().is_none());
+                    service.handle(ctx, rpc).await;
+                    let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                        panic!("expected PCIe removal");
+                    };
+                    let ((mut abandoned_ctx, _, _), abandoned_response) = rpc.split();
+                    drop(abandoned);
+
+                    let active = client
+                        .call()
+                        .start(vmservice::Vm::RemovePcieDevice, pcie_removal_request());
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    service.handle(ctx, rpc).await;
+                    let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                        panic!("expected the second PCIe removal");
+                    };
+                    let ((mut active_ctx, _, _), active_response) = rpc.split();
+                    assert!(!abandoned_ctx.is_cancelled());
+                    assert!(!active_ctx.is_cancelled());
+                    active_response.complete(Ok(()));
+                    service.rpc_tasks.pop().unwrap().await;
+                    active.await.unwrap();
+                    assert!(!abandoned_ctx.is_cancelled());
+                    abandoned_response.complete(Ok(()));
+                    service.rpc_tasks.pop().unwrap().await;
+                    client.shutdown().await;
+                    assert_ttrpc_disconnect_result(server_task.await);
+                })
+                .await
+                .expect("dropping one native call made the connection unusable");
+        });
+    }
+
+    #[cfg(all(feature = "ttrpc", unix))]
+    #[test]
+    fn pcie_removal_disconnect_over_ttrpc_cancels_before_reply() {
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut server = mesh_rpc::Server::new();
+                    let mut requests = server.add_service::<vmservice::Vm>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("pcie-disconnect-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let client = mesh_rpc::Client::new(
+                        &driver,
+                        mesh_rpc::client::ExistingConnection::new(
+                            pal_async::socket::PolledSocket::new(&driver, client_socket).unwrap(),
+                        ),
+                    );
+                    let (mut service, mut recv) = pcie_service(driver.clone());
+                    let request = client
+                        .call()
+                        .start(vmservice::Vm::RemovePcieDevice, pcie_removal_request());
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    assert!(ctx.deadline().is_none());
+                    service.handle(ctx, rpc).await;
+                    let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                        panic!("expected PCIe removal");
+                    };
+                    let ((mut ctx, port_name, orderly), response) = rpc.split();
+                    assert_eq!(port_name, "rp0");
+                    assert!(orderly);
+                    assert!(!ctx.is_cancelled());
+                    drop(client);
+                    assert_eq!(ctx.cancelled().await, CancelReason::Cancelled);
+
+                    // Disconnect must finish the server before a worker reply exists.
+                    assert_ttrpc_disconnect_result(server_task.await);
+                    response.complete(Err(RemovePcieDeviceError::Cancelled(
+                        CancelReason::Cancelled,
+                    )));
+                    service.rpc_tasks.pop().unwrap().await;
+                    assert!(request.await.is_err());
+                })
+                .await
+                .expect("native ttrpc disconnect did not cancel pending PCIe removal");
+        });
     }
 
     fn memory_disk() -> vmservice::DiskBackend {
@@ -3932,6 +4673,8 @@ mod tests {
                     wait_vm_response: None,
                     lifecycle: VmLifecycle::Running,
                     rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
+                    state_changes: Default::default(),
+                    deferred_lifecycle: Default::default(),
                     transport: ResolvedTransport::Auto,
                     registry: FdRegistry::default(),
                 };
@@ -4355,6 +5098,7 @@ mod tests {
                             name: "rp0".into(),
                             hotplug: true,
                             attention_button,
+                            eject_timeout_ms: attention_button.then_some(30_000),
                             attached: Some(vmservice::PcieAttachment {
                                 kind: Some(vmservice::pcie_attachment::Kind::Switch(
                                     vmservice::PcieSwitch {
@@ -4362,7 +5106,6 @@ mod tests {
                                         downstream_ports: vec![vmservice::PciePort {
                                             name: "dp0".into(),
                                             hotplug: true,
-                                            attention_button,
                                             ..Default::default()
                                         }],
                                     },
@@ -4381,58 +5124,87 @@ mod tests {
             .unwrap();
             assert_eq!(
                 topology.root_complexes[0].ports[0].hotplug,
-                Some(openvmm_defs::config::PcieHotplugConfig { attention_button })
+                Some(openvmm_defs::config::PcieHotplugConfig {
+                    attention_button: attention_button.then_some(Duration::from_secs(30)),
+                })
             );
             assert_eq!(
                 topology.switches[0].ports[0].hotplug,
-                Some(openvmm_defs::config::PcieHotplugConfig { attention_button })
+                Some(openvmm_defs::config::PcieHotplugConfig::default())
             );
         }
     }
 
     #[test]
-    fn pcie_attention_button_requires_hotplug() {
+    fn pcie_attention_button_invalid_configuration() {
         for downstream in [false, true] {
-            let invalid_port = vmservice::PciePort {
-                name: "invalid".into(),
-                attention_button: true,
-                ..Default::default()
-            };
-            let root_port = if downstream {
-                vmservice::PciePort {
-                    name: "rp0".into(),
-                    attached: Some(vmservice::PcieAttachment {
-                        kind: Some(vmservice::pcie_attachment::Kind::Switch(
-                            vmservice::PcieSwitch {
-                                name: "sw0".into(),
-                                downstream_ports: vec![invalid_port],
-                            },
-                        )),
-                    }),
+            let mut cases = vec![
+                (false, true, Some(1), "attention_button requires hotplug"),
+                (
+                    true,
+                    true,
+                    None,
+                    "eject_timeout_ms is required with attention_button and must be omitted without it",
+                ),
+                (
+                    true,
+                    false,
+                    Some(1),
+                    "eject_timeout_ms is required with attention_button and must be omitted without it",
+                ),
+            ];
+            if downstream {
+                cases.push((
+                    true,
+                    true,
+                    Some(30_000),
+                    "attention button ejection is not supported on switch downstream ports",
+                ));
+            }
+            for (hotplug, attention_button, eject_timeout_ms, expected_error) in cases {
+                let invalid_port = vmservice::PciePort {
+                    name: "invalid".into(),
+                    hotplug,
+                    attention_button,
+                    eject_timeout_ms,
                     ..Default::default()
-                }
-            } else {
-                invalid_port
-            };
-            let error = futures::executor::block_on(build_pcie_topology(
-                vmservice::PcieTopologyConfig {
-                    root_complexes: vec![vmservice::PcieRootComplex {
-                        name: "rc0".into(),
-                        root_ports: vec![root_port],
+                };
+                let root_port = if downstream {
+                    vmservice::PciePort {
+                        name: "rp0".into(),
+                        attached: Some(vmservice::PcieAttachment {
+                            kind: Some(vmservice::pcie_attachment::Kind::Switch(
+                                vmservice::PcieSwitch {
+                                    name: "sw0".into(),
+                                    downstream_ports: vec![invalid_port],
+                                },
+                            )),
+                        }),
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-                &FdRegistry::default(),
-                &IommufdContexts::default(),
-                false,
-            ))
-            .err()
-            .expect("attention button without hotplug must be rejected");
-            assert_eq!(
-                format!("{error:#}"),
-                "invalid PCIe port 'invalid': attention_button requires hotplug"
-            );
+                    }
+                } else {
+                    invalid_port
+                };
+                let error = futures::executor::block_on(build_pcie_topology(
+                    vmservice::PcieTopologyConfig {
+                        root_complexes: vec![vmservice::PcieRootComplex {
+                            name: "rc0".into(),
+                            root_ports: vec![root_port],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    &FdRegistry::default(),
+                    &IommufdContexts::default(),
+                    false,
+                ))
+                .err()
+                .expect("invalid attention button configuration must be rejected");
+                assert_eq!(
+                    format!("{error:#}"),
+                    format!("invalid PCIe port 'invalid': {expected_error}")
+                );
+            }
         }
     }
 

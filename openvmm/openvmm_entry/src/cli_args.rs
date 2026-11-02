@@ -1292,6 +1292,7 @@ Options:
                                    lowest available); dev 0-31, fn 0-7
     `hotplug`                      enable hotplug support for this root port
     `attention_button`             enable attention button ejection, requires hotplug, off by default
+    `eject_timeout_ms=<MS>`        required with attention_button, no default
     `acs=<mask>`                   ACS capability bitmask (u16, decimal or 0x-prefixed hex)
     `cxl`                          configure this root port as CXL-capable
     `pasid`                        configure this port to support PASID for downstream devices
@@ -1329,7 +1330,6 @@ Syntax: <port_name>:<name>[,opt,opt=arg,...]
 
 Options:
     `hotplug`                       enable hotplug support for all downstream switch ports
-    `attention_button`              enable attention button ejection, requires hotplug, off by default
     `num_downstream_ports=<value>`  number of downstream ports, default 4
     `acs=<mask>`                    ACS capability bitmask for downstream switch ports
     `pasid`                         configure this port to support PASID for downstream devices
@@ -3559,6 +3559,7 @@ struct RootPortArgs {
     hotplug: bool,
     #[kv(flag)]
     attention_button: bool,
+    eject_timeout_ms: Option<u32>,
     acs: Option<AcsMask>,
     #[kv(flag)]
     cxl: bool,
@@ -3575,7 +3576,11 @@ impl FromStr for PcieRootPortCli {
             root_complex_name: args.names.parent,
             name: args.names.child,
             devfn: args.addr.map(|a| a.0),
-            hotplug: parse_pcie_hotplug(args.hotplug, args.attention_button)?,
+            hotplug: parse_pcie_hotplug(
+                args.hotplug,
+                args.attention_button,
+                args.eject_timeout_ms,
+            )?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             cxl: args.cxl,
             pasid: args.pasid,
@@ -3634,6 +3639,7 @@ struct SwitchArgs {
     hotplug: bool,
     #[kv(flag)]
     attention_button: bool,
+    eject_timeout_ms: Option<u32>,
     acs: Option<AcsMask>,
     #[kv(flag)]
     pasid: bool,
@@ -3648,7 +3654,11 @@ impl FromStr for GenericPcieSwitchCli {
             port_name: args.names.parent,
             name: args.names.child,
             num_downstream_ports: args.num_downstream_ports,
-            hotplug: parse_pcie_hotplug(args.hotplug, args.attention_button)?,
+            hotplug: parse_pcie_switch_hotplug(
+                args.hotplug,
+                args.attention_button,
+                args.eject_timeout_ms,
+            )?,
             acs_capabilities_supported: args.acs.map(|a| a.0),
             pasid: args.pasid,
         })
@@ -3659,12 +3669,33 @@ impl FromStr for GenericPcieSwitchCli {
 pub(crate) fn parse_pcie_hotplug(
     hotplug: bool,
     attention_button: bool,
+    eject_timeout_ms: Option<u32>,
 ) -> anyhow::Result<Option<PcieHotplugConfig>> {
     anyhow::ensure!(
         !attention_button || hotplug,
         "attention_button requires hotplug"
     );
-    Ok(hotplug.then_some(PcieHotplugConfig { attention_button }))
+    anyhow::ensure!(
+        attention_button == eject_timeout_ms.is_some(),
+        "eject_timeout_ms is required with attention_button and must be omitted without it"
+    );
+    Ok(hotplug.then_some(PcieHotplugConfig {
+        attention_button: eject_timeout_ms
+            .map(|ms| std::time::Duration::from_millis(u64::from(ms))),
+    }))
+}
+
+pub(crate) fn parse_pcie_switch_hotplug(
+    hotplug: bool,
+    attention_button: bool,
+    eject_timeout_ms: Option<u32>,
+) -> anyhow::Result<Option<PcieHotplugConfig>> {
+    let config = parse_pcie_hotplug(hotplug, attention_button, eject_timeout_ms)?;
+    anyhow::ensure!(
+        !attention_button,
+        "attention button ejection is not supported on switch downstream ports"
+    );
+    Ok(config)
 }
 
 /// CLI configuration mapping a PCIe port name to a generic-initiator NUMA node.
@@ -5010,20 +5041,51 @@ mod tests {
     #[test]
     fn test_pcie_attention_button_options() {
         for enabled in [false, true] {
-            let option = if enabled { ",attention_button" } else { "" };
+            let option = if enabled {
+                ",attention_button,eject_timeout_ms=30000"
+            } else {
+                ""
+            };
             let root = PcieRootPortCli::from_str(&format!("rc0:rp0,hotplug{option}")).unwrap();
             assert_eq!(
                 root.hotplug,
                 Some(PcieHotplugConfig {
-                    attention_button: enabled,
+                    attention_button: enabled.then_some(std::time::Duration::from_secs(30)),
                 })
             );
-            let switch =
-                GenericPcieSwitchCli::from_str(&format!("rp0:sw0,hotplug{option}")).unwrap();
-            assert_eq!(switch.hotplug, root.hotplug);
+            let switch = GenericPcieSwitchCli::from_str(&format!("rp0:sw0,hotplug{option}"));
+            if enabled {
+                assert!(
+                    switch
+                        .unwrap_err()
+                        .to_string()
+                        .contains("switch downstream ports")
+                );
+            } else {
+                assert_eq!(switch.unwrap().hotplug, root.hotplug);
+            }
         }
         assert!(PcieRootPortCli::from_str("rc0:rp0,attention_button").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:sw0,attention_button").is_err());
+        for options in [
+            "hotplug,attention_button",
+            "hotplug,eject_timeout_ms=1",
+            "eject_timeout_ms=1",
+            "hotplug,attention_button,eject_timeout_ms=-1",
+            "hotplug,attention_button,eject_timeout_ms=4294967296",
+        ] {
+            assert!(PcieRootPortCli::from_str(&format!("rc0:rp0,{options}")).is_err());
+            assert!(GenericPcieSwitchCli::from_str(&format!("rp0:sw0,{options}")).is_err());
+        }
+        for timeout_ms in [0, 1, 5_000, u32::MAX] {
+            let options = format!("hotplug,attention_button,eject_timeout_ms={timeout_ms}");
+            let root = PcieRootPortCli::from_str(&format!("rc0:rp0,{options}")).unwrap();
+            assert!(GenericPcieSwitchCli::from_str(&format!("rp0:sw0,{options}")).is_err());
+            assert_eq!(
+                root.hotplug.unwrap().attention_button,
+                Some(std::time::Duration::from_millis(u64::from(timeout_ms)))
+            );
+        }
     }
 
     #[test]
