@@ -1059,7 +1059,12 @@ mod tests {
     use fuse::Fuse;
     use fuse::Request;
     use fuse::protocol::*;
+    use std::collections::BTreeMap;
+    use std::collections::HashSet;
+    use std::path::Path;
+    use std::sync::Arc;
     use test_with_tracing::test;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -1073,6 +1078,400 @@ mod tests {
         let mut bytes = header.as_bytes().to_vec();
         bytes.extend_from_slice(b".\0");
         Request::new(bytes.as_slice()).unwrap()
+    }
+
+    pub(super) fn read_directory(
+        fs: &VirtioFs,
+        file: &super::VirtioFsFile,
+        mut offset: u64,
+        size: u32,
+        plus: bool,
+    ) -> BTreeMap<String, (u64, u32)> {
+        let mut entries = BTreeMap::new();
+        let mut offsets = HashSet::new();
+        loop {
+            let data = file.read_dir(fs, offset, size, plus).unwrap();
+            assert!(data.len() <= size as usize);
+            if data.is_empty() {
+                return entries;
+            }
+            let mut remaining = data.as_slice();
+            while !remaining.is_empty() {
+                let (entry, rest) = if plus {
+                    let (entry, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+                    assert_eq!(entry.dirent.ino, entry.entry_out.attr.ino);
+                    assert_eq!(entry.dirent.file_type, entry.entry_out.attr.mode >> 12);
+                    if entry.entry_out.nodeid != 0 {
+                        fs.forget(entry.entry_out.nodeid, 1);
+                    }
+                    (entry.dirent, rest)
+                } else {
+                    fuse_dirent::read_from_prefix(remaining).unwrap()
+                };
+                let name = std::str::from_utf8(&rest[..entry.namelen as usize])
+                    .unwrap()
+                    .to_owned();
+                assert!(
+                    entries
+                        .insert(name.clone(), (entry.ino, entry.file_type))
+                        .is_none(),
+                    "duplicate entry {name}"
+                );
+                assert_ne!(entry.off, offset, "directory offset did not advance");
+                assert!(offsets.insert(entry.off), "repeated directory offset");
+                offset = entry.off;
+                let header_size = if plus {
+                    size_of::<fuse_direntplus>()
+                } else {
+                    size_of::<fuse_dirent>()
+                };
+                remaining = &remaining[fuse_dirent_align(header_size + entry.namelen as usize)..];
+            }
+        }
+    }
+
+    fn assert_directory_parity(
+        root: &Path,
+        options: Option<&super::LxVolumeOptions>,
+        names: &BTreeMap<String, u32>,
+    ) {
+        for aggregate in [false, true] {
+            let fs = if aggregate {
+                let fs = VirtioFs::new_aggregate();
+                fs.add_child("share", root, options).unwrap();
+                fs
+            } else {
+                VirtioFs::new(root, options).unwrap()
+            };
+            let node_id = if aggregate {
+                fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+            } else {
+                FUSE_ROOT_ID
+            };
+            let inode = fs.get_inode(node_id).unwrap();
+            let mut expected = BTreeMap::from([
+                (".".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+                ("..".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+            ]);
+            for (name, file_type) in names {
+                let attr = inode.lookup_child(name.as_str().as_ref()).unwrap().1;
+                expected.insert(name.clone(), (attr.ino, *file_type));
+            }
+            for size in [256, 4096] {
+                for plus in [false, true] {
+                    let file = Arc::clone(&inode)
+                        .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                        .unwrap();
+                    let initial_inodes = fs.inner.inodes.read().inodes_by_node_id.values.len();
+                    assert_eq!(
+                        read_directory(&fs, &file, 0, size, plus),
+                        expected,
+                        "aggregate={aggregate}, size={size}, plus={plus}"
+                    );
+                    assert_eq!(
+                        fs.inner.inodes.read().inodes_by_node_id.values.len(),
+                        initial_inodes
+                    );
+                    assert_eq!(
+                        file.read_dir(&fs, 0, 0, plus).unwrap_err(),
+                        lx::Error::EINVAL
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readdir_and_readdirplus_match_through_eof() {
+        for count in [0, 150] {
+            let root = tempfile::tempdir().unwrap();
+            let mut names = BTreeMap::new();
+            for i in 0..count {
+                let name = format!("entry{i:03}");
+                let file_type = if i % 3 == 0 {
+                    std::fs::create_dir(root.path().join(&name)).unwrap();
+                    lx::DT_DIR
+                } else {
+                    std::fs::write(root.path().join(&name), b"data").unwrap();
+                    lx::DT_REG
+                };
+                names.insert(name, file_type as u32);
+            }
+            assert_directory_parity(root.path(), None, &names);
+        }
+    }
+
+    #[test]
+    fn plain_readdir_does_not_increment_existing_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        for _ in 0..2 {
+            assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+        }
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[test]
+    fn readdirplus_retains_lookup_references() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"data").unwrap();
+        let fs = VirtioFs::new(root.path(), None).unwrap();
+        let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+        let entry = fs.lookup_helper(&inode, "file".as_ref()).unwrap();
+        let file = inode.open(lx::O_RDONLY | lx::O_DIRECTORY).unwrap();
+        let data = file.read_dir(&fs, 0, 4096, true).unwrap();
+        let mut remaining = data.as_slice();
+        let mut found = false;
+        while !remaining.is_empty() {
+            let (dirent, rest) = fuse_direntplus::read_from_prefix(remaining).unwrap();
+            if &rest[..dirent.dirent.namelen as usize] == b"file" {
+                assert_eq!(dirent.entry_out.nodeid, entry.nodeid);
+                assert_eq!(dirent.dirent.ino, entry.attr.ino);
+                found = true;
+            }
+            remaining = &remaining[fuse_dirent_align(
+                size_of::<fuse_direntplus>() + dirent.dirent.namelen as usize,
+            )..];
+        }
+        assert!(found);
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_some());
+        fs.forget(entry.nodeid, 1);
+        assert!(fs.inner.inodes.read().get(entry.nodeid).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readdir_and_readdirplus_match_sandbox_filtering_through_eof() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SYSTEM;
+
+        for include_visible in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut all_names = BTreeMap::new();
+            for i in 0..150 {
+                let (name, file_type) = match i % 4 {
+                    0 => {
+                        let name = format!("blocked{i:03}.EXE");
+                        std::fs::write(root.path().join(&name), b"data").unwrap();
+                        (name, lx::DT_REG)
+                    }
+                    1 => {
+                        let name = format!("directory{i:03}.ExE");
+                        std::fs::create_dir(root.path().join(&name)).unwrap();
+                        (name, lx::DT_DIR)
+                    }
+                    n => {
+                        let name = format!("hidden{i:03}");
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .attributes(if n == 2 {
+                                FILE_ATTRIBUTE_HIDDEN
+                            } else {
+                                FILE_ATTRIBUTE_SYSTEM
+                            })
+                            .open(root.path().join(&name))
+                            .unwrap();
+                        (name, lx::DT_REG)
+                    }
+                };
+                all_names.insert(name, file_type as u32);
+            }
+            let mut visible_names = BTreeMap::new();
+            if include_visible {
+                std::fs::write(root.path().join("allowed"), b"data").unwrap();
+                visible_names.insert("allowed".to_owned(), lx::DT_REG as u32);
+                std::fs::create_dir(root.path().join("visible-directory")).unwrap();
+                visible_names.insert("visible-directory".to_owned(), lx::DT_DIR as u32);
+                all_names.extend(visible_names.clone());
+            }
+            for sandbox in [false, true] {
+                let mut options = super::LxVolumeOptions::new();
+                options
+                    .sandbox(sandbox)
+                    .sandbox_disallowed_extensions(vec!["exe"]);
+                assert_directory_parity(
+                    root.path(),
+                    Some(&options),
+                    if sandbox { &visible_names } else { &all_names },
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readdirplus_skips_cached_entries_that_no_longer_pass_lookup() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+
+        for hide in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            for name in ["a", "b", "c"] {
+                std::fs::write(root.path().join(name), b"data").unwrap();
+            }
+            let mut options = super::LxVolumeOptions::new();
+            options.sandbox(true);
+            let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+            let inode = fs.get_inode(FUSE_ROOT_ID).unwrap();
+            let file = Arc::clone(&inode)
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap();
+            let mut expected = BTreeMap::new();
+            for name in ["a", "b", "c"] {
+                let attr = inode.lookup_child(name.as_ref()).unwrap().1;
+                expected.insert(name.to_owned(), (attr.ino, lx::DT_REG as u32));
+            }
+
+            // Return the dots and one child, leaving the other children cached.
+            let data = file.read_dir(&fs, 0, 96, false).unwrap();
+            let mut remaining = data.as_slice();
+            let mut offset = 0;
+            let mut first_child = None;
+            while !remaining.is_empty() {
+                let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                if name != "." && name != ".." {
+                    assert!(first_child.replace(name.to_owned()).is_none());
+                }
+                offset = entry.off;
+                remaining = &remaining
+                    [fuse_dirent_align(size_of::<fuse_dirent>() + entry.namelen as usize)..];
+            }
+            expected.remove(&first_child.unwrap());
+            let victim = expected.keys().next().unwrap().clone();
+            std::fs::remove_file(root.path().join(&victim)).unwrap();
+            if hide {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .attributes(FILE_ATTRIBUTE_HIDDEN)
+                    .open(root.path().join(&victim))
+                    .unwrap();
+            }
+            assert_eq!(
+                inode.lookup_child(victim.as_str().as_ref()).err().unwrap(),
+                if hide {
+                    lx::Error::EACCES
+                } else {
+                    lx::Error::ENOENT
+                }
+            );
+            assert_eq!(read_directory(&fs, &file, offset, 256, false), expected);
+            expected.remove(&victim);
+            assert_eq!(read_directory(&fs, &file, offset, 256, true), expected);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_readdir_rejects_renamed_and_replaced_directory() {
+        for aggregate in [false, true] {
+            for continuation in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                for name in ["a", "b", "c"] {
+                    std::fs::write(root.path().join("allowed").join(name), b"data").unwrap();
+                }
+                let mut options = super::LxVolumeOptions::new();
+                options
+                    .sandbox(true)
+                    .sandbox_disallowed_extensions(vec!["exe"]);
+                let fs = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), Some(&options)).unwrap();
+                    fs
+                } else {
+                    VirtioFs::new(root.path(), Some(&options)).unwrap()
+                };
+                let root_id = if aggregate {
+                    fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let root_inode = fs.get_inode(root_id).unwrap();
+                let entry = fs.lookup_helper(&root_inode, "allowed".as_ref()).unwrap();
+                let inode = fs.get_inode(entry.nodeid).unwrap();
+                let file = Arc::clone(&inode)
+                    .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                    .unwrap();
+                let mut offset = 0;
+                let mut expected_names =
+                    BTreeMap::from([".", "..", "a", "b", "c"].map(|name| (name.to_owned(), ())));
+                if continuation {
+                    let data = file.read_dir(&fs, 0, 96, false).unwrap();
+                    let mut remaining = data.as_slice();
+                    while !remaining.is_empty() {
+                        let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                        let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                        assert!(expected_names.remove(name).is_some());
+                        offset = entry.off;
+                        remaining = &remaining[fuse_dirent_align(
+                            size_of::<fuse_dirent>() + entry.namelen as usize,
+                        )..];
+                    }
+                    assert!(offset > 2);
+                }
+
+                let host = lxutil::LxVolume::new(root.path()).unwrap();
+                host.rename("allowed", "blocked.EXE", 0).unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                assert_ne!(host.lstat("allowed").unwrap().inode_nr, inode.inode_nr());
+                // Both FUSE getters report the cached guest inode, hiding the mismatch.
+                assert_eq!(inode.get_attr().unwrap().ino, file.get_attr().unwrap().ino);
+                assert_eq!(
+                    file.read_dir(&fs, offset, 4096, false).unwrap_err(),
+                    lx::Error::EACCES,
+                    "aggregate={aggregate}, continuation={continuation}"
+                );
+
+                std::fs::remove_dir(root.path().join("allowed")).unwrap();
+                host.rename("blocked.EXE", "allowed", 0).unwrap();
+                let entries = read_directory(&fs, &file, offset, 256, false);
+                assert_eq!(
+                    entries.keys().collect::<Vec<_>>(),
+                    expected_names.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_readdir_revalidates_sandbox_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("parent").join("child")).unwrap();
+        std::fs::write(root.path().join("parent").join("child").join("file"), b"").unwrap();
+        let mut options = super::LxVolumeOptions::new();
+        options
+            .sandbox(true)
+            .sandbox_disallowed_extensions(vec!["exe"]);
+        let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+        let parent = fs
+            .get_inode(FUSE_ROOT_ID)
+            .unwrap()
+            .lookup_child("parent".as_ref())
+            .unwrap()
+            .0;
+        let inode = Arc::new(parent.lookup_child("child".as_ref()).unwrap().0);
+        let file = Arc::clone(&inode)
+            .open(lx::O_RDONLY | lx::O_DIRECTORY)
+            .unwrap();
+        assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+
+        // An open handle must not bypass policy after its inode path is refreshed.
+        inode.lookup(std::path::PathBuf::from("blocked.EXE").join("child"));
+        assert_eq!(
+            file.read_dir(&fs, 0, 4096, false).unwrap_err(),
+            lx::Error::EACCES
+        );
     }
 
     #[test]
@@ -1208,7 +1607,7 @@ mod tests {
             .unwrap();
         let (reused, reused_node_id) = reservation.insert(inode).unwrap();
 
-        assert!(std::sync::Arc::ptr_eq(&existing, &reused));
+        assert!(Arc::ptr_eq(&existing, &reused));
         assert_eq!(reused_node_id, node_id);
         assert_eq!(fs.reserve_inode().unwrap().reservation.handle, u64::MAX);
     }
