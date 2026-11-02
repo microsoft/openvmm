@@ -58,18 +58,12 @@ pub trait LineSetTarget: Send + Sync {
         self.set_irq(vector, high);
     }
 
-    /// Initializes an input with no connected source when replaying line state.
+    /// Reconciles an input with no connected source during startup or attachment.
     ///
     /// Pure line controllers should deassert the input. The default leaves it
     /// untouched because a target's namespace can also contain non-line
     /// interrupts whose pending state must not be cleared.
     fn set_unconnected_irq(&self, _vector: u32) {}
-
-    /// Replays an input with no connected source, preserving the target's
-    /// unconnected-input policy by default.
-    fn replay_unconnected_irq(&self, vector: u32) {
-        self.set_unconnected_irq(vector);
-    }
 }
 
 #[derive(Debug)]
@@ -183,11 +177,7 @@ impl LineInterruptInner {
         }
         for target in &self.targets {
             if self.lines.is_empty() {
-                if replay {
-                    target.inner.replay_unconnected_irq(target.vector);
-                } else {
-                    target.inner.set_unconnected_irq(target.vector);
-                }
+                target.inner.set_unconnected_irq(target.vector);
             } else if replay {
                 target.inner.replay_irq(target.vector, is_high);
             } else {
@@ -433,7 +423,7 @@ impl LineSet {
         for mapping in &state.targets {
             for vector in mapping.source_range.clone() {
                 if !state.lines.contains_key(&vector) {
-                    mapping.target.replay_unconnected_irq(
+                    mapping.target.set_unconnected_irq(
                         vector - mapping.source_range.start() + mapping.target_start,
                     );
                 }
@@ -659,7 +649,7 @@ mod tests {
                 self.0.lock().push((vector, high, true));
             }
 
-            fn replay_unconnected_irq(&self, vector: u32) {
+            fn set_unconnected_irq(&self, vector: u32) {
                 self.replay_irq(vector, false);
             }
         }
@@ -678,6 +668,9 @@ mod tests {
         );
         line.set_level(true);
         assert_eq!(target.0.lock().last(), Some(&(0, true, false)));
+        let attached = Arc::new(Target::default());
+        set.add_target(1..=2, 1, "attached", attached.clone());
+        assert_eq!(*attached.0.lock(), [(1, false, true), (2, false, true)]);
         set.stop();
     }
 
