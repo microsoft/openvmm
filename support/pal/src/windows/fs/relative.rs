@@ -140,7 +140,6 @@ pub fn open_relative_read_only(
         FILE_GENERIC_READ,
         FILE_SHARE_READ,
         ntioapi::FILE_OPEN,
-        "open",
     )
 }
 
@@ -157,7 +156,6 @@ pub fn open_relative_for_identity(
         FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         ntioapi::FILE_OPEN,
-        "open for identity check",
     )
 }
 
@@ -172,7 +170,6 @@ pub fn create_relative_new(directory: &fs::File, name: &std::ffi::OsStr) -> io::
         FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES | DELETE,
         FILE_SHARE_READ,
         ntioapi::FILE_CREATE,
-        "create",
     )
 }
 
@@ -182,9 +179,7 @@ fn open_relative_file(
     desired_access: u32,
     share_access: u32,
     create_disposition: u32,
-    operation: &str,
 ) -> io::Result<fs::File> {
-    let name_string = name.to_string_lossy();
     let name = validate_relative_component(name, "file")?;
     let name = UnicodeString::new(&name)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
@@ -212,12 +207,7 @@ fn open_relative_file(
             0,
         )
     };
-    chk_status(status).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("failed to {operation} {name_string}: {error}"),
-        )
-    })?;
+    chk_status(status)?;
     Ok(unsafe { fs::File::from_raw_handle(handle) })
 }
 
@@ -642,6 +632,20 @@ mod tests {
         fs::rename(&source_path, &renamed_path).unwrap();
         fs::remove_file(&renamed_path).unwrap();
         fs::remove_file(&alias_path).unwrap();
+    }
+
+    #[test]
+    fn relative_open_preserves_native_sharing_violation() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        drop(create_relative_new(&directory, "file".as_ref()).unwrap());
+        let _exclusive = OpenOptions::new()
+            .write(true)
+            .share_mode(0)
+            .open(root.path().join("file"))
+            .unwrap();
+
+        assert_sharing_violation(open_relative_read_only(&directory, "file".as_ref()));
     }
 
     #[test]
