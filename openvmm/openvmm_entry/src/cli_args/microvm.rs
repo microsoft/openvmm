@@ -2118,7 +2118,7 @@ mod tests {
         assert_eq!(
             with_devices,
             format!(
-                "{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:7 virtio_mmio.device=0x1000@0xd0003000:4 virtio_mmio.device=0x1000@0xd0006000:11"
+                "{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:18 virtio_mmio.device=0x1000@0xd0003000:19 virtio_mmio.device=0x1000@0xd0006000:22"
             )
         );
         let mut with_control_console = build_microvm_control_command_line(&[], true).unwrap();
@@ -2136,8 +2136,8 @@ mod tests {
             with_control_console,
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} \
-                 virtio_mmio.device=0x1000@0xd0002000:7 \
-                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 virtio_mmio.device=0x1000@0xd0002000:18 \
+                 virtio_mmio.device=0x1000@0xd0007000:23 \
                  {}",
                 openvmm_defs::microvm::MICROVM_CONTROL_TTY_COMMAND_LINE
             )
@@ -2147,12 +2147,7 @@ mod tests {
         let mut with_network = build_microvm_command_line(&[], false).unwrap();
         append_microvm_virtio_discovery(
             &mut with_network,
-            Some((
-                &network,
-                openvmm_defs::microvm::MICROVM_VIRTIO_NET_KVM_IRQ,
-                None,
-                None,
-            )),
+            Some((&network, None, None)),
             false,
             &[],
             false,
@@ -2163,20 +2158,15 @@ mod tests {
         assert_eq!(
             with_network,
             format!(
-                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:10 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:16 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
             )
         );
         // The guest names either gateway as its DNS server.
         for (server, dns) in [("10.0.0.1", "10.0.0.1"), ("fd00::a00:1", "fd00::a00:1")] {
-            let mut with_whp_network = build_microvm_command_line(&[], false).unwrap();
+            let mut with_dns = build_microvm_command_line(&[], false).unwrap();
             append_microvm_virtio_discovery(
-                &mut with_whp_network,
-                Some((
-                    &network,
-                    openvmm_defs::microvm::MICROVM_VIRTIO_NET_WHP_IRQ,
-                    Some(server.parse().unwrap()),
-                    None,
-                )),
+                &mut with_dns,
+                Some((&network, Some(server.parse().unwrap()), None)),
                 false,
                 &[],
                 false,
@@ -2185,10 +2175,10 @@ mod tests {
             )
             .unwrap();
             assert!(
-                with_whp_network.ends_with(&format!(
+                with_dns.ends_with(&format!(
                     "virtnet_dns={dns} virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
                 )),
-                "{with_whp_network}"
+                "{with_dns}"
             );
         }
 
@@ -2211,7 +2201,7 @@ mod tests {
         assert_eq!(
             with_filesystem,
             format!(
-                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:6 virtfs_dir=/mnt/share virtfs_tag=microvm virtfs_mode=ro"
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:17 virtfs_dir=/mnt/share virtfs_tag=microvm virtfs_mode=ro"
             )
         );
 
@@ -2236,7 +2226,7 @@ mod tests {
             "nvx-control-tty=hvc9",
             "driver_async_probe=virtio_console",
             "driver-async-probe=virtio_console",
-            "virtio-mmio.device=0x1000@0xd0007000:3",
+            "virtio-mmio.device=0x1000@0xd0007000:23",
         ] {
             assert!(build_microvm_control_command_line(&[reserved.into()], false).is_err());
             assert!(build_microvm_command_line(&[reserved.into()], false).is_ok());

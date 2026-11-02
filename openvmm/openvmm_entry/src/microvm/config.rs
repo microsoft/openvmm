@@ -818,12 +818,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
             let has_control_console = cfg.virtio_devices.iter().any(|(_, device)| {
                 device.id() == openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID
             });
-            let network_irq = cfg
-                .microvm
-                .network
-                .as_ref()
-                .map(|_| openvmm_defs::microvm::microvm_virtio_net_irq(requested_hypervisor))
-                .transpose()?;
             let ingress = self
                 .network
                 .as_ref()
@@ -832,8 +826,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 .microvm
                 .network
                 .as_ref()
-                .zip(network_irq)
-                .map(|(network, irq)| (network, irq, self.gateway_dns, ingress));
+                .map(|network| (network, self.gateway_dns, ingress));
             if let Some(snapshot_tier) = opt.microvm.snapshot_tier {
                 anyhow::ensure!(
                     !cmdline
