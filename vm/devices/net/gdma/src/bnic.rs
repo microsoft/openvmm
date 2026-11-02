@@ -206,6 +206,14 @@ impl InspectMut for Vport {
     }
 }
 
+impl Vport {
+    async fn stop_data_path(&mut self) {
+        self.task.stop().await;
+        self.task.remove();
+        self.endpoint.stop().await;
+    }
+}
+
 struct QueueCfg {
     tx: Option<(u32, u32)>,
     rx: Option<(u32, u32)>,
@@ -235,6 +243,17 @@ impl BasicNic {
             .collect();
 
         Self { vports, config }
+    }
+
+    /// Stops the data path of each vport and forgets its queues.
+    pub async fn reset(&mut self) {
+        for vport in &mut self.vports {
+            if vport.task.is_running() {
+                vport.stop_data_path().await;
+            }
+            vport.queue_cfg = QueueCfg { tx: None, rx: None };
+            vport.serial_no = 0;
+        }
     }
 
     pub async fn handle_req(
@@ -378,9 +397,7 @@ impl BasicNic {
 
                 match req.rx_enable {
                     Tristate::FALSE if vport.task.is_running() => {
-                        vport.task.stop().await;
-                        vport.task.remove();
-                        vport.endpoint.stop().await;
+                        vport.stop_data_path().await;
                     }
                     Tristate::TRUE if !vport.task.is_running() => {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
@@ -1039,5 +1056,80 @@ mod tests {
         assert!(flags.offload_udp_checksum());
         assert!(!flags.offload_tcp_checksum());
         assert!(!flags.offload_tcp_segmentation());
+    }
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+    use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+    use net_backend::null::NullEndpoint;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pci_core::capabilities::msix::MsixEmulator;
+    use pci_core::msi::MsiTarget;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    #[async_test]
+    async fn device_reset_stops_the_data_path(driver: DefaultDriver) {
+        let gm = GuestMemory::allocate(0x1000);
+        let (msix, _capability) = MsixEmulator::new(4, 64, &MsiTarget::disconnected());
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let mut device = crate::GdmaDevice::new(
+            &driver_source,
+            gm.clone(),
+            &MsiTarget::disconnected(),
+            vec![VportConfig {
+                mac_address: [0, 1, 2, 3, 4, 5].into(),
+                endpoint: Box::new(NullEndpoint::new()),
+            }],
+            &mut ExternallyManagedMmioIntercepts,
+        );
+        let vport = &mut device.hwc.task_mut().bnic.vports[0];
+        let mut queues = vec![];
+        vport
+            .endpoint
+            .get_queues(
+                vec![QueueConfig {
+                    driver: Box::new(driver_source.simple()),
+                    enabled_rx_offloads: Default::default(),
+                }],
+                None,
+                &mut queues,
+            )
+            .await
+            .unwrap();
+        vport.task.insert(
+            driver_source.simple(),
+            "gdma-bnic",
+            TxRxTask {
+                queues: Arc::new(Queues::new(gm.clone(), driver_source.simple(), &msix)),
+                epqueue: queues.drain(..).next().unwrap(),
+                pool: GuestBuffers {
+                    gm,
+                    rx_packets: Default::default(),
+                },
+                sq_id: 0,
+                sq_cq_id: 0,
+                rq_id: 0,
+                rq_cq_id: 0,
+                tx_segment_buffer: Vec::new(),
+                rx_buf_count: 0,
+            },
+        );
+        vport.task.start();
+        vport.queue_cfg.tx = Some((1, 1));
+        vport.queue_cfg.rx = Some((1, 1));
+        vport.serial_no = 1;
+
+        device.reset().await;
+
+        let vport = &device.hwc.task_mut().bnic.vports[0];
+        assert!(!vport.task.has_state());
+        assert!(vport.queue_cfg.tx.is_none());
+        assert!(vport.queue_cfg.rx.is_none());
+        assert_eq!(vport.serial_no, 0);
     }
 }
