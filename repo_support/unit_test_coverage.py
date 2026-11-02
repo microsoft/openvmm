@@ -120,7 +120,10 @@ def resolve_report(root, report_path=None):
         return Path(report_path).resolve()
     pointer = root / "target/unit-coverage/latest.json"
     if not pointer.is_file():
-        raise ValueError("no local coverage report; run cargo xflowey unit-test-coverage first")
+        raise ValueError(
+            "no active coverage report; run cargo xflowey unit-test-coverage "
+            "or use --report to inspect an older result"
+        )
     latest = json.loads(pointer.read_text(encoding="utf-8"))
     if latest["schema_version"] != SCHEMA_VERSION:
         raise ValueError("unsupported latest-report index schema; collect coverage again")
@@ -463,6 +466,8 @@ def collect_source_map(root, output, plan, cargo, report):
 def collect(plan_path, output):
     started = time.monotonic()
     root = repository_root()
+    latest = root / "target/unit-coverage/latest.json"
+    latest.unlink(missing_ok=True)
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.mkdir()  # Never reuse execution counts from an earlier invocation.
@@ -505,7 +510,6 @@ def collect(plan_path, output):
         "issues": [],
     }
     write_json(output / "report.json", report)
-    latest = root / "target/unit-coverage/latest.json"
     latest.parent.mkdir(parents=True, exist_ok=True)
     # Point to the newest attempt even if it fails; never fall back to old success.
     write_json(latest, {"schema_version": SCHEMA_VERSION, "report": str(output / "report.json")})

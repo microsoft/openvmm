@@ -72,7 +72,20 @@ impl IntoPipeline for UnitTestCoverageCli {
             output.display()
         );
         let mut pipeline = Pipeline::new();
-        pipeline
+        let begin = pipeline
+            .new_job(
+                FlowPlatform::host(backend),
+                FlowArch::host(backend),
+                "begin unit test coverage",
+            )
+            .dep_on(
+                |ctx| flowey_lib_hvlite::collect_unit_test_coverage::Request::Begin {
+                    repo_root: crate::repo_root(),
+                    done: ctx.new_done_handle(),
+                },
+            )
+            .finish();
+        let collect = pipeline
             .new_job(
                 FlowPlatform::host(backend),
                 FlowArch::host(backend),
@@ -111,6 +124,7 @@ impl IntoPipeline for UnitTestCoverageCli {
                 },
             })
             .finish();
+        pipeline.non_artifact_dep(&collect, &begin);
         Ok(pipeline)
     }
 }

@@ -14,13 +14,19 @@ pub struct Options {
 }
 
 flowey_request! {
-    pub struct Request {
-        pub xtask: ReadVar<crate::build_xtask::XtaskOutput>,
-        pub runs: Vec<(String, NextestBuildParams)>,
-        pub options: Options,
-        pub working_dir: ReadVar<PathBuf>,
-        pub pre_run_deps: Vec<ReadVar<SideEffect>>,
-        pub done: WriteVar<SideEffect>,
+    pub enum Request {
+        Begin {
+            repo_root: PathBuf,
+            done: WriteVar<SideEffect>,
+        },
+        Collect {
+            xtask: ReadVar<crate::build_xtask::XtaskOutput>,
+            runs: Vec<(String, NextestBuildParams)>,
+            options: Options,
+            working_dir: ReadVar<PathBuf>,
+            pre_run_deps: Vec<ReadVar<SideEffect>>,
+            done: WriteVar<SideEffect>,
+        },
     }
 }
 
@@ -43,24 +49,38 @@ impl FlowNode for Node {
             matches!(ctx.backend(), FlowBackend::Local),
             "unit coverage currently supports only the local backend"
         );
-        let flags = ctx.reqv(flowey_lib_common::cfg_cargo_common_flags::Request::GetFlags);
-        let toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
-        let nextest = ctx.reqv(flowey_lib_common::install_cargo_nextest::Request);
-        for Request {
-            xtask,
-            runs,
-            options,
-            working_dir,
-            pre_run_deps,
-            done,
-        } in requests
-        {
+        for request in requests {
+            let (xtask, runs, options, working_dir, pre_run_deps, done) = match request {
+                Request::Begin { repo_root, done } => {
+                    ctx.emit_rust_step("clear active unit coverage", |ctx| {
+                        done.claim(ctx);
+                        move |_rt| match fs_err::remove_file(
+                            repo_root.join("target/unit-coverage/latest.json"),
+                        ) {
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                            result => result.context("clearing previous active unit coverage"),
+                        }
+                    });
+                    continue;
+                }
+                Request::Collect {
+                    xtask,
+                    runs,
+                    options,
+                    working_dir,
+                    pre_run_deps,
+                    done,
+                } => (xtask, runs, options, working_dir, pre_run_deps, done),
+            };
+            let flags = ctx.reqv(flowey_lib_common::cfg_cargo_common_flags::Request::GetFlags);
+            let toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
+            let nextest = ctx.reqv(flowey_lib_common::install_cargo_nextest::Request);
             ctx.emit_rust_step("collect local unit test coverage", |ctx| {
                 done.claim(ctx);
                 pre_run_deps.claim(ctx);
-                nextest.clone().claim(ctx);
-                let flags = flags.clone().claim(ctx);
-                let toolchain = toolchain.clone().claim(ctx);
+                nextest.claim(ctx);
+                let flags = flags.claim(ctx);
+                let toolchain = toolchain.claim(ctx);
                 let working_dir = working_dir.claim(ctx);
                 let xtask = xtask.claim(ctx);
                 let runs: Vec<_> = runs

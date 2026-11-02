@@ -477,6 +477,40 @@ class GitQueryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "latest report was removed"):
             coverage.query(root=self.root)
 
+    def test_worker_startup_failure_clears_previous_active_report(self):
+        previous = self.report("previous")
+        index = self.root / "target/unit-coverage/latest.json"
+        config = self.root / "target/nextest.toml"
+        config.write_text("")
+        for failure in ("output", "config", "snapshot"):
+            with self.subTest(failure=failure):
+                coverage.write_json(index, {"schema_version": 2, "report": str(previous)})
+                output = self.root / "target" / f"failed-{failure}"
+                if failure == "output":
+                    output.mkdir()
+                plan = self.root / "target/plan.json"
+                coverage.write_json(plan, {
+                    "toolchain": None, "filter": None, "xtask": "xtask",
+                    "runs": [{"name": "base", "env": {}, "args": [
+                        "--target", "x86_64-unknown-linux-gnu", "-p", "headervec",
+                    ]}],
+                    "nextest_config": str(config if failure != "config" else config.with_suffix(".missing")),
+                })
+                with patch.object(coverage, "repository_root", return_value=self.root):
+                    if failure == "snapshot":
+                        with patch.object(coverage, "source_snapshot", side_effect=ValueError("snapshot failed")), \
+                             self.assertRaisesRegex(ValueError, "snapshot failed"):
+                            coverage.collect(plan, output)
+                    else:
+                        with self.assertRaises(OSError):
+                            coverage.collect(plan, output)
+                self.assertFalse(index.exists())
+                with self.assertRaisesRegex(ValueError, "no active coverage report"):
+                    coverage.query(root=self.root)
+                explicit = coverage.query(previous, root=self.root)
+                self.assertEqual(explicit["collection_state"], "complete")
+                self.assertEqual(explicit["freshness"]["state"], "current")
+
     def test_only_the_current_report_and_index_schema_are_accepted(self):
         path = self.report()
         report = json.loads(path.read_text())

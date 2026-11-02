@@ -111,6 +111,14 @@ that choice. It does not guess the default branch. `--report <path>` selects
 an explicit report instead of the latest attempt. A newer failed/incomplete
 collection is never silently replaced by older successful results.
 
+When execution starts, the pipeline clears the active pointer before preparing
+dependencies. The worker also clears it before creating output or snapshotting
+source. If startup fails before a new report is available, a bare `query`
+reports no active result; older reports are still accessible with `--report`.
+Argument-validation failures and graph visualization do not start collection
+and leave the active result unchanged. Once a report is created it becomes
+active, including when tests subsequently fail.
+
 Queries emit compact JSON with file or changed-hunk summaries. Use `--file`
 with optional `--start`/`--end` for measured lines and their covering tests,
 including configuration-run names, attempts, and pass/fail results.

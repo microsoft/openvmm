@@ -276,7 +276,7 @@ impl FlowNode for Node {
 
             match build_mode {
                 BuildNextestUnitTestMode::Coverage { options, done, .. } => {
-                    ctx.req(crate::collect_unit_test_coverage::Request {
+                    ctx.req(crate::collect_unit_test_coverage::Request::Collect {
                         xtask: xtask.clone(),
                         runs,
                         options,
