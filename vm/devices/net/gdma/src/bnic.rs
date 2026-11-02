@@ -31,6 +31,7 @@ use anyhow::Context;
 use anyhow::anyhow;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::Sge;
 use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
@@ -580,15 +581,16 @@ impl TxRxTask {
             };
 
         let lso = sqe.header.params.client_oob_in_sgl();
+        let trans_off = transport_offset(self.pool.guest_memory(), sqe.sgl(), &oob.s_oob);
         let mut meta = TxMetadata {
             id: TxId(0),
             segment_count: sqe.sgl().len().try_into().unwrap(),
             len: total_len.try_into().unwrap(),
             flags: tx_flags(&oob.s_oob, lso),
             l2_len: l2_len as u8,
-            l3_len: oob.s_oob.trans_off().clamp(l2_len as u16, 255) - l2_len as u16,
+            l3_len: trans_off.clamp(l2_len as u16, 255) - l2_len as u16,
             l4_len: 0,
-            transport_header_offset: oob.s_oob.trans_off(),
+            transport_header_offset: trans_off,
             max_segment_size: 0,
             vlan,
         };
@@ -736,6 +738,47 @@ fn tx_flags(s_oob: &ManaTxShortOob, lso: bool) -> TxFlags {
         .with_offload_tcp_segmentation(lso)
         .with_is_ipv4(is_ipv4)
         .with_is_ipv6(s_oob.is_outer_ipv6() && !is_ipv4)
+}
+
+/// Returns the transport header offset of a send, reading it from the frame when
+/// a checksum send omits it.
+///
+/// Linux's mana driver leaves `trans_off` at 0 on UDP checksum sends, so the
+/// device has to find the transport header itself. An injected VLAN tag is not in the
+/// guest's bytes, so the IP header follows a 14-byte Ethernet header either way.
+fn transport_offset(gm: &GuestMemory, sgl: &[Sge], s_oob: &ManaTxShortOob) -> u16 {
+    let trans_off = s_oob.trans_off();
+    let ip_offset = net_backend::ETHERNET_HEADER_LEN as u16;
+    if !(s_oob.comp_tcp_csum() || s_oob.comp_udp_csum())
+        || trans_off >= ip_offset + net_backend::IPV4_MIN_HEADER_LEN
+    {
+        return trans_off;
+    }
+    frame_byte(gm, sgl, ip_offset.into())
+        .and_then(ip_header_len)
+        .map_or(trans_off, |l3_len| ip_offset + l3_len)
+}
+
+/// Returns the byte at `offset` of the frame described by `sgl`.
+fn frame_byte(gm: &GuestMemory, sgl: &[Sge], mut offset: u32) -> Option<u8> {
+    for sge in sgl {
+        if offset < sge.size {
+            let address = sge.address.checked_add(offset.into())?;
+            return gm.read_plain(address).ok();
+        }
+        offset -= sge.size;
+    }
+    None
+}
+
+/// Returns the IP header length given the first byte of the IP header. IPv6
+/// extension headers are not counted.
+fn ip_header_len(byte: u8) -> Option<u16> {
+    match byte >> 4 {
+        4 => Some(u16::from(byte & 0xf) * 4).filter(|&len| len >= net_backend::IPV4_MIN_HEADER_LEN),
+        6 => Some(net_backend::IPV6_MIN_HEADER_LEN),
+        _ => None,
+    }
 }
 
 struct TxRxState;
@@ -1039,5 +1082,176 @@ mod tests {
         assert!(flags.offload_udp_checksum());
         assert!(!flags.offload_tcp_checksum());
         assert!(!flags.offload_tcp_segmentation());
+    }
+}
+
+#[cfg(test)]
+mod transport_offset_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use gdma_defs::CLIENT_OOB_24;
+    use gdma_defs::WqeParams;
+    use net_backend::TxError;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use pci_core::capabilities::msix::MsixEmulator;
+    use pci_core::msi::MsiTarget;
+    use std::task::Context;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    /// Keeps the metadata of each send.
+    #[derive(InspectMut)]
+    struct RecordingQueue {
+        #[inspect(skip)]
+        sent: Arc<Mutex<Vec<TxMetadata>>>,
+    }
+
+    #[async_trait]
+    impl Queue for RecordingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.clone());
+            Ok((true, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            Ok(0)
+        }
+    }
+
+    /// Sends a frame in two SGEs and returns what the backend was handed. With
+    /// `split` the IP header starts the second SGE.
+    async fn send(
+        driver: &DefaultDriver,
+        s_oob: ManaTxShortOob,
+        ip_byte: u8,
+        split: bool,
+    ) -> TxMetadata {
+        let gm = GuestMemory::allocate(0x4000);
+        let sge0_len = if split { 14 } else { 64 };
+        let sgl = [
+            Sge {
+                address: 0,
+                mem_key: 0,
+                size: sge0_len,
+            },
+            Sge {
+                address: 0x1000,
+                mem_key: 0,
+                size: 0x100,
+            },
+        ];
+        let ip_address = if split { 0x1000 } else { 14 };
+        gm.write_at(ip_address, &[ip_byte]).unwrap();
+
+        let (msix, _capability) = MsixEmulator::new(4, 64, &MsiTarget::disconnected());
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut task = TxRxTask {
+            queues: Arc::new(Queues::new(gm.clone(), driver_source.simple(), &msix)),
+            epqueue: Box::new(RecordingQueue { sent: sent.clone() }),
+            pool: GuestBuffers {
+                gm,
+                rx_packets: Default::default(),
+            },
+            sq_id: 0,
+            sq_cq_id: 0,
+            rq_id: 0,
+            rq_cq_id: 0,
+            tx_segment_buffer: Vec::new(),
+            rx_buf_count: 0,
+        };
+
+        let mut sqe = Wqe::new_zeroed();
+        sqe.header.params = WqeParams::new()
+            .with_num_sgl_entries(2)
+            .with_inline_client_oob_size(CLIENT_OOB_24);
+        let oob = ManaTxOob {
+            s_oob,
+            l_oob: FromZeros::new_zeroed(),
+            reserved3: 0,
+            reserved4: 0,
+        };
+        oob.write_to_prefix(&mut sqe.data[..]).unwrap();
+        let sgl_offset = sqe.header.sgl_offset();
+        sgl.write_to_prefix(&mut sqe.data[sgl_offset..]).unwrap();
+
+        task.process_sqe(sqe).unwrap();
+        sent.lock().pop().unwrap()
+    }
+
+    #[async_test]
+    async fn checksum_send_without_trans_off_reads_the_frame(driver: DefaultDriver) {
+        let udp = ManaTxShortOob::new()
+            .with_is_outer_ipv4(true)
+            .with_comp_udp_csum(true);
+        let tcp = ManaTxShortOob::new().with_comp_tcp_csum(true);
+        for (s_oob, ip_byte, split, l3_len) in [
+            // A minimal IPv4 header, with options, IPv6, across an SGE boundary.
+            (udp, 0x45, false, 20),
+            (udp, 0x46, false, 24),
+            (tcp, 0x60, false, 40),
+            (udp, 0x45, true, 20),
+            // An offset short of a minimal IP header counts as omitted.
+            (udp.with_trans_off(33), 0x46, false, 24),
+        ] {
+            let meta = send(&driver, s_oob, ip_byte, split).await;
+            assert_eq!(meta.l2_len, 14);
+            assert_eq!(meta.l3_len, l3_len);
+            assert_eq!(meta.transport_header_offset, 14 + l3_len);
+        }
+    }
+
+    #[async_test]
+    async fn send_keeps_a_stated_trans_off(driver: DefaultDriver) {
+        // The IP header says 24 bytes; the driver's offset wins.
+        let udp = ManaTxShortOob::new()
+            .with_comp_udp_csum(true)
+            .with_trans_off(34);
+        assert_eq!(send(&driver, udp, 0x46, false).await.l3_len, 20);
+    }
+
+    #[async_test]
+    async fn send_without_an_ip_header_keeps_trans_off(driver: DefaultDriver) {
+        let udp = ManaTxShortOob::new().with_comp_udp_csum(true);
+        assert_eq!(
+            send(&driver, udp, 0x00, false)
+                .await
+                .transport_header_offset,
+            0
+        );
+        let no_checksum = ManaTxShortOob::new().with_is_outer_ipv4(true);
+        assert_eq!(
+            send(&driver, no_checksum, 0x45, false)
+                .await
+                .transport_header_offset,
+            0
+        );
     }
 }
