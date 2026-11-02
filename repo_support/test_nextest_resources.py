@@ -149,6 +149,30 @@ class AnalysisTests(unittest.TestCase):
         cpu_chart = html.split("Host CPU, percent (")[1].split("</svg>")[0]
         self.assertIn('<polyline points="0.00,97.50 1000.00,97.50"', cpu_chart)
 
+    def test_disk_throughput_maximum_uses_full_chart_height(self):
+        for maximum in (0.5, 2.0):
+            with self.subTest(maximum=maximum):
+                for row in self.samples:
+                    row["disks"][0]["read_bytes"] = int(
+                        row["elapsed_seconds"] * maximum * 1024**2
+                    )
+                self.write_samples()
+                html = resources.render_html(resources.analyze(self.directory))
+                disk_chart = html.split(
+                    f"read_bytes MiB/s (0 - {maximum:.1f})", 1
+                )[1].split("</svg>", 1)[0]
+                self.assertIn('<polyline points="0.00,0.00 ', disk_chart)
+
+    def test_zero_concurrency_chart_stays_on_baseline(self):
+        (self.directory / "junit.xml").write_text(
+            '<testsuites timestamp="2026-01-01T00:00:00Z" time="10"/>'
+        )
+        html = resources.render_html(resources.analyze(self.directory))
+        concurrency_chart = html.split(
+            "Concurrent test attempts (0 - 0.0)", 1
+        )[1].split("</svg>", 1)[0]
+        self.assertIn('<polyline points="0.00,130.00 ', concurrency_chart)
+
 
 if __name__ == "__main__":
     unittest.main()

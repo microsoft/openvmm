@@ -197,6 +197,7 @@ def render_html(report: dict) -> str:
         # Split at missing observations instead of drawing across unknown CPU data.
         paths = []
         path = []
+        scale_maximum = maximum if maximum > 0 else 1
         for time, value in values:
             if value is None:
                 if path:
@@ -204,7 +205,7 @@ def render_html(report: dict) -> str:
                     path = []
                 continue
             if start <= time <= end:
-                path.append(f"{x(time):.2f},{height - height * value / max(maximum, 1):.2f}")
+                path.append(f"{x(time):.2f},{height - height * value / scale_maximum:.2f}")
         if path:
             paths.append(path)
         lines = "".join(

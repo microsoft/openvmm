@@ -44,7 +44,6 @@ flowey_request! {
         pub done: WriteVar<SideEffect>,
     }
 }
-
 new_flow_node!(struct Node);
 
 impl FlowNode for Node {
@@ -171,9 +170,7 @@ impl FlowNode for Node {
                                         .next()
                                         .is_some())
                         });
-                let attachment_path_string = attachment_path.map(ctx, |p| {
-                    p.absolute().expect("invalid path").display().to_string()
-                });
+                let attachment_path_string = attachment_path.map(ctx, attachment_path_to_string);
 
                 match ctx.backend() {
                     FlowBackend::Ado => {
@@ -258,6 +255,35 @@ impl FlowNode for Node {
         }
         ctx.emit_side_effect_step(use_side_effects, resolve_side_effects);
 
+        Ok(())
+    }
+}
+
+fn attachment_path_to_string(path: PathBuf) -> String {
+    if path.as_os_str().is_empty() {
+        String::new()
+    } else {
+        path.absolute().expect("invalid path").display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn absent_attachment_path_stays_empty() {
+        assert_eq!(attachment_path_to_string(PathBuf::new()), "");
+    }
+
+    #[test]
+    fn present_attachment_path_is_absolute() -> anyhow::Result<()> {
+        let expected = std::env::current_dir()?.join("resources");
+        assert_eq!(
+            attachment_path_to_string(PathBuf::from("resources")),
+            expected.display().to_string()
+        );
         Ok(())
     }
 }
