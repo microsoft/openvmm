@@ -47,6 +47,13 @@ const MAX_TAP_FRAME_LEN: usize =
 // read buffer to that contract rather than adding overflow detection.
 const TAP_READ_BUFFER_LEN: usize = size_of::<VirtioNetHdr>() + MAX_TAP_FRAME_LEN;
 const MAX_RX_PACKETS_PER_POLL: usize = 64;
+/// The destination and source MAC addresses, which an 802.1Q tag follows.
+const ETHERNET_ADDRESSES_LEN: usize = 12;
+const VLAN_TAG_LEN: usize = 4;
+const ETH_P_8021Q: u16 = 0x8100;
+const ETH_P_8021AD: u16 = 0x88a8;
+const ETH_P_IP: u16 = 0x0800;
+const ETH_P_IPV6: u16 = 0x86dd;
 
 // TODO: These virtio net header types duplicate definitions in virtio_net.
 // Consider extracting a shared `virtio_net_header` crate if more consumers
@@ -389,6 +396,44 @@ impl Queue for TapQueue {
     }
 }
 
+/// The IP version a frame carries, by its EtherType.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpVersion {
+    V4,
+    V6,
+}
+
+/// Where a frame's IP header starts and which version it is, as the frame says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IpHeader {
+    offset: usize,
+    version: IpVersion,
+}
+
+/// The IP header of a frame, past up to two inline tags, or `None` if the frame does not hold
+/// IP behind them.
+fn ip_header(packet: &[u8]) -> Option<IpHeader> {
+    const MAX_INLINE_TAGS: usize = 2;
+    let mut ethertype_offset = ETHERNET_ADDRESSES_LEN;
+    for _ in 0..=MAX_INLINE_TAGS {
+        let ethertype = packet.get(ethertype_offset..ethertype_offset + 2)?;
+        let version = match u16::from_be_bytes([ethertype[0], ethertype[1]]) {
+            ETH_P_8021Q | ETH_P_8021AD => {
+                ethertype_offset += VLAN_TAG_LEN;
+                continue;
+            }
+            ETH_P_IP => IpVersion::V4,
+            ETH_P_IPV6 => IpVersion::V6,
+            _ => return None,
+        };
+        return Some(IpHeader {
+            offset: ethertype_offset + 2,
+            version,
+        });
+    }
+    None
+}
+
 /// Compute and write the IPv4 header checksum in place.
 ///
 /// The IPv4 header length is derived from the IHL field in the packet itself
@@ -580,16 +625,23 @@ fn fixup_gso_pseudo_header(packet: &mut [u8], l2_len: usize) {
 /// `csum_offset` to the known offset of the checksum field within each protocol
 /// header (16 for TCP, 6 for UDP).
 ///
-/// For TSO, `gso_type` is set based on the `is_ipv4`/`is_ipv6` flags, and
-/// `NEEDS_CSUM` is always set since the kernel requires the checksum to be
+/// For TSO, `gso_type` follows `ip`, the IP version the frame itself carries; only a
+/// frame with no IP behind its tags falls back to the `is_ipv4` flag. A driver that lays a
+/// tag into the frame can leave both version flags clear (Linux's mana and netvsc set them
+/// from `skb->protocol`, which is then the tag's TPID). `NEEDS_CSUM` is always set
+/// since the kernel requires the checksum to be
 /// partially computed when performing segmentation. For USO,
 /// `gso_type` is set to `UDP_L4` and the UDP header length (8) is used.
 ///
 /// If no offload flags are set, an all-zero header is returned, which tells the
 /// TAP device that the packet requires no special handling.
-fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
+fn build_vnet_hdr(meta: &TxMetadata, ip: Option<IpVersion>) -> VirtioNetHdr {
     if meta.flags.offload_tcp_segmentation() {
-        let protocol = if meta.flags.is_ipv4() {
+        let ipv4 = match ip {
+            Some(version) => version == IpVersion::V4,
+            None => meta.flags.is_ipv4(),
+        };
+        let protocol = if ipv4 {
             VirtioNetHdrGsoProtocol::TCPV4
         } else {
             VirtioNetHdrGsoProtocol::TCPV6
@@ -845,6 +897,28 @@ mod tests {
     }
 
     #[test]
+    fn ip_header_walks_at_most_two_tags() {
+        let frame = |ethertypes: &[u16]| {
+            let mut frame = vec![0; ETHERNET_ADDRESSES_LEN];
+            for ethertype in ethertypes {
+                frame.extend_from_slice(&ethertype.to_be_bytes());
+                frame.extend_from_slice(&[0, 100]);
+            }
+            frame
+        };
+        let (q, ad) = (ETH_P_8021Q, ETH_P_8021AD);
+        let at = |offset, version| Some(IpHeader { offset, version });
+        assert_eq!(ip_header(&frame(&[ETH_P_IP])), at(14, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[q, ETH_P_IPV6])), at(18, IpVersion::V6));
+        assert_eq!(ip_header(&frame(&[ad, ETH_P_IP])), at(18, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[ad, q, ETH_P_IP])), at(22, IpVersion::V4));
+        assert_eq!(ip_header(&frame(&[q, q, q, ETH_P_IP])), None);
+        assert_eq!(ip_header(&frame(&[q, 0x88b5])), None);
+        assert_eq!(ip_header(&frame(&[q])[..14]), None);
+        assert_eq!(ip_header(&[]), None);
+    }
+
+    #[test]
     fn vnet_hdr_from_tx_metadata_csum() {
         let meta = TxMetadata {
             flags: TxFlags::new()
@@ -854,7 +928,7 @@ mod tests {
             l3_len: 20,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(hdr.flags.needs_csum());
         assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.csum_start, 14 + 20);
@@ -876,7 +950,7 @@ mod tests {
             max_segment_size: 1460,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
         assert_eq!(hdr.gso_size, 1460);
         assert_eq!(hdr.hdr_len, 14 + 20 + 32);
@@ -886,10 +960,47 @@ mod tests {
         assert_eq!(hdr.csum_offset, 16);
     }
 
+    /// The frame's IP version picks the segmentation type, whatever the flags say; the flags
+    /// decide only for a frame with no IP behind its tags.
+    #[test]
+    fn vnet_hdr_tso_type_follows_the_frame() {
+        let meta = |is_ipv4, is_ipv6| TxMetadata {
+            flags: TxFlags::new()
+                .with_offload_tcp_segmentation(true)
+                .with_offload_tcp_checksum(true)
+                .with_is_ipv4(is_ipv4)
+                .with_is_ipv6(is_ipv6),
+            l2_len: 14,
+            l3_len: 20,
+            l4_len: 20,
+            max_segment_size: 1000,
+            ..Default::default()
+        };
+        let protocol = |meta: TxMetadata, ip| build_vnet_hdr(&meta, ip).gso_type.protocol();
+        for (is_ipv4, is_ipv6) in [(false, false), (true, false), (false, true)] {
+            assert_eq!(
+                protocol(meta(is_ipv4, is_ipv6), Some(IpVersion::V4)),
+                VirtioNetHdrGsoProtocol::TCPV4
+            );
+            assert_eq!(
+                protocol(meta(is_ipv4, is_ipv6), Some(IpVersion::V6)),
+                VirtioNetHdrGsoProtocol::TCPV6
+            );
+        }
+        assert_eq!(
+            protocol(meta(true, false), None),
+            VirtioNetHdrGsoProtocol::TCPV4
+        );
+        assert_eq!(
+            protocol(meta(false, false), None),
+            VirtioNetHdrGsoProtocol::TCPV6
+        );
+    }
+
     #[test]
     fn vnet_hdr_from_tx_metadata_none() {
         let meta = TxMetadata::default();
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(!hdr.flags.needs_csum());
         assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
@@ -909,7 +1020,7 @@ mod tests {
             l3_len: 20,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert!(hdr.flags.needs_csum());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 6);
@@ -1281,7 +1392,7 @@ mod tests {
             max_segment_size: 1472,
             ..Default::default()
         };
-        let hdr = build_vnet_hdr(&meta);
+        let hdr = build_vnet_hdr(&meta, Some(IpVersion::V4));
         assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::UDP_L4);
         assert_eq!(hdr.gso_size, 1472);
         assert_eq!(hdr.hdr_len, 14 + 20 + 8);
