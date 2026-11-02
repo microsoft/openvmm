@@ -798,6 +798,7 @@ mod tests {
     use inspect::Inspect;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use parking_lot::Mutex;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -812,12 +813,13 @@ mod tests {
     use uefi_specs::hyperv::nvram::NvramCommandDescriptor;
     use uefi_specs::hyperv::nvram::NvramVariableCommand;
     use uefi_specs::uefi::common::EfiStatus;
+    use uefi_specs::uefi::nvram::EfiVariableAttributes;
     use vmcore::save_restore::SaveRestore;
     use vmcore::vmtime::VmTime;
     use vmcore::vmtime::VmTimeKeeper;
     use watchdog_core::platform::WatchdogCallback;
 
-    /// NVRAM storage whose reads wait for a permit, standing in for a backing
+    /// NVRAM storage whose writes wait for a permit, standing in for a backing
     /// store that is serviced by another thread.
     #[derive(Inspect)]
     struct GatedNvram {
@@ -825,6 +827,8 @@ mod tests {
         inner: InMemoryNvram,
         #[inspect(skip)]
         permits: mesh::Receiver<()>,
+        #[inspect(skip)]
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
     }
 
     #[async_trait::async_trait]
@@ -834,7 +838,6 @@ mod tests {
             name: &Ucs2LeSlice,
             vendor: Guid,
         ) -> Result<Option<(u32, Vec<u8>, EFI_TIME)>, NvramStorageError> {
-            self.permits.recv().await.unwrap();
             self.inner.get_variable(name, vendor).await
         }
 
@@ -846,9 +849,12 @@ mod tests {
             data: Vec<u8>,
             timestamp: EFI_TIME,
         ) -> Result<(), NvramStorageError> {
+            self.permits.recv().await.unwrap();
             self.inner
-                .set_variable(name, vendor, attr, data, timestamp)
-                .await
+                .set_variable(name, vendor, attr, data.clone(), timestamp)
+                .await?;
+            self.writes.lock().push(data);
+            Ok(())
         }
 
         async fn append_variable(
@@ -926,23 +932,26 @@ mod tests {
         dev: UefiDevice,
         gm: GuestMemory,
         permits: mesh::Sender<()>,
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
         _keeper: VmTimeKeeper,
     }
 
-    async fn test_device(driver: &DefaultDriver) -> TestDevice {
+    async fn test_device(driver: &DefaultDriver, use_mmio: bool) -> TestDevice {
         let gm = GuestMemory::allocate(64 * 1024);
         let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
         let vmtime = keeper.builder().build(driver).await.unwrap();
         let (_genid_send, generation_id_recv) = mesh::channel();
         let (_watchdog_send, watchdog_recv) = mesh::channel();
         let (permits, permits_recv) = mesh::channel();
+        let writes = Arc::new(Mutex::new(Vec::new()));
         let storage: Box<dyn VmmNvramStorage> = Box::new(GatedNvram {
             inner: InMemoryNvram::new(),
             permits: permits_recv,
+            writes: writes.clone(),
         });
 
         let dev = UefiDevice {
-            use_mmio: false,
+            use_mmio,
             command_set: UefiCommandSet::X64,
             diagnostics_rate_limit: None,
             gm: gm.clone(),
@@ -983,19 +992,19 @@ mod tests {
             dev,
             gm,
             permits,
+            writes,
             _keeper: keeper,
         }
     }
 
-    /// Writes a GET_VARIABLE command for a variable that does not exist, and
-    /// returns its descriptor address.
-    fn write_get_variable(gm: &GuestMemory, desc_addr: u64) -> u64 {
+    fn write_set_variable(gm: &GuestMemory, desc_addr: u64, data: &[u8]) -> u64 {
         let name_addr = desc_addr + 0x100;
         gm.write_at(name_addr, &[b'A', 0, 0, 0]).unwrap();
+        gm.write_at(desc_addr + 0x200, data).unwrap();
         gm.write_plain(
             desc_addr,
             &NvramCommandDescriptor {
-                command: NvramCommand::GET_VARIABLE,
+                command: NvramCommand::SET_VARIABLE,
                 // Sentinel: a command that never ran must not look finished.
                 status: EfiStatus::DEVICE_ERROR.into(),
             },
@@ -1004,12 +1013,12 @@ mod tests {
         gm.write_plain(
             desc_addr + size_of::<NvramCommandDescriptor>() as u64,
             &NvramVariableCommand {
-                attributes: 0,
+                attributes: EfiVariableAttributes::DEFAULT_ATTRIBUTES.into(),
                 name_address: name_addr.into(),
                 name_bytes: 4,
                 vendor_guid: Guid::default(),
                 data_address: (desc_addr + 0x200).into(),
-                data_bytes: 16,
+                data_bytes: data.len().try_into().unwrap(),
             },
         )
         .unwrap();
@@ -1055,16 +1064,16 @@ mod tests {
             mut dev,
             gm,
             permits,
+            writes,
             _keeper,
-        } = test_device(&driver).await;
+        } = test_device(&driver, false).await;
         let waker = Arc::new(CountingWaker::default());
         dev.poll_device(&mut Context::from_waker(&waker.clone().into()));
 
-        let desc_addr = write_get_variable(&gm, 0x1000);
+        let desc_addr = write_set_variable(&gm, 0x1000, &[1, 2, 3]);
         let mut token = issue(&mut dev, desc_addr);
-        assert_eq!(
-            waker.0.load(Ordering::SeqCst),
-            1,
+        assert!(
+            waker.0.load(Ordering::SeqCst) > 0,
             "the command must be polled"
         );
 
@@ -1076,13 +1085,17 @@ mod tests {
                 .is_pending()
         );
         assert_eq!(status(&gm, desc_addr), EfiStatus::DEVICE_ERROR);
+        assert!(writes.lock().is_empty());
 
+        let before = waker.0.load(Ordering::SeqCst);
         permits.send(());
+        assert!(waker.0.load(Ordering::SeqCst) > before);
         complete(&mut dev, &mut token).await;
-        assert_eq!(status(&gm, desc_addr), EfiStatus::NOT_FOUND);
+        assert_eq!(status(&gm, desc_addr), EfiStatus::SUCCESS);
+        assert_eq!(*writes.lock(), [vec![1, 2, 3]]);
     }
 
-    /// A command issued while another runs is queued, not dropped, and both
+    /// Commands issued while another runs are queued, not dropped, and all
     /// complete in order.
     #[async_test]
     async fn concurrent_nvram_commands_complete_in_order(driver: DefaultDriver) {
@@ -1090,23 +1103,51 @@ mod tests {
             mut dev,
             gm,
             permits,
+            writes,
             _keeper,
-        } = test_device(&driver).await;
+        } = test_device(&driver, false).await;
         dev.poll_device(&mut Context::from_waker(Waker::noop()));
 
-        let first = write_get_variable(&gm, 0x1000);
-        let second = write_get_variable(&gm, 0x4000);
+        let first = write_set_variable(&gm, 0x1000, &[1]);
+        let second = write_set_variable(&gm, 0x4000, &[2]);
+        let third = write_set_variable(&gm, 0x7000, &[3]);
         let mut first_token = issue(&mut dev, first);
         let mut second_token = issue(&mut dev, second);
+        let mut third_token = issue(&mut dev, third);
 
         permits.send(());
         complete(&mut dev, &mut first_token).await;
-        assert_eq!(status(&gm, first), EfiStatus::NOT_FOUND);
+        assert_eq!(status(&gm, first), EfiStatus::SUCCESS);
         assert_eq!(status(&gm, second), EfiStatus::DEVICE_ERROR);
+        assert_eq!(status(&gm, third), EfiStatus::DEVICE_ERROR);
+        assert!(
+            second_token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(*writes.lock(), [vec![1]]);
 
         permits.send(());
-        complete(&mut dev, &mut second_token).await;
-        assert_eq!(status(&gm, second), EfiStatus::NOT_FOUND);
+        std::future::poll_fn(|cx| {
+            dev.poll_device(cx);
+            assert_eq!(status(&gm, third), EfiStatus::DEVICE_ERROR);
+            second_token.poll_write(cx)
+        })
+        .await
+        .unwrap();
+        assert_eq!(status(&gm, second), EfiStatus::SUCCESS);
+        assert_eq!(status(&gm, third), EfiStatus::DEVICE_ERROR);
+        assert!(
+            third_token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(*writes.lock(), [vec![1], vec![2]]);
+
+        permits.send(());
+        complete(&mut dev, &mut third_token).await;
+        assert_eq!(status(&gm, third), EfiStatus::SUCCESS);
+        assert_eq!(*writes.lock(), [vec![1], vec![2], vec![3]]);
     }
 
     /// The MMIO register pair (used on aarch64) defers the same way.
@@ -1116,12 +1157,12 @@ mod tests {
             mut dev,
             gm,
             permits,
+            writes,
             _keeper,
-        } = test_device(&driver).await;
-        dev.use_mmio = true;
+        } = test_device(&driver, true).await;
         dev.poll_device(&mut Context::from_waker(Waker::noop()));
 
-        let desc_addr = write_get_variable(&gm, 0x1000);
+        let desc_addr = write_set_variable(&gm, 0x1000, &[3, 4]);
         let base = MMIO_RANGE_BEGIN;
         assert!(matches!(
             dev.mmio_write(
@@ -1138,9 +1179,18 @@ mod tests {
             _ => panic!("an NVRAM command must defer its I/O"),
         };
 
+        dev.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(status(&gm, desc_addr), EfiStatus::DEVICE_ERROR);
+        assert!(writes.lock().is_empty());
         permits.send(());
         complete(&mut dev, &mut token).await;
-        assert_eq!(status(&gm, desc_addr), EfiStatus::NOT_FOUND);
+        assert_eq!(status(&gm, desc_addr), EfiStatus::SUCCESS);
+        assert_eq!(*writes.lock(), [vec![3, 4]]);
     }
 
     /// Stopping the device finishes a running command, so saved state never
@@ -1151,17 +1201,41 @@ mod tests {
             mut dev,
             gm,
             permits,
+            writes,
             _keeper,
-        } = test_device(&driver).await;
+        } = test_device(&driver, false).await;
         dev.poll_device(&mut Context::from_waker(Waker::noop()));
 
-        let desc_addr = write_get_variable(&gm, 0x1000);
-        let token = issue(&mut dev, desc_addr);
-        permits.send(());
-        dev.stop().await;
+        let first = write_set_variable(&gm, 0x1000, &[1]);
+        let second = write_set_variable(&gm, 0x4000, &[2]);
+        let mut first_token = issue(&mut dev, first);
+        let mut second_token = issue(&mut dev, second);
+        let waker = Arc::new(CountingWaker::default());
+        let task_waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
+        let mut stop = Box::pin(dev.stop());
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(first_token.poll_write(&mut cx).is_pending());
+        assert!(second_token.poll_write(&mut cx).is_pending());
+        assert!(writes.lock().is_empty());
 
-        token.write_future().await.unwrap();
-        assert_eq!(status(&gm, desc_addr), EfiStatus::NOT_FOUND);
-        dev.save().unwrap();
+        let before = waker.0.load(Ordering::SeqCst);
+        permits.send(());
+        assert!(waker.0.load(Ordering::SeqCst) > before);
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(matches!(
+            first_token.poll_write(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(second_token.poll_write(&mut cx).is_pending());
+        assert_eq!(status(&gm, second), EfiStatus::DEVICE_ERROR);
+        assert_eq!(*writes.lock(), [vec![1]]);
+
+        permits.send(());
+        stop.await;
+        second_token.write_future().await.unwrap();
+        assert_eq!(status(&gm, first), EfiStatus::SUCCESS);
+        assert_eq!(status(&gm, second), EfiStatus::SUCCESS);
+        assert_eq!(*writes.lock(), [vec![1], vec![2]]);
     }
 }

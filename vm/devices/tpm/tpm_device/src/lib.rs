@@ -2398,7 +2398,15 @@ mod tests {
     use std::task::Context;
     use std::task::Wake;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
+    use tpm_protocol::tpm20proto::AlgIdEnum;
+    use tpm_protocol::tpm20proto::SessionTagEnum;
+    use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
+    use tpm_protocol::tpm20proto::TPM20_RS_PW;
     use tpm_protocol::tpm20proto::TpmaNvBits;
+    use tpm_protocol::tpm20proto::protocol::NvDefineSpaceCmd;
+    use tpm_protocol::tpm20proto::protocol::TpmsNvPublic;
+    use tpm_protocol::tpm20proto::protocol::common::CmdAuth;
+    use tpm_protocol::tpm20proto::protocol::common::ReplyHeader;
     use tpm_resources::RequestAkCert;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
@@ -2815,12 +2823,21 @@ mod tests {
         .await
     }
 
-    /// A store that, once armed, waits for a permit before each write,
-    /// standing in for a backing store that is serviced by another thread.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    enum StoreKind {
+        Ppi,
+        Nvram,
+    }
+
+    type RecordedWrites = Arc<Mutex<Vec<(StoreKind, Vec<u8>)>>>;
+
+    /// Once armed, writes wait for permission and record successful persistence.
     struct GatedStore {
         inner: Box<dyn NonVolatileStore>,
         armed: Arc<AtomicBool>,
         permits: mesh::Receiver<()>,
+        kind: StoreKind,
+        writes: RecordedWrites,
     }
 
     #[async_trait::async_trait]
@@ -2829,7 +2846,11 @@ mod tests {
             if self.armed.load(Ordering::SeqCst) {
                 self.permits.recv().await.unwrap();
             }
-            self.inner.persist(data).await
+            self.inner.persist(data.clone()).await?;
+            if self.armed.load(Ordering::SeqCst) {
+                self.writes.lock().push((self.kind, data));
+            }
+            Ok(())
         }
 
         async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
@@ -2842,6 +2863,8 @@ mod tests {
         armed: Arc<AtomicBool>,
         ppi_permits: mesh::Sender<()>,
         nvram_permits: mesh::Sender<()>,
+        gm: GuestMemory,
+        writes: RecordedWrites,
     }
 
     async fn new_gated_tpm() -> GatedTpm {
@@ -2852,20 +2875,24 @@ mod tests {
         let armed = Arc::new(AtomicBool::new(false));
         let (ppi_permits, ppi_recv) = mesh::channel();
         let (nvram_permits, nvram_recv) = mesh::channel();
-        let gated = |permits| -> Box<dyn NonVolatileStore> {
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let gated = |kind, permits| -> Box<dyn NonVolatileStore> {
             Box::new(GatedStore {
                 inner: EphemeralNonVolatileStore::new_boxed(),
                 armed: armed.clone(),
                 permits,
+                kind,
+                writes: writes.clone(),
             })
         };
+        let gm = GuestMemory::allocate(0x10000);
 
         let tpm = Tpm::new(
             TpmVersion::V138,
             TpmRegisterLayout::IoPort,
-            GuestMemory::allocate(0x10000),
-            gated(ppi_recv),
-            gated(nvram_recv),
+            gm.clone(),
+            gated(StoreKind::Ppi, ppi_recv),
+            gated(StoreKind::Nvram, nvram_recv),
             None,
             Box::new(|| std::time::Duration::new(0, 0)),
             false,
@@ -2886,6 +2913,8 @@ mod tests {
             armed,
             ppi_permits,
             nvram_permits,
+            gm,
+            writes,
         }
     }
 
@@ -2899,6 +2928,77 @@ mod tests {
 
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn issue_ppi_write(tpm: &mut Tpm, operation: u32) -> DeferredToken {
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+            &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes(),
+        )
+        .unwrap();
+        match tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+            &operation.to_le_bytes(),
+        ) {
+            IoResult::Defer(token) => token,
+            _ => panic!("a PPI write must defer its I/O"),
+        }
+    }
+
+    fn define_nv_index(tpm: &mut Tpm, gm: &GuestMemory) -> DeferredToken {
+        let public = TpmsNvPublic::new(
+            0x01500100,
+            AlgIdEnum::SHA256.into(),
+            TpmaNvBits::new()
+                .with_nv_ownerread(true)
+                .with_nv_ownerwrite(true),
+            &[],
+            8,
+        )
+        .unwrap();
+        let command = NvDefineSpaceCmd::new(
+            SessionTagEnum::Sessions.into(),
+            TPM20_RH_OWNER,
+            CmdAuth::new(TPM20_RS_PW, 0, 0, 0),
+            0,
+            public,
+        )
+        .unwrap();
+        const COMMAND_ADDRESS: u32 = 0x1000;
+        gm.write_at(COMMAND_ADDRESS.into(), &command.serialize())
+            .unwrap();
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+            &TpmIoCommand::MAP_SHARED_MEMORY.0.to_le_bytes(),
+        )
+        .unwrap();
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+            &COMMAND_ADDRESS.to_le_bytes(),
+        )
+        .unwrap();
+        let result = tpm.mmio_write(
+            TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
+            &1u32.to_le_bytes(),
+        );
+        let reply: ReplyHeader = gm
+            .read_plain(u64::from(COMMAND_ADDRESS) + TPM_PAGE_SIZE as u64)
+            .unwrap();
+        assert!(
+            reply
+                .base_validation(
+                    SessionTagEnum::Sessions.into(),
+                    size_of::<ReplyHeader>() as u32,
+                )
+                .unwrap(),
+            "NV_DefineSpace failed: {reply:?}"
+        );
+        match result {
+            IoResult::Defer(token) => token,
+            _ => panic!("a successful NV_DefineSpace must defer until persisted"),
         }
     }
 
@@ -2922,27 +3022,16 @@ mod tests {
             armed: _armed,
             ppi_permits,
             nvram_permits: _nvram_permits,
+            writes,
+            ..
         } = new_gated_tpm().await;
         let waker = Arc::new(CountingWaker::default());
         tpm.poll_device(&mut Context::from_waker(&waker.clone().into()));
         let woken_before = waker.0.load(Ordering::SeqCst);
 
-        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
-        assert!(matches!(
-            tpm.io_write(
-                port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
-                &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes()
-            ),
-            IoResult::Ok
-        ));
-        let mut token =
-            match tpm.io_write(port + TPM_DEVICE_IO_PORT_DATA_OFFSET, &5u32.to_le_bytes()) {
-                IoResult::Defer(token) => token,
-                _ => panic!("a PPI write must defer its I/O"),
-            };
-        assert_eq!(
-            waker.0.load(Ordering::SeqCst),
-            woken_before + 1,
+        let mut token = issue_ppi_write(&mut tpm, 5);
+        assert!(
+            waker.0.load(Ordering::SeqCst) > woken_before,
             "the write must be polled"
         );
 
@@ -2953,11 +3042,14 @@ mod tests {
                 .is_pending()
         );
 
+        assert!(writes.lock().is_empty());
         ppi_permits.send(());
         complete(&mut tpm, &mut token).await;
-        let stored = tpm.idle_stores().ppi.restore().await.unwrap().unwrap();
+        let writes = writes.lock();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, StoreKind::Ppi);
         assert_eq!(
-            persist_restore::deserialize_ppi_state(stored)
+            persist_restore::deserialize_ppi_state(writes[0].1.clone())
                 .unwrap()
                 .pending_ppi_operation,
             PpiOperation(5)
@@ -2971,6 +3063,7 @@ mod tests {
             armed: _armed,
             ppi_permits,
             nvram_permits: _nvram_permits,
+            ..
         } = new_gated_tpm_with_ak_cert(TpmAkCertType::Trusted(
             Arc::new(TestRequestAkCertHelper),
             Some(true),
@@ -2983,17 +3076,7 @@ mod tests {
         // The certificate provider returns an empty response on the initial poll.
         tpm.poll_device(&mut cx);
         let before = waker.0.load(Ordering::SeqCst);
-        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
-        tpm.io_write(
-            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
-            &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes(),
-        )
-        .unwrap();
-        let mut token =
-            match tpm.io_write(port + TPM_DEVICE_IO_PORT_DATA_OFFSET, &5u32.to_le_bytes()) {
-                IoResult::Defer(token) => token,
-                _ => panic!("a PPI write must defer its I/O"),
-            };
+        let mut token = issue_ppi_write(&mut tpm, 5);
         assert!(
             waker.0.load(Ordering::SeqCst) > before,
             "a deferred write must schedule polling after an empty certificate response"
@@ -3019,6 +3102,8 @@ mod tests {
             armed: _armed,
             ppi_permits: _ppi_permits,
             nvram_permits,
+            gm,
+            writes,
         } = new_gated_tpm().await;
         tpm.poll_device(&mut Context::from_waker(Waker::noop()));
         let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
@@ -3028,11 +3113,7 @@ mod tests {
             IoResult::Ok
         ));
 
-        *tpm.pending_nvram.lock() = vec![1, 2, 3];
-        let mut token = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
-            IoResult::Defer(token) => token,
-            _ => panic!("committing NVRAM must defer its I/O"),
-        };
+        let mut token = define_nv_index(&mut tpm, &gm);
         tpm.poll_device(&mut Context::from_waker(Waker::noop()));
         assert!(
             token
@@ -3040,12 +3121,13 @@ mod tests {
                 .is_pending()
         );
 
+        assert!(writes.lock().is_empty());
         nvram_permits.send(());
         complete(&mut tpm, &mut token).await;
-        assert_eq!(
-            tpm.idle_stores().nvram.restore().await.unwrap(),
-            Some(vec![1, 2, 3])
-        );
+        let writes = writes.lock();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, StoreKind::Nvram);
+        assert!(!writes[0].1.is_empty());
     }
 
     /// Writes issued while one is running wait for it and then run in arrival
@@ -3057,36 +3139,16 @@ mod tests {
             armed: _armed,
             ppi_permits,
             nvram_permits,
+            gm,
+            writes,
         } = new_gated_tpm().await;
         tpm.poll_device(&mut Context::from_waker(Waker::noop()));
-        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
-        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
-        let ppi_write = |tpm: &mut Tpm, operation: u32| {
-            assert!(matches!(
-                tpm.io_write(
-                    port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
-                    &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes()
-                ),
-                IoResult::Ok
-            ));
-            match tpm.io_write(
-                port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
-                &operation.to_le_bytes(),
-            ) {
-                IoResult::Defer(token) => token,
-                _ => panic!("a PPI write must defer its I/O"),
-            }
-        };
         let pending =
             |token: &mut DeferredToken| token.poll_write(&mut Context::from_waker(Waker::noop()));
 
-        let mut first = ppi_write(&mut tpm, 7);
-        *tpm.pending_nvram.lock() = vec![7, 8, 9];
-        let mut second = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
-            IoResult::Defer(token) => token,
-            _ => panic!("committing NVRAM must defer its I/O"),
-        };
-        let mut third = ppi_write(&mut tpm, 9);
+        let mut first = issue_ppi_write(&mut tpm, 7);
+        let mut second = define_nv_index(&mut tpm, &gm);
+        let mut third = issue_ppi_write(&mut tpm, 9);
 
         // The NVRAM store is free to go, but its write must wait behind the
         // running PPI write.
@@ -3095,6 +3157,7 @@ mod tests {
         assert!(pending(&mut first).is_pending());
         assert!(pending(&mut second).is_pending());
         assert!(pending(&mut third).is_pending());
+        assert!(writes.lock().is_empty());
 
         // Finishing the PPI write runs the NVRAM write next, which completes
         // with the permit it already has, and only then the second PPI write.
@@ -3102,48 +3165,78 @@ mod tests {
         complete(&mut tpm, &mut first).await;
         tpm.poll_device(&mut Context::from_waker(Waker::noop()));
         assert!(
-            pending(&mut second).is_ready(),
+            matches!(pending(&mut second), Poll::Ready(Ok(()))),
             "the NVRAM write runs second"
         );
         assert!(pending(&mut third).is_pending());
+        assert!(matches!(
+            writes.lock().as_slice(),
+            [(StoreKind::Ppi, _), (StoreKind::Nvram, _)]
+        ));
 
         ppi_permits.send(());
         complete(&mut tpm, &mut third).await;
-        let stores = tpm.idle_stores();
-        assert_eq!(stores.nvram.restore().await.unwrap(), Some(vec![7, 8, 9]));
-        let stored = stores.ppi.restore().await.unwrap().unwrap();
+        let writes = writes.lock();
+        assert!(matches!(
+            writes.as_slice(),
+            [
+                (StoreKind::Ppi, _),
+                (StoreKind::Nvram, _),
+                (StoreKind::Ppi, _)
+            ]
+        ));
         assert_eq!(
-            persist_restore::deserialize_ppi_state(stored)
+            persist_restore::deserialize_ppi_state(writes[0].1.clone())
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(7)
+        );
+        assert!(!writes[1].1.is_empty());
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(writes[2].1.clone())
                 .unwrap()
                 .pending_ppi_operation,
             PpiOperation(9)
         );
     }
 
-    /// Stopping the device finishes a running store write.
+    /// Stop waits for both the running write and writes queued behind it.
     #[async_test]
     async fn stop_finishes_a_running_store_write() {
         let GatedTpm {
             mut tpm,
             armed: _armed,
-            ppi_permits: _ppi_permits,
+            ppi_permits,
             nvram_permits,
+            gm,
+            writes,
         } = new_gated_tpm().await;
         tpm.poll_device(&mut Context::from_waker(Waker::noop()));
-        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
+        let mut first = define_nv_index(&mut tpm, &gm);
+        let mut second = issue_ppi_write(&mut tpm, 9);
+        let waker = Arc::new(CountingWaker::default());
+        let task_waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
+        let mut stop = Box::pin(tpm.stop());
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(first.poll_write(&mut cx).is_pending());
+        assert!(second.poll_write(&mut cx).is_pending());
+        assert!(writes.lock().is_empty());
 
-        *tpm.pending_nvram.lock() = vec![4, 5, 6];
-        let token = match tpm.mmio_write(cancel, &0u32.to_le_bytes()) {
-            IoResult::Defer(token) => token,
-            _ => panic!("committing NVRAM must defer its I/O"),
-        };
+        let before = waker.0.load(Ordering::SeqCst);
         nvram_permits.send(());
-        tpm.stop().await;
+        assert!(waker.0.load(Ordering::SeqCst) > before);
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(matches!(first.poll_write(&mut cx), Poll::Ready(Ok(()))));
+        assert!(second.poll_write(&mut cx).is_pending());
+        assert!(matches!(writes.lock().as_slice(), [(StoreKind::Nvram, _)]));
 
-        token.write_future().await.unwrap();
-        assert_eq!(
-            tpm.idle_stores().nvram.restore().await.unwrap(),
-            Some(vec![4, 5, 6])
-        );
+        ppi_permits.send(());
+        stop.await;
+        second.write_future().await.unwrap();
+        assert!(matches!(
+            writes.lock().as_slice(),
+            [(StoreKind::Nvram, _), (StoreKind::Ppi, _)]
+        ));
     }
 }
