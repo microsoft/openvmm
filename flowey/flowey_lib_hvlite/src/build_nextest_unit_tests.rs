@@ -47,6 +47,12 @@ pub enum BuildNextestUnitTestMode {
     /// Build and archive the tests into nextest archive files, which can then
     /// be run via [`crate::test_nextest_unit_tests_archive`].
     Archive(WriteVar<Vec<NextestUnitTestArchive>>),
+    /// Collect attributed coverage from selected local unit tests.
+    Coverage {
+        packages: Vec<String>,
+        options: crate::collect_unit_test_coverage::Options,
+        done: WriteVar<SideEffect>,
+    },
 }
 
 flowey_request! {
@@ -72,6 +78,7 @@ impl FlowNode for Node {
         ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
         ctx.import::<crate::run_cargo_nextest_run::Node>();
         ctx.import::<crate::init_cross_build::Node>();
+        ctx.import::<crate::collect_unit_test_coverage::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -151,6 +158,28 @@ impl FlowNode for Node {
         {
             let mut pre_run_deps = ambient_deps.clone();
 
+            let packages = if let BuildNextestUnitTestMode::Coverage { packages, .. } = &build_mode
+            {
+                let packages = packages.clone();
+                ctx.emit_rust_stepv("select unit test coverage packages", |ctx| {
+                    let test_packages = test_packages.clone().claim(ctx);
+                    move |rt| {
+                        let TestPackages::Workspace { exclude } = rt.read(test_packages) else {
+                            unreachable!()
+                        };
+                        for package in &packages {
+                            anyhow::ensure!(
+                                !exclude.contains(package),
+                                "{package} is excluded from the unit test suite"
+                            );
+                        }
+                        Ok(TestPackages::Crates { crates: packages })
+                    }
+                })
+            } else {
+                test_packages.clone()
+            };
+
             let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
 
             // See comment in `crate::cargo_build` for why this is necessary.
@@ -186,7 +215,7 @@ impl FlowNode for Node {
             });
 
             let base_build_params = NextestBuildParams {
-                packages: test_packages.clone(),
+                packages,
                 features,
                 no_default_features: false,
                 target: target.clone(),
@@ -226,6 +255,13 @@ impl FlowNode for Node {
                 crypto_feature_sets.push(("all", CargoFeatureSet::All));
             }
             for (name, features) in crypto_feature_sets {
+                if matches!(
+                    &build_mode,
+                    BuildNextestUnitTestMode::Coverage { packages, .. }
+                        if !packages.iter().any(|p| p == "crypto")
+                ) {
+                    continue;
+                }
                 runs.push((
                     format!("crypto-{}", name),
                     NextestBuildParams {
@@ -239,6 +275,15 @@ impl FlowNode for Node {
             }
 
             match build_mode {
+                BuildNextestUnitTestMode::Coverage { options, done, .. } => {
+                    ctx.req(crate::collect_unit_test_coverage::Request {
+                        runs,
+                        options,
+                        working_dir: openvmm_repo_path.clone(),
+                        pre_run_deps,
+                        done,
+                    });
+                }
                 BuildNextestUnitTestMode::ImmediatelyRun {
                     nextest_profile,
                     junit_test_label,
