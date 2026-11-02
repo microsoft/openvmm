@@ -11,6 +11,7 @@ use crate::build_vnet_hdr;
 use crate::fixup_gso_pseudo_header;
 use crate::fixup_ipv4_header_checksum;
 use crate::fixup_ipv6_payload_length;
+use crate::ip_header_offset;
 use net_backend::BufferAccess;
 use net_backend::TxError;
 use net_backend::TxId;
@@ -52,20 +53,32 @@ impl TapQueue {
                 // no header checksum (so the IPv4 fixup above never runs for it);
                 // fix the length here, or the host's IPv6 input validation
                 // truncates the frame to its header before segmentation.
-                if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
-                    fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
+                //
+                // `meta.l2_len` does not count a tag the guest laid into the frame, so the IP
+                // header is found from the frame.
+                let ip_offset = ip_header_offset(&packet);
+                if let Some(ip_offset) = ip_offset
+                    && meta.flags.offload_ip_header_checksum()
+                    && meta.flags.is_ipv4()
+                {
+                    fixup_ipv4_header_checksum(&mut packet, ip_offset);
                 }
-                if (meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation())
+                if let Some(ip_offset) = ip_offset
+                    && (meta.flags.offload_tcp_segmentation()
+                        || meta.flags.offload_udp_segmentation())
                     && meta.flags.is_ipv6()
                 {
-                    fixup_ipv6_payload_length(&mut packet, meta.l2_len as usize);
+                    fixup_ipv6_payload_length(&mut packet, ip_offset);
                 }
 
                 // Convert the LSO length-less pseudo-header seed to the convention the
                 // kernel's GSO path expects (pseudo-header with the full L4 length) so
                 // segmentation produces correct per-segment checksums.
-                if meta.flags.offload_tcp_segmentation() || meta.flags.offload_udp_segmentation() {
-                    fixup_gso_pseudo_header(&mut packet, meta.l2_len as usize);
+                if let Some(ip_offset) = ip_offset
+                    && (meta.flags.offload_tcp_segmentation()
+                        || meta.flags.offload_udp_segmentation())
+                {
+                    fixup_gso_pseudo_header(&mut packet, ip_offset);
                 }
 
                 let bufs = [
