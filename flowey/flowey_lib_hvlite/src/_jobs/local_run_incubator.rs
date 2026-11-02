@@ -13,6 +13,7 @@ flowey_request! {
     pub struct Params {
         pub profile: CommonProfile,
         pub source_profile: String,
+        pub working_dir: PathBuf,
         pub kernel: Option<PathBuf>,
         pub initrd: Option<PathBuf>,
         pub firmware: Option<PathBuf>,
@@ -47,6 +48,7 @@ impl SimpleFlowNode for Node {
         let Params {
             profile,
             source_profile,
+            working_dir,
             kernel,
             initrd,
             firmware,
@@ -194,6 +196,7 @@ impl SimpleFlowNode for Node {
                         .join(" ");
                     log::info!("Run directly: {command}");
                 } else {
+                    rt.sh.change_dir(&working_dir);
                     flowey::shell_cmd!(rt, "{runner}")
                         .args(args)
                         .args(incubator_args)

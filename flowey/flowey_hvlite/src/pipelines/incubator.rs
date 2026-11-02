@@ -71,6 +71,7 @@ pub struct IncubatorCli {
 
 impl IntoPipeline for IncubatorCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+        let working_dir = std::env::current_dir().context("getting Incubator working directory")?;
         let source_profile = read_source_profile(&self.profile)?;
         anyhow::ensure!(
             matches!(backend_hint, PipelineBackendHint::Local)
@@ -132,6 +133,7 @@ impl IntoPipeline for IncubatorCli {
                 |ctx| flowey_lib_hvlite::_jobs::local_run_incubator::Params {
                     profile: CommonProfile::from_release(self.release),
                     source_profile,
+                    working_dir,
                     kernel,
                     initrd,
                     firmware,
