@@ -103,6 +103,40 @@ logview/
 └── README.md             # This file
 ```
 
+## Run Manifests
+
+The results uploader publishes versioned JSON in the body of
+`results/attempts/<runId>_<attempt>`, retaining the metadata used by the runs
+index. It uploads this manifest only after the run's artifacts have uploaded
+successfully. For example:
+
+```json
+{
+  "version": 1,
+  "runNumber": "123_1",
+  "creationTime": "2026-10-30T16:00:00Z",
+  "tests": [{ "name": "x64/job/test", "status": "passed" }]
+}
+```
+
+Test names are artifact-directory paths relative to the run, including the
+architecture. The viewer derives log paths from them. A `petri.jsonl` file
+identifies a test, and a sibling `petri.passed` file identifies a pass; other
+tests are failed. The timestamp is the source workflow's creation time.
+
+The viewer tries this manifest before listing artifacts. Missing or empty
+legacy markers fall back to the paginated listing. Malformed manifests,
+unsupported versions, and other HTTP errors are reported rather than silently
+falling back. Existing runs need backfilled manifests to use the fast path.
+Foreground and background requests share the same run-details cache.
+
+Run the viewer's scheduler and manifest-reader tests with `npm test`. From the
+repository root, test the uploader's manifest generator with:
+
+```bash
+python3 -m unittest discover -s repo_support -p 'test_generate_petri_results_manifest.py'
+```
+
 ## Troubleshooting
 
 ### Common Issues
