@@ -1257,6 +1257,31 @@ impl WhpProcessor<'_> {
         } else {
             MsrAccess::Read
         };
+        // RDMSR and WRMSR are two bytes long. A faulting access does not
+        // retire, so RIP stays.
+        let rip = exit.vp_context.Rip.wrapping_add(2);
+        // WHP keeps `IA32_XSS` in the VP, and takes the guest's writes of it,
+        // but sends a read of it here on a time ABI partition, whose XSAVE
+        // features enable no supervisor state. Every profile enumerates
+        // XSAVES, so a read must return what the guest wrote, as it does on
+        // KVM: Linux writes the MSR at boot, and its KVM reads it back when it
+        // initializes, under nested virtualization.
+        if info.MsrNumber == x86defs::X86X_MSR_XSS && access == MsrAccess::Read {
+            let value = self
+                .current_whp()
+                .get_register(whp::Register64::Xss)
+                .for_op("read IA32_XSS for a time ABI MSR read")?;
+            whp::set_registers!(
+                self.current_whp(),
+                [
+                    (whp::Register64::Rax, value & 0xffff_ffff),
+                    (whp::Register64::Rdx, value >> 32),
+                    (whp::Register64::Rip, rip),
+                ]
+            )
+            .for_op("complete a time ABI IA32_XSS read")?;
+            return Ok(true);
+        }
         let Some(outcome) = serve_msr(
             &time_abi.msrs,
             time_abi.cpu_profile.cpu_vendor(),
@@ -1273,9 +1298,6 @@ impl WhpProcessor<'_> {
             ?outcome,
             "time ABI MSR access"
         );
-        // RDMSR and WRMSR are two bytes long. A faulting access does not
-        // retire, so RIP stays.
-        let rip = exit.vp_context.Rip.wrapping_add(2);
         match outcome {
             MsrOutcome::Read(value) => whp::set_registers!(
                 self.current_whp(),

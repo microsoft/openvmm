@@ -41,6 +41,7 @@ pub enum Register64 {
     Dr6 = abi::WHvX64RegisterDr6.0,
     Dr7 = abi::WHvX64RegisterDr7.0,
     XCr0 = abi::WHvX64RegisterXCr0.0,
+    Xss = abi::WHvX64RegisterXss.0,
 
     Tsc = abi::WHvX64RegisterTsc.0,
     TscAdjust = abi::WHvX64RegisterTscAdjust.0,
