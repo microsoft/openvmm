@@ -1372,6 +1372,79 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn plain_readdir_rejects_renamed_and_replaced_directory() {
+        for aggregate in [false, true] {
+            for continuation in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                for name in ["a", "b", "c"] {
+                    std::fs::write(root.path().join("allowed").join(name), b"data").unwrap();
+                }
+                let mut options = super::LxVolumeOptions::new();
+                options
+                    .sandbox(true)
+                    .sandbox_disallowed_extensions(vec!["exe"]);
+                let fs = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), Some(&options)).unwrap();
+                    fs
+                } else {
+                    VirtioFs::new(root.path(), Some(&options)).unwrap()
+                };
+                let root_id = if aggregate {
+                    fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let root_inode = fs.get_inode(root_id).unwrap();
+                let entry = fs.lookup_helper(&root_inode, "allowed".as_ref()).unwrap();
+                let inode = fs.get_inode(entry.nodeid).unwrap();
+                let file = Arc::clone(&inode)
+                    .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                    .unwrap();
+                let mut offset = 0;
+                let mut expected_names =
+                    BTreeMap::from([".", "..", "a", "b", "c"].map(|name| (name.to_owned(), ())));
+                if continuation {
+                    let data = file.read_dir(&fs, 0, 96, false).unwrap();
+                    let mut remaining = data.as_slice();
+                    while !remaining.is_empty() {
+                        let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                        let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                        assert!(expected_names.remove(name).is_some());
+                        offset = entry.off;
+                        remaining = &remaining[fuse_dirent_align(
+                            size_of::<fuse_dirent>() + entry.namelen as usize,
+                        )..];
+                    }
+                    assert!(offset > 2);
+                }
+
+                let host = lxutil::LxVolume::new(root.path()).unwrap();
+                host.rename("allowed", "blocked.EXE", 0).unwrap();
+                std::fs::create_dir(root.path().join("allowed")).unwrap();
+                assert_ne!(host.lstat("allowed").unwrap().inode_nr, inode.inode_nr());
+                // Both FUSE getters report the cached guest inode, hiding the mismatch.
+                assert_eq!(inode.get_attr().unwrap().ino, file.get_attr().unwrap().ino);
+                assert_eq!(
+                    file.read_dir(&fs, offset, 4096, false).unwrap_err(),
+                    lx::Error::EACCES,
+                    "aggregate={aggregate}, continuation={continuation}"
+                );
+
+                std::fs::remove_dir(root.path().join("allowed")).unwrap();
+                host.rename("blocked.EXE", "allowed", 0).unwrap();
+                let entries = read_directory(&fs, &file, offset, 256, false);
+                assert_eq!(
+                    entries.keys().collect::<Vec<_>>(),
+                    expected_names.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn plain_readdir_revalidates_sandbox_ancestors() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("parent").join("child")).unwrap();

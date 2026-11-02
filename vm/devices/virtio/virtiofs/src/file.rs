@@ -76,17 +76,17 @@ impl VirtioFsFile {
         size: u32,
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
+        let mut file = self.file.write();
         if !plus && self.inode.volume.is_sandbox() {
             // Revalidate the directory and its ancestors once per request.
             // Child filtering uses the host enumeration's metadata snapshot.
-            self.inode.get_attr()?;
+            self.inode.check_directory_handle(&file)?;
         }
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
         // Report the directory's guest-visible inode number so `.`/`..` agree
         // with the number reported by lookup/getattr.
         let self_inode_nr = self.inode.guest_inode_nr();
-        let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
             // If readdirplus is being used, do a lookup on all items except the . and .. entries.

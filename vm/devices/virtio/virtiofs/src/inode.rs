@@ -235,6 +235,25 @@ impl VirtioFsInode {
         Ok(self.attr_from_stat(&stat))
     }
 
+    /// Validates directory policy against the object being enumerated.
+    pub(crate) fn check_directory_handle(&self, file: &lxutil::LxFile) -> lx::Result<()> {
+        let path = self.get_path();
+        let stat = self.volume.lstat(&*path)?;
+        // The share root is captured by the volume, not resolved by a mutable pathname.
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        // Guest inode numbers are cached and cannot establish host object identity.
+        // Fail closed when the volume cannot supply a reliable identity.
+        if !self.volume.supports_stable_file_id()
+            || stat.inode_nr == 0
+            || stat.inode_nr != file.fstat()?.inode_id
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
+    }
+
     /// Retrieves the extended attributes of this inode.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
         let statx = self.volume.statx(&*self.get_path())?;
@@ -466,6 +485,31 @@ mod tests {
     use super::*;
     use crate::InodeMap;
     use test_with_tracing::test;
+
+    #[test]
+    fn directory_handle_checks_fail_closed_without_stable_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("allowed")).unwrap();
+        let mut options = lxutil::LxVolumeOptions::new();
+        options.sandbox(true);
+        let mut volume = VirtioFsVolume::new(options.new_volume(tmp.path()).unwrap(), 0, false);
+        volume.stable_file_ids = false;
+        let volume = Arc::new(volume);
+        let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
+        let file = volume
+            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        root.check_directory_handle(&file).unwrap();
+
+        let (child, _) = root.lookup_child("allowed".as_ref()).unwrap();
+        let file = volume
+            .open("allowed", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        assert_eq!(
+            child.check_directory_handle(&file).unwrap_err(),
+            lx::Error::EACCES
+        );
+    }
 
     fn path_keyed_volume(root: &std::path::Path, id: u32) -> Arc<VirtioFsVolume> {
         let mut volume = VirtioFsVolume::new(LxVolume::new(root).unwrap(), id, false);
