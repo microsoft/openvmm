@@ -8,6 +8,7 @@ use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::queue::VirtioQueuePayload;
+use crate::queue::VirtioQueuePayloadVec;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::VirtioDeviceType;
@@ -105,14 +106,11 @@ fn read_from_payload_at_offset(
 #[must_use]
 pub struct VirtioQueueCallbackWork {
     completion: QueueCompletion,
-    pub payload: Vec<VirtioQueuePayload>,
+    pub payload: VirtioQueuePayloadVec,
 }
 
 impl VirtioQueueCallbackWork {
-    pub(crate) fn from_parts(
-        completion: QueueCompletion,
-        payload: Vec<VirtioQueuePayload>,
-    ) -> Self {
+    pub(crate) fn from_parts(completion: QueueCompletion, payload: VirtioQueuePayloadVec) -> Self {
         Self {
             completion,
             payload,
