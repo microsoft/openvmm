@@ -453,6 +453,98 @@ class GitQueryTests(unittest.TestCase):
         report["runs"][0].update(exit_code=0, expected_tests=0)
         self.assertEqual(coverage.test_outcome(report), "not_run")
 
+    def test_gaps_rank_production_only_and_distinguish_execution_evidence(self):
+        path = self.report()
+        report = json.loads(path.read_text())
+        report["test_outcome"] = "failed"
+        report["all_tests_passed"] = False
+        report["files"]["tracked.rs"] = {
+            "1": True, "2": False, "3": True, "4": False,
+            "5": False, "6": False, "7": False, "9": False,
+        }
+        report["source_map"]["files"]["tracked.rs"]["ranges"] = [
+            [1, 4, "production"], [5, 5, "test"], [6, 6, "auxiliary"],
+            [7, 7, "unknown"], [8, 20, "production"],
+        ]
+        for name in ("z.rs", "a.rs", "dependency.rs", "covered.rs"):
+            report["files"][name] = {"1": False, "2": False}
+            report["source_map"]["files"][name] = {
+                "package": "dependency" if name == "dependency.rs" else "fixture",
+                "ranges": [[1, 2, "production"]],
+            }
+        report["files"]["covered.rs"] = {"1": True}
+        report["tests"][0]["covered"]["covered.rs"] = [1]
+        report["tests"].append({
+            **report["tests"][0], "id": "failed", "name": "failed", "result": "failed",
+            "covered": {"tracked.rs": [3]},
+        })
+        coverage.write_json(path, report)
+        result = coverage.query(path, root=self.root, gaps=True)
+        gaps = result["gaps"]
+        self.assertEqual(result["collection_state"], "complete")
+        self.assertEqual(result["test_outcome"], "failed")
+        self.assertEqual([file["path"] for file in gaps["files"]], ["tracked.rs", "a.rs", "z.rs"])
+        self.assertEqual(gaps["lines_without_passing_evidence"], 8)
+        self.assertEqual(gaps["unexecuted_lines"], 7)
+        self.assertEqual(gaps["executed_without_passing_evidence_lines"], 1)
+        self.assertEqual(gaps["unclassified_measured_lines"], 1)
+        ranges = gaps["files"][0]["ranges"]
+        self.assertEqual([(r["start"], r["end"]) for r in ranges], [(2, 4), (9, 9)])
+        self.assertEqual(ranges[0]["unexecuted_lines"], 2)
+        self.assertEqual(ranges[0]["executed_without_passing_evidence_lines"], 1)
+        bounded = coverage.query(path, root=self.root, gaps=True, limit=1)["gaps"]
+        self.assertTrue(bounded["truncated"])
+        self.assertTrue(bounded["files"][0]["truncated"])
+        self.assertEqual(bounded["files_with_gaps"], 3)
+        self.assertEqual(bounded["lines_without_passing_evidence"], 8)
+        self.assertEqual(len(bounded["files"]), 1)
+        self.assertEqual(len(bounded["files"][0]["ranges"]), 1)
+        bounded = coverage.query(path, root=self.root, gaps=True, limit=2)["gaps"]
+        self.assertEqual(sum(len(file["ranges"]) for file in bounded["files"]), 2)
+        self.assertTrue(bounded["files"][1]["truncated"])
+
+    def test_empty_gaps_require_passing_evidence_and_known_source_metadata(self):
+        path = self.report()
+        report = json.loads(path.read_text())
+        report["files"]["tracked.rs"] = {"1": True}
+        coverage.write_json(path, report)
+        gaps = coverage.query(path, root=self.root, gaps=True)["gaps"]
+        self.assertEqual(gaps["files"], [])
+        self.assertEqual(gaps["files_with_gaps"], 0)
+        self.assertEqual(gaps["lines_without_passing_evidence"], 0)
+        self.assertFalse(gaps["truncated"])
+        for key in ("source_map", "scope"):
+            modified = {**report, key: {}}
+            coverage.write_json(path, modified)
+            with self.assertRaisesRegex(ValueError, "recollect"):
+                coverage.query(path, root=self.root, gaps=True)
+        del report["source_map"]
+        coverage.write_json(path, report)
+        with self.assertRaisesRegex(ValueError, "recollect"):
+            coverage.query(path, root=self.root, gaps=True)
+
+    def test_gap_cli_preserves_freshness_and_rejects_conflicting_modes(self):
+        path = self.report(state="incomplete")
+        for options in ({"changed": True}, {"file": "tracked.rs"}, {"base": self.base}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                coverage.query(path, root=self.root, gaps=True, **options)
+        args = ["query", "--report", str(path), "--gaps", "--limit", "1"]
+        with patch.object(coverage, "repository_root", return_value=self.root), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(coverage.main(args), 0)
+            result = json.loads(stdout.getvalue())
+        self.assertEqual(result["collection_state"], "incomplete")
+        self.assertEqual(result["issues"], ["missing profile"])
+        self.assertEqual(result["gaps"]["lines_without_passing_evidence"], 2)
+        (self.root / "tracked.rs").write_text("changed source\n")
+        with patch.object(coverage, "repository_root", return_value=self.root), \
+             patch("sys.stdout", new_callable=io.StringIO) as stdout:
+            self.assertEqual(coverage.main(args), 2)
+            self.assertEqual(json.loads(stdout.getvalue())["error"], "stale_coverage")
+        historical = coverage.query(path, root=self.root, gaps=True, allow_stale=True)
+        self.assertEqual(historical["freshness"]["state"], "stale")
+        self.assertEqual(historical["gaps"]["lines_without_passing_evidence"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

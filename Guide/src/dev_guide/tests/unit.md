@@ -144,6 +144,29 @@ this summary describes the patch and also reports unmapped changes and
 unmeasured files. Changed-hunk summaries associate ranges with covering tests.
 Package selection remains explicit; the comparison base never selects packages.
 
+To find existing code that could benefit from tests, collect without a comparison
+base and query production gaps:
+
+```bash
+cargo xflowey unit-test-coverage -p memory_range
+python3 repo_support/unit_test_coverage.py query --gaps --limit 20
+```
+
+`gaps.files` lists selected-package production ranges without passing-attempt
+evidence, ordered by largest missing-line count, then path. Counts distinguish
+unexecuted lines from lines executed without passing evidence (for example,
+by a failing test). Test source, dependencies, auxiliary code, and unclassified
+spans are excluded. Unmeasured or compiled-out lines are not invented as gaps.
+Check the collection status and unclassified-line count before drawing
+conclusions; this is not a workspace-wide inventory or an importance ranking.
+
+`--limit` bounds both files and the total number of returned ranges, with
+explicit truncation; totals still describe all discovered gaps. Use the existing
+`--file` query separately to inspect a range and its covering attempts.
+`--gaps` cannot be combined with `--changed`, `--file`, or line ranges, and
+requires source-classification and selected-package metadata. Freshness checks
+still apply; `--allow-stale` explicitly permits labeled historical inspection.
+
 Coverage includes repository source linked into the selected test binaries,
 including unit-test code and workspace dependencies. The aggregate percentage
 is not a production-only or workspace-wide metric. Separate `sources` views

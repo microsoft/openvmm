@@ -644,6 +644,61 @@ def line_ranges(numbers):
     return ranges
 
 
+def gap_counts(lines):
+    executed = sum(lines.values())
+    return {
+        "lines_without_passing_evidence": len(lines),
+        "unexecuted_lines": len(lines) - executed,
+        "executed_without_passing_evidence_lines": executed,
+    }
+
+
+def gaps_query(report, passed, limit):
+    candidates = []
+    totals = gap_counts({})
+    for name, hits in report["files"].items():
+        production = {
+            int(number): hit for number, hit in hits.items()
+            if source_category(report, name, int(number)) == "selected_production"
+        }
+        missing = {
+            number: hit for number, hit in production.items()
+            if number not in passed.get(name, set())
+        }
+        if missing:
+            candidates.append((name, production, missing))
+            for key, value in gap_counts(missing).items():
+                totals[key] += value
+    candidates.sort(key=lambda item: (-len(item[2]), item[0]))
+    files = []
+    remaining = limit
+    for name, production, missing in candidates[:limit]:
+        ranges = line_ranges(missing)
+        selected = ranges[:remaining]
+        remaining -= len(selected)
+        files.append({
+            "path": name,
+            "coverage": evidence_summary({name: production}, passed),
+            **gap_counts(missing),
+            "ranges": [
+                {"start": start, "end": end, **gap_counts({
+                    number: missing[number] for number in range(start, end + 1)
+                })}
+                for start, end in selected
+            ],
+            "truncated": len(selected) < len(ranges),
+        })
+    return {
+        "source_category": "selected_production",
+        "evidence": "passing_attempts",
+        "order": "lines_without_passing_evidence_descending_then_path",
+        "files_with_gaps": len(candidates),
+        **totals,
+        "files": files,
+        "truncated": len(files) < len(candidates) or any(file["truncated"] for file in files),
+    }
+
+
 def hunk_summary(report, name, start, end, hits, passed, limit):
     measured = {number: hit for number, hit in hits.items() if start <= number <= end}
     references = {
@@ -733,7 +788,7 @@ def changed_query(report, root, comparison, limit, passed):
 
 
 def query(report_path=None, file=None, start=None, end=None, limit=100, *,
-          changed=False, base=None, root=None, allow_stale=False):
+          changed=False, base=None, root=None, allow_stale=False, gaps=False):
     root = Path(root).resolve() if root is not None else repository_root()
     report_path = resolve_report(root, report_path)
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
@@ -749,9 +804,16 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
         raise ValueError("--base requires --changed")
     if changed and (file is not None or start is not None or allow_stale):
         raise ValueError("--changed cannot be combined with --file, line ranges, or --allow-stale")
+    if gaps and (changed or file is not None or start is not None or end is not None):
+        raise ValueError("--gaps cannot be combined with --changed, --file, or line ranges")
     freshness = check_freshness(report, root)
     if freshness["state"] != "current" and not allow_stale:
         raise StaleCoverageError(freshness)
+    if gaps and ("files" not in report.get("source_map", {}) or not selected_packages(report)):
+        raise ValueError(
+            "gap discovery requires source classification and selected-package metadata; "
+            "recollect with the current tool"
+        )
     result = {
         key: report[key] for key in
         ("schema_version", "source", "family", "origin", "target",
@@ -789,6 +851,11 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
         freshness = check_freshness(report, root)
         if freshness["state"] != "current":
             raise StaleCoverageError(freshness)
+    elif gaps:
+        result["gaps"] = gaps_query(report, passed, limit)
+        result["gaps"]["unclassified_measured_lines"] = (
+            result["sources"]["unclassified"]["execution"]["measured_lines"]
+        )
     elif file is None:
         names = sorted(report["files"])
         result["files"] = [
@@ -851,6 +918,8 @@ def main(argv=None):
     reader.add_argument("--end", type=int)
     reader.add_argument("--limit", type=int, default=100)
     reader.add_argument("--changed", action="store_true", help="report changed Rust lines and covering tests")
+    reader.add_argument("--gaps", action="store_true",
+                        help="find selected production ranges without passing-test evidence")
     reader.add_argument("--base", help="base revision (defaults to the recorded base or origin/HEAD)")
     reader.add_argument("--allow-stale", action="store_true", help="inspect historical data without claiming freshness")
     args = parser.parse_args(argv)
@@ -862,6 +931,7 @@ def main(argv=None):
         print(json.dumps(query(
             args.report, args.file, args.start, args.end, args.limit,
             changed=args.changed, base=args.base, allow_stale=args.allow_stale,
+            gaps=args.gaps,
         )))
         return 0
     except StaleCoverageError as error:
