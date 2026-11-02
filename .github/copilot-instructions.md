@@ -22,6 +22,12 @@ For cross-compilation from WSL2 to Windows, see
 For `.proto` changes (including gRPC/ttrpc), read and follow the
 [Protocol Buffers enum conventions](instructions/protobuf.instructions.md).
 
+## Commit Messages and PR Titles
+
+Use `<area>: <short description>` for commit subject lines (the first line of
+the message) and PR titles. Choose an area that identifies the affected
+component or subsystem, and keep the description concise.
+
 ## Git Commit Rules
 
 - **Never amend commits that have already been pushed without express
