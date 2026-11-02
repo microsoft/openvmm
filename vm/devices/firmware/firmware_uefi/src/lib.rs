@@ -496,7 +496,6 @@ impl ChangeDeviceState for UefiDevice {
 
     async fn reset(&mut self) {
         self.address = 0;
-        self.service.nvram.reset();
 
         self.finish_nvram_commands().await;
         self.idle_nvram().reset();
