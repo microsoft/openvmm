@@ -9,7 +9,9 @@ use fuse::protocol::fuse_entry_out;
 use fuse::protocol::fuse_setattr_in;
 use fuse::protocol::fuse_statx;
 use lxutil::LxFile;
+use lxutil::PathExt;
 use parking_lot::RwLock;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Implements file callbacks for virtio-fs.
@@ -82,6 +84,11 @@ impl VirtioFsFile {
             // Child filtering uses the host enumeration's metadata snapshot.
             self.inode.check_directory_handle(&file)?;
         }
+        let directory = if plus && self.inode.volume.is_sandbox() {
+            Some(self.inode.volume.query_directory(self.inode.clone_path())?)
+        } else {
+            None
+        };
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
         // Report the directory's guest-visible inode number so `.`/`..` agree
@@ -98,7 +105,18 @@ impl VirtioFsFile {
                         return Ok(false);
                     }
 
-                    match fs.lookup_helper(&self.inode, &entry.name) {
+                    let lookup = || {
+                        let Some(directory) = &directory else {
+                            return fs.lookup_helper(&self.inode, &entry.name);
+                        };
+                        let name = Path::from_lx(&entry.name)?;
+                        let (path, stat) = directory.lookup(name.as_ref())?;
+                        let inode =
+                            VirtioFsInode::with_attr(Arc::clone(&self.inode.volume), path, &stat);
+                        let attr = inode.attr_from_stat(&stat);
+                        fs.insert_lookup(inode, attr)
+                    };
+                    match lookup() {
                         Ok(e) => e,
                         Err(err) => {
                             // Ignore entries that are inaccessible to the

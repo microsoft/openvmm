@@ -170,54 +170,79 @@ impl LxVolume {
     }
 
     fn check_sandbox_enforcement(&self, path: &Path) -> lx::Result<()> {
+        self.query_sandbox_attributes(path).map(|_| ())
+    }
+
+    fn query_sandbox_attributes(&self, path: &Path) -> lx::Result<Option<util::LxStatInformation>> {
         if !self.state.options.sandbox {
-            return Ok(());
+            return Ok(None);
         }
         let mut cur_path = PathBuf::new();
+        let mut information = None;
         for next_path in path.components() {
             let next_path = match next_path {
                 Component::Normal(next) => next,
                 _ => return Err(lx::Error::EINVAL),
             };
 
-            self.state.check_sandbox_name(next_path)?;
-
             cur_path = cur_path.join(next_path);
-
-            let information = match self.state.get_attributes(
-                Some(&self.root),
-                cur_path.as_path(),
-                None,
-            ) {
-                Ok(info) => info.stat,
-                Err(err) => {
-                    // Non-existent paths are not filtered
-                    if err == lx::Error::ENOENT {
-                        return Ok(());
-                    }
-                    // Otherwise couldn't get attributes, so safest recourse is to fail
-                    tracing::warn!(path = %path.display(), ?err, "Unable to get attributes; denying access");
-                    return Err(lx::Error::EACCES);
-                }
+            information = match self.child_attributes(&cur_path, next_path) {
+                Ok(info) => Some(info),
+                // Non-existent paths are not filtered.
+                Err(lx::Error::ENOENT) => return Ok(None),
+                Err(err) => return Err(err),
             };
-            self.state
-                .check_sandbox_attributes(information.FileAttributes)?;
         }
 
-        Ok(())
+        Ok(information)
+    }
+
+    fn child_attributes(
+        &self,
+        path: &Path,
+        name: &ffi::OsStr,
+    ) -> lx::Result<util::LxStatInformation> {
+        self.state.check_sandbox_name(name)?;
+        let info = match self.state.get_attributes(Some(&self.root), path, None) {
+            Ok(info) => info,
+            Err(err) if self.state.options.sandbox && err != lx::Error::ENOENT => {
+                tracing::warn!(path = %path.display(), ?err, "Unable to get attributes; denying access");
+                return Err(lx::Error::EACCES);
+            }
+            Err(err) => return Err(err),
+        };
+        self.state
+            .check_sandbox_attributes(info.stat.FileAttributes)?;
+        Ok(info)
     }
 
     pub fn lstat(&self, path: &Path) -> lx::Result<lx::StatEx> {
         assert!(path.is_relative());
 
         // Special-case returning attributes of the root itself to just use the existing handle.
-        let mut info = if path.as_os_str().is_empty() {
+        let info = if path.as_os_str().is_empty() {
             self.state.get_attributes_by_handle(&self.root)?
+        } else if self.state.options.sandbox {
+            match self.query_sandbox_attributes(path)? {
+                Some(info) => info,
+                None => self.state.get_attributes(Some(&self.root), path, None)?,
+            }
         } else {
-            self.check_sandbox_enforcement(path)?;
             self.state.get_attributes(Some(&self.root), path, None)?
         };
 
+        self.stat_from_information(info)
+    }
+
+    pub fn check_directory_for_query(&self, path: &Path) -> lx::Result<()> {
+        self.check_sandbox_enforcement(path)
+    }
+
+    pub fn lstat_child(&self, path: &Path, name: &ffi::OsStr) -> lx::Result<lx::StatEx> {
+        self.stat_from_information(self.child_attributes(path, name)?)
+    }
+
+    fn stat_from_information(&self, mut info: util::LxStatInformation) -> lx::Result<lx::StatEx> {
         util::file_info_to_stat(
             &self.state.fs_context,
             &mut info,
@@ -1662,6 +1687,43 @@ mod tests {
         let refreshed = directory_entries(&mut dir, DOT_ENTRY_COUNT);
         assert_eq!(refreshed.len(), 2);
         assert!(!refreshed.iter().any(|entry| entry.name == second.name));
+    }
+
+    #[test]
+    fn directory_queries_recheck_children_and_validate_ancestors_once() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("dir")).unwrap();
+        std::fs::write(root.path().join("dir").join("file"), b"data").unwrap();
+        std::fs::write(root.path().join("dir").join("other"), b"data").unwrap();
+        let mut options = LxVolumeOptions::new();
+        options
+            .sandbox(true)
+            .sandbox_disallowed_extensions(vec!["exe"]);
+        let volume = options.new_volume(root.path()).unwrap();
+        let query = volume.query_directory("dir").unwrap();
+        assert_eq!(query.lookup("file").unwrap().1.file_size, 4);
+        for name in ["blocked.ExE", "NUL"] {
+            assert_eq!(query.lookup(name).unwrap_err(), lx::Error::EACCES);
+        }
+        set_host_attributes(
+            &root.path().join("dir").join("file"),
+            W32Fs::FILE_ATTRIBUTE_HIDDEN.0,
+        );
+        assert_eq!(query.lookup("file").unwrap_err(), lx::Error::EACCES);
+        std::fs::remove_file(root.path().join("dir").join("other")).unwrap();
+        assert_eq!(query.lookup("other").unwrap_err(), lx::Error::ENOENT);
+
+        std::fs::write(root.path().join("dir").join("visible"), b"").unwrap();
+        set_host_attributes(&root.path().join("dir"), W32Fs::FILE_ATTRIBUTE_HIDDEN.0);
+        assert!(query.lookup("visible").is_ok());
+        assert!(matches!(
+            volume.query_directory("dir"),
+            Err(lx::Error::EACCES)
+        ));
+        assert_eq!(
+            volume.lstat(Path::new("dir").join("visible")).unwrap_err(),
+            lx::Error::EACCES
+        );
     }
 
     #[test]

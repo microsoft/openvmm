@@ -629,7 +629,11 @@ impl VirtioFs {
 
     fn lookup_helper(&self, inode: &VirtioFsInode, name: &lx::LxStr) -> lx::Result<fuse_entry_out> {
         let (new_inode, attr) = inode.lookup_child(name)?;
-        let (_, new_inode_nr) = self.insert_inode(new_inode)?;
+        self.insert_lookup(new_inode, attr)
+    }
+
+    fn insert_lookup(&self, inode: VirtioFsInode, attr: fuse_attr) -> lx::Result<fuse_entry_out> {
+        let (_, new_inode_nr) = self.insert_inode(inode)?;
         Ok(fuse_entry_out::new(
             new_inode_nr,
             ENTRY_TIMEOUT,
@@ -1217,6 +1221,84 @@ mod tests {
     }
 
     #[test]
+    fn readdirplus_returns_fresh_complete_attributes() {
+        for aggregate in [false, true] {
+            for sandbox in [false, true] {
+                if sandbox && !cfg!(windows) {
+                    continue;
+                }
+                let root = tempfile::tempdir().unwrap();
+                let directory = root.path().join("parent").join("child");
+                std::fs::create_dir_all(&directory).unwrap();
+                std::fs::write(directory.join("file"), b"first").unwrap();
+                std::fs::hard_link(directory.join("file"), directory.join("alias")).unwrap();
+                std::fs::create_dir(directory.join("directory")).unwrap();
+                let mut options = super::LxVolumeOptions::new();
+                options.sandbox(sandbox);
+                let fs = if aggregate {
+                    let fs = VirtioFs::new_aggregate();
+                    fs.add_child("share", root.path(), Some(&options)).unwrap();
+                    fs
+                } else {
+                    VirtioFs::new(root.path(), Some(&options)).unwrap()
+                };
+                let root_id = if aggregate {
+                    fs.lookup_synthetic_root("share".as_ref()).unwrap().nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let mut inode = fs.get_inode(root_id).unwrap();
+                for name in ["parent", "child"] {
+                    let (child, _) = inode.lookup_child(name.as_ref()).unwrap();
+                    inode = fs.insert_inode(child).unwrap().0;
+                }
+                let file = Arc::clone(&inode)
+                    .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                    .unwrap();
+                for contents in [b"first".as_slice(), b"changed contents"] {
+                    std::fs::write(directory.join("file"), contents).unwrap();
+                    let mut expected = BTreeMap::new();
+                    for name in ["file", "alias", "directory"] {
+                        let attr = inode.lookup_child(name.as_ref()).unwrap().1;
+                        if name != "directory" {
+                            assert_eq!(attr.size, contents.len() as u64);
+                            assert_eq!(attr.nlink, 2);
+                        }
+                        expected.insert(name.to_owned(), attr.as_bytes().to_vec());
+                    }
+                    let mut offset = 0;
+                    loop {
+                        let data = file.read_dir(&fs, offset, 256, true).unwrap();
+                        if data.is_empty() {
+                            break;
+                        }
+                        let mut remaining = data.as_slice();
+                        while !remaining.is_empty() {
+                            let (entry, rest) =
+                                fuse_direntplus::read_from_prefix(remaining).unwrap();
+                            let name = std::str::from_utf8(&rest[..entry.dirent.namelen as usize])
+                                .unwrap();
+                            if name != "." && name != ".." {
+                                assert_eq!(
+                                    entry.entry_out.attr.as_bytes(),
+                                    expected.remove(name).unwrap().as_slice(),
+                                    "{name}, aggregate={aggregate}, sandbox={sandbox}"
+                                );
+                                fs.forget(entry.entry_out.nodeid, 1);
+                            }
+                            offset = entry.dirent.off;
+                            remaining = &remaining[fuse_dirent_align(
+                                size_of::<fuse_direntplus>() + entry.dirent.namelen as usize,
+                            )..];
+                        }
+                    }
+                    assert!(expected.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn readdirplus_retains_lookup_references() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("file"), b"data").unwrap();
@@ -1445,7 +1527,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn plain_readdir_revalidates_sandbox_ancestors() {
+    fn readdir_revalidates_sandbox_ancestors() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("parent").join("child")).unwrap();
         std::fs::write(root.path().join("parent").join("child").join("file"), b"").unwrap();
@@ -1468,10 +1550,12 @@ mod tests {
 
         // An open handle must not bypass policy after its inode path is refreshed.
         inode.lookup(std::path::PathBuf::from("blocked.EXE").join("child"));
-        assert_eq!(
-            file.read_dir(&fs, 0, 4096, false).unwrap_err(),
-            lx::Error::EACCES
-        );
+        for plus in [false, true] {
+            assert_eq!(
+                file.read_dir(&fs, 0, 4096, plus).unwrap_err(),
+                lx::Error::EACCES
+            );
+        }
     }
 
     #[test]

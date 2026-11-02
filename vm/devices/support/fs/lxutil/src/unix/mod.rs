@@ -57,6 +57,14 @@ impl LxVolume {
         util::stat_at(parent.directory(), parent.name)
     }
 
+    pub fn check_directory_for_query(&self, _path: &Path) -> lx::Result<()> {
+        Ok(())
+    }
+
+    pub fn lstat_child(&self, path: &Path, _name: &ffi::OsStr) -> lx::Result<StatEx> {
+        self.lstat(path)
+    }
+
     pub fn set_attr(&self, path: &Path, attr: SetAttributes) -> lx::Result<()> {
         let parent = util::Parent::new(&self.root, path)?;
         util::set_attr(

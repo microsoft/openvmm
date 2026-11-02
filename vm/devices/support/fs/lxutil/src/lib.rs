@@ -81,6 +81,32 @@ pub struct LxVolume {
     inner: sys::LxVolume,
 }
 
+/// Fresh child attribute queries using a captured volume-relative directory path.
+///
+/// On Windows, sandbox restrictions on the directory and its ancestors are
+/// checked once when this query is created. Each child is still queried and
+/// checked individually. Create a new query to revalidate ancestor restrictions.
+pub struct LxDirectoryQuery<'a> {
+    volume: &'a LxVolume,
+    path: std::path::PathBuf,
+}
+
+impl LxDirectoryQuery<'_> {
+    /// Queries one child, returning its volume-relative path and fresh attributes.
+    ///
+    /// `name` must be a single native filename, not a path or a dot entry.
+    pub fn lookup(&self, name: impl AsRef<Path>) -> lx::Result<(std::path::PathBuf, lx::Stat)> {
+        let name = name.as_ref();
+        if name.file_name() != Some(name.as_os_str()) {
+            return Err(lx::Error::EINVAL);
+        }
+        path::validate_relative_path(name)?;
+        let path = self.path.join(name);
+        let stat = self.volume.inner.lstat_child(&path, name.as_os_str())?;
+        Ok((path, stat.into()))
+    }
+}
+
 // This top-level implementation exists to ensure the Windows and Unix implementation have the same
 // interface.
 impl LxVolume {
@@ -125,6 +151,20 @@ impl LxVolume {
     /// Retrieves the statx details of a file. Symlinks are not followed.
     pub fn statx(&self, path: impl AsRef<Path>) -> lx::Result<lx::StatEx> {
         self.inner.lstat(path.as_ref())
+    }
+
+    /// Starts fresh child attribute queries beneath a captured directory path.
+    ///
+    /// Sandbox ancestor restrictions are validated once per query on Windows.
+    /// Child names, attributes, and path containment are checked on each lookup.
+    pub fn query_directory(&self, path: impl AsRef<Path>) -> lx::Result<LxDirectoryQuery<'_>> {
+        let path = path.as_ref();
+        path::validate_relative_path(path)?;
+        self.inner.check_directory_for_query(path)?;
+        Ok(LxDirectoryQuery {
+            volume: self,
+            path: path.to_owned(),
+        })
     }
 
     /// Sets the attributes of a file. Symlinks are not followed.
@@ -1281,6 +1321,53 @@ mod tests {
         assert!(stat.link_count >= 1);
         assert_eq!(stat.mode & lx::S_IFMT, lx::S_IFDIR);
         assert_ne!(stat.mode & 0o777, 0);
+    }
+
+    #[test]
+    fn directory_queries_validate_names_and_return_fresh_attributes() {
+        let env = TestEnv::new();
+        fs::create_dir(env.root_dir.path().join("dir")).unwrap();
+        fs::write(env.root_dir.path().join("dir").join("file"), b"first").unwrap();
+        fs::hard_link(
+            env.root_dir.path().join("dir").join("file"),
+            env.root_dir.path().join("dir").join("alias"),
+        )
+        .unwrap();
+        let query = env.volume.query_directory("dir").unwrap();
+        for contents in [b"first".as_slice(), b"longer contents"] {
+            fs::write(env.root_dir.path().join("dir").join("file"), contents).unwrap();
+            for name in ["file", "alias"] {
+                let (path, stat) = query.lookup(name).unwrap();
+                assert_eq!(path, Path::new("dir").join(name));
+                assert_eq!(stat, env.volume.lstat(&path).unwrap());
+                assert_eq!(stat.file_size, contents.len() as u64);
+                assert_eq!(stat.link_count, 2);
+            }
+        }
+        for name in ["", ".", "..", "../file", "dir/file", "/file"] {
+            assert_eq!(query.lookup(name).unwrap_err(), lx::Error::EINVAL, "{name}");
+        }
+        for parent in ["..", "../outside", "/outside"] {
+            assert!(matches!(
+                env.volume.query_directory(parent),
+                Err(lx::Error::EINVAL)
+            ));
+        }
+        assert_eq!(query.lookup("missing").unwrap_err(), lx::Error::ENOENT);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_queries_do_not_follow_ancestor_links() {
+        let env = TestEnv::new();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("file"), b"outside").unwrap();
+        std::os::unix::fs::symlink(outside.path(), env.root_dir.path().join("link")).unwrap();
+        let query = env.volume.query_directory("link").unwrap();
+        assert!(matches!(
+            query.lookup("file"),
+            Err(lx::Error::ELOOP | lx::Error::ENOTDIR)
+        ));
     }
 
     #[test]
