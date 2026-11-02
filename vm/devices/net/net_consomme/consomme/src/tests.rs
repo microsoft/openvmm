@@ -5,6 +5,7 @@ mod fragments;
 
 use super::*;
 use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetFrame;
@@ -18,16 +19,29 @@ use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
 use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
+use socket2::Domain;
+use socket2::Socket;
+use socket2::Type;
+use std::net::TcpStream;
+use std::net::UdpSocket;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::task::Waker;
+use test_with_tracing::test as tracing_test;
 
 const ETHERNET_HEADER_LEN: usize = 14;
 
-struct TestClient {
-    driver: DefaultDriver,
+pub(super) struct TestClient {
+    pub(super) driver: DefaultDriver,
+    pub(super) received_packets: Vec<Vec<u8>>,
 }
 
 impl TestClient {
-    fn new(driver: DefaultDriver) -> Self {
-        Self { driver }
+    pub(super) fn new(driver: DefaultDriver) -> Self {
+        Self {
+            driver,
+            received_packets: Vec::new(),
+        }
     }
 }
 
@@ -36,11 +50,218 @@ impl Client for TestClient {
         &self.driver
     }
 
-    fn recv(&mut self, _data: &[u8], _checksum: &ChecksumState) {}
+    fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+        self.received_packets.push(data.to_vec());
+    }
 
     fn rx_mtu(&mut self) -> usize {
         1514
     }
+}
+
+pub(super) struct DriverThread {
+    thread: std::thread::JoinHandle<()>,
+    exited: mpsc::Receiver<()>,
+}
+
+impl DriverThread {
+    pub(super) fn new() -> (Self, DefaultDriver) {
+        let pool = DefaultPool::new();
+        let driver = pool.driver();
+        let (send, exited) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            pool.run();
+            let _ = send.send(());
+        });
+        (Self { thread, exited }, driver)
+    }
+
+    pub(super) fn join(self) {
+        self.exited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the old driver thread must exit without dropping Consomme");
+        self.thread.join().unwrap();
+    }
+}
+
+pub(super) struct WakeChannel {
+    waker: Waker,
+    recv: mpsc::Receiver<()>,
+}
+
+impl WakeChannel {
+    pub(super) fn new() -> Self {
+        struct Notify(mpsc::Sender<()>);
+
+        impl futures::task::ArcWake for Notify {
+            fn wake_by_ref(this: &Arc<Self>) {
+                let _ = this.0.send(());
+            }
+        }
+
+        let (send, recv) = mpsc::channel();
+        Self {
+            waker: futures::task::waker(Arc::new(Notify(send))),
+            recv,
+        }
+    }
+
+    pub(super) fn poll(&self, consomme: &mut Consomme, client: &mut TestClient) {
+        consomme
+            .access(client)
+            .poll(&mut Context::from_waker(&self.waker));
+    }
+
+    pub(super) fn wait_for_packet(
+        &self,
+        consomme: &mut Consomme,
+        client: &mut TestClient,
+        matches: impl Fn(&[u8]) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            self.recv
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("the replacement driver must wake the packet poller");
+            self.poll(consomme, client);
+            if client.received_packets.iter().any(|packet| matches(packet)) {
+                return;
+            }
+        }
+    }
+}
+
+fn port_forward_survives_driver_refresh(socket_type: Type, local_ip: IpAddr) {
+    let (old_thread, old_driver) = DriverThread::new();
+    let (new_thread, new_driver) = DriverThread::new();
+    let mut params = ConsommeParams::new().unwrap();
+    params.skip_ipv6_checks = true;
+    params.client_ip_ipv6 = Some("fe80::2".parse().unwrap());
+    params.client_ip_ipv6_routable = Some("2001:db8::2".parse().unwrap());
+    let mut consomme = Consomme::new(params);
+    let mut client = TestClient::new(old_driver);
+    let socket = Socket::new(
+        if local_ip.is_ipv4() {
+            Domain::IPV4
+        } else {
+            Domain::IPV6
+        },
+        socket_type,
+        None,
+    )
+    .unwrap();
+    socket.bind(&SocketAddr::new(local_ip, 0).into()).unwrap();
+    let host_addr = socket.local_addr().unwrap().as_socket().unwrap();
+    let guest_port = 7777;
+    let family = if local_ip.is_ipv4() {
+        IpVersion::Ipv4
+    } else {
+        IpVersion::Ipv6
+    };
+    if socket_type == Type::STREAM {
+        consomme
+            .access(&mut client)
+            .bind_tcp_port(socket, guest_port)
+            .unwrap();
+    } else {
+        consomme
+            .access(&mut client)
+            .bind_udp_port(socket, guest_port)
+            .unwrap();
+    }
+
+    let old_wake = WakeChannel::new();
+    old_wake.poll(&mut consomme, &mut client);
+    assert!(client.received_packets.is_empty());
+
+    let send = || {
+        if socket_type == Type::STREAM {
+            let stream = TcpStream::connect_timeout(&host_addr, Duration::from_secs(5)).unwrap();
+            let port = stream.local_addr().unwrap().port();
+            (Some(stream), port)
+        } else {
+            let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).unwrap();
+            socket.send_to(b"forwarded", host_addr).unwrap();
+            (None, socket.local_addr().unwrap().port())
+        }
+    };
+    let matches_packet = |packet: &[u8], source_port| {
+        let frame = EthernetFrame::new_checked(packet).unwrap();
+        let payload = if local_ip.is_ipv4() {
+            &frame.payload()[Ipv4Packet::new_checked(frame.payload())
+                .unwrap()
+                .header_len() as usize..]
+        } else {
+            &frame.payload()[smoltcp::wire::IPV6_HEADER_LEN..]
+        };
+        if socket_type == Type::STREAM {
+            let tcp = TcpPacket::new_checked(payload).unwrap();
+            tcp.syn() && tcp.src_port() == source_port && tcp.dst_port() == guest_port
+        } else {
+            let udp = UdpPacket::new_checked(payload).unwrap();
+            udp.src_port() == source_port
+                && udp.dst_port() == guest_port
+                && udp.payload() == b"forwarded"
+        }
+    };
+
+    // Leave traffic queued on the bound socket while its executor is replaced.
+    let (queued_connection, queued_port) = send();
+    client.driver = new_driver;
+    old_thread.join();
+    consomme.access(&mut client).refresh_driver();
+    consomme.access(&mut client).refresh_driver();
+    let wake = WakeChannel::new();
+    wake.poll(&mut consomme, &mut client);
+    if !client
+        .received_packets
+        .iter()
+        .any(|packet| matches_packet(packet, queued_port))
+    {
+        wake.wait_for_packet(&mut consomme, &mut client, |packet| {
+            matches_packet(packet, queued_port)
+        });
+    }
+
+    client.received_packets.clear();
+    wake.poll(&mut consomme, &mut client);
+    let (new_connection, new_port) = send();
+    wake.wait_for_packet(&mut consomme, &mut client, |packet| {
+        matches_packet(packet, new_port)
+    });
+    if socket_type == Type::STREAM {
+        consomme
+            .access(&mut client)
+            .unbind_tcp_port(family, guest_port)
+            .unwrap();
+    } else {
+        consomme
+            .access(&mut client)
+            .unbind_udp_port(family, guest_port)
+            .unwrap();
+    }
+    drop((queued_connection, new_connection, consomme, client));
+    new_thread.join();
+}
+
+#[tracing_test]
+fn tcp_ipv4_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::STREAM, IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn tcp_ipv6_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::STREAM, IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn udp_ipv4_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::DGRAM, IpAddr::V4(Ipv4Addr::LOCALHOST));
+}
+
+#[tracing_test]
+fn udp_ipv6_port_forward_survives_driver_refresh() {
+    port_forward_survives_driver_refresh(Type::DGRAM, IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
 }
 
 /// Build a minimal TCP SYN packet inside an Ethernet/IPv4 frame.

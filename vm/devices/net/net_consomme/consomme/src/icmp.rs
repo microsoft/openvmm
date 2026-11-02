@@ -71,7 +71,7 @@ impl Inspect for Icmp {
 #[derive(Inspect)]
 struct IcmpConnection {
     #[inspect(skip)]
-    socket: PolledSocket<Socket>,
+    socket: Option<PolledSocket<Socket>>,
     #[inspect(display)]
     guest_mac: EthernetAddress,
     stats: Stats,
@@ -95,11 +95,12 @@ impl IcmpConnection {
     ) {
         let mut eth = EthernetFrame::new_unchecked(&mut state.buffer);
         loop {
-            match self
-                .socket
-                .poll_io(cx, InterestSlot::Read, PollEvents::IN, |socket| {
-                    Self::recv_from(socket.get(), &mut eth.payload_mut()[..])
-                }) {
+            match self.socket.as_mut().unwrap().poll_io(
+                cx,
+                InterestSlot::Read,
+                PollEvents::IN,
+                |socket| Self::recv_from(socket.get(), &mut eth.payload_mut()[..]),
+            ) {
                 Poll::Ready(Ok((n, _))) => {
                     if n < IPV4_HEADER_LEN + ICMPV4_HEADER_LEN {
                         tracelimit::warn_ratelimited!(
@@ -149,7 +150,7 @@ impl IcmpConnection {
     }
 
     fn send_to(&mut self, dest: Ipv4Addr, buffer: &[u8], hop_limit: u8) -> std::io::Result<()> {
-        let socket = self.socket.get();
+        let socket = self.socket.as_ref().unwrap().get();
         let dest = SocketAddr::new(IpAddr::V4(dest), 0);
         socket.set_ttl_v4(hop_limit as u32)?;
         socket.send_to(buffer, &dest.into())?;
@@ -158,6 +159,26 @@ impl IcmpConnection {
 }
 
 impl<T: Client> Access<'_, T> {
+    pub(crate) fn refresh_icmp_driver(&mut self) {
+        self.inner.icmp.connections.retain(|guest_addr, conn| {
+            let socket = conn.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    conn.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        guest_ip = %guest_addr.ip(),
+                        "failed to update driver for icmp connection"
+                    );
+                    false
+                }
+            }
+        });
+    }
+
     pub(crate) fn poll_icmp(&mut self, cx: &mut Context<'_>) {
         for (dst_addr, conn) in &mut self.inner.icmp.connections {
             conn.poll_conn(cx, dst_addr, &mut self.inner.state, self.client);
@@ -272,7 +293,7 @@ impl<T: Client> Access<'_, T> {
                 let socket =
                     PolledSocket::new(self.client.driver(), socket).map_err(DropReason::Io)?;
                 let conn = IcmpConnection {
-                    socket,
+                    socket: Some(socket),
                     guest_mac: frame.src_addr,
                     stats: Default::default(),
                 };
@@ -301,5 +322,87 @@ impl<T: Client> Access<'_, T> {
         let addr = SocketAddr::new(IpAddr::V4(addr.into()), 0);
         socket.bind(&addr.into())?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Consomme;
+    use crate::ConsommeParams;
+    use crate::tests::DriverThread;
+    use crate::tests::TestClient;
+    use crate::tests::WakeChannel;
+    use smoltcp::wire::Ipv4Repr;
+    use std::net::UdpSocket;
+    use test_with_tracing::test;
+
+    #[test]
+    fn icmp_connection_survives_driver_refresh() {
+        let (old_thread, old_driver) = DriverThread::new();
+        let (new_thread, new_driver) = DriverThread::new();
+        let params = ConsommeParams::new().unwrap();
+        let guest_addr = SocketAddrV4::new(params.client_ip, 0);
+        let guest_mac = params.client_mac;
+        let mut consomme = Consomme::new(params);
+        let mut client = TestClient::new(old_driver);
+
+        // Feed raw IP packets through UDP so this test needs no raw-socket privileges.
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let host_addr = socket.local_addr().unwrap();
+        let socket = PolledSocket::new(&client.driver, Socket::from(socket)).unwrap();
+        consomme.icmp.connections.insert(
+            guest_addr,
+            IcmpConnection {
+                socket: Some(socket),
+                guest_mac,
+                stats: Default::default(),
+            },
+        );
+        let old_wake = WakeChannel::new();
+        old_wake.poll(&mut consomme, &mut client);
+        assert!(client.received_packets.is_empty());
+
+        let mut packet = [0; IPV4_HEADER_LEN + ICMPV4_HEADER_LEN + 4];
+        let mut ipv4 = Ipv4Packet::new_unchecked(&mut packet[..]);
+        Ipv4Repr {
+            src_addr: Ipv4Addr::LOCALHOST,
+            dst_addr: Ipv4Addr::LOCALHOST,
+            next_header: IpProtocol::Icmp,
+            payload_len: ICMPV4_HEADER_LEN + 4,
+            hop_limit: 64,
+        }
+        .emit(&mut ipv4, &ChecksumCapabilities::default());
+        let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let mut send = |data: &[u8]| {
+            ipv4.payload_mut()[ICMPV4_HEADER_LEN..].copy_from_slice(data);
+            Icmpv4Packet::new_unchecked(ipv4.payload_mut()).fill_checksum();
+            sender.send_to(ipv4.as_ref(), host_addr).unwrap();
+        };
+        send(b"old!");
+        client.driver = new_driver;
+        old_thread.join();
+        consomme.access(&mut client).refresh_driver();
+        consomme.access(&mut client).refresh_driver();
+        let wake = WakeChannel::new();
+        wake.poll(&mut consomme, &mut client);
+        if client.received_packets.is_empty() {
+            wake.wait_for_packet(&mut consomme, &mut client, |_| true);
+        }
+        let frame = EthernetFrame::new_checked(&client.received_packets[0]).unwrap();
+        let reply = Ipv4Packet::new_checked(frame.payload()).unwrap();
+        assert_eq!(frame.dst_addr(), guest_mac);
+        assert_eq!(reply.dst_addr(), *guest_addr.ip());
+        assert_eq!(&reply.payload()[ICMPV4_HEADER_LEN..], b"old!");
+
+        client.received_packets.clear();
+        wake.poll(&mut consomme, &mut client);
+        send(b"new!");
+        wake.wait_for_packet(&mut consomme, &mut client, |_| true);
+        let frame = EthernetFrame::new_checked(&client.received_packets[0]).unwrap();
+        let reply = Ipv4Packet::new_checked(frame.payload()).unwrap();
+        assert_eq!(&reply.payload()[ICMPV4_HEADER_LEN..], b"new!");
+        drop((consomme, client));
+        new_thread.join();
     }
 }
