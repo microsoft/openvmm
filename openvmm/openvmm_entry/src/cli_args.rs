@@ -1390,6 +1390,43 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_remote: Vec<PcieRemoteCli>,
 
+    /// Attach an emulated xHCI USB controller to a PCIe port (repeatable).
+    #[clap(long, value_name = "PORT_NAME", conflicts_with("pcat"))]
+    pub usb_xhci: Vec<UsbXhciCli>,
+
+    /// Attach a device backend to an xHCI USB controller (repeatable).
+    #[clap(
+        long,
+        value_name = "SPEC",
+        requires("usb_xhci"),
+        long_help = r#"Attach an initial USB device to a controller declared with --usb-xhci.
+
+Syntax: KIND[,on=PCIE_PORT][,connector=N][,OPTION=VALUE,...]
+
+With one controller, on defaults to its PCIe port; otherwise on is required.
+Connectors are one-based and optional. Explicit numbers are reserved first;
+omitted connectors use the first free number in command-line order.
+An empty controller needs no --usb-device options.
+
+Kinds: mock-loopback, mock-hid, mock-storage, mock-mutt, mock-supermutt,
+       winusb, winusb-all.
+
+The first four mocks accept vid=ID,pid=ID,serial=STRING overrides.
+IDs accept decimal or 0x-prefixed hexadecimal values.
+mock-storage also accepts blocks=N in 512-byte logical blocks.
+mock-supermutt accepts no device-specific options.
+winusb requires instance_id=ID, a Windows PnP instance ID.
+winusb-all selects eligible present devices at startup and assigns free
+connectors. It accepts optional on=PCIE_PORT, but no connector.
+
+Examples:
+    --usb-xhci rc0rp0 --usb-device mock-hid --usb-device mock-storage
+    --usb-device mock-storage,on=rc0rp0,connector=2,blocks=65536
+    --usb-device 'winusb,instance_id=USB\DEVICE\INSTANCE'
+    --usb-device winusb-all"#
+    )]
+    pub usb_device: Vec<UsbDeviceCli>,
+
     /// Assign a host PCI device to the guest via VFIO (Linux only)
     #[clap(long_help = r#"
 Assign a host PCI device to the guest via Linux VFIO.
@@ -3662,6 +3699,250 @@ pub struct PcieGenericInitiatorCli {
     pub node: u32,
 }
 
+/// CLI configuration for an emulated xHCI controller.
+#[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
+pub struct UsbXhciCli {
+    /// Name of the PCIe port used by the controller.
+    #[kv(positional)]
+    pub port_name: String,
+}
+
+/// USB vendor or product ID in decimal or hexadecimal notation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbIdCli(pub u16);
+
+impl FromStr for UsbIdCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(
+            if let Some(hex) = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                u16::from_str_radix(hex, 16).context("invalid hexadecimal USB ID")?
+            } else {
+                value.parse().context("invalid decimal USB ID")?
+            },
+        ))
+    }
+}
+
+/// A validated, one-based physical USB connector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UsbConnectorCli(u8);
+
+impl UsbConnectorCli {
+    /// The user-supplied one-based connector number.
+    pub fn number(self) -> u8 {
+        self.0
+    }
+}
+
+impl FromStr for UsbConnectorCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let connector = value.parse()?;
+        anyhow::ensure!(connector != 0, "USB connector numbers are one-based");
+        Ok(Self(connector))
+    }
+}
+
+/// Optional placement overrides for a single USB device.
+#[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
+pub struct UsbDeviceLocationCli {
+    /// Controller's PCIe port; omitted when the sole controller should be selected.
+    pub on: Option<String>,
+    /// One-based USB connector; omitted to select the first free connector.
+    pub connector: Option<UsbConnectorCli>,
+}
+
+/// Typed configuration selecting a USB backend.
+#[derive(Clone, Debug)]
+pub enum UsbBackendCli {
+    /// Loopback mock.
+    Loopback(usb_config_resources::MockLoopbackConfig),
+    /// Composite HID mock.
+    Hid(usb_config_resources::MockHidConfig),
+    /// Mass-storage mock.
+    Storage(usb_config_resources::MockStorageConfig),
+    /// FX2 MUTT mock.
+    Mutt(usb_config_resources::MockMuttConfig),
+    /// FX3 SuperMUTT mock.
+    SuperMutt(usb_config_resources::MockSuperMuttConfig),
+    /// One Windows host device.
+    WinUsb(usb_config_resources::WinUsbConfig),
+}
+
+impl UsbBackendCli {
+    /// Erases the configuration type for resource resolution.
+    pub fn into_resource(self) -> vm_resource::Resource<usb_config_resources::UsbDeviceConfigKind> {
+        use vm_resource::IntoResource;
+        match self {
+            Self::Loopback(handle) => handle.into_resource(),
+            Self::Hid(handle) => handle.into_resource(),
+            Self::Storage(handle) => handle.into_resource(),
+            Self::Mutt(handle) => handle.into_resource(),
+            Self::SuperMutt(handle) => handle.into_resource(),
+            Self::WinUsb(handle) => handle.into_resource(),
+        }
+    }
+}
+
+/// A concrete attachment or an automatic device-discovery request.
+#[derive(Clone, Debug)]
+pub enum UsbDeviceCli {
+    /// Attach one typed device with optional controller and connector overrides.
+    Device {
+        /// Controller and connector selection.
+        location: UsbDeviceLocationCli,
+        /// Backend-specific configuration.
+        backend: UsbBackendCli,
+    },
+    /// Discover WinUSB devices and attach them to free connectors.
+    WinUsbAll {
+        /// Controller's PCIe port; omitted when the sole controller should be selected.
+        on: Option<String>,
+    },
+}
+
+impl UsbDeviceCli {
+    /// Explicit controller PCIe port, or none when it should be inferred.
+    pub fn controller_pcie_port(&self) -> Option<&str> {
+        match self {
+            Self::Device { location, .. } => location.on.as_deref(),
+            Self::WinUsbAll { on } => on.as_deref(),
+        }
+    }
+}
+
+/// Connector selection and optional identity overrides shared by mock devices.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbMockArgs {
+    /// Optional controller PCIe port and USB connector overrides.
+    #[kv(flatten)]
+    location: UsbDeviceLocationCli,
+    /// Optional USB vendor ID override.
+    vid: Option<UsbIdCli>,
+    /// Optional USB product ID override.
+    pid: Option<UsbIdCli>,
+    /// Optional serial-number override.
+    serial: Option<String>,
+}
+
+impl UsbMockArgs {
+    fn into_parts(
+        self,
+    ) -> (
+        UsbDeviceLocationCli,
+        usb_config_resources::UsbIdentityConfig,
+    ) {
+        (
+            self.location,
+            usb_config_resources::UsbIdentityConfig {
+                vendor_id: self.vid.map(|id| id.0),
+                product_id: self.pid.map(|id| id.0),
+                serial_number: self.serial,
+            },
+        )
+    }
+}
+
+/// Mock-storage arguments, including an optional capacity override.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbStorageArgs {
+    /// Connector selection and optional device identity overrides.
+    #[kv(flatten)]
+    mock: UsbMockArgs,
+    /// Optional capacity in 512-byte logical blocks.
+    blocks: Option<u64>,
+}
+
+/// Explicit host-device selection for the `winusb` kind.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbWinUsbArgs {
+    /// Optional controller PCIe port and USB connector overrides.
+    #[kv(flatten)]
+    location: UsbDeviceLocationCli,
+    /// Windows PnP instance ID of the host device to select.
+    instance_id: String,
+}
+
+/// Startup discovery arguments for the `winusb-all` kind.
+#[derive(vmm_cli::KeyValueArgs)]
+struct UsbWinUsbAllArgs {
+    /// Controller's PCIe port; omitted when the sole controller should be selected.
+    on: Option<String>,
+}
+
+impl FromStr for UsbDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        use usb_config_resources::*;
+        let (kind, options) = value.split_once(',').unwrap_or((value, ""));
+        let (location, backend) = match kind {
+            "mock-loopback" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (
+                    location,
+                    UsbBackendCli::Loopback(MockLoopbackConfig { identity }),
+                )
+            }
+            "mock-hid" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (location, UsbBackendCli::Hid(MockHidConfig { identity }))
+            }
+            "mock-storage" => {
+                let args: UsbStorageArgs = options.parse()?;
+                anyhow::ensure!(
+                    args.blocks != Some(0),
+                    "mock-storage blocks must be greater than zero"
+                );
+                let (location, identity) = args.mock.into_parts();
+                (
+                    location,
+                    UsbBackendCli::Storage(MockStorageConfig {
+                        identity,
+                        block_count: args.blocks,
+                    }),
+                )
+            }
+            "mock-mutt" => {
+                let args: UsbMockArgs = options.parse()?;
+                let (location, identity) = args.into_parts();
+                (location, UsbBackendCli::Mutt(MockMuttConfig { identity }))
+            }
+            "mock-supermutt" => (
+                options.parse()?,
+                UsbBackendCli::SuperMutt(MockSuperMuttConfig),
+            ),
+            "winusb" => {
+                let args: UsbWinUsbArgs = options.parse()?;
+                anyhow::ensure!(
+                    !args.instance_id.trim().is_empty() && !args.instance_id.contains('\0'),
+                    "WinUSB instance IDs must be nonempty and contain no NUL characters"
+                );
+                (
+                    args.location,
+                    UsbBackendCli::WinUsb(WinUsbConfig {
+                        instance_id: args.instance_id,
+                    }),
+                )
+            }
+            "winusb-all" => {
+                let args: UsbWinUsbAllArgs = options.parse()?;
+                return Ok(Self::WinUsbAll { on: args.on });
+            }
+            _ => anyhow::bail!("unknown USB device kind {kind:?}"),
+        };
+        Ok(Self::Device { location, backend })
+    }
+}
+
 /// CLI configuration for a PCIe remote device.
 #[derive(Clone, Debug, PartialEq, vmm_cli::KeyValueArgs)]
 pub struct PcieRemoteCli {
@@ -3987,6 +4268,145 @@ mod tests {
                     | (ProvisionCondition::OnFailure, ProvisionCondition::OnFailure)
                     | (ProvisionCondition::Single, ProvisionCondition::Single)
             ));
+        }
+    }
+
+    /// Controller arguments contain one PCIe port name and no device-specific options.
+    #[test]
+    fn test_parse_usb_controller() {
+        let controller = UsbXhciCli::from_str("rc0rp0").unwrap();
+        assert_eq!(controller.port_name, "rc0rp0");
+        assert!(UsbXhciCli::from_str("").is_err());
+        assert!(UsbXhciCli::from_str("rc0rp0,connector=1").is_err());
+    }
+
+    /// Bare mock kinds select the right variant and leave optional fields unset.
+    #[test]
+    fn test_parse_usb_mock_defaults() {
+        for kind in [
+            "mock-loopback",
+            "mock-hid",
+            "mock-storage",
+            "mock-mutt",
+            "mock-supermutt",
+        ] {
+            let UsbDeviceCli::Device { location, backend } = UsbDeviceCli::from_str(kind).unwrap()
+            else {
+                panic!("expected a device for {kind}");
+            };
+            assert_eq!(location.on, None);
+            assert_eq!(location.connector, None);
+            let identity = match (kind, backend) {
+                ("mock-loopback", UsbBackendCli::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackendCli::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackendCli::Storage(config)) => {
+                    assert_eq!(config.block_count, None);
+                    config.identity
+                }
+                ("mock-mutt", UsbBackendCli::Mutt(config)) => config.identity,
+                ("mock-supermutt", UsbBackendCli::SuperMutt(_)) => continue,
+                _ => panic!("wrong backend variant for {kind}"),
+            };
+            assert_eq!(identity, usb_config_resources::UsbIdentityConfig::default());
+        }
+    }
+
+    /// Mock placement and identity overrides retain their parsed values for each kind.
+    #[test]
+    fn test_parse_usb_mock_overrides() {
+        for kind in ["mock-loopback", "mock-hid", "mock-storage", "mock-mutt"] {
+            let capacity = if kind == "mock-storage" {
+                ",blocks=4096"
+            } else {
+                ""
+            };
+            let selection = format!(
+                "{kind},on=usb0,connector=7,vid=0x1234,pid=65535,serial=SERIAL42{capacity}"
+            );
+            let UsbDeviceCli::Device { location, backend } =
+                UsbDeviceCli::from_str(&selection).unwrap()
+            else {
+                panic!("expected a device for {kind}");
+            };
+            assert_eq!(location.on.as_deref(), Some("usb0"));
+            assert_eq!(location.connector.map(UsbConnectorCli::number), Some(7));
+            let identity = match (kind, backend) {
+                ("mock-loopback", UsbBackendCli::Loopback(config)) => config.identity,
+                ("mock-hid", UsbBackendCli::Hid(config)) => config.identity,
+                ("mock-storage", UsbBackendCli::Storage(config)) => {
+                    assert_eq!(config.block_count, Some(4096));
+                    config.identity
+                }
+                ("mock-mutt", UsbBackendCli::Mutt(config)) => config.identity,
+                _ => panic!("wrong backend variant for {kind}"),
+            };
+            assert_eq!(identity.vendor_id, Some(0x1234));
+            assert_eq!(identity.product_id, Some(65535));
+            assert_eq!(identity.serial_number.as_deref(), Some("SERIAL42"));
+        }
+    }
+
+    /// Host-device IDs and optional placement remain distinct from discovery requests.
+    #[test]
+    fn test_parse_usb_host_selections() {
+        for (selection, expected_pcie_port, expected_connector) in [
+            (r"winusb,instance_id=USB\A&B C", None, None),
+            (
+                r"winusb,on=usb0,connector=3,instance_id=USB\A&B C",
+                Some("usb0"),
+                Some(3),
+            ),
+        ] {
+            let UsbDeviceCli::Device {
+                location,
+                backend: UsbBackendCli::WinUsb(config),
+            } = UsbDeviceCli::from_str(selection).unwrap()
+            else {
+                panic!("expected explicit WinUSB selection");
+            };
+            assert_eq!(location.on.as_deref(), expected_pcie_port);
+            assert_eq!(
+                location.connector.map(UsbConnectorCli::number),
+                expected_connector
+            );
+            assert_eq!(config.instance_id, r"USB\A&B C");
+        }
+        for (selection, expected_pcie_port) in
+            [("winusb-all", None), ("winusb-all,on=usb1", Some("usb1"))]
+        {
+            let UsbDeviceCli::WinUsbAll { on } = UsbDeviceCli::from_str(selection).unwrap() else {
+                panic!("expected WinUSB discovery request");
+            };
+            assert_eq!(on.as_deref(), expected_pcie_port);
+        }
+    }
+
+    /// Reject malformed values, repeated fields, and options belonging to another kind.
+    #[test]
+    fn test_parse_usb_invalid_options() {
+        for selection in [
+            "",
+            "unknown",
+            "usb0:hid",
+            "mock-hid,connector=0",
+            "mock-hid,connector=256",
+            "mock-hid,vid=0x10000",
+            "mock-hid,pid=bad",
+            "mock-hid,on=usb0,on=usb1",
+            "mock-hid,blocks=1",
+            "mock-hid,serial=",
+            "mock-storage,blocks=0",
+            "mock-supermutt,vid=1",
+            "winusb",
+            "winusb,instance_id=",
+            "winusb,instance_id=USB\0INSTANCE",
+            "winusb,instance_id=USB,serial=x",
+            "winusb-all,connector=1",
+        ] {
+            assert!(
+                UsbDeviceCli::from_str(selection).is_err(),
+                "accepted {selection:?}"
+            );
         }
     }
 
