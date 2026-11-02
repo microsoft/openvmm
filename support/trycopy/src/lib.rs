@@ -388,6 +388,12 @@ impl MemoryError {
             // TODO: get the failure offset from the routine that actually
             // faulted rather than relying on the kernel.
             (0, src.is_none())
+        } else if let Some(src) = src
+            && failure.is_write == Some(false)
+            && (src..src.wrapping_add(len)).contains(&failure.address.cast_const())
+        {
+            // The address alone is ambiguous when the copy ranges overlap.
+            (failure.address as usize - src as usize, false)
         } else if (dest..dest.wrapping_add(len)).contains(&failure.address) {
             (failure.address as usize - dest as usize, true)
         } else if let Some(src) = src {
@@ -436,6 +442,8 @@ struct Fault;
 #[derive(Copy, Clone)]
 struct AccessFailure {
     address: *mut u8,
+    /// None when the platform does not report an access direction.
+    is_write: Option<bool>,
     #[cfg(unix)]
     si_signo: i32,
     #[cfg(unix)]
@@ -450,6 +458,7 @@ impl AccessFailure {
     const fn empty() -> Self {
         Self {
             address: std::ptr::null_mut(),
+            is_write: None,
             #[cfg(unix)]
             si_signo: 0,
             #[cfg(unix)]
@@ -499,19 +508,38 @@ unsafe fn install_signal_handlers() {
             std::ptr::null_mut()
         };
 
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        // The W/R bit is valid for page faults, not other x86 exceptions.
+        let is_write = (ctx.gregs[libc::REG_TRAPNO as usize] == 14)
+            .then_some(ctx.gregs[libc::REG_ERR as usize] & 2 != 0);
+
+        #[cfg(target_arch = "aarch64")]
+        let esr = {
+            #[cfg(target_os = "linux")]
+            {
+                const ESR_MAGIC: u32 = 0x45535201;
+                aarch64_extended_context::<u64>(ctx, ESR_MAGIC).copied()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                Some(u64::from(ctx.__es.__esr))
+            }
+        };
+        #[cfg(target_arch = "aarch64")]
+        // WnR is defined for data aborts from a lower or the current EL.
+        let is_write = esr.and_then(|esr| {
+            matches!((esr >> 26) & 0x3f, 0x24 | 0x25).then_some(esr & (1 << 6) != 0)
+        });
+
         let failure = AccessFailure {
             address,
+            is_write,
             si_signo: sig,
             si_code: info.si_code as u32,
             #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
             trapno: ctx.gregs[libc::REG_TRAPNO as usize] as u8,
-            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-            esr: {
-                const ESR_MAGIC: u32 = 0x45535201;
-                aarch64_extended_context::<u64>(ctx, ESR_MAGIC).copied()
-            },
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            esr: Some(ctx.__es.__esr.into()),
+            #[cfg(target_arch = "aarch64")]
+            esr,
         };
 
         let recovered = recover(ctx, failure);
@@ -600,6 +628,11 @@ unsafe fn install_signal_handlers() {
 
         let failure = AccessFailure {
             address: record.ExceptionInformation[1] as *mut u8,
+            is_write: match record.ExceptionInformation[0] {
+                0 => Some(false),
+                1 => Some(true),
+                _ => None,
+            },
         };
         let recovered = recover(context, failure);
         if recovered {
@@ -852,16 +885,236 @@ mod tests {
     use crate::try_cmpxchg32;
     use crate::try_cmpxchg64;
     use crate::try_compare_exchange;
+    use crate::try_copy;
     use crate::try_memmove;
     use crate::try_memset;
+    use crate::try_read_volatile;
     use crate::try_read8;
     use crate::try_read16;
     use crate::try_read32;
     use crate::try_read64;
+    use crate::try_write_bytes;
+    use crate::try_write_volatile;
     use crate::try_write8;
     use crate::try_write16;
     use crate::try_write32;
     use crate::try_write64;
+    use test_with_tracing::test;
+
+    #[cfg(unix)]
+    struct GuardedMapping {
+        ptr: *mut u8,
+        page_size: usize,
+    }
+
+    #[cfg(unix)]
+    impl GuardedMapping {
+        fn new() -> Self {
+            initialize_try_copy();
+            // SAFETY: reserve three owned pages, then protect the middle page.
+            unsafe {
+                let page_size = usize::try_from(libc::sysconf(libc::_SC_PAGESIZE)).unwrap();
+                let ptr = libc::mmap(
+                    std::ptr::null_mut(),
+                    3 * page_size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                );
+                assert_ne!(ptr, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
+                let mapping = Self {
+                    ptr: ptr.cast(),
+                    page_size,
+                };
+                assert_eq!(
+                    libc::mprotect(ptr.add(page_size), page_size, libc::PROT_NONE),
+                    0,
+                    "{}",
+                    std::io::Error::last_os_error()
+                );
+                mapping
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for GuardedMapping {
+        fn drop(&mut self) {
+            // SAFETY: this object owns the complete three-page reservation.
+            assert_eq!(
+                unsafe { libc::munmap(self.ptr.cast(), 3 * self.page_size) },
+                0
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_overlapping_copy_reports_source_fault() {
+        let mapping = GuardedMapping::new();
+        let mut dest = [0; 3];
+        // SAFETY: both copy ranges are reserved, overlap is permitted, and no
+        // Rust references alias the mapping.
+        unsafe {
+            let src = mapping.ptr.add(mapping.page_size - 1);
+            let control = try_copy(src, dest.as_mut_ptr(), 3).unwrap_err();
+            assert_eq!(control.offset(), 1);
+            assert!(!control.is_write);
+
+            let error = try_copy(src, src.sub(1), 3).unwrap_err();
+            assert_eq!(error.offset(), 1, "{error:?}");
+            assert!(!error.is_write);
+            assert_eq!(error.to_string(), "failed to read memory");
+        }
+    }
+
+    #[test]
+    fn test_public_copy_and_fill_element_counts() {
+        initialize_try_copy();
+        let src = std::array::from_fn::<_, 19, _>(|i| i as u16);
+        let mut dest = [0xfeedu16; 21];
+        let mut expected = dest;
+        // SAFETY: the source and destination ranges are within the owned arrays.
+        unsafe {
+            try_copy(src.as_ptr(), dest.as_mut_ptr().add(1), src.len()).unwrap();
+            expected[1..20].copy_from_slice(&src);
+            assert_eq!(dest, expected);
+
+            try_write_bytes(dest.as_mut_ptr().add(5), 0xa5, 3).unwrap();
+            expected[5..8].fill(0xa5a5);
+            assert_eq!(dest, expected);
+
+            try_copy(src.as_ptr(), dest.as_mut_ptr(), 0).unwrap();
+            try_write_bytes(dest.as_mut_ptr(), 0, 0).unwrap();
+            assert_eq!(dest, expected);
+        }
+    }
+
+    #[test]
+    fn test_public_volatile_access_sizes() {
+        fn check<T: Copy + Default + PartialEq + std::fmt::Debug>(value: T) {
+            let mut dest = T::default();
+            // SAFETY: the typed source and destination are valid and exclusively owned.
+            unsafe {
+                try_write_volatile(&mut dest, &value).unwrap();
+                assert_eq!(dest, value);
+                assert_eq!(try_read_volatile(&dest).unwrap(), value);
+            }
+        }
+
+        initialize_try_copy();
+        check(0x12u8);
+        check(0x3456u16);
+        check(0x789abcdeu32);
+        check(0x0123456789abcdefu64);
+        check(std::array::from_fn::<_, 17, _>(|i| i as u8));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_copy_and_fill_fault_offsets() {
+        let mapping = GuardedMapping::new();
+        for len in [1, 8, 32, 1024] {
+            let prefix = len / 2;
+            let mut buffer = vec![0xa5u8; len];
+            // SAFETY: all ranges are reserved; the mapping's middle page is
+            // inaccessible and the nonoverlapping buffer is exclusively owned.
+            unsafe {
+                let crossing = mapping.ptr.add(mapping.page_size - prefix);
+                let read = try_copy(crossing, buffer.as_mut_ptr(), len).unwrap_err();
+                assert_eq!(read.offset(), prefix);
+                assert!(!read.is_write);
+
+                let write = try_copy(buffer.as_ptr(), crossing, len).unwrap_err();
+                assert_eq!(write.offset(), prefix);
+                assert!(write.is_write);
+
+                for value in [0, 0x5f] {
+                    let fill = try_write_bytes(crossing, value, len).unwrap_err();
+                    assert_eq!(fill.offset(), prefix);
+                    assert!(fill.is_write);
+                }
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_public_volatile_and_atomic_faults() {
+        let mapping = GuardedMapping::new();
+        // SAFETY: the middle page is reserved and naturally aligned, with no
+        // Rust references to its inaccessible bytes.
+        unsafe {
+            let guard = mapping.ptr.add(mapping.page_size);
+            let read = try_read_volatile::<u64>(guard.cast()).unwrap_err();
+            assert_eq!(read.offset(), 0);
+            assert!(!read.is_write);
+            let read = try_read_volatile::<[u8; 17]>(guard.cast()).unwrap_err();
+            assert_eq!(read.offset(), 0);
+            assert!(!read.is_write);
+
+            let write = try_write_volatile(guard.cast(), &0x1234u64).unwrap_err();
+            assert_eq!(write.offset(), 0);
+            assert!(write.is_write);
+            let write = try_write_volatile(guard.cast(), &[0u8; 17]).unwrap_err();
+            assert_eq!(write.offset(), 0);
+            assert!(write.is_write);
+
+            let atomic = try_compare_exchange(guard.cast::<u64>(), 0, 1).unwrap_err();
+            assert_eq!(atomic.offset(), 0);
+            assert!(atomic.is_write);
+        }
+    }
+
+    #[cfg(all(unix, target_arch = "x86_64"))]
+    #[test]
+    fn test_backward_copy_fault_restores_direction_flag() {
+        let mapping = GuardedMapping::new();
+        for (len, offset, is_write) in [(3, 2, false), (2, 1, true)] {
+            // SAFETY: the overlapping ranges are reserved. Reading RFLAGS
+            // preserves it and leaves the stack unchanged.
+            unsafe {
+                let src = mapping.ptr.add(mapping.page_size - 2);
+                let error = try_copy(src, src.add(1), len).unwrap_err();
+                let flags: usize;
+                core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(preserves_flags));
+                assert_eq!(
+                    flags & 0x400,
+                    0,
+                    "direction flag must be clear after recovery"
+                );
+                assert_eq!(error.offset(), offset);
+                assert_eq!(error.is_write, is_write);
+            }
+        }
+    }
+
+    #[test]
+    fn test_public_compare_exchange_sizes() {
+        fn check<T: Copy + PartialEq + std::fmt::Debug>(initial: T, new: T, wrong: T) {
+            let mut values = [initial; 3];
+            // SAFETY: the middle element is a valid, naturally aligned destination.
+            unsafe {
+                assert_eq!(
+                    try_compare_exchange(&mut values[1], initial, new).unwrap(),
+                    Ok(new)
+                );
+                assert_eq!(values, [initial, new, initial]);
+                assert_eq!(
+                    try_compare_exchange(&mut values[1], wrong, initial).unwrap(),
+                    Err(new)
+                );
+                assert_eq!(values, [initial, new, initial]);
+            }
+        }
+
+        initialize_try_copy();
+        check(0x12u8, 0x34, 0x56);
+        check(0x1234u16, 0x5678, 0x9abc);
+        check(0x12345678u32, 0x9abcdef0, 0x01234567);
+        check(0x0123456789abcdefu64, 0xfedcba9876543210, 0);
+    }
 
     #[derive(Copy, Clone, Debug)]
     enum Primitive {
@@ -899,6 +1152,7 @@ mod tests {
         #[cfg_attr(windows, expect(clippy::needless_update))]
         LAST_ACCESS_FAILURE.set(AccessFailure {
             address: nonsense_addr.cast(),
+            is_write: None,
             ..AccessFailure::empty()
         });
 
