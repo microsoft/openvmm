@@ -126,8 +126,10 @@ fn validate_relative_component(name: &std::ffi::OsStr, description: &str) -> io:
 
 /// Opens an existing regular file relative to an opened directory.
 ///
-/// The resulting handle allows read sharing only, so writers and
-/// delete/rename attempts are rejected while the handle remains open.
+/// The resulting handle allows read sharing only. While it remains open,
+/// writers are rejected through every name of the file, and the opened name
+/// cannot be renamed or deleted. The file system tracks rename and delete
+/// sharing per name, so other hard links to the file are not protected.
 pub fn open_relative_read_only(
     directory: &fs::File,
     name: &std::ffi::OsStr,
@@ -423,6 +425,7 @@ mod tests {
     use std::path::PathBuf;
     use test_with_tracing::test;
     use windows_sys::Win32::Foundation::ERROR_PRIVILEGE_NOT_HELD;
+    use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
@@ -585,6 +588,94 @@ mod tests {
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[track_caller]
+    fn assert_sharing_violation<T: std::fmt::Debug>(result: io::Result<T>) {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn read_only_open_denies_writers_renames_and_deletes() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        let mut source = create_relative_new(&directory, "source".as_ref()).unwrap();
+        source.write_all(b"contents").unwrap();
+        hard_link_relative(&source, &directory, "alias".as_ref()).unwrap();
+        drop(source);
+
+        let source_path = root.path().join("source");
+        let alias_path = root.path().join("alias");
+        let renamed_path = root.path().join("renamed");
+        let mut read_only = open_relative_read_only(&directory, "source".as_ref()).unwrap();
+
+        // Writers are denied through every name of the file.
+        for path in [&source_path, &alias_path] {
+            assert_sharing_violation(OpenOptions::new().write(true).open(path));
+            assert_sharing_violation(OpenOptions::new().append(true).open(path));
+        }
+        // The opened name can be neither renamed nor deleted. The file system
+        // enforces this per name, so other hard links are not protected.
+        assert_sharing_violation(fs::rename(&source_path, &renamed_path));
+        assert_sharing_violation(fs::remove_file(&source_path));
+        assert!(source_path.exists() && !renamed_path.exists());
+        let mut contents = Vec::new();
+        read_only.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"contents");
+
+        // Other readers are still allowed.
+        drop(open_relative_for_identity(&directory, "alias".as_ref()).unwrap());
+        drop(fs::File::open(&alias_path).unwrap());
+
+        drop(read_only);
+        OpenOptions::new()
+            .write(true)
+            .open(&alias_path)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+        fs::rename(&source_path, &renamed_path).unwrap();
+        fs::remove_file(&renamed_path).unwrap();
+        fs::remove_file(&alias_path).unwrap();
+    }
+
+    #[test]
+    fn hard_link_does_not_replace_an_existing_name() {
+        let root = TestDirectory::new();
+        let directory = open_directory(root.path(), false);
+        let mut source = create_relative_new(&directory, "source".as_ref()).unwrap();
+        source.write_all(b"source").unwrap();
+        let source_identity = file_identity(&source).unwrap();
+        let mut existing = create_relative_new(&directory, "existing".as_ref()).unwrap();
+        existing.write_all(b"existing").unwrap();
+        let existing_identity = file_identity(&existing).unwrap();
+        drop(existing);
+        assert_ne!(existing_identity.file_id, source_identity.file_id);
+
+        assert_eq!(
+            hard_link_relative(&source, &directory, "existing".as_ref())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        drop(source);
+
+        let mut existing = open_relative_read_only(&directory, "existing".as_ref()).unwrap();
+        assert_eq!(file_identity(&existing).unwrap(), existing_identity);
+        let mut contents = Vec::new();
+        existing.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"existing");
+        drop(existing);
+        let mut source = open_relative_read_only(&directory, "source".as_ref()).unwrap();
+        assert_eq!(file_identity(&source).unwrap(), source_identity);
+        contents.clear();
+        source.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"source");
     }
 
     #[test]
