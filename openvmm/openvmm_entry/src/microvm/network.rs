@@ -271,11 +271,10 @@ pub(crate) mod tests {
         policy: &net_backend_resources::egress::EgressPolicy,
     ) -> openvmm_helpers::snapshot::microvm::SnapshotMachineContract {
         let source_hypervisor = if cfg!(windows) { "whp" } else { "kvm" };
-        let irq = openvmm_defs::microvm::microvm_virtio_net_irq(Some(source_hypervisor)).unwrap();
         let mut command_line = build_microvm_command_line(&[], false).unwrap();
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
-            Some((network, irq, policy.gateway_dns_server(), None)),
+            Some((network, policy.gateway_dns_server(), None)),
             false,
             &[],
             false,
