@@ -35,10 +35,12 @@ Here are the principles you must maintain when adding new save & restore code:
 
 Restore into a stopped VM whose components have just been constructed or
 successfully reset. Stopping a previously running VM is not sufficient: reset it
-before restoring. After a restore attempt, reset before attempting another
-restore, including after a failure. Saving restored state before starting the VM
-is supported; restoring that snapshot still requires a fresh or reset
-destination.
+before restoring. Once restoration of unit state begins, reset before attempting
+another restore, even if it fails. Initial snapshot unit-name validation errors
+do not require a reset, since no unit state has been restored.
+
+Saving restored state before starting the VM is supported; restoring that
+snapshot still requires a fresh or reset destination.
 
 ### Synchronous and asynchronous implementations
 

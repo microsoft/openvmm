@@ -591,8 +591,9 @@ impl StateUnits {
     /// Restores all the state units.
     ///
     /// Requires a newly constructed or successfully reset destination. Starting
-    /// or beginning a restore consumes this eligibility. Saving does not, and
-    /// saving restored state before start is supported.
+    /// the VM or dispatching restore requests consumes this eligibility. Initial
+    /// unit-name validation errors leave eligibility unchanged. Saving does not
+    /// consume eligibility, and saving restored state before start is supported.
     ///
     /// Panics if running.
     pub async fn restore(
