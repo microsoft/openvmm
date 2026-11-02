@@ -154,13 +154,6 @@ timeout bounds initial handshakes that receive no close request.
 Inbound connections require explicit port forwarding — OpenVMM can
 programmatically bind host ports and forward them into the guest.
 
-TCP receive coalescing is supported when virtio-net receive GSO is explicitly
-enabled (for example, `--virtio-net rx_gso:consomme`) and the guest negotiates
-receive checksum offload and TCP GSO for the corresponding IP version.
-Consomme then delivers coalesced frames with segmentation and partial-checksum
-metadata. Without these negotiated features, it continues to send individual
-TCP segments.
-
 ### UDP
 
 Each unique guest source socket (guest IP + source port) gets a
