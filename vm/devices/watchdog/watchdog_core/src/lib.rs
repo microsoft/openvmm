@@ -166,9 +166,12 @@ impl WatchdogServices {
     ///
     /// Devices call this when they stop, so neither a saved state nor a reset
     /// sees a timeout whose action has not finished.
+    ///
+    /// Cancelling this future leaves the action available to poll or finish later.
     pub async fn finish_timeout_action(&mut self) {
-        if let Some(action) = self.timeout_action.take() {
+        if let Some(action) = &mut self.timeout_action {
             self.platform = Some(action.await);
+            self.timeout_action = None;
         }
     }
 
@@ -266,9 +269,10 @@ impl WatchdogServices {
             // the thread polling this device.
             // Only an in-flight action holds the platform, and that case
             // returned or handed it back at the top of the loop.
-            let Some(mut platform) = self.platform.take() else {
-                return;
-            };
+            let mut platform = self
+                .platform
+                .take()
+                .expect("platform must be present without an in-flight timeout action");
             self.timeout_action = Some(Box::pin(async move {
                 platform.on_timeout().await;
                 platform
@@ -348,9 +352,13 @@ mod tests {
     use crate::platform::WatchdogPlatform;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::pin::pin;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::task::Wake;
+    use std::task::Waker;
+    use test_with_tracing::test;
     use vmcore::vmtime::SavedState as VmTimeSavedState;
     use vmcore::vmtime::VmTime;
     use vmcore::vmtime::VmTimeKeeper;
@@ -359,14 +367,14 @@ mod tests {
     /// store served by the thread that polls the device.
     struct GatedPlatform {
         permit: mesh::Receiver<()>,
-        acted: Arc<AtomicBool>,
+        completed: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
     impl WatchdogPlatform for GatedPlatform {
         async fn on_timeout(&mut self) {
             self.permit.recv().await.unwrap();
-            self.acted.store(true, Ordering::SeqCst);
+            self.completed.fetch_add(1, Ordering::SeqCst);
         }
 
         async fn read_and_clear_boot_status(&mut self) -> bool {
@@ -380,17 +388,30 @@ mod tests {
         watchdog: WatchdogServices,
         keeper: VmTimeKeeper,
         permit: mesh::Sender<()>,
-        acted: Arc<AtomicBool>,
+        completed: Arc<AtomicUsize>,
+    }
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     async fn test_watchdog(driver: &DefaultDriver) -> TestWatchdog {
         let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
         let vmtime = keeper.builder().build(driver).await.unwrap();
         let (permit, permit_recv) = mesh::channel();
-        let acted = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicUsize::new(0));
         let platform = GatedPlatform {
             permit: permit_recv,
-            acted: acted.clone(),
+            completed: completed.clone(),
         };
         let watchdog =
             WatchdogServices::new("test", vmtime.access("watchdog"), Box::new(platform), false)
@@ -399,27 +420,14 @@ mod tests {
             watchdog,
             keeper,
             permit,
-            acted,
+            completed,
         }
     }
 
     /// Polls once. With a blocking timeout action this call never returns.
     fn poll_once(watchdog: &mut WatchdogServices) {
-        let waker = std::task::Waker::noop();
+        let waker = Waker::noop();
         watchdog.poll(&mut Context::from_waker(waker));
-    }
-
-    /// Drives the device until the platform has carried out the timeout.
-    async fn drive_until_acted(watchdog: &mut WatchdogServices, acted: &AtomicBool) {
-        std::future::poll_fn(|cx| {
-            watchdog.poll(cx);
-            if acted.load(Ordering::SeqCst) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
     }
 
     /// Arms a one-second count, then moves the stopped clock to `secs`, so
@@ -460,21 +468,27 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit,
-            acted,
+            completed,
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
 
-        poll_once(&mut watchdog);
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(wakes.clone());
+        watchdog.poll(&mut Context::from_waker(&waker));
         assert!(watchdog.timeout_action.is_some());
-        assert!(!acted.load(Ordering::SeqCst));
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
         assert!(!watchdog.state.config.enabled());
 
+        let before = wakes.0.load(Ordering::SeqCst);
         permit.send(());
-        drive_until_acted(&mut watchdog, &acted).await;
+        assert!(wakes.0.load(Ordering::SeqCst) > before);
         poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert!(watchdog.timeout_action.is_none());
         assert!(watchdog.platform.is_some());
+        poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 
     /// Stopping the device finishes an in-flight action, so no saved state is
@@ -485,18 +499,78 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit,
-            acted,
+            completed,
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
         assert!(watchdog.timeout_action.is_some());
 
-        permit.send(());
-        watchdog.finish_timeout_action().await;
-        assert!(acted.load(Ordering::SeqCst));
+        {
+            let wakes = Arc::new(WakeCounter::default());
+            let waker = Waker::from(wakes.clone());
+            let mut finish = pin!(watchdog.finish_timeout_action());
+            assert!(
+                finish
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            assert_eq!(completed.load(Ordering::SeqCst), 0);
+            let before = wakes.0.load(Ordering::SeqCst);
+            permit.send(());
+            assert!(wakes.0.load(Ordering::SeqCst) > before);
+            finish.await;
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
         assert!(watchdog.timeout_action.is_none());
         assert!(watchdog.platform.is_some());
+        watchdog.finish_timeout_action().await;
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+    }
+
+    #[async_test]
+    async fn cancelled_finish_can_be_retried(driver: DefaultDriver) {
+        let TestWatchdog {
+            mut watchdog,
+            mut keeper,
+            permit,
+            completed,
+        } = test_watchdog(&driver).await;
+
+        arm_and_expire(&mut watchdog, &mut keeper, 2).await;
+        poll_once(&mut watchdog);
+        {
+            let mut finish = pin!(watchdog.finish_timeout_action());
+            assert!(
+                finish
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+        }
+        assert!(watchdog.timeout_action.is_some());
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+        {
+            let mut finish = pin!(watchdog.finish_timeout_action());
+            assert!(
+                finish
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            permit.send(());
+            finish.await;
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(watchdog.platform.is_some());
+        assert!(watchdog.timeout_action.is_none());
+
+        arm_and_expire(&mut watchdog, &mut keeper, 4).await;
+        poll_once(&mut watchdog);
+        permit.send(());
+        watchdog.finish_timeout_action().await;
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
     }
 
     /// A reset leaves the watchdog unconfigured, so a timer the guest armed
@@ -507,7 +581,7 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit: _permit,
-            acted: _acted,
+            completed: _completed,
         } = test_watchdog(&driver).await;
 
         arm(&mut watchdog);
@@ -526,7 +600,7 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit: _permit,
-            acted: _acted,
+            completed: _completed,
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
@@ -534,34 +608,119 @@ mod tests {
         watchdog.reset();
     }
 
-    /// A finished action hands the platform back, and the next timeout runs
-    /// it again.
     #[async_test]
-    async fn next_timeout_runs_the_action_again(driver: DefaultDriver) {
+    async fn rearm_and_disable_while_action_is_pending(driver: DefaultDriver) {
         let TestWatchdog {
             mut watchdog,
             mut keeper,
             permit,
-            acted,
+            completed,
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
         assert!(watchdog.timeout_action.is_some());
 
-        permit.send(());
-        drive_until_acted(&mut watchdog, &acted).await;
-        poll_once(&mut watchdog);
-        assert!(watchdog.platform.is_some());
-
-        acted.store(false, Ordering::SeqCst);
         arm_and_expire(&mut watchdog, &mut keeper, 4).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.timeout_action.is_some());
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+        assert!(watchdog.state.config.enabled());
 
         permit.send(());
-        drive_until_acted(&mut watchdog, &acted).await;
         poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(watchdog.timeout_action.is_some());
+        assert!(!watchdog.state.config.enabled());
+
+        watchdog.write(Register::Config, 0).unwrap();
+        poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+
+        permit.send(());
+        poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
         assert!(watchdog.timeout_action.is_none());
+        assert!(watchdog.platform.is_some());
+        poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+    }
+
+    #[async_test]
+    async fn ready_timeout_action_completes_in_one_poll(driver: DefaultDriver) {
+        let TestWatchdog {
+            mut watchdog,
+            mut keeper,
+            permit,
+            completed,
+        } = test_watchdog(&driver).await;
+
+        permit.send(());
+        arm_and_expire(&mut watchdog, &mut keeper, 2).await;
+        poll_once(&mut watchdog);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert!(watchdog.timeout_action.is_none());
+        assert!(watchdog.platform.is_some());
+        assert!(!watchdog.state.config.enabled());
+    }
+
+    #[async_test]
+    async fn base_platform_persists_before_callbacks(driver: DefaultDriver) {
+        use crate::platform::BaseWatchdogPlatform;
+        use vmcore::non_volatile_store::NonVolatileStore;
+        use vmcore::non_volatile_store::NonVolatileStoreError;
+
+        struct GatedStore {
+            permit: mesh::Receiver<()>,
+            fail: bool,
+        }
+
+        #[async_trait::async_trait]
+        impl NonVolatileStore for GatedStore {
+            async fn persist(&mut self, data: Vec<u8>) -> Result<(), NonVolatileStoreError> {
+                assert_eq!(data, [1]);
+                self.permit.recv().await.unwrap();
+                if self.fail {
+                    return Err(NonVolatileStoreError::new(std::io::Error::other(
+                        "test store failure",
+                    )));
+                }
+                Ok(())
+            }
+
+            async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
+                Ok(None)
+            }
+        }
+
+        for fail in [false, true] {
+            let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+            let vmtime = keeper.builder().build(&driver).await.unwrap();
+            let (permit, permit_recv) = mesh::channel();
+            let mut platform = BaseWatchdogPlatform::new(Box::new(GatedStore {
+                permit: permit_recv,
+                fail,
+            }))
+            .await
+            .unwrap();
+            let completed = Arc::new(AtomicUsize::new(0));
+            let callback_count = completed.clone();
+            platform.add_callback(Box::new(move || {
+                callback_count.fetch_add(1, Ordering::SeqCst);
+            }));
+            let mut watchdog =
+                WatchdogServices::new("test", vmtime.access("watchdog"), Box::new(platform), false)
+                    .await;
+
+            arm_and_expire(&mut watchdog, &mut keeper, 2).await;
+            poll_once(&mut watchdog);
+            assert_eq!(completed.load(Ordering::SeqCst), 0);
+            assert!(watchdog.timeout_action.is_some());
+            permit.send(());
+            poll_once(&mut watchdog);
+            assert_eq!(completed.load(Ordering::SeqCst), 1);
+            assert!(watchdog.timeout_action.is_none());
+            poll_once(&mut watchdog);
+            assert_eq!(completed.load(Ordering::SeqCst), 1);
+        }
     }
 }

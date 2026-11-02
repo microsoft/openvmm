@@ -251,9 +251,13 @@ mod tests {
     use super::*;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::future::Future;
+    use std::pin::pin;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use vmcore::save_restore::SaveRestore;
     use vmcore::vmtime::SavedState as VmTimeSavedState;
     use vmcore::vmtime::VmTime;
     use vmcore::vmtime::VmTimeKeeper;
@@ -262,14 +266,14 @@ mod tests {
     /// A platform whose timeout action waits for a permit.
     struct GatedPlatform {
         permit: mesh::Receiver<()>,
-        acted: Arc<AtomicBool>,
+        completed: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
     impl WatchdogPlatform for GatedPlatform {
         async fn on_timeout(&mut self) {
             self.permit.recv().await.unwrap();
-            self.acted.store(true, Ordering::SeqCst);
+            self.completed.fetch_add(1, Ordering::SeqCst);
         }
 
         async fn read_and_clear_boot_status(&mut self) -> bool {
@@ -286,10 +290,10 @@ mod tests {
         let mut keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
         let vmtime = keeper.builder().build(&driver).await.unwrap();
         let (permit, permit_recv) = mesh::channel();
-        let acted = Arc::new(AtomicBool::new(false));
+        let completed = Arc::new(AtomicUsize::new(0));
         let platform = GatedPlatform {
             permit: permit_recv,
-            acted: acted.clone(),
+            completed: completed.clone(),
         };
         let mut device = GuestWatchdogServices::new(
             vmtime.access("guest-watchdog"),
@@ -298,6 +302,7 @@ mod tests {
             false,
         )
         .await;
+        device.start();
 
         // Configured and enabled, with a one-second count.
         device
@@ -315,10 +320,25 @@ mod tests {
             .await;
 
         device.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
-        assert!(!acted.load(Ordering::SeqCst));
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
 
-        permit.send(());
-        device.stop().await;
-        assert!(acted.load(Ordering::SeqCst));
+        {
+            let mut stop = pin!(device.stop());
+            assert!(
+                stop.as_mut()
+                    .poll(&mut Context::from_waker(std::task::Waker::noop()))
+                    .is_pending()
+            );
+            assert_eq!(completed.load(Ordering::SeqCst), 0);
+            permit.send(());
+            stop.await;
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        let saved = device.save().unwrap();
+        device.reset().await;
+        device.restore(saved).unwrap();
+        device.start();
+        device.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 }
