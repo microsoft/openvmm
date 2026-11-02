@@ -382,7 +382,7 @@ pub struct SavedStateUnit {
 pub struct StateTransitionError {
     op: &'static str,
     #[source]
-    errors: UnitErrorSet,
+    error: anyhow::Error,
 }
 
 fn extract<T, E: Into<anyhow::Error>, U>(
@@ -407,7 +407,7 @@ fn extract<T, E: Into<anyhow::Error>, U>(
     } else {
         Err(StateTransitionError {
             op,
-            errors: UnitErrorSet(errors),
+            error: UnitErrorSet(errors).into(),
         })
     }
 }
@@ -599,7 +599,7 @@ impl StateUnits {
         if !self.restore_allowed {
             return Err(StateTransitionError {
                 op: "restore",
-                errors: UnitErrorSet(vec![("lifecycle".into(), RestoreRequiresReset.into())]),
+                error: RestoreRequiresReset.into(),
             });
         }
 
@@ -1042,13 +1042,16 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    use super::RestoreRequiresReset;
     use super::StateUnit;
     use super::StateUnits;
+    use super::UnitErrorSet;
     use crate::run_unit;
     use inspect::InspectMut;
     use mesh::payload::Protobuf;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::error::Error as _;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicUsize;
@@ -1202,7 +1205,8 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 1);
 
         let state = units.save().await.unwrap();
-        assert!(units.restore(state).await.is_err());
+        let err = units.restore(state).await.unwrap_err();
+        assert!(err.source().unwrap().is::<RestoreRequiresReset>());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
 
         units.reset().await.unwrap();
@@ -1236,7 +1240,14 @@ mod tests {
             })
             .unwrap();
         let state = units.save().await.unwrap();
-        assert!(units.restore(state).await.is_err());
+        let err = units.restore(state).await.unwrap_err();
+        let unit_errors = err
+            .source()
+            .unwrap()
+            .downcast_ref::<UnitErrorSet>()
+            .unwrap();
+        assert_eq!(unit_errors.0.len(), 1);
+        assert_eq!(unit_errors.0[0].0.as_ref(), "device");
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
