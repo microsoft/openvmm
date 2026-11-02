@@ -22,6 +22,7 @@ pub fn load_linux_x86_mptable(
     gm: &GuestMemory,
     apic_ids: &[u32],
     level_triggered_irqs: &[u32],
+    ioapic_inputs: u8,
     reserved_memory_ranges: &[MemoryRange],
 ) -> Result<InitialLoad<X86Register>, LinuxError> {
     if !matches!(cfg.isolation, KernelIsolationConfig::None) {
@@ -54,6 +55,7 @@ pub fn load_linux_x86_mptable(
         &loader::mptable::MpTableConfig {
             apic_ids,
             level_triggered_irqs,
+            ioapic_inputs,
         },
         reserved_memory_ranges,
     )

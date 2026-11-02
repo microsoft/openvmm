@@ -52,17 +52,20 @@ describes the source definitions.
   rejects a longer command line, or one with an embedded NUL, rather than let
   the guest truncate it.
 
-  One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 6 and remains
+  One virtio-fs slot is exposed at MMIO `0xd0001000`, IRQ 17 and remains
   dormant when neither `--mount` nor `--mount-aggregate` is given; either one
   binds HostFs to it;
   one optional `--virtio-console <BACKEND>` is exposed at MMIO `0xd0002000`,
-  IRQ 7 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
-  exposes the fixed `distro` slot at MMIO `0xd0003000`, IRQ 4 and the fixed
-  `scratch` slot at MMIO `0xd0006000`, IRQ 11. The windows between them and
-  IRQs 9 and 12 stay unassigned. The profile also reserves MMIO `0xd0007000`,
-  IRQ 3 for the dedicated control console (`hvc2`), selected by the host-owned
-  `nvx_control_tty=hvc2` token. The reserved slot and resource identity do not
-  expose a live control endpoint. Both consoles
+  IRQ 18 as the boot/log console (`hvc1`); and `--microvm-sandbox-block`
+  exposes the fixed `distro` slot at MMIO `0xd0003000`, IRQ 19 and the fixed
+  `scratch` slot at MMIO `0xd0006000`, IRQ 22. The windows between them and
+  IRQs 20 and 21 stay unassigned. The profile also reserves MMIO `0xd0007000`,
+  IRQ 23 for the dedicated control console (`hvc2`), selected by the host-owned
+  `nvx_control_tty=hvc2` token. Each virtio-mmio window, `0xd0000000 + n *
+  0x1000`, interrupts on its own IOAPIC input, `16 + n`, with active-high edges
+  on every backend; the PIC sees none of these inputs, and the ISA IRQs carry
+  only the PIT (IRQ 0) and the RTC (IRQ 8). The reserved slot and resource
+  identity do not expose a live control endpoint. Both consoles
   remain virtio-console devices from the guest's perspective. Ordinary
   `--virtio-blk` is rejected. All use split rings, and each offers an exact
   feature mask of virtio 1.0 features: the NIC its MAC address; the block
@@ -71,14 +74,15 @@ describes the source definitions.
   notification suppression. No device offers `VIRTIO_F_ACCESS_PLATFORM`, since
   the microVM has no IOMMU, and no console offers its size. Firmware, ACPI,
   SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested virtualization, and
-  other devices are rejected. Linux discovers contiguous APIC IDs and the
-  IOAPIC from Intel MP 1.4 tables at `0x0` and `0x400`; `boot_params` is at
+  other devices are rejected. Linux discovers contiguous APIC IDs, the IOAPIC,
+  and the routing of its 24 inputs from Intel MP 1.4 tables at `0x0` and
+  `0x400`; `boot_params` is at
   `0x2000`, the command line starts at `0x20000`, and no ACPI or SMBIOS data is
   exposed. Host-driven save/restore, pulse-save/restore, and worker restart
   remain unavailable.
 
   `microvm` may also expose a dedicated control virtio-console at MMIO
-  `0xd0007000`, IRQ 3. It requires the boot virtio-console, preserves
+  `0xd0007000`, IRQ 23. It requires the boot virtio-console, preserves
   `console=hvc1`, and publishes `nvx_control_tty=hvc2`. The profile fixes
   boot-before-control discovery order and rejects user overrides that could
   change it.
@@ -102,11 +106,13 @@ describes the source definitions.
   as `microvm-v2`; the `microvm-v2` selector and the former ABI-v1 behavior are
   removed. Snapshots record microVM ABI value 3 and boot layout value 2. ABI
   value 3 offers no device `VIRTIO_F_ACCESS_PLATFORM` and no console
-  `VIRTIO_CONSOLE_F_SIZE`, which value 2 offered, so restore refuses a
+  `VIRTIO_CONSOLE_F_SIZE`, which value 2 offered, and gives each virtio-mmio
+  slot its own IOAPIC input past the ISA IRQs on every backend, where value 2
+  used ISA IRQs and put the NIC on another one on WHP, so restore refuses a
   snapshot of value 2, which must be recaptured.
   ```
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
-  at MMIO `0xd0000000`. KVM and MSHV use IRQ 10; WHP uses IRQ 5. Prefixes
+  at MMIO `0xd0000000`, IRQ 16, on every backend. Prefixes
   `/1` through `/30` are accepted. The first usable subnet address becomes
   the gateway; network, broadcast, and gateway addresses cannot be assigned
   to the guest. Guest and gateway MAC addresses are derived as
@@ -266,7 +272,7 @@ describes the source definitions.
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
 * `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>`: With `--machine microvm`, attach
-  one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 6, with tag `microvm`.
+  one no-DAX HostFs device at MMIO `0xd0001000`, IRQ 17, with tag `microvm`.
   `--mount` may appear once. The default mode is read-only; `rw` must be
   explicit. The guest target ends at the first comma, and the mode follows
   the last comma, so a host path may contain commas when the mode is given.
@@ -1006,7 +1012,7 @@ Serial devices can be configured to appear as different devices inside the guest
   behaves normally.
 * `--virtio-console <BACKEND>`: Expose a virtio console device. It normally
   appears as `/dev/hvc0`. Under `--machine microvm`, it occupies fixed MMIO
-  `0xd0002000`, IRQ 7, and is selected as `/dev/hvc1`; the raw portb path
+  `0xd0002000`, IRQ 18, and is selected as `/dev/hvc1`; the raw portb path
   remains available as `hvc0` for early output and recovery.
 
   A microVM accepts these explicit attachment policies:
@@ -1034,7 +1040,7 @@ Serial devices can be configured to appear as different devices inside the guest
 
 * `--microvm-control-console <BACKEND>`: With `--machine microvm`, expose a
   second independent single-port virtio console at fixed MMIO `0xd0007000`, IRQ
-  3. `--virtio-console` is required on a fresh boot and remains the only kernel
+  23. `--virtio-console` is required on a fresh boot and remains the only kernel
   console. The control device normally appears as the profile-owned
   `nvx_control_tty=hvc2`.
 

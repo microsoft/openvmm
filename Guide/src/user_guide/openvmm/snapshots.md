@@ -606,7 +606,7 @@ immediately with a clear error if any active device does not support it.
   `--processors`. MicroVM restore reads them authoritatively from the manifest
   and rejects overrides. Persisted microVM ABI value 3 and boot-layout value 2
   are supported; a snapshot of ABI value 2, whose devices offered
-  `VIRTIO_F_ACCESS_PLATFORM`, must be recaptured.
+  `VIRTIO_F_ACCESS_PLATFORM` and used ISA IRQs, must be recaptured.
 - MicroVM restore requires the backend, CPU generation, and CPU profile of
   the capture, and an OpenVMM build that computes the same effective CPUID.
   A host profile's snapshot, including one of a cold boot whose `auto` fell

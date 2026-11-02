@@ -187,6 +187,7 @@ pub(super) fn load_linux_x86_mptable(
         &vm.gm,
         &apic_ids,
         &openvmm_defs::microvm::MICROVM_LEVEL_TRIGGERED_IRQS,
+        openvmm_defs::microvm::MICROVM_IOAPIC_INPUTS,
         &reserved_memory_ranges,
     )?)
 }
@@ -484,7 +485,7 @@ fn virtio_mmio_config(
     let (start, irq, features) = match id {
         "virtio-net" => (
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_MMIO_BASE,
-            openvmm_defs::microvm::microvm_virtio_net_irq(None)?,
+            openvmm_defs::microvm::MICROVM_VIRTIO_NET_IRQ,
             openvmm_defs::microvm::MICROVM_VIRTIO_NET_FEATURES,
         ),
         // The configuration orders virtio-fs devices by slot.
@@ -805,8 +806,7 @@ pub(super) fn x86_topology_builder(
     }
 }
 
-// The microVM runs on Linux and Windows hosts alone, where its NIC has an
-// interrupt.
+// The microVM runs on Linux and Windows hosts alone.
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::virtio_mmio_config;
@@ -916,24 +916,25 @@ mod tests {
         ];
         let mut sandbox_block_index = 0;
         let mut filesystem_index = 0;
-        // Each device in the order of the slots of its kind, with its window
-        // and the features that the guest sees: never access-platform, which
-        // the transport offers every device, nor the console size, which the
-        // virtio-console device offers.
-        let devices: [(&str, u64, &[u32]); 6] = [
-            ("virtio-net", 0xd000_0000, &[5, 32]),
-            ("virtiofs", 0xd000_1000, &[28, 29, 32]),
-            ("virtio-console", 0xd000_2000, &[28, 29, 32]),
-            ("virtio-blk", 0xd000_3000, &[2, 5, 6, 9, 10, 28, 29, 32]),
-            ("virtio-blk", 0xd000_6000, &[2, 6, 9, 10, 28, 29, 32]),
+        // Each device in the order of the slots of its kind, with its window,
+        // its IOAPIC input, and the features that the guest sees: never
+        // access-platform, which the transport offers every device, nor the
+        // console size, which the virtio-console device offers.
+        let devices: [(&str, u64, u32, &[u32]); 6] = [
+            ("virtio-net", 0xd000_0000, 16, &[5, 32]),
+            ("virtiofs", 0xd000_1000, 17, &[28, 29, 32]),
+            ("virtio-console", 0xd000_2000, 18, &[28, 29, 32]),
+            ("virtio-blk", 0xd000_3000, 19, &[2, 5, 6, 9, 10, 28, 29, 32]),
+            ("virtio-blk", 0xd000_6000, 22, &[2, 6, 9, 10, 28, 29, 32]),
             (
                 openvmm_defs::microvm::MICROVM_VIRTIO_CONTROL_CONSOLE_ID,
                 0xd000_7000,
+                23,
                 &[28, 29, 32],
             ),
         ];
-        for (id, mmio_base, bits) in devices {
-            let (start, len, _irq, features, interrupt_mode) = virtio_mmio_config(
+        for (id, mmio_base, input, bits) in devices {
+            let (start, len, irq, features, interrupt_mode) = virtio_mmio_config(
                 id,
                 &blocks,
                 &mut sandbox_block_index,
@@ -942,6 +943,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(start, mmio_base, "{id}");
+            assert_eq!(irq, input, "{id}");
             let mut device = VirtioMmioDevice::new_with_disabled_features_and_interrupt_mode(
                 Box::new(EveryFeatureDevice),
                 &driver_source.simple(),

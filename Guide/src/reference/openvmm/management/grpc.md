@@ -219,7 +219,7 @@ On cold boot, `DevicesConfig.virtio_consoles` may hold one entry, which
 configures a microVM Unix socket or named-pipe endpoint. Listener mode
 recreates the path on restore.
 Client mode is required and uses a five-second connection timeout
-before vCPUs start. The device uses MMIO `0xd0002000`, IRQ 7, and selects
+before vCPUs start. The device uses MMIO `0xd0002000`, IRQ 18, and selects
 `hvc1`; its canonical path and policy become the stable restore attachment.
 
 `DevicesConfig.virtiofs_config` may bind one HostFs attachment to the fixed
@@ -232,7 +232,7 @@ target, and access mode, and the live root must retain its saved identity;
 the snapshot's denied, allowed, and writable paths apply again. A snapshot
 captured with the slot dormant may
 omit the attachment or supply a new one; after `ResumeVM`, the guest explicitly
-mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 6, one
+mounts tag `microvm`. The fixed device uses MMIO `0xd0001000`, IRQ 17, one
 request queue, and no DAX window. The management API binds only a single
 directory: it cannot attach an aggregate of several host directories, as the
 command line's `--mount-aggregate` does, and it cannot restore a snapshot of
@@ -264,7 +264,8 @@ currently blockless; role-bearing sandbox blocks remain CLI-only. Snapshots
 record microVM ABI value 3 and boot layout value 2, which identifies the
 Linux-direct MP-table layout. Snapshots of ABI values 1 and 2 are unsupported:
 value 2 offered `VIRTIO_F_ACCESS_PLATFORM` on every device but the NIC, and the
-console size on the consoles.
+console size on the consoles, and put the virtio devices on ISA IRQs, where
+value 3 gives each one its own IOAPIC input past them.
 
 `VMConfig.cpu_profile` selects the microVM's CPU profile as
 [`--cpu-profile`](cli.md) does, with the same values and checks: `auto`, the
