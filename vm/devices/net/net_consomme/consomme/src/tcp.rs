@@ -724,7 +724,7 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 #[derive(Inspect)]
 struct TcpListener {
     #[inspect(skip)]
-    socket: PolledSocket<Socket>,
+    socket: Option<PolledSocket<Socket>>,
     host_port: u16,
 }
 
@@ -962,6 +962,24 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
+        self.inner.tcp.listeners.retain(|key, listener| {
+            let socket = listener.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    listener.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        guest_port = key.guest_port,
+                        family = %key.family,
+                        "failed to update driver for tcp listener"
+                    );
+                    false
+                }
+            }
+        });
         self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
@@ -3003,14 +3021,18 @@ impl TcpListener {
             );
             return Err(BindError::Io(err));
         }
-        Ok(Self { socket, host_port })
+        Ok(Self {
+            socket: Some(socket),
+            host_port,
+        })
     }
 
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Result<Option<(Socket, SocketAddr)>, DropReason> {
-        match self.socket.poll_accept(cx) {
+        let socket = self.socket.as_mut().unwrap();
+        match socket.poll_accept(cx) {
             Poll::Ready(r) => match r {
                 Ok((socket, address)) => match address.as_socket() {
                     Some(addr) => Ok(Some((socket, addr))),
@@ -3024,7 +3046,7 @@ impl TcpListener {
                     }
                 },
                 Err(_) => {
-                    let err = take_socket_error(&self.socket);
+                    let err = take_socket_error(socket);
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
                         host_port = self.host_port,
