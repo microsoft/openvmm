@@ -1196,7 +1196,8 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("allowed"), b"data").unwrap();
-        std::fs::write(root.path().join("blocked.exe"), b"data").unwrap();
+        std::fs::write(root.path().join("blocked.EXE"), b"data").unwrap();
+        std::fs::create_dir(root.path().join("directory.ExE")).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1242,7 +1243,7 @@ mod tests {
                         &remaining[fuse_dirent_align(header_size + entry.namelen as usize)..];
                 }
                 assert!(names.iter().any(|name| name == b"allowed"));
-                for name in [b"blocked.exe".as_slice(), b"hidden"] {
+                for name in [b"blocked.EXE".as_slice(), b"directory.ExE", b"hidden"] {
                     assert_eq!(
                         names.iter().any(|entry| entry == name),
                         !sandbox,
@@ -1251,6 +1252,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn plain_readdir_revalidates_sandbox_ancestors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("parent").join("child")).unwrap();
+        std::fs::write(root.path().join("parent").join("child").join("file"), b"").unwrap();
+        let mut options = super::LxVolumeOptions::new();
+        options
+            .sandbox(true)
+            .sandbox_disallowed_extensions(vec!["exe"]);
+        let fs = VirtioFs::new(root.path(), Some(&options)).unwrap();
+        let parent = fs
+            .get_inode(FUSE_ROOT_ID)
+            .unwrap()
+            .lookup_child("parent".as_ref())
+            .unwrap()
+            .0;
+        let inode = std::sync::Arc::new(parent.lookup_child("child".as_ref()).unwrap().0);
+        let file = std::sync::Arc::clone(&inode)
+            .open(lx::O_RDONLY | lx::O_DIRECTORY)
+            .unwrap();
+        assert!(!file.read_dir(&fs, 0, 4096, false).unwrap().is_empty());
+
+        // An open handle must not bypass policy after its inode path is refreshed.
+        inode.lookup(std::path::PathBuf::from("blocked.EXE").join("child"));
+        assert_eq!(
+            file.read_dir(&fs, 0, 4096, false).unwrap_err(),
+            lx::Error::EACCES
+        );
     }
 
     #[test]

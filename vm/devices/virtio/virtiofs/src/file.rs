@@ -76,6 +76,11 @@ impl VirtioFsFile {
         size: u32,
         plus: bool,
     ) -> lx::Result<Vec<u8>> {
+        if !plus && self.inode.volume.is_sandbox() {
+            // Revalidate the directory and its ancestors once per request.
+            // Child filtering uses the host enumeration's metadata snapshot.
+            self.inode.get_attr()?;
+        }
         let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
         // Report the directory's guest-visible inode number so `.`/`..` agree
@@ -121,18 +126,6 @@ impl VirtioFsFile {
                 let inode_nr = if entry.name == "." || entry.name == ".." {
                     self_inode_nr
                 } else {
-                    // Sandbox mode also hides entries based on names and host
-                    // attributes. Check those without taking lookup references.
-                    if self.inode.volume.is_sandbox() {
-                        match self.inode.lookup_child(&entry.name) {
-                            Ok(_) => {}
-                            Err(err) if err == lx::Error::EACCES || err == lx::Error::ENOENT => {
-                                entry_count -= 1;
-                                return Ok(true);
-                            }
-                            Err(err) => return Err(err),
-                        }
-                    }
                     // Children share this directory's volume, so apply its
                     // guest inode mapping to match lookup/readdirplus.
                     self.inode.guest_ino(entry.inode_nr)

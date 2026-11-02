@@ -78,6 +78,37 @@ impl VolumeState {
     pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<lx::LxString>> {
         fs::read_reparse_link(handle, self)
     }
+
+    fn check_sandbox_name(&self, name: &ffi::OsStr) -> lx::Result<()> {
+        if !self.options.sandbox {
+            return Ok(());
+        }
+        if util::is_dos_device_name(name)? {
+            return Err(lx::Error::EACCES);
+        }
+        if let Some(extension) = Path::new(name).extension() {
+            let ext = extension.to_ascii_lowercase();
+            if self.options.sandbox_disallowed_extensions.contains(&ext) {
+                return Err(lx::Error::EACCES);
+            }
+        }
+        Ok(())
+    }
+
+    fn check_sandbox_attributes(&self, attributes: u32) -> lx::Result<()> {
+        if self.options.sandbox
+            && attributes
+                & (W32Fs::FILE_ATTRIBUTE_HIDDEN
+                    | W32Fs::FILE_ATTRIBUTE_SYSTEM
+                    | W32Fs::FILE_ATTRIBUTE_OFFLINE
+                    | W32Fs::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+                    .0
+                != 0
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
+    }
 }
 
 // Windows implementation of LxVolume.
@@ -149,21 +180,7 @@ impl LxVolume {
                 _ => return Err(lx::Error::EINVAL),
             };
 
-            if util::is_dos_device_name(next_path)? {
-                return Err(lx::Error::EACCES);
-            }
-
-            if let Some(extension) = Path::new(next_path).extension() {
-                let ext = extension.to_ascii_lowercase();
-                if self
-                    .state
-                    .options
-                    .sandbox_disallowed_extensions
-                    .contains(&ext)
-                {
-                    return Err(lx::Error::EACCES);
-                }
-            }
+            self.state.check_sandbox_name(next_path)?;
 
             cur_path = cur_path.join(next_path);
 
@@ -183,23 +200,8 @@ impl LxVolume {
                     return Err(lx::Error::EACCES);
                 }
             };
-            self.check_sandbox_attributes(information.FileAttributes)?;
-        }
-
-        Ok(())
-    }
-
-    fn check_sandbox_attributes(&self, attributes: u32) -> lx::Result<()> {
-        if self.state.options.sandbox
-            && attributes
-                & (W32Fs::FILE_ATTRIBUTE_HIDDEN
-                    | W32Fs::FILE_ATTRIBUTE_SYSTEM
-                    | W32Fs::FILE_ATTRIBUTE_OFFLINE
-                    | W32Fs::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
-                    .0
-                != 0
-        {
-            return Err(lx::Error::EACCES);
+            self.state
+                .check_sandbox_attributes(information.FileAttributes)?;
         }
 
         Ok(())
@@ -473,7 +475,7 @@ impl LxVolume {
             if self.state.options.sandbox || source_is_dir.is_some() {
                 let info: FileSystem::FILE_BASIC_INFORMATION =
                     util::query_information_file(&target)?;
-                self.check_sandbox_attributes(info.FileAttributes)?;
+                self.state.check_sandbox_attributes(info.FileAttributes)?;
                 if let Some(source_is_dir) = source_is_dir {
                     let target_is_dir =
                         info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0;
@@ -1414,12 +1416,7 @@ impl LxFile {
         assert!(local_offset >= DOT_ENTRY_COUNT);
 
         let mut offset = local_offset - DOT_ENTRY_COUNT;
-        enumerator.read_dir(
-            &self.handle,
-            &self.state.fs_context,
-            &mut offset,
-            &mut callback,
-        )?;
+        enumerator.read_dir(&self.handle, &self.state, &mut offset, &mut callback)?;
 
         Ok(())
     }
@@ -1534,6 +1531,138 @@ mod tests {
     use crate::LxCreateOptions;
     use crate::LxVolumeOptions;
     use test_with_tracing::test;
+
+    fn set_host_attributes(path: &Path, attributes: u32) {
+        let file = std::fs::OpenOptions::new()
+            .access_mode((W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_WRITE_ATTRIBUTES).0)
+            .custom_flags(W32Fs::FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(path)
+            .unwrap();
+        let handle = file.into();
+        let mut info: FileSystem::FILE_BASIC_INFORMATION =
+            util::query_information_file(&handle).unwrap();
+        info.FileAttributes |= attributes;
+        util::set_information_file(&handle, &info).unwrap();
+    }
+
+    fn directory_entries(file: &mut LxFile, mut offset: lx::off_t) -> Vec<lx::DirEntry> {
+        let mut entries = Vec::new();
+        loop {
+            let previous_count = entries.len();
+            file.read_dir(offset, |entry| {
+                offset = entry.offset;
+                entries.push(entry);
+                Ok(true)
+            })
+            .unwrap();
+            if entries.len() == previous_count {
+                return entries;
+            }
+        }
+    }
+
+    #[test]
+    fn sandbox_readdir_preserves_cookies_across_filtered_windows() {
+        let root = tempfile::tempdir().unwrap();
+        for i in 0..150 {
+            std::fs::write(root.path().join(format!("file{i:03}")), b"").unwrap();
+        }
+        let raw_volume = LxVolume::new(root.path(), &LxVolumeOptions::new()).unwrap();
+        let mut raw_dir = raw_volume
+            .open(Path::new(""), lx::O_DIRECTORY, None)
+            .unwrap();
+        let raw = directory_entries(&mut raw_dir, DOT_ENTRY_COUNT);
+        assert_eq!(raw.len(), 150);
+        let visible_indices = [0, 148, 149];
+        for (i, entry) in raw.iter().enumerate() {
+            if !visible_indices.contains(&i) {
+                set_host_attributes(
+                    &root.path().join(entry.name.to_str().unwrap()),
+                    W32Fs::FILE_ATTRIBUTE_HIDDEN.0,
+                );
+            }
+        }
+        let mut options = LxVolumeOptions::new();
+        options.sandbox(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let mut dir = volume.open(Path::new(""), lx::O_DIRECTORY, None).unwrap();
+        let mut offset = DOT_ENTRY_COUNT;
+        for i in visible_indices {
+            let mut found = None;
+            dir.read_dir(offset, |entry| {
+                if found.is_some() {
+                    return Ok(false);
+                }
+                found = Some(entry);
+                Ok(true)
+            })
+            .unwrap();
+            let found = found.expect("filtered windows must not end enumeration");
+            assert_eq!(found.name, raw[i].name);
+            assert_eq!(found.offset, raw[i].offset);
+            offset = found.offset;
+        }
+        assert!(directory_entries(&mut dir, offset).is_empty());
+
+        let remaining = directory_entries(&mut dir, raw[0].offset);
+        assert_eq!(remaining.len(), 2);
+        for (entry, i) in remaining.iter().zip([148, 149]) {
+            assert_eq!(entry.name, raw[i].name);
+            assert_eq!(entry.offset, raw[i].offset);
+        }
+        for i in visible_indices {
+            set_host_attributes(
+                &root.path().join(raw[i].name.to_str().unwrap()),
+                W32Fs::FILE_ATTRIBUTE_HIDDEN.0,
+            );
+        }
+        assert!(directory_entries(&mut dir, DOT_ENTRY_COUNT).is_empty());
+    }
+
+    #[test]
+    fn sandbox_readdir_caches_visibility_but_path_operations_recheck() {
+        let root = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.path().join(name), b"").unwrap();
+        }
+        let mut options = LxVolumeOptions::new();
+        options.sandbox(true);
+        let volume = LxVolume::new(root.path(), &options).unwrap();
+        let mut dir = volume.open(Path::new(""), lx::O_DIRECTORY, None).unwrap();
+        let mut first = None;
+        let mut second = None;
+        dir.read_dir(DOT_ENTRY_COUNT, |entry| {
+            if first.is_none() {
+                first = Some(entry);
+                Ok(true)
+            } else {
+                second = Some(entry);
+                Ok(false)
+            }
+        })
+        .unwrap();
+        let first = first.unwrap();
+        let second = second.unwrap();
+        let name = second.name.to_str().unwrap();
+        set_host_attributes(&root.path().join(name), W32Fs::FILE_ATTRIBUTE_HIDDEN.0);
+
+        let cached = directory_entries(&mut dir, first.offset);
+        assert_eq!(cached[0].name, second.name);
+        assert_eq!(
+            volume.lstat(Path::new(name)).unwrap_err(),
+            lx::Error::EACCES
+        );
+        assert_eq!(
+            volume
+                .open(Path::new(name), lx::O_RDONLY, None)
+                .err()
+                .unwrap(),
+            lx::Error::EACCES
+        );
+        let refreshed = directory_entries(&mut dir, DOT_ENTRY_COUNT);
+        assert_eq!(refreshed.len(), 2);
+        assert!(!refreshed.iter().any(|entry| entry.name == second.name));
+    }
 
     #[test]
     fn ordinary_data_opens_preserve_open_semantics() {

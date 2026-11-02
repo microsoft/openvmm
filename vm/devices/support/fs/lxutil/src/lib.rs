@@ -718,6 +718,8 @@ impl LxFile {
     /// # Windows
     ///
     /// The . and .. entries are always returned, but their inode number is not set.
+    /// Sandbox filtering uses the names and attributes captured in each cached
+    /// enumeration window; subsequent path-based operations recheck access.
     ///
     /// # Unix
     ///
