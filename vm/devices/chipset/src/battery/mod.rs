@@ -114,7 +114,6 @@ pub struct BatteryDevice {
 impl BatteryDevice {
     /// Create a new battery device
     pub fn new(platform: BatteryRuntimeDeps, base_addr: u64) -> Self {
-        platform.notify_interrupt.set_level(false);
         BatteryDevice {
             rt: platform,
             mmio_region: (

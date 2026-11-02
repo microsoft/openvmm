@@ -3533,8 +3533,6 @@ mod tests {
         let initial_target = TestLineInterruptTarget::new_arc();
         let evtq = LineInterrupt::new_with_target("EVTQ", initial_target.clone(), 0);
         let gerror = LineInterrupt::new_with_target("GERROR", initial_target.clone(), 1);
-        evtq.set_level(true);
-        gerror.set_level(true);
         let mut initial_device = SmmuDevice::new(
             TEST_MMIO_BASE,
             GuestMemory::allocate(0x4_0000),
@@ -3544,7 +3542,7 @@ mod tests {
         );
         assert!(
             !initial_target.is_high(0) && !initial_target.is_high(1),
-            "construction must publish low"
+            "new interrupt outputs default to low"
         );
         write64(
             &mut initial_device,

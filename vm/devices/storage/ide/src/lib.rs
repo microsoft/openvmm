@@ -1143,7 +1143,6 @@ impl Channel {
             ChannelType::Secondary => 1,
         };
 
-        interrupt.set_level(false);
         Ok(Self {
             drives: [
                 primary_media

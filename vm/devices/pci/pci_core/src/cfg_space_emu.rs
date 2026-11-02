@@ -364,7 +364,6 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         pin: PciInterruptPin,
         line: LineInterrupt,
     ) -> Arc<IntxInterrupt> {
-        line.set_level(false);
         let intx_interrupt = Arc::new(IntxInterrupt {
             pin,
             line,

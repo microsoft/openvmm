@@ -3,8 +3,9 @@
 
 //! Infrastructure to support line interrupts.
 //!
-//! Devices own their output levels and must establish them during construction,
-//! reset, and restore. Targets own interrupt recognition and its saved history.
+//! New outputs default to low. Devices own their output levels and must establish
+//! them during reset and restore, or construction if initially high.
+//! Targets own interrupt recognition and its saved history.
 //! A stopped [`LineSet`] caches publications without calling targets. Starting
 //! it replays the final levels after targets have started and before producers
 //! start. Pulses completed while the set is stopped are not replayed.
@@ -81,7 +82,7 @@ impl Line {
     fn new(debug_label: Cow<'static, str>) -> Self {
         Self {
             debug_label,
-            is_high: None,
+            is_high: Some(false),
         }
     }
 }
@@ -399,7 +400,7 @@ fn inspect_mappings(mappings: &[TargetMapping]) -> impl '_ + Inspect {
 }
 
 impl LineSet {
-    /// Creates a stopped line set with no published outputs.
+    /// Creates a stopped line set. New producer contributions default to low.
     pub fn new() -> Self {
         Self {
             state: Default::default(),
@@ -777,7 +778,12 @@ mod tests {
         let set = LineSet::new();
         set.add_target(0..=0, 0, "target", Arc::new(RecordingTarget::default()));
         let a = set.new_line(0, "a").unwrap();
-        let b = set.new_line(0, "b").unwrap();
+        let b = a.new_shared("b").unwrap();
+        assert_eq!(b.inner.lock().lines[&b.line_key].is_high, Some(false));
+        assert!(a.inner.lock().unpublished_sources().next().is_none());
+        set.start();
+        set.stop();
+        set.reset();
         a.set_level(true);
         {
             let inner = a.inner.lock();
@@ -797,9 +803,14 @@ mod tests {
 
         set.reset();
         assert_eq!(a.inner.lock().unpublished_sources().count(), 2);
+        // A publication between manager reset and producer reset must not
+        // substitute for the producer establishing its actual reset output.
+        a.set_level(true);
         a.set_level(false);
+        assert_eq!(a.inner.lock().unpublished_sources().count(), 1);
         b.set_level(false);
         assert!(a.inner.lock().unpublished_sources().next().is_none());
+        assert!(!a.inner.lock().is_high());
     }
 
     #[test]

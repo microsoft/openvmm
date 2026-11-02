@@ -461,12 +461,6 @@ impl SmmuSharedState {
         gerror_irq: Option<LineInterrupt>,
     ) -> Arc<Self> {
         let oas_mask = (1u64 << oas_bits) - 1;
-        if let Some(irq) = &evtq_irq {
-            irq.set_level(false);
-        }
-        if let Some(irq) = &gerror_irq {
-            irq.set_level(false);
-        }
         Arc::new(Self {
             inner: RwLock::new(SharedStateInner {
                 capabilities_frozen: false,

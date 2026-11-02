@@ -59,7 +59,6 @@ struct DualPicStats {
 
 impl DualPic {
     pub fn new(ready: LineInterrupt, port_io: &mut dyn RegisterPortIoIntercept) -> Self {
-        ready.set_level(false);
         let mut primary_region = port_io.new_io_region(
             "primary",
             (PRIMARY_PIC_COMMAND_PORT..=PRIMARY_PIC_DATA_PORT).len() as u16,

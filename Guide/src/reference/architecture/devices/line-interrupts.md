@@ -36,21 +36,23 @@ provisional cascade low from inputs that have not yet been replayed.
 
 ## Establish outputs before start
 
-Establish every output during construction, reset, and restore, before the VM
-starts. Publish low explicitly when no interrupt is asserted; do not wait for
-the first register access, timer expiration, or device poll.
+New producer handles default to low; construction only needs to publish outputs
+that are initially high. Establish every output during reset and restore,
+including low when no interrupt is asserted. Do not wait for the first register
+access, timer expiration, or device poll.
 
 Restore must reconstruct the output without processing new work. For example,
 an IDE channel with a saved pending interrupt must publish its restored level
 before polling its drives. Otherwise, replay can temporarily lower a previously
 high wire, and the first poll can manufacture a rising edge.
 
-An output is initially unpublished, and line-manager reset marks existing
-outputs unpublished again. Ordinary stop/start retains publication validity.
+Line-manager reset marks existing outputs unpublished. Producers must establish
+their reset outputs even if they published a level after the manager reset but
+before their own reset. Ordinary stop/start retains publication validity.
 At start, an unpublished source attached to a target produces a warning and
 contributes low to the shared wire. This is a diagnostic, not a proof of restore
-correctness: publishing low during construction does not excuse failing to
-restore a saved high output.
+correctness: a default-low contribution does not excuse failing to restore a
+saved high output.
 
 Restore only into newly constructed or successfully reset stopped components.
 A paused VM with old device state is not a valid restore destination. See

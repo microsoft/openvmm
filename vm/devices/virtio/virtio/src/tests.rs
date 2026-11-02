@@ -4739,9 +4739,11 @@ async fn mmio_restore_publishes_interrupt_before_start(driver: DefaultDriver) {
     };
     let initial_target = TestLineInterruptTarget::new_arc();
     let initial_line = LineInterrupt::new_with_target("constructor", initial_target.clone(), 0);
-    initial_line.set_level(true);
     let _initial_device = new_device(initial_line);
-    assert!(!initial_target.is_high(0), "construction must publish low");
+    assert!(
+        !initial_target.is_high(0),
+        "new interrupt outputs default to low"
+    );
     for status in [0, 1, 2, 3] {
         let mut source = new_device(LineInterrupt::detached());
         let mut state = source.save().unwrap();

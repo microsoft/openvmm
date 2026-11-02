@@ -57,7 +57,6 @@ impl GenerationId {
 impl GenerationId {
     /// Construct a new GenerationId device.
     pub fn new(initial_generation_id: [u8; 16], platform: GenerationIdRuntimeDeps) -> Self {
-        platform.notify_interrupt.set_level(false);
         Self {
             id: initial_generation_id,
             ptr: [None, None],
