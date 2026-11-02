@@ -153,6 +153,17 @@ impl CreateVm {
             snapshot_destination.is_none() || restore_path.is_none(),
             "snapshot capture and restore paths are mutually exclusive"
         );
+        // A restore takes its machine from the snapshot, which never has
+        // nested virtualization, since no microVM with it is captured: refuse
+        // the request before the snapshot is read.
+        anyhow::ensure!(
+            restore_path.is_none()
+                || !requested_config
+                    .as_ref()
+                    .is_some_and(|config| config.nested_virt),
+            "a microVM restore takes its machine from the snapshot, which never has nested \
+             virtualization; clear nested_virt"
+        );
         anyhow::ensure!(
             !restore_entropy || restore_path.is_some(),
             "restore_entropy requires restore_path"
@@ -328,6 +339,14 @@ impl CreateVm {
         anyhow::ensure!(
             active || (snapshot_destination.is_none() && authoritative_restore.is_none()),
             "microVM snapshot options require the microVM machine profile"
+        );
+        // No backend saves a nested guest's processor state for the microVM,
+        // so refuse its capture before the VM starts rather than during the
+        // state transfer.
+        anyhow::ensure!(
+            !(active && req_config.nested_virt && snapshot_destination.is_some()),
+            "microVM nested virtualization does not support snapshot capture; clear nested_virt \
+             or destination_path"
         );
         anyhow::ensure!(
             active || cpu_profile.is_empty(),
@@ -1663,6 +1682,67 @@ mod tests {
             assert_eq!(parameters.generation, 0);
             assert!(!parameters.hooks.active());
         }
+    }
+
+    /// A microVM over the management RPC may have nested virtualization, but
+    /// not with a capture or a restore, which the request refuses before the
+    /// VM starts, and, for a restore, before it reads the snapshot.
+    #[test]
+    fn ttrpc_microvm_nested_virtualization_refuses_capture_and_restore() {
+        let request = |nested_virt: bool, destination: &str| vmservice::CreateVmRequest {
+            config: Some(vmservice::VmConfig {
+                machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                nested_virt,
+                ..Default::default()
+            }),
+            microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
+                destination_path: destination.to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let restore = |nested_virt: bool| vmservice::CreateVmRequest {
+            config: Some(vmservice::VmConfig {
+                machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                nested_virt,
+                ..Default::default()
+            }),
+            microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
+                restore_path: "missing-snapshot".to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let Err(error) = CreateVm::new(request(true, "snapshot")) else {
+            panic!("a nested microVM must refuse a capture");
+        };
+        assert_eq!(
+            error.to_string(),
+            "microVM nested virtualization does not support snapshot capture; clear nested_virt \
+             or destination_path"
+        );
+        let (_, config) = CreateVm::new(request(true, "")).unwrap();
+        assert!(config.nested_virt);
+        let (create, config) = CreateVm::new(request(false, "snapshot")).unwrap();
+        assert!(!config.nested_virt);
+        assert!(create.snapshot_destination.is_some());
+        // The restore's refusal precedes its read of the snapshot, which does
+        // not exist, and which a restore without the request fails to open.
+        let Err(error) = CreateVm::new(restore(true)) else {
+            panic!("a restore must refuse nested virtualization");
+        };
+        assert_eq!(
+            error.to_string(),
+            "a microVM restore takes its machine from the snapshot, which never has nested \
+             virtualization; clear nested_virt"
+        );
+        let Err(error) = CreateVm::new(restore(false)) else {
+            panic!("a restore of a missing snapshot must fail");
+        };
+        assert!(
+            format!("{error:#}").contains("failed to open snapshot directory"),
+            "{error:#}"
+        );
     }
 
     #[test]

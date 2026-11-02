@@ -1950,6 +1950,30 @@ fn validate_machine_load_mode(
     }
 }
 
+/// The backends whose microVMs may have nested virtualization.
+pub const MICROVM_NESTED_VIRTUALIZATION_BACKENDS: [&str; 2] = ["kvm", "whp"];
+
+/// Checks that a microVM with nested virtualization runs on a backend that
+/// supports it, KVM or WHP, when `hypervisor_id` names the backend. MSHV
+/// exposes nested virtualization only to a partition with the Hyper-V guest
+/// interface, which the NVX time ABI excludes, so a microVM on MSHV never has
+/// it.
+///
+/// Whether the host itself offers nested virtualization, and whether the
+/// microVM's CPU profile is Intel's, whose VMX nested virtualization exposes,
+/// is checked when the partition is created, before the guest runs.
+pub fn validate_microvm_nested_virtualization(hypervisor_id: Option<&str>) -> anyhow::Result<()> {
+    if let Some(hypervisor_id) = hypervisor_id {
+        anyhow::ensure!(
+            MICROVM_NESTED_VIRTUALIZATION_BACKENDS.contains(&hypervisor_id),
+            "microVM nested virtualization requires KVM or WHP, not {hypervisor_id}: MSHV \
+             exposes nested virtualization only with the Hyper-V guest interface, which the \
+             NVX time ABI excludes"
+        );
+    }
+    Ok(())
+}
+
 /// Validates the microVM machine contract. Standard-machine configurations are unchanged.
 pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> anyhow::Result<()> {
     let MachineProfile::Microvm = config.machine_profile else {
@@ -2036,10 +2060,12 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     anyhow::ensure!(
         !config.hypervisor.with_hv
             && config.hypervisor.with_vtl2.is_none()
-            && config.hypervisor.with_isolation.is_none()
-            && !config.hypervisor.nested_virt,
-        "microVM does not support Hyper-V enlightenments, VTL2, isolation, or nested virtualization"
+            && config.hypervisor.with_isolation.is_none(),
+        "microVM does not support Hyper-V enlightenments, VTL2, or isolation"
     );
+    if config.hypervisor.nested_virt {
+        validate_microvm_nested_virtualization(hypervisor_id)?;
+    }
 
     let expected_chipset = BaseChipsetManifest {
         with_generic_cmos_rtc: true,
@@ -2330,6 +2356,26 @@ mod tests {
         assert!(
             build_microvm_command_line(&["nvx_snapshot_tier=platform".to_owned()], false).is_err()
         );
+    }
+
+    /// A microVM may have nested virtualization on KVM and WHP, and on a
+    /// backend that is not yet selected, but never on MSHV.
+    #[test]
+    fn microvm_nested_virtualization_requires_kvm_or_whp() {
+        for hypervisor_id in [None, Some("kvm"), Some("whp")] {
+            validate_microvm_nested_virtualization(hypervisor_id).unwrap();
+        }
+        for hypervisor_id in ["mshv", "hvf", ""] {
+            let error = validate_microvm_nested_virtualization(Some(hypervisor_id))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "microVM nested virtualization requires KVM or WHP, not {hypervisor_id}:"
+                )),
+                "{error}"
+            );
+        }
     }
 
     #[test]

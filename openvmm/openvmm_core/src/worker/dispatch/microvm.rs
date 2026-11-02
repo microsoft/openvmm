@@ -106,6 +106,14 @@ impl MicrovmParameters {
             &parameters.cfg,
             Some(parameters.hypervisor.id()),
         )?;
+        // A snapshot never records nested virtualization, since no microVM
+        // with it is captured, so its restore never has it either.
+        anyhow::ensure!(
+            parameters.cfg.machine_profile != MachineProfile::Microvm
+                || !parameters.cfg.hypervisor.nested_virt
+                || parameters.saved_state.is_none(),
+            "a microVM restore never has nested virtualization"
+        );
         Ok(Self { snapshot_boundary })
     }
 
@@ -197,7 +205,9 @@ impl LoadedVm {
         &mut self,
         request: MicrovmSnapshotBoundaryRequest,
     ) -> bool {
-        let Some(request) = snapshot_rpc::filter_boundary_request(request) else {
+        let Some(request) =
+            snapshot_rpc::filter_boundary_request(request, self.inner.hypervisor_cfg.nested_virt)
+        else {
             return true;
         };
         if self.snapshot_boundary.stop_guard.is_some() {
@@ -325,6 +335,19 @@ impl LoadedVm {
         if !self.running {
             return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
                 RemoteError::new(anyhow::anyhow!("VM is already stopped")),
+            ));
+        }
+        // A microVM with nested virtualization is never captured: KVM cannot
+        // save a nested guest's processor state, and the VMX capabilities on
+        // which a guest hypervisor's state depends are the host backend's,
+        // which no CPU profile pins. The frontends refuse such a capture at
+        // launch; refuse it here too, before anything stops, rather than
+        // during the save.
+        if self.inner.hypervisor_cfg.nested_virt {
+            return Err(openvmm_defs::rpc::SnapshotQuiesceError::Rejected(
+                RemoteError::new(anyhow::anyhow!(
+                    "microVM snapshot capture does not support nested virtualization"
+                )),
             ));
         }
 

@@ -267,6 +267,12 @@ value 2 offered `VIRTIO_F_ACCESS_PLATFORM` on every device but the NIC, and the
 console size on the consoles, and put the virtio devices on ISA IRQs, where
 value 3 gives each one its own IOAPIC input past them.
 
+`VMConfig.nested_virt` gives a microVM nested virtualization, as
+[`--nested-virt`](cli.md) does: on KVM and WHP, never on MSHV, and under an
+Intel CPU profile, with VMX set in its effective CPUID. A request refuses it
+with `microvm_snapshot.destination_path`, and a restore refuses it, since a
+microVM with nested virtualization is never captured or restored.
+
 `VMConfig.cpu_profile` selects the microVM's CPU profile as
 [`--cpu-profile`](cli.md) does, with the same values and checks: `auto`, the
 default, which an empty value also selects, for the built-in profile of the

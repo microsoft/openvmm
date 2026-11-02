@@ -783,6 +783,34 @@ impl Options {
             && (self.restore_snapshot.is_none() || self.microvm.restore_network_policy)
     }
 
+    /// Checks `--nested-virt` of a microVM: never on MSHV, when
+    /// `--hypervisor` names the backend, and never with a capture or a
+    /// restore. No backend saves a nested guest's processor state for the
+    /// microVM, so a machine with nested virtualization is neither captured
+    /// nor restored, and a snapshot never has it: refuse both before the VM
+    /// starts rather than during the state transfer. OpenVMM runs this before
+    /// it reads a snapshot, and again with the other microVM options.
+    pub(crate) fn validate_microvm_nested_virtualization(&self) -> anyhow::Result<()> {
+        if self.machine != MachineProfileCli::Microvm || !self.nested_virt {
+            return Ok(());
+        }
+        if let Some(hypervisor) = self.hypervisor.as_deref() {
+            let name = hypervisor.split(':').next().unwrap_or(hypervisor);
+            openvmm_defs::microvm::validate_microvm_nested_virtualization(Some(name))?;
+        }
+        anyhow::ensure!(
+            self.microvm.snapshot_destination.is_none(),
+            "microVM nested virtualization does not support snapshot capture; omit \
+             --snapshot-destination or --nested-virt"
+        );
+        anyhow::ensure!(
+            self.restore_snapshot.is_none(),
+            "a microVM restore takes its machine from the snapshot, which never has nested \
+             virtualization; omit --nested-virt"
+        );
+        Ok(())
+    }
+
     pub(crate) fn validate_microvm_options(&self) -> anyhow::Result<()> {
         self.validate_microvm_host_loopback()?;
         if self.machine != MachineProfileCli::Microvm {
@@ -996,14 +1024,13 @@ impl Options {
             !self.hv
                 && !self.vtl2
                 && self.isolation.is_none()
-                && !self.nested_virt
                 && !self.get
                 && !self.vmbus_redirect
                 && self.vmbus_vsock_path.is_none()
                 && self.vmbus_vtl2_vsock_path.is_none()
                 && self.openhcl_dump_path.is_none()
                 && self.gdb.is_none(),
-            "microVM does not support Hyper-V, VTL2, isolation, nested virtualization, GET, or VMBus"
+            "microVM does not support Hyper-V, VTL2, isolation, GET, or VMBus"
         );
         if let Some(hypervisor) = self.hypervisor.as_deref() {
             let name = hypervisor.split(':').next().unwrap_or(hypervisor);
@@ -1013,6 +1040,7 @@ impl Options {
                 "microVM requires KVM or MSHV on Linux, or WHP on Windows"
             );
         }
+        self.validate_microvm_nested_virtualization()?;
 
         anyhow::ensure!(
             self.com1.is_none()
@@ -1582,6 +1610,74 @@ mod tests {
             let options = Options::try_parse_from(args).unwrap();
             assert!(options.validate_microvm_options().is_err());
         }
+    }
+
+    /// `--nested-virt` gives a microVM nested virtualization on KVM and WHP,
+    /// never on MSHV, and never with a capture or a restore, which the
+    /// options refuse before the VM starts, and before OpenVMM reads the
+    /// snapshot of a restore.
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_nested_virtualization_validation() {
+        let microvm = |extra: &[&str]| {
+            let mut args = vec!["openvmm", "--machine", "microvm"];
+            args.extend_from_slice(extra);
+            Options::try_parse_from(args).unwrap()
+        };
+        assert!(!microvm(&[]).nested_virt);
+        microvm(&["--nested-virt"])
+            .validate_microvm_options()
+            .unwrap();
+        let backend = if cfg!(windows) { "whp" } else { "kvm" };
+        let nested = microvm(&["--nested-virt", "--hypervisor", backend]);
+        assert!(nested.nested_virt);
+        nested.validate_microvm_options().unwrap();
+
+        #[cfg(target_os = "linux")]
+        {
+            let error = microvm(&["--nested-virt", "--hypervisor", "mshv"])
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with("microVM nested virtualization requires KVM or WHP, not mshv:"),
+                "{error}"
+            );
+            microvm(&["--hypervisor", "mshv"])
+                .validate_microvm_options()
+                .unwrap();
+        }
+
+        let capture = microvm(&["--nested-virt", "--snapshot-destination", "snapshot"]);
+        assert_eq!(
+            capture.validate_microvm_options().unwrap_err().to_string(),
+            "microVM nested virtualization does not support snapshot capture; omit \
+             --snapshot-destination or --nested-virt"
+        );
+        microvm(&["--snapshot-destination", "snapshot"])
+            .validate_microvm_options()
+            .unwrap();
+        let restore = microvm(&["--nested-virt", "--restore-snapshot", "snapshot"]);
+        for error in [
+            restore.validate_microvm_options().unwrap_err(),
+            restore
+                .validate_microvm_nested_virtualization()
+                .unwrap_err(),
+        ] {
+            assert_eq!(
+                error.to_string(),
+                "a microVM restore takes its machine from the snapshot, which never has nested \
+                 virtualization; omit --nested-virt"
+            );
+        }
+        microvm(&["--restore-snapshot", "snapshot"])
+            .validate_microvm_nested_virtualization()
+            .unwrap();
+        // Only the microVM machine checks the request here.
+        Options::try_parse_from(["openvmm", "--nested-virt", "--restore-snapshot", "snapshot"])
+            .unwrap()
+            .validate_microvm_nested_virtualization()
+            .unwrap();
     }
 
     #[cfg(guest_arch = "x86_64")]

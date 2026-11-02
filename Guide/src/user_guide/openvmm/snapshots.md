@@ -424,6 +424,17 @@ profile. Their error thus names every violation of each, leads with the code
 of the first that fails, in that order, and goes on with the failures of the
 others.
 
+A microVM with nested virtualization (`--nested-virt`), whose effective CPUID
+sets VMX, is never captured or restored. KVM cannot save the processor state
+of a nested guest, and the VMX capabilities on which a guest hypervisor's
+state depends are the backend's, which no CPU profile pins. OpenVMM therefore
+refuses `--nested-virt` with `--snapshot-destination` or
+`--restore-snapshot`, and the management RPC refuses `nested_virt` with
+`destination_path` or `restore_path`, before the VM starts; a guest's
+snapshot request in such a VM is also refused before anything stops. No
+snapshot records VMX, so a restore, which computes the effective CPUID
+without it, never has nested virtualization.
+
 Restore also requires:
 
 - a snapshot of the same time ABI version, so a snapshot of time ABI 1 must
@@ -614,3 +625,5 @@ immediately with a clear error if any active device does not support it.
   model and stepping whose backend supports the profile.
   Snapshots from manifest versions before 6, or from a build that computes a
   different effective CPUID, must be recaptured.
+- A microVM with nested virtualization (`--nested-virt`) supports neither
+  capture nor restore.

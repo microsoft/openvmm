@@ -73,10 +73,10 @@ describes the source definitions.
   read-only; and every device but the NIC indirect descriptors and event-index
   notification suppression. No device offers `VIRTIO_F_ACCESS_PLATFORM`, since
   the microVM has no IOMMU, and no console offers its size. Firmware, ACPI,
-  SMBIOS, PCI, VMBus, UARTs, graphics, isolation, nested virtualization, and
-  other devices are rejected. Linux discovers contiguous APIC IDs, the IOAPIC,
-  and the routing of its 24 inputs from Intel MP 1.4 tables at `0x0` and
-  `0x400`; `boot_params` is at
+  SMBIOS, PCI, VMBus, UARTs, graphics, isolation, and other devices are
+  rejected. Linux discovers contiguous APIC IDs, the IOAPIC, and the routing
+  of its 24 inputs from Intel MP 1.4 tables at `0x0` and `0x400`;
+  `boot_params` is at
   `0x2000`, the command line starts at `0x20000`, and no ACPI or SMBIOS data is
   exposed. Host-driven save/restore, pulse-save/restore, and worker restart
   remain unavailable.
@@ -91,7 +91,22 @@ describes the source definitions.
   with one core per vCPU, no SMT, xAPIC mode, and contiguous APIC IDs from 0.
   Guest-requested snapshot capture and new-process restore are available for
   blockless and fixed-block machines on Linux/KVM, Linux/MSHV, and Windows/WHP,
-  except for the RAM-backed overlay layout.
+  except for the RAM-backed overlay layout and nested virtualization.
+
+  `--nested-virt` gives a `microvm` nested virtualization, so that its guest
+  can run VMs of its own, on KVM and WHP but never on MSHV, which offers
+  nested virtualization only with the Hyper-V guest interface that the NVX time
+  ABI excludes. The effective CPUID then sets VMX (`CPUID.1:ECX[5]`) over the
+  CPU profile, whose policy clears every virtualization extension, and the VMX
+  capability MSRs that describe the controls a guest hypervisor may use are
+  the backend's. It requires an Intel CPU profile, since no profile describes
+  SVM's feature leaf `0x8000000A` (`E_PROFILE_UNSUPPORTED` on AMD), and a
+  backend that offers nested virtualization on the host: KVM with `kvm_intel`
+  loaded with `nested=1`, or WHP with its nested virtualization feature;
+  otherwise the partition's creation fails before the guest runs. Such a
+  microVM is never captured or restored: OpenVMM refuses `--nested-virt` with
+  `--snapshot-destination` or `--restore-snapshot` before the VM starts. A
+  microVM without `--nested-virt` exposes no virtualization extension.
 
   A non-empty `--microvm-sandbox-block` topology must end with the writable
   `scratch` block unless the command line carries exactly one
@@ -807,7 +822,9 @@ guest state and protect the directory with host access controls.
   such as Virtual Secure Mode (VSM), which can hurt performance and interfere
   with VMBus devices; nested virt cannot currently be combined with
   `--hv`/VMBus or
-  `--hypervisor whp:user_mode_apic`.
+  `--hypervisor whp:user_mode_apic`. A `--machine microvm` takes it on KVM and
+  WHP only, with an Intel CPU profile, and refuses it with a snapshot capture
+  or restore; see `--machine` above.
 * `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
   * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
   * `debug`: Enable UEFI debugging on COM1.

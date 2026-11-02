@@ -12,14 +12,28 @@ use openvmm_defs::rpc::VmRpc;
 #[error("VM mutation is unavailable while a microVM snapshot boundary is active")]
 struct SnapshotBoundaryActive;
 
+/// Returns the guest's snapshot boundary request that the worker must
+/// establish, or `None` for one that ends before host input is gated or a vCPU
+/// stops: one that stop or reset cancelled, and any of a microVM with nested
+/// virtualization (`nested_virt`), which is never captured, which completes at
+/// once.
 pub(super) fn filter_boundary_request(
     request: MicrovmSnapshotBoundaryRequest,
+    nested_virt: bool,
 ) -> Option<MicrovmSnapshotBoundaryRequest> {
     // Stop/reset drops the release receiver but leaves the request queued.
     // The worker serializes reset with boundary establishment, so checking
     // before gating input or stopping VPs prevents capture of a reset VM.
     if request.release_write.is_closed() {
         tracelimit::warn_ratelimited!("dropping cancelled microVM snapshot boundary request");
+        return None;
+    }
+    if nested_virt {
+        tracelimit::warn_ratelimited!(
+            "refusing microVM snapshot boundary request: a microVM with nested virtualization is never captured"
+        );
+        request.release_write.send(());
+        request.transaction_complete.complete(());
         return None;
     }
     Some(request)
@@ -113,9 +127,9 @@ mod tests {
             // Cancellation leaves the old request ahead of the new one in the queue.
             let old_request = requests.try_recv().unwrap();
             assert!(old_request.release_write.is_closed());
-            assert!(filter_boundary_request(old_request).is_none());
+            assert!(filter_boundary_request(old_request, false).is_none());
 
-            let request = filter_boundary_request(requests.try_recv().unwrap())
+            let request = filter_boundary_request(requests.try_recv().unwrap(), false)
                 .expect("a cancelled predecessor must not discard the next request");
             request.release_write.send(());
             device.poll_device(&mut cx);
@@ -137,7 +151,7 @@ mod tests {
         let IoResult::Defer(mut write) = device.io_write(SNAPSHOT_PORT, &[0]) else {
             panic!("snapshot write was not deferred");
         };
-        let request = filter_boundary_request(requests.try_recv().unwrap())
+        let request = filter_boundary_request(requests.try_recv().unwrap(), false)
             .expect("live snapshot request was discarded");
         request.release_write.send(());
         let mut cx = Context::from_waker(Waker::noop());
@@ -156,7 +170,30 @@ mod tests {
             IoResult::Defer(_)
         ));
         drop(device);
-        assert!(filter_boundary_request(requests.try_recv().unwrap()).is_none());
+        assert!(filter_boundary_request(requests.try_recv().unwrap(), false).is_none());
+    }
+
+    #[test]
+    fn snapshot_boundary_completes_a_nested_microvms_request_at_once() {
+        let (send, mut requests) = mesh::channel();
+        let mut device = MicrovmSnapshotRequest::new(Some(send), Duration::from_secs(1));
+        device.start();
+        let IoResult::Defer(mut write) = device.io_write(SNAPSHOT_PORT, &[0]) else {
+            panic!("snapshot write was not deferred");
+        };
+        // The request ends before the worker gates input or stops a vCPU,
+        // and the guest's write completes.
+        assert!(filter_boundary_request(requests.try_recv().unwrap(), true).is_none());
+        let mut cx = Context::from_waker(Waker::noop());
+        device.poll_device(&mut cx);
+        assert!(matches!(write.poll_write(&mut cx), Poll::Ready(Ok(()))));
+
+        // The device takes the next request, which the transaction's
+        // completion released.
+        let IoResult::Defer(_) = device.io_write(SNAPSHOT_PORT, &[0]) else {
+            panic!("the next snapshot write was not deferred");
+        };
+        assert!(filter_boundary_request(requests.try_recv().unwrap(), true).is_none());
     }
 
     #[test]

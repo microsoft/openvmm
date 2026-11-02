@@ -2889,6 +2889,9 @@ async fn run_control_inner(
     mut opt: Options,
 ) -> anyhow::Result<i32> {
     let mesh = mesh_slot.as_ref().unwrap();
+    // A snapshot never has nested virtualization, so refuse a restore that
+    // asks for it before reading the snapshot.
+    opt.validate_microvm_nested_virtualization()?;
     let mut restore = snapshot_restore::SnapshotRestore::open(&opt)?;
     let microvm_restore = microvm::prepare_restore(&mut opt, restore.snapshot())?;
     let (mut vm_config, mut resources) =
