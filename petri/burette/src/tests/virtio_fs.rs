@@ -68,7 +68,7 @@ pub struct VirtioFsTestState {
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, MachineArch::host())
+    petri::Firmware::linux_direct(resolver, MachineArch::host(), None)
 }
 
 fn require_petritools_erofs(

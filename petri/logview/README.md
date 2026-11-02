@@ -6,6 +6,12 @@ A React-based web application for viewing and analyzing Petri logs, built with T
 
 - **Node.js** (version `>=22.22.0`, as required by react-router 8)
 - **npm** (comes with Node.js)
+- **Browser**: Safari 16.4+, Chrome 111+, or Firefox 128+ (required by Tailwind CSS 4)
+
+Tailwind CSS 4 runs through the `@tailwindcss/vite` plugin in `vite.config.ts`.
+`tailwind.css` imports the theme and utilities without Preflight and retains
+the existing gray palette, preserving browser defaults and the site's custom
+styles. Source scanning is limited to TypeScript files under `src/`.
 
 ## Initial Setup
 
@@ -62,6 +68,21 @@ npm run preview
 # Run linting
 npx eslint .
 ```
+
+## Running Locally
+
+Build and serve the production viewer:
+
+```bash
+npm run build
+npm run preview -- --host 127.0.0.1 --port 4177 --strictPort
+```
+
+Open <http://localhost:4177/test-results/>.
+If the server is on a remote development machine, forward port 4177 first.
+The viewer reads the public results; no Azure credentials or uploads are needed.
+
+Run the automated tests with `npm test`.
 
 ## Project Structure
 

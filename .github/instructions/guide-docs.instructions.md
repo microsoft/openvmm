@@ -19,6 +19,11 @@ Follow the style guide at `Guide/src/dev_guide/contrib/style_guide.md`.
 
 ## Content Policy
 
+- Apply `.github/instructions/doc-code-sync.instructions.md` to decide whether
+  a Guide edit is needed and keep it limited to the reader's needs.
+- Do not duplicate rustdoc or source-level detail. Include implementation
+  detail only when it explains a reader-relevant constraint or stable
+  architectural choice.
 - This is an **OSS repo** — do not reference internal Microsoft tools, wikis,
   build paths, or infrastructure
 - Link to crate rustdoc where possible (https://openvmm.dev/rustdoc/)

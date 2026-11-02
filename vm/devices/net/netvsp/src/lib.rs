@@ -3730,6 +3730,11 @@ impl Adapter {
         let mut restart_endpoint = false;
         let mut packet_filter = None;
         match oid {
+            rndisprot::Oid::OID_GEN_CURRENT_LOOKAHEAD => {
+                let _: u32 = reader.clone().read_plain()?;
+                // NetVSP supplies the full packet in every receive indication, so the
+                // requested lookahead does not change behavior.
+            }
             rndisprot::Oid::OID_GEN_CURRENT_PACKET_FILTER => {
                 packet_filter = self.oid_set_packet_filter(reader)?;
             }
@@ -4822,6 +4827,7 @@ impl Coordinator {
                     // buffers.
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[0].clone()),
+                        enabled_rx_offloads: Default::default(),
                     });
                     per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
@@ -4857,6 +4863,7 @@ impl Coordinator {
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
                         driver: Box::new(drivers[queue_index as usize].clone()),
+                        enabled_rx_offloads: Default::default(),
                     });
                     per_queue_rx.push(this.to_vec());
                     initial_rx = rest;
@@ -5339,7 +5346,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             });
                         }
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(WorkerError::UnexpectedPacketOrder(
+                            PacketOrderError::InvalidPacketData,
+                        ));
+                    }
                 }
             }
         }

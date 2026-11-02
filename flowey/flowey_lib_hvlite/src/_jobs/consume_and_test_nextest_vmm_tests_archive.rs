@@ -3,7 +3,6 @@
 
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
-use crate::build_incubator::IncubatorProfileNameOrPath;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifacts;
 use crate::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections;
 use crate::init_vmm_tests_content_dir::VmmTestsPreBuiltArtifactsSelections;
@@ -62,9 +61,6 @@ flowey_request! {
         pub prep_steps_variants: Vec<String>,
         /// External dependencies necessary to run the VMM tests
         pub external_deps: VmmTestsExternalDeps,
-        /// If set, run tests inside an incubator using the named profile,
-        /// instead of directly on the host.
-        pub incubator_profile: Option<IncubatorProfileNameOrPath>,
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
         /// Upload logs on success (logs are always uploaded on failure)
@@ -103,7 +99,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
-        ctx.import::<crate::write_incubator_target_runner::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::resolve_vmm_tests_pipeline_artifacts::Node>();
     }
@@ -118,7 +113,6 @@ impl SimpleFlowNode for Node {
             downloaded_artifacts,
             prep_steps_variants,
             external_deps,
-            incubator_profile,
             upload_logs_on_success,
             fail_job_on_test_fail,
             repetitions,
@@ -153,7 +147,6 @@ impl SimpleFlowNode for Node {
         let leftover_vms_removed = needs_hyperv
             .then(|| ctx.reqv(|done| crate::cleanup_leftover_hyperv_vms::Request { done }));
 
-        let needs_incubator = incubator_profile.is_some();
         let needs_prep_steps = !prep_steps_variants.is_empty();
 
         let (mut test_content_dir, mut built_artifacts, prebuilt_artifacts) =
@@ -201,9 +194,6 @@ impl SimpleFlowNode for Node {
                     selections.require_nextest_vmm_tests_archive_for(ArtifactTarget::Triple(
                         target.clone(),
                     ))?;
-                    if needs_incubator {
-                        selections.incubator_linux_x64 = true;
-                    }
                     if needs_prep_steps {
                         selections
                             .require_prep_steps_for(ArtifactTarget::Triple(target.clone()))?;
@@ -228,11 +218,12 @@ impl SimpleFlowNode for Node {
             test_content_dir = test_content_dir.depending_on(ctx, removed);
         }
 
+        // clone instead of take since the l1 may need the same archive
+        // for nested tests.
         let nextest_vmm_tests_archive = built_artifacts
             .nextest_vmm_tests_archive(ArtifactTarget::Triple(target.clone()))?
-            .take()
+            .clone()
             .expect("nextest_vmm_tests_archive is always required");
-        let incubator = built_artifacts.incubator_linux_x64.take();
         let prep_steps = built_artifacts
             .prep_steps(ArtifactTarget::Triple(target.clone()))
             .ok()
@@ -260,7 +251,6 @@ impl SimpleFlowNode for Node {
                     prebuilt_artifacts,
                     uefi_firmware_flavor,
                     is_repo_root: test_content_dir_as_repo_root,
-                    needs_incubator_profiles: needs_incubator,
                     needs_virtio_win_drivers,
                     needs_release_igvm,
                     done: v,
@@ -290,54 +280,6 @@ impl SimpleFlowNode for Node {
         let nextest_config_file = openvmm_repo_path
             .clone()
             .map(ctx, |p| p.join(".config").join("nextest.toml"));
-
-        let igvm_agent_env = extra_env.clone();
-
-        let extra_env = if let Some(incubator_profile) = incubator_profile {
-            let incubator = incubator
-                .expect("incubator profile was set but no incubator artifact was provided");
-
-            let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
-
-            let kernel = ctx.reqv(|v| {
-                crate::resolve_openvmm_test_linux_kernel::Request::Get(
-                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel,
-                    arch,
-                    crate::resolve_openvmm_test_linux_kernel::INCUBATOR_LINUX_TEST_KERNEL_VERSION,
-                    v,
-                )
-            });
-            let initrd = ctx.reqv(|v| crate::resolve_openvmm_test_initrd::Request::Get(arch, v));
-
-            let host_arch: crate::common::CommonArch = ctx.arch().try_into()?;
-            let qemu_binary = ctx.reqv(|v| {
-                crate::resolve_openvmm_qemu::Request::Get(
-                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
-                    host_arch,
-                    v,
-                )
-            });
-
-            let nextest_archive = nextest_vmm_tests_archive
-                .clone()
-                .map(ctx, |x| x.archive_file);
-
-            ctx.reqv(|v| crate::write_incubator_target_runner::Request {
-                incubator,
-                incubator_profile,
-                kernel: Some(kernel),
-                initrd: Some(initrd),
-                repo_root: openvmm_repo_path.clone(),
-                test_content_dir: test_content_dir.clone(),
-                extra_share_paths: vec![nextest_archive, nextest_config_file.clone()],
-                extra_env: Some(extra_env),
-                qemu_binary: Some(qemu_binary),
-                target: target.clone(),
-                nextest_env: v,
-            })
-        } else {
-            extra_env
-        };
 
         if needs_prep_steps {
             let prep_steps = prep_steps
@@ -371,7 +313,7 @@ impl SimpleFlowNode for Node {
                 pre_run_deps_iteration.push(ctx.reqv(|done| {
                     crate::run_test_igvm_agent_rpc_server::Request {
                         test_igvm_agent_rpc_server,
-                        env: igvm_agent_env.clone(),
+                        env: extra_env.clone(),
                         done,
                         previous_done,
                     }

@@ -106,7 +106,8 @@ impl FlowNodeWithConfig for Node {
                 let output_folder = if let Some(dir) = custom_cache_dir {
                     dir
                 } else if let Some(dir) =
-                    std::env::var_os("VMM_TEST_IMAGES").and_then(|v| (!v.is_empty()).then_some(v))
+                    std::env::var_os(petri_artifacts_vmm_test::env::VMM_TEST_IMAGES)
+                        .and_then(|v| (!v.is_empty()).then_some(v))
                 {
                     PathBuf::from(dir)
                 } else if let Some(dir) = persistent_dir {

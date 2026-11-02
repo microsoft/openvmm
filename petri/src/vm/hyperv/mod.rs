@@ -177,8 +177,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
         config: PetriVmConfig,
         _modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        anyhow::ensure!(
+            !matches!(config.firmware, Firmware::IgvmLinuxDirect { .. }),
+            "Linux-direct IGVM boot is not supported by the Hyper-V backend"
+        );
         let PetriVmResources {
             driver,
             log_source,
@@ -403,6 +407,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Once this is done, the files can safely be deleted.
 
         let imc_hiv = if properties.using_vtl0_pipette
+            && !properties.external_pipette
             && matches!(properties.os_flavor, OsFlavor::Windows)
             && !properties.is_isolated
         {
@@ -444,7 +449,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
             imc_hiv,
             management_vtl_settings,
 
-            ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
+            ..HyperVNewCustomVMArgs::from_config(&config, properties)?
         };
 
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
@@ -508,7 +513,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 temp_dir,
                 output_dir: log_source.output_dir().to_owned(),
                 driver: driver.clone(),
-                properties,
+                properties: properties.clone(),
             },
             config
                 .firmware

@@ -100,6 +100,11 @@ impl VirtioVsockDevice {
         base_path: PathBuf,
         listener: UnixListener,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            (3..u64::from(u32::MAX)).contains(&guest_cid),
+            "virtio-vsock guest CID must be between 3 and {}",
+            u32::MAX - 1
+        );
         let driver = driver_source.simple();
         let listener = PolledSocket::new(&driver, listener)
             .context("failed to create polled socket for vsock relay listener")?;

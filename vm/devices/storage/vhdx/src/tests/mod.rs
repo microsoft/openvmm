@@ -85,7 +85,7 @@ mod integration {
     async fn create_differencing_then_parse() {
         let mut params = CreateParams {
             disk_size: format::GB1,
-            has_parent: true,
+            disk_type: crate::DiskType::Differencing(crate::VhdxParent::unlinked()),
             ..CreateParams::default()
         };
         let file = InMemoryFile::new(0);

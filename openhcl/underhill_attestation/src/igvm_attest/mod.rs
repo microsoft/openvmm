@@ -6,6 +6,7 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
+use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_REQUEST_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
@@ -99,6 +100,8 @@ pub struct IgvmAttestRequestHelper {
     report_type: ReportType,
     /// Raw bytes of `RuntimeClaims`.
     runtime_claims: Vec<u8>,
+    /// Whether the serialized runtime claims include AK certificate metadata.
+    has_ak_cert_metadata: bool,
     /// The hash of the `runtime_claims` to be included in the
     /// `report_data` field of the attestation report.
     runtime_claims_hash: [u8; tee_call::REPORT_DATA_SIZE],
@@ -137,6 +140,7 @@ impl IgvmAttestRequestHelper {
             request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
             report_type,
             runtime_claims,
+            has_ak_cert_metadata: false,
             runtime_claims_hash,
             hash_type,
         }
@@ -151,6 +155,9 @@ impl IgvmAttestRequestHelper {
         ek_pub_modulus: &[u8],
         attestation_vm_config: &AttestationVmConfig,
         guest_input: &[u8],
+        akcert: Option<
+            openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata,
+        >,
     ) -> Self {
         let report_type = match tee_type {
             Some(TeeType::Snp) => ReportType::Snp,
@@ -160,7 +167,7 @@ impl IgvmAttestRequestHelper {
             None => ReportType::Tvm,
         };
 
-        let runtime_claims =
+        let mut runtime_claims =
             openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims::ak_cert_runtime_claims(
                 ak_pub_exponent,
                 ak_pub_modulus,
@@ -169,8 +176,21 @@ impl IgvmAttestRequestHelper {
                 attestation_vm_config,
                 guest_input,
             );
+        runtime_claims.akcert = akcert;
 
-        let runtime_claims = runtime_claims_to_bytes(&runtime_claims);
+        let mut serialized_claims = runtime_claims_to_bytes(&runtime_claims);
+        if runtime_claims.akcert.is_some()
+            && request_size(IGVM_ATTEST_REQUEST_CURRENT_VERSION, serialized_claims.len())
+                > get_protocol::IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE
+        {
+            // Unlikely with ordinary production certificate names and key IDs,
+            // but unusually large metadata or JSON expansion can exceed the GET
+            // limit. Omit the metadata before hashing to request a replacement.
+            runtime_claims.akcert = None;
+            serialized_claims = runtime_claims_to_bytes(&runtime_claims);
+        }
+        let has_ak_cert_metadata = runtime_claims.akcert.is_some();
+        let runtime_claims = serialized_claims;
 
         let hash_type = IgvmAttestHashType::SHA_256;
         let hash = crypto::sha_256::sha_256(runtime_claims.as_bytes());
@@ -181,9 +201,20 @@ impl IgvmAttestRequestHelper {
             request_type: IgvmAttestRequestType::AK_CERT_REQUEST,
             report_type,
             runtime_claims,
+            has_ak_cert_metadata,
             runtime_claims_hash,
             hash_type,
         }
+    }
+
+    /// Whether the final runtime claims include AK certificate metadata.
+    pub fn has_ak_cert_metadata(&self) -> bool {
+        self.has_ak_cert_metadata
+    }
+
+    /// Return the complete wire request size, including any versioned extension.
+    pub fn request_size(&self, version: IgvmAttestRequestVersion) -> usize {
+        request_size(version, self.runtime_claims.len())
     }
 
     /// Return the `runtime_claims_hash`.
@@ -230,6 +261,12 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
             specified_size: header.data_size as usize,
         })?
     }
+    let response = &response[..header.data_size as usize];
+    if response.len() < size_of::<IgvmAttestCommonResponseHeader>() {
+        return Err(Error::ResponseSizeTooSmall {
+            response_size: response.len(),
+        });
+    }
     if header.version > IGVM_ATTEST_RESPONSE_CURRENT_VERSION {
         Err(Error::InvalidResponseHeaderVersion {
             version: header.version,
@@ -263,6 +300,19 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
     })
 }
 
+/// Calculate the complete request size without generating a TEE report.
+fn request_size(version: IgvmAttestRequestVersion, runtime_claims_len: usize) -> usize {
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+
+    let extension_size = if version >= IgvmAttestRequestVersion::VERSION_2 {
+        size_of::<IgvmAttestRequestDataExt>()
+    } else {
+        0
+    };
+    size_of::<IgvmAttestRequestBase>() + extension_size + runtime_claims_len
+}
+
 /// Create a request in raw bytes.
 /// A request looks like:
 ///   `IgvmAttestRequestBase` (raw bytes) | `IgvmAttestRequestDataExt` (raw bytes) if version >= 2 | `runtime_claims` (raw bytes)
@@ -290,13 +340,9 @@ fn create_request(
     let runtime_claims_len = runtime_claims.len();
     // Determine if request data extension structure is needed (introduced in version 2)
     let include_extension = version >= IgvmAttestRequestVersion::VERSION_2;
-    let extension_size = if include_extension {
-        size_of::<IgvmAttestRequestDataExt>()
-    } else {
-        0
-    };
-    let report_size = size_of::<IgvmAttestRequestBase>() + extension_size + runtime_claims_len;
-    let user_data_size = size_of::<IgvmAttestRequestData>() + extension_size + runtime_claims_len;
+    let report_size = request_size(version, runtime_claims_len);
+    let user_data_size =
+        report_size - size_of::<IgvmAttestRequestBase>() + size_of::<IgvmAttestRequestData>();
     let mut request = IgvmAttestRequestBase::new_zeroed();
 
     request.header = IgvmAttestRequestHeader::new(report_size as u32, request_type, 0);
@@ -364,8 +410,356 @@ fn runtime_claims_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crypto::rsa::RsaKeyPair;
+    use crypto::rsa::RsaPublicKeyComponents;
+    use get_protocol::IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestBase;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestDataExt;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AkCertMetadata;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
+    use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
+    use test_with_tracing::test;
+
+    const AK_CERT_TEES: [Option<TeeType>; 5] = [
+        Some(TeeType::Snp),
+        Some(TeeType::Tdx),
+        Some(TeeType::Cca),
+        Some(TeeType::Vbs),
+        None,
+    ];
+
+    struct AkCertTestInput {
+        ak: RsaPublicKeyComponents,
+        ek: RsaPublicKeyComponents,
+        config: AttestationVmConfig,
+        guest_input: Vec<u8>,
+    }
+
+    impl AkCertTestInput {
+        fn new() -> Self {
+            Self {
+                ak: RsaKeyPair::generate(2048).unwrap().to_components().unwrap(),
+                ek: RsaKeyPair::generate(2048).unwrap().to_components().unwrap(),
+                config: AttestationVmConfig {
+                    current_time: None,
+                    root_cert_thumbprint: "A".repeat(64),
+                    console_enabled: false,
+                    interactive_console_enabled: false,
+                    ipmi_enabled: false,
+                    secure_boot: true,
+                    tpm_enabled: true,
+                    tpm_version: AttestationTpmVersion::V185,
+                    tpm_persisted: true,
+                    hardware_sealing_policy: HardwareSealingPolicy::Signer,
+                    filtered_vpci_devices_allowed: false,
+                    vm_unique_id: "01234567-89ab-cdef-0123-456789abcdef".to_owned(),
+                    vmgs_provisioner: None,
+                },
+                guest_input: vec![0x42; 32],
+            }
+        }
+
+        fn claims(&self, metadata: Option<AkCertMetadata>) -> Vec<u8> {
+            let mut claims = RuntimeClaims::ak_cert_runtime_claims(
+                &self.ak.public_exponent,
+                &self.ak.modulus,
+                &self.ek.public_exponent,
+                &self.ek.modulus,
+                &self.config,
+                &self.guest_input,
+            );
+            claims.akcert = metadata;
+            runtime_claims_to_bytes(&claims)
+        }
+
+        fn prepare(
+            &self,
+            tee: Option<TeeType>,
+            metadata: Option<AkCertMetadata>,
+        ) -> IgvmAttestRequestHelper {
+            IgvmAttestRequestHelper::prepare_ak_cert_request(
+                tee,
+                &self.ak.public_exponent,
+                &self.ak.modulus,
+                &self.ek.public_exponent,
+                &self.ek.modulus,
+                &self.config,
+                &self.guest_input,
+                metadata,
+            )
+        }
+
+        fn metadata_for_request_size(&self, size: usize) -> AkCertMetadata {
+            let certificate = test_igvm_agent_lib::ak_cert::certificate();
+            let mut metadata = ak_cert::parse_metadata(&certificate).unwrap();
+            metadata.subject.clear();
+            let base_size = size_of::<IgvmAttestRequestBase>()
+                + size_of::<IgvmAttestRequestDataExt>()
+                + self.claims(Some(metadata.clone())).len();
+            metadata.subject = "s".repeat(size.checked_sub(base_size).unwrap());
+            metadata
+        }
+
+        fn assert_fallback(&self, metadata: AkCertMetadata) {
+            let oversized_claims = self.claims(Some(metadata.clone()));
+            assert!(
+                size_of::<IgvmAttestRequestBase>()
+                    + size_of::<IgvmAttestRequestDataExt>()
+                    + oversized_claims.len()
+                    > IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE
+            );
+            for (tee, same_tee) in AK_CERT_TEES.into_iter().zip(AK_CERT_TEES) {
+                let fallback = self.prepare(tee, Some(metadata.clone()));
+                let without_metadata = self.prepare(same_tee, None);
+                assert!(!fallback.has_ak_cert_metadata());
+                assert!(!without_metadata.has_ak_cert_metadata());
+                assert_eq!(fallback.runtime_claims, self.claims(None));
+                assert_eq!(fallback.runtime_claims, without_metadata.runtime_claims);
+                assert_eq!(
+                    fallback.get_runtime_claims_hash(),
+                    without_metadata.get_runtime_claims_hash()
+                );
+                assert_ne!(
+                    &fallback.get_runtime_claims_hash()[..32],
+                    crypto::sha_256::sha_256(&oversized_claims).as_ref()
+                );
+                assert_request_layout_and_hash(&fallback);
+                assert!(
+                    fallback.request_size(IGVM_ATTEST_REQUEST_CURRENT_VERSION)
+                        <= IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE
+                );
+            }
+        }
+    }
+
+    fn assert_request_layout_and_hash(helper: &IgvmAttestRequestHelper) {
+        let hash = crypto::sha_256::sha_256(&helper.runtime_claims);
+        assert_eq!(&helper.get_runtime_claims_hash()[..32], hash.as_ref());
+        assert_eq!(&helper.get_runtime_claims_hash()[32..], &[0; 32]);
+        for version in [
+            IgvmAttestRequestVersion::VERSION_1,
+            IgvmAttestRequestVersion::VERSION_2,
+        ] {
+            let extension_size = if version == IgvmAttestRequestVersion::VERSION_2 {
+                size_of::<IgvmAttestRequestDataExt>()
+            } else {
+                0
+            };
+            let claims_offset = size_of::<IgvmAttestRequestBase>() + extension_size;
+            assert_eq!(
+                helper.request_size(version),
+                claims_offset + helper.runtime_claims.len()
+            );
+            // CCA report serialization is not implemented yet. Its claims,
+            // report-data hash, and size accounting can still be checked.
+            if matches!(helper.report_type, ReportType::Cca) {
+                continue;
+            }
+            let report = vec![0x5a; get_report_size(&helper.report_type)];
+            let wire = helper.create_request(version, &report).unwrap();
+            assert_eq!(wire.len(), helper.request_size(version));
+            assert_eq!(&wire[claims_offset..], &helper.runtime_claims);
+            let (base, _) = IgvmAttestRequestBase::read_from_prefix(&wire).unwrap();
+            assert_eq!(base.header.report_size as usize, wire.len());
+            assert_eq!(base.request_data.version, version);
+            assert_eq!(
+                base.request_data.report_type,
+                helper.report_type.to_external_type()
+            );
+            assert_eq!(&base.attestation_report[..report.len()], &report);
+        }
+    }
+
+    #[test]
+    fn test_ak_cert_metadata_size_boundary() {
+        let input = AkCertTestInput::new();
+        assert_eq!(IGVM_ATTEST_MSG_REQ_REPORT_MAX_SIZE, 4096);
+        assert_eq!(
+            IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+            IgvmAttestRequestVersion::VERSION_2
+        );
+        for size in [4096, 4097] {
+            let metadata = input.metadata_for_request_size(size);
+            let claims = input.claims(Some(metadata.clone()));
+            // Independently serialize the unfiltered request to pin the exact
+            // boundary, including the V2 extension rather than just the JSON.
+            let raw = create_request(
+                IGVM_ATTEST_REQUEST_CURRENT_VERSION,
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                &claims,
+                &[],
+                &ReportType::Tvm,
+                IgvmAttestHashType::SHA_256,
+            )
+            .unwrap();
+            assert_eq!(raw.len(), size);
+            assert!(size_of::<IgvmAttestRequestBase>() + claims.len() <= 4096);
+            if size == 4096 {
+                for tee in AK_CERT_TEES {
+                    let helper = input.prepare(tee, Some(metadata.clone()));
+                    assert!(helper.has_ak_cert_metadata());
+                    assert_eq!(helper.runtime_claims, claims);
+                    assert_eq!(
+                        helper.request_size(IGVM_ATTEST_REQUEST_CURRENT_VERSION),
+                        4096
+                    );
+                    assert_request_layout_and_hash(&helper);
+                }
+            } else {
+                input.assert_fallback(metadata);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ak_cert_metadata_large_hex_authority_fallback() {
+        let input = AkCertTestInput::new();
+        let mut metadata = input.metadata_for_request_size(4096);
+        metadata.subject.clear();
+        metadata.authority = hex::encode_upper([0xab; 2048]);
+        input.assert_fallback(metadata);
+    }
+
+    #[test]
+    fn test_ak_cert_metadata_escaped_common_names_fallback() {
+        let input = AkCertTestInput::new();
+        for escaped_name in ['"', '\\', '\n', '\0'] {
+            for issuer in [false, true] {
+                let mut metadata = input.metadata_for_request_size(4096);
+                let name = if issuer {
+                    &mut metadata.issuer
+                } else {
+                    &mut metadata.subject
+                };
+                // Replace one ASCII byte with one byte that expands in JSON:
+                // the unescaped metadata length still fits the limit exactly.
+                assert!(name.is_ascii() && !name.is_empty());
+                name.replace_range(..1, &escaped_name.to_string());
+                input.assert_fallback(metadata);
+            }
+        }
+    }
+
+    #[test]
+    fn test_metadata_free_guest_v1_and_key_release_unchanged() {
+        let mut input = AkCertTestInput::new();
+        // A guest NV report can exceed the GET limit and must not be truncated.
+        input.guest_input = vec![0xab; 4096];
+        for (tee, same_tee) in AK_CERT_TEES.into_iter().zip(AK_CERT_TEES) {
+            let guest = input.prepare(tee, None);
+            assert!(!guest.has_ak_cert_metadata());
+            assert_eq!(guest.runtime_claims, input.claims(None));
+            assert!(guest.request_size(IgvmAttestRequestVersion::VERSION_1) > 4096);
+            assert_request_layout_and_hash(&guest);
+
+            if let Some(tee) = same_tee {
+                let key_release = IgvmAttestRequestHelper::prepare_key_release_request(
+                    tee,
+                    &input.ak.public_exponent,
+                    &input.ak.modulus,
+                    12345,
+                    &input.config,
+                );
+                assert!(!key_release.has_ak_cert_metadata());
+                let claims = RuntimeClaims::key_release_request_runtime_claims(
+                    &input.ak.public_exponent,
+                    &input.ak.modulus,
+                    &attestation_vm_config_with_time(&input.config, 12345),
+                );
+                assert_eq!(key_release.runtime_claims, runtime_claims_to_bytes(&claims));
+                assert_request_layout_and_hash(&key_release);
+            }
+        }
+    }
+
+    #[test]
+    fn test_ak_cert_metadata_claims_are_measured() {
+        use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::RuntimeClaims;
+
+        let config = AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            interactive_console_enabled: false,
+            ipmi_enabled: false,
+            secure_boot: false,
+            tpm_enabled: true,
+            tpm_version: AttestationTpmVersion::V185,
+            tpm_persisted: true,
+            hardware_sealing_policy: HardwareSealingPolicy::Signer,
+            filtered_vpci_devices_allowed: false,
+            vm_unique_id: String::new(),
+            vmgs_provisioner: None,
+        };
+        let certificate = test_igvm_agent_lib::ak_cert::certificate();
+        let mut metadata = ak_cert::parse_metadata(&certificate).unwrap();
+        metadata.subject = "AK \"subject\"\\\n".to_owned();
+        for tee in [
+            Some(TeeType::Snp),
+            Some(TeeType::Tdx),
+            Some(TeeType::Cca),
+            Some(TeeType::Vbs),
+            None,
+        ] {
+            let with_cert = IgvmAttestRequestHelper::prepare_ak_cert_request(
+                tee,
+                &[1],
+                &[2],
+                &[3],
+                &[4],
+                &config,
+                &[],
+                Some(metadata.clone()),
+            );
+            let claims: serde_json::Value =
+                serde_json::from_slice(&with_cert.runtime_claims).unwrap();
+            assert_eq!(
+                claims["akcert"],
+                serde_json::json!({
+                    "issuer": metadata.issuer,
+                    "subject": metadata.subject,
+                    "not_before": metadata.not_before,
+                    "not_after": metadata.not_after,
+                    "authority": metadata.authority,
+                })
+            );
+            let hash = crypto::sha_256::sha_256(&with_cert.runtime_claims);
+            assert_eq!(&with_cert.get_runtime_claims_hash()[..32], hash.as_ref());
+            assert_eq!(&with_cert.get_runtime_claims_hash()[32..], &[0; 32]);
+
+            let without_cert = IgvmAttestRequestHelper::prepare_ak_cert_request(
+                None,
+                &[1],
+                &[2],
+                &[3],
+                &[4],
+                &config,
+                &[],
+                None,
+            );
+            let claims: serde_json::Value =
+                serde_json::from_slice(&without_cert.runtime_claims).unwrap();
+            assert!(claims.get("akcert").is_none());
+            let decoded: RuntimeClaims =
+                serde_json::from_slice(&without_cert.runtime_claims).unwrap();
+            assert!(decoded.akcert.is_none());
+            assert_ne!(
+                with_cert.get_runtime_claims_hash(),
+                without_cert.get_runtime_claims_hash()
+            );
+
+            let legacy =
+                RuntimeClaims::ak_cert_runtime_claims(&[1], &[2], &[3], &[4], &config, &[]);
+            assert_eq!(
+                without_cert.runtime_claims,
+                serde_json::to_vec(&legacy).unwrap()
+            );
+        }
+        let key_release = RuntimeClaims::key_release_request_runtime_claims(&[1], &[2], &config);
+        let claims = serde_json::to_value(key_release).unwrap();
+        assert!(claims.get("akcert").is_none());
+    }
 
     #[test]
     fn test_create_request() {

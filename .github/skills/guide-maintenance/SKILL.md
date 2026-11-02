@@ -14,6 +14,10 @@ Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the codebas
 and heuristics that are automatically loaded during Copilot code review on
 `*.rs` and `Cargo.toml` files.
 
+Apply that file's relevance and scope rules before editing the Guide. A code
+change does not automatically require a Guide update. Prefer an existing page
+over a new page when it adequately covers the reader's need.
+
 ---
 
 ## Adding a New Guide Page
@@ -61,26 +65,30 @@ content get a path; placeholder topics for future work get an empty link `()`.
 
 When a new crate is added under `vm/devices/`:
 
-1. **Does it need a Guide page?** If it's a user-visible device or backend,
-   yes. Internal plumbing crates (e.g., `*_resources`, `*_protocol`) usually
-   don't need their own page but should be mentioned in the parent device page.
+1. **Do readers need new documentation?** For a user-visible device or backend,
+   document the capability and how to use it. Internal plumbing crates (e.g.,
+   `*_resources`, `*_protocol`) do not need a page or a mention in the parent
+   page unless they explain a reader-relevant constraint or architectural
+   choice.
 
-2. **Create the page** following the "Adding a New Guide Page" procedure above.
-
-3. **Update the "What to Flag" list** if the new crate introduces a new
-   category of reviewable change.
+2. **Update an existing page** if it adequately covers the topic. Otherwise,
+   follow the "Adding a New Guide Page" procedure above.
 
 ---
 
 ## Adding or Changing CLI Arguments
 
-When `openvmm/openvmm_entry/src/cli_args.rs` changes:
+When the documented CLI interface changes (for example, flag syntax,
+defaults, behavior, or interactions in
+`openvmm/openvmm_entry/src/cli_args.rs`):
 
 1. Update `Guide/src/reference/openvmm/management/cli.md`
 2. The CLI page has a disclaimer that it may be out of date — keep it honest,
-   but still update the page when making changes
+   but still update the affected documentation when the interface changes
 3. New arguments should include: flag syntax, description, default value,
-   and any interactions with other flags
+   and interactions with other flags that readers need to use them correctly
+
+Refactors that leave the documented interface unchanged need no CLI page edit.
 
 ---
 

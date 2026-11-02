@@ -1281,13 +1281,83 @@ pub const SNP_REPORT_SIZE: usize = 0x4a0;
 /// Size of `report_data` member in [`SnpReport`].
 pub const SNP_REPORT_DATA_SIZE: usize = 64;
 
-/// Report structure.
-/// See `ATTESTATION_REPORT` in Table 22, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
+/// CPUID family containing Milan/Genoa, as reported by
+/// [`SnpReport::cpuid_fam_id`]. Select the TCB layout using the model as well:
+/// AMD 56860 revision 1.59, section 2.3, table 5 covers models 00h–1Fh.
+pub const SNP_CPUID_FAMILY_MILAN_GENOA: u8 = 0x19;
+
+/// CPUID family containing Turin, as reported by [`SnpReport::cpuid_fam_id`].
+/// This family is not exclusive to Turin: AMD 56860 revision 1.59, section 2.3,
+/// table 4 selects the Turin TCB layout for models 90h–AFh and C0h–CFh.
+pub const SNP_CPUID_FAMILY_TURIN: u8 = 0x1a;
+
+/// Milan/Genoa model IDs within [`SNP_CPUID_FAMILY_MILAN_GENOA`] that use
+/// [`SnpTcbVersionLegacy`]. AMD 56860 revision 1.59, section 2.3, table 5.
+pub const SNP_CPUID_MODELS_MILAN_GENOA: core::ops::RangeInclusive<u8> = 0x00..=0x1f;
+
+/// First Turin model-ID range within [`SNP_CPUID_FAMILY_TURIN`].
+/// AMD 56860 revision 1.59, section 2.3, table 4: models 90h–AFh.
+pub const SNP_CPUID_MODELS_TURIN_90_AF: core::ops::RangeInclusive<u8> = 0x90..=0xaf;
+
+/// Second Turin model-ID range within [`SNP_CPUID_FAMILY_TURIN`].
+/// AMD 56860 revision 1.59, section 2.3, table 4: models C0h–CFh.
+pub const SNP_CPUID_MODELS_TURIN_C0_CF: core::ops::RangeInclusive<u8> = 0xc0..=0xcf;
+
+/// Eight-byte `TCB_VERSION` encoding for Milan/Genoa (family 19h,
+/// models 00h–1Fh), in little-endian byte order.
+/// See AMD 56860 revision 1.59, section 2.3, table 5.
+///
+/// The CPU generation, not the attestation report version, selects this layout.
+/// No ordering is derived: SVN components must be compared individually.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpTcbVersionLegacy {
+    /// ASP bootloader SVN.
+    pub bootloader: u8,
+    /// ASP operating system SVN.
+    pub tee: u8,
+    /// Reserved bytes (bits 47:16).
+    pub reserved: [u8; 4],
+    /// SNP firmware SVN.
+    pub snp: u8,
+    /// Lowest microcode patch level of all cores.
+    pub microcode: u8,
+}
+
+/// Eight-byte `TCB_VERSION` encoding for Turin (family 1Ah,
+/// models 90h–AFh and C0h–CFh), in little-endian byte order.
+/// See AMD 56860 revision 1.59, section 2.3, table 4.
+///
+/// Unlike the legacy layout, this includes FMC and moves other components.
+/// It is not the Venice encoding or a report-version-specific structure.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpTcbVersionTurin {
+    /// ASP FMC firmware SVN.
+    pub fmc: u8,
+    /// ASP bootloader SVN.
+    pub bootloader: u8,
+    /// ASP operating system SVN.
+    pub tee: u8,
+    /// SNP firmware SVN.
+    pub snp: u8,
+    /// Reserved bytes (bits 55:32).
+    pub reserved: [u8; 3],
+    /// Lowest microcode patch level of all cores.
+    pub microcode: u8,
+}
+
+const_assert_eq!(size_of::<SnpTcbVersionLegacy>(), 8);
+const_assert_eq!(size_of::<SnpTcbVersionTurin>(), 8);
+
+/// SNP attestation report layout.
+/// See `ATTESTATION_REPORT` in the
+/// [SEV-SNP Firmware ABI specification (AMD 56860)](https://docs.amd.com/v/u/en-US/56860_PUB_SEV_SNP).
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpReport {
     /// Version number of this attestation report.
-    /// Set to 2h for this specification.
+    /// Determines which version-dependent fields are valid.
     pub version: u32,
     /// The guest SVN.
     pub guest_svn: u32,
@@ -1335,8 +1405,14 @@ pub struct SnpReport {
     /// Reported TCB version used to derive
     /// the VCEK that signed this report.
     pub reported_tcb: u64,
-    /// Reserved
-    pub _reserved1: [u8; 24],
+    /// CPUID family ID. Valid in report version 3 and later; reserved in v2.
+    pub cpuid_fam_id: u8,
+    /// CPUID model ID. Valid in report version 3 and later; reserved in v2.
+    pub cpuid_mod_id: u8,
+    /// CPUID stepping. Valid in report version 3 and later; reserved in v2.
+    pub cpuid_step: u8,
+    /// Reserved.
+    pub _reserved1: [u8; 21],
     /// If MaskChipId is set to 0, Identifier
     /// unique to the chip as output by
     /// GET_ID. Otherwise, set to 0h.
@@ -1445,7 +1521,86 @@ static_assertions::const_assert_eq!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
     use zerocopy::FromZeros;
+
+    #[test]
+    fn snp_tcb_layouts_and_little_endian_decoding() {
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionLegacy, bootloader), 0);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionLegacy, tee), 1);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionLegacy, reserved), 2);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionLegacy, snp), 6);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionLegacy, microcode), 7);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, fmc), 0);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, bootloader), 1);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, tee), 2);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, snp), 3);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, reserved), 4);
+        assert_eq!(core::mem::offset_of!(SnpTcbVersionTurin, microcode), 7);
+
+        let bytes = 0x0807_0605_0403_0201u64.to_le_bytes();
+        let legacy = SnpTcbVersionLegacy::read_from_bytes(&bytes).unwrap();
+        assert_eq!(legacy.bootloader, 1);
+        assert_eq!(legacy.tee, 2);
+        assert_eq!(legacy.reserved, [3, 4, 5, 6]);
+        assert_eq!(legacy.snp, 7);
+        assert_eq!(legacy.microcode, 8);
+        assert_eq!(legacy.as_bytes(), &bytes);
+
+        let turin = SnpTcbVersionTurin::read_from_bytes(&bytes).unwrap();
+        assert_eq!(turin.fmc, 1);
+        assert_eq!(turin.bootloader, 2);
+        assert_eq!(turin.tee, 3);
+        assert_eq!(turin.snp, 4);
+        assert_eq!(turin.reserved, [5, 6, 7]);
+        assert_eq!(turin.microcode, 8);
+        assert_eq!(turin.as_bytes(), &bytes);
+
+        assert!(SnpTcbVersionLegacy::read_from_bytes(&bytes[..7]).is_err());
+        assert!(SnpTcbVersionTurin::read_from_bytes(&bytes[..7]).is_err());
+        assert!(SnpTcbVersionLegacy::read_from_bytes(&[0; 9]).is_err());
+        assert!(SnpTcbVersionTurin::read_from_bytes(&[0; 9]).is_err());
+    }
+
+    #[test]
+    fn snp_report_layout() {
+        // AMD 56860 ATTESTATION_REPORT. Naming the v3 CPUID fields must not
+        // change the wire layout or move any subsequent fields.
+        assert_eq!(size_of::<SnpReport>(), SNP_REPORT_SIZE);
+        assert_eq!(core::mem::offset_of!(SnpReport, reported_tcb), 0x180);
+        assert_eq!(core::mem::offset_of!(SnpReport, cpuid_fam_id), 0x188);
+        assert_eq!(core::mem::offset_of!(SnpReport, cpuid_mod_id), 0x189);
+        assert_eq!(core::mem::offset_of!(SnpReport, cpuid_step), 0x18a);
+        assert_eq!(core::mem::offset_of!(SnpReport, chip_id), 0x1a0);
+        assert_eq!(core::mem::offset_of!(SnpReport, committed_tcb), 0x1e0);
+        assert_eq!(core::mem::offset_of!(SnpReport, launch_tcb), 0x1f0);
+        assert_eq!(core::mem::offset_of!(SnpReport, signature), 0x2a0);
+    }
+
+    #[test]
+    fn snp_report_read_from_unaligned_bytes() {
+        let mut bytes = [0u8; SNP_REPORT_SIZE + 16];
+        let offset = if bytes.as_ptr().align_offset(align_of::<SnpReport>()) == 0 {
+            1
+        } else {
+            0
+        };
+        let bytes = &mut bytes[offset..offset + SNP_REPORT_SIZE];
+        assert_ne!(bytes.as_ptr().align_offset(align_of::<SnpReport>()), 0);
+        bytes[..4].copy_from_slice(&3u32.to_le_bytes());
+        bytes[0x180..0x188].copy_from_slice(&0x0807_0000_0000_0201u64.to_le_bytes());
+        bytes[0x188..0x18b].copy_from_slice(&[0x19, 0x11, 2]);
+
+        let (report, rest) = SnpReport::read_from_prefix(bytes).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(report.version, 3);
+        assert_eq!(report.reported_tcb, 0x0807_0000_0000_0201);
+        assert_eq!(report.cpuid_fam_id, 0x19);
+        assert_eq!(report.cpuid_mod_id, 0x11);
+        assert_eq!(report.cpuid_step, 2);
+        assert_eq!(report.as_bytes(), bytes);
+        assert!(SnpReport::read_from_prefix(&bytes[..SNP_REPORT_SIZE - 1]).is_err());
+    }
 
     // ---- SecureAvicControl bitfield tests ----
 

@@ -28,10 +28,9 @@ unicycle.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
-disklayer_ram.workspace = true
+disk_hook.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
-parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

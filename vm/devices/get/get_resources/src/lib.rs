@@ -300,17 +300,17 @@ pub mod ged {
         AkCertRequestFailureAndRetryExtended,
         /// Config for testing AK cert persistency across boots.
         ///
-        /// Plan: one success then always-no-response.  Used by
-        /// OpenVMM-hosted tests where no extra boot-time requests occur.
+        /// Issue certificate A when metadata is absent, then require exact A
+        /// metadata and respond once with bit 5 set and a poison payload that
+        /// must not be written to NV. Later requests must still report A and
+        /// receive no transport response, exercising the persistent cache.
         AkCertPersistentAcrossBoot,
         /// Config for testing AK cert persistency across boots —
-        /// extended plan for Hyper-V tests.
+        /// scripted replacement for Hyper-V tests.
         ///
-        /// Hyper-V VMs go through an `initial_reboot` that can consume
-        /// the first success action before the test code runs.  The
-        /// extra `RespondSuccess` ensures the cert is still provisioned
-        /// after the reboot, so the subsequent boot can validate that
-        /// the cert is served from the persistent cache.
+        /// Same policy as `AkCertRenewal`: issue A, replace it with B on exact
+        /// A metadata, then require exact B metadata with no transport response.
+        /// Replacement is scripted, not based on certificate expiry.
         AkCertPersistentAcrossBootExtended,
         /// Config for testing the `skip_hw_unsealing` signal from the
         /// IGVM agent.
@@ -338,5 +338,13 @@ pub mod ged {
         /// boot.  AK cert requests are served so the guest has a valid
         /// AK to read across boots.
         StateRefresh,
+        /// Issue a real synthetic AK certificate, then approve it without renewal.
+        AkCertNoRenewal,
+        /// Script an AK certificate replacement, not an expiry-based renewal.
+        ///
+        /// Issue A with bit 5 clear when metadata is absent. On exact A metadata,
+        /// issue B with bit 5 clear. Later requests must report exact B metadata
+        /// and receive no transport response, exercising the persistent cache.
+        AkCertRenewal,
     }
 }

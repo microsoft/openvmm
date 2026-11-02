@@ -5,7 +5,6 @@
 
 use crate::common::CommonProfile;
 use crate::common::CommonTriple;
-use crate::run_vmm_perf::VmmPerfProfile;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -13,7 +12,7 @@ flowey_request! {
         pub target: CommonTriple,
         pub profile: CommonProfile,
         pub root_dir: PathBuf,
-        pub profiles: Vec<VmmPerfProfile>,
+        pub profiles: Vec<String>,
         pub vm_sizes_json: Option<String>,
         pub parameters_json: Option<String>,
         pub runtime_archive: Option<PathBuf>,

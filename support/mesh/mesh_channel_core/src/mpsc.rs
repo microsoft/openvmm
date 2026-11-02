@@ -51,14 +51,15 @@ use parking_lot::MutexGuard;
 use std::marker::PhantomPinned;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::task::ready;
 
 /// Creates a new channel for sending messages of type `T`, returning the sender
 /// and receiver ends.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     fn channel_core(vtable: &'static ElementVtable) -> (SenderCore, ReceiverCore) {
-        let mut receiver = ReceiverCore::new(vtable);
-        let sender = receiver.sender();
+        // Count the initial sender up front to avoid the extra lock acquisition
+        // in SenderCore::new.
+        let receiver = ReceiverCore::new(vtable, 1);
+        let sender = SenderCore(ManuallyDrop::new(receiver.queue.0.clone()));
         (sender, receiver)
     }
     let (sender, receiver) = channel_core(const { &ElementVtable::new::<T>() });
@@ -150,10 +151,23 @@ unsafe fn send_message<T: MeshField>(port: &Port, message: MessagePtr) {
     port.send_protobuf(m);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SenderCore(ManuallyDrop<Arc<Queue>>);
 
+impl Clone for SenderCore {
+    fn clone(&self) -> Self {
+        Self::new(Arc::clone(&self.0))
+    }
+}
+
 impl SenderCore {
+    fn new(queue: Arc<Queue>) -> Self {
+        if let QueueAccess::Local(mut local) = queue.access() {
+            local.senders += 1;
+        }
+        Self(ManuallyDrop::new(queue))
+    }
+
     /// Sends `message`.
     ///
     /// # Safety
@@ -211,7 +225,7 @@ impl SenderCore {
             SenderCore(ManuallyDrop::new(Arc::new(Queue {
                 local: Mutex::new(LocalQueue {
                     remote: true,
-                    ..LocalQueue::new(vtable)
+                    ..LocalQueue::new(vtable, 0)
                 }),
                 remote: OnceLock::from(RemoteQueueState { port, send }),
                 receiver: Default::default(),
@@ -247,6 +261,9 @@ impl SenderCore {
                     let (send, recv) = Port::new_pair();
                     match queue.access() {
                         QueueAccess::Local(mut local) => {
+                            // Replace this sender with a port under the same lock
+                            // used by the receiver to check for closure.
+                            local.senders -= 1;
                             if !local.receiver_gone {
                                 local.new_handler = new_handler;
                                 local.ports.push(recv);
@@ -272,14 +289,19 @@ impl Drop for SenderCore {
     fn drop(&mut self) {
         // SAFETY: the queue won't be referenced after this.
         let queue = unsafe { ManuallyDrop::take(&mut self.0) };
-        let waker = if queue.remote.get().is_some() {
-            None
-        } else {
-            let mut local = queue.local.lock();
-            // TODO: keep a sender count to avoid needing to wake.
-            local.waker.take()
+        let waker = match queue.access() {
+            QueueAccess::Local(mut local) => {
+                // Publish closure before releasing the lock, so the receiver cannot
+                // register a new waker after the last sender has taken it.
+                local.senders -= 1;
+                if local.senders == 0 {
+                    local.waker.take()
+                } else {
+                    None
+                }
+            }
+            QueueAccess::Remote(_) => None,
         };
-        // Drop the queue so that the receiver will see the sender is gone.
         drop(queue);
         if let Some(waker) = waker {
             waker.wake();
@@ -359,7 +381,7 @@ impl<T> Receiver<T> {
     /// called.
     pub fn new() -> Self {
         Self(
-            ReceiverCore::new(const { &ElementVtable::new::<T>() }),
+            ReceiverCore::new(const { &ElementVtable::new::<T>() }, 0),
             PhantomData,
         )
     }
@@ -455,11 +477,18 @@ impl Drop for ReceiverQueue {
         // SAFETY: `receiver` is exclusively owned by this receiver and will never
         // be accessed again.
         unsafe { ManuallyDrop::drop(&mut *self.0.receiver.0.get()) };
-        let mut local = self.0.local.lock();
-        local.receiver_gone = true;
-        let _waker = std::mem::take(&mut local.waker);
-        local.messages.clear_and_shrink();
-        let _ports = std::mem::take(&mut local.ports);
+        // Destructors may reenter this queue, so detach its contents under the
+        // lock and drop them after unlocking.
+        let detached = {
+            let mut local = self.0.local.lock();
+            local.receiver_gone = true;
+            (
+                local.messages.take(),
+                std::mem::take(&mut local.ports),
+                local.waker.take(),
+            )
+        };
+        drop(detached);
     }
 }
 
@@ -481,14 +510,14 @@ impl ReceiverQueue {
 }
 
 impl ReceiverCore {
-    fn new(vtable: &'static ElementVtable) -> Self {
+    fn new(vtable: &'static ElementVtable, senders: usize) -> Self {
         Self {
             queue: ReceiverQueue(Arc::new(Queue {
-                local: Mutex::new(LocalQueue::new(vtable)),
+                local: Mutex::new(LocalQueue::new(vtable, senders)),
                 remote: OnceLock::new(),
                 receiver: SyncUnsafeCell::new(ManuallyDrop::new(ReceiverState {
                     ports: PortHandlerList::default(),
-                    terminated: true,
+                    terminated: senders == 0,
                 })),
             })),
         }
@@ -505,8 +534,9 @@ impl ReceiverCore {
     ) -> Poll<Result<T, RecvError>> {
         fn try_poll_recv<'a>(
             this: &'a mut ReceiverCore,
-            cx: Option<&mut Context<'_>>,
+            cx: Option<&Context<'_>>,
         ) -> Poll<Result<MutexGuard<'a, LocalQueue>, RecvError>> {
+            let mut deferred_waker = None;
             let (queue, state) = this.queue.split_mut();
             loop {
                 debug_assert!(queue.remote.get().is_none());
@@ -522,8 +552,10 @@ impl ReceiverCore {
                         let local = queue.local.lock();
                         if local.messages.is_empty()
                             && local.ports.is_empty()
-                            && ReceiverCore::is_closed(queue)
+                            && ReceiverCore::is_closed(&local, state)
                         {
+                            drop(local);
+                            drop(deferred_waker);
                             state.terminated = true;
                             return Poll::Ready(Err(RecvError::Error(err)));
                         } else {
@@ -547,24 +579,41 @@ impl ReceiverCore {
                             .waker
                             .as_ref()
                             .is_some_and(|waker| waker.will_wake(cx.waker()))
-                            && !ReceiverCore::is_closed(queue)
+                            && !ReceiverCore::is_closed(&local, state)
                         {
-                            local.waker = Some(cx.waker().clone());
+                            let Some(waker) = deferred_waker.take() else {
+                                drop(local);
+                                deferred_waker = Some(cx.waker().clone());
+                                // Cloning can reenter the channel. Recheck all
+                                // queue state before registering the new waker.
+                                continue;
+                            };
+                            deferred_waker = local.waker.replace(waker);
                         }
                     }
-                    if ReceiverCore::is_closed(queue) {
+                    let closed = ReceiverCore::is_closed(&local, state);
+                    drop(local);
+                    drop(deferred_waker);
+                    if closed {
                         state.terminated = true;
                         return Poll::Ready(Err(RecvError::Closed));
                     } else {
                         return Poll::Pending;
                     }
                 } else {
+                    if let Some(waker) = deferred_waker.take() {
+                        drop(local);
+                        // Dispose of an unused candidate before returning a
+                        // live guard. Its destructor can reenter the queue too.
+                        drop(waker);
+                        continue;
+                    }
                     return Poll::Ready(Ok(local));
                 }
             }
         }
 
-        ready!(try_poll_recv(self, cx))
+        std::task::ready!(try_poll_recv(self, cx.as_deref()))
             .map(|mut local| {
                 let message = local.messages.pop_front_in_place().unwrap();
                 // SAFETY: `message` is a valid owned `T`.
@@ -573,13 +622,13 @@ impl ReceiverCore {
             .into()
     }
 
-    fn is_closed(queue: &Arc<Queue>) -> bool {
-        Arc::strong_count(queue) == 1
+    fn is_closed(local: &LocalQueue, state: &ReceiverState) -> bool {
+        local.senders == 0 && state.ports.0.is_empty()
     }
 
     fn sender(&mut self) -> SenderCore {
         self.queue.state_mut().terminated = false;
-        SenderCore(ManuallyDrop::new(self.queue.0.clone()))
+        SenderCore::new(self.queue.0.clone())
     }
 
     /// Converts this receiver into a port.
@@ -633,7 +682,7 @@ impl ReceiverCore {
                 local: Mutex::new(LocalQueue {
                     ports: vec![port],
                     new_handler,
-                    ..LocalQueue::new(vtable)
+                    ..LocalQueue::new(vtable, 0)
                 }),
                 remote: OnceLock::new(),
                 receiver: Default::default(),
@@ -769,6 +818,8 @@ impl Queue {
 
 #[derive(Debug)]
 struct LocalQueue {
+    // Counts SenderCore instances until this queue becomes remote.
+    senders: usize,
     messages: ErasedVecDeque,
     ports: Vec<Port>,
     waker: Option<Waker>,
@@ -781,8 +832,9 @@ struct LocalQueue {
 type NewHandlerFn = unsafe fn(Arc<Queue>) -> RemotePortHandler;
 
 impl LocalQueue {
-    fn new(vtable: &'static ElementVtable) -> Self {
+    fn new(vtable: &'static ElementVtable, senders: usize) -> Self {
         Self {
+            senders,
             messages: ErasedVecDeque::new(vtable),
             ports: Vec::new(),
             waker: None,
@@ -919,8 +971,20 @@ mod tests {
     use futures::stream::FusedStream;
     use mesh_node::local_node::Port;
     use mesh_protobuf::Protobuf;
+    use parking_lot::Mutex;
     use std::cell::Cell;
     use std::marker::PhantomData;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::RawWaker;
+    use std::task::RawWakerVTable;
+    use std::task::Wake;
+    use std::task::Waker;
+    use std::time::Duration;
     use test_with_tracing::test;
 
     // Ensure `Send` and `Sync` are implemented correctly.
@@ -931,6 +995,227 @@ mod tests {
     static_assertions::assert_not_impl_any!(Sender<*const ()>: Send, Sync);
     static_assertions::assert_not_impl_any!(Receiver<*const ()>: Send, Sync);
 
+    fn assert_completes(f: impl FnOnce() + Send + 'static) {
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            f();
+            send.send(()).unwrap();
+        });
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("channel operation deadlocked during reentrant destruction");
+        worker.join().unwrap();
+    }
+
+    struct WakeFlag(AtomicBool);
+
+    impl Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct SenderWake {
+        _sender: Sender<()>,
+    }
+
+    impl Wake for SenderWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    enum CloneAction {
+        CloneSender,
+        Send,
+        Close,
+    }
+
+    struct ReentrantWaker {
+        queue: Arc<super::Queue>,
+        sender: Mutex<Option<Sender<u32>>>,
+        action: CloneAction,
+        clones: AtomicUsize,
+        woken: AtomicBool,
+    }
+
+    impl ReentrantWaker {
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            Self::clone_waker,
+            Self::wake_waker,
+            Self::wake_by_ref,
+            Self::drop_waker,
+        );
+
+        fn make(
+            receiver: &Receiver<u32>,
+            sender: Sender<u32>,
+            action: CloneAction,
+        ) -> (Waker, Arc<Self>) {
+            let state = Arc::new(Self {
+                queue: receiver.0.queue.0.clone(),
+                sender: Mutex::new(Some(sender)),
+                action,
+                clones: AtomicUsize::new(0),
+                woken: AtomicBool::new(false),
+            });
+            let raw = RawWaker::new(Arc::into_raw(state.clone()).cast(), &Self::VTABLE);
+            // SAFETY: the vtable manages the owned Arc and only accesses
+            // thread-safe state.
+            (unsafe { Waker::from_raw(raw) }, state)
+        }
+
+        /// # Safety
+        /// `data` must point to the live Arc allocation owned by the calling waker.
+        unsafe fn clone_waker(data: *const ()) -> RawWaker {
+            // SAFETY: the calling waker keeps this Arc allocation alive.
+            let state = unsafe { &*data.cast::<Self>() };
+            state.clones.fetch_add(1, Ordering::SeqCst);
+            let mut sender = state.sender.lock();
+            match state.action {
+                CloneAction::CloneSender => drop(sender.as_ref().unwrap().clone()),
+                CloneAction::Send => sender.as_ref().unwrap().send(7),
+                CloneAction::Close => drop(sender.take()),
+            }
+            // SAFETY: the calling waker owns a strong reference, and the new
+            // waker takes ownership of this additional reference.
+            unsafe { Arc::increment_strong_count(data.cast::<Self>()) };
+            RawWaker::new(data, &Self::VTABLE)
+        }
+
+        /// # Safety
+        /// `data` must transfer the consuming waker's owned strong Arc reference.
+        unsafe fn wake_waker(data: *const ()) {
+            // SAFETY: wake consumes the waker's owned strong reference.
+            let state = unsafe { Arc::from_raw(data.cast::<Self>()) };
+            state.woken.store(true, Ordering::SeqCst);
+        }
+
+        /// # Safety
+        /// `data` must point to the live Arc allocation owned by the calling waker.
+        unsafe fn wake_by_ref(data: *const ()) {
+            // SAFETY: the borrowed waker keeps this Arc allocation alive.
+            let state = unsafe { &*data.cast::<Self>() };
+            state.woken.store(true, Ordering::SeqCst);
+        }
+
+        /// # Safety
+        /// `data` must transfer the consuming waker's owned strong Arc reference.
+        unsafe fn drop_waker(data: *const ()) {
+            // SAFETY: drop consumes the waker's owned strong reference.
+            let state = unsafe { Arc::from_raw(data.cast::<Self>()) };
+            // Reenter even when another Arc keeps the sender alive.
+            drop(state.queue.local.lock());
+        }
+    }
+
+    #[test]
+    fn test_waker_clone_reenters_sender_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::CloneSender);
+            let mut cx = Context::from_waker(&waker);
+            assert!(receiver.poll_recv(&mut cx).is_pending());
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+            assert!(receiver.poll_recv(&mut cx).is_pending());
+            state.sender.lock().as_ref().unwrap().send(7);
+            assert!(state.woken.load(Ordering::SeqCst));
+            assert!(matches!(receiver.poll_recv(&mut cx), Poll::Ready(Ok(7))));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn test_message_arrives_during_waker_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::Send);
+            assert!(matches!(
+                receiver.poll_recv(&mut Context::from_waker(&waker)),
+                Poll::Ready(Ok(7))
+            ));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn test_sender_closes_during_waker_clone() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let (waker, state) = ReentrantWaker::make(&receiver, sender, CloneAction::Close);
+            assert!(matches!(
+                receiver.poll_recv(&mut Context::from_waker(&waker)),
+                Poll::Ready(Err(RecvError::Closed))
+            ));
+            assert_eq!(state.clones.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn test_drop_receiver_with_sender_in_queued_message() {
+        assert_completes(|| {
+            struct Message {
+                _sender: Sender<Message>,
+                _held: Arc<()>,
+            }
+
+            let (sender, receiver) = channel();
+            let held = Arc::new(());
+            let weak = Arc::downgrade(&held);
+            sender.send(Message {
+                _sender: sender.clone(),
+                _held: held,
+            });
+            drop(sender);
+            drop(receiver);
+            assert!(weak.upgrade().is_none());
+        });
+    }
+
+    #[test]
+    fn test_drop_receiver_with_sender_in_registered_waker() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let wake = Arc::new(SenderWake { _sender: sender });
+            let weak = Arc::downgrade(&wake);
+            let waker = Waker::from(wake);
+            assert!(
+                receiver
+                    .poll_recv(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            drop(receiver);
+            assert!(weak.upgrade().is_none());
+        });
+    }
+
+    #[test]
+    fn test_replace_waker_owning_last_sender() {
+        assert_completes(|| {
+            let (sender, mut receiver) = channel();
+            let wake = Arc::new(SenderWake { _sender: sender });
+            let weak = Arc::downgrade(&wake);
+            let waker = Waker::from(wake);
+            assert!(
+                receiver
+                    .poll_recv(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+            let new_waker = Waker::from(flag.clone());
+            let mut cx = Context::from_waker(&new_waker);
+            let result = receiver.poll_recv(&mut cx);
+            assert!(weak.upgrade().is_none());
+            if result.is_pending() {
+                assert!(flag.0.load(Ordering::SeqCst));
+            }
+            assert!(matches!(
+                receiver.poll_recv(&mut cx),
+                Poll::Ready(Err(RecvError::Closed))
+            ));
+        });
+    }
+
     #[test]
     fn test_basic() {
         block_on(async {
@@ -940,6 +1225,84 @@ mod tests {
             drop(sender);
             assert_eq!(receiver.next().await, None);
         })
+    }
+
+    #[test]
+    fn test_last_sender_close_with_queue_reference() {
+        let (sender, receiver) = channel::<()>();
+        let sender2 = sender.clone();
+        // Keep the allocation alive, as it is between publishing the last
+        // sender's disappearance and dropping its queue reference.
+        let _queue = receiver.0.queue.0.clone();
+        let mut streams = futures::stream::select_all([receiver]);
+        let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+        let waker = Waker::from(flag.clone());
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(streams.poll_next_unpin(&mut cx).is_pending());
+        drop(sender);
+        assert!(streams.poll_next_unpin(&mut cx).is_pending());
+        flag.0.store(false, Ordering::SeqCst);
+        drop(sender2);
+        assert!(flag.0.load(Ordering::SeqCst));
+        assert_eq!(streams.poll_next_unpin(&mut cx), Poll::Ready(None));
+    }
+
+    #[test]
+    fn test_last_local_sender_with_remote_sender() {
+        let (sender, mut receiver) = channel::<u32>();
+        let remote_sender = Sender::<u32>::from(Port::from(sender.clone()));
+        let mut cx = Context::from_waker(Waker::noop());
+
+        assert!(receiver.poll_recv(&mut cx).is_pending());
+        drop(sender);
+        assert!(receiver.poll_recv(&mut cx).is_pending());
+        remote_sender.send(5);
+        assert!(matches!(receiver.poll_recv(&mut cx), Poll::Ready(Ok(5))));
+        drop(remote_sender);
+        assert!(matches!(
+            receiver.poll_recv(&mut cx),
+            Poll::Ready(Err(RecvError::Closed))
+        ));
+
+        let sender = receiver.sender();
+        assert!(receiver.poll_recv(&mut cx).is_pending());
+        drop(sender);
+        assert!(matches!(
+            receiver.poll_recv(&mut cx),
+            Poll::Ready(Err(RecvError::Closed))
+        ));
+    }
+
+    #[test]
+    fn test_remote_sender_clone_and_conversion() {
+        block_on(async {
+            let (sender, mut receiver) = channel::<u32>();
+            let sender = Sender::<u32>::from(Port::from(sender));
+            let sender2 = sender.clone();
+            let sender = Sender::<u32>::from(Port::from(sender));
+            drop(sender2);
+            sender.send(5);
+            assert_eq!(receiver.recv().await.unwrap(), 5);
+            drop(sender);
+            assert!(matches!(receiver.recv().await, Err(RecvError::Closed)));
+        });
+    }
+
+    #[test]
+    fn test_sender_clone_after_receiver_becomes_remote() {
+        block_on(async {
+            let (sender, receiver) = channel::<u32>();
+            let sender2 = sender.clone();
+            let mut receiver = Receiver::<u32>::from(Port::from(receiver));
+            let sender3 = sender2.clone();
+            drop(sender);
+            drop(sender2);
+            sender3.send(5);
+            assert_eq!(receiver.recv().await.unwrap(), 5);
+            drop(sender3);
+            assert!(matches!(receiver.recv().await, Err(RecvError::Closed)));
+        });
     }
 
     #[test]

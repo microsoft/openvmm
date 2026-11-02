@@ -6,6 +6,9 @@
 
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use consomme::ChecksumState;
@@ -25,8 +28,11 @@ use net_backend::L4Protocol;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxChecksumState;
+use net_backend::RxGsoProtocol;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::RxOffload;
+use net_backend::RxOffloadSupport;
 use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
@@ -37,6 +43,10 @@ use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
+use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::IPV6_HEADER_LEN;
+use smoltcp::wire::TcpPacket;
 use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -378,6 +388,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             },
             stats: Default::default(),
             driver: config.driver,
+            enabled_rx_offloads: config.enabled_rx_offloads,
         });
         let port_forwards =
             std::mem::take(&mut queue.endpoint_state.as_mut().unwrap().port_forwards);
@@ -443,6 +454,7 @@ pub struct ConsommeQueue {
     state: QueueState,
     stats: Stats,
     driver: Box<dyn Driver>,
+    enabled_rx_offloads: RxOffloadSupport,
 }
 
 impl InspectMut for ConsommeQueue {
@@ -492,6 +504,7 @@ impl ConsommeQueue {
                 stats: &mut self.stats,
                 driver: &self.driver,
                 pool,
+                enabled_rx_offloads: self.enabled_rx_offloads,
             }))
     }
 
@@ -514,6 +527,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        enabled_rx_offloads: self.enabled_rx_offloads,
                     }),
                     message,
                 ),
@@ -538,6 +552,7 @@ impl ConsommeQueue {
                         stats: &mut self.stats,
                         driver: &self.driver,
                         pool,
+                        enabled_rx_offloads: self.enabled_rx_offloads,
                     }),
                     request,
                 ),
@@ -830,6 +845,7 @@ struct Client<'a> {
     stats: &'a mut Stats,
     driver: &'a dyn Driver,
     pool: &'a mut dyn BufferAccess,
+    enabled_rx_offloads: RxOffloadSupport,
 }
 
 /// Minimal client for consomme operations that don't need BufferAccess
@@ -870,6 +886,26 @@ impl consomme::Client for Client<'_> {
         let max = self.pool.capacity(rx_id) as usize;
         let len: usize = segments.iter().map(|s| s.len()).sum();
         if len <= max {
+            let offload = if let Some(mss) = checksum.tso {
+                // Consomme-generated TCP frames have fixed Ethernet/IP headers,
+                // and the first segment contains the entire TCP header.
+                let (protocol, start) = if checksum.ipv4 {
+                    (RxGsoProtocol::TcpV4, ETHERNET_HEADER_LEN + IPV4_HEADER_LEN)
+                } else {
+                    (RxGsoProtocol::TcpV6, ETHERNET_HEADER_LEN + IPV6_HEADER_LEN)
+                };
+                assert!(checksum.tcp && self.rx_gso_supported(!checksum.ipv4));
+                let tcp_header_len =
+                    u16::from(TcpPacket::new_unchecked(&segments[0][start..]).header_len());
+                RxOffload::tcp_gso(
+                    protocol,
+                    start as u16 + tcp_header_len,
+                    mss,
+                    Some(start as u16),
+                )
+            } else {
+                RxOffload::default()
+            };
             self.pool.write_packet_segments(
                 rx_id,
                 &RxMetadata {
@@ -880,7 +916,9 @@ impl consomme::Client for Client<'_> {
                     } else {
                         RxChecksumState::Unknown
                     },
-                    l4_checksum: if checksum.tcp || checksum.udp {
+                    l4_checksum: if checksum.tso.is_some() {
+                        RxChecksumState::Unknown
+                    } else if checksum.tcp || checksum.udp {
                         RxChecksumState::Good
                     } else {
                         RxChecksumState::Unknown
@@ -892,6 +930,7 @@ impl consomme::Client for Client<'_> {
                     } else {
                         L4Protocol::Unknown
                     },
+                    offload,
                     vlan: None,
                 },
                 segments,
@@ -909,5 +948,14 @@ impl consomme::Client for Client<'_> {
         } else {
             0
         }
+    }
+
+    fn rx_gso_supported(&self, ipv6: bool) -> bool {
+        self.enabled_rx_offloads.checksum
+            && if ipv6 {
+                self.enabled_rx_offloads.tcpv6_gso
+            } else {
+                self.enabled_rx_offloads.tcpv4_gso
+            }
     }
 }

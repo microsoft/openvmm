@@ -446,14 +446,14 @@ pub struct Pipeline {
     ado_ci_triggers: Option<AdoCiTriggers>,
     ado_pr_triggers: Option<AdoPrTriggers>,
     ado_resources_repository: Vec<InternalAdoResourcesRepository>,
-    ado_bootstrap_template: String,
+    ado_bootstrap_template: Option<Box<AdoBootstrapTemplate>>,
     ado_variables: BTreeMap<String, String>,
     ado_post_process_yaml_cb: Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
     gh_name: Option<String>,
     gh_schedule_triggers: Vec<GhScheduleTriggers>,
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
-    gh_bootstrap_template: String,
+    gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
 }
 
 impl Pipeline {
@@ -477,8 +477,12 @@ impl Pipeline {
         self
     }
 
-    /// (ADO only) Provide a YAML template used to bootstrap flowey at the start
+    /// (ADO only) Provide a callback to provide a job-specific YAML template used to bootstrap flowey at the start
     /// of an ADO pipeline.
+    ///
+    /// The callback receives the job's platform and architecture and is invoked
+    /// for each job that builds flowey, but not jobs that consume a prebuilt
+    /// binary.
     ///
     /// The template has access to the following vars, which will be statically
     /// interpolated into the template's text:
@@ -506,8 +510,11 @@ impl Pipeline {
     ///    `{{FLOWEY_PIPELINE_PATH}}` is provided as a way to disambiguate in
     ///    cases where the same template is being for multiple pipelines (e.g: a
     ///    debug vs. release pipeline).
-    pub fn ado_set_flowey_bootstrap_template(&mut self, template: String) -> &mut Self {
-        self.ado_bootstrap_template = template;
+    pub fn ado_set_flowey_bootstrap_template_fn(
+        &mut self,
+        template: impl Fn(FlowPlatform, FlowArch) -> anyhow::Result<String> + 'static,
+    ) -> &mut Self {
+        self.ado_bootstrap_template = Some(Box::new(template));
         self
     }
 
@@ -587,8 +594,12 @@ impl Pipeline {
         self
     }
 
-    /// Provide a YAML template used to bootstrap flowey at the start of an GitHub
-    /// pipeline.
+    /// Provide a callback that provides a job-specific YAML template used to
+    /// bootstrap flowey at the start of a GitHub Actions pipeline.
+    ///
+    /// The callback receives the job's platform and architecture and is invoked
+    /// for each job that builds flowey, but not jobs that consume a prebuilt
+    /// binary.
     ///
     /// The template has access to the following vars, which will be statically
     /// interpolated into the template's text:
@@ -616,8 +627,11 @@ impl Pipeline {
     ///    `{{FLOWEY_PIPELINE_PATH}}` is provided as a way to disambiguate in
     ///    cases where the same template is being for multiple pipelines (e.g: a
     ///    debug vs. release pipeline).
-    pub fn gh_set_flowey_bootstrap_template(&mut self, template: String) -> &mut Self {
-        self.gh_bootstrap_template = template;
+    pub fn gh_set_flowey_bootstrap_template_fn(
+        &mut self,
+        template: impl Fn(FlowPlatform, FlowArch) -> anyhow::Result<String> + 'static,
+    ) -> &mut Self {
+        self.gh_bootstrap_template = Some(Box::new(template));
         self
     }
 
@@ -1531,6 +1545,12 @@ pub mod internal {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Generate an ADO bootstrap template for a job's platform and architecture.
+    pub type AdoBootstrapTemplate = dyn Fn(FlowPlatform, FlowArch) -> anyhow::Result<String>;
+
+    /// Generate a GitHub bootstrap template for a job's platform and architecture.
+    pub type GhBootstrapTemplate = dyn Fn(FlowPlatform, FlowArch) -> anyhow::Result<String>;
+
     pub fn consistent_artifact_runtime_var_name(artifact: impl AsRef<str>, is_use: bool) -> String {
         format!(
             "artifact_{}_{}",
@@ -1597,7 +1617,7 @@ pub mod internal {
         pub ado_schedule_triggers: Vec<AdoScheduleTriggers>,
         pub ado_ci_triggers: Option<AdoCiTriggers>,
         pub ado_pr_triggers: Option<AdoPrTriggers>,
-        pub ado_bootstrap_template: String,
+        pub ado_bootstrap_template: Option<Box<AdoBootstrapTemplate>>,
         pub ado_resources_repository: Vec<InternalAdoResourcesRepository>,
         pub ado_post_process_yaml_cb:
             Option<Box<dyn FnOnce(serde_yaml::Value) -> serde_yaml::Value>>,
@@ -1607,7 +1627,7 @@ pub mod internal {
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
-        pub gh_bootstrap_template: String,
+        pub gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
     }
 
     impl PipelineFinalized {

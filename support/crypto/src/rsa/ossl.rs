@@ -50,8 +50,24 @@ impl RsaKeyPairInner {
             modulus: rsa.n().to_vec(),
             public_exponent: rsa.e().to_vec(),
             private_exponent: rsa.d().to_vec(),
-            prime1: rsa.p().unwrap().to_vec(),
-            prime2: rsa.q().unwrap().to_vec(),
+            prime1: rsa
+                .p()
+                .ok_or_else(|| {
+                    err(
+                        openssl::error::ErrorStack::get(),
+                        "exporting the RSA private key: first prime is missing",
+                    )
+                })?
+                .to_vec(),
+            prime2: rsa
+                .q()
+                .ok_or_else(|| {
+                    err(
+                        openssl::error::ErrorStack::get(),
+                        "exporting the RSA private key: second prime is missing",
+                    )
+                })?
+                .to_vec(),
         })
     }
 
@@ -205,12 +221,15 @@ impl RsaPublicKeyInner {
         self.0.rsa().unwrap().size() as usize
     }
 
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
         // TODO: This should use EVP_PKEY_get_params but the openssl crate doesn't expose it
-        let rsa = self.0.rsa().unwrap();
-        RsaPublicKeyComponents {
+        let rsa = self
+            .0
+            .rsa()
+            .map_err(|e| err(e, "accessing the RSA public key"))?;
+        Ok(RsaPublicKeyComponents {
             modulus: rsa.n().to_vec(),
             public_exponent: rsa.e().to_vec(),
-        }
+        })
     }
 }

@@ -418,20 +418,23 @@ impl RsaPublicKeyInner {
         unsafe { SecKeyGetBlockSize(self.0.0) }
     }
 
-    pub fn to_components(&self) -> super::RsaPublicKeyComponents {
-        let pub_key = self.public_key_handle().unwrap();
+    pub fn to_components(&self) -> Result<super::RsaPublicKeyComponents, RsaError> {
+        let pub_key = self.public_key_handle()?;
         let mut error: CFErrorRef = ptr::null();
         // SAFETY: pub_key.0 is valid.
         let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
-        assert!(!data.is_null(), "failed to export the RSA public key");
+        if data.is_null() {
+            // SAFETY: error is null or a valid CFErrorRef.
+            return Err(unsafe { rsa_sec_err(error, "exporting the RSA public key") });
+        }
         let data = CfHandle(data);
         // SAFETY: data.0 is valid.
         let der_bytes = unsafe { cf_data_to_vec(data.0) };
-        let (modulus, public_exponent) = parse_pkcs1_pub(&der_bytes).unwrap();
-        super::RsaPublicKeyComponents {
+        let (modulus, public_exponent) = parse_pkcs1_pub(&der_bytes)?;
+        Ok(super::RsaPublicKeyComponents {
             modulus,
             public_exponent,
-        }
+        })
     }
 
     /// Get a SecKeyRef for the public half of this key. For a key already

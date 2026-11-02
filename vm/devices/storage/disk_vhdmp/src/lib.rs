@@ -19,11 +19,14 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
+
+mod scsi;
 
 mod virtdisk {
     #![expect(non_snake_case, dead_code, clippy::upper_case_acronyms)]
@@ -702,13 +705,14 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
 #[derive(Debug, Inspect)]
 pub struct VhdmpDisk {
     #[inspect(flatten)]
-    vhd: FileDisk,
+    vhd: Arc<FileDisk>,
     /// Lock uses to serialize IOs, since FileDisk currently cannot handle
     /// multiple concurrent IOs on files opened with FILE_FLAG_OVERLAPPED on
     /// Windows (and the VHDMP handle is opened with FILE_FLAG_OVERLAPPED).
     #[inspect(skip)]
-    io_lock: futures::lock::Mutex<()>,
+    io_lock: Arc<futures::lock::Mutex<()>>,
     disk_id: Guid,
+    unmap_cap: scsi::UnmapCapabilities,
 }
 
 #[derive(Debug, Error)]
@@ -743,6 +747,7 @@ impl VhdmpDisk {
     pub fn new(vhd: Vhd, read_only: bool) -> Result<Self, Error> {
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
+        let unmap_cap = scsi::unmap_capabilities(vhd.0.as_handle()).map_err(Error::Query)?;
         let metadata = disk_file::Metadata {
             disk_size: size.VirtualSize,
             sector_size: size.SectorSize,
@@ -752,9 +757,10 @@ impl VhdmpDisk {
         let vhd = FileDisk::with_metadata(vhd.0, metadata);
 
         Ok(Self {
-            vhd,
+            vhd: Arc::new(vhd),
             io_lock: Default::default(),
             disk_id,
+            unmap_cap,
         })
     }
 }
@@ -814,20 +820,53 @@ impl DiskIo for VhdmpDisk {
 
     async fn unmap(
         &self,
-        _sector: u64,
-        _count: u64,
-        _block_level_only: bool,
+        mut sector: u64,
+        mut count: u64,
+        block_level_only: bool,
     ) -> Result<(), DiskError> {
-        Ok(())
+        if sector
+            .checked_add(count)
+            .is_none_or(|end| end > self.sector_count())
+        {
+            return Err(DiskError::IllegalBlock);
+        }
+        if self.is_read_only() {
+            return Err(DiskError::ReadOnly);
+        }
+        if count == 0 || self.unmap_cap.behavior == disk_backend::UnmapBehavior::Ignored {
+            return Ok(());
+        }
+
+        let locked = self.io_lock.clone().lock_owned().await;
+        let vhd = self.vhd.clone();
+        let max_sectors = self.unmap_cap.max_sectors;
+        blocking::unblock(move || {
+            // Keep serialization and the handle alive even if the future is dropped.
+            let _locked = locked;
+            while count != 0 {
+                let sectors = count.min(max_sectors.into()) as u32;
+                scsi::unmap(vhd.as_handle(), sector, sectors, block_level_only)?;
+                sector += u64::from(sectors);
+                count -= u64::from(sectors);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(DiskError::Io)
     }
 
     fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        disk_backend::UnmapBehavior::Ignored
+        self.unmap_cap.behavior
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.unmap_cap.optimal_sectors
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::Vhd;
     use super::VhdmpDisk;
     use disk_backend::DiskError;
     use disk_backend::DiskIo;
@@ -836,7 +875,73 @@ mod tests {
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
     use std::io::Write;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::{Path, PathBuf};
     use tempfile::TempPath;
+    use windows_sys::Win32::Storage::Vhd as native;
+
+    const BLOCK_SIZE: usize = 2 * 1024 * 1024;
+    const BLOCK_SECTORS: u64 = BLOCK_SIZE as u64 / 512;
+
+    fn make_test_vhdx() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trim.vhdx");
+        drop(Vhd::create_dynamic(&path, 64, true).unwrap());
+        (dir, path)
+    }
+
+    fn open_disk(path: &Path, read_only: bool, cached: bool) -> VhdmpDisk {
+        let vhd = VhdmpDisk::options()
+            .read_only(read_only)
+            .cached_io(cached)
+            .open(path)
+            .unwrap();
+        VhdmpDisk::new(vhd, read_only).unwrap()
+    }
+
+    async fn write_bytes(disk: &VhdmpDisk, sector: u64, data: &[u8]) {
+        let gm = GuestMemory::allocate(data.len());
+        gm.write_at(0, data).unwrap();
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, data.len(), false).buffer(&gm),
+            sector,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    async fn read_bytes(disk: &VhdmpDisk, sector: u64, length: usize) -> Vec<u8> {
+        let gm = GuestMemory::allocate(length);
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, length, true).buffer(&gm),
+            sector,
+        )
+        .await
+        .unwrap();
+        let mut data = vec![0; length];
+        gm.read_at(0, &mut data).unwrap();
+        data
+    }
+
+    fn compact(path: &Path) {
+        let vhd = VhdmpDisk::options().open_raw(path).unwrap();
+        let parameters = native::COMPACT_VIRTUAL_DISK_PARAMETERS {
+            Version: native::COMPACT_VIRTUAL_DISK_VERSION_1,
+            ..Default::default()
+        };
+        // SAFETY: The disk is unattached and exclusively owned for this
+        // synchronous call, and the parameters are initialized for version 1.
+        super::chk_win32(unsafe {
+            native::CompactVirtualDisk(
+                vhd.0.as_raw_handle(),
+                native::COMPACT_VIRTUAL_DISK_FLAG_NO_ZERO_SCAN,
+                &parameters,
+                std::ptr::null(),
+            )
+        })
+        .unwrap();
+    }
 
     fn make_test_vhd() -> TempPath {
         let mut f = tempfile::Builder::new().suffix(".vhd").tempfile().unwrap();
@@ -860,6 +965,24 @@ mod tests {
     #[async_test]
     async fn sector_range_conformance() {
         storage_tests::sector_range::test_disk_sector_range_conformance(&conformance_disk()).await;
+    }
+
+    #[async_test]
+    async fn vhdx_sector_range_conformance() {
+        let (_dir, path) = make_test_vhdx();
+        let disk = disk_backend::Disk::new(open_disk(&path, false, true)).unwrap();
+        storage_tests::sector_range::test_disk_sector_range_conformance(&disk).await;
+    }
+
+    #[async_test]
+    async fn unmap_without_driver_support_is_ignored() {
+        let path = make_test_vhd();
+        let mut disk = open_disk(&path, false, true);
+        disk.unmap_cap.behavior = disk_backend::UnmapBehavior::Ignored;
+        disk.unmap_cap.max_sectors = 0;
+        write_bytes(&disk, 0, &[0x5a; 512]).await;
+        disk.unmap(0, 1, false).await.unwrap();
+        assert_eq!(read_bytes(&disk, 0, 512).await, vec![0x5a; 512]);
     }
 
     #[test]
@@ -898,5 +1021,129 @@ mod tests {
             Err(DiskError::IllegalBlock) => {}
             r => panic!("unexpected result: {:?}", r),
         }
+    }
+
+    #[async_test]
+    async fn unmap_preserves_neighbors_and_survives_reopen() {
+        for cached in [false, true] {
+            for block_level_only in [false, true] {
+                let (_dir, path) = make_test_vhdx();
+                let mut disk = open_disk(&path, false, cached);
+                assert_ne!(disk.unmap_behavior(), disk_backend::UnmapBehavior::Ignored);
+                assert!(disk.optimal_unmap_sectors() > 0);
+                assert!(disk.unmap_cap.max_sectors >= BLOCK_SECTORS as u32);
+                // Exercise splitting at the backend's advertised command limit.
+                disk.unmap_cap.max_sectors = BLOCK_SECTORS as u32;
+                write_bytes(&disk, 0, &vec![0x5a; 4 * BLOCK_SIZE]).await;
+                disk.sync_cache().await.unwrap();
+                disk.unmap(BLOCK_SECTORS, 2 * BLOCK_SECTORS, block_level_only)
+                    .await
+                    .unwrap();
+                disk.sync_cache().await.unwrap();
+                for reopened in [false, true] {
+                    if reopened {
+                        drop(disk);
+                        disk = open_disk(&path, true, cached);
+                    }
+                    assert_eq!(
+                        read_bytes(&disk, 0, BLOCK_SIZE).await,
+                        vec![0x5a; BLOCK_SIZE]
+                    );
+                    assert_eq!(
+                        read_bytes(&disk, BLOCK_SECTORS, 2 * BLOCK_SIZE).await,
+                        vec![0; 2 * BLOCK_SIZE]
+                    );
+                    assert_eq!(
+                        read_bytes(&disk, 3 * BLOCK_SECTORS, BLOCK_SIZE).await,
+                        vec![0x5a; BLOCK_SIZE]
+                    );
+                }
+            }
+        }
+    }
+
+    #[async_test]
+    async fn unmap_reclaims_space_through_compaction() {
+        let (_dir, path) = make_test_vhdx();
+        let disk = open_disk(&path, false, true);
+        write_bytes(&disk, 0, &vec![0x5a; 4 * BLOCK_SIZE]).await;
+        disk.sync_cache().await.unwrap();
+        drop(disk);
+        compact(&path);
+        let before = std::fs::metadata(&path).unwrap().len();
+        let disk = open_disk(&path, false, true);
+        disk.unmap(BLOCK_SECTORS, 2 * BLOCK_SECTORS, false)
+            .await
+            .unwrap();
+        disk.sync_cache().await.unwrap();
+        drop(disk);
+        compact(&path);
+        let after = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            before >= after + 2 * BLOCK_SIZE as u64,
+            "discard and compaction reclaimed less than 4 MiB: {before} -> {after}"
+        );
+        let disk = open_disk(&path, true, true);
+        assert_eq!(read_bytes(&disk, 0, 512).await, vec![0x5a; 512]);
+        assert_eq!(
+            read_bytes(&disk, 3 * BLOCK_SECTORS, 512).await,
+            vec![0x5a; 512]
+        );
+    }
+
+    #[async_test]
+    async fn unmap_validates_ranges_and_read_only() {
+        let (_dir, path) = make_test_vhdx();
+        let disk = open_disk(&path, false, true);
+        let end = disk.sector_count();
+        for (sector, count) in [(end, 1), (end + 1, 0), (0, end + 1), (u64::MAX, 1)] {
+            assert!(matches!(
+                disk.unmap(sector, count, false).await,
+                Err(DiskError::IllegalBlock)
+            ));
+        }
+        disk.unmap(0, 0, false).await.unwrap();
+        disk.unmap(end, 0, false).await.unwrap();
+        disk.unmap(end - 1, 1, false).await.unwrap();
+        drop(disk);
+        let disk = open_disk(&path, true, true);
+        assert!(matches!(
+            disk.unmap(0, 1, false).await,
+            Err(DiskError::ReadOnly)
+        ));
+    }
+
+    #[async_test]
+    async fn unmap_differencing_disk_preserves_parent() {
+        let (_dir, parent) = make_test_vhdx();
+        let disk = open_disk(&parent, false, true);
+        write_bytes(&disk, 0, &vec![0x5a; 3 * BLOCK_SIZE]).await;
+        disk.sync_cache().await.unwrap();
+        drop(disk);
+        let child = parent.with_file_name("child.vhdx");
+        drop(Vhd::create_diff(&child, &parent).unwrap());
+        let disk = open_disk(&child, false, true);
+        write_bytes(&disk, BLOCK_SECTORS, &vec![0x7a; BLOCK_SIZE]).await;
+        disk.sync_cache().await.unwrap();
+        disk.unmap(BLOCK_SECTORS, BLOCK_SECTORS, false)
+            .await
+            .unwrap();
+        disk.sync_cache().await.unwrap();
+        drop(disk);
+        let disk = open_disk(&child, true, true);
+        assert_eq!(
+            read_bytes(&disk, 0, BLOCK_SIZE).await,
+            vec![0x5a; BLOCK_SIZE]
+        );
+        assert_eq!(
+            read_bytes(&disk, 2 * BLOCK_SECTORS, BLOCK_SIZE).await,
+            vec![0x5a; BLOCK_SIZE]
+        );
+        drop(disk);
+        let disk = open_disk(&parent, true, true);
+        assert_eq!(
+            read_bytes(&disk, 0, 3 * BLOCK_SIZE).await,
+            vec![0x5a; 3 * BLOCK_SIZE]
+        );
     }
 }

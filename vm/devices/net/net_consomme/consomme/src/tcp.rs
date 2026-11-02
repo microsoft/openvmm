@@ -44,6 +44,7 @@ use smoltcp::wire::TcpControl;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
 use smoltcp::wire::TcpSeqNumber;
+use smoltcp::wire::checksum;
 use socket2::Domain;
 use socket2::Protocol;
 use socket2::SockAddr;
@@ -724,7 +725,7 @@ fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
 #[derive(Inspect)]
 struct TcpListener {
     #[inspect(skip)]
-    socket: PolledSocket<Socket>,
+    socket: Option<PolledSocket<Socket>>,
     host_port: u16,
 }
 
@@ -962,6 +963,24 @@ impl<T: Client> Access<'_, T> {
 
     pub(crate) fn refresh_tcp_driver(&mut self) {
         self.inner.tcp.timer = Some(TcpTimer::new(self.client.driver()));
+        self.inner.tcp.listeners.retain(|key, listener| {
+            let socket = listener.socket.take().unwrap().into_inner();
+            match PolledSocket::new(self.client.driver(), socket) {
+                Ok(socket) => {
+                    listener.socket = Some(socket);
+                    true
+                }
+                Err(err) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        guest_port = key.guest_port,
+                        family = %key.family,
+                        "failed to update driver for tcp listener"
+                    );
+                    false
+                }
+            }
+        });
         self.inner.tcp.connections.retain(|ft, conn| {
             let TcpBackend::Socket {
                 socket: opt_socket, ..
@@ -1194,7 +1213,12 @@ struct Sender<'a, T> {
 }
 
 impl<T: Client> Sender<'_, T> {
-    fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
+    fn send_packet(
+        &mut self,
+        tcp: &TcpRepr<'_>,
+        payload: Option<ring::View<'_>>,
+        tso_mss: Option<u16>,
+    ) {
         let payload_len = payload.as_ref().map_or(0, |p| p.len());
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
@@ -1243,9 +1267,12 @@ impl<T: Client> Sender<'_, T> {
             &ChecksumCapabilities::ignored(),
         );
 
-        let checksum_state = match self.ft.dst {
-            SocketAddr::V4(_) => ChecksumState::TCP4,
-            SocketAddr::V6(_) => ChecksumState::TCP6,
+        let checksum_state = ChecksumState {
+            tso: tso_mss,
+            ..match self.ft.dst {
+                SocketAddr::V4(_) => ChecksumState::TCP4,
+                SocketAddr::V6(_) => ChecksumState::TCP6,
+            }
         };
         let n = ETHERNET_HEADER_LEN + ip_total_len;
 
@@ -1270,21 +1297,28 @@ impl<T: Client> Sender<'_, T> {
         // The TCP header length is a multiple of 4, so the header and `a` are
         // 16-bit aligned; `b` shifts by a byte only when `a` has odd length, in
         // which case its partial checksum is byte-swapped.
-        let checksum = !checksum::combine(&[
-            checksum::pseudo_header(
-                &src_ip_addr,
-                &dst_ip_addr,
-                IpProtocol::Tcp,
-                (tcp_header_len + payload_len) as u32,
-            ),
-            checksum::data(&tcp_packet.as_ref()[..tcp_header_len]),
-            checksum::data(a),
-            if a.len() % 2 == 0 {
-                checksum::data(b)
-            } else {
-                checksum::data(b).swap_bytes()
-            },
-        ]);
+        let pseudo_header = checksum::pseudo_header(
+            &src_ip_addr,
+            &dst_ip_addr,
+            IpProtocol::Tcp,
+            (tcp_header_len + payload_len) as u32,
+        );
+        let checksum = if tso_mss.is_some() {
+            // GSO uses an uncomplemented pseudo-header seed; the guest completes
+            // the checksum after segmentation, without a payload checksum pass here.
+            pseudo_header
+        } else {
+            !checksum::combine(&[
+                pseudo_header,
+                checksum::data(&tcp_packet.as_ref()[..tcp_header_len]),
+                checksum::data(a),
+                if a.len() % 2 == 0 {
+                    checksum::data(b)
+                } else {
+                    checksum::data(b).swap_bytes()
+                },
+            ])
+        };
         tcp_packet.set_checksum(checksum);
 
         let header_len = n - payload_len;
@@ -1323,7 +1357,7 @@ impl<T: Client> Sender<'_, T> {
 
         trace_tcp_packet(self.ft, &tcp, 0, "rst xmit");
 
-        self.send_packet(&tcp, None);
+        self.send_packet(&tcp, None, None);
         true
     }
 }
@@ -2063,7 +2097,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
 
-        sender.send_packet(&tcp, None);
+        sender.send_packet(&tcp, None, None);
         self.tx_send += 1;
         self.tx_syn = if ack_number.is_some() {
             TxSynState::SynAck
@@ -2100,6 +2134,11 @@ impl TcpConnectionInner {
             self.stats.tx_blocked_window_full.increment();
         }
 
+        let gso_supported = self.tx_mss != 0
+            && sender
+                .client
+                .rx_gso_supported(matches!(sender.ft.dst, SocketAddr::V6(_)));
+
         while self.needs_ack || self.tx_send < tx_done || send_fin_probe {
             let rx_mtu = sender.client.rx_mtu();
             if rx_mtu == 0 {
@@ -2130,7 +2169,7 @@ impl TcpConnectionInner {
             // exceeding:
             // 1. The available buffer length.
             // 2. The current window.
-            // 3. The configured maximum segment size.
+            // 3. The configured maximum segment size, unless GSO is supported.
             // 4. The client MTU.
             let tx_segment_end = {
                 let ip_header_len = match sender.ft.dst {
@@ -2139,12 +2178,16 @@ impl TcpConnectionInner {
                 };
                 let header_len = ETHERNET_HEADER_LEN + ip_header_len + tcp.header_len();
                 let mtu = rx_mtu.min(sender.state.buffer.len());
-                seq_min([
-                    tx_payload_end,
-                    tx_window_end,
-                    tx_next + self.tx_mss,
-                    tx_next + (mtu - header_len),
-                ])
+                let max_payload = mtu.saturating_sub(header_len);
+                if max_payload == 0 {
+                    break;
+                }
+                let segment_limit = if gso_supported {
+                    max_payload
+                } else {
+                    self.tx_mss.min(max_payload)
+                };
+                seq_min([tx_payload_end, tx_window_end, tx_next + segment_limit])
             };
 
             let (payload_start, payload_len) = if tx_next < tx_segment_end {
@@ -2196,7 +2239,9 @@ impl TcpConnectionInner {
                 .tx_buffer
                 .view(payload_start..payload_start + payload_len);
 
-            sender.send_packet(&tcp, Some(payload));
+            let tso_mss =
+                (gso_supported && payload_len > self.tx_mss).then_some(self.tx_mss as u16);
+            sender.send_packet(&tcp, Some(payload), tso_mss);
             self.stats.pkts_tx_to_guest.increment();
             self.stats.bytes_tx_to_guest.add(payload_len as u64);
             self.stats.tx_segment_size.add_sample(payload_len as u64);
@@ -2421,7 +2466,7 @@ impl TcpConnectionInner {
 
         trace_tcp_packet(sender.ft, &tcp, payload_len, "retransmit");
         let payload = self.tx_buffer.view(0..payload_len);
-        sender.send_packet(&tcp, Some(payload));
+        sender.send_packet(&tcp, Some(payload), None);
         self.stats.pkts_tx_to_guest.increment();
         self.stats.bytes_tx_to_guest.add(payload_len as u64);
         self.stats.tx_segment_size.add_sample(payload_len as u64);
@@ -2475,7 +2520,7 @@ impl TcpConnectionInner {
         };
         let payload = self.tx_buffer.view(0..1);
         trace_tcp_packet(sender.ft, &tcp, payload.len(), "zero window probe");
-        sender.send_packet(&tcp, Some(payload));
+        sender.send_packet(&tcp, Some(payload), None);
         if self.tx_send == self.tx_acked {
             self.tx_send += 1;
         } else {
@@ -2516,7 +2561,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
         trace_tcp_packet(sender.ft, &tcp, 0, "retransmit");
-        sender.send_packet(&tcp, None);
+        sender.send_packet(&tcp, None, None);
     }
 
     /// Send an ACK using the current state of the connection.
@@ -2558,7 +2603,7 @@ impl TcpConnectionInner {
 
         trace_tcp_packet(sender.ft, &tcp, 0, "ack");
 
-        sender.send_packet(&tcp, None);
+        sender.send_packet(&tcp, None, None);
         self.stats.standalone_acks_tx.increment();
         self.record_advertised_window(window_len);
         true
@@ -3003,14 +3048,18 @@ impl TcpListener {
             );
             return Err(BindError::Io(err));
         }
-        Ok(Self { socket, host_port })
+        Ok(Self {
+            socket: Some(socket),
+            host_port,
+        })
     }
 
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Result<Option<(Socket, SocketAddr)>, DropReason> {
-        match self.socket.poll_accept(cx) {
+        let socket = self.socket.as_mut().unwrap();
+        match socket.poll_accept(cx) {
             Poll::Ready(r) => match r {
                 Ok((socket, address)) => match address.as_socket() {
                     Some(addr) => Ok(Some((socket, addr))),
@@ -3024,7 +3073,7 @@ impl TcpListener {
                     }
                 },
                 Err(_) => {
-                    let err = take_socket_error(&self.socket);
+                    let err = take_socket_error(socket);
                     tracing::warn!(
                         error = &err as &dyn std::error::Error,
                         host_port = self.host_port,
@@ -3062,78 +3111,6 @@ fn trace_tcp_packet(ft: &FourTuple, tcp: &TcpRepr<'_>, payload_len: usize, label
         payload_len,
         "tcp packet",
     );
-}
-
-// RFC 1071 primitives vendored from smoltcp (0BSD); replace with a `use` of
-// smoltcp::wire::checksum once smoltcp-rs/smoltcp#1172 exposes it.
-mod checksum {
-    use smoltcp::wire::IpAddress;
-    use smoltcp::wire::IpProtocol;
-
-    const fn propagate_carries(word: u32) -> u16 {
-        let sum = (word >> 16) + (word & 0xffff);
-        ((sum >> 16) as u16) + (sum as u16)
-    }
-
-    pub fn data(mut data: &[u8]) -> u16 {
-        let mut accum: u32 = 0;
-        const CHUNK_SIZE: usize = 32;
-        while data.len() >= CHUNK_SIZE {
-            let mut d = &data[..CHUNK_SIZE];
-            while d.len() >= 2 {
-                accum = accum.wrapping_add(u16::from_be_bytes([d[0], d[1]]) as u32);
-                d = &d[2..];
-            }
-            data = &data[CHUNK_SIZE..];
-        }
-        while data.len() >= 2 {
-            accum = accum.wrapping_add(u16::from_be_bytes([data[0], data[1]]) as u32);
-            data = &data[2..];
-        }
-        if let Some(&value) = data.first() {
-            accum = accum.wrapping_add((value as u32) << 8);
-        }
-        propagate_carries(accum)
-    }
-
-    pub fn combine(checksums: &[u16]) -> u16 {
-        let mut accum: u32 = 0;
-        for &word in checksums {
-            accum = accum.wrapping_add(word as u32);
-        }
-        propagate_carries(accum)
-    }
-
-    pub fn pseudo_header(
-        src_addr: &IpAddress,
-        dst_addr: &IpAddress,
-        next_header: IpProtocol,
-        length: u32,
-    ) -> u16 {
-        match (src_addr, dst_addr) {
-            (IpAddress::Ipv4(src_addr), IpAddress::Ipv4(dst_addr)) => {
-                let mut proto_len = [0u8; 4];
-                proto_len[1] = next_header.into();
-                proto_len[2..4].copy_from_slice(&(length as u16).to_be_bytes());
-                combine(&[
-                    data(&src_addr.octets()),
-                    data(&dst_addr.octets()),
-                    data(&proto_len),
-                ])
-            }
-            (IpAddress::Ipv6(src_addr), IpAddress::Ipv6(dst_addr)) => {
-                let mut len_proto = [0u8; 8];
-                len_proto[0..4].copy_from_slice(&length.to_be_bytes());
-                len_proto[7] = next_header.into();
-                combine(&[
-                    data(&src_addr.octets()),
-                    data(&dst_addr.octets()),
-                    data(&len_proto),
-                ])
-            }
-            _ => unreachable!("mismatched IP address families"),
-        }
-    }
 }
 
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {

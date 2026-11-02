@@ -71,7 +71,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Reprovision)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::ReprovisionSingle)
         .with_initial_vmgs(initial_vmgs)
         .run()
         .await?;

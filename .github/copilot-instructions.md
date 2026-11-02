@@ -17,6 +17,11 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
+## Protocol Buffers Enums
+
+For `.proto` changes (including gRPC/ttrpc), read and follow the
+[Protocol Buffers enum conventions](instructions/protobuf.instructions.md).
+
 ## Git Commit Rules
 
 - **Never amend commits that have already been pushed without express
@@ -113,8 +118,9 @@ See `Guide/src/dev_guide/tests/vmm.md` for details.
 - **VMM tests** — integration tests in `vmm_tests/` using the petri
   framework (requires additional setup).
 - Mark tests requiring special setup with `#[ignore]`.
-- Update `Guide/` docs when adding features or changing behavior
-  (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
+- Assess documentation impact using
+  `.github/instructions/doc-code-sync.instructions.md`; a Guide edit is not
+  always needed.
 - **CI failures** — to investigate failing CI checks on a PR, load the
   `openvmm-ci-investigation` skill.
 

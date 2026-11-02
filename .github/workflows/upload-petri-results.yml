@@ -8,6 +8,7 @@ on:
       - 'OpenVMM CI'
       - 'OpenVMM PR'
       - '\[Optional\] OpenVMM Release PR'
+      - 'OpenVMM Patina Nightly'
 
 permissions:
   id-token: write

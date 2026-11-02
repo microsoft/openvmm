@@ -23,6 +23,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
+use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -609,6 +610,10 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
+    /// Prefix a virtio NIC with `rx_gso:` to advertise guest TCP segmentation
+    /// offload. This is disabled by default until mergeable receive buffers are
+    /// supported.
     ///
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
@@ -667,7 +672,7 @@ options:
     pub smmu: Vec<SmmuCli>,
 
     /// COM1 binding, optionally prefixed with `debugger-mode:` (see below)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     ///
     /// Prefix the binding with `debugger-mode:` to run this COM port in
     /// debugger mode for WinDbg kernel debugging over serial (KD), e.g.
@@ -681,25 +686,25 @@ options:
     pub com1: Option<ComSerialConfigCli>,
 
     /// COM2 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<ComSerialConfigCli>,
 
     /// COM3 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<ComSerialConfigCli>,
 
     /// COM4 binding, optionally prefixed with `debugger-mode:` (see --com1)
-    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<ComSerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
@@ -707,7 +712,7 @@ options:
     #[clap(long)]
     pub serial_tx_only: bool,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -835,11 +840,21 @@ The openhcl personality requires explicit --hv --vtl2."#
     #[clap(long, value_name = "PORT", requires("virtio_rng"))]
     pub virtio_rng_pcie_port: Option<String>,
 
+    /// add a virtio real-time clock device, optionally configured with
+    /// comma-separated options (bus=auto|mmio|pci|pcie:PORT|vpci)
+    #[clap(
+        long,
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub virtio_rtc: Option<VirtioRtcCli>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
     /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
-    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 
@@ -872,6 +887,7 @@ The openhcl personality requires explicit --hv --vtl2."#
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -1025,6 +1041,7 @@ flags:
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
     /// at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -1049,7 +1066,7 @@ flags:
     /// own hypervisor.
     ///
     /// Only supported on x86_64, and only by backends that support nested
-    /// virtualization (currently WHP and KVM). Requires host support.
+    /// virtualization (currently WHP, KVM, and MSHV). Requires host support.
     #[clap(long)]
     pub nested_virt: bool,
 
@@ -1586,6 +1603,14 @@ pub struct UefiCli {
     pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
     #[kv(flag)]
     pub default_boot_always_attempt: bool,
+}
+
+/// Options for `--virtio-rtc`.
+#[derive(Clone, Debug, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct VirtioRtcCli {
+    /// Bus to attach the device to (auto | mmio | pci | pcie:PORT | vpci).
+    #[kv(default = VirtioBusCli::Auto)]
+    pub bus: VirtioBusCli,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2269,6 +2294,13 @@ impl FromStr for DiskCliKind {
                     Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
+                "delay" => {
+                    let (delay_ms, kind) = arg.split_once(':').context("expected delay_ms:kind")?;
+                    DiskCliKind::DelayDiskWrapper {
+                        delay_ms: delay_ms.parse().context("invalid disk delay")?,
+                        disk: Box::new(kind.parse()?),
+                    }
+                }
                 "file" => {
                     let FileOpts {
                         path,
@@ -2394,14 +2426,14 @@ impl FromStr for RpcCli {
 #[derive(Clone)]
 pub struct VmgsCli {
     pub kind: DiskCliKind,
-    pub provision: ProvisionVmgs,
+    pub provision: ProvisionCondition,
 }
 
 #[derive(Copy, Clone)]
-pub enum ProvisionVmgs {
+pub enum ProvisionCondition {
     OnEmpty,
     OnFailure,
-    True,
+    Single,
 }
 
 impl FromStr for VmgsCli {
@@ -2415,9 +2447,9 @@ impl FromStr for VmgsCli {
         let kind = kind.parse()?;
 
         let provision = match opt {
-            None => ProvisionVmgs::OnEmpty,
-            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
-            Some("fmt") => ProvisionVmgs::True,
+            None => ProvisionCondition::OnEmpty,
+            Some("fmt-on-fail") => ProvisionCondition::OnFailure,
+            Some("fmt") => ProvisionCondition::Single,
             Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
         };
 
@@ -2839,10 +2871,11 @@ impl FromStr for ComSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+/// (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | null | none)
 #[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
+    Null,
     Console,
     NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
@@ -2865,6 +2898,7 @@ impl FromStr for SerialConfigCli {
 
         let ret = match first_key {
             "none" => SerialConfigCli::None,
+            "null" => SerialConfigCli::Null,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
             "file" => match first_value {
@@ -3077,7 +3111,10 @@ impl FromStr for EndpointConfigCli {
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
+    /// MAC address to expose to the guest. A random address is used if omitted.
+    pub mac_address: Option<MacAddress>,
     pub max_queues: Option<u16>,
+    pub enable_rx_gso: bool,
     pub underhill: bool,
     pub pcie_port: Option<String>,
 }
@@ -3087,7 +3124,9 @@ impl FromStr for NicConfigCli {
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
         let mut vtl = DeviceVtl::Vtl0;
+        let mut mac_address = None;
         let mut max_queues = None;
+        let mut enable_rx_gso = false;
         let mut underhill = false;
         let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
@@ -3095,6 +3134,9 @@ impl FromStr for NicConfigCli {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "mac" => {
+                        mac_address = Some(val.parse().map_err(|_| "failed to parse MAC address")?);
                     }
                     "pcie_port" => {
                         if val.is_empty() {
@@ -3110,6 +3152,7 @@ impl FromStr for NicConfigCli {
                         vtl = DeviceVtl::Vtl2;
                     }
                     "uh" => underhill = true,
+                    "rx_gso" => enable_rx_gso = true,
                     _ => break,
                 }
             }
@@ -3128,7 +3171,9 @@ impl FromStr for NicConfigCli {
         Ok(NicConfigCli {
             vtl,
             endpoint,
+            mac_address,
             max_queues,
+            enable_rx_gso,
             underhill,
             pcie_port,
         })
@@ -3928,6 +3973,23 @@ mod tests {
     use std::path::Path;
     use test_with_tracing::test;
 
+    #[test]
+    fn vmgs_provision_conditions() {
+        for (option, expected) in [
+            ("", ProvisionCondition::OnEmpty),
+            (",fmt-on-fail", ProvisionCondition::OnFailure),
+            (",fmt", ProvisionCondition::Single),
+        ] {
+            let vmgs: VmgsCli = format!("mem:VMGS_DEFAULT{option}").parse().unwrap();
+            assert!(matches!(
+                (vmgs.provision, expected),
+                (ProvisionCondition::OnEmpty, ProvisionCondition::OnEmpty)
+                    | (ProvisionCondition::OnFailure, ProvisionCondition::OnFailure)
+                    | (ProvisionCondition::Single, ProvisionCondition::Single)
+            ));
+        }
+    }
+
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.
     #[test]
@@ -4281,6 +4343,10 @@ mod tests {
             SerialConfigCli::None
         );
         assert_eq!(
+            SerialConfigCli::from_str("null").unwrap(),
+            SerialConfigCli::Null
+        );
+        assert_eq!(
             SerialConfigCli::from_str("console").unwrap(),
             SerialConfigCli::Console
         );
@@ -4508,10 +4574,19 @@ mod tests {
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.mac_address.is_none());
         assert!(config.max_queues.is_none());
+        assert!(!config.enable_rx_gso);
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        let config = NicConfigCli::from_str("rx_gso:tap:tap0").unwrap();
+        assert!(config.enable_rx_gso);
+        assert!(matches!(
+            config.endpoint,
+            EndpointConfigCli::Tap { ref name } if name == "tap0"
+        ));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
@@ -4523,6 +4598,14 @@ mod tests {
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
         assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with explicit MAC address
+        let config = NicConfigCli::from_str("mac=00-15-5d-12-12-13:none").unwrap();
+        assert_eq!(
+            config.mac_address,
+            Some(MacAddress::new([0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]))
+        );
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
@@ -4538,6 +4621,7 @@ mod tests {
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("mac=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
         assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
         assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
@@ -6213,6 +6297,33 @@ mod tests {
             Options::try_parse_from(["openvmm", "--virtio-rng", "--virtio-rng-bus", "pcie:custom"])
                 .unwrap();
         assert_eq!(opt.virtio_rng_bus, VirtioBusCli::Pcie("custom".to_string()));
+    }
+
+    #[test]
+    fn test_virtio_rtc_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.virtio_rtc.is_none());
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rtc", "--processors", "2"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Auto
+            })
+        );
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-rtc", "bus=pcie:rp0"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Pcie("rp0".to_string())
+            })
+        );
+
+        for value in ["mmio", "bus", "bus=", "bus=pcie:", "bus=pcie:rp0,bus=mmio"] {
+            assert!(Options::try_parse_from(["openvmm", "--virtio-rtc", value]).is_err());
+        }
     }
 
     #[test]
