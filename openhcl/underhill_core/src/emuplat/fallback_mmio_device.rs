@@ -10,6 +10,8 @@ use cvm_tracing::CVM_ALLOWED;
 use hcl::ioctl::MshvHvcall;
 use memory_range::MemoryRange;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 // Represents a stub MMIO device that handles unhandled MMIO accesses by
 // forwarding them to the host on the blocking thread pool.
@@ -40,7 +42,18 @@ impl MmioIntercept for FallbackMmioDevice {
         let len = data.len();
         blocking::unblock(move || {
             let mut buffer = vec![!0; len];
-            if let Err(err) = mshv_hvcall.mmio_read(addr, &mut buffer) {
+            let start = Instant::now();
+            let result = mshv_hvcall.mmio_read(addr, &mut buffer);
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    addr,
+                    ?elapsed,
+                    "host MMIO read hypercall took longer than 1 second"
+                );
+            }
+            if let Err(err) = result {
                 tracelimit::error_ratelimited!(
                     CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
@@ -63,7 +76,18 @@ impl MmioIntercept for FallbackMmioDevice {
         let mshv_hvcall = self.mshv_hvcall.clone();
         let data = data.to_vec();
         blocking::unblock(move || {
-            if let Err(err) = mshv_hvcall.mmio_write(addr, &data) {
+            let start = Instant::now();
+            let result = mshv_hvcall.mmio_write(addr, &data);
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_secs(1) {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    addr,
+                    ?elapsed,
+                    "host MMIO write hypercall took longer than 1 second"
+                );
+            }
+            if let Err(err) = result {
                 tracelimit::error_ratelimited!(
                     CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
