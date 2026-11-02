@@ -220,6 +220,7 @@ struct TapQueue {
     tap: Option<tap::PolledTap>,
     inner: Inner,
     buffer: Box<[u8]>,
+    pending_rx: Option<RxMetadata>,
     enabled_rx_offloads: RxOffloadSupport,
     stale_offload_recovery: StaleOffloadRecovery,
     read_since_pending: bool,
@@ -227,15 +228,7 @@ struct TapQueue {
 
 struct Inner {
     rx_free: VecDeque<RxId>,
-    rx_ready: VecDeque<RxId>,
-}
-
-impl Inner {
-    fn complete_rx(&mut self, rx: RxId) {
-        let oldest = self.rx_free.pop_front().expect("RX queue is empty");
-        assert_eq!(oldest.0, rx.0);
-        self.rx_ready.push_back(rx);
-    }
+    rx_ready: VecDeque<Vec<RxId>>,
 }
 
 impl InspectMut for TapQueue {
@@ -274,6 +267,7 @@ impl TapQueue {
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; TAP_READ_BUFFER_LEN].into_boxed_slice(),
+            pending_rx: None,
             enabled_rx_offloads,
             stale_offload_recovery,
             read_since_pending: false,
@@ -294,7 +288,26 @@ impl Queue for TapQueue {
         };
 
         let mut packets_processed = 0;
-        while let Some(&rx) = self.inner.rx_free.front() {
+        while !self.inner.rx_free.is_empty() {
+            if let Some(metadata) = &self.pending_rx {
+                if pool.supports_multiple_buffers()
+                    && net_backend::rx_packet_buffer_count(pool, &self.inner.rx_free, metadata.len)
+                        .is_none()
+                {
+                    break;
+                }
+                if let Some(ids) = net_backend::write_rx_packet(
+                    pool,
+                    &mut self.inner.rx_free,
+                    metadata,
+                    &[&self.buffer
+                        [size_of::<VirtioNetHdr>()..size_of::<VirtioNetHdr>() + metadata.len]],
+                ) {
+                    self.inner.rx_ready.push_back(ids);
+                }
+                self.pending_rx = None;
+                continue;
+            }
             if packets_processed == MAX_RX_PACKETS_PER_POLL {
                 cx.waker().wake_by_ref();
                 break;
@@ -319,22 +332,11 @@ impl Queue for TapQueue {
                     ) else {
                         continue;
                     };
-                    let capacity = pool.capacity(rx);
-                    if frame_len <= capacity as usize {
-                        pool.write_packet(
-                            rx,
-                            &RxMetadata {
-                                offset: 0,
-                                len: frame_len,
-                                ..rx_meta
-                            },
-                            frame,
-                        );
-                    } else {
-                        continue;
-                    }
-
-                    self.inner.complete_rx(rx);
+                    self.pending_rx = Some(RxMetadata {
+                        offset: 0,
+                        len: frame_len,
+                        ..rx_meta
+                    });
                 }
                 Poll::Ready(Err(err)) => {
                     tracing::warn!(error = &err as &dyn std::error::Error, "tap rx error");
@@ -363,13 +365,12 @@ impl Queue for TapQueue {
         &mut self,
         _pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
         // Send to the guest any packets that might have been read during poll_ready().
-        let n = std::cmp::min(self.inner.rx_ready.len(), packets.len());
-        for (done, id) in packets[..n].iter_mut().zip(self.inner.rx_ready.drain(..n)) {
-            *done = id;
-        }
-        Ok(n)
+        Ok(net_backend::drain_rx_packets(
+            &mut self.inner.rx_ready,
+            packets,
+        ))
     }
 
     fn tx_avail(
@@ -1126,9 +1127,20 @@ mod tests {
             )
             .is_some()
         );
-        inner.complete_rx(rx);
+        let mut pool = net_backend::tests::Bufs::new(guestmem::GuestMemory::allocate(0x10000));
+        let ids = net_backend::write_rx_packet(
+            &mut pool,
+            &mut inner.rx_free,
+            &RxMetadata {
+                len: 64,
+                ..Default::default()
+            },
+            &[&[0; 64]],
+        )
+        .unwrap();
+        inner.rx_ready.push_back(ids);
         assert!(inner.rx_free.is_empty());
-        assert_eq!(inner.rx_ready.front().map(|id| id.0), Some(rx.0));
+        assert_eq!(inner.rx_ready.front().map(|ids| ids[0].0), Some(rx.0));
 
         recovery = StaleOffloadRecovery::after_reconfiguration(
             Some(all_rx_offloads()),

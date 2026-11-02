@@ -120,7 +120,7 @@ struct MockQueue {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(Vec<RxId>, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
@@ -164,20 +164,44 @@ impl net_backend::Queue for MockQueue {
         &mut self,
         pool: &mut dyn net_backend::BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
         let mut ready = self.rx_ready.lock();
-        let n = ready.len().min(packets.len());
-        for packet in packets.iter_mut().take(n) {
-            let (rx_id, data, metadata, header_first) = ready.pop_front().unwrap();
-            if header_first {
-                pool.write_header(rx_id, &metadata);
-                pool.write_data(rx_id, &data);
-            } else {
-                pool.write_packet(rx_id, &metadata, &data);
+        let mut completions = Vec::new();
+        let mut remaining = packets;
+        while let Some((ids, ..)) = ready.front() {
+            if ids.len() > remaining.len() {
+                break;
             }
-            *packet = rx_id;
+            let (ids, data, metadata, header_first) = ready.pop_front().unwrap();
+            if let [id] = ids.as_slice() {
+                if header_first {
+                    pool.write_header(*id, &metadata);
+                    pool.write_data(*id, &data);
+                } else {
+                    pool.write_packet(*id, &metadata, &data);
+                }
+            } else {
+                let mut available = VecDeque::from(ids.clone());
+                let split = data.len() / 2;
+                let consumed = net_backend::write_rx_packet(
+                    pool,
+                    &mut available,
+                    &metadata,
+                    &[&[], &data[..split], &[], &data[split..], &[]],
+                )
+                .expect("packet must fit");
+                assert!(available.is_empty());
+                assert_eq!(consumed.len(), ids.len());
+            }
+            let (output, rest) = remaining.split_at_mut(ids.len());
+            output.copy_from_slice(&ids);
+            remaining = rest;
+            completions.push(net_backend::RxBufferCompletion {
+                id: ids[0],
+                buffer_count: std::num::NonZeroU16::new(ids.len() as u16).unwrap(),
+            });
         }
-        Ok(n)
+        Ok(completions)
     }
 
     fn tx_avail(
@@ -239,7 +263,7 @@ struct MockQueueHandle {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata, bool)>>>,
+    rx_ready: Arc<Mutex<VecDeque<(Vec<RxId>, Vec<u8>, RxMetadata, bool)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Receiver<()>,
     tx_avail_notify: mesh::Receiver<()>,
@@ -283,7 +307,7 @@ impl MockQueueHandle {
             .expect("no pending RX buffer available");
         self.rx_ready
             .lock()
-            .push_back((rx_id, data.to_vec(), *metadata, false));
+            .push_back((vec![rx_id], data.to_vec(), *metadata, false));
         if let Some(waker) = self.ready_waker.lock().take() {
             waker.wake();
         }
@@ -296,7 +320,7 @@ impl MockQueueHandle {
             .pop_front()
             .expect("no pending RX buffer available");
         self.rx_ready.lock().push_back((
-            rx_id,
+            vec![rx_id],
             data.to_vec(),
             RxMetadata {
                 offset: 0,
@@ -322,7 +346,7 @@ impl MockQueueHandle {
         pending.remove(pos);
         drop(pending);
         self.rx_ready.lock().push_back((
-            rx_id,
+            vec![rx_id],
             data.to_vec(),
             RxMetadata {
                 offset: 0,
@@ -344,6 +368,16 @@ impl MockQueueHandle {
             .await
             .expect("timed out waiting for rx_avail")
             .expect("channel closed");
+    }
+
+    fn inject_mergeable_rx_packet(&self, count: usize, data: &[u8], metadata: RxMetadata) {
+        let ids = self.rx_pending.lock().drain(..count).collect();
+        self.rx_ready
+            .lock()
+            .push_back((ids, data.to_vec(), metadata, false));
+        if let Some(waker) = self.ready_waker.lock().take() {
+            waker.wake();
+        }
     }
 
     /// Wait until the device has called `tx_avail` at least once.
@@ -567,8 +601,15 @@ impl TestHarness {
 
     /// Enable the device and retrieve the MockQueueHandle.
     async fn enable_and_get_handle(&mut self) -> MockQueueHandle {
-        self.enable_and_get_handle_with_features(VirtioDeviceFeatures::new())
-            .await
+        self.enable_and_get_handle_with_features(
+            VirtioDeviceFeatures::new().with_bank(
+                0,
+                NetworkFeaturesBank0::new()
+                    .with_guest_csum(true)
+                    .into_bits(),
+            ),
+        )
+        .await
     }
 
     /// Enable the device with specific negotiated features.
@@ -740,6 +781,53 @@ impl TestHarness {
         );
         self.rx_event.signal();
         gpa
+    }
+
+    fn post_rx_chain(&mut self, head: u16, lengths: &[u32], indirect: bool) -> Vec<(u64, u32)> {
+        let table = if indirect {
+            self.alloc_data(lengths.len() as u32 * 16)
+        } else {
+            RX_DESC_ADDR
+        };
+        let mut parts = Vec::new();
+        for (i, &len) in lengths.iter().enumerate() {
+            let gpa = self.alloc_data(len);
+            self.mem.fill_at(gpa, 0xa5, len as usize).unwrap();
+            self.alloc_data(16);
+            let idx = if indirect { i as u16 } else { head + i as u16 };
+            write_descriptor(
+                &self.mem,
+                table,
+                idx,
+                gpa,
+                len,
+                DescriptorFlags::new()
+                    .with_write(true)
+                    .with_next(i + 1 < lengths.len()),
+                idx + 1,
+            );
+            parts.push((gpa, len));
+        }
+        if indirect {
+            write_descriptor(
+                &self.mem,
+                RX_DESC_ADDR,
+                head,
+                table,
+                lengths.len() as u32 * 16,
+                DescriptorFlags::new().with_indirect(true),
+                0,
+            );
+        }
+        make_available(
+            &self.mem,
+            RX_AVAIL_ADDR,
+            QUEUE_SIZE,
+            head,
+            &mut self.rx_avail_idx,
+        );
+        self.rx_event.signal();
+        parts
     }
 
     /// Wait for the next RX used ring entry with a timeout.
@@ -1015,6 +1103,20 @@ async fn rx_out_of_order_completion_published_in_order(driver: DefaultDriver) {
             .read_at(gpas[i] + NET_HEADER_SIZE as u64, &mut readback)
             .unwrap();
         assert_eq!(&readback, payload, "buffer {i} data mismatch");
+    }
+
+    for i in 0u16..3 {
+        harness.post_rx_buffer_and_signal(i, buffer_size);
+        handle.wait_for_rx_pending().await;
+    }
+    for i in [2, 0, 1] {
+        handle.inject_rx_packet_for(RxId(i), payloads[i as usize]);
+    }
+    for (i, payload) in payloads.iter().enumerate() {
+        assert_eq!(
+            harness.wait_for_rx_used().await,
+            (i as u16, NET_HEADER_SIZE + payload.len() as u32)
+        );
     }
 }
 
@@ -2040,6 +2142,500 @@ async fn tx_offload_end_to_end_tcp_csum(driver: DefaultDriver) {
 
 // --- RX Offload Tests ---
 
+fn mergeable_features() -> VirtioDeviceFeatures {
+    VirtioDeviceFeatures::new()
+        .with_version_1(true)
+        .with_bank(
+            0,
+            NetworkFeaturesBank0::new()
+                .with_mrg_rxbuf(true)
+                .with_guest_csum(true)
+                .with_guest_tso4(true)
+                .with_guest_tso6(true)
+                .into_bits(),
+        )
+        .with_ring_indirect_desc(true)
+}
+
+#[async_test]
+async fn rx_mergeable_gso_and_restart_order(driver: DefaultDriver) {
+    for offload in [
+        RxOffload::default(),
+        RxOffload::tcp_gso(RxGsoProtocol::TcpV4, 54, 1460, Some(34)),
+        RxOffload::tcp_gso(RxGsoProtocol::TcpV6, 74, 1440, Some(54)),
+    ] {
+        let mut harness = TestHarness::new(&driver);
+        let mut handle = harness
+            .enable_and_get_handle_with_features(mergeable_features())
+            .await;
+        let ids = [7, 3, 1];
+        let lengths = [NET_HEADER_SIZE, 4096, 4096];
+        let mut gpas = Vec::new();
+        for (&id, &len) in ids.iter().zip(&lengths) {
+            gpas.push(harness.post_rx_buffer_and_signal(id, len));
+            harness.alloc_data(16);
+            handle.wait_for_rx_pending().await;
+        }
+
+        harness.request_endpoint_restart();
+        handle = harness.wait_for_recreated_queue().await;
+        for _ in ids {
+            handle.wait_for_rx_pending().await;
+        }
+        assert_eq!(
+            handle
+                .rx_pending
+                .lock()
+                .iter()
+                .map(|id| id.0)
+                .collect::<Vec<_>>(),
+            ids.map(u32::from)
+        );
+
+        let payload: Vec<_> = (0..6144).map(|i| (i % 251) as u8).collect();
+        handle.inject_mergeable_rx_packet(
+            3,
+            &payload,
+            RxMetadata {
+                len: payload.len(),
+                offload,
+                ..Default::default()
+            },
+        );
+        for (id, len) in [(7, NET_HEADER_SIZE), (3, 4096), (1, 2048)] {
+            assert_eq!(harness.wait_for_rx_used().await, (id, len));
+            assert_eq!(harness.mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 3);
+        }
+        let hdr = read_virtio_header(&harness.mem, gpas[0]);
+        assert_eq!(hdr.num_buffers, 3);
+        assert_eq!(hdr.flags & 1 != 0, offload.checksum_metadata().is_some());
+        if let Some(gso) = offload.gso() {
+            assert_eq!(hdr.hdr_len, gso.header_len);
+            assert_eq!(hdr.gso_size, gso.max_segment_size);
+            assert_eq!(hdr.csum_start, offload.checksum_metadata().unwrap().start);
+            assert_eq!(hdr.csum_offset, 16);
+        }
+        let mut readback = vec![0; payload.len()];
+        harness.mem.read_at(gpas[1], &mut readback[..4096]).unwrap();
+        harness.mem.read_at(gpas[2], &mut readback[4096..]).unwrap();
+        assert_eq!(readback, payload);
+        assert!(harness.try_read_rx_used().is_none());
+    }
+}
+
+#[async_test]
+async fn rx_mergeable_scatter_gather_counts_buffers_not_descriptors(driver: DefaultDriver) {
+    for indirect in [false, true] {
+        let mut harness = TestHarness::new(&driver);
+        let mut handle = harness
+            .enable_and_get_handle_with_features(mergeable_features())
+            .await;
+        let layouts = [
+            harness.post_rx_chain(7, &[5, 0, 39], indirect),
+            harness.post_rx_chain(3, &[11, 37], indirect),
+            harness.post_rx_chain(1, &[64], indirect),
+        ];
+        for _ in 0..3 {
+            handle.wait_for_rx_pending().await;
+        }
+        let payload: Vec<_> = (0..100).collect();
+        handle.inject_mergeable_rx_packet(
+            3,
+            &payload,
+            RxMetadata {
+                len: payload.len(),
+                ..Default::default()
+            },
+        );
+
+        let mut packet = Vec::new();
+        for ((id, used), parts) in [(7, 44), (3, 48), (1, 20)].into_iter().zip(layouts) {
+            assert_eq!(harness.wait_for_rx_used().await, (id, used));
+            let mut remaining = used;
+            for (gpa, len) in parts {
+                let mut part = vec![0; len as usize];
+                harness.mem.read_at(gpa, &mut part).unwrap();
+                let consumed = remaining.min(len) as usize;
+                packet.extend_from_slice(&part[..consumed]);
+                assert!(part[consumed..].iter().all(|&byte| byte == 0xa5));
+                remaining -= consumed as u32;
+            }
+            assert_eq!(remaining, 0);
+        }
+        assert_eq!(u16::from_le_bytes(packet[10..12].try_into().unwrap()), 3);
+        assert_eq!(&packet[12..], payload);
+    }
+}
+
+#[async_test]
+async fn rx_mergeable_packed_ring_reuse(driver: DefaultDriver) {
+    use pal_async::wait::PolledWait;
+    use virtio::spec::queue::PackedDescriptor;
+
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(mergeable_features().with_ring_packed(true))
+        .await;
+    let mut interrupt = PolledWait::new(&driver, harness.rx_interrupt_event.clone()).unwrap();
+    for (wrap, count, packet_len) in [(true, QUEUE_SIZE, 8180), (false, 2, 600)] {
+        let mut gpas = Vec::new();
+        for idx in 0..count {
+            let gpa = harness.alloc_data(512);
+            gpas.push(gpa);
+            let mut descriptor = PackedDescriptor::new()
+                .with_length(512)
+                .with_buffer_id(100 + idx)
+                .with_flags(
+                    DescriptorFlags::new()
+                        .with_write(true)
+                        .with_available(wrap)
+                        .with_used(!wrap),
+                );
+            descriptor.address = gpa.into();
+            harness
+                .mem
+                .write_plain(RX_DESC_ADDR + u64::from(idx) * 16, &descriptor)
+                .unwrap();
+        }
+        harness.rx_event.signal();
+        for _ in 0..count {
+            handle.wait_for_rx_pending().await;
+        }
+        let payload = vec![0x5a; packet_len];
+        handle.inject_mergeable_rx_packet(
+            count as usize,
+            &payload,
+            RxMetadata {
+                len: payload.len(),
+                ..Default::default()
+            },
+        );
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(interrupt.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut readback = Vec::new();
+        for idx in 0..count {
+            let desc = harness
+                .mem
+                .read_plain::<PackedDescriptor>(RX_DESC_ADDR + u64::from(idx) * 16)
+                .unwrap();
+            assert_eq!(desc.flags().used(), wrap);
+            assert_eq!(desc.flags().available(), wrap);
+            assert_eq!(desc.buffer_id.get(), 100 + idx);
+            if idx + 1 < count {
+                assert_eq!(desc.length.get(), 512);
+            }
+            let mut part = vec![0; desc.length.get() as usize];
+            harness.mem.read_at(gpas[idx as usize], &mut part).unwrap();
+            readback.extend(part);
+        }
+        assert_eq!(
+            u16::from_le_bytes(readback[10..12].try_into().unwrap()),
+            count
+        );
+        assert_eq!(&readback[12..], payload);
+    }
+}
+
+#[async_test]
+async fn rx_mergeable_memory_failure_drops_whole_packet(driver: DefaultDriver) {
+    for fail_header in [false, true] {
+        let mut harness = TestHarness::new(&driver);
+        let mut handle = harness
+            .enable_and_get_handle_with_features(mergeable_features())
+            .await;
+        let before_gpa = harness.post_rx_buffer_and_signal(0, 128);
+        let header_gpa = if fail_header {
+            TOTAL_MEM_SIZE as u64
+        } else {
+            harness.alloc_data(12)
+        };
+        let first_data = harness.alloc_data(32);
+        write_descriptor(
+            &harness.mem,
+            RX_DESC_ADDR,
+            7,
+            header_gpa,
+            12,
+            DescriptorFlags::new().with_write(true).with_next(true),
+            8,
+        );
+        write_descriptor(
+            &harness.mem,
+            RX_DESC_ADDR,
+            8,
+            first_data,
+            32,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(
+            &harness.mem,
+            RX_AVAIL_ADDR,
+            QUEUE_SIZE,
+            7,
+            &mut harness.rx_avail_idx,
+        );
+        let middle = if fail_header {
+            harness.alloc_data(48)
+        } else {
+            TOTAL_MEM_SIZE as u64
+        };
+        write_descriptor(
+            &harness.mem,
+            RX_DESC_ADDR,
+            3,
+            middle,
+            48,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(
+            &harness.mem,
+            RX_AVAIL_ADDR,
+            QUEUE_SIZE,
+            3,
+            &mut harness.rx_avail_idx,
+        );
+        harness.post_rx_buffer_and_signal(1, 64);
+        let after_gpa = harness.post_rx_buffer_and_signal(2, 128);
+        for _ in 0..5 {
+            handle.wait_for_rx_pending().await;
+        }
+        handle.inject_rx_packet(&[0x11; 60]);
+        handle.inject_mergeable_rx_packet(
+            3,
+            &[0x5a; 100],
+            RxMetadata {
+                len: 100,
+                ..Default::default()
+            },
+        );
+        handle.inject_rx_packet(&[0x22; 60]);
+        assert_eq!(harness.wait_for_rx_used().await, (0, 72));
+        for id in [7, 3, 1] {
+            assert_eq!(harness.wait_for_rx_used().await, (id, 0));
+        }
+        assert_eq!(harness.wait_for_rx_used().await, (2, 72));
+        for gpa in [before_gpa, after_gpa] {
+            assert_eq!(read_virtio_header(&harness.mem, gpa).num_buffers, 1);
+        }
+        let gpa = harness.post_rx_buffer_and_signal(7, 128);
+        handle.wait_for_rx_pending().await;
+        handle.inject_rx_packet(&[0x42; 60]);
+        assert_eq!(harness.wait_for_rx_used().await, (7, 72));
+        assert_eq!(read_virtio_header(&harness.mem, gpa).num_buffers, 1);
+    }
+}
+
+#[async_test]
+async fn rx_without_mergeable_or_checksum_features(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let mut handle = harness
+        .enable_and_get_handle_with_features(VirtioDeviceFeatures::new().with_version_1(true))
+        .await;
+    let gpa = harness.post_rx_buffer_and_signal(0, 128);
+    handle.wait_for_rx_pending().await;
+    handle.inject_rx_packet_with_metadata(
+        &[0x42; 60],
+        &RxMetadata {
+            len: 60,
+            ip_checksum: RxChecksumState::Good,
+            l4_checksum: RxChecksumState::Good,
+            ..Default::default()
+        },
+    );
+    assert_eq!(harness.wait_for_rx_used().await, (0, 72));
+    let hdr = read_virtio_header(&harness.mem, gpa);
+    assert_eq!(hdr.num_buffers, 1);
+    assert_eq!(hdr.flags, 0);
+    assert_rx_payload(&harness.mem, gpa, &[0x42; 60]);
+}
+
+fn rx_test_queue(driver: &DefaultDriver, mem: &GuestMemory) -> virtio::VirtioQueue {
+    virtio::VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        QueueParams {
+            size: QUEUE_SIZE,
+            enable: true,
+            desc_addr: RX_DESC_ADDR,
+            avail_addr: RX_AVAIL_ADDR,
+            used_addr: RX_USED_ADDR,
+        },
+        mem.clone(),
+        Interrupt::from_event(Event::new()),
+        pal_async::wait::PolledWait::new(driver, Event::new()).unwrap(),
+        None,
+    )
+    .unwrap()
+}
+
+#[async_test]
+async fn rx_mergeable_pool_lengths_and_packet_addresses(driver: DefaultDriver) {
+    use net_backend::BufferAccess;
+
+    for (second_gpa, first_gpa) in [(0x4200, 0x4100), (0x4127, 0x4100), (0x4200, u64::MAX - 5)] {
+        let mem = GuestMemory::allocate(0x10000);
+        let mut queue = rx_test_queue(&driver, &mem);
+        let mut pool = crate::buffers::VirtioWorkPool::new(
+            mem.clone(),
+            QUEUE_SIZE,
+            NetworkFeaturesBank0::new().with_mrg_rxbuf(true),
+        );
+        let mut avail = 0;
+        for (id, gpa, len, next) in [
+            (7, 0x4000, 5, Some(8)),
+            (8, first_gpa, 39, None),
+            (3, second_gpa, 64, None),
+            (1, 0x4300, 64, None),
+        ] {
+            write_descriptor(
+                &mem,
+                RX_DESC_ADDR,
+                id,
+                gpa,
+                len,
+                DescriptorFlags::new()
+                    .with_write(true)
+                    .with_next(next.is_some()),
+                next.unwrap_or(0),
+            );
+        }
+        for id in [7, 3, 1] {
+            make_available(&mem, RX_AVAIL_ADDR, QUEUE_SIZE, id, &mut avail);
+            let work = queue.try_next().unwrap().unwrap();
+            assert_eq!(pool.queue_work(work).ok().unwrap().0, u32::from(id));
+        }
+        let mut addresses = Vec::new();
+        pool.push_guest_addresses(RxId(7), &mut addresses);
+        assert_eq!(
+            addresses.iter().map(|s| (s.gpa, s.len)).collect::<Vec<_>>(),
+            [(first_gpa.saturating_add(7), 32)]
+        );
+        let data: [u8; 100] = std::array::from_fn(|i| i as u8);
+        assert!(!pool.write_packet_across_multiple_buffers(
+            &[RxId(7), RxId(3)],
+            &RxMetadata {
+                len: 100,
+                ..Default::default()
+            },
+            &[&data],
+        ));
+        assert!(!pool.write_packet_across_multiple_buffers(
+            &[RxId(7), RxId(3), RxId(1)],
+            &RxMetadata {
+                len: 96,
+                ..Default::default()
+            },
+            &[&data[..7], &[], &data[7..67], &data[67..96]],
+        ));
+        assert!(pool.write_packet_across_multiple_buffers(
+            &[RxId(7), RxId(3)],
+            &RxMetadata {
+                len: 96,
+                ..Default::default()
+            },
+            &[&data[..7], &[], &data[7..67], &data[67..96]],
+        ));
+        let mut readback = [0; 96];
+        if first_gpa == u64::MAX - 5 {
+            for id in [7, 3] {
+                let (work, used, dropped) = pool.take_rx_work(RxId(id));
+                assert_eq!(used, 0);
+                assert!(dropped);
+                queue.complete(work, used);
+            }
+            continue;
+        }
+        mem.read_at(0x4107, &mut readback[..32]).unwrap();
+        mem.read_at(second_gpa, &mut readback[32..]).unwrap();
+        assert_eq!(readback, data[..96]);
+        addresses.clear();
+        pool.push_guest_addresses(RxId(7), &mut addresses);
+        pool.push_guest_addresses(RxId(3), &mut addresses);
+        assert_eq!(
+            addresses.iter().map(|s| (s.gpa, s.len)).collect::<Vec<_>>(),
+            [(0x4107, 32), (second_gpa, 64)]
+        );
+        for (id, len) in [(7, 44), (3, 64)] {
+            let (work, used, dropped) = pool.take_rx_work(RxId(id));
+            assert_eq!(used, len);
+            assert!(!dropped);
+            queue.complete(work, used);
+        }
+    }
+}
+
+#[async_test]
+async fn rx_rejects_invalid_mergeable_buffers_without_length_truncation(driver: DefaultDriver) {
+    for lengths in [[11, 0], [u32::MAX, 1]] {
+        let mem = GuestMemory::allocate(0x10000);
+        let mut queue = rx_test_queue(&driver, &mem);
+        let mut pool = crate::buffers::VirtioWorkPool::new(
+            mem.clone(),
+            QUEUE_SIZE,
+            NetworkFeaturesBank0::new().with_mrg_rxbuf(true),
+        );
+        for (id, len) in lengths.into_iter().enumerate() {
+            write_descriptor(
+                &mem,
+                RX_DESC_ADDR,
+                id as u16,
+                0x4000,
+                len,
+                DescriptorFlags::new().with_write(true).with_next(id == 0),
+                1,
+            );
+        }
+        let mut avail = 0;
+        make_available(&mem, RX_AVAIL_ADDR, QUEUE_SIZE, 0, &mut avail);
+        let work = queue.try_next().unwrap().unwrap();
+        assert!(pool.queue_work(work).is_err());
+    }
+}
+
+#[async_test]
+async fn rx_mergeable_invalid_buffer_cannot_split_a_packet(driver: DefaultDriver) {
+    let mem = GuestMemory::allocate(0x10000);
+    let features = NetworkFeaturesBank0::new().with_mrg_rxbuf(true);
+    let mut worker = Worker {
+        virtio_state: crate::VirtioState {
+            rx_queue: rx_test_queue(&driver, &mem),
+            tx_queue: rx_test_queue(&driver, &mem),
+            rx_queue_size: QUEUE_SIZE,
+            tx_queue_size: QUEUE_SIZE,
+            rx_in_order: virtio::in_order::InOrderCompletion::new(QUEUE_SIZE),
+            tx_in_order: virtio::in_order::InOrderCompletion::new(QUEUE_SIZE),
+        },
+        active_state: crate::ActiveState::new(mem.clone(), QUEUE_SIZE, QUEUE_SIZE, features),
+        negotiated_features: features,
+        negotiated_features_bank1: NetworkFeaturesBank1::new(),
+    };
+    let mut avail = 0;
+    for (id, len) in [(7, 32), (3, 11), (1, 64)] {
+        write_descriptor(
+            &mem,
+            RX_DESC_ADDR,
+            id,
+            0x4000,
+            len,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, RX_AVAIL_ADDR, QUEUE_SIZE, id, &mut avail);
+    }
+    let (mut backend, handle) = new_mock_queue();
+    assert!(matches!(
+        worker.process_virtio_rx(&mut backend),
+        Err(crate::WorkerError::InvalidRxBuffer)
+    ));
+    assert!(handle.rx_pending.lock().is_empty());
+    assert_eq!(mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 0);
+}
+
 /// Read the virtio-net header from guest memory at the given GPA.
 fn read_virtio_header(mem: &GuestMemory, gpa: u64) -> VirtioNetHeader {
     let mut buf = [0u8; size_of::<VirtioNetHeader>()];
@@ -2350,6 +2946,10 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac(), "MAC feature should always be set");
+    assert!(
+        bank0.mrg_rxbuf(),
+        "mergeable receive buffers should be offered"
+    );
     assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(
         bank0.csum(),
@@ -2358,6 +2958,8 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
     assert!(bank0.guest_tso4(), "GUEST_TSO4 should always be set");
     assert!(bank0.guest_tso6(), "GUEST_TSO6 should always be set");
+    assert_eq!(device.queue_size(0), virtio::MAX_QUEUE_SIZE);
+    assert_eq!(device.queue_size(1), virtio::DEFAULT_QUEUE_SIZE);
     assert!(
         bank0.host_tso4(),
         "HOST_TSO4 should be set when tso+tcp+ipv4_header supported"
@@ -2385,7 +2987,7 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     assert_eq!(device.registers.duplex, 0xff);
 }
 
-/// Receive GSO is opt-in until virtio-net supports mergeable receive buffers.
+/// Receive GSO remains opt-in independently of mergeable receive buffers.
 #[async_test]
 async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -2406,7 +3008,32 @@ async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
         "checksum receive offload remains available"
     );
     assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
+    assert_eq!(device.queue_size(0), virtio::DEFAULT_QUEUE_SIZE);
     assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
+}
+
+#[async_test]
+async fn receive_gso_is_independent_of_transmit_offloads(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let endpoint = MockEndpointWithTxOffloads {
+        offloads: TxOffloadSupport::default(),
+        link_speed: 10_000 * BITS_PER_MEGABIT,
+    };
+    let device = Device::builder()
+        .enable_rx_gso(true)
+        .build(
+            &driver_source,
+            Box::new(endpoint),
+            MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]),
+        )
+        .unwrap();
+    let bank0 = NetworkFeaturesBank0::from(device.traits().device_features.bank(0));
+    assert!(!bank0.csum());
+    assert!(bank0.guest_csum());
+    assert!(bank0.guest_tso4());
+    assert!(bank0.guest_tso6());
+    assert_eq!(device.queue_size(0), virtio::MAX_QUEUE_SIZE);
+    assert_eq!(device.queue_size(1), virtio::DEFAULT_QUEUE_SIZE);
 }
 
 /// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order
@@ -2468,8 +3095,9 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     assert!(bank0.mac());
     assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
-    assert!(!bank0.guest_tso4(), "GUEST_TSO4 requires explicit opt-in");
-    assert!(!bank0.guest_tso6(), "GUEST_TSO6 requires explicit opt-in");
+    assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
+    assert_eq!(device.queue_size(0), virtio::DEFAULT_QUEUE_SIZE);
+    assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),

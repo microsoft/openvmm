@@ -121,6 +121,7 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
+    write_log: Mutex<Option<Vec<(u64, usize)>>>,
     failed_write_range: Mutex<Option<std::ops::Range<u64>>>,
     doorbell_count: AtomicUsize,
     /// The doorbells that are currently INSTALLED, i.e. whose registration
@@ -270,6 +271,9 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         src: *const u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        if let Some(log) = self.write_log.lock().as_mut() {
+            log.push((address, len));
+        }
         let end = address.saturating_add(len as u64);
         if self
             .failed_write_range
@@ -5503,6 +5507,233 @@ async fn in_order_completion_publishes_in_avail_order(driver: DefaultDriver) {
         read_used(&mem, used_addr, size, &mut used_idx),
         Some((2, 22))
     );
+}
+
+#[async_test]
+async fn in_order_completion_preserves_batch_boundaries(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::init_avail_ring;
+    use crate::test_helpers::init_used_ring;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+    use crate::test_helpers::write_descriptor;
+
+    let mem = GuestMemory::allocate(0x10000);
+    let desc_addr = 0x1000;
+    let avail_addr = 0x2000;
+    let used_addr = 0x3000;
+    let data_addr = 0x4000;
+    let size: u16 = 8;
+
+    init_avail_ring(&mem, avail_addr);
+    init_used_ring(&mem, used_addr);
+    let params = QueueParams {
+        size,
+        enable: true,
+        desc_addr,
+        avail_addr,
+        used_addr,
+    };
+    let queue_event = PolledWait::new(&driver, Event::new()).unwrap();
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        params,
+        mem.clone(),
+        Interrupt::from_event(Event::new()),
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let mut in_order = InOrderCompletion::new(size);
+
+    let mut avail_idx = 0;
+    for i in 0..3u16 {
+        write_descriptor(
+            &mem,
+            desc_addr,
+            i,
+            data_addr + i as u64 * 0x100,
+            0x100,
+            DescriptorFlags::new().with_write(true),
+            0,
+        );
+        make_available(&mem, avail_addr, size, i, &mut avail_idx);
+    }
+
+    let w0 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w1 = in_order.try_next(&mut queue).unwrap().unwrap();
+    let w2 = in_order.try_next(&mut queue).unwrap().unwrap();
+    in_order.complete_batch(
+        &mut queue,
+        vec![(w1.into_completion(), 11), (w2.into_completion(), 22)],
+    );
+
+    let mut used_idx = 0;
+    assert!(read_used(&mem, used_addr, size, &mut used_idx).is_none());
+
+    in_order.complete(&mut queue, w0.into_completion(), 10);
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((0, 10))
+    );
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((1, 11))
+    );
+    assert_eq!(
+        read_used(&mem, used_addr, size, &mut used_idx),
+        Some((2, 22))
+    );
+}
+
+#[async_test]
+async fn in_order_batch_publication_wrap_and_notifications(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::spec::queue::EventSuppressionFlags;
+    use crate::spec::queue::PackedEventSuppression;
+    use crate::test_helpers::make_available;
+    use crate::test_helpers::read_used;
+    use crate::test_helpers::write_descriptor;
+
+    for (packed, chained) in [(false, false), (true, false), (true, true)] {
+        for suppressed in [false, true] {
+            let backing = VirtioTestMemoryAccess::new();
+            backing.modify_memory_map(0, &vec![0; 0x10000], true);
+            let mem = GuestMemory::new("batch-test", backing.clone());
+            let start = if packed { 0x8003 } else { u16::MAX };
+            let mut avail = start;
+            for (offset, id) in [3, 0, 1].into_iter().enumerate() {
+                if packed {
+                    let wrap = offset == 0;
+                    write_packed_descriptor(
+                        &mem,
+                        id,
+                        BOUND_TEST_DATA_ADDR,
+                        10 + id,
+                        DescriptorFlags::new()
+                            .with_write(true)
+                            .with_next(chained && id == 3)
+                            .with_available(wrap)
+                            .with_used(!wrap),
+                    );
+                } else {
+                    write_descriptor(
+                        &mem,
+                        BOUND_TEST_DESC_ADDR,
+                        id,
+                        BOUND_TEST_DATA_ADDR,
+                        256,
+                        DescriptorFlags::new().with_write(true),
+                        0,
+                    );
+                    make_available(
+                        &mem,
+                        BOUND_TEST_AVAIL_ADDR,
+                        BOUND_TEST_QUEUE_SIZE,
+                        id,
+                        &mut avail,
+                    );
+                }
+            }
+            if packed {
+                mem.write_plain(
+                    BOUND_TEST_AVAIL_ADDR,
+                    &PackedEventSuppression::new()
+                        .with_flags(if suppressed {
+                            EventSuppressionFlags::Disabled
+                        } else {
+                            EventSuppressionFlags::DescriptorIndex
+                        })
+                        .with_offset(0)
+                        .with_wrap(false),
+                )
+                .unwrap();
+            } else {
+                mem.write_plain(BOUND_TEST_USED_ADDR + 2, &start).unwrap();
+                mem.write_plain(
+                    BOUND_TEST_AVAIL_ADDR + 4 + u64::from(BOUND_TEST_QUEUE_SIZE) * 2,
+                    &if suppressed { 2u16 } else { 0u16 },
+                )
+                .unwrap();
+            }
+            let signals = Arc::new(AtomicUsize::new(0));
+            let notify = {
+                let signals = signals.clone();
+                Interrupt::from_fn(move || {
+                    signals.fetch_add(1, Ordering::Relaxed);
+                })
+            };
+            let mut queue = VirtioQueue::new(
+                VirtioDeviceFeatures::new()
+                    .with_ring_packed(packed)
+                    .with_ring_event_idx(true),
+                bound_test_params(BOUND_TEST_QUEUE_SIZE),
+                mem.clone(),
+                notify,
+                PolledWait::new(&driver, Event::new()).unwrap(),
+                Some(QueueState {
+                    avail_index: start,
+                    used_index: start,
+                }),
+            )
+            .unwrap();
+            let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+            let completions: Vec<_> = (0..if chained { 2 } else { 3 })
+                .map(|i| {
+                    let work = in_order.try_next(&mut queue).unwrap().unwrap();
+                    (work.into_completion(), 100 + i)
+                })
+                .collect();
+            *backing.write_log.lock() = Some(Vec::new());
+            in_order.complete_batch(&mut queue, completions);
+            assert_eq!(in_order.outstanding(), 0);
+            assert_eq!(queue.queue_state().used_index, 2);
+            assert_eq!(signals.load(Ordering::Relaxed), usize::from(!suppressed));
+            let log = backing.write_log.lock().take().unwrap();
+            if packed {
+                let flag_writes: Vec<_> = log
+                    .iter()
+                    .filter(|(addr, len)| *len == 8 && (*addr - BOUND_TEST_DESC_ADDR) % 16 == 8)
+                    .map(|&(addr, _)| addr)
+                    .collect();
+                let published = if chained { vec![3, 1] } else { vec![3, 0, 1] };
+                assert_eq!(
+                    flag_writes,
+                    published
+                        .iter()
+                        .rev()
+                        .map(|&id| BOUND_TEST_DESC_ADDR + id * 16 + 8)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    log.last().copied(),
+                    Some((BOUND_TEST_DESC_ADDR + 3 * 16 + 8, 8))
+                );
+                for (offset, id) in published.into_iter().enumerate() {
+                    let desc = mem
+                        .read_plain::<PackedDescriptor>(BOUND_TEST_DESC_ADDR + id * 16)
+                        .unwrap();
+                    assert_eq!(desc.flags().used(), offset == 0);
+                    assert_eq!(desc.flags().available(), offset == 0);
+                    assert!(desc.flags().write());
+                    assert_eq!(desc.length.get(), 100 + offset as u32);
+                    let last_id = if chained && id == 3 { 0 } else { id };
+                    assert_eq!(desc.buffer_id.get(), 10 + last_id as u16);
+                }
+            } else {
+                let publication = (BOUND_TEST_USED_ADDR + 2, 2);
+                assert_eq!(log.last(), Some(&publication));
+                assert_eq!(log.iter().filter(|&&write| write == publication).count(), 1);
+                let mut used = start;
+                for (offset, id) in [3, 0, 1].into_iter().enumerate() {
+                    assert_eq!(
+                        read_used(&mem, BOUND_TEST_USED_ADDR, BOUND_TEST_QUEUE_SIZE, &mut used),
+                        Some((id, 100 + offset as u32))
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[async_test]

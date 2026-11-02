@@ -78,7 +78,7 @@ impl Endpoint for LoopbackEndpoint {
 #[inspect(skip)]
 pub struct LoopbackQueue {
     pub(crate) rx_avail: VecDeque<RxId>,
-    pub(crate) rx_done: VecDeque<RxId>,
+    pub(crate) rx_done: VecDeque<Vec<RxId>>,
 }
 
 impl Queue for LoopbackQueue {
@@ -99,12 +99,8 @@ impl Queue for LoopbackQueue {
         &mut self,
         _pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        let n = packets.len().min(self.rx_done.len());
-        for (d, s) in packets.iter_mut().zip(self.rx_done.drain(..n)) {
-            *d = s;
-        }
-        Ok(n)
+    ) -> anyhow::Result<Vec<crate::RxBufferCompletion>> {
+        Ok(crate::drain_rx_packets(&mut self.rx_done, packets))
     }
 
     fn tx_avail(
@@ -120,18 +116,19 @@ impl Queue for LoopbackQueue {
             let before = segments.len();
             let packet = linearize(pool, &mut segments)?;
             sent += before - segments.len();
-            let rx_id = self.rx_avail.pop_front().unwrap();
-            pool.write_packet(
-                rx_id,
+            if let Some(ids) = crate::write_rx_packet(
+                pool,
+                &mut self.rx_avail,
                 &RxMetadata {
                     offset: 0,
                     len: packet.len(),
                     vlan,
                     ..Default::default()
                 },
-                &packet,
-            );
-            self.rx_done.push_back(rx_id);
+                &[&packet],
+            ) {
+                self.rx_done.push_back(ids);
+            }
         }
         Ok((true, sent))
     }

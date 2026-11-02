@@ -252,6 +252,34 @@ impl SplitQueueCompleteWork {
         Ok(send_signal)
     }
 
+    pub fn complete_descriptors(&mut self, completions: &[(u16, u32)]) -> Result<bool, QueueError> {
+        if completions.is_empty() {
+            return Ok(false);
+        }
+
+        let first_used_index = self.last_used_index;
+        for (offset, &(descriptor_index, bytes_written)) in completions.iter().enumerate() {
+            self.set_used_descriptor(
+                first_used_index.wrapping_add(offset as u16),
+                descriptor_index,
+                bytes_written,
+            )?;
+        }
+        self.last_used_index = first_used_index.wrapping_add(completions.len() as u16);
+
+        atomic::fence(atomic::Ordering::Release);
+        self.set_used_index(self.last_used_index)?;
+        atomic::fence(atomic::Ordering::SeqCst);
+
+        if self.use_ring_event_index {
+            let used_event = self.get_used_event()?;
+            Ok((0..completions.len())
+                .any(|offset| first_used_index.wrapping_add(offset as u16) == used_event))
+        } else {
+            Ok(!self.get_available_flags()?.no_interrupt())
+        }
+    }
+
     fn get_available_flags(&self) -> Result<spec::AvailableFlags, QueueError> {
         Ok(self
             .queue_avail

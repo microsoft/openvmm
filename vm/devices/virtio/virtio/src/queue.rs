@@ -606,6 +606,35 @@ impl QueueCoreCompleteWork {
             }
         }
     }
+
+    pub fn complete_descriptors(
+        &mut self,
+        completions: &[(QueueCompletion, u32)],
+    ) -> Result<bool, QueueError> {
+        match &mut self.inner {
+            QueueCompleteWorkInner::Split(split) => {
+                let completions = completions
+                    .iter()
+                    .map(|(completion, bytes_written)| {
+                        (completion.descriptor_index, *bytes_written)
+                    })
+                    .collect::<Vec<_>>();
+                split.complete_descriptors(&completions)
+            }
+            QueueCompleteWorkInner::Packed(packed) => {
+                let completions = completions
+                    .iter()
+                    .map(|(completion, bytes_written)| {
+                        let QueueCompletionContext::Packed(context) = &completion.context else {
+                            panic!("mismatched queue completion context for packed queue");
+                        };
+                        (context, *bytes_written)
+                    })
+                    .collect::<Vec<_>>();
+                packed.complete_descriptors(&completions)
+            }
+        }
+    }
 }
 
 pub(crate) fn new_queue(

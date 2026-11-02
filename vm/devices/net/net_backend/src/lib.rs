@@ -55,7 +55,9 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
+use std::collections::VecDeque;
 use std::future::pending;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -170,6 +172,22 @@ pub trait BackendQueueStats {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct RxBufferCompletion {
+    pub id: RxId,
+    /// The number of receive buffers occupied by this packet.
+    pub buffer_count: NonZeroU16,
+}
+
+impl RxBufferCompletion {
+    pub fn single(id: RxId) -> Self {
+        Self {
+            id,
+            buffer_count: NonZeroU16::MIN,
+        }
+    }
+}
+
 /// A single TX/RX data path for sending and receiving network packets.
 ///
 /// Created by [`Endpoint::get_queues`] and driven by the frontend in
@@ -200,11 +218,16 @@ pub trait Queue: Send + InspectMut {
     fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]);
 
     /// Polls the device for receives.
+    ///
+    /// Writes completed buffer IDs into `buffers`, grouped in packet order.
+    /// Each returned completion describes the next `buffer_count` IDs, starting
+    /// with `id`. A packet must not be split across calls, and its buffers must
+    /// be consecutive in the order supplied to [`Self::rx_avail`].
     fn rx_poll(
         &mut self,
         pool: &mut dyn BufferAccess,
-        packets: &mut [RxId],
-    ) -> anyhow::Result<usize>;
+        buffers: &mut [RxId],
+    ) -> anyhow::Result<Vec<RxBufferCompletion>>;
 
     /// Posts transmits to the device.
     ///
@@ -251,6 +274,16 @@ pub trait BufferAccess {
     /// The capacity of the specified buffer in bytes.
     fn capacity(&self, id: RxId) -> u32;
 
+    /// Whether one receive packet may occupy multiple buffers.
+    fn supports_multiple_buffers(&self) -> bool {
+        false
+    }
+
+    /// The packet data capacity of a buffer at `buffer_index` within a packet.
+    fn packet_buffer_capacity(&self, id: RxId, _buffer_index: usize) -> u32 {
+        self.capacity(id)
+    }
+
     /// Sets the packet metadata for the receive.
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata);
 
@@ -284,6 +317,106 @@ pub trait BufferAccess {
         }
         self.write_packet(id, metadata, &data);
     }
+
+    /// Writes a packet into consecutive receive buffers. Only the first buffer
+    /// contains frontend metadata; intermediate buffers must be filled.
+    ///
+    /// Returns false without modifying buffers if the request is rejected.
+    /// True transfers all IDs to the completion path, including on guest-memory
+    /// failure: the frontend must then drop the entire packet.
+    fn write_packet_across_multiple_buffers(
+        &mut self,
+        ids: &[RxId],
+        metadata: &RxMetadata,
+        segments: &[&[u8]],
+    ) -> bool {
+        let [id] = ids else {
+            return false;
+        };
+        self.write_packet_segments(*id, metadata, segments);
+        true
+    }
+}
+
+/// Returns the shortest FIFO prefix that can hold `len` packet bytes.
+pub fn rx_packet_buffer_count(
+    pool: &dyn BufferAccess,
+    available: &VecDeque<RxId>,
+    len: usize,
+) -> Option<usize> {
+    let max_buffers = if pool.supports_multiple_buffers() {
+        usize::from(u16::MAX)
+    } else {
+        1
+    };
+    let mut remaining = len;
+    for (index, &id) in available.iter().take(max_buffers).enumerate() {
+        remaining = remaining.saturating_sub(pool.packet_buffer_capacity(id, index) as usize);
+        if remaining != 0 {
+            continue;
+        }
+        return Some(index + 1);
+    }
+    None
+}
+
+/// Writes a packet into the shortest sufficient prefix of `available`.
+///
+/// On insufficient capacity, drops the packet without consuming any buffers.
+/// Returned IDs must be completed together, even if the frontend's guest-memory
+/// writes failed. Frontends without multi-buffer support retain single-buffer
+/// receive semantics.
+pub fn write_rx_packet(
+    pool: &mut dyn BufferAccess,
+    available: &mut VecDeque<RxId>,
+    metadata: &RxMetadata,
+    segments: &[&[u8]],
+) -> Option<Vec<RxId>> {
+    let Some(count) = rx_packet_buffer_count(pool, available, metadata.len) else {
+        tracelimit::warn_ratelimited!(
+            len = metadata.len,
+            "dropping RX packet: insufficient receive buffer capacity"
+        );
+        return None;
+    };
+    let ids: Vec<_> = available.iter().take(count).copied().collect();
+    if let [id] = ids.as_slice() {
+        pool.write_packet_segments(*id, metadata, segments);
+    } else if !pool.write_packet_across_multiple_buffers(&ids, metadata, segments) {
+        tracelimit::warn_ratelimited!("dropping RX packet: buffer pool rejected packet");
+        return None;
+    }
+    available.drain(..count);
+    Some(ids)
+}
+
+/// Drains whole packets into a frontend's completion buffer.
+///
+/// Each entry in `ready` must contain between one and `u16::MAX` IDs.
+pub fn drain_rx_packets(
+    ready: &mut VecDeque<Vec<RxId>>,
+    buffers: &mut [RxId],
+) -> Vec<RxBufferCompletion> {
+    let mut completions = Vec::new();
+    let mut remaining = buffers;
+    while let Some(ids) = ready.front() {
+        if ids.len() > remaining.len() {
+            break;
+        }
+        let count = u16::try_from(ids.len())
+            .ok()
+            .and_then(NonZeroU16::new)
+            .expect("invalid receive completion buffer count");
+        let (output, rest) = remaining.split_at_mut(ids.len());
+        output.copy_from_slice(ids);
+        remaining = rest;
+        completions.push(RxBufferCompletion {
+            id: ids[0],
+            buffer_count: count,
+        });
+        ready.pop_front();
+    }
+    completions
 }
 
 /// Linearizes the next packet in a list of segments, returning the buffer data

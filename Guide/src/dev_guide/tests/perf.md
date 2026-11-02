@@ -110,11 +110,16 @@ burette run --test network -o network.json
 
 # Test with virtio-net instead of VMBus
 burette run --test network --nic virtio-net -o network.json
+
+# Test virtio-net with the Linux TAP backend and receive GSO
+burette run --test network --nic virtio-net --backend tap -o network-tap.json
 ```
 
 The report records TCP throughput and UDP packet-rate metrics. Keep the NIC,
 network backend, host CPU placement, and MTU constant between compared runs.
 Virtio-net benchmarks enable receive GSO with both Consomme and TAP backends.
+With mergeable receive buffers negotiated, a coalesced packet can span
+multiple guest buffers rather than requiring one large receive buffer.
 
 Compare shared vs. private memory overhead:
 

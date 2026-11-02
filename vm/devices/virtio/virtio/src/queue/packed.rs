@@ -226,6 +226,7 @@ impl PackedQueueCompleteWork {
             .with_length(bytes_written)
             .with_flags(
                 DescriptorFlags::new()
+                    .with_write(bytes_written != 0)
                     .with_available(self.wrapped_bit)
                     .with_used(self.wrapped_bit),
             );
@@ -257,5 +258,77 @@ impl PackedQueueCompleteWork {
             raw
         };
         Ok(send_signal)
+    }
+
+    pub fn complete_descriptors(
+        &mut self,
+        completions: &[(&PackedQueueCompletionContext, u32)],
+    ) -> Result<bool, QueueError> {
+        if completions.is_empty() {
+            return Ok(false);
+        }
+
+        let mut index = self.next_index;
+        let mut wrapped_bit = self.wrapped_bit;
+        let mut positions = Vec::with_capacity(completions.len());
+        for &(context, bytes_written) in completions {
+            positions.push((index, wrapped_bit, context, bytes_written));
+            let raw = index + context.descriptor_count;
+            index = if raw >= self.queue_size {
+                wrapped_bit = !wrapped_bit;
+                raw - self.queue_size
+            } else {
+                raw
+            };
+        }
+
+        for &(index, wrapped_bit, context, bytes_written) in positions.iter().rev() {
+            let flags = DescriptorFlags::new()
+                .with_write(bytes_written != 0)
+                .with_available(wrapped_bit)
+                .with_used(wrapped_bit);
+            let used_fields = u64::from(bytes_written)
+                | (u64::from(context.buffer_id) << 32)
+                | (u64::from(u16::from(flags)) << 48);
+            let offset = descriptor_offset(index);
+            // The aligned eight-byte write atomically publishes length, ID,
+            // and flags. Publish the first buffer last so the driver cannot
+            // observe a partially completed multi-buffer request (§2.8.9).
+            atomic::fence(atomic::Ordering::Release);
+            self.queue_desc
+                .write_plain(
+                    offset + std::mem::offset_of!(PackedDescriptor, length) as u64,
+                    &used_fields.to_le(),
+                )
+                .map_err(QueueError::Memory)?;
+        }
+        self.next_index = index;
+        self.wrapped_bit = wrapped_bit;
+
+        atomic::fence(atomic::Ordering::SeqCst);
+        let driver_event: PackedEventSuppression = self
+            .driver_event
+            .read_plain(0)
+            .map_err(QueueError::Memory)?;
+        Ok(match driver_event.flags() {
+            EventSuppressionFlags::Disabled => false,
+            EventSuppressionFlags::DescriptorIndex if self.use_event_index => {
+                let (first_index, first_wrap, ..) = positions[0];
+                // The event can point inside a chain, not just at a buffer head.
+                let distance = |index: u16, wrap: bool| {
+                    i32::from(index) - i32::from(first_index)
+                        + if wrap != first_wrap {
+                            i32::from(self.queue_size)
+                        } else {
+                            0
+                        }
+                };
+                let event = distance(driver_event.offset(), driver_event.wrap());
+                driver_event.offset() < self.queue_size
+                    && event >= 0
+                    && event < distance(self.next_index, self.wrapped_bit)
+            }
+            _ => true,
+        })
     }
 }

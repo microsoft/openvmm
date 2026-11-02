@@ -86,6 +86,7 @@ pub struct DioQueue {
     slot: Arc<Mutex<Option<dio::DioNic>>>,
     nic: Option<dio::DioQueue>,
     free: VecDeque<RxId>,
+    ready: VecDeque<Vec<RxId>>,
 }
 
 impl InspectMut for DioQueue {
@@ -108,12 +109,16 @@ impl DioQueue {
             slot,
             nic: nic.map(|nic| dio::DioQueue::new(driver, nic)),
             free: VecDeque::new(),
+            ready: VecDeque::new(),
         }
     }
 }
 
 impl Queue for DioQueue {
     fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+        if !self.ready.is_empty() {
+            return Poll::Ready(());
+        }
         // TX completes synchronously. Without RX buffers, readable input cannot
         // make progress and would leave a TX-only queue continuously ready.
         if !self.free.is_empty()
@@ -133,29 +138,29 @@ impl Queue for DioQueue {
         &mut self,
         pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        let mut n_packets = 0;
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
         if let Some(nic) = &mut self.nic {
             // Transmit incoming packets to the guest until there are no more available.
-            for done_id in packets {
-                let id = if let Some(&id) = self.free.front() {
-                    id
-                } else {
+            for _ in 0..packets.len() {
+                if self.free.is_empty() {
                     break;
-                };
+                }
                 let result = nic.read_with(|buf| {
-                    pool.write_packet(
-                        id,
+                    if let Some(ids) = net_backend::write_rx_packet(
+                        pool,
+                        &mut self.free,
                         &RxMetadata {
                             offset: 0,
                             len: buf.len(),
                             ..Default::default()
                         },
-                        buf,
-                    );
+                        &[buf],
+                    ) {
+                        self.ready.push_back(ids);
+                    }
                 });
                 match result {
-                    Ok(()) => self.free.pop_front(),
+                    Ok(()) => {}
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                     Err(e) => {
                         // The DIO endpoint is in a bad state.
@@ -167,11 +172,9 @@ impl Queue for DioQueue {
                         break;
                     }
                 };
-                *done_id = id;
-                n_packets += 1;
             }
         }
-        Ok(n_packets)
+        Ok(net_backend::drain_rx_packets(&mut self.ready, packets))
     }
 
     fn tx_avail(

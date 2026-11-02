@@ -470,19 +470,24 @@ impl Queue for PacketCaptureQueue {
         &mut self,
         pool: &mut dyn BufferAccess,
         packets: &mut [RxId],
-    ) -> anyhow::Result<usize> {
-        let n = self.current_mut().rx_poll(pool, packets)?;
+    ) -> anyhow::Result<Vec<net_backend::RxBufferCompletion>> {
+        let completions = self.current_mut().rx_poll(pool, packets)?;
         if self.pcap.enabled.load(Ordering::Relaxed) {
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::new(0, 0));
             let snaplen = self.pcap.snaplen.load(Ordering::Relaxed);
-            for id in &packets[..n] {
+            let mut buffer_offset = 0;
+            'packet: for completion in &completions {
                 let mut buf = vec![0; snaplen];
                 let mut len = 0;
                 let mut pkt_len = 0;
                 self.scratch_segments.clear();
-                pool.push_guest_addresses(*id, &mut self.scratch_segments);
+                let buffer_count = completion.buffer_count.get() as usize;
+                for id in &packets[buffer_offset..buffer_offset + buffer_count] {
+                    pool.push_guest_addresses(*id, &mut self.scratch_segments);
+                }
+                buffer_offset += buffer_count;
                 for segment in &self.scratch_segments {
                     pkt_len += segment.len;
                     if len == buf.len() {
@@ -490,7 +495,16 @@ impl Queue for PacketCaptureQueue {
                     }
 
                     let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                    let _ = pool.guest_memory().read_at(segment.gpa, &mut buf[len..]);
+                    if let Err(err) = pool
+                        .guest_memory()
+                        .read_at(segment.gpa, &mut buf[len..len + copy_length])
+                    {
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to read receive packet for capture"
+                        );
+                        continue 'packet;
+                    }
                     len += copy_length;
                 }
 
@@ -506,7 +520,7 @@ impl Queue for PacketCaptureQueue {
                 }
             }
         }
-        Ok(n)
+        Ok(completions)
     }
 
     fn tx_avail(

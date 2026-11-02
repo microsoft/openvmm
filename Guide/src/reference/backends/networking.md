@@ -79,11 +79,14 @@ for the full trait signatures and type definitions.
    calling `queue.rx_avail(&mut pool, &buffer_ids)`.
 2. When `queue.poll_ready(cx, &mut pool)` signals readiness, the
    backend has received a packet. It writes the packet data into
-   guest memory through `pool.write_packet(rx_id, metadata, data)`.
+   guest memory through `pool.write_packet(rx_id, metadata, data)`, or
+   `net_backend::write_rx_packet` when a packet may span receive buffers.
 3. The frontend calls `queue.rx_poll(&mut pool, &mut ids)` to
-   collect the IDs of completed buffers, then delivers them to the
-   guest (e.g. by completing virtio descriptors or sending VMBus
-   completion packets).
+   collect packet completions and the IDs of their buffers. Each
+   `RxBufferCompletion::buffer_count` describes a consecutive group in the
+   returned ID array. A packet is never split across polls. The frontend
+   delivers these buffers together to the guest (e.g. by completing virtio
+   descriptors or sending VMBus completion packets).
 4. The guest eventually returns the buffer, and the frontend recycles
    it via `rx_avail`.
 
@@ -108,6 +111,37 @@ back with `BufferAccess::write_packet`. The data passes through
 host memory, but the `Queue` interface avoids any extra copies
 between the frontend and backend layers — the backend reads/writes
 guest RAM directly.
+
+### Mergeable receive buffers
+
+Virtio-net advertises `VIRTIO_NET_F_MRG_RXBUF`. When negotiated, the TAP,
+Consomme, DirectIO, and loopback backends can distribute a packet across
+consecutive receive buffers rather than requiring one large buffer.
+
+Following [Virtio 1.2, sections 5.1.6.3-4](
+https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html), only the first
+buffer contains a virtio-net header. Its `num_buffers` counts buffers
+(descriptor chains), not individual descriptors. All buffers except the last
+are filled completely. Both split and packed queues publish the whole packet
+together, with one notification subject to interrupt suppression.
+
+Each mergeable buffer must hold at least the 12-byte header; the first buffer
+may contain only that header. Headers and packet data may themselves span
+direct or indirect descriptor chains. Backend restarts preserve buffer order.
+If the available buffers cannot hold a packet, TAP retains that frame and
+waits for more buffers before reading another frame. This lets the frontend
+publish completed receives and the guest replenish its buffers without
+dropping coalesced packets at the end of a receive batch. Other software
+backends drop the packet without consuming or skipping any buffers.
+
+When receive GSO is enabled, virtio-net advertises
+1,024 receive-queue entries instead of 256. Coalesced packets can consume many
+mergeable buffers, so the larger queue keeps more packets in flight while the
+guest replenishes buffers. Transmit queues still advertise 256 entries.
+
+Without mergeable receive buffers, a receive uses exactly one buffer and
+`num_buffers` is one. OpenVMM uses the modern 12-byte header regardless of
+mergeable-buffer negotiation; the legacy 10-byte layout is not supported.
 
 ### Receive offload invariants
 
@@ -150,33 +184,31 @@ read is followed by a read that reaches `EAGAIN`; an initial asynchronous
 `Pending` does not prove that the queue drained. Steady-state and other vnet
 metadata violations still fail fast.
 
-Virtio-net receive GSO is disabled by default. Advertising guest TCP
-segmentation offload without mergeable receive buffers causes Linux guests to
-allocate receive buffers large enough for a complete coalesced packet, commonly
-64 KiB per descriptor. OpenVMM can opt in with the `rx_gso:` prefix on a
-`--virtio-net` argument when testing or when that allocation tradeoff is
-acceptable.
+Virtio-net receive GSO remains disabled by default. OpenVMM can opt in with the
+`rx_gso:` prefix on a `--virtio-net` argument. Guests that negotiate mergeable
+receive buffers can receive coalesced packets across multiple small buffers.
+Guests that decline mergeable buffers still need one buffer large enough for
+the complete packet, commonly 64 KiB.
 
 When enabled, receive GSO is advertised only when the selected backend reports
 that it can produce coalesced receive packets. TCP GSO also requires guest
 checksum support; a guest that selects TCP GSO without checksum support does not
-cause the backend to request an invalid TAP offload configuration. Receive GSO
-can become the default after virtio-net supports distributing one packet across
-multiple mergeable receive buffers.
+cause the backend to request an invalid TAP offload configuration. Mergeable
+buffer support does not change the receive-GSO opt-in policy.
 
 Frontends must also publish a receive completion only after the packet
 payload and frontend-specific header have both been written successfully.
-For virtio-net, a capacity or guest-memory write failure leaves the
-descriptor as a dropped receive and increments an explicit drop counter;
-it is never counted as a successfully received packet.
+For virtio-net, a capacity or guest-memory write failure drops the entire
+packet, completing all its buffers with zero lengths and counting one dropped
+packet. It is never counted as a successfully received packet.
 
 Frontends reject intrinsically unusable receive buffers before posting them
-to a backend. For example, virtio-net completes a descriptor that cannot hold
-a minimum Ethernet header as a zero-length dropped receive. If a valid TAP
-frame is larger than the oldest posted buffer, TAP drops that frame but retains
-the buffer at the front of the queue for the next frame. It does not skip ahead
-to a later buffer, because frontend completions may need to be published in the
-original descriptor order.
+to a backend. Without mergeable buffers, virtio-net completes a descriptor
+that cannot hold its header and a minimum Ethernet header as a zero-length
+dropped receive. With mergeable buffers, a chain shorter than the virtio-net
+header stops the worker instead: skipping it could interleave a dropped
+completion with a multi-buffer packet. Chains whose lengths exceed the
+32-bit used-length field are also rejected.
 
 ## Lifecycle
 

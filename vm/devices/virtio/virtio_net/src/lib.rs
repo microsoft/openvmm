@@ -217,7 +217,8 @@ struct VirtioNetHeader {
 }
 
 const fn header_size() -> usize {
-    // TODO: Verify hash flags are not set, since header size would be larger in that case.
+    // Modern devices include num_buffers even without VIRTIO_NET_F_MRG_RXBUF.
+    // VIRTIO_NET_F_HASH_REPORT is not offered.
     offset_of!(VirtioNetHeader, hash_value)
 }
 
@@ -256,6 +257,16 @@ enum QueuePairState {
 }
 
 impl VirtioDevice for Device {
+    fn queue_size(&self, queue_index: u16) -> u16 {
+        if queue_index.is_multiple_of(2) && self.adapter.enable_rx_gso {
+            // A coalesced packet can consume many mergeable buffers. Keep
+            // enough receives in flight to amortize guest replenishment.
+            virtio::MAX_QUEUE_SIZE
+        } else {
+            virtio::DEFAULT_QUEUE_SIZE
+        }
+    }
+
     fn traits(&self) -> DeviceTraits {
         let offloads = &self.adapter.tx_offload_support;
 
@@ -272,6 +283,7 @@ impl VirtioDevice for Device {
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_status(true)
+            .with_mrg_rxbuf(true)
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
@@ -293,9 +305,7 @@ impl VirtioDevice for Device {
                 .with_ring_event_idx(true)
                 .with_ring_indirect_desc(true)
                 .with_ring_packed(true)
-                // We guarantee in-order descriptor completion per queue. We
-                // don't yet take advantage of the ability to do batched
-                // completions, but we may in the future.
+                // We guarantee in-order descriptor completion per queue.
                 .with_in_order(true),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
@@ -523,10 +533,15 @@ struct ActiveState {
 }
 
 impl ActiveState {
-    fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
+    fn new(
+        mem: GuestMemory,
+        rx_queue_size: u16,
+        tx_queue_size: u16,
+        features: NetworkFeaturesBank0,
+    ) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size, features),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
         }
@@ -692,6 +707,7 @@ impl Device {
             guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
+            negotiated_features,
         );
         let worker = Worker {
             virtio_state,
@@ -868,6 +884,8 @@ struct VirtioState {
 enum WorkerError {
     #[error("virtio queue processing error")]
     VirtioQueue(#[source] std::io::Error),
+    #[error("invalid mergeable receive buffer")]
+    InvalidRxBuffer,
     #[error("endpoint")]
     Endpoint(#[source] anyhow::Error),
     #[error("cancelled")]
@@ -1035,9 +1053,10 @@ impl Worker {
             "TX descriptor {idx} is already tracked"
         );
 
+        let header_size = header_size();
         let total_readable = work.get_payload_length(false) as usize;
         let packet_len: u32 = total_readable
-            .checked_sub(header_size())
+            .checked_sub(header_size)
             .and_then(|len| u32::try_from(len).ok())
             .ok_or(TxPacketError::Empty)?;
 
@@ -1048,22 +1067,22 @@ impl Worker {
         let bytes_read = work
             .read(
                 self.active_state.pending_rx_packets.mem(),
-                &mut peek_buf[..header_size() + ETH_PEEK],
+                &mut peek_buf[..header_size + ETH_PEEK],
             )
             .map_err(TxPacketError::ReadHeader)?;
 
         let header = VirtioNetHeader::read_from_prefix(&peek_buf)
             .map(|(h, _)| h)
             .ok();
-        let packet_prefix = if bytes_read > header_size() {
-            &peek_buf[header_size()..bytes_read]
+        let packet_prefix = if bytes_read > header_size {
+            &peek_buf[header_size..bytes_read]
         } else {
             &[]
         };
 
         let segments = &mut self.active_state.data.tx_segments;
         let seg_start = segments.len();
-        let mut header_bytes_remaining = header_size() as u32;
+        let mut header_bytes_remaining = header_size as u32;
         for p in &work.payload {
             if p.writeable {
                 continue;
@@ -1319,6 +1338,11 @@ impl Worker {
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
                 Err(work) => {
+                    // Skipping a malformed buffer could interleave its completion
+                    // with the buffers of a merged packet. Retire the worker instead.
+                    if self.negotiated_features.mrg_rxbuf() {
+                        return Err(WorkerError::InvalidRxBuffer);
+                    }
                     // Complete (drop) the buffer in avail order via the in-order
                     // completion discipline. Reason traced by callee.
                     self.active_state.stats.rx_dropped.increment();
@@ -1343,28 +1367,62 @@ impl Worker {
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
         let state = &mut self.active_state;
-        let n = epqueue
+        let completions = epqueue
             .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
-        if n == 0 {
+        if completions.is_empty() {
             return Ok(false);
         }
 
-        for ready_id in state.data.rx_ready[..n].iter() {
-            let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*ready_id);
-            if dropped {
+        let mut buffer_offset = 0;
+        let mut batch = Vec::new();
+        for completion in &completions {
+            let buffer_count = completion.buffer_count.get() as usize;
+            let ready_ids = &state.data.rx_ready[buffer_offset..buffer_offset + buffer_count];
+            assert_eq!(ready_ids[0].0, completion.id.0);
+            let mut packet_dropped = false;
+            if let [id] = ready_ids
+                && (completions.len() == 1 || !self.negotiated_features.mrg_rxbuf())
+            {
+                let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(*id);
+                packet_dropped = dropped;
+                self.virtio_state.rx_in_order.complete(
+                    &mut self.virtio_state.rx_queue,
+                    work.into_completion(),
+                    bytes,
+                );
+            } else {
+                let start = batch.len();
+                for &ready_id in ready_ids {
+                    let (work, bytes, dropped) = state.pending_rx_packets.take_rx_work(ready_id);
+                    packet_dropped |= dropped;
+                    batch.push((work.into_completion(), bytes));
+                }
+                if packet_dropped {
+                    for (_, bytes) in &mut batch[start..] {
+                        *bytes = 0;
+                    }
+                }
+            }
+            buffer_offset += buffer_count;
+            if packet_dropped {
                 state.stats.rx_dropped.increment();
             } else {
                 state.stats.rx_packets.increment();
             }
-            self.virtio_state.rx_in_order.complete(
-                &mut self.virtio_state.rx_queue,
-                work.into_completion(),
-                bytes,
-            );
+        }
+        if !batch.is_empty() {
+            // Mergeable backends complete buffers in posting order, so publish
+            // all packets from this poll with one used-ring update.
+            self.virtio_state
+                .rx_in_order
+                .complete_batch(&mut self.virtio_state.rx_queue, batch);
         }
 
-        state.stats.rx_packets_per_wake.add_sample(n as u64);
+        state
+            .stats
+            .rx_packets_per_wake
+            .add_sample(completions.len() as u64);
         Ok(true)
     }
 

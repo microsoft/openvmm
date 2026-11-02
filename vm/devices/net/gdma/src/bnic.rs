@@ -690,7 +690,11 @@ impl TxRxTask {
 
     fn process_backend(&mut self) -> anyhow::Result<()> {
         let mut packets = [RxId(0)];
-        if self.epqueue.rx_poll(&mut self.pool, &mut packets)? > 0 {
+        if !self
+            .epqueue
+            .rx_poll(&mut self.pool, &mut packets)?
+            .is_empty()
+        {
             tracing::trace!("rx complete");
             let packet = self
                 .pool
