@@ -19,6 +19,43 @@ import unit_test_coverage as coverage
 
 
 class CoverageTests(unittest.TestCase):
+    def test_collection_requires_one_supported_target_across_runs(self):
+        x64 = {"args": ["--target", "x86_64-unknown-linux-gnu"]}
+        arm64 = {"args": ["--target", "aarch64-unknown-linux-gnu"]}
+        self.assertEqual(coverage.coverage_target([arm64, arm64]), "aarch64-unknown-linux-gnu")
+        for runs in ([], [x64, arm64], [{"args": []}], [{"args": ["--target"]}],
+                     [{"args": ["--target", "unsupported"]}],
+                     [{"args": x64["args"] + arm64["args"]}]):
+            with self.subTest(runs=runs), self.assertRaises(ValueError):
+                coverage.coverage_target(runs)
+
+    def test_target_specific_caches_and_build_arguments(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "binary"
+            binary.write_bytes(b"fixture")
+            inventory = {"rust-suites": {"crate": {
+                "binary-id": "crate", "binary-path": str(binary), "testcases": {},
+            }}}
+            for target in sorted(coverage.SUPPORTED_TARGETS):
+                output = root / target
+                output.mkdir()
+                with patch.object(coverage, "capture", side_effect=["", json.dumps(inventory)]) as call, \
+                     patch.object(coverage, "export_lines", return_value={}):
+                    coverage.collect_run(
+                        root, output, {"filter": None, "nextest_config": "fixture.toml"},
+                        {"name": "base", "args": ["--target", target], "env": {}},
+                        ["cargo"], "llvm-cov", "llvm-profdata", set(),
+                        {"files": {}, "tests": [], "runs": [], "issues": []},
+                    )
+                first = call.call_args_list[0]
+                cache = str(root / "target/unit-coverage-build" / target / "base")
+                for key in ("CARGO_TARGET_DIR", "CARGO_LLVM_COV_TARGET_DIR",
+                            "CARGO_LLVM_COV_BUILD_DIR"):
+                    self.assertEqual(first.kwargs["env"][key], cache)
+                self.assertEqual(first.args[0][-3:], ["--target", target, "--no-cfg-coverage"])
+                self.assertIn(target, call.call_args_list[1].args[0])
+
     def test_environment_is_parsed_without_evaluation(self):
         parsed = coverage.parse_environment(
             "RUSTFLAGS='-C instrument-coverage'\n"
@@ -285,6 +322,76 @@ class GitQueryTests(unittest.TestCase):
         }
         coverage.write_json(output / "report.json", report)
         return output / "report.json"
+
+    def test_collection_uses_host_llvm_tools_and_records_the_test_target(self):
+        x64 = "x86_64-unknown-linux-gnu"
+        arm64 = "aarch64-unknown-linux-gnu"
+        directory = self.root / "target/architecture-fixtures"
+        directory.mkdir(parents=True)
+        config = directory / "nextest.toml"
+        config.write_text("")
+        sysroot = directory / "sysroot"
+        original_capture = coverage.capture
+        for index, (host, target) in enumerate((
+            (x64, x64), (arm64, arm64), (x64, arm64),
+            (None, arm64), ("aarch64-pc-windows-msvc", arm64),
+        )):
+            with self.subTest(host=host, target=target):
+                output = directory / str(index)
+                tools = sysroot / "lib/rustlib" / (host or "missing") / "bin"
+                tools.mkdir(parents=True, exist_ok=True)
+                for name in ("llvm-cov", "llvm-profdata"):
+                    (tools / name).touch()
+                plan = directory / f"{index}.json"
+                coverage.write_json(plan, {
+                    "toolchain": None, "filter": None, "nextest_config": str(config),
+                    "runs": [{"name": "base", "args": ["--target", target, "-p", "fixture"]}],
+                })
+
+                def capture(args, **kwargs):
+                    if args[0] == "rustc":
+                        if args[1:] == ["-vV"]:
+                            return "rustc fixture\n" + (f"host: {host}\n" if host else "")
+                        self.assertEqual(args[1:], ["--print", "sysroot"])
+                        return str(sysroot)
+                    if args[0] == "cargo":
+                        self.assertEqual(args[1:], ["llvm-cov", "--version"])
+                        return "cargo-llvm-cov fixture"
+                    return original_capture(args, **kwargs)
+
+                def collect_run(root, output, plan, run, cargo, llvm_cov,
+                                llvm_profdata, source_files, report):
+                    report["files"] = {"tracked.rs": {1: True}}
+                    report["runs"].append({"exit_code": 0, "expected_tests": 1})
+                    report["tests"].append({
+                        "id": "test", "run": "base", "binary_id": "fixture", "name": "test",
+                        "attempt": 1, "result": "passed", "profile_state": "available",
+                        "covered": {"tracked.rs": [1]},
+                    })
+
+                with patch.object(coverage, "repository_root", return_value=self.root), \
+                     patch.object(coverage, "capture", side_effect=capture), \
+                     patch.object(coverage, "collect_run", side_effect=collect_run) as collect, \
+                     patch.object(coverage, "collect_source_map"), \
+                     patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                     patch("sys.stderr", new_callable=io.StringIO):
+                    if host in coverage.SUPPORTED_TARGETS:
+                        self.assertEqual(coverage.collect(plan, output), 0)
+                        result = json.loads(stdout.getvalue())
+                        self.assertEqual(result["target"], target)
+                        self.assertEqual(result["host"], host)
+                        self.assertEqual(collect.call_args.args[5:7], (
+                            tools / "llvm-cov", tools / "llvm-profdata",
+                        ))
+                    else:
+                        with self.assertRaisesRegex(ValueError, "compiler host"):
+                            coverage.collect(plan, output)
+                        collect.assert_not_called()
+                persisted = json.loads((output / "report.json").read_text())
+                self.assertEqual(persisted["target"], target)
+                self.assertEqual(persisted["collection_state"],
+                                 "complete" if host in coverage.SUPPORTED_TARGETS else "incomplete")
+                self.assertEqual(coverage.resolve_report(self.root), output / "report.json")
 
     def test_patch_combines_committed_staged_unstaged_and_untracked_changes(self):
         source = self.root / "tracked.rs"

@@ -23,6 +23,7 @@ import time
 SCHEMA_VERSION = 2
 SUPPORTED_SCHEMAS = (1, 2)
 PROFILE_DIR_ENV = "OPENVMM_UNIT_COVERAGE_PROFILES"
+SUPPORTED_TARGETS = {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
 
 
 class StaleCoverageError(ValueError):
@@ -307,13 +308,26 @@ def selected_tests(inventory):
     }
 
 
+def coverage_target(runs):
+    targets = set()
+    for run in runs:
+        args = run["args"]
+        if args.count("--target") != 1 or args[-1] == "--target":
+            raise ValueError("coverage runs require exactly one explicit --target")
+        targets.add(args[args.index("--target") + 1])
+    if len(targets) != 1 or not targets <= SUPPORTED_TARGETS:
+        raise ValueError("coverage requires one Linux GNU x64 or ARM64 target across all runs")
+    return targets.pop()
+
+
 def collect_run(root, output, plan, run, cargo, llvm_cov, llvm_profdata, source_files, report):
     started = time.monotonic()
     run_dir = output / "runs" / run["name"]
     run_dir.mkdir(parents=True)
     profiles = run_dir / "profiles"
     profiles.mkdir()
-    cache = root / "target" / "unit-coverage-build" / run["name"]
+    target = coverage_target([run])
+    cache = root / "target" / "unit-coverage-build" / target / run["name"]
     env = {
         **os.environ,
         **run["env"],
@@ -324,7 +338,6 @@ def collect_run(root, output, plan, run, cargo, llvm_cov, llvm_profdata, source_
         "CARGO_LLVM_COV_SETUP": "no",
     }
     build_args = run["args"]
-    target = build_args[build_args.index("--target") + 1]
     env.update(parse_environment(capture(
         cargo + ["llvm-cov", "show-env", "--target", target, "--no-cfg-coverage"],
         cwd=root, env=env,
@@ -475,7 +488,8 @@ def collect(plan_path, output):
         "family": "unit",
         "origin": "local",
         "source": snapshot,
-        "target": "x86_64-unknown-linux-gnu",
+        "target": None,
+        "host": None,
         "build_profile": "dev",
         "nextest_profile": "agent",
         "collection_state": "collecting",
@@ -499,12 +513,18 @@ def collect(plan_path, output):
     # Point to the newest attempt even if it fails; never fall back to old success.
     write_json(latest, {"schema_version": SCHEMA_VERSION, "report": str(output / "report.json")})
     try:
+        report["target"] = coverage_target(plan["runs"])
         if plan.get("base") is not None:
             report["comparison"] = resolve_comparison(root, plan["base"])
         report["rustc"] = capture(rustc + ["-vV"], cwd=root).strip()
+        host = re.search(r"^host: (\S+)$", report["rustc"], re.MULTILINE)
+        if host is None or host[1] not in SUPPORTED_TARGETS:
+            raise ValueError("coverage requires a Linux GNU x64 or ARM64 compiler host")
+        report["host"] = host[1]
         report["cargo_llvm_cov"] = capture(cargo + ["llvm-cov", "--version"], cwd=root).strip()
         sysroot = Path(capture(rustc + ["--print", "sysroot"], cwd=root).strip())
-        llvm_dir = sysroot / "lib/rustlib/x86_64-unknown-linux-gnu/bin"
+        # LLVM tools execute on the compiler host, which may differ from the test target.
+        llvm_dir = sysroot / "lib/rustlib" / report["host"] / "bin"
         llvm_cov, llvm_profdata = llvm_dir / "llvm-cov", llvm_dir / "llvm-profdata"
         if not llvm_cov.is_file() or not llvm_profdata.is_file():
             raise ValueError("missing LLVM tools; run: rustup component add llvm-tools-preview")
@@ -819,6 +839,7 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
         ("schema_version", "source", "family", "origin", "target",
          "all_tests_passed", "scope", "issues")
     }
+    result["host"] = report.get("host")
     if report["schema_version"] == 1:
         result["collection_state"] = "complete" if report["state"] == "complete" else "unknown"
         result["test_outcome"] = (

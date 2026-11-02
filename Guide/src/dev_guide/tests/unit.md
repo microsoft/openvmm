@@ -50,13 +50,20 @@ in "Rust by example" for more details.
 
 ## Local coverage
 
-On x64 Linux, collect LLVM line coverage with per-test attribution using:
+On Linux x64 or ARM64 with a GNU Rust toolchain, collect LLVM line coverage
+with per-test attribution using:
 
 ```bash
 cargo install cargo-llvm-cov --locked --version 0.8.5
 rustup component add llvm-tools-preview
 cargo xflowey unit-test-coverage -p memory_range -p headervec
 ```
+
+The command selects the native host architecture: `x86_64-unknown-linux-gnu`
+on x64 or `aarch64-unknown-linux-gnu` on ARM64. The same workflow and queries
+work on both. Windows, macOS, and a public cross-compilation mode are not
+supported yet. Coverage describes the selected target and feature/test
+configuration, not all supported platforms.
 
 For an agent's edit/test/review loop, collect and report changed-line coverage
 in one command:
@@ -82,7 +89,8 @@ Use `-E 'test(test_align)'` to restrict the nextest test selection, or
 `--output target/my-coverage` to choose a **new** result directory. Otherwise a
 unique directory is created under `target/unit-coverage/`. The command never
 reuses old execution counts. Instrumented builds use a separate reusable cache
-under `target/unit-coverage-build/`; normal builds are unchanged.
+under `target/unit-coverage-build/<target>/<configuration>/`; normal builds
+are unchanged. Different target architectures do not share this cache.
 
 The command prints the path to `report.json` and emits a JSON query result.
 Subsequent queries automatically use the latest local collection attempt:
@@ -116,11 +124,12 @@ No measured changed lines means a null percentage, not 100%.
 
 The version-2 report records HEAD plus a hash of tracked changes and nonignored
 untracked content, so dirty-tree results are not mislabeled as committed PR
-coverage. It also records the compiler/tool versions, exact build arguments,
-test filter, and collection state. Changes during collection invalidate the
-snapshot. Queries check freshness automatically: after source edits or a HEAD
-change they emit a `stale_coverage` JSON error and exit with code 2, instructing
-the agent to recollect. Run queries from the repository being reviewed.
+coverage. It also records the compiler host, test target, compiler/tool versions,
+exact build arguments, test filter, and collection state. Changes during
+collection invalidate the snapshot. Queries check freshness automatically:
+after source edits or a HEAD change they emit a `stale_coverage` JSON error
+and exit with code 2, instructing the agent to recollect. Run queries from
+the repository being reviewed.
 `--allow-stale` permits explicit historical inspection, labels the result stale,
 and cannot be combined with `--changed`.
 Collection and test results are independent: `collection_state: complete`
@@ -185,6 +194,21 @@ a non-flaky test or successful overall suite. Neither metric proves an assertion
 checked the line's behavior.
 Doctests, separately built child binaries, Petri/VM tests, and branch coverage
 are not included yet. No data is uploaded or published.
+
+### Use coverage to improve tests, not scores
+
+For code changes, inspect changed production paths and add focused tests
+with meaningful assertions about behavior, especially regressions, boundaries,
+and realistic errors. For existing-code discovery, use `--gaps` to find
+candidates, then prioritize by behavioral risk rather than missing-line count.
+Execution alone does not demonstrate that an assertion checks the behavior.
+
+There is no requirement to reach 100%. Do not weaken assertions, hide code,
+remove defensive checks, expose internals, or restructure correct production
+code solely to improve a percentage. Leave and explain justified gaps where
+unit tests are inappropriate; use integration or VM tests when needed.
+Report the actual test/target scope and uncertainty. If local collection is
+unavailable, say so and use suitable tests rather than claiming coverage.
 
 The collector/reader regression tests run without coverage-tool installation:
 

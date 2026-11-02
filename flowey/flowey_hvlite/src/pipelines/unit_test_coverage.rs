@@ -37,10 +37,14 @@ impl IntoPipeline for UnitTestCoverageCli {
     fn into_pipeline(self, backend: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         anyhow::ensure!(
             matches!(backend, PipelineBackendHint::Local)
-                && matches!(FlowPlatform::host(backend), FlowPlatform::Linux(_))
-                && matches!(FlowArch::host(backend), FlowArch::X86_64),
-            "unit-test-coverage currently requires local x64 Linux"
+                && matches!(FlowPlatform::host(backend), FlowPlatform::Linux(_)),
+            "unit-test-coverage currently requires local x64 or ARM64 Linux"
         );
+        let target = match FlowArch::host(backend) {
+            FlowArch::X86_64 => target_lexicon::triple!("x86_64-unknown-linux-gnu"),
+            FlowArch::Aarch64 => target_lexicon::triple!("aarch64-unknown-linux-gnu"),
+            arch => anyhow::bail!("unsupported Linux unit coverage architecture: {arch:?}"),
+        };
         for package in &self.packages {
             anyhow::ensure!(
                 !package.is_empty()
@@ -94,7 +98,7 @@ impl IntoPipeline for UnitTestCoverageCli {
                 no_incremental: false,
             })
             .dep_on(|ctx| flowey_lib_hvlite::build_nextest_unit_tests::Request {
-                target: target_lexicon::triple!("x86_64-unknown-linux-gnu"),
+                target,
                 profile: CommonProfile::Debug,
                 build_mode: BuildNextestUnitTestMode::Coverage {
                     packages: self.packages,
