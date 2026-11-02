@@ -116,6 +116,7 @@ impl FlowNode for Node {
                     nextest_profile: nextest_profile.as_str().to_owned(),
                     extra_env: Some(extra_env),
                     with_rlimit_unlimited_core_size: true,
+                    collect_resources: matches!(nextest_profile, NextestProfile::Ci),
                     nextest_filter_expr,
                     run_ignored,
                     pre_run_deps,

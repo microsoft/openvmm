@@ -8,6 +8,8 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+mod resources;
+
 /// Determine the configured JUnit output path for a nextest profile.
 pub fn nextest_junit_path(
     config_file: &Path,
@@ -37,6 +39,8 @@ pub struct TestResults {
     pub all_tests_passed: bool,
     /// Path to JUnit XML output (if enabled by the nextest profile)
     pub junit_xml: Option<PathBuf>,
+    /// Host resource samples and run configuration, if collection was enabled.
+    pub resources: Option<PathBuf>,
 }
 
 /// Parameters related to building nextest tests
@@ -112,6 +116,8 @@ pub struct Run {
     pub run_ignored: bool,
     /// Set rlimits to allow unlimited sized coredump file (if supported)
     pub with_rlimit_unlimited_core_size: bool,
+    /// Collect host-wide resource usage while nextest is running.
+    pub collect_resources: bool,
     /// Additional env vars set when executing the tests.
     pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
     /// Wait for specified side-effects to resolve before building / running any
@@ -179,6 +185,7 @@ impl FlowNodeWithConfig for Node {
             nextest_profile,
             extra_env,
             with_rlimit_unlimited_core_size,
+            collect_resources,
             nextest_filter_expr,
             run_ignored,
             pre_run_deps,
@@ -240,6 +247,7 @@ impl FlowNodeWithConfig for Node {
 
             let (all_tests_passed_read, all_tests_passed_write) = ctx.new_var();
             let (junit_xml_read, junit_xml_write) = ctx.new_var();
+            let (resources_read, resources_write) = ctx.new_var();
 
             ctx.emit_rust_step(format!("run '{friendly_name}' nextest tests"), |ctx| {
                 pre_run_deps.claim(ctx);
@@ -249,6 +257,7 @@ impl FlowNodeWithConfig for Node {
                 let all_tests_passed_var = all_tests_passed_write.claim(ctx);
                 let junit_xml_write = junit_xml_write.claim(ctx);
                 let cmd = cmd.claim(ctx);
+                let resources_write = resources_write.claim(ctx);
 
                 move |rt| {
                     let working_dir = rt.read(working_dir);
@@ -312,11 +321,27 @@ impl FlowNodeWithConfig for Node {
                         .envs(&cmd.env)
                         .current_dir(&working_dir);
 
+                    let monitor = if collect_resources {
+                        match resources::ResourceMonitor::start(
+                            &config_file,
+                            &nextest_profile,
+                            &cmd,
+                        ) {
+                            Ok(monitor) => Some(monitor),
+                            Err(err) => {
+                                log::warn!("failed to start nextest resource collection: {err:#}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let mut child = command.spawn().with_context(|| {
                         format!("failed to spawn '{}'", cmd.commands[0].0.to_string_lossy())
                     })?;
 
                     let status = child.wait()?;
+                    let resources = monitor.map(|monitor| monitor.finish(status.code()));
 
                     #[cfg(unix)]
                     if let Some((soft, hard)) = old_core_rlimits {
@@ -358,12 +383,18 @@ impl FlowNodeWithConfig for Node {
                         let final_xml = std::env::current_dir()?.join("junit.xml");
                         // copy locally to avoid trashing the output between test runs
                         fs_err::copy(emitted_xml, &final_xml)?;
+                        if let Some(resources) = &resources
+                            && let Err(err) = fs_err::copy(&final_xml, resources.join("junit.xml"))
+                        {
+                            log::warn!("failed to copy JUnit into nextest resources: {err:#}");
+                        }
                         Some(final_xml.absolute()?)
                     } else {
                         None
                     };
 
                     rt.write(junit_xml_write, &junit_xml);
+                    rt.write(resources_write, &resources);
 
                     Ok(())
                 }
@@ -373,16 +404,19 @@ impl FlowNodeWithConfig for Node {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
                 let results = results.claim(ctx);
+                let resources = resources_read.claim(ctx);
 
                 move |rt| {
                     let all_tests_passed = rt.read(all_tests_passed);
                     let junit_xml = rt.read(junit_xml);
+                    let resources = rt.read(resources);
 
                     rt.write(
                         results,
                         &TestResults {
                             all_tests_passed,
                             junit_xml,
+                            resources,
                         },
                     );
                 }

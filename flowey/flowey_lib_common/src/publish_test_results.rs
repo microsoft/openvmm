@@ -150,14 +150,20 @@ impl FlowNode for Node {
                 }
             }
 
-            for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
+            let resources = test_results.map(ctx, |r| r.resources.unwrap_or_default());
+            let attachments = attachments
+                .into_iter()
+                .map(|(label, (path, ado))| (label, path, ado, false))
+                .chain(std::iter::once(("resources".into(), resources, true, true)));
+            for (attachment_label, attachment_path, publish_on_ado, always_upload) in attachments {
                 let step_name = format!("publish test results: {label} ({attachment_label})");
                 let artifact_name = format!("{label}-{attachment_label}");
                 let should_publish =
                     attachment_path
                         .zip(ctx, test_results.clone())
                         .map(ctx, move |(p, r)| {
-                            (upload_logs_on_success || !r.all_tests_passed)
+                            !p.as_os_str().is_empty()
+                                && (always_upload || upload_logs_on_success || !r.all_tests_passed)
                                 && p.exists()
                                 && (p.is_file()
                                     || p.read_dir()

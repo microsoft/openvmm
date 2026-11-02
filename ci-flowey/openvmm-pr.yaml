@@ -314,14 +314,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar11
+      $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar17
       $FLOWEY_BIN v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar11)
+    persistCredentials: $(floweyvar17)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -341,13 +341,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar9
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar10
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar15
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar16
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar10)
-      path: $(floweyvar9)
+      key: $(floweyvar16)
+      path: $(floweyvar15)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -412,13 +412,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
-      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar8
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar13
+      $FLOWEY_BIN v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar14
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar8)
-      path: $(floweyvar7)
+      key: $(floweyvar14)
+      path: $(floweyvar13)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -432,94 +432,21 @@ jobs:
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::install_cargo_nextest 0
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::install_cargo_nextest 0 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_nextest_run 5
     displayName: installing cargo-nextest
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::init_cross_build 2 flowey_lib_hvlite::run_cargo_nextest_run 0
-    displayName: determine unit test exclusions
-  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 5
+  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 4
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 5 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-base' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
-      testRunTitle: x64-linux-musl-unit-tests-base
-    displayName: 'publish test results: x64-linux-musl-unit-tests-base (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 2 flowey_lib_common::gen_cargo_nextest_run_cmd 1
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 7 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-crypto-native' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-linux-musl-unit-tests-crypto-native
-    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-native (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 4 flowey_lib_common::gen_cargo_nextest_run_cmd 3
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 8 flowey_lib_common::run_cargo_nextest_run 9 flowey_lib_common::publish_test_results 9 flowey_lib_common::ado_task_publish_test_results 8 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-crypto-rust' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar5)
-      testRunTitle: x64-linux-musl-unit-tests-crypto-rust
-    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-rust (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 3 flowey_lib_common::gen_cargo_nextest_run_cmd 2
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 6 flowey_lib_common::run_cargo_nextest_run 7 flowey_lib_common::publish_test_results 11 flowey_lib_common::ado_task_publish_test_results 6 flowey_lib_common::publish_test_results 10
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-musl-unit-tests-crypto-openssl' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar4)
-      testRunTitle: x64-linux-musl-unit-tests-crypto-openssl
-    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-openssl (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 5 flowey_lib_common::gen_cargo_nextest_run_cmd 4
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 10 flowey_lib_common::run_cargo_nextest_run 11 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 10 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 10 flowey_lib_common::run_cargo_nextest_run 11 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:11:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-symcrypt' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar6)
-      testRunTitle: x64-linux-musl-unit-tests-crypto-symcrypt
-    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-symcrypt (JUnit XML)'
+  - publish: $(floweyvar1)
+    artifact: x64-linux-musl-unit-tests-crypto-symcrypt-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-symcrypt (resources)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -527,16 +454,149 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 3 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 8 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 7
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar8
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-musl-unit-tests-crypto-all' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar2)
+      testResultsFiles: $(floweyvar8)
       testRunTitle: x64-linux-musl-unit-tests-crypto-all
     displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-all (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 9 flowey_lib_common::publish_test_results 10 flowey_lib_common::publish_test_results 11 flowey_lib_common::publish_test_results 12
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar2)
+    artifact: x64-linux-musl-unit-tests-crypto-all-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-all (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::run_cargo_nextest_run 0
+    displayName: determine unit test exclusions
+  - bash: $(FLOWEY_BIN) e 16 flowey_lib_common::gen_cargo_nextest_run_cmd 5
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 15 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 14
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar7
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-base' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar7)
+      testRunTitle: x64-linux-musl-unit-tests-base
+    displayName: 'publish test results: x64-linux-musl-unit-tests-base (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 16 flowey_lib_common::publish_test_results 17 flowey_lib_common::publish_test_results 18 flowey_lib_common::publish_test_results 19
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:39:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar3)
+    artifact: x64-linux-musl-unit-tests-base-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-base (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 2 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 22 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 21
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar9
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-crypto-native' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar9)
+      testRunTitle: x64-linux-musl-unit-tests-crypto-native
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-native (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 10 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:10:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar12
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar12)
+      testRunTitle: x64-linux-musl-unit-tests-crypto-symcrypt
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-symcrypt (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 23 flowey_lib_common::publish_test_results 24 flowey_lib_common::publish_test_results 25 flowey_lib_common::publish_test_results 26
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:53:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar4)
+    artifact: x64-linux-musl-unit-tests-crypto-native-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-native (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 4 flowey_lib_common::gen_cargo_nextest_run_cmd 3
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 8 flowey_lib_common::run_cargo_nextest_run 9 flowey_lib_common::publish_test_results 29 flowey_lib_common::ado_task_publish_test_results 8 flowey_lib_common::publish_test_results 28
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:56:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar11
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:56:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-crypto-rust' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar11)
+      testRunTitle: x64-linux-musl-unit-tests-crypto-rust
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-rust (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 30 flowey_lib_common::publish_test_results 31 flowey_lib_common::publish_test_results 32 flowey_lib_common::publish_test_results 33
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:67:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:65:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:65:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar5)
+    artifact: x64-linux-musl-unit-tests-crypto-rust-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-rust (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_hvlite::run_cargo_nextest_run 3 flowey_lib_common::gen_cargo_nextest_run_cmd 2
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_nextest_run 6 flowey_lib_common::run_cargo_nextest_run 7 flowey_lib_common::publish_test_results 36 flowey_lib_common::ado_task_publish_test_results 6 flowey_lib_common::publish_test_results 35
+      $FLOWEY_BIN v 16 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:70:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar10
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:70:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-musl-unit-tests-crypto-openssl' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar10)
+      testRunTitle: x64-linux-musl-unit-tests-crypto-openssl
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-openssl (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 16 flowey_lib_common::publish_test_results 37 flowey_lib_common::publish_test_results 38 flowey_lib_common::publish_test_results 39 flowey_lib_common::publish_test_results 40
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:81:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
+      $FLOWEY_BIN v 16 'flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar6)
+    artifact: x64-linux-musl-unit-tests-crypto-openssl-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-musl-unit-tests-crypto-openssl (resources)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -598,14 +658,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar10
+      $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar15
       $FLOWEY_BIN v 15 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar10)
+    persistCredentials: $(floweyvar15)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -627,13 +687,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar8
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar9
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar13
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar14
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar9)
-      path: $(floweyvar8)
+      key: $(floweyvar14)
+      path: $(floweyvar13)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -676,13 +736,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 15 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
-      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar11
+      $FLOWEY_BIN v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar12
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar7)
-      path: $(floweyvar6)
+      key: $(floweyvar12)
+      path: $(floweyvar11)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -696,77 +756,23 @@ jobs:
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::install_cargo_nextest 0 flowey_lib_hvlite::init_cross_build 0 flowey_lib_hvlite::run_cargo_nextest_run 4
+  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::install_cargo_nextest 0
     displayName: installing cargo-nextest
-  - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 3
-    displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 8 flowey_lib_common::run_cargo_nextest_run 9 flowey_lib_common::publish_test_results 5 flowey_lib_common::ado_task_publish_test_results 8 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-unit-tests-crypto-rust' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar5)
-      testRunTitle: x64-linux-unit-tests-crypto-rust
-    displayName: 'publish test results: x64-linux-unit-tests-crypto-rust (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 3 flowey_lib_common::gen_cargo_nextest_run_cmd 2
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 6 flowey_lib_common::run_cargo_nextest_run 7 flowey_lib_common::publish_test_results 7 flowey_lib_common::ado_task_publish_test_results 6 flowey_lib_common::publish_test_results 6
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-unit-tests-crypto-openssl' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar4)
-      testRunTitle: x64-linux-unit-tests-crypto-openssl
-    displayName: 'publish test results: x64-linux-unit-tests-crypto-openssl (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 1 flowey_lib_common::gen_cargo_nextest_run_cmd 0
-    displayName: generate nextest command
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 9 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 8
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:20:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-linux-unit-tests-crypto-all' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar2)
-      testRunTitle: x64-linux-unit-tests-crypto-all
-    displayName: 'publish test results: x64-linux-unit-tests-crypto-all (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::run_cargo_nextest_run 0
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::init_cross_build 0 flowey_lib_hvlite::run_cargo_nextest_run 0
     displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 15 flowey_lib_common::gen_cargo_nextest_run_cmd 4
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:11:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-base' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
-      testRunTitle: x64-linux-unit-tests-base
-    displayName: 'publish test results: x64-linux-unit-tests-base (JUnit XML)'
+  - publish: $(floweyvar1)
+    artifact: x64-linux-unit-tests-base-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-unit-tests-base (resources)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -774,16 +780,120 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 3 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
-      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 8 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 7
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar8
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-linux-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar3)
+      testResultsFiles: $(floweyvar8)
       testRunTitle: x64-linux-unit-tests-crypto-native
     displayName: 'publish test results: x64-linux-unit-tests-crypto-native (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 9 flowey_lib_common::publish_test_results 10 flowey_lib_common::publish_test_results 11 flowey_lib_common::publish_test_results 12
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar2)
+    artifact: x64-linux-unit-tests-crypto-native-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-native (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 4 flowey_lib_common::gen_cargo_nextest_run_cmd 3
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 8 flowey_lib_common::run_cargo_nextest_run 9 flowey_lib_common::publish_test_results 15 flowey_lib_common::ado_task_publish_test_results 8 flowey_lib_common::publish_test_results 14
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:8:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar10
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-unit-tests-crypto-rust' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar10)
+      testRunTitle: x64-linux-unit-tests-crypto-rust
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-rust (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 16 flowey_lib_common::publish_test_results 17 flowey_lib_common::publish_test_results 18 flowey_lib_common::publish_test_results 19
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:39:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar3)
+    artifact: x64-linux-unit-tests-crypto-rust-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-rust (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 3 flowey_lib_common::gen_cargo_nextest_run_cmd 2
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 6 flowey_lib_common::run_cargo_nextest_run 7 flowey_lib_common::publish_test_results 22 flowey_lib_common::ado_task_publish_test_results 6 flowey_lib_common::publish_test_results 21
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:6:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar9
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-unit-tests-crypto-openssl' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar9)
+      testRunTitle: x64-linux-unit-tests-crypto-openssl
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-openssl (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar6)
+      testRunTitle: x64-linux-unit-tests-base
+    displayName: 'publish test results: x64-linux-unit-tests-base (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 23 flowey_lib_common::publish_test_results 24 flowey_lib_common::publish_test_results 25 flowey_lib_common::publish_test_results 26
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:53:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar4)
+    artifact: x64-linux-unit-tests-crypto-openssl-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-openssl (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_hvlite::run_cargo_nextest_run 1 flowey_lib_common::gen_cargo_nextest_run_cmd 0
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 29 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 28
+      $FLOWEY_BIN v 15 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:56:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar7
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:56:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-linux-unit-tests-crypto-all' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar7)
+      testRunTitle: x64-linux-unit-tests-crypto-all
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-all (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 15 flowey_lib_common::publish_test_results 30 flowey_lib_common::publish_test_results 31 flowey_lib_common::publish_test_results 32 flowey_lib_common::publish_test_results 33
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:67:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:65:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 15 'flowey_lib_common::publish_test_results:65:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar5)
+    artifact: x64-linux-unit-tests-crypto-all-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-unit-tests-crypto-all (resources)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -877,14 +987,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar8
+      $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar11
       $FLOWEY_BIN v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar8)
+    persistCredentials: $(floweyvar11)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -906,13 +1016,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar9
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar10
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar7)
-      path: $(floweyvar6)
+      key: $(floweyvar10)
+      path: $(floweyvar9)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -951,13 +1061,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 14 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
-      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
+      $FLOWEY_BIN v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar8
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar5)
-      path: $(floweyvar4)
+      key: $(floweyvar8)
+      path: $(floweyvar7)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -971,43 +1081,23 @@ jobs:
     displayName: downloading cargo-nextest
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::install_rust 2
     displayName: report $CARGO_HOME
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::install_cargo_nextest 0 flowey_lib_hvlite::init_cross_build 1 flowey_lib_hvlite::run_cargo_nextest_run 2
+  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::install_cargo_nextest 0
     displayName: installing cargo-nextest
-  - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 1
-    displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 5 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 4
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:10:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
-    displayName: run 'x64-windows-unit-tests-crypto-rust' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar3)
-      testRunTitle: x64-windows-unit-tests-crypto-rust
-    displayName: 'publish test results: x64-windows-unit-tests-crypto-rust (JUnit XML)'
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::run_cargo_nextest_run 0
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::build_nextest_unit_tests 0 flowey_lib_hvlite::init_cross_build 1 flowey_lib_hvlite::run_cargo_nextest_run 0
     displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 14 flowey_lib_common::gen_cargo_nextest_run_cmd 2
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 0 flowey_lib_common::run_cargo_nextest_run 1 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:11:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-base' nextest tests
-  - task: PublishTestResults@2
-    inputs:
-      testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
-      testRunTitle: x64-windows-unit-tests-base
-    displayName: 'publish test results: x64-windows-unit-tests-base (JUnit XML)'
+  - publish: $(floweyvar1)
+    artifact: x64-windows-unit-tests-base-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-unit-tests-base (resources)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -1015,16 +1105,66 @@ jobs:
     displayName: generate nextest command
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 3 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 2
-      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
-      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:5:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 2 flowey_lib_common::run_cargo_nextest_run 3 flowey_lib_common::publish_test_results 8 flowey_lib_common::ado_task_publish_test_results 2 flowey_lib_common::publish_test_results 7
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:2:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar5
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: run 'x64-windows-unit-tests-crypto-native' nextest tests
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar2)
+      testResultsFiles: $(floweyvar5)
       testRunTitle: x64-windows-unit-tests-crypto-native
     displayName: 'publish test results: x64-windows-unit-tests-crypto-native (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 9 flowey_lib_common::publish_test_results 10 flowey_lib_common::publish_test_results 11 flowey_lib_common::publish_test_results 12
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:25:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar2)
+    artifact: x64-windows-unit-tests-crypto-native-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-unit-tests-crypto-native (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 14 flowey_lib_hvlite::run_cargo_nextest_run 2 flowey_lib_common::gen_cargo_nextest_run_cmd 1
+    displayName: generate nextest command
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 14 flowey_lib_common::run_cargo_nextest_run 4 flowey_lib_common::run_cargo_nextest_run 5 flowey_lib_common::publish_test_results 15 flowey_lib_common::ado_task_publish_test_results 4 flowey_lib_common::publish_test_results 14
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:4:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar6
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:28:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: run 'x64-windows-unit-tests-crypto-rust' nextest tests
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar6)
+      testRunTitle: x64-windows-unit-tests-crypto-rust
+    displayName: 'publish test results: x64-windows-unit-tests-crypto-rust (JUnit XML)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 16 flowey_lib_common::publish_test_results 17 flowey_lib_common::publish_test_results 18 flowey_lib_common::publish_test_results 19
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:39:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar3
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - publish: $(floweyvar3)
+    artifact: x64-windows-unit-tests-crypto-rust-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-unit-tests-crypto-rust (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 14 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 14 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar4
+      $FLOWEY_BIN v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: $(floweyvar4)
+      testRunTitle: x64-windows-unit-tests-base
+    displayName: 'publish test results: x64-windows-unit-tests-base (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
@@ -3750,13 +3890,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar5)
+      path: $(floweyvar4)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -3771,14 +3911,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
       $FLOWEY_BIN v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar2)
+    persistCredentials: $(floweyvar3)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -3802,13 +3942,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 20 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar7)
+      path: $(floweyvar6)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -3868,20 +4008,30 @@ jobs:
     displayName: run 'vmm_tests' nextest tests
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 20 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 6 flowey_lib_common::publish_test_results 7 flowey_lib_common::publish_test_results 8
+      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: summarize failing vmm tests
+  - publish: $(floweyvar1)
+    artifact: x64-linux-amd-kvm-vmm-tests-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-linux-amd-kvm-vmm-tests (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 20 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
+      testResultsFiles: $(floweyvar2)
       testRunTitle: x64-linux-amd-kvm-vmm-tests
     displayName: 'publish test results: x64-linux-amd-kvm-vmm-tests (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 20 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 20 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -4041,13 +4191,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar7)
+      path: $(floweyvar6)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -4096,13 +4246,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar5)
+      path: $(floweyvar4)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -4117,14 +4267,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 19 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
       $FLOWEY_BIN v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar2)
+    persistCredentials: $(floweyvar3)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -4161,20 +4311,30 @@ jobs:
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 19 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 6 flowey_lib_common::publish_test_results 7 flowey_lib_common::publish_test_results 8
+      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: summarize failing vmm tests
+  - publish: $(floweyvar1)
+    artifact: x64-windows-amd-vmm-tests-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-amd-vmm-tests (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 19 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
+      testResultsFiles: $(floweyvar2)
       testRunTitle: x64-windows-amd-vmm-tests
     displayName: 'publish test results: x64-windows-amd-vmm-tests (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 19 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 19 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -4334,13 +4494,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar7)
+      path: $(floweyvar6)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -4389,13 +4549,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar5)
+      path: $(floweyvar4)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -4410,14 +4570,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 18 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
       $FLOWEY_BIN v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar2)
+    persistCredentials: $(floweyvar3)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -4448,20 +4608,30 @@ jobs:
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 18 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 6 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 6 flowey_lib_common::publish_test_results 7 flowey_lib_common::publish_test_results 8
+      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: summarize failing vmm tests
+  - publish: $(floweyvar1)
+    artifact: x64-windows-intel-mi-secure-vmm-tests-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-intel-mi-secure-vmm-tests (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 18 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
+      testResultsFiles: $(floweyvar2)
       testRunTitle: x64-windows-intel-mi-secure-vmm-tests
     displayName: 'publish test results: x64-windows-intel-mi-secure-vmm-tests (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
+      $(FLOWEY_BIN) e 18 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 18 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
@@ -4621,13 +4791,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 4
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:8:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar6
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar7
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar6)
-      path: $(floweyvar5)
+      key: $(floweyvar7)
+      path: $(floweyvar6)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
@@ -4676,13 +4846,13 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar3
-      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar4
+      $FLOWEY_BIN v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env ado floweyvar5
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
-      key: $(floweyvar4)
-      path: $(floweyvar3)
+      key: $(floweyvar5)
+      path: $(floweyvar4)
       cacheHitVar: FLOWEY_CACHE_HITVAR
     displayName: 'Restore cache: cargo-nextest'
   - bash: |-
@@ -4697,14 +4867,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 17 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env ado floweyvar3
       $FLOWEY_BIN v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
     fetchTags: false
     fetchDepth: 1
-    persistCredentials: $(floweyvar2)
+    persistCredentials: $(floweyvar3)
     submodules: recursive
     displayName: checkout repo openvmm
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
@@ -4741,20 +4911,30 @@ jobs:
     displayName: stopping test_igvm_agent_rpc_server
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
-      $FLOWEY_BIN v 17 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
-      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 17 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 7 flowey_lib_common::publish_test_results 5 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 6 flowey_lib_common::publish_test_results 7 flowey_lib_common::publish_test_results 8
+      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar1
+      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:15:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
     displayName: summarize failing vmm tests
+  - publish: $(floweyvar1)
+    artifact: x64-windows-intel-vmm-tests-resources-$(System.JobAttempt)
+    displayName: 'publish test results: x64-windows-intel-vmm-tests (resources)'
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 1 flowey_lib_common::ado_task_publish_test_results 0 flowey_lib_common::publish_test_results 0
+      $FLOWEY_BIN v 17 'flowey_lib_common::ado_task_publish_test_results:0:flowey_lib_common/src/ado_task_publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs write-to-env ado floweyvar2
+      $FLOWEY_BIN v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs' write-to-env ado FLOWEY_CONDITION
+    displayName: 🦀 flowey rust steps
   - task: PublishTestResults@2
     inputs:
       testResultsFormat: JUnit
-      testResultsFiles: $(floweyvar1)
+      testResultsFiles: $(floweyvar2)
       testRunTitle: x64-windows-intel-vmm-tests
     displayName: 'publish test results: x64-windows-intel-vmm-tests (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 2 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
+      $(FLOWEY_BIN) e 17 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 8
     displayName: report test results to overall pipeline status
   - bash: $(FLOWEY_BIN) e 17 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
