@@ -1146,6 +1146,7 @@ dependencies = [
  "anyhow",
  "cms",
  "const-oid",
+ "constant_time_eq",
  "der",
  "getrandom 0.4.2",
  "hex",
@@ -1297,15 +1298,6 @@ dependencies = [
  "mesh_worker",
  "vmm_core_defs",
  "vmsocket",
-]
-
-[[package]]
-name = "defmt"
-version = "0.3.100"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
-dependencies = [
- "defmt 1.0.1",
 ]
 
 [[package]]
@@ -2270,6 +2262,7 @@ dependencies = [
  "mesh",
  "open_enum",
  "pal_async",
+ "parking_lot",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
@@ -3501,9 +3494,9 @@ version = "0.0.0"
 
 [[package]]
 name = "heapless"
-version = "0.8.0"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
  "hash32",
  "stable_deref_trait",
@@ -5174,6 +5167,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "consomme",
+ "guestmem",
  "inspect",
  "inspect_counters",
  "mesh",
@@ -5181,7 +5175,9 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "smoltcp",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
@@ -6588,6 +6584,7 @@ dependencies = [
  "smallbox",
  "socket2",
  "tempfile",
+ "test_with_tracing",
  "unicycle",
  "unix_socket",
  "windows-result 0.4.0",
@@ -8285,14 +8282,14 @@ dependencies = [
 
 [[package]]
 name = "smoltcp"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dad095989c1533c1c266d9b1e8d70a1329dd3723c3edac6d03bbd67e7bf6f4bb"
+checksum = "b6f8b28ad56c6e35524a37dd492af5d1a47e31e1a4d175cd12f89c075f01980f"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "cfg-if",
- "defmt 0.3.100",
+ "defmt",
  "heapless",
  "managed",
 ]
@@ -11330,6 +11327,7 @@ dependencies = [
  "hyperv_ic_resources",
  "initrd_cpio",
  "inspect",
+ "inspect_proto",
  "jiff",
  "kmsg",
  "memory_range",

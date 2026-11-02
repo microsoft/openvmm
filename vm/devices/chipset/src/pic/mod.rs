@@ -176,6 +176,8 @@ impl PortIoIntercept for DualPic {
             SECONDARY_PIC_ELCR_PORT => self.pics[1].elcr,
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
+        // A poll read acknowledges an interrupt, which can change the outputs.
+        self.sync_outputs();
         IoResult::Ok
     }
 
@@ -716,6 +718,7 @@ mod tests {
     use super::*;
     use chipset_device::pio::ExternallyManagedPortIoIntercepts;
     use chipset_device::pio::PortIoIntercept;
+    use test_with_tracing::test;
     use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
 
     const IV_BASE: u8 = 0x30;
@@ -774,6 +777,46 @@ mod tests {
         let (ready, pic) = create_pic();
         assert!(matches!(pic.pics[0].init, InitStage::Initialized));
         assert!(matches!(pic.pics[1].init, InitStage::Initialized));
+        assert!(!ready());
+    }
+
+    #[test]
+    fn test_poll_read_primary_lowers_ready() {
+        let (ready, mut pic) = create_pic();
+        pic.set_irq(1, true);
+        pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        assert!(ready());
+
+        let mut data = [0];
+        pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x81);
+        assert_eq!(pic.pics[0].isr, 1 << 1);
+        assert!(!pic.pics[0].interrupt_pending());
+        assert!(!ready());
+    }
+
+    #[test]
+    fn test_poll_read_secondary_lowers_cascade() {
+        let (ready, mut pic) = create_pic();
+        let cascade = 1 << PIC_CHAIN_COMMUNICATION_IRQ;
+        pic.set_irq(9, true);
+        assert!(ready());
+
+        pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        let mut data = [0];
+        pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x80 | PIC_CHAIN_COMMUNICATION_IRQ);
+
+        pic.io_write(SECONDARY_PIC_COMMAND_PORT, &[0x0c]).unwrap(); // OCW3: poll
+        assert_ne!(pic.pics[0].lines & cascade, 0);
+        assert_eq!(pic.pics[0].line_low_latch & cascade, 0);
+
+        pic.io_read(SECONDARY_PIC_COMMAND_PORT, &mut data).unwrap();
+        assert_eq!(data[0], 0x81);
+        assert_eq!(pic.pics[1].isr, 1 << 1);
+        assert!(!pic.pics[1].interrupt_pending());
+        assert_eq!(pic.pics[0].lines & cascade, 0);
+        assert_ne!(pic.pics[0].line_low_latch & cascade, 0);
         assert!(!ready());
     }
 
