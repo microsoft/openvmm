@@ -600,7 +600,7 @@ ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev 
 arrayvec = { version = "0.7", default-features = false }
 bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
-heapless = { version = "0.8", default-features = false }
+heapless = { version = "0.9", default-features = false }
 petgraph = "0.8.0"
 range_map_vec = "0.2.0"
 rustc-hash = "2.1.1"
@@ -645,7 +645,7 @@ hyper-tls = "0.6"
 hyper-util = "0.1"
 pcap-file = "2.0.0"
 resolv-conf = "0.7"
-smoltcp = { version = "0.12.0", default-features = false }
+smoltcp = { version = "0.14.0", default-features = false }
 socket2 = "0.6"
 
 # --- Time ---
