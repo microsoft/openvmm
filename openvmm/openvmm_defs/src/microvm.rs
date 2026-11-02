@@ -25,8 +25,12 @@ use vmotherboard::options::BaseChipsetManifest;
 ///
 /// Version 3 offers no device `VIRTIO_F_ACCESS_PLATFORM`, since the microVM
 /// has no IOMMU, and no console `VIRTIO_CONSOLE_F_SIZE`, both of which
-/// version 2 offered. A snapshot of version 2 records those feature masks, so
-/// restore refuses it by its version, before it compares the devices.
+/// version 2 offered. It also routes the IOAPIC's inputs past the 16 ISA IRQs
+/// in the MP table and gives each virtio-mmio slot one of them, the same on
+/// every backend, where version 2 put each slot on an ISA IRQ and the NIC on
+/// another one on WHP. A snapshot of version 2 records those feature masks
+/// and interrupts, so restore refuses it by its version, before it compares
+/// the devices.
 pub const MICROVM_ABI_VERSION_3: u32 = 3;
 /// Linux memory-block granularity used for microVM restore-time expansion.
 pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 = 128 * 1024 * 1024;
@@ -60,20 +64,23 @@ pub const MICROVM_VIRTIO_CONSOLE_MMIO_BASE: u64 = 0xd000_2000;
 pub const MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE: u64 = 0xd000_7000;
 /// Fixed microVM virtio transport window length.
 pub const MICROVM_VIRTIO_MMIO_LEN: u64 = 0x1000;
-/// Fixed distro virtio-blk interrupt.
-pub const MICROVM_VIRTIO_BLK_IRQ: u32 = 4;
-/// Fixed virtio-blk interrupt for the writable scratch layer.
-pub const MICROVM_VIRTIO_SCRATCH_BLK_IRQ: u32 = 11;
-/// Fixed microVM virtio-console interrupt.
-pub const MICROVM_VIRTIO_CONSOLE_IRQ: u32 = 7;
-/// Fixed microVM control virtio-console interrupt.
-pub const MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ: u32 = 3;
-/// Fixed interrupt of the microVM virtio-fs slot.
-pub const MICROVM_VIRTIO_FS_IRQ: u32 = 6;
-/// Fixed microVM virtio-net interrupt on KVM.
-pub const MICROVM_VIRTIO_NET_KVM_IRQ: u32 = 10;
-/// Fixed microVM virtio-net interrupt on WHP.
-pub const MICROVM_VIRTIO_NET_WHP_IRQ: u32 = 5;
+/// The IOAPIC input of the first virtio-mmio window, the first input past the
+/// 16 ISA IRQs, which the PIC does not see: the window at
+/// `0xd0000000 + n * 0x1000` interrupts on input `16 + n`, on every backend.
+pub const MICROVM_VIRTIO_IRQ_BASE: u32 = 16;
+/// Fixed distro virtio-blk interrupt: the input of window 3.
+pub const MICROVM_VIRTIO_BLK_IRQ: u32 = 19;
+/// Fixed virtio-blk interrupt for the writable scratch layer: the input of
+/// window 6.
+pub const MICROVM_VIRTIO_SCRATCH_BLK_IRQ: u32 = 22;
+/// Fixed microVM virtio-console interrupt: the input of window 2.
+pub const MICROVM_VIRTIO_CONSOLE_IRQ: u32 = 18;
+/// Fixed microVM control virtio-console interrupt: the input of window 7.
+pub const MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ: u32 = 23;
+/// Fixed interrupt of the microVM virtio-fs slot: the input of window 1.
+pub const MICROVM_VIRTIO_FS_IRQ: u32 = 17;
+/// Fixed microVM virtio-net interrupt: the input of window 0.
+pub const MICROVM_VIRTIO_NET_IRQ: u32 = 16;
 // The virtio 1.2 feature bits that the exact microVM feature masks name. The
 // masks leave out `VIRTIO_F_ACCESS_PLATFORM` (bit 33), which the virtio
 // transport offers every device, since the microVM has no IOMMU to translate a
@@ -141,9 +148,9 @@ pub const MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingr
 ///
 /// Each slot keeps its place whether or not the slots before it are present.
 /// The windows at `0xd0004000` and `0xd0005000`, which held the retired
-/// `runtime` and `custom` sandbox layers, stay unassigned, as do IRQs 12 and 9
-/// and the shared-status words at offsets `0x10` and `0x14`: the slots after
-/// them kept their places.
+/// `runtime` and `custom` sandbox layers, stay unassigned, as do their IOAPIC
+/// inputs 20 and 21 and the shared-status words at offsets `0x10` and `0x14`:
+/// the slots after them kept their places.
 pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 6] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
     MICROVM_VIRTIO_FS_MMIO_BASE,
@@ -220,11 +227,26 @@ pub const fn microvm_virtio_status_gpa(mmio_base: u64) -> Option<u64> {
     };
     Some(MICROVM_SHARED_STATUS_PAGE_GPA + offset)
 }
+
+/// Returns the edge-triggered interrupt, the IOAPIC input, of a fixed
+/// virtio-mmio slot.
+pub const fn microvm_virtio_irq(mmio_base: u64) -> Option<u32> {
+    Some(match mmio_base {
+        MICROVM_VIRTIO_NET_MMIO_BASE => MICROVM_VIRTIO_NET_IRQ,
+        MICROVM_VIRTIO_FS_MMIO_BASE => MICROVM_VIRTIO_FS_IRQ,
+        MICROVM_VIRTIO_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONSOLE_IRQ,
+        MICROVM_VIRTIO_BLK_MMIO_BASE => MICROVM_VIRTIO_BLK_IRQ,
+        MICROVM_VIRTIO_SCRATCH_BLK_MMIO_BASE => MICROVM_VIRTIO_SCRATCH_BLK_IRQ,
+        MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE => MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
+        _ => return None,
+    })
+}
 /// The microVM publishes no level-triggered virtio IRQs in its MP table.
 pub const MICROVM_LEVEL_TRIGGERED_IRQS: [u32; 0] = [];
 /// The inputs of the microVM's IOAPIC, the generic IOAPIC of its chipset,
 /// every one of which its MP table routes: the first 16 carry the ISA IRQs,
-/// which the PIC also sees, and the IOAPIC alone sees inputs 16 through 23.
+/// which the PIC also sees, and the IOAPIC alone sees inputs 16 through 23,
+/// which the virtio-mmio slots use.
 pub const MICROVM_IOAPIC_INPUTS: u8 = chipset_resources::ioapic::IOAPIC_NUM_ENTRIES;
 
 /// The stable role of a microVM sandbox block device.
@@ -1147,20 +1169,6 @@ impl std::str::FromStr for MicrovmNetworkConfig {
     }
 }
 
-/// Returns the pinned virtio-net IRQ for the selected microVM backend.
-pub fn microvm_virtio_net_irq(hypervisor_id: Option<&str>) -> anyhow::Result<u32> {
-    match hypervisor_id {
-        Some("kvm" | "mshv") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
-        Some("whp") => Ok(MICROVM_VIRTIO_NET_WHP_IRQ),
-        Some(other) => anyhow::bail!("microVM virtio-net does not support hypervisor '{other}'"),
-        None if cfg!(target_os = "linux") => Ok(MICROVM_VIRTIO_NET_KVM_IRQ),
-        None if cfg!(windows) => Ok(MICROVM_VIRTIO_NET_WHP_IRQ),
-        None => {
-            anyhow::bail!("microVM virtio-net requires an explicit KVM, MSHV, or WHP hypervisor")
-        }
-    }
-}
-
 fn validate_microvm_virtio_reservations() -> anyhow::Result<()> {
     let bases = &MICROVM_VIRTIO_MMIO_BASES;
     for (index, base) in bases.iter().copied().enumerate() {
@@ -1192,6 +1200,34 @@ fn validate_microvm_virtio_reservations() -> anyhow::Result<()> {
             "microVM shared-status words are duplicated or out of order"
         );
         previous_status_gpa = Some(status_gpa);
+    }
+    validate_microvm_virtio_irqs(
+        bases
+            .iter()
+            .map(|&mmio_base| (mmio_base, microvm_virtio_irq(mmio_base))),
+    )
+}
+
+/// Checks that each slot of `slots`, a window base and its interrupt in
+/// window order, interrupts on an IOAPIC input of its own past the ISA IRQs,
+/// which neither the PIC nor a chipset device shares.
+fn validate_microvm_virtio_irqs(
+    slots: impl IntoIterator<Item = (u64, Option<u32>)>,
+) -> anyhow::Result<()> {
+    let mut previous_irq = None;
+    for (mmio_base, irq) in slots {
+        let irq = irq.ok_or_else(|| {
+            anyhow::anyhow!("microVM virtio MMIO slot {mmio_base:#x} has no interrupt")
+        })?;
+        anyhow::ensure!(
+            (MICROVM_VIRTIO_IRQ_BASE..u32::from(MICROVM_IOAPIC_INPUTS)).contains(&irq),
+            "microVM interrupt {irq} of slot {mmio_base:#x} is not an IOAPIC input past the ISA IRQs"
+        );
+        anyhow::ensure!(
+            previous_irq.is_none_or(|previous| previous < irq),
+            "microVM virtio interrupts are duplicated or out of order"
+        );
+        previous_irq = Some(irq);
     }
     Ok(())
 }
@@ -1272,14 +1308,13 @@ pub fn microvm_filesystem_slot_count(first_slot: bool, attached: usize) -> anyho
 /// Appends sandbox virtio devices in fixed-address order.
 ///
 /// `filesystem_slot` reserves the virtio-fs slot, and `filesystems`, at most
-/// one, occupies it. `network` carries the NIC's identity, its interrupt, the
-/// gateway address, if any, that the guest names as its DNS server, and the
-/// ingress, if any, for which the guest announces its listeners.
+/// one, occupies it. `network` carries the NIC's identity, the gateway
+/// address, if any, that the guest names as its DNS server, and the ingress,
+/// if any, for which the guest announces its listeners.
 pub fn append_microvm_virtio_discovery(
     cmdline: &mut String,
     network: Option<(
         &MicrovmNetworkConfig,
-        u32,
         Option<std::net::IpAddr>,
         Option<MicrovmIngress>,
     )>,
@@ -1304,14 +1339,10 @@ pub fn append_microvm_virtio_discovery(
     validate_microvm_filesystems(filesystems)?;
 
     use std::fmt::Write as _;
-    if let Some((_, irq, _, _)) = network {
-        anyhow::ensure!(
-            matches!(irq, MICROVM_VIRTIO_NET_KVM_IRQ | MICROVM_VIRTIO_NET_WHP_IRQ),
-            "microVM virtio-net IRQ {irq} is not part of the fixed machine contract"
-        );
+    if network.is_some() {
         write!(
             cmdline,
-            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{irq}"
+            " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{MICROVM_VIRTIO_NET_IRQ}"
         )?;
     }
     if filesystem_slots > 0 {
@@ -1345,7 +1376,7 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_CONTROL_CONSOLE_MMIO_BASE:#x}:{MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ} {MICROVM_CONTROL_TTY_COMMAND_LINE}"
         )?;
     }
-    if let Some((network, _, gateway_dns, ingress)) = network {
+    if let Some((network, gateway_dns, ingress)) = network {
         write!(
             cmdline,
             " {}",
@@ -1447,10 +1478,7 @@ fn microvm_command_line_ingress(
     }
 }
 
-fn validate_microvm_command_line(
-    config: &Config,
-    hypervisor_id: Option<&str>,
-) -> anyhow::Result<()> {
+fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
     let MachineProfile::Microvm = config.machine_profile else {
         unreachable!("microVM command-line validation requires the microVM profile");
     };
@@ -1567,9 +1595,8 @@ fn validate_microvm_command_line(
     let ingress = microvm_command_line_ingress(config.microvm.network.as_ref(), &tokens)?;
     let mut expected_discovery = Vec::new();
     if has_network {
-        let irq = microvm_virtio_net_irq(hypervisor_id)?;
         expected_discovery.push(format!(
-            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{irq}"
+            "virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{MICROVM_VIRTIO_NET_IRQ}"
         ));
     }
     if filesystem_count > 0 {
@@ -1616,15 +1643,27 @@ fn validate_microvm_command_line(
             );
         }
     }
-    if !expected_discovery.is_empty() {
-        anyhow::ensure!(
-            tokens.ends_with(
-                &expected_discovery
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-            ),
-            "microVM virtio discovery tokens are not in fixed-address order"
+    check_microvm_discovery_tokens(&tokens, &expected_discovery)
+}
+
+/// Checks that the command line's `tokens` end with `expected`, the discovery
+/// tokens of the machine's devices in fixed-address order, and names the
+/// first token that differs, whether it is out of order or places its device
+/// elsewhere, such as on the interrupt of another contract.
+fn check_microvm_discovery_tokens(tokens: &[&str], expected: &[String]) -> anyhow::Result<()> {
+    let tail = &tokens[tokens.len().saturating_sub(expected.len())..];
+    anyhow::ensure!(
+        tail.len() == expected.len(),
+        "microVM command line lacks virtio discovery tokens"
+    );
+    if let Some((found, expected)) = tail
+        .iter()
+        .zip(expected)
+        .find(|(found, expected)| **found != expected.as_str())
+    {
+        anyhow::bail!(
+            "microVM virtio discovery tokens are not this machine's in fixed-address order: \
+             found `{found}` where `{expected}` belongs"
         );
     }
     Ok(())
@@ -1941,7 +1980,7 @@ pub fn validate_machine_config(config: &Config, hypervisor_id: Option<&str>) -> 
     };
 
     validate_microvm_virtio_reservations()?;
-    validate_microvm_command_line(config, hypervisor_id)?;
+    validate_microvm_command_line(config)?;
     validate_machine_load_mode(config.machine_profile, &config.load_mode)?;
     anyhow::ensure!(
         config.microvm.time_abi.is_some(),
@@ -2388,7 +2427,7 @@ mod tests {
         let discover = |cmdline: &mut String| {
             append_microvm_virtio_discovery(
                 cmdline,
-                Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None, None)),
+                Some((&network, None, None)),
                 false,
                 &[],
                 false,
@@ -2567,7 +2606,7 @@ mod tests {
             let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
             append_microvm_virtio_discovery(
                 &mut cmdline,
-                Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, dns, Some(ingress))),
+                Some((&network, dns, Some(ingress))),
                 false,
                 &[],
                 false,
@@ -2637,8 +2676,8 @@ mod tests {
             cmdline,
             format!(
                 "{MICROVM_BASE_COMMAND_LINE} \
-                 virtio_mmio.device=0x1000@0xd0003000:4 \
-                 virtio_mmio.device=0x1000@0xd0006000:11"
+                 virtio_mmio.device=0x1000@0xd0003000:19 \
+                 virtio_mmio.device=0x1000@0xd0006000:22"
             )
         );
     }
@@ -2651,31 +2690,129 @@ mod tests {
             cmdline,
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} \
-                 virtio_mmio.device=0x1000@0xd0002000:7 \
-                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 virtio_mmio.device=0x1000@0xd0002000:18 \
+                 virtio_mmio.device=0x1000@0xd0007000:23 \
                  {MICROVM_CONTROL_TTY_COMMAND_LINE}"
             )
         );
     }
 
     #[test]
-    fn microvm_virtio_irqs_avoid_unused_lines_and_are_edge_triggered() {
+    fn microvm_virtio_slots_have_their_own_ioapic_inputs() {
         let irqs = [
-            MICROVM_VIRTIO_NET_KVM_IRQ,
-            MICROVM_VIRTIO_NET_WHP_IRQ,
+            MICROVM_VIRTIO_NET_IRQ,
             MICROVM_VIRTIO_FS_IRQ,
             MICROVM_VIRTIO_CONSOLE_IRQ,
             MicrovmSandboxBlockRole::Distro.irq(),
             MicrovmSandboxBlockRole::Scratch.irq(),
             MICROVM_VIRTIO_CONTROL_CONSOLE_IRQ,
         ];
-        assert_eq!(irqs, [10, 5, 6, 7, 4, 11, 3]);
-        // The RTC owns IRQ 8. IRQs 12, 9, and 13 of the retired runtime and
-        // custom layers and second virtio-fs slot stay unused.
-        for unused in [8, 9, 12, 13] {
-            assert!(!irqs.contains(&unused), "IRQ {unused} is in use");
+        assert_eq!(irqs, [16, 17, 18, 19, 22, 23]);
+        assert_eq!(
+            MICROVM_VIRTIO_MMIO_BASES.map(|mmio_base| microvm_virtio_irq(mmio_base).unwrap()),
+            irqs
+        );
+        // The window at 0xd0000000 + n * 0x1000 interrupts on input 16 + n,
+        // past the ISA IRQs, which the PIC also sees and the PIT and RTC use.
+        for mmio_base in MICROVM_VIRTIO_MMIO_BASES {
+            let window = (mmio_base - MICROVM_VIRTIO_NET_MMIO_BASE) / MICROVM_VIRTIO_MMIO_LEN;
+            assert_eq!(
+                microvm_virtio_irq(mmio_base),
+                Some(MICROVM_VIRTIO_IRQ_BASE + window as u32)
+            );
         }
+        for (role, irq) in [
+            (MicrovmSandboxBlockRole::Distro, 19),
+            (MicrovmSandboxBlockRole::Scratch, 22),
+        ] {
+            assert_eq!(microvm_virtio_irq(role.mmio_base()), Some(irq));
+        }
+        // The windows of the retired runtime and custom layers keep inputs 20
+        // and 21 free, and no window past them has an input.
+        for mmio_base in [0xd000_4000, 0xd000_5000, 0xd000_8000] {
+            assert_eq!(microvm_virtio_irq(mmio_base), None);
+        }
+        assert_eq!(
+            u32::from(MICROVM_IOAPIC_INPUTS),
+            MICROVM_VIRTIO_IRQ_BASE + 8
+        );
         assert!(MICROVM_LEVEL_TRIGGERED_IRQS.is_empty());
+    }
+
+    #[test]
+    fn microvm_virtio_irq_validation_rejects_collisions() {
+        validate_microvm_virtio_reservations().unwrap();
+        let slot = |window: u64, irq| {
+            (
+                MICROVM_VIRTIO_NET_MMIO_BASE + window * MICROVM_VIRTIO_MMIO_LEN,
+                Some(irq),
+            )
+        };
+        validate_microvm_virtio_irqs([slot(0, 16), slot(1, 17), slot(7, 23)]).unwrap();
+        for slots in [
+            // Two slots on one input.
+            vec![slot(0, 16), slot(1, 16)],
+            // ISA IRQs, which the PIC also sees: the RTC's and a free one.
+            vec![slot(0, 8)],
+            vec![slot(0, 15)],
+            // Past the IOAPIC's last input.
+            vec![slot(0, 24)],
+            // No interrupt.
+            vec![(MICROVM_VIRTIO_NET_MMIO_BASE, None)],
+        ] {
+            assert!(
+                validate_microvm_virtio_irqs(slots.clone()).is_err(),
+                "{slots:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn microvm_discovery_token_mismatch_names_the_token() {
+        let expected = [
+            format!("virtio_mmio.device=0x1000@0xd0000000:{MICROVM_VIRTIO_NET_IRQ}"),
+            format!("virtio_mmio.device=0x1000@0xd0001000:{MICROVM_VIRTIO_FS_IRQ}"),
+        ];
+        check_microvm_discovery_tokens(
+            &["quiet", expected[0].as_str(), expected[1].as_str()],
+            &expected,
+        )
+        .unwrap();
+        check_microvm_discovery_tokens(&["quiet"], &[]).unwrap();
+        // A token that places its device on another interrupt, such as the
+        // NIC's ISA IRQ before each slot had an IOAPIC input of its own, is
+        // named, not only reported out of order.
+        let error = check_microvm_discovery_tokens(
+            &[
+                "quiet",
+                "virtio_mmio.device=0x1000@0xd0000000:10",
+                expected[1].as_str(),
+            ],
+            &expected,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.ends_with(
+                "found `virtio_mmio.device=0x1000@0xd0000000:10` where \
+                 `virtio_mmio.device=0x1000@0xd0000000:16` belongs"
+            ),
+            "{error}"
+        );
+        let error = check_microvm_discovery_tokens(
+            &[expected[1].as_str(), expected[0].as_str()],
+            &expected,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.ends_with(&format!(
+                "found `{}` where `{}` belongs",
+                expected[1], expected[0]
+            )),
+            "{error}"
+        );
+        assert!(check_microvm_discovery_tokens(&[expected[1].as_str()], &expected).is_err());
     }
 
     #[test]
@@ -2766,11 +2903,11 @@ mod tests {
                 slot.mmio_base,
                 slot.irq
             )),
-            [("fs:microvm0", "microvm", 0xd000_1000, 6)]
+            [("fs:microvm0", "microvm", 0xd000_1000, 17)]
         );
         assert_eq!(
             MICROVM_FILESYSTEM_SLOTS[0].discovery_token(),
-            "virtio_mmio.device=0x1000@0xd0001000:6"
+            "virtio_mmio.device=0x1000@0xd0001000:17"
         );
         validate_microvm_virtio_reservations().unwrap();
         assert!(!MICROVM_VIRTIO_MMIO_BASES.contains(&0xd000_8000));
@@ -3219,7 +3356,7 @@ mod tests {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
         append_microvm_virtio_discovery(
             &mut cmdline,
-            Some((&network, MICROVM_VIRTIO_NET_KVM_IRQ, None, None)),
+            Some((&network, None, None)),
             true,
             std::slice::from_ref(&aggregate),
             true,
@@ -3231,10 +3368,10 @@ mod tests {
             cmdline,
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} \
-                 virtio_mmio.device=0x1000@0xd0000000:10 \
-                 virtio_mmio.device=0x1000@0xd0001000:6 \
-                 virtio_mmio.device=0x1000@0xd0002000:7 \
-                 virtio_mmio.device=0x1000@0xd0007000:3 \
+                 virtio_mmio.device=0x1000@0xd0000000:16 \
+                 virtio_mmio.device=0x1000@0xd0001000:17 \
+                 virtio_mmio.device=0x1000@0xd0002000:18 \
+                 virtio_mmio.device=0x1000@0xd0007000:23 \
                  {MICROVM_CONTROL_TTY_COMMAND_LINE} \
                  virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 \
                  virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1 \
@@ -3261,7 +3398,7 @@ mod tests {
         assert_eq!(
             cmdline,
             format!(
-                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:6 \
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:17 \
                  virtfs_dir=/workspace virtfs_tag=microvm virtfs_mode=rw"
             )
         );
@@ -3347,8 +3484,8 @@ mod tests {
         let mut cmdline = format!("{MICROVM_BASE_COMMAND_LINE} nvx_overlay_upper=ramfs");
         append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &[distro])
             .unwrap();
-        assert!(cmdline.contains("virtio_mmio.device=0x1000@0xd0003000:4"));
-        assert!(!cmdline.contains("virtio_mmio.device=0x1000@0xd0006000:11"));
+        assert!(cmdline.contains("virtio_mmio.device=0x1000@0xd0003000:19"));
+        assert!(!cmdline.contains("virtio_mmio.device=0x1000@0xd0006000:22"));
 
         let mut cmdline = format!("{MICROVM_BASE_COMMAND_LINE} nvx_overlay_upper");
         assert!(
