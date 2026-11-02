@@ -21,7 +21,6 @@ use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
-use socket2::SockRef;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -2637,11 +2636,17 @@ async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
     };
     let mut h = TcpTestHarness::connect_with_params(driver, params).await;
 
-    // Shrink the host receive buffer so the egress path backs up after only a
-    // modest amount of data, keeping the flood bounded.
-    SockRef::from(h.host_stream.get())
-        .set_recv_buffer_size(8 << 10)
-        .unwrap();
+    // Bound the sender backlog without shrinking the host's TCP receive
+    // window, which can make draining the backlog exceed the test timeout.
+    let connection = h.consomme.tcp.connections.get(&h.four_tuple()).unwrap();
+    let TcpBackend::Socket {
+        socket: Some(socket),
+        ..
+    } = &connection.backend
+    else {
+        panic!("expected a connected host socket");
+    };
+    socket.get().set_send_buffer_size(8 << 10).unwrap();
 
     // Flood until consomme's advertised receive window closes to zero.
     let sent = h.flood_guest_until_window_closed().await;
