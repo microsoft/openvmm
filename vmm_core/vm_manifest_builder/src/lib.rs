@@ -18,6 +18,8 @@
 #![forbid(unsafe_code)]
 
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::acpi_power_button::AcpiPowerButtonDeviceHandle;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -83,6 +85,7 @@ pub struct VmManifestBuilder {
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
+    acpi_power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
     framebuffer: bool,
     guest_watchdog: bool,
     ipmi_kcs: bool,
@@ -292,6 +295,7 @@ impl VmManifestBuilder {
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
+            acpi_power_button_recv: None,
             framebuffer: false,
             guest_watchdog: false,
             ipmi_kcs: false,
@@ -394,6 +398,16 @@ impl VmManifestBuilder {
         self
     }
 
+    /// Expose an ACPI power button for direct ACPI, UEFI, or PCAT boot.
+    ///
+    /// PCAT uses the firmware's fixed PM1 power-button event. For other boot
+    /// modes, the caller must include the button's AML in the guest's ACPI
+    /// tables using the returned chipset capabilities.
+    pub fn with_acpi_power_button(mut self, recv: mesh::Receiver<PowerButtonRpc>) -> Self {
+        self.acpi_power_button_recv = Some(recv);
+        self
+    }
+
     /// Enable the architecture-specific IPMI KCS virtual BMC.
     ///
     /// This is supported only for UEFI-booted guests.
@@ -465,12 +479,14 @@ impl VmManifestBuilder {
                 with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
+                acpi_power_button_gsiv: None,
                 with_i440bx_host_pci_bridge: false,
                 dt_com_ports: [false; 4],
                 dt_pl011_uarts: false,
             },
         };
         let is_x86 = matches!(self.arch, MachineArch::X86_64);
+        let mut acpi_power_button_recv = self.acpi_power_button_recv;
 
         if let Some((backend, port)) = self.debugcon {
             if is_x86 {
@@ -514,7 +530,10 @@ impl VmManifestBuilder {
                 result.attach_generic_ioapic();
                 result.attach_pic();
                 result.attach_pit();
-                result.attach_piix4_power_management(self.platform_pm_timer_assist);
+                result.attach_piix4_power_management(
+                    self.platform_pm_timer_assist,
+                    acpi_power_button_recv.take(),
+                );
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
@@ -680,6 +699,10 @@ impl VmManifestBuilder {
             }
         }
 
+        if let Some(recv) = acpi_power_button_recv {
+            result.attach_acpi_power_button(self.arch, recv);
+        }
+
         Ok(result)
     }
 
@@ -809,6 +832,29 @@ impl VmChipsetResult {
         self
     }
 
+    fn attach_acpi_power_button(
+        &mut self,
+        arch: MachineArch,
+        recv: mesh::Receiver<PowerButtonRpc>,
+    ) -> &mut Self {
+        let (irq, gsiv) = match arch {
+            MachineArch::X86_64 => {
+                let irq = chipset_resources::acpi_power_button::X64_IRQ;
+                (irq, irq)
+            }
+            MachineArch::Aarch64 => {
+                let spi = chipset_resources::acpi_power_button::AARCH64_SPI;
+                (spi, 32 + spi)
+            }
+        };
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "acpi-power-button".to_owned(),
+            resource: AcpiPowerButtonDeviceHandle { irq, recv }.into_resource(),
+        });
+        self.capabilities.acpi_power_button_gsiv = Some(gsiv);
+        self
+    }
+
     fn attach_guest_watchdog(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "guest-watchdog".to_owned(),
@@ -855,11 +901,19 @@ impl VmChipsetResult {
         self
     }
 
-    fn attach_piix4_power_management(&mut self, platform_pm_timer_assist: bool) -> &mut Self {
+    fn attach_piix4_power_management(
+        &mut self,
+        platform_pm_timer_assist: bool,
+        power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
+    ) -> &mut Self {
         let pm_timer_assist = platform_pm_timer_assist.then(|| PlatformResource.into_resource());
         self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
             name: "piix4-pm".to_string(),
-            resource: Piix4PowerManagementDeviceHandle { pm_timer_assist }.into_resource(),
+            resource: Piix4PowerManagementDeviceHandle {
+                pm_timer_assist,
+                power_button_recv,
+            }
+            .into_resource(),
             pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PM_BDF,
         });
@@ -1086,6 +1140,68 @@ impl VmChipsetResult {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn pcat_power_button_uses_the_existing_pm_device() {
+        let (_, recv) = mesh::channel();
+        let manifest = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .with_acpi_power_button(recv)
+            .build()
+            .unwrap();
+        assert_eq!(manifest.capabilities.acpi_power_button_gsiv, None);
+        assert!(
+            manifest
+                .chipset_devices
+                .iter()
+                .all(|d| d.resource.id() != "acpi_power_button")
+        );
+        assert_eq!(
+            manifest
+                .pci_chipset_devices
+                .iter()
+                .filter(|d| d.resource.id() == "piix4_power_management")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn acpi_power_button_is_opt_in_and_uses_arch_specific_interrupts() {
+        for (arch, gsiv) in [(MachineArch::X86_64, 10), (MachineArch::Aarch64, 39)] {
+            for uefi in [false, true] {
+                let builder = || {
+                    if uefi {
+                        uefi_builder(arch)
+                    } else {
+                        VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, arch)
+                    }
+                };
+                let manifest = builder().build().unwrap();
+                assert_eq!(manifest.capabilities.acpi_power_button_gsiv, None);
+                assert!(
+                    manifest
+                        .chipset_devices
+                        .iter()
+                        .all(|d| d.name != "acpi-power-button")
+                );
+
+                let (_, recv) = mesh::channel();
+                let manifest = builder()
+                    .without_vmbus()
+                    .with_acpi_power_button(recv)
+                    .build()
+                    .unwrap();
+                assert_eq!(manifest.capabilities.acpi_power_button_gsiv, Some(gsiv));
+                let buttons: Vec<_> = manifest
+                    .chipset_devices
+                    .iter()
+                    .filter(|d| d.name == "acpi-power-button")
+                    .collect();
+                assert_eq!(buttons.len(), 1);
+                assert_eq!(buttons[0].resource.id(), "acpi_power_button");
+            }
+        }
+    }
 
     fn no_serial_backends() -> [Option<Resource<SerialBackendHandle>>; 4] {
         [(); 4].map(|_| None)

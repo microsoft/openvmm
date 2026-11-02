@@ -27,6 +27,7 @@ use console_relay::ConsoleLaunchOptions;
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
@@ -96,6 +97,7 @@ use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
+use openvmm_helpers::config::supports_acpi_power_button;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::socket::PolledSocket;
@@ -191,6 +193,7 @@ struct VmResources {
     serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
@@ -1333,17 +1336,6 @@ async fn vm_config_from_command_line(
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
 
-    let layout_config = chipset.layout_config();
-    let VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-        pci_chipset_devices,
-        isa_dma_controller,
-        capabilities,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
-
     let tpm_version = opt.tpm.map(|cli_ver| match cli_ver {
         TpmVersionCli::V138 => TpmVersion::V138,
         TpmVersionCli::V185 => TpmVersion::V185,
@@ -1534,6 +1526,23 @@ async fn vm_config_from_command_line(
             smbios,
         };
     }
+
+    if supports_acpi_power_button(&load_mode) {
+        let (send, recv) = mesh::channel();
+        chipset = chipset.with_acpi_power_button(recv);
+        resources.acpi_power_button = Some(send);
+    }
+
+    let layout_config = chipset.layout_config();
+    let VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        capabilities,
+    } = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
 
     let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
         let encryption_policy = if opt.test_gsp_by_id {
@@ -3089,6 +3098,7 @@ async fn run_control_inner(
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
             consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
+            acpi_power_button: resources.acpi_power_button,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
@@ -3415,6 +3425,7 @@ mod tests {
                 assert!(config.vmbus.is_some());
                 assert!(config.vtl2_vmbus.is_some());
                 assert!(resources.ged_rpc.is_some());
+                assert!(resources.acpi_power_button.is_none());
                 for id in ["ged", "gel"] {
                     assert!(
                         config.vmbus_devices.iter().any(|(vtl, resource)| {

@@ -63,6 +63,7 @@ use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -506,6 +507,15 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
+        let acpi_power_button_send =
+            if !properties.minimal_mode && supports_acpi_power_button(&load_mode) {
+                let (send, recv) = mesh::channel();
+                chipset = chipset.with_acpi_power_button(recv);
+                Some(send)
+            } else {
+                None
+            };
+
         let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()
@@ -787,6 +797,7 @@ impl PetriVmConfigOpenVmm {
                 firmware_event_recv,
                 ipmi_sel_event_recv,
                 shutdown_ic_send,
+                acpi_power_button_send,
                 kvp_ic_send,
                 ged_send,
                 pipette_listener,
