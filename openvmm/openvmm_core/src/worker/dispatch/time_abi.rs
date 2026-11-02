@@ -1457,7 +1457,7 @@ mod tests {
     fn test_config(vp_count: u32) -> (Arc<TimeAbiMsrs>, TimeAbiConfig, EffectiveCpuid) {
         let profile = test_profile();
         let effective =
-            effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
+            effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported), false).unwrap();
         let (msrs, config) = partition_config(&partition_profile(profile), &effective);
         (msrs, config, effective)
     }
@@ -1594,7 +1594,8 @@ mod tests {
         for profile in cpu_profile::pinned_profiles() {
             for vp_count in [1, 2, 8] {
                 for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
-                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
+                    let effective =
+                        effective_cpuid(profile, &topology(vp_count, x2apic), false).unwrap();
                     let (_, config) = partition_config(&partition_profile(profile), &effective);
                     assert_eq!(config.cpu_profile.id(), profile.id());
 
@@ -1630,7 +1631,8 @@ mod tests {
         for profile in cpu_profile::pinned_profiles() {
             for vp_count in [1, 2, 8, 64] {
                 for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
-                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic)).unwrap();
+                    let effective =
+                        effective_cpuid(profile, &topology(vp_count, x2apic), false).unwrap();
                     let (_, config) = partition_config(&partition_profile(profile), &effective);
                     check_presented(profile, &effective, config.cpuid.leaves().to_vec())
                         .unwrap_or_else(|err| {
@@ -1691,7 +1693,8 @@ mod tests {
             assert!(profile.lookup(0, 0)[0] < 0x1f, "{}", profile.id());
             for vp_count in [1, 2, 8] {
                 let effective =
-                    effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported)).unwrap();
+                    effective_cpuid(profile, &topology(vp_count, X2ApicState::Supported), false)
+                        .unwrap();
                 let subleaves = |function| {
                     effective
                         .results()

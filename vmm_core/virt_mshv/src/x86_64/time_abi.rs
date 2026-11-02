@@ -1909,7 +1909,8 @@ mod hw {
     fn host_profile_cpuid(
         topology: &vm_topology::processor::ProcessorTopology,
     ) -> (cpu_profile::EffectiveCpuid, CpuidLeafSet) {
-        let effective = virt::time_abi::cpuid::effective_cpuid(&host_profile(), topology).unwrap();
+        let effective =
+            virt::time_abi::cpuid::effective_cpuid(&host_profile(), topology, false).unwrap();
         let table = virt::time_abi::cpuid::backend_cpuid(&effective);
         (effective, table)
     }

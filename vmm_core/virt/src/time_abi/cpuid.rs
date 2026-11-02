@@ -30,11 +30,16 @@ impl From<&CpuidLeaf> for CpuidResult {
 /// Builds the effective CPUID of a partition with `profile` and `topology`:
 /// the profile completed with OpenVMM's topology leaves, each extended
 /// topology leaf's terminating subleaf, the APIC mode, and the time ABI's
-/// identity and explicit zero leaves. Fails with `E_CPU_SURFACE` if they do
-/// not complete the profile exactly.
+/// identity and explicit zero leaves, and, when `nested_virt` is set, the
+/// hardware virtualization that nested virtualization exposes
+/// ([`EffectiveCpuid::with_nested_virtualization`]). Fails with
+/// `E_CPU_SURFACE` if they do not complete the profile exactly, and with
+/// `E_PROFILE_UNSUPPORTED` for nested virtualization under a profile of AMD's
+/// CPUs.
 pub fn effective_cpuid(
     profile: &CpuProfile,
     topology: &ProcessorTopology<X86Topology>,
+    nested_virt: bool,
 ) -> Result<EffectiveCpuid, TimeAbiError> {
     let mut topology_leaves = Vec::new();
     crate::x86::topology::topology_cpuid(
@@ -62,7 +67,12 @@ pub fn effective_cpuid(
         .map(CpuidResult::from)
         .chain(super::identity::identity_zero_cpuid_leaves().map(|leaf| CpuidResult::from(&leaf)))
         .collect();
-    Ok(profile.effective_cpuid(&vm, &identity)?)
+    let effective = profile.effective_cpuid(&vm, &identity)?;
+    Ok(if nested_virt {
+        effective.with_nested_virtualization(profile.cpu_vendor())?
+    } else {
+        effective
+    })
 }
 
 /// Returns the CPUID results a backend programs for `effective`
@@ -113,7 +123,7 @@ mod tests {
         for profile in cpu_profile::pinned_profiles() {
             for vp_count in [1, 2, 8] {
                 for x2apic in [X2ApicState::Unsupported, X2ApicState::Supported] {
-                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic))
+                    let effective = effective_cpuid(profile, &topology(vp_count, x2apic), false)
                         .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
                     identity::check_time_bits(
                         &mut |leaf, subleaf| effective.lookup(leaf, subleaf),
@@ -148,7 +158,7 @@ mod tests {
             for vp_count in [1, 2, 8] {
                 let topology = topology(vp_count, X2ApicState::Supported);
                 let socket = topology.reserved_vps_per_socket();
-                let effective = effective_cpuid(profile, &topology).unwrap();
+                let effective = effective_cpuid(profile, &topology, false).unwrap();
                 let mut levels = Vec::new();
                 for subleaf in 0..16 {
                     let eax = CacheParametersEax::from(effective.lookup(leaf, subleaf)[0]);
@@ -179,10 +189,48 @@ mod tests {
         }
     }
 
+    /// Nested virtualization adds VMX, `CPUID.1:ECX[5]`, to every Intel
+    /// profile's effective CPUID, which still satisfies the time ABI, and a
+    /// backend programs it under its mask; AMD profiles refuse it.
+    #[test]
+    fn nested_virtualization_adds_vmx_to_intel_profiles_only() {
+        const VMX: u32 = 1 << 5;
+        for profile in cpu_profile::pinned_profiles() {
+            let topology = topology(2, X2ApicState::Unsupported);
+            let result = effective_cpuid(profile, &topology, true);
+            if profile.cpu_vendor() == CpuVendor::Amd {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    TimeAbiCode::ProfileUnsupported,
+                    "{}",
+                    profile.id()
+                );
+                continue;
+            }
+            let nested = result.unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
+            let plain = effective_cpuid(profile, &topology, false).unwrap();
+            assert_eq!(plain.lookup(1, 0)[2] & VMX, 0, "{}", profile.id());
+            assert_eq!(nested.lookup(1, 0)[2] & VMX, VMX, "{}", profile.id());
+            identity::check_time_bits(&mut |leaf, subleaf| nested.lookup(leaf, subleaf), true)
+                .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
+            identity::check_identity(&mut |leaf, subleaf| nested.lookup(leaf, subleaf), 2)
+                .unwrap_or_else(|error| panic!("{}: {error}", profile.id()));
+            let leaf = backend_cpuid(&nested)
+                .leaves()
+                .iter()
+                .find(|leaf| leaf.function == 1)
+                .copied()
+                .unwrap();
+            assert_eq!(leaf.result[2] & VMX, VMX, "{}", profile.id());
+            assert_eq!(leaf.mask[2] & VMX, VMX, "{}", profile.id());
+        }
+    }
+
     #[test]
     fn backend_cpuid_unmasks_only_the_per_vp_apic_bits() {
         for profile in cpu_profile::pinned_profiles() {
-            let effective = effective_cpuid(profile, &topology(2, X2ApicState::Supported)).unwrap();
+            let effective =
+                effective_cpuid(profile, &topology(2, X2ApicState::Supported), false).unwrap();
             let table = backend_cpuid(&effective);
             assert_eq!(
                 table.leaves().len(),

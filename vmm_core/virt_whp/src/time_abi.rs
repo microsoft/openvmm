@@ -1608,6 +1608,7 @@ mod tests {
             let effective = virt::time_abi::cpuid::effective_cpuid(
                 cpu_profile::pinned(profile).unwrap(),
                 &topology,
+                false,
             )
             .unwrap();
             let config = virt::time_abi::cpuid::backend_cpuid(&effective);
@@ -1636,7 +1637,8 @@ mod tests {
         fn profile_programmed(profile: &str, vp_count: u32, noise: bool) -> Self {
             let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
             let pinned = cpu_profile::pinned(profile).unwrap();
-            let effective = virt::time_abi::cpuid::effective_cpuid(pinned, &topology).unwrap();
+            let effective =
+                virt::time_abi::cpuid::effective_cpuid(pinned, &topology, false).unwrap();
             let programming = test_cpuid::profile_programming(pinned, vp_count);
             let whp = FakeWhp {
                 results: programming.results,
@@ -2472,7 +2474,8 @@ mod whp_tests {
             }
         };
         let topology = test_cpuid::topology(vp_count, X2ApicState::Supported);
-        let effective = virt::time_abi::cpuid::effective_cpuid(&profile, &topology).unwrap();
+        let effective =
+            virt::time_abi::cpuid::effective_cpuid(&profile, &topology, false).unwrap();
         let config = TimeAbiConfig {
             cpuid: Arc::new(virt::time_abi::cpuid::backend_cpuid(&effective)),
             msrs: Arc::new(TimeAbiMsrs::new()),

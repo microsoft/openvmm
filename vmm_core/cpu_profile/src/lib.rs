@@ -11,7 +11,10 @@
 //! ([`pinned`]), immutable once released, and identified by ID and SHA-256
 //! digest. A VM's effective CPUID ([`CpuProfile::effective_cpuid`]) is a pure
 //! function of its profile, its topology, and the time ABI's identity
-//! leaves; OpenVMM builds it in `virt::time_abi::cpuid::effective_cpuid`.
+//! leaves, and of whether the VM has nested virtualization, which sets VMX
+//! over the profile's pinned value
+//! ([`EffectiveCpuid::with_nested_virtualization`]); OpenVMM builds it in
+//! `virt::time_abi::cpuid::effective_cpuid`.
 //!
 //! - **Selection:** [`select`] maps `--cpu-profile <id|auto>` and the host
 //!   CPU ([`HostCpuSignature`]) to a pinned profile. A host profile serves a
@@ -115,6 +118,7 @@ pub use derive::supports_host_profiles;
 pub use effective::CpuidResult;
 pub use effective::EFFECTIVE_CPUID_SCHEMA;
 pub use effective::EffectiveCpuid;
+pub use effective::nested_virtualization_cpuid;
 pub use effective::x2apic_cpuid;
 pub use error::ProfileError;
 pub use error::ProfileErrorCode;

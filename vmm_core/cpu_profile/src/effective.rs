@@ -14,6 +14,7 @@ use crate::profile::VM_OWNED_LEAVES;
 use crate::profile::describe_leaf;
 use crate::profile::find;
 use crate::profile::vm_owned_bits;
+use crate::vendor::CpuVendor;
 use serde::Deserialize;
 use std::cmp::Ordering;
 
@@ -74,6 +75,34 @@ impl CpuidResult {
 pub const fn x2apic_cpuid(x2apic: bool) -> CpuidResult {
     const X2APIC: u32 = 1 << 21;
     CpuidResult::new(0x1, [0, 0, if x2apic { X2APIC } else { 0 }, 0]).masked([0, 0, X2APIC, 0])
+}
+
+/// `CPUID.1:ECX[5]`: VMX, Intel's hardware virtualization.
+const VMX: u32 = 1 << 5;
+
+/// Returns the CPUID result through which a VM with nested virtualization
+/// exposes hardware virtualization to a guest of a profile of `vendor`'s
+/// CPUs: VMX, `CPUID.1:ECX[5]`, set, on Intel.
+///
+/// Every profile pins the virtualization extensions clear, as the derivation
+/// policy requires, so a profile alone never exposes them, and only
+/// [`EffectiveCpuid::with_nested_virtualization`] sets this bit over its
+/// pinned value. VMX's capability MSRs, which describe the VMX controls that
+/// a guest hypervisor may use, are the backend's.
+///
+/// Fails with `E_PROFILE_UNSUPPORTED` for a profile of AMD's CPUs, whose
+/// guests would need SVM: no profile describes SVM's feature leaf,
+/// `0x8000000A`, which a guest hypervisor reads, so nested virtualization
+/// does not expose SVM.
+pub fn nested_virtualization_cpuid(vendor: CpuVendor) -> Result<CpuidResult, ProfileError> {
+    match vendor {
+        CpuVendor::Intel => Ok(CpuidResult::new(0x1, [0, 0, VMX, 0]).masked([0, 0, VMX, 0])),
+        CpuVendor::Amd => Err(ProfileError::new(
+            ProfileErrorCode::ProfileUnsupported,
+            "nested virtualization requires an Intel CPU profile: it exposes VMX, but no \
+             profile of AMD's CPUs describes SVM's feature leaf 0x8000000A",
+        )),
+    }
 }
 
 /// The effective guest CPUID of a VM.
@@ -239,6 +268,40 @@ impl EffectiveCpuid {
             ));
         }
         Self::decode(bytes)
+    }
+
+    /// Returns this effective CPUID, of a profile of `vendor`'s CPUs, with
+    /// the hardware virtualization of nested virtualization
+    /// ([`nested_virtualization_cpuid`]) set over the profile's pinned
+    /// value: VMX, on Intel.
+    ///
+    /// A snapshot's effective CPUID never has it, since no VM with nested
+    /// virtualization is captured, so a destination that recomputes the
+    /// effective CPUID of a snapshot's VM without it would also reject one
+    /// that did ([`Self::check_matches`]). Fails with
+    /// `E_PROFILE_UNSUPPORTED` on AMD, and with `E_CPU_SURFACE` if leaf 1 is
+    /// missing.
+    pub fn with_nested_virtualization(mut self, vendor: CpuVendor) -> Result<Self, ProfileError> {
+        let overlay = nested_virtualization_cpuid(vendor)?;
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.key() == (overlay.function, overlay.index))
+        else {
+            return Err(ProfileError::new(
+                ProfileErrorCode::CpuSurface,
+                format!(
+                    "the effective CPUID has no {} for nested virtualization",
+                    describe_leaf(overlay.function, overlay.index)
+                ),
+            ));
+        };
+        for register in 0..4 {
+            entry.value[register].0 = (entry.value[register].0 & !overlay.mask[register])
+                | (overlay.result[register] & overlay.mask[register]);
+            entry.mask[register].0 |= overlay.mask[register];
+        }
+        Ok(self)
     }
 
     /// Checks that this effective CPUID, recomputed on the destination,
@@ -744,6 +807,89 @@ mod tests {
                 .message
                 .ends_with(": CPUID 0x40000000 exists only on the destination"),
             "{error}"
+        );
+    }
+
+    /// Nested virtualization sets VMX, and nothing else, over every Intel
+    /// profile's pinned zero, and the result stays a canonical record.
+    #[test]
+    fn nested_virtualization_sets_only_vmx_on_intel_profiles() {
+        for profile in crate::pinned_profiles()
+            .iter()
+            .filter(|profile| profile.cpu_vendor() == CpuVendor::Intel)
+        {
+            let effective = profile
+                .effective_cpuid(&vm_leaves(profile, 2), &identity())
+                .unwrap();
+            assert_eq!(effective.lookup(1, 0)[2] & VMX, 0, "{}", profile.id());
+            let nested = effective
+                .clone()
+                .with_nested_virtualization(CpuVendor::Intel)
+                .unwrap();
+            assert_eq!(nested.lookup(1, 0)[2] & VMX, VMX, "{}", profile.id());
+            let differences = nested
+                .results()
+                .zip(effective.results())
+                .filter(|(nested, effective)| nested != effective)
+                .map(|(nested, effective)| {
+                    (
+                        nested.function,
+                        nested.index,
+                        [0, 1, 2, 3]
+                            .map(|register| nested.result[register] ^ effective.result[register]),
+                        nested.mask == effective.mask,
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                differences,
+                [(1, None, [0, 0, VMX, 0], true)],
+                "{}",
+                profile.id()
+            );
+            assert_eq!(EffectiveCpuid::decode(&nested.encode()).unwrap(), nested);
+        }
+    }
+
+    /// A snapshot's effective CPUID never has VMX, so a VM with nested
+    /// virtualization and a VM without it never match.
+    #[test]
+    fn nested_virtualization_changes_the_effective_cpuid_record() {
+        let profile = profile(ICELAKE);
+        let effective = profile
+            .effective_cpuid(&vm_leaves(profile, 2), &identity())
+            .unwrap();
+        let nested = effective
+            .clone()
+            .with_nested_virtualization(CpuVendor::Intel)
+            .unwrap();
+        let error = nested.check_matches(&effective).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::CpuSurface);
+        assert!(error.message.contains("CPUID 0x1 is"), "{error}");
+        effective.check_matches(&nested).unwrap_err();
+    }
+
+    /// No profile of AMD's CPUs describes SVM's feature leaf, so nested
+    /// virtualization refuses them.
+    #[test]
+    fn nested_virtualization_refuses_amd_profiles() {
+        let error = nested_virtualization_cpuid(CpuVendor::Amd).unwrap_err();
+        assert_eq!(error.code, ProfileErrorCode::ProfileUnsupported);
+        assert!(error.message.contains("0x8000000A"), "{error}");
+        let profile = amd_host_profile();
+        let effective = profile
+            .effective_cpuid(&vm_leaves(&profile, 2), &identity())
+            .unwrap();
+        assert_eq!(
+            effective
+                .with_nested_virtualization(CpuVendor::Amd)
+                .unwrap_err()
+                .code,
+            ProfileErrorCode::ProfileUnsupported
+        );
+        assert_eq!(
+            nested_virtualization_cpuid(CpuVendor::Intel).unwrap(),
+            CpuidResult::new(1, [0, 0, VMX, 0]).masked([0, 0, VMX, 0])
         );
     }
 

@@ -1331,9 +1331,13 @@ impl InitializedVm {
                     cfg.microvm.restored_host_profile.as_ref(),
                     &parameters.hooks,
                 )?;
+                // Nested virtualization sets VMX over the profile's surface; a
+                // restore never has it, so a snapshot's effective CPUID never
+                // does either.
                 let effective_cpuid = Arc::new(virt::time_abi::cpuid::effective_cpuid(
                     &profile,
                     &processor_topology,
+                    cfg.hypervisor.nested_virt,
                 )?);
                 let (msrs, config) = time_abi::partition_config(&profile, &effective_cpuid);
                 (
