@@ -44,11 +44,12 @@ locations:
 
 | Role | Access | MMIO address | IRQ |
 | --- | --- | ---: | ---: |
-| `distro` | read-only | `0xd0003000` | 4 |
-| `scratch` | writable | `0xd0006000` | 11 |
+| `distro` | read-only | `0xd0003000` | 19 |
+| `scratch` | writable | `0xd0006000` | 22 |
 
-The windows `0xd0004000` and `0xd0005000` between them, and IRQs 9 and 12,
-stay unassigned, so that no slot moves.
+The windows `0xd0004000` and `0xd0005000` between them, and their IRQs 20 and
+21, stay unassigned, so that no slot moves. Each IRQ is an IOAPIC input past
+the ISA IRQs, which the PIC does not see.
 
 Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. The `distro`
 role requires the normal disk `,ro` option and a non-empty topology must end
@@ -94,8 +95,10 @@ Custom socket, SMT, APIC, x2APIC, and NUMA options are rejected.
 The microVM uses fixed virtio device slots and sandbox block roles. Its
 persisted ABI is value 3 and its boot layout value 2. Each fixed virtio device
 offers an exact feature mask, which never includes `VIRTIO_F_ACCESS_PLATFORM`,
-since the microVM has no IOMMU, nor packed virtqueues. The
-MP floating pointer begins at `0x0`, the MP configuration table at `0x400`,
+since the microVM has no IOMMU, nor packed virtqueues, and interrupts on an
+IOAPIC input of its own past the ISA IRQs, the same on every backend. The
+MP floating pointer begins at `0x0`, the MP configuration table, which routes
+all 24 IOAPIC inputs, at `0x400`,
 the boot GDT at `0x1000`, and the Linux zero page at `0x2000`. No ACPI MADT or
 SMBIOS data is exposed.
 
