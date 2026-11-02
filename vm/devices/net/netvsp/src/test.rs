@@ -7932,6 +7932,100 @@ async fn oid_set_current_lookahead_rejects_short_payload(driver: DefaultDriver) 
     assert_eq!(set_complete.status, rndisprot::STATUS_FAILURE);
 }
 
+/// Sends a string-valued `OID_GEN_RNDIS_CONFIG_PARAMETER` and returns the status.
+async fn set_config_parameter(
+    channel: &mut TestNicChannel<'_>,
+    request_id: u32,
+    name: &str,
+    value: &str,
+) -> u32 {
+    let name = name.encode_utf16().collect::<Vec<_>>();
+    let value = value.encode_utf16().collect::<Vec<_>>();
+    let name_offset = size_of::<rndisprot::RndisConfigParameterInfo>() as u32;
+    let name_length = size_of_val(name.as_slice()) as u32;
+    let info = rndisprot::RndisConfigParameterInfo {
+        name_offset,
+        name_length,
+        parameter_type: rndisprot::NdisParameterType::STRING,
+        value_offset: name_offset + name_length,
+        value_length: size_of_val(value.as_slice()) as u32,
+    };
+    let mut payload = info.as_bytes().to_vec();
+    payload.extend_from_slice(name.as_bytes());
+    payload.extend_from_slice(value.as_bytes());
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id,
+                oid: rndisprot::Oid::OID_GEN_RNDIS_CONFIG_PARAMETER,
+                information_buffer_length: payload.len() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            &payload,
+        )
+        .await;
+
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(set_complete.request_id, request_id);
+    set_complete.status
+}
+
+#[async_test]
+async fn rndis_config_parameter_is_answered_by_name(driver: DefaultDriver) {
+    let mut nic = TestNicDevice::new(&driver).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+    initialize_rndis_control(&mut channel).await;
+
+    for (request_id, name, value, status) in [
+        // A MAC address, as Linux sends it, whichever way it starts.
+        (
+            20,
+            "NetworkAddress",
+            "0c241100aabb",
+            rndisprot::STATUS_NOT_SUPPORTED,
+        ),
+        (
+            21,
+            "NetworkAddress",
+            "bc241100aabb",
+            rndisprot::STATUS_NOT_SUPPORTED,
+        ),
+        // A keyword with no handler is ignored, even if its value is not a digit.
+        (22, "*Unhandled", "Enabled", rndisprot::STATUS_SUCCESS),
+        (23, "*Unhandled", "1", rndisprot::STATUS_SUCCESS),
+        // A keyword with a handler still needs a digit.
+        (24, "*LsoV2IPv4", "yes", rndisprot::STATUS_INVALID_DATA),
+        (25, "*LsoV2IPv4", "1", rndisprot::STATUS_SUCCESS),
+        (
+            26,
+            "*UDPChecksumOffloadIPv4",
+            "yes",
+            rndisprot::STATUS_INVALID_DATA,
+        ),
+        (
+            27,
+            "*UDPChecksumOffloadIPv4",
+            "3",
+            rndisprot::STATUS_SUCCESS,
+        ),
+    ] {
+        assert_eq!(
+            set_config_parameter(&mut channel, request_id, name, value).await,
+            status,
+            "{name}={value}"
+        );
+    }
+}
+
 #[async_test]
 async fn vlan_tx_counter_increments(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();

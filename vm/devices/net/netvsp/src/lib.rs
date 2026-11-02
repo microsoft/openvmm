@@ -3958,35 +3958,39 @@ impl Adapter {
                     .first()
                     .map(|c| c.wrapping_sub(b'0'))
                     .filter(|&c| c <= 9)
-                    .ok_or(OidError::InvalidInput("value as num"))?;
-                let tx = as_num & 1 != 0;
-                let rx = as_num & 2 != 0;
+                    .ok_or(OidError::InvalidInput("value as num"));
 
                 tracing::debug!(name, value, "rndis config");
                 match name.as_str() {
+                    "NetworkAddress" => return Err(OidError::NotSupported("NetworkAddress")),
                     "*IPChecksumOffloadIPv4" => {
+                        let (tx, rx) = checksum_directions(as_num?);
                         primary.offload_config.checksum_tx.ipv4_header = tx;
                         primary.offload_config.checksum_rx.ipv4_header = rx;
                     }
                     "*LsoV2IPv4" => {
-                        primary.offload_config.lso4 = as_num != 0;
+                        primary.offload_config.lso4 = as_num? != 0;
                     }
                     "*LsoV2IPv6" => {
-                        primary.offload_config.lso6 = as_num != 0;
+                        primary.offload_config.lso6 = as_num? != 0;
                     }
                     "*TCPChecksumOffloadIPv4" => {
+                        let (tx, rx) = checksum_directions(as_num?);
                         primary.offload_config.checksum_tx.tcp4 = tx;
                         primary.offload_config.checksum_rx.tcp4 = rx;
                     }
                     "*TCPChecksumOffloadIPv6" => {
+                        let (tx, rx) = checksum_directions(as_num?);
                         primary.offload_config.checksum_tx.tcp6 = tx;
                         primary.offload_config.checksum_rx.tcp6 = rx;
                     }
                     "*UDPChecksumOffloadIPv4" => {
+                        let (tx, rx) = checksum_directions(as_num?);
                         primary.offload_config.checksum_tx.udp4 = tx;
                         primary.offload_config.checksum_rx.udp4 = rx;
                     }
                     "*UDPChecksumOffloadIPv6" => {
+                        let (tx, rx) = checksum_directions(as_num?);
                         primary.offload_config.checksum_tx.udp6 = tx;
                         primary.offload_config.checksum_rx.udp6 = rx;
                     }
@@ -4008,6 +4012,11 @@ impl Adapter {
         }
         Ok(())
     }
+}
+
+/// Splits the value of a checksum keyword into its transmit and receive enables.
+fn checksum_directions(value: u8) -> (bool, bool) {
+    (value & 1 != 0, value & 2 != 0)
 }
 
 fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
