@@ -198,7 +198,7 @@ impl GuestCrashDevice {
         channel: &mut GuestCrashChannel<M>,
         check: &task_control::StopCheck<'_>,
     ) -> Result<(), Cancelled> {
-        let mut buffer = vec![0; 16384];
+        let mut buffer = vec![0; crash::MAX_DUMP_PAYLOAD_SIZE];
         loop {
             check.check()?;
             if let Err(err) = self.process_message(channel, &mut buffer).await {
