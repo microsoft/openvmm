@@ -21,7 +21,6 @@ import time
 
 
 SCHEMA_VERSION = 2
-SUPPORTED_SCHEMAS = (1, 2)
 PROFILE_DIR_ENV = "OPENVMM_UNIT_COVERAGE_PROFILES"
 SUPPORTED_TARGETS = {"x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
 
@@ -123,8 +122,8 @@ def resolve_report(root, report_path=None):
     if not pointer.is_file():
         raise ValueError("no local coverage report; run cargo xflowey unit-test-coverage first")
     latest = json.loads(pointer.read_text(encoding="utf-8"))
-    if latest["schema_version"] not in SUPPORTED_SCHEMAS:
-        raise ValueError("unsupported latest-report index schema")
+    if latest["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("unsupported latest-report index schema; collect coverage again")
     path = Path(latest["report"])
     if not path.is_file():
         raise ValueError("the latest report was removed; collect coverage again")
@@ -387,7 +386,6 @@ def collect_run(root, output, plan, run, cargo, llvm_cov, llvm_profdata, source_
     run_record["exit_code"] = result
     run_record["test_seconds"] = time.monotonic() - test_started
     if result != 0:
-        report["all_tests_passed"] = False
         if result == 100:
             print(f"{run['name']}: tests failed; collecting their profiles", file=sys.stderr)
         else:
@@ -494,7 +492,6 @@ def collect(plan_path, output):
         "nextest_profile": "agent",
         "collection_state": "collecting",
         "test_outcome": "pending",
-        "all_tests_passed": None,
         "scope": {
             "filter": plan["filter"],
             "runs": plan["runs"],
@@ -550,10 +547,6 @@ def collect(plan_path, output):
     finally:
         report["duration_seconds"] = time.monotonic() - started
         report["test_outcome"] = test_outcome(report)
-        report["all_tests_passed"] = (
-            report["test_outcome"] == "passed"
-            if report["test_outcome"] in ("passed", "failed") else None
-        )
         report["summary"] = summarize(report["files"])
         write_json(output / "report.json", report)
         print(json.dumps({
@@ -733,7 +726,6 @@ def hunk_summary(report, name, start, end, hits, passed, limit):
         "start": start, "end": end,
         "unmapped_lines": end - start + 1 - len(measured),
         "coverage": evidence_summary({name: measured}, passed),
-        "sources": source_summaries(report, {name: measured}, passed),
         "tests": tests[:limit], "tests_truncated": len(tests) > limit,
     }
 
@@ -746,7 +738,6 @@ def changed_query(report, root, comparison, limit, passed):
     measured = {}
     unmapped = 0
     unmeasured_files = 0
-    remaining = limit
     remaining_hunks = limit
     for name, numbers in sorted(changed.items()):
         coverage = {int(number): hit for number, hit in report["files"].get(name, {}).items()}
@@ -756,8 +747,6 @@ def changed_query(report, root, comparison, limit, passed):
         unmeasured_files += int(bool(numbers) and name not in report["files"])
         if len(files) >= limit:
             continue
-        selected = sorted(hits)[:remaining]
-        remaining -= len(selected)
         unmapped_ranges = line_ranges(numbers - coverage.keys())
         uncovered_ranges = line_ranges(number for number, hit in hits.items() if not hit)
         not_passing = line_ranges(number for number in hits if number not in passed.get(name, set()))
@@ -775,28 +764,19 @@ def changed_query(report, root, comparison, limit, passed):
             "unmapped_ranges": unmapped_ranges[:limit],
             "uncovered_ranges": uncovered_ranges[:limit],
             "not_covered_by_passing_attempt_ranges": not_passing[:limit],
-            "summary": summarize({name: hits}),
             "coverage": evidence_summary({name: hits}, passed),
             "hunks": [
                 hunk_summary(report, name, start, end, hits, passed, min(limit, 5))
                 for start, end in selected_hunks
             ],
-            "lines": [
-                line_details(report, name, number, coverage.get(number), limit)
-                for number in selected
-            ],
             "truncated": (
-                len(selected) < len(hits)
-                or len(unmapped_ranges) > limit or len(uncovered_ranges) > limit
+                len(unmapped_ranges) > limit or len(uncovered_ranges) > limit
                 or len(not_passing) > limit or len(selected_hunks) < len(hunks)
             ),
         })
-    return {
+    return measured, {
         "comparison": comparison,
         "diff": "merge-base-to-worktree-including-untracked",
-        "summary": summarize(measured),
-        "coverage": evidence_summary(measured, passed),
-        "sources": source_summaries(report, measured, passed),
         "changed_rust_lines": sum(len(lines) for lines in changed.values()),
         "unmapped_lines": unmapped,
         "unmeasured_files": unmeasured_files,
@@ -812,8 +792,10 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
     root = Path(root).resolve() if root is not None else repository_root()
     report_path = resolve_report(root, report_path)
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    if report["schema_version"] not in SUPPORTED_SCHEMAS:
-        raise ValueError(f"unsupported coverage schema: {report['schema_version']}")
+    if report["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported coverage schema: {report['schema_version']}; collect coverage again"
+        )
     if start is not None and (file is None or start <= 0):
         raise ValueError("--start requires --file and a positive line number")
     if end is not None and (start is None or end < start):
@@ -837,23 +819,10 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
     result = {
         key: report[key] for key in
         ("schema_version", "source", "family", "origin", "target",
-         "all_tests_passed", "scope", "issues")
+         "scope", "issues", "collection_state", "test_outcome")
     }
     result["host"] = report.get("host")
-    if report["schema_version"] == 1:
-        result["collection_state"] = "complete" if report["state"] == "complete" else "unknown"
-        result["test_outcome"] = (
-            "passed" if report["all_tests_passed"] is True else
-            "failed" if report["all_tests_passed"] is False else "unknown"
-        )
-        result["legacy_state"] = report["state"]
-    else:
-        result["collection_state"] = report["collection_state"]
-        result["test_outcome"] = report["test_outcome"]
     passed = coverage_index(report)
-    result["summary"] = summarize(report["files"])
-    result["coverage"] = evidence_summary(report["files"], passed)
-    result["sources"] = source_summaries(report, report["files"], passed)
     result["source_classification"] = "available" if "source_map" in report else "unavailable"
     result["classification_issues"] = report.get("source_map", {}).get(
         "issues", ["source classification unavailable; recollect with the current tool"],
@@ -863,29 +832,27 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
     )
     result["report"] = str(report_path)
     result["freshness"] = freshness
+    files = report["files"]
     if changed:
+        result["view"] = "changed"
         comparison = (
             report["comparison"] if base is None and "comparison" in report
             else resolve_comparison(root, base)
         )
-        result["patch"] = changed_query(report, root, comparison, limit, passed)
-        freshness = check_freshness(report, root)
-        if freshness["state"] != "current":
-            raise StaleCoverageError(freshness)
+        files, result["patch"] = changed_query(report, root, comparison, limit, passed)
     elif gaps:
+        result["view"] = "gaps"
         result["gaps"] = gaps_query(report, passed, limit)
-        result["gaps"]["unclassified_measured_lines"] = (
-            result["sources"]["unclassified"]["execution"]["measured_lines"]
-        )
     elif file is None:
+        result["view"] = "absolute"
         names = sorted(report["files"])
         result["files"] = [
-            {"path": name, **summarize({name: report["files"][name]}),
-             "coverage": evidence_summary({name: report["files"][name]}, passed)}
+            {"path": name, "coverage": evidence_summary({name: report["files"][name]}, passed)}
             for name in names[:limit]
         ]
         result["truncated"] = len(names) > limit
     else:
+        result["view"] = "file"
         name = Path(file).as_posix()
         lines = report["files"].get(name)
         result["file"] = name
@@ -899,28 +866,14 @@ def query(report_path=None, file=None, start=None, end=None, limit=100, *,
             line_details(report, name, number, hit, limit)
             for number, hit in selected[:limit]
         ]
-        result["coverage"] = evidence_summary({name: dict(selected)}, passed)
-        result["sources"] = source_summaries(report, {name: dict(selected)}, passed)
-        result["summary"] = result["coverage"]["execution"]
+        files = {name: dict(selected)}
         result["truncated"] = len(selected) > limit
-    sources = result["patch"]["sources"] if changed else result["sources"]
-    production = sources["selected_production"]
-    result["review_summary"] = {
-        "scope": "changed" if changed else "file_range" if file is not None else "absolute",
-        "collection_state": result["collection_state"],
-        "test_outcome": result["test_outcome"],
-        "selected_production": production,
-        "production_lines_without_passing_evidence": (
-            production["passing_attempts"]["measured_lines"]
-            - production["passing_attempts"]["covered_lines"]
-        ),
-        "unclassified_measured_lines": sources["unclassified"]["execution"]["measured_lines"],
-    }
+    result["coverage"] = evidence_summary(files, passed)
+    result["sources"] = source_summaries(report, files, passed)
     if changed:
-        result["review_summary"].update(
-            unmapped_changed_lines=result["patch"]["unmapped_lines"],
-            unmeasured_changed_files=result["patch"]["unmeasured_files"],
-        )
+        freshness = check_freshness(report, root)
+        if freshness["state"] != "current":
+            raise StaleCoverageError(freshness)
     return result
 
 

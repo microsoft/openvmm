@@ -88,20 +88,20 @@ class CoverageTests(unittest.TestCase):
 
     def test_query_keeps_zero_unmeasured_and_failed_test_evidence_distinct(self):
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source": {"head": "abc", "dirty": True, "snapshot_sha256": "def"},
             "family": "unit",
             "origin": "local",
             "target": "x86_64-unknown-linux-gnu",
-            "state": "incomplete",
-            "all_tests_passed": False,
+            "collection_state": "incomplete",
+            "test_outcome": "failed",
             "scope": {"includes_test_source": True},
             "issues": ["missing test profile"],
-            "summary": {"measured_lines": 2, "covered_lines": 1, "line_percent": 50},
             "files": {"src/lib.rs": {"10": False, "11": True}},
             "tests": [{
                 "id": "test1", "run": "base", "binary_id": "crate", "name": "tests::bad",
-                "attempt": 1, "result": "failed", "covered": {"src/lib.rs": [11]},
+                "attempt": 1, "result": "failed", "profile_state": "available",
+                "covered": {"src/lib.rs": [11]},
             }],
         }
         with tempfile.TemporaryDirectory() as directory, \
@@ -114,7 +114,7 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(result["lines"][1]["tests"][0]["result"], "failed")
             self.assertFalse(result["lines"][1]["covered_by_passing_attempt"])
             self.assertEqual(result["coverage"]["passing_attempts"]["covered_lines"], 0)
-            self.assertEqual(result["collection_state"], "unknown")
+            self.assertEqual(result["collection_state"], "incomplete")
             self.assertEqual(result["test_outcome"], "failed")
             self.assertEqual(coverage.query(path, "windows.rs")["measurement"], "unmeasured")
             self.assertIsNone(coverage.summarize({})["line_percent"])
@@ -205,8 +205,7 @@ class CoverageTests(unittest.TestCase):
                     "test": {"ignored": False, "filter-match": {"status": "matches"}},
                 },
             }}}
-            report = {"files": {}, "tests": [], "runs": [], "issues": [],
-                      "all_tests_passed": None}
+            report = {"files": {}, "tests": [], "runs": [], "issues": []}
 
             def finish_without_profile(*args, **kwargs):
                 attempt = output / "runs/base/profiles/attempt"
@@ -242,8 +241,7 @@ class CoverageTests(unittest.TestCase):
                         "test": {"ignored": False, "filter-match": {"status": "matches"}},
                     },
                 }}}
-                report = {"files": {}, "tests": [], "runs": [], "issues": [],
-                          "all_tests_passed": None}
+                report = {"files": {}, "tests": [], "runs": [], "issues": []}
 
                 def finish_with_profile(*args, **kwargs):
                     attempt = output / "runs/base/profiles/attempt"
@@ -306,7 +304,6 @@ class GitQueryTests(unittest.TestCase):
             "family": "unit", "origin": "local", "target": "x86_64-unknown-linux-gnu",
             "collection_state": state,
             "test_outcome": "passed" if state == "complete" else "incomplete",
-            "all_tests_passed": True if state == "complete" else None,
             "scope": {"runs": [{"args": ["-p", "fixture"]}]},
             "issues": [] if state == "complete" else ["missing profile"],
             "files": {"tracked.rs": {"1": True, "2": False, "13": False}},
@@ -404,24 +401,33 @@ class GitQueryTests(unittest.TestCase):
         (self.root / "notes.md").write_text("not executable Rust\n")
         (self.root / "deleted.rs").unlink()
         path = self.report()
-        result = coverage.query(path, changed=True, root=self.root)["patch"]
+        query = coverage.query(path, changed=True, root=self.root)
+        result = query["patch"]
         self.assertEqual(result["changed_rust_lines"], 5)
-        self.assertEqual(result["summary"]["measured_lines"], 3)
-        self.assertEqual(result["summary"]["covered_lines"], 1)
+        self.assertEqual(query["coverage"]["execution"]["measured_lines"], 3)
+        self.assertEqual(query["coverage"]["execution"]["covered_lines"], 1)
         self.assertEqual(result["unmapped_lines"], 2)
         self.assertEqual(result["unmeasured_files"], 1)
         self.assertEqual(result["non_rust_files"], 1)
         self.assertEqual(result["deleted_files"], 1)
         tracked = next(file for file in result["files"] if file["path"] == "tracked.rs")
-        self.assertEqual([line["line"] for line in tracked["lines"]], [1, 2, 13])
-        self.assertEqual(tracked["lines"][0]["tests"][0]["name"], "covers_first")
+        self.assertEqual(tracked["hunks"][0]["tests"][0]["name"], "covers_first")
+        self.assertNotIn("lines", tracked)
+        self.assertNotIn("sources", tracked["hunks"][0])
+        self.assertNotIn("summary", query)
+        self.assertNotIn("review_summary", query)
+        self.assertNotIn("sources", result)
+        self.assertNotIn("coverage", result)
+        detail = coverage.query(path, "tracked.rs", 1, 1, root=self.root)
+        self.assertEqual(detail["lines"][0]["tests"][0]["name"], "covers_first")
         self.assertEqual(tracked["uncovered_ranges"], [[2, 2], [13, 13]])
         unmeasured = next(file for file in result["files"] if file["path"] != "tracked.rs")
-        self.assertEqual(unmeasured["lines"], [])
+        self.assertEqual(unmeasured["hunks"][0]["tests"], [])
         self.assertEqual(unmeasured["unmapped_ranges"], [[1, 2]])
-        bounded = coverage.query(path, changed=True, root=self.root, limit=1)["patch"]
-        self.assertTrue(bounded["truncated"])
-        self.assertEqual(bounded["summary"], result["summary"])
+        bounded = coverage.query(path, changed=True, root=self.root, limit=1)
+        self.assertTrue(bounded["patch"]["truncated"])
+        self.assertEqual(bounded["coverage"], query["coverage"])
+        self.assertEqual(bounded["sources"], query["sources"])
 
     def test_rename_maps_only_edited_new_side_lines(self):
         destination = self.root / "renamed é space.rs"
@@ -434,14 +440,14 @@ class GitQueryTests(unittest.TestCase):
 
     def test_empty_patch_and_deletion_only_patch_are_not_100_percent(self):
         path = self.report()
-        result = coverage.query(path, changed=True, root=self.root)["patch"]
-        self.assertEqual(result["changed_rust_lines"], 0)
-        self.assertIsNone(result["summary"]["line_percent"])
+        result = coverage.query(path, changed=True, root=self.root)
+        self.assertEqual(result["patch"]["changed_rust_lines"], 0)
+        self.assertIsNone(result["coverage"]["execution"]["line_percent"])
         (self.root / "deleted.rs").unlink()
         path = self.report("deleted-only")
-        result = coverage.query(path, changed=True, root=self.root)["patch"]
-        self.assertEqual(result["deleted_files"], 1)
-        self.assertIsNone(result["summary"]["line_percent"])
+        result = coverage.query(path, changed=True, root=self.root)
+        self.assertEqual(result["patch"]["deleted_files"], 1)
+        self.assertIsNone(result["coverage"]["execution"]["line_percent"])
 
     def test_stale_queries_fail_and_historical_override_is_explicit(self):
         (self.root / "untracked.rs").write_text("fn before() {}\n")
@@ -462,7 +468,7 @@ class GitQueryTests(unittest.TestCase):
         previous = self.report("previous")
         newest = self.report("newest", state="incomplete")
         index = self.root / "target/unit-coverage/latest.json"
-        coverage.write_json(index, {"schema_version": 1, "report": str(newest)})
+        coverage.write_json(index, {"schema_version": 2, "report": str(newest)})
         result = coverage.query(root=self.root)
         self.assertEqual(result["report"], str(newest))
         self.assertEqual(result["collection_state"], "incomplete")
@@ -470,6 +476,20 @@ class GitQueryTests(unittest.TestCase):
         self.assertTrue(previous.is_file())
         with self.assertRaisesRegex(ValueError, "latest report was removed"):
             coverage.query(root=self.root)
+
+    def test_only_the_current_report_and_index_schema_are_accepted(self):
+        path = self.report()
+        report = json.loads(path.read_text())
+        coverage.write_json(path, {**report, "schema_version": 1})
+        with self.assertRaisesRegex(ValueError, "unsupported coverage schema"):
+            coverage.query(path, root=self.root)
+        coverage.write_json(path, report)
+        index = self.root / "target/unit-coverage/latest.json"
+        coverage.write_json(index, {"schema_version": 1, "report": str(path)})
+        with self.assertRaisesRegex(ValueError, "unsupported latest-report index schema"):
+            coverage.query(root=self.root)
+        coverage.write_json(index, {"schema_version": 2, "report": str(path)})
+        self.assertEqual(coverage.query(root=self.root)["collection_state"], "complete")
 
     def test_default_base_uses_configured_origin_head_not_a_guessed_branch(self):
         with self.assertRaisesRegex(ValueError, "supply --base"):
@@ -495,7 +515,6 @@ class GitQueryTests(unittest.TestCase):
         path = self.report()
         report = json.loads(path.read_text())
         report["test_outcome"] = "failed"
-        report["all_tests_passed"] = False
         report["files"]["tracked.rs"]["2"] = True
         report["tests"].append({
             "id": "test2", "run": "base", "binary_id": "crate", "name": "fails_after_second",
@@ -517,19 +536,23 @@ class GitQueryTests(unittest.TestCase):
         production = result["sources"]["selected_production"]
         self.assertEqual(production["execution"]["covered_lines"], 2)
         self.assertEqual(production["passing_attempts"]["covered_lines"], 1)
-        self.assertEqual(result["sources"]["test_source"]["execution"]["measured_lines"], 1)
-        self.assertEqual(result["sources"]["unclassified"]["execution"]["measured_lines"], 1)
+        self.assertEqual(result["sources"]["test_source"]["execution"]["measured_lines"], 0)
+        self.assertEqual(result["sources"]["unclassified"]["execution"]["measured_lines"], 0)
+        absolute = coverage.query(path, root=self.root)
+        self.assertEqual(absolute["view"], "absolute")
+        self.assertEqual(set(absolute["files"][0]), {"path", "coverage"})
+        self.assertEqual(absolute["sources"]["test_source"]["execution"]["measured_lines"], 1)
+        self.assertEqual(absolute["sources"]["unclassified"]["execution"]["measured_lines"], 1)
         patch = result["patch"]["files"][0]
         self.assertEqual(patch["not_covered_by_passing_attempt_ranges"], [[2, 2]])
-        self.assertTrue(patch["lines"][1]["covered"])
-        self.assertFalse(patch["lines"][1]["covered_by_passing_attempt"])
         self.assertEqual(patch["hunks"][0]["coverage"]["passing_attempts"]["covered_lines"], 1)
         self.assertEqual({test["result"] for test in patch["hunks"][0]["tests"]}, {"passed", "failed"})
-        self.assertEqual(result["review_summary"]["scope"], "changed")
-        self.assertEqual(result["review_summary"]["production_lines_without_passing_evidence"], 1)
+        self.assertEqual(result["view"], "changed")
         ranged = coverage.query(path, "tracked.rs", 2, 2, root=self.root)
-        self.assertEqual(ranged["review_summary"]["scope"], "file_range")
-        self.assertEqual(ranged["summary"]["measured_lines"], 1)
+        self.assertTrue(ranged["lines"][0]["covered"])
+        self.assertFalse(ranged["lines"][0]["covered_by_passing_attempt"])
+        self.assertEqual(ranged["view"], "file")
+        self.assertEqual(ranged["coverage"]["execution"]["measured_lines"], 1)
         self.assertEqual(ranged["sources"]["test_source"]["execution"]["measured_lines"], 0)
 
     def test_workspace_dependency_views_and_bounded_hunks(self):
@@ -541,7 +564,7 @@ class GitQueryTests(unittest.TestCase):
         coverage.write_json(path, report)
         result = coverage.query(path, changed=True, root=self.root, limit=1)
         self.assertEqual(result["sources"]["selected_production"]["execution"]["measured_lines"], 0)
-        self.assertEqual(result["sources"]["dependency_production"]["execution"]["measured_lines"], 3)
+        self.assertEqual(result["sources"]["dependency_production"]["execution"]["measured_lines"], 1)
         self.assertEqual(len(result["patch"]["files"][0]["hunks"]), 1)
         self.assertTrue(result["patch"]["truncated"])
 
@@ -564,7 +587,6 @@ class GitQueryTests(unittest.TestCase):
         path = self.report()
         report = json.loads(path.read_text())
         report["test_outcome"] = "failed"
-        report["all_tests_passed"] = False
         report["files"]["tracked.rs"] = {
             "1": True, "2": False, "3": True, "4": False,
             "5": False, "6": False, "7": False, "9": False,
@@ -588,13 +610,14 @@ class GitQueryTests(unittest.TestCase):
         coverage.write_json(path, report)
         result = coverage.query(path, root=self.root, gaps=True)
         gaps = result["gaps"]
+        self.assertEqual(result["view"], "gaps")
         self.assertEqual(result["collection_state"], "complete")
         self.assertEqual(result["test_outcome"], "failed")
         self.assertEqual([file["path"] for file in gaps["files"]], ["tracked.rs", "a.rs", "z.rs"])
         self.assertEqual(gaps["lines_without_passing_evidence"], 8)
         self.assertEqual(gaps["unexecuted_lines"], 7)
         self.assertEqual(gaps["executed_without_passing_evidence_lines"], 1)
-        self.assertEqual(gaps["unclassified_measured_lines"], 1)
+        self.assertEqual(result["sources"]["unclassified"]["execution"]["measured_lines"], 1)
         ranges = gaps["files"][0]["ranges"]
         self.assertEqual([(r["start"], r["end"]) for r in ranges], [(2, 4), (9, 9)])
         self.assertEqual(ranges[0]["unexecuted_lines"], 2)

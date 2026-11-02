@@ -72,8 +72,9 @@ in one command:
 cargo xflowey unit-test-coverage -p memory_range --base origin/main
 ```
 
-This prints bounded JSON containing absolute coverage and changed Rust lines,
-their covering tests, uncovered lines, and unmeasured files. The comparison is
+This prints bounded JSON containing coverage of changed Rust lines, their
+covering tests, uncovered ranges, and unmeasured files. Use `query` without
+`--changed` for absolute coverage. The comparison is
 from the merge base of the selected revision and HEAD to the working tree:
 committed branch changes, staged/unstaged edits, and nonignored untracked Rust
 files are included. Deletions do not contribute new executable lines.
@@ -110,8 +111,9 @@ that choice. It does not guess the default branch. `--report <path>` selects
 an explicit report instead of the latest attempt. A newer failed/incomplete
 collection is never silently replaced by older successful results.
 
-Queries emit JSON with file summaries or measured lines and their covering
-tests, including configuration-run names, attempts, and pass/fail results.
+Queries emit compact JSON with file or changed-hunk summaries. Use `--file`
+with optional `--start`/`--end` for measured lines and their covering tests,
+including configuration-run names, attempts, and pass/fail results.
 `--limit` bounds file/line results, changed-hunk summaries, and each line's
 covering-test list; hunks list at most five covering attempts. Truncation
 is explicit. Paths are relative to the repository root. Files absent from the
@@ -137,8 +139,8 @@ means the selected attempts and their profiles were collected, not that tests
 passed. `test_outcome` reports the suite result separately. A failed test can
 produce complete coverage; a passing suite can have incomplete profiles.
 The command still exits unsuccessfully on either test failures or missing
-coverage data. Version-1 reports remain readable, but an old `incomplete` state
-becomes an unknown collection status because it did not separate these causes.
+coverage data. Only the current report and latest-index format is supported;
+recollect rather than reading reports from older prototype formats.
 
 The result directory retains the effective nextest configuration, inventories,
 matching test binaries, per-attempt raw/indexed profiles, and LCOV exports.
@@ -147,10 +149,16 @@ configuration; the repository configuration is not modified. Existing target
 runners are composed inside the coverage wrapper. Existing nextest run-wrappers
 are rejected rather than silently replaced.
 
-Start with `review_summary` for selected-package production coverage and the
-number of measured production lines without passing evidence. For `--changed`,
-this summary describes the patch and also reports unmapped changes and
-unmeasured files. Changed-hunk summaries associate ranges with covering tests.
+Each query reports its aggregate once, in `coverage`, with source categories
+in `sources`. Start with `sources.selected_production.passing_attempts` for
+production evidence. `view` identifies the query mode: `--changed` totals
+describe changed measured lines, `--file` totals describe the requested file
+or range, and ordinary/gap queries describe the full collection. Detail limits
+do not truncate those totals.
+
+Changed queries put diff metadata, gap ranges, and covering-test references
+in `patch`. Hunk coverage includes all measured source categories; use a
+file/range query for per-line source classification and attempt details.
 Package selection remains explicit; the comparison base never selects packages.
 
 To find existing code that could benefit from tests, collect without a comparison
@@ -185,7 +193,7 @@ uses Cargo targets and Rust syntax, including `#[cfg(test)]` modules, rather
 than filenames. Unresolved path-based modules, macro item bodies, ambiguous
 conditional compilation, and parse failures remain unclassified; classification
 issues are reported. This is not compiler-expanded semantic classification.
-Historical reports without this metadata remain unclassified.
+Reports without this metadata remain unclassified.
 
 Every coverage view distinguishes all-attempt `execution` from
 `passing_attempts`. A line hit only by a failed test has execution evidence but
