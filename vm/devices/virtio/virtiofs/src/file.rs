@@ -126,8 +126,9 @@ impl VirtioFsFile {
                 let inode_nr = if entry.name == "." || entry.name == ".." {
                     self_inode_nr
                 } else {
-                    // Without reliable IDs, retain the previous pathname-based
-                    // sandbox checks rather than rejecting directory reads.
+                    // Without stable IDs, check policy through each child's pathname.
+                    // This cannot establish that the parent path still names the
+                    // open directory being enumerated.
                     if check_children {
                         match self.inode.lookup_child(&entry.name) {
                             Ok(_) => {}
