@@ -85,6 +85,26 @@ struct Target {
     debug_label: Arc<str>,
     inner: Arc<dyn LineSetTarget>,
     vector: u32,
+    asserted: bool,
+}
+
+impl Target {
+    fn publish(&mut self, level: Option<bool>, replay: bool) {
+        let high = match level {
+            Some(high) => high,
+            None if self.asserted => false,
+            None => {
+                self.inner.set_unconnected_irq(self.vector);
+                return;
+            }
+        };
+        if replay {
+            self.inner.replay_irq(self.vector, high);
+        } else {
+            self.inner.set_irq(self.vector, high);
+        }
+        self.asserted = high;
+    }
 }
 
 impl Debug for Target {
@@ -170,19 +190,14 @@ impl LineInterruptInner {
             .filter(|line| !self.targets.is_empty() && line.is_high.is_none())
     }
 
-    fn publish(&self, replay: bool) {
+    fn publish(&mut self, replay: bool) {
         let is_high = self.is_high();
         if is_high && self.targets.is_empty() {
             tracelimit::warn_ratelimited!(%self, "LineInterrupt not hooked up to any targets!");
         }
-        for target in &self.targets {
-            if self.lines.is_empty() {
-                target.inner.set_unconnected_irq(target.vector);
-            } else if replay {
-                target.inner.replay_irq(target.vector, is_high);
-            } else {
-                target.inner.set_irq(target.vector, is_high);
-            }
+        let level = (!self.lines.is_empty()).then_some(is_high);
+        for target in &mut self.targets {
+            target.publish(level, replay);
         }
     }
 
@@ -451,8 +466,14 @@ impl LineSet {
         let state = self.state.lock();
         assert!(!state.running);
         for line in state.lines.values() {
-            for source in line.lock().lines.values_mut() {
+            let mut line = line.lock();
+            for source in line.lines.values_mut() {
                 source.is_high = None;
+            }
+            // Targets reset their own state; old assertions must not carry
+            // into a new reset/restore epoch.
+            for target in &mut line.targets {
+                target.asserted = false;
             }
         }
     }
@@ -477,18 +498,16 @@ impl LineSet {
             if source_range.contains(&vector) {
                 let target_vector = vector - source_range.start() + target_start;
                 let mut line = line.lock();
-                line.targets.push(Target {
+                let mut new_target = Target {
                     debug_label: debug_label.clone(),
                     inner: target.clone(),
                     vector: target_vector,
-                });
+                    asserted: false,
+                };
                 if line.running {
-                    if line.lines.is_empty() {
-                        target.set_unconnected_irq(target_vector);
-                    } else {
-                        target.set_irq(target_vector, line.is_high());
-                    }
+                    new_target.publish((!line.lines.is_empty()).then(|| line.is_high()), false);
                 }
+                line.targets.push(new_target);
             }
         }
         if state.running {
@@ -547,6 +566,7 @@ impl LineSet {
                             debug_label: mapping.debug_label.clone(),
                             inner: mapping.target.clone(),
                             vector: vector - mapping.source_range.start() + mapping.target_start,
+                            asserted: false,
                         })
                         .collect(),
                     state.running,

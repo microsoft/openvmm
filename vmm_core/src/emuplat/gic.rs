@@ -47,6 +47,73 @@ mod tests {
     }
 
     #[test]
+    fn stopped_source_removal_withdraws_only_previously_delivered_assertions() {
+        for attach_while_running in [false, true] {
+            let gic = Arc::new(Gic::default());
+            let set = LineSet::new();
+            let line = set.new_line(0, "device").unwrap();
+            line.set_level(true);
+            if attach_while_running {
+                set.start();
+            }
+            set.add_target(
+                0..=1,
+                32,
+                "GIC",
+                Arc::new(GicInterruptTarget::new(gic.clone())),
+            );
+            if !attach_while_running {
+                set.start();
+            }
+            assert_eq!(*gic.0.lock(), [(32, true)]);
+            set.stop();
+            drop(line);
+            assert_eq!(*gic.0.lock(), [(32, true)]);
+
+            // This target never received the managed high, even though it
+            // attaches to the same wire before replay.
+            let late_gic = Arc::new(Gic::default());
+            set.add_target(
+                0..=1,
+                32,
+                "late GIC",
+                Arc::new(GicInterruptTarget::new(late_gic.clone())),
+            );
+            set.start();
+            assert_eq!(*gic.0.lock(), [(32, true), (32, false)]);
+            assert!(late_gic.0.lock().is_empty());
+            set.stop();
+            set.start();
+            assert_eq!(*gic.0.lock(), [(32, true), (32, false)]);
+            assert!(late_gic.0.lock().is_empty());
+            set.stop();
+        }
+    }
+
+    #[test]
+    fn reset_discards_old_managed_assertions() {
+        let gic = Arc::new(Gic::default());
+        let set = LineSet::new();
+        set.add_target(
+            0..=0,
+            32,
+            "GIC",
+            Arc::new(GicInterruptTarget::new(gic.clone())),
+        );
+        let line = set.new_line(0, "device").unwrap();
+        line.set_level(true);
+        set.start();
+        set.stop();
+        drop(line);
+        set.reset();
+        gic.0.lock().clear();
+        // State restored independently into an unwired SPI is not ours to clear.
+        set.start();
+        assert!(gic.0.lock().is_empty());
+        set.stop();
+    }
+
+    #[test]
     fn managed_gic_replays_connected_inputs_without_clearing_unconnected_spis() {
         for attach_while_running in [false, true] {
             let gic = Arc::new(Gic::default());
