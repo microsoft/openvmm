@@ -6275,7 +6275,126 @@ async fn verify_teardown_drops_device(driver: DefaultDriver) {
     )
     .unwrap();
 
+    let bar_address = 0x100000;
+    dev.pci_cfg_write(
+        0x10,
+        ByteEnabledDwordWrite::with_all_bytes_enabled(bar_address),
+    )
+    .unwrap();
+    dev.pci_cfg_write(0x4, ByteEnabledDwordWrite::with_all_bytes_enabled(2))
+        .unwrap();
+    let mut data = [0; 4];
+    dev.mmio_read(bar_address.into(), &mut data).unwrap();
     assert!(!dropped.load(Ordering::SeqCst));
     dev.teardown().await;
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(matches!(
+        dev.mmio_read(bar_address.into(), &mut data),
+        IoResult::Err(_)
+    ));
+}
+
+#[async_test]
+async fn verify_mmio_teardown_drops_device(driver: DefaultDriver) {
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let intc = TestLineInterruptTarget::new_arc();
+    let line = LineInterrupt::new_with_target("teardown", intc.clone(), 0);
+    line.set_level(true);
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(DropTrackingDevice(dropped.clone())),
+        &driver,
+        GuestMemory::allocate(0x1000),
+        line,
+        None,
+        0,
+        0x1000,
+    )
+    .unwrap();
+    assert!(intc.is_high(0));
+    dev.teardown().await;
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(!intc.is_high(0));
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct PendingStartDevice {
+    inner: DropTrackingDevice,
+    entered: mesh::Sender<()>,
+    release: mesh::Receiver<()>,
+    started: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl VirtioDevice for PendingStartDevice {
+    fn traits(&self) -> DeviceTraits {
+        VirtioDevice::traits(&self.inner)
+    }
+
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        VirtioDevice::read_registers_u32(&mut self.inner, offset).await
+    }
+
+    async fn write_registers_u32(&mut self, offset: u16, val: u32) {
+        VirtioDevice::write_registers_u32(&mut self.inner, offset, val).await;
+    }
+
+    async fn start_queue(
+        &mut self,
+        _: u16,
+        _: QueueResources,
+        _: &VirtioDeviceFeatures,
+        _: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        self.entered.send(());
+        self.release.recv().await.unwrap();
+        self.started.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+        None
+    }
+}
+
+#[async_test]
+async fn teardown_finishes_pending_device_operation(driver: DefaultDriver) {
+    let (entered, mut entered_recv) = mesh::channel();
+    let (release, release_recv) = mesh::channel();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let memory = GuestMemory::allocate(0x1000);
+    let mut core = crate::transport::core::VirtioTransportCore::new(
+        Box::new(PendingStartDevice {
+            inner: DropTrackingDevice(dropped.clone()),
+            entered,
+            release: release_recv,
+            started: started.clone(),
+        }),
+        &driver,
+        memory.clone(),
+        None,
+    )
+    .unwrap();
+    core.state.start_enable(
+        &core.device_sender,
+        vec![(
+            0,
+            QueueResources {
+                params: QueueParams::default(),
+                guest_memory: memory,
+                event: Event::new(),
+                notify: Interrupt::from_fn(|| {}),
+            },
+        )],
+        VirtioDeviceFeatures::new(),
+    );
+    entered_recv.recv().await.unwrap();
+    let mut teardown = Box::pin(core.teardown());
+    assert!(futures::poll!(teardown.as_mut()).is_pending());
+    assert!(!dropped.load(Ordering::SeqCst));
+    assert!(!started.load(Ordering::SeqCst));
+    release.send(());
+    teardown.await;
+    assert!(started.load(Ordering::SeqCst));
     assert!(dropped.load(Ordering::SeqCst));
 }

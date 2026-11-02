@@ -85,11 +85,12 @@ impl ChipsetDevices {
         let device = arc_builder.build(CloseableMutex::new(device));
         let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
         let builder = units.add(name).dependency_of(self.chipset_unit());
+        let driver = driver_source.simple();
         let unit = builder
-            .spawn(driver_source.simple(), |recv| device_unit.run(recv))
+            .spawn(driver.clone(), |recv| device_unit.run(recv))
             .context("name in use")?;
 
-        Ok((DynamicDeviceUnit(unit), device))
+        Ok((DynamicDeviceUnit { unit, driver }, device))
     }
 }
 

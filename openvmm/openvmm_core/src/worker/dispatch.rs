@@ -104,6 +104,7 @@ use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::future::Future;
 use std::sync::Arc;
@@ -182,6 +183,51 @@ const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
 const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct PendingDeviceRemovals {
+    pending: Option<mesh::OneshotReceiver<()>>,
+}
+
+impl PendingDeviceRemovals {
+    fn start(&mut self, driver: &impl Spawn, removal: impl Future<Output = ()> + Send + 'static) {
+        assert!(self.is_empty(), "a device removal is already pending");
+        let (send, recv) = mesh::oneshot();
+        driver
+            .spawn("remove-device", async move {
+                removal.await;
+                send.send(());
+            })
+            .detach();
+        self.pending = Some(recv);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending.is_none()
+    }
+
+    async fn wait(&mut self) {
+        if let Some(completion) = &mut self.pending {
+            completion.await.expect("device removal task failed");
+            self.pending = None;
+        } else {
+            std::future::pending().await
+        }
+    }
+
+    async fn drain(&mut self) {
+        if !self.is_empty() {
+            self.wait().await;
+        }
+    }
+}
+
+fn can_run_during_device_removal(rpc: &VmRpc) -> bool {
+    matches!(
+        rpc,
+        VmRpc::ReadMemory(_) | VmRpc::WriteMemory(_) | VmRpc::Nmi(_) | VmRpc::ConnectHvsock(_)
+    )
+}
 
 enum VpciEjectResult {
     Complete(anyhow::Result<()>),
@@ -783,6 +829,47 @@ fn resolve_proto_partition_isolation(
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn pending_removal_keeps_running_when_wait_is_cancelled(driver: DefaultDriver) {
+        let (entered, mut entered_recv) = mesh::channel();
+        let (release, wait) = mesh::oneshot();
+        let mut removals = PendingDeviceRemovals::default();
+        removals.start(&driver, async move {
+            entered.send(());
+            wait.await.unwrap();
+        });
+        entered_recv.recv().await.unwrap();
+        assert!(removals.wait().now_or_never().is_none());
+        assert!(can_run_during_device_removal(&VmRpc::ReadMemory(
+            mesh::rpc::Rpc::detached((0, 4))
+        )));
+        assert!(!can_run_during_device_removal(&VmRpc::Reset(
+            mesh::rpc::Rpc::detached(())
+        )));
+        assert!(!can_run_during_device_removal(&VmRpc::RemovePcieDevice(
+            mesh::rpc::Rpc::detached("test".into())
+        )));
+        assert_eq!(driver.spawn("control-request", async { 42 }).await, 42);
+        assert!(!removals.is_empty());
+        release.send(());
+        removals.drain().await;
+        assert!(removals.is_empty());
+    }
+
+    #[pal_async::async_test]
+    async fn dropping_removal_tracker_does_not_cancel_cleanup(driver: DefaultDriver) {
+        let (release, wait) = mesh::oneshot();
+        let (finished, completed) = mesh::oneshot();
+        let mut removals = PendingDeviceRemovals::default();
+        removals.start(&driver, async move {
+            wait.await.unwrap();
+            finished.send(());
+        });
+        drop(removals);
+        release.send(());
+        completed.await.unwrap();
+    }
 
     fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
         LoadMode::Linux {
@@ -3764,6 +3851,7 @@ impl LoadedVm {
             WorkerRpc(Result<WorkerRpc<RestartState>, mesh::RecvError>),
             VmRpc(Result<VmRpc, mesh::RecvError>),
             Halt(Result<HaltReason, mesh::RecvError>),
+            DeviceRemoved,
         }
 
         // Start a task to handle state unit inspections by filtering the worker
@@ -3785,16 +3873,37 @@ impl LoadedVm {
             }
         });
         let mut worker_rpc = worker_rpc_recv;
+        let mut removals = PendingDeviceRemovals::default();
+        let mut deferred = VecDeque::new();
 
         loop {
-            let event: Event = {
+            let queued = if removals.is_empty() {
+                deferred.pop_front()
+            } else {
+                None
+            };
+            let event: Event = if let Some(event) = queued {
+                event
+            } else {
                 let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
-                (a, b, c).race().await
+                let d = removals.wait().map(|()| Event::DeviceRemoved);
+                (a, b, c, d).race().await
             };
 
+            let wait_for_removal = match &event {
+                Event::WorkerRpc(Ok(WorkerRpc::Restart(_))) => true,
+                Event::VmRpc(Ok(rpc)) => !can_run_during_device_removal(rpc),
+                _ => false,
+            };
+            if !removals.is_empty() && wait_for_removal {
+                deferred.push_back(event);
+                continue;
+            }
+
             match event {
+                Event::DeviceRemoved => {}
                 Event::WorkerRpc(Err(_)) => break,
                 Event::WorkerRpc(Ok(message)) => match message {
                     WorkerRpc::Stop => break,
@@ -3831,7 +3940,8 @@ impl LoadedVm {
                         }
                     }
                     WorkerRpc::Inspect(deferred) => deferred.respond(|resp| {
-                        resp.field("memory", &self.inner.memory_manager)
+                        resp.field("device_removal_pending", !removals.is_empty())
+                            .field("memory", &self.inner.memory_manager)
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
                             .field("vmgs", &self.inner.vmgs_client_inspect_handle);
@@ -4073,7 +4183,7 @@ impl LoadedVm {
                             ) {
                                 // Clean up the device unit on failure
                                 let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
-                                unit.remove().await;
+                                removals.start(driver, unit.remove());
                                 return Err(e);
                             }
                             anyhow::Ok(())
@@ -4081,7 +4191,8 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemovePcieDevice(rpc) => {
-                        rpc.handle_failable(async |port_name: String| {
+                        let (port_name, response) = rpc.split();
+                        let device = (|| {
                             // Only allow removing dynamically hot-added devices.
                             // Statically-attached devices don't have a tracked unit
                             // and removing them would leave their state unit/MMIO
@@ -4103,12 +4214,17 @@ impl LoadedVm {
                             rc.lock().hotplug_remove_device(&port_name)?;
 
                             // Remove and stop the device unit
-                            let (_, unit, _device) = self.inner.pcie_hotplug_devices.remove(idx);
-                            unit.remove().await;
-
-                            anyhow::Ok(())
-                        })
-                        .await
+                            let (_, unit, device) = self.inner.pcie_hotplug_devices.remove(idx);
+                            anyhow::Ok((unit, device))
+                        })();
+                        match device {
+                            Ok((unit, device)) => removals.start(driver, async move {
+                                unit.remove().await;
+                                drop(device);
+                                response.complete(Ok(()));
+                            }),
+                            Err(error) => response.complete(Err(RemoteError::new(error))),
+                        }
                     }
                     VmRpc::AddVpciDevice(rpc) => {
                         rpc.handle_failable(async |(instance_id, resource)| {
@@ -4175,22 +4291,23 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemoveVpciDevice(rpc) => {
-                        rpc.handle_failable(async |instance_id: guid::Guid| {
-                            let index = self
-                                .inner
-                                .dynamic_vpci_devices
-                                .iter()
-                                .position(|entry| entry.instance_id == instance_id)
-                                .with_context(|| {
-                                    format!(
-                                        "no dynamically added VPCI device with instance ID '{instance_id}'"
-                                    )
-                                })?;
-                            if self.running {
-                                let driver = self.inner.driver_source.simple();
+                        let (instance_id, response) = rpc.split();
+                        let Some(index) = self.inner.dynamic_vpci_devices.iter()
+                            .position(|entry| entry.instance_id == instance_id)
+                        else {
+                            response.complete(Err(RemoteError::new(anyhow::anyhow!(
+                                "no dynamically added VPCI device with instance ID '{instance_id}'"
+                            ))));
+                            continue;
+                        };
+                        let entry = self.inner.dynamic_vpci_devices.remove(index);
+                        let running = self.running;
+                        let device_driver = self.inner.driver_source.simple();
+                        removals.start(driver, async move {
+                            if running {
                                 let eject_result = wait_for_vpci_eject(
-                                    &driver,
-                                    self.inner.dynamic_vpci_devices[index].device.eject(),
+                                    &device_driver,
+                                    entry.device.eject(),
                                     VPCI_EJECT_GRACE_PERIOD,
                                 )
                                 .await;
@@ -4210,11 +4327,9 @@ impl LoadedVm {
                                     ),
                                 }
                             }
-                            let entry = self.inner.dynamic_vpci_devices.remove(index);
                             entry.device.remove().await;
-                            anyhow::Ok(())
-                        })
-                        .await
+                            response.complete(Ok(()));
+                        });
                     }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
@@ -4228,6 +4343,11 @@ impl LoadedVm {
             }
         }
 
+        removals.drain().await;
+        while let Some((_, unit, device)) = self.inner.pcie_hotplug_devices.pop() {
+            unit.remove().await;
+            drop(device);
+        }
         while let Some(entry) = self.inner.dynamic_vpci_devices.pop() {
             entry.device.remove().await;
         }
@@ -4682,7 +4802,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         Some(
             self.0
                 .upgrade()?
-                .lock()
+                .lock_if_open()?
                 .supports_pci()?
                 .pci_cfg_read(offset, value),
         )
@@ -4692,7 +4812,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         Some(
             self.0
                 .upgrade()?
-                .lock()
+                .lock_if_open()?
                 .supports_pci()?
                 .pci_cfg_write(offset, value),
         )
@@ -4707,7 +4827,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         Some(
             self.0
                 .upgrade()?
-                .lock()
+                .lock_if_open()?
                 .supports_pci()?
                 .pci_cfg_read_with_routing(access_type, address, value),
         )
@@ -4722,7 +4842,7 @@ impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
         Some(
             self.0
                 .upgrade()?
-                .lock()
+                .lock_if_open()?
                 .supports_pci()?
                 .pci_cfg_write_with_routing(access_type, address, value),
         )

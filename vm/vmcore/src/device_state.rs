@@ -52,6 +52,10 @@ pub trait ChangeDeviceState {
     /// some later point when the background tasks are reaped.
     ///
     /// The device will not be used again after this returns.
+    /// Callers must revoke guest access before calling this method. The device
+    /// may still be running, so implementations must stop accepting new work and
+    /// finish issued I/O before releasing its resources. Dropping issued I/O
+    /// futures is not generally safe and can abort the process.
     fn teardown(&mut self) -> impl Send + Future<Output = ()> {
         async {}
     }

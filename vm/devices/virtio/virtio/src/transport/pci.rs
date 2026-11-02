@@ -787,6 +787,8 @@ impl ChangeDeviceState for VirtioPciDevice {
 
     async fn teardown(&mut self) {
         self.core.teardown().await;
+        self.pci.reset_interrupts();
+        self.pci.config_space.reset();
     }
 }
 

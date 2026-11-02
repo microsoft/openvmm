@@ -10,6 +10,7 @@ use futures::task::ArcWake;
 use futures::task::WakerRef;
 use futures::task::waker_ref;
 use inspect::InspectMut;
+use pal_async::task::Spawn;
 use state_unit::SpawnedUnit;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
@@ -19,6 +20,7 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::slim_event::SlimEvent;
+use vmcore::vm_task::VmTaskDriver;
 
 pub struct ArcMutexChipsetDeviceUnit {
     device: Arc<CloseableMutex<dyn DynDevice>>,
@@ -28,7 +30,10 @@ pub struct ArcMutexChipsetDeviceUnit {
 }
 
 /// A unit handle for a dynamically managed device.
-pub struct DynamicDeviceUnit(pub(crate) SpawnedUnit<ArcMutexChipsetDeviceUnit>);
+pub struct DynamicDeviceUnit {
+    pub(crate) unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
+    pub(crate) driver: VmTaskDriver,
+}
 
 impl DynamicDeviceUnit {
     /// Removes the dynamically managed device and releases its backing resources.
@@ -36,9 +41,22 @@ impl DynamicDeviceUnit {
     /// Waits for the state-unit task to exit before invoking device teardown.
     /// Resources owned by device-specific background tasks must be released
     /// before this returns, even if other references to the device remain.
-    pub async fn remove(self) {
-        let unit = self.0.remove().await;
-        unit.device.close().teardown().await;
+    ///
+    /// Dropping the returned future does not cancel removal or issued I/O.
+    pub fn remove(self) -> impl Future<Output = ()> {
+        let (send, recv) = mesh::oneshot();
+        self.driver
+            .spawn("remove-chipset-device", async move {
+                let unit = self.unit.remove().await;
+                let mut device = unit.device.close_permanently();
+                device.teardown().await;
+                drop(device);
+                send.send(());
+            })
+            .detach();
+        async move {
+            recv.await.expect("device removal task failed");
+        }
     }
 }
 
@@ -321,5 +339,204 @@ mod tests {
                 .is_err()
         );
         assert!(!device.lock().restored);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DebugEventHandler;
+    use crate::chipset::Chipset;
+    use crate::chipset::io_ranges::IoRanges;
+    use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
+    use chipset_device::mmio::MmioIntercept;
+    use chipset_device::pio::PortIoIntercept;
+    use pal_async::DefaultDriver;
+    use state_unit::StateUnits;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    struct DropMarker(Arc<AtomicBool>);
+
+    impl Drop for DropMarker {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct RemovingDevice {
+        accesses: Arc<AtomicUsize>,
+        entered: mesh::Sender<()>,
+        release: mesh::Receiver<()>,
+        finished: mesh::Sender<()>,
+        io: Option<DropMarker>,
+    }
+
+    struct TestDebugEventHandler;
+
+    impl DebugEventHandler for TestDebugEventHandler {
+        fn on_debug_break(&self, _: Option<u32>) {
+            panic!("unexpected debug break");
+        }
+    }
+
+    impl ChipsetDevice for RemovingDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
+        }
+
+        fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+            Some(self)
+        }
+    }
+
+    impl MmioIntercept for RemovingDevice {
+        fn mmio_read(&mut self, _: u64, data: &mut [u8]) -> IoResult {
+            self.accesses.fetch_add(1, Ordering::SeqCst);
+            data.fill(0x5a);
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, _: u64, _: &[u8]) -> IoResult {
+            self.accesses.fetch_add(1, Ordering::SeqCst);
+            IoResult::Ok
+        }
+    }
+
+    impl PortIoIntercept for RemovingDevice {
+        fn io_read(&mut self, _: u16, data: &mut [u8]) -> IoResult {
+            self.mmio_read(0, data)
+        }
+
+        fn io_write(&mut self, _: u16, data: &[u8]) -> IoResult {
+            self.mmio_write(0, data)
+        }
+    }
+
+    impl SaveRestore for RemovingDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    impl ChangeDeviceState for RemovingDevice {
+        fn start(&mut self) {}
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+
+        async fn teardown(&mut self) {
+            let io = self.io.take();
+            self.entered.send(());
+            self.release.recv().await.unwrap();
+            drop(io);
+            self.finished.send(());
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn removal_revokes_io_without_cancelling_cleanup(driver: DefaultDriver) {
+        for abandon_waiter in [false, true] {
+            let (entered, mut entered_recv) = mesh::channel();
+            let (release, release_recv) = mesh::channel();
+            let (finished, mut finished_recv) = mesh::channel();
+            let io_dropped = Arc::new(AtomicBool::new(false));
+            let accesses = Arc::new(AtomicUsize::new(0));
+            let device = Arc::new(CloseableMutex::new(RemovingDevice {
+                accesses: accesses.clone(),
+                entered,
+                release: release_recv,
+                finished,
+                io: Some(DropMarker(io_dropped.clone())),
+            }));
+            let erased: Arc<CloseableMutex<dyn ChipsetDevice>> = device.clone();
+            let mmio_ranges = IoRanges::<u64>::new(false, None);
+            mmio_ranges
+                .register(
+                    0x1000,
+                    0x1fff,
+                    "bar".into(),
+                    Arc::downgrade(&erased),
+                    "test".into(),
+                )
+                .unwrap();
+            let pio_ranges = IoRanges::<u16>::new(false, None);
+            pio_ranges
+                .register(
+                    0x100,
+                    0x103,
+                    "pio".into(),
+                    Arc::downgrade(&erased),
+                    "test".into(),
+                )
+                .unwrap();
+            let stale_lookup = mmio_ranges.lookup(0x1000, true);
+            let chipset = Chipset {
+                mmio_ranges,
+                pio_ranges,
+                pic: None,
+                eoi_handler: None,
+                debug_event_handler: Arc::new(TestDebugEventHandler),
+            };
+            let mut data = [0; 4];
+            chipset.mmio_read(0, 0x1000, &mut data).await;
+            assert_eq!(data, [0x5a; 4]);
+            let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+            let task_driver = source.simple();
+            let units = StateUnits::new();
+            let unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+            let unit = units
+                .add("test")
+                .spawn(task_driver.clone(), |recv| unit.run(recv))
+                .unwrap();
+            let mut removal = Some(
+                DynamicDeviceUnit {
+                    unit,
+                    driver: task_driver,
+                }
+                .remove(),
+            );
+            entered_recv.recv().await.unwrap();
+            if abandon_waiter {
+                drop(removal.take());
+            }
+
+            assert!(stale_lookup.dev.lock_if_open().is_none());
+            chipset.mmio_read(0, 0x1000, &mut data).await;
+            assert_eq!(data, [0xff; 4]);
+            chipset.mmio_write(0, 0x1000, &[1; 4]).await;
+            chipset.io_read(0, 0x100, &mut data).await;
+            assert_eq!(data, [0xff; 4]);
+            chipset.io_write(0, 0x100, &[1; 4]).await;
+            assert_eq!(accesses.load(Ordering::SeqCst), 1);
+            assert!(!io_dropped.load(Ordering::SeqCst));
+
+            release.send(());
+            finished_recv.recv().await.unwrap();
+            if let Some(removal) = removal {
+                removal.await;
+            }
+            assert!(io_dropped.load(Ordering::SeqCst));
+            assert!(device.lock_if_open().is_none());
+            chipset.mmio_read(0, 0x1000, &mut data).await;
+            assert_eq!(data, [0xff; 4]);
+        }
     }
 }

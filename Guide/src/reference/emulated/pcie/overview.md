@@ -64,6 +64,17 @@ These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
 
+Removal success means that device teardown has finished, including the
+release of resources held by device background tasks. Before teardown,
+guest access is permanently revoked so late accesses cannot reach the
+removed device. Issued disk I/O is drained, not discarded by dropping its
+future.
+
+A slow backend can keep the removal RPC pending. Inspection, memory
+accesses, and NMI requests remain available; state transitions and further
+hotplug operations wait for removal to finish. Worker shutdown also waits
+for pending cleanup before destroying the partition.
+
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)
 trait for the test API (`add_pcie_device` / `remove_pcie_device`)

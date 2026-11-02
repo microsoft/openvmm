@@ -366,6 +366,11 @@ impl ChangeDeviceState for VirtioMmioDevice {
     async fn reset(&mut self) {
         self.core.reset(&mut self.mmio).await;
     }
+
+    async fn teardown(&mut self) {
+        self.core.teardown().await;
+        self.mmio.reset_interrupts();
+    }
 }
 
 impl PollDevice for VirtioMmioDevice {
