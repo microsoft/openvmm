@@ -39,6 +39,7 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::cfg_cargo_common_flags::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
         ctx.import::<flowey_lib_common::install_cargo_nextest::Node>();
+        ctx.import::<flowey_lib_common::install_cargo_llvm_cov::Node>();
     }
 
     fn emit(requests: Vec<Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -73,12 +74,17 @@ impl FlowNode for Node {
                 } => (xtask, runs, options, working_dir, pre_run_deps, done),
             };
             let flags = ctx.reqv(flowey_lib_common::cfg_cargo_common_flags::Request::GetFlags);
+            ctx.req(flowey_lib_common::install_rust::Request::InstallComponent(
+                format!("llvm-tools-{}", target_lexicon::Triple::host(),),
+            ));
             let toolchain = ctx.reqv(flowey_lib_common::install_rust::Request::GetRustupToolchain);
             let nextest = ctx.reqv(flowey_lib_common::install_cargo_nextest::Request);
+            let llvm_cov = ctx.reqv(flowey_lib_common::install_cargo_llvm_cov::Request);
             ctx.emit_rust_step("collect local unit test coverage", |ctx| {
                 done.claim(ctx);
                 pre_run_deps.claim(ctx);
                 nextest.claim(ctx);
+                llvm_cov.claim(ctx);
                 let flags = flags.claim(ctx);
                 let toolchain = toolchain.claim(ctx);
                 let working_dir = working_dir.claim(ctx);

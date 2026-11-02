@@ -132,7 +132,7 @@ selected tests exercise. Setup, scope, and diagnostics are documented in
 `Guide/src/dev_guide/tests/unit.md#local-coverage`.
 
 ```bash
-cargo xflowey unit-test-coverage -p <package> --base <review-base>
+cargo xflowey unit-test-coverage -p <package> --base <review-base> --install-missing-deps
 python3 repo_support/unit_test_coverage.py query --changed
 ```
 

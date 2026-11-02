@@ -28,7 +28,7 @@ pub struct UnitTestCoverageCli {
     #[clap(long)]
     output: Option<PathBuf>,
 
-    /// Install missing build dependencies using Flowey's normal setup.
+    /// Install missing build dependencies and Rust components using Flowey's normal setup.
     #[clap(long)]
     install_missing_deps: bool,
 }

@@ -54,10 +54,16 @@ On Linux x64 or ARM64 with a GNU Rust toolchain, collect LLVM line coverage
 with per-test attribution using:
 
 ```bash
-cargo install cargo-llvm-cov --locked --version 0.8.5
-rustup component add llvm-tools-preview
-cargo xflowey unit-test-coverage -p memory_range -p headervec
+cargo xflowey unit-test-coverage -p memory_range -p headervec --install-missing-deps
 ```
+
+Flowey installs and caches the repository-pinned `cargo-llvm-cov`, just as it
+manages nextest. It also checks for the compiler host's LLVM tools in the
+selected Rust toolchain; `--install-missing-deps` allows Rust setup to install
+that component and other missing build dependencies. Once those prerequisites
+are present, the flag can be omitted. Custom or externally managed toolchains
+must provide matching LLVM tools themselves. The internal Python worker does
+not install tools.
 
 The command selects the native host architecture: `x86_64-unknown-linux-gnu`
 on x64 or `aarch64-unknown-linux-gnu` on ARM64. The same workflow and queries
