@@ -556,12 +556,11 @@ mod tests {
     }
 
     #[test]
-    #[expect(deprecated)]
     fn pkcs11_rsa_aes_key_unwrap_roundtrip() {
         // Exercise both the default (SHA-1) and SHA-384 key-wrap schemes.
-        for (rsa_aes_key_wrap_384_used, oaep_hash_algorithm) in
-            [(false, HashAlgorithm::Sha1), (true, HashAlgorithm::Sha384)]
-        {
+        #[expect(deprecated)]
+        let algorithms = [(false, HashAlgorithm::Sha1), (true, HashAlgorithm::Sha384)];
+        for (rsa_aes_key_wrap_384_used, oaep_hash_algorithm) in algorithms {
             let target_key = RsaKeyPair::generate(2048).unwrap();
             let pkcs8_target_key = target_key.to_pkcs8_der().unwrap();
 
