@@ -347,15 +347,18 @@ mod save_restore {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::Register;
+    use super::WatchdogServices;
     use crate::platform::WatchdogCallback;
     use crate::platform::WatchdogPlatform;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::future::Future;
     use std::pin::pin;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
+    use std::task::Context;
     use std::task::Wake;
     use std::task::Waker;
     use test_with_tracing::test;
@@ -367,12 +370,14 @@ mod tests {
     /// store served by the thread that polls the device.
     struct GatedPlatform {
         permit: mesh::Receiver<()>,
+        started: Arc<AtomicUsize>,
         completed: Arc<AtomicUsize>,
     }
 
     #[async_trait::async_trait]
     impl WatchdogPlatform for GatedPlatform {
         async fn on_timeout(&mut self) {
+            self.started.fetch_add(1, Ordering::SeqCst);
             self.permit.recv().await.unwrap();
             self.completed.fetch_add(1, Ordering::SeqCst);
         }
@@ -388,6 +393,7 @@ mod tests {
         watchdog: WatchdogServices,
         keeper: VmTimeKeeper,
         permit: mesh::Sender<()>,
+        started: Arc<AtomicUsize>,
         completed: Arc<AtomicUsize>,
     }
 
@@ -408,9 +414,11 @@ mod tests {
         let keeper = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
         let vmtime = keeper.builder().build(driver).await.unwrap();
         let (permit, permit_recv) = mesh::channel();
+        let started = Arc::new(AtomicUsize::new(0));
         let completed = Arc::new(AtomicUsize::new(0));
         let platform = GatedPlatform {
             permit: permit_recv,
+            started: started.clone(),
             completed: completed.clone(),
         };
         let watchdog =
@@ -420,6 +428,7 @@ mod tests {
             watchdog,
             keeper,
             permit,
+            started,
             completed,
         }
     }
@@ -440,15 +449,7 @@ mod tests {
     /// Arms a one-second count.
     fn arm(watchdog: &mut WatchdogServices) {
         watchdog.write(Register::Count, 1).unwrap();
-        watchdog
-            .write(
-                Register::Config,
-                ConfigBits::new()
-                    .with_configured(true)
-                    .with_enabled(true)
-                    .into(),
-            )
-            .unwrap();
+        watchdog.write(Register::Config, 0b11).unwrap();
     }
 
     /// Moves the stopped clock to `secs`.
@@ -468,6 +469,7 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit,
+            started,
             completed,
         } = test_watchdog(&driver).await;
 
@@ -476,18 +478,17 @@ mod tests {
         let wakes = Arc::new(WakeCounter::default());
         let waker = Waker::from(wakes.clone());
         watchdog.poll(&mut Context::from_waker(&waker));
-        assert!(watchdog.timeout_action.is_some());
+        assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 0);
-        assert!(!watchdog.state.config.enabled());
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0);
 
         let before = wakes.0.load(Ordering::SeqCst);
         permit.send(());
         assert!(wakes.0.load(Ordering::SeqCst) > before);
         poll_once(&mut watchdog);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert!(watchdog.timeout_action.is_none());
-        assert!(watchdog.platform.is_some());
         poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 
@@ -500,12 +501,11 @@ mod tests {
             mut keeper,
             permit,
             completed,
+            ..
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.timeout_action.is_some());
-
         {
             let wakes = Arc::new(WakeCounter::default());
             let waker = Waker::from(wakes.clone());
@@ -523,9 +523,13 @@ mod tests {
             finish.await;
         }
         assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert!(watchdog.timeout_action.is_none());
-        assert!(watchdog.platform.is_some());
-        watchdog.finish_timeout_action().await;
+        let mut finish = pin!(watchdog.finish_timeout_action());
+        assert!(
+            finish
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_ready()
+        );
         assert_eq!(completed.load(Ordering::SeqCst), 1);
     }
 
@@ -535,6 +539,7 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit,
+            started,
             completed,
         } = test_watchdog(&driver).await;
 
@@ -549,7 +554,7 @@ mod tests {
                     .is_pending()
             );
         }
-        assert!(watchdog.timeout_action.is_some());
+        assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 0);
         {
             let mut finish = pin!(watchdog.finish_timeout_action());
@@ -562,12 +567,50 @@ mod tests {
             permit.send(());
             finish.await;
         }
+        assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert!(watchdog.platform.is_some());
-        assert!(watchdog.timeout_action.is_none());
 
         arm_and_expire(&mut watchdog, &mut keeper, 4).await;
         poll_once(&mut watchdog);
+        permit.send(());
+        watchdog.finish_timeout_action().await;
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+    }
+
+    #[async_test]
+    async fn finish_does_not_dispatch_an_expired_timer(driver: DefaultDriver) {
+        let TestWatchdog {
+            mut watchdog,
+            mut keeper,
+            permit,
+            started,
+            completed,
+        } = test_watchdog(&driver).await;
+
+        arm_and_expire(&mut watchdog, &mut keeper, 2).await;
+        {
+            let mut finish = pin!(watchdog.finish_timeout_action());
+            assert!(
+                finish
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_ready()
+            );
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0b11);
+
+        poll_once(&mut watchdog);
+        arm_and_expire(&mut watchdog, &mut keeper, 4).await;
+        permit.send(());
+        watchdog.finish_timeout_action().await;
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0b11);
+
+        poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
         permit.send(());
         watchdog.finish_timeout_action().await;
         assert_eq!(completed.load(Ordering::SeqCst), 2);
@@ -580,16 +623,20 @@ mod tests {
         let TestWatchdog {
             mut watchdog,
             mut keeper,
-            permit: _permit,
-            completed: _completed,
+            permit,
+            started,
+            completed,
         } = test_watchdog(&driver).await;
 
         arm(&mut watchdog);
         watchdog.reset();
         advance_to(&mut keeper, 2).await;
 
+        permit.send(());
         poll_once(&mut watchdog);
-        assert!(watchdog.timeout_action.is_none());
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0);
+        assert_eq!(started.load(Ordering::SeqCst), 0);
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
     }
 
     /// Reset relies on stop having finished the action.
@@ -601,6 +648,7 @@ mod tests {
             mut keeper,
             permit: _permit,
             completed: _completed,
+            ..
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
@@ -614,34 +662,36 @@ mod tests {
             mut watchdog,
             mut keeper,
             permit,
+            started,
             completed,
         } = test_watchdog(&driver).await;
 
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
-        assert!(watchdog.timeout_action.is_some());
+        assert_eq!(started.load(Ordering::SeqCst), 1);
 
         arm_and_expire(&mut watchdog, &mut keeper, 4).await;
         poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 0);
-        assert!(watchdog.state.config.enabled());
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0b11);
 
         permit.send(());
         poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert!(watchdog.timeout_action.is_some());
-        assert!(!watchdog.state.config.enabled());
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0);
 
         watchdog.write(Register::Config, 0).unwrap();
         poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
 
         permit.send(());
         poll_once(&mut watchdog);
         assert_eq!(completed.load(Ordering::SeqCst), 2);
-        assert!(watchdog.timeout_action.is_none());
-        assert!(watchdog.platform.is_some());
         poll_once(&mut watchdog);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
         assert_eq!(completed.load(Ordering::SeqCst), 2);
     }
 
@@ -652,15 +702,14 @@ mod tests {
             mut keeper,
             permit,
             completed,
+            ..
         } = test_watchdog(&driver).await;
 
         permit.send(());
         arm_and_expire(&mut watchdog, &mut keeper, 2).await;
         poll_once(&mut watchdog);
         assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert!(watchdog.timeout_action.is_none());
-        assert!(watchdog.platform.is_some());
-        assert!(!watchdog.state.config.enabled());
+        assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0);
     }
 
     #[async_test]
@@ -714,11 +763,10 @@ mod tests {
             arm_and_expire(&mut watchdog, &mut keeper, 2).await;
             poll_once(&mut watchdog);
             assert_eq!(completed.load(Ordering::SeqCst), 0);
-            assert!(watchdog.timeout_action.is_some());
+            assert_eq!(watchdog.read(Register::Config).unwrap() & 0b11, 0);
             permit.send(());
             poll_once(&mut watchdog);
             assert_eq!(completed.load(Ordering::SeqCst), 1);
-            assert!(watchdog.timeout_action.is_none());
             poll_once(&mut watchdog);
             assert_eq!(completed.load(Ordering::SeqCst), 1);
         }
