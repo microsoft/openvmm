@@ -81,7 +81,7 @@ pub enum StateRequest {
     /// Save state of a stopped unit.
     Save(FailableRpc<(), Option<SavedStateBlob>>),
 
-    /// Restore state of a stopped unit.
+    /// Restore state of a stopped, newly constructed or reset unit.
     Restore(FailableRpc<SavedStateBlob, ()>),
 
     /// Inspect state.
@@ -113,7 +113,9 @@ pub trait StateUnit: InspectMut {
 
     /// Restore state.
     ///
-    /// Must only be called while stopped.
+    /// Must only be called while stopped, after construction or a successful
+    /// reset. Starting or restoring consumes this eligibility; another restore
+    /// requires a reset even if the previous restore failed.
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
 }
 
@@ -208,6 +210,7 @@ impl StateRequest {
 pub struct StateUnits {
     inner: Arc<Mutex<Inner>>,
     running: bool,
+    restore_allowed: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Inspect)]
@@ -379,7 +382,15 @@ pub struct SavedStateUnit {
 pub struct StateTransitionError {
     op: &'static str,
     #[source]
-    errors: UnitErrorSet,
+    error: StateTransitionErrorKind,
+}
+
+#[derive(Debug, Error)]
+enum StateTransitionErrorKind {
+    #[error(transparent)]
+    Units(UnitErrorSet),
+    #[error("restore requires a newly constructed or successfully reset destination")]
+    RestoreRequiresReset,
 }
 
 fn extract<T, E: Into<anyhow::Error>, U>(
@@ -404,7 +415,7 @@ fn extract<T, E: Into<anyhow::Error>, U>(
     } else {
         Err(StateTransitionError {
             op,
-            errors: UnitErrorSet(errors),
+            error: StateTransitionErrorKind::Units(UnitErrorSet(errors)),
         })
     }
 }
@@ -442,6 +453,7 @@ impl StateUnits {
                 names: HashMap::new(),
             })),
             running: false,
+            restore_allowed: true,
         }
     }
 
@@ -486,6 +498,7 @@ impl StateUnits {
 
     /// Starts all the state units.
     pub async fn start(&mut self) {
+        self.restore_allowed = false;
         self.run_op(
             "start",
             None,
@@ -524,6 +537,7 @@ impl StateUnits {
     /// Panics if running.
     pub async fn reset(&mut self) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        self.restore_allowed = false;
         // Reset in dependency order so that dependants observe their
         // dependencies' reset state.
         let r = self
@@ -540,6 +554,7 @@ impl StateUnits {
             .await;
 
         check("reset", r)?;
+        self.restore_allowed = true;
         Ok(())
     }
 
@@ -575,12 +590,22 @@ impl StateUnits {
 
     /// Restores all the state units.
     ///
+    /// Requires a newly constructed or successfully reset destination. Starting
+    /// or beginning a restore consumes this eligibility. Saving does not, and
+    /// saving restored state before start is supported.
+    ///
     /// Panics if running.
     pub async fn restore(
         &mut self,
         states: Vec<SavedStateUnit>,
     ) -> Result<(), StateTransitionError> {
         assert!(!self.running);
+        if !self.restore_allowed {
+            return Err(StateTransitionError {
+                op: "restore",
+                error: StateTransitionErrorKind::RestoreRequiresReset,
+            });
+        }
 
         #[derive(Debug, Error)]
         enum RestoreUnitError {
@@ -613,6 +638,7 @@ impl StateUnits {
 
         check("restore", r)?;
 
+        self.restore_allowed = false;
         let r = self
             .run_op(
                 "restore",
@@ -1020,6 +1046,7 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    use super::StateTransitionErrorKind;
     use super::StateUnit;
     use super::StateUnits;
     use crate::run_unit;
@@ -1029,6 +1056,7 @@ mod tests {
     use pal_async::async_test;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
     use test_with_tracing::test;
@@ -1121,6 +1149,126 @@ mod tests {
         }
     }
 
+    #[derive(InspectMut)]
+    struct FailingUnit {
+        #[inspect(skip)]
+        fail_restore: Arc<AtomicBool>,
+        #[inspect(skip)]
+        fail_reset: Arc<AtomicBool>,
+        #[inspect(skip)]
+        restore_calls: Arc<AtomicUsize>,
+    }
+
+    impl StateUnit for FailingUnit {
+        async fn start(&mut self) {}
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            if self.fail_reset.load(Ordering::Relaxed) {
+                anyhow::bail!("injected reset failure");
+            }
+            Ok(())
+        }
+
+        async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+            Ok(Some(SavedStateBlob::new(SavedState(false))))
+        }
+
+        async fn restore(&mut self, _: SavedStateBlob) -> Result<(), RestoreError> {
+            self.restore_calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_restore.load(Ordering::Relaxed) {
+                return Err(RestoreError::Other(anyhow::anyhow!(
+                    "injected restore failure"
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn restore_eligibility_requires_construction_or_reset(driver: DefaultDriver) {
+        let mut units = StateUnits::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let _unit = units
+            .add("device")
+            .spawn(&driver, |recv| {
+                run_unit(
+                    FailingUnit {
+                        fail_restore: Default::default(),
+                        fail_reset: Default::default(),
+                        restore_calls: calls.clone(),
+                    },
+                    recv,
+                )
+            })
+            .unwrap();
+        let state = units.save().await.unwrap();
+        units.restore(state).await.unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        let state = units.save().await.unwrap();
+        let err = units.restore(state).await.unwrap_err();
+        assert!(matches!(
+            err.error,
+            StateTransitionErrorKind::RestoreRequiresReset
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        units.reset().await.unwrap();
+        let state = units.save().await.unwrap();
+        units.restore(state).await.unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        units.start().await;
+        units.stop().await;
+        let state = units.save().await.unwrap();
+        assert!(units.restore(state).await.is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[async_test]
+    async fn failed_restore_and_reset_do_not_allow_restore_retry(driver: DefaultDriver) {
+        let mut units = StateUnits::new();
+        let fail_restore = Arc::new(AtomicBool::new(true));
+        let fail_reset = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let _unit = units
+            .add("device")
+            .spawn(&driver, |recv| {
+                run_unit(
+                    FailingUnit {
+                        fail_restore: fail_restore.clone(),
+                        fail_reset: fail_reset.clone(),
+                        restore_calls: calls.clone(),
+                    },
+                    recv,
+                )
+            })
+            .unwrap();
+        let state = units.save().await.unwrap();
+        let err = units.restore(state).await.unwrap_err();
+        let StateTransitionErrorKind::Units(unit_errors) = err.error else {
+            panic!("expected named unit failures");
+        };
+        assert_eq!(unit_errors.0.len(), 1);
+        assert_eq!(unit_errors.0[0].0.as_ref(), "device");
+        let state = units.save().await.unwrap();
+        assert!(units.restore(state).await.is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        fail_reset.store(true, Ordering::Relaxed);
+        assert!(units.reset().await.is_err());
+        let state = units.save().await.unwrap();
+        assert!(units.restore(state).await.is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        fail_reset.store(false, Ordering::Relaxed);
+        fail_restore.store(false, Ordering::Relaxed);
+        units.reset().await.unwrap();
+        let state = units.save().await.unwrap();
+        units.restore(state).await.unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
     #[async_test]
     async fn test_state_change(driver: DefaultDriver) {
         let mut units = StateUnits::new();
@@ -1158,6 +1306,7 @@ mod tests {
 
         a_val.store(false, Ordering::Relaxed);
 
+        units.reset().await.unwrap();
         units.restore(state).await.unwrap();
 
         assert!(a_val.load(Ordering::Relaxed));
@@ -1204,6 +1353,7 @@ mod tests {
 
         a_val.store(false, Ordering::Relaxed);
 
+        units.reset().await.unwrap();
         units.restore(state).await.unwrap();
     }
 

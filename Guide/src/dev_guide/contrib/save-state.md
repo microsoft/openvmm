@@ -31,6 +31,15 @@ Here are the principles you must maintain when adding new save & restore code:
     * Enum: if you need to add an enum, add it as `Option<MyEnum>` instead.
 4. **Be particularly careful when updating saved state**: See below.
 
+### Destination lifecycle
+
+Restore into a stopped VM whose components have just been constructed or
+successfully reset. Stopping a previously running VM is not sufficient: reset it
+before restoring. After a restore attempt, reset before attempting another
+restore, including after a failure. Saving restored state before starting the VM
+is supported; restoring that snapshot still requires a fresh or reset
+destination.
+
 ### Synchronous and asynchronous implementations
 
 New code should implement `vmcore::save_restore::AsyncSaveRestore`, even if it
