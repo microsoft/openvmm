@@ -604,9 +604,8 @@ immediately with a clear error if any active device does not support it.
 - VMs using PCAT firmware do not support save/restore
 - Standard-machine restore still requires matching `--memory` and
   `--processors`. MicroVM restore reads them authoritatively from the manifest
-  and rejects overrides. Persisted microVM ABI value 3 and boot-layout value 2
-  are supported; a snapshot of ABI value 2, whose devices offered
-  `VIRTIO_F_ACCESS_PLATFORM` and used ISA IRQs, must be recaptured.
+  and rejects overrides. Restore supports persisted microVM ABI value 1 and
+  boot-layout value 1.
 - MicroVM restore requires the backend, CPU generation, and CPU profile of
   the capture, and an OpenVMM build that computes the same effective CPUID.
   A host profile's snapshot, including one of a cold boot whose `auto` fell
