@@ -659,55 +659,51 @@ pub struct SnapshotMachineContract {
     /// Required host attachments.
     #[mesh(10)]
     pub attachments: Vec<SnapshotAttachment>,
-    // Fields 11 to 15, 17, and 20 held the clock fields of manifest versions
-    // 2 to 5. They are retired, and their numbers are never reused.
-    /// Version of the fixed cold-boot and memory layout.
-    #[mesh(16)]
-    pub boot_layout_version: u32,
-    /// Static identity of the optional microVM virtio-net device.
-    #[mesh(18)]
-    pub microvm_network: Option<SnapshotMicrovmNetwork>,
-    /// Guest-visible policy of the optional microVM virtio-fs device.
-    #[mesh(19)]
-    pub microvm_filesystem: Option<SnapshotMicrovmFilesystem>,
-    /// Fixed-role sandbox blocks in guest-visible order.
-    #[mesh(21)]
-    pub microvm_sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
-    /// Version of the reserved restore-attachable microVM virtio-fs slot.
-    #[mesh(22)]
-    pub microvm_filesystem_slot_version: u32,
-    /// Virtual processors online at boot, or zero when restore activation is disabled.
-    #[mesh(23)]
-    pub boot_online_vp_count: u32,
-    /// Virtio interrupt-delivery mode.
-    #[mesh(24)]
-    pub virtio_interrupt_mode: String,
-    /// Guest-physical base of the shared interrupt-status page, or zero when absent.
-    #[mesh(25)]
-    pub virtio_shared_status_page_gpa: u64,
-    /// Size of the shared interrupt-status page, or zero when absent.
-    #[mesh(26)]
-    pub virtio_shared_status_page_size: u64,
-    /// Restore-time memory expansion capability version, or zero when absent.
-    #[mesh(27)]
-    pub memory_expansion_version: u32,
-    /// Immutable maximum guest RAM size for restore-time expansion.
-    #[mesh(28)]
-    pub memory_capacity_bytes: u64,
-    /// Required alignment of every restore-time memory target and range.
-    #[mesh(29)]
-    pub memory_block_size_bytes: u64,
-    /// Canonical capacity ranges absent from the captured boot memory map.
-    #[mesh(30)]
-    pub memory_expansion_ranges: Vec<SnapshotMemoryExpansionRange>,
     /// The NVX time ABI time contract; required.
-    #[mesh(31)]
+    #[mesh(11)]
     pub time: Option<openvmm_defs::time_abi::SnapshotTimeContract>,
     /// The NVX time ABI CPU profile record; required.
-    #[mesh(32)]
+    #[mesh(12)]
     pub cpu_profile: Option<openvmm_defs::time_abi::SnapshotCpuProfile>,
-    // Field 33 held the policies of a second virtio-fs slot, which the
-    // microVM no longer has. It is retired, and its number is never reused.
+    /// Version of the fixed cold-boot and memory layout.
+    #[mesh(13)]
+    pub boot_layout_version: u32,
+    /// Static identity of the optional microVM virtio-net device.
+    #[mesh(14)]
+    pub microvm_network: Option<SnapshotMicrovmNetwork>,
+    /// Guest-visible policy of the optional microVM virtio-fs device.
+    #[mesh(15)]
+    pub microvm_filesystem: Option<SnapshotMicrovmFilesystem>,
+    /// Fixed-role sandbox blocks in guest-visible order.
+    #[mesh(16)]
+    pub microvm_sandbox_blocks: Vec<SnapshotMicrovmSandboxBlock>,
+    /// Version of the reserved restore-attachable microVM virtio-fs slot.
+    #[mesh(17)]
+    pub microvm_filesystem_slot_version: u32,
+    /// Virtual processors online at boot, or zero when restore activation is disabled.
+    #[mesh(18)]
+    pub boot_online_vp_count: u32,
+    /// Virtio interrupt-delivery mode.
+    #[mesh(19)]
+    pub virtio_interrupt_mode: String,
+    /// Guest-physical base of the shared interrupt-status page, or zero when absent.
+    #[mesh(20)]
+    pub virtio_shared_status_page_gpa: u64,
+    /// Size of the shared interrupt-status page, or zero when absent.
+    #[mesh(21)]
+    pub virtio_shared_status_page_size: u64,
+    /// Restore-time memory expansion capability version, or zero when absent.
+    #[mesh(22)]
+    pub memory_expansion_version: u32,
+    /// Immutable maximum guest RAM size for restore-time expansion.
+    #[mesh(23)]
+    pub memory_capacity_bytes: u64,
+    /// Required alignment of every restore-time memory target and range.
+    #[mesh(24)]
+    pub memory_block_size_bytes: u64,
+    /// Canonical capacity ranges absent from the captured boot memory map.
+    #[mesh(25)]
+    pub memory_expansion_ranges: Vec<SnapshotMemoryExpansionRange>,
 }
 
 impl SnapshotMachineContract {
