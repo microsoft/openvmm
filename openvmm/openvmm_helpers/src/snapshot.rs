@@ -16,9 +16,11 @@ pub mod time;
 pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
 
-/// The manifest format version, the only one this OpenVMM reads or writes.
-/// Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 6;
+/// The manifest format version, the only one this OpenVMM reads or writes:
+/// version 1 is upstream's manifest, which this format extends with its
+/// magic, saved-state schema, and machine contract. Bump when making
+/// incompatible changes.
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -219,14 +221,14 @@ mod tests {
         }
 
         let bytes = mesh::payload::encode(OldManifest {
-            version: 7,
+            version: 6,
             state_size_bytes: 4096,
         });
         let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
         assert!(manifest.snapshot_id.is_zero());
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
         assert!(
-            err.to_string().contains("version 7 is not supported"),
+            err.to_string().contains("version 6 is not supported"),
             "unexpected error: {err}"
         );
     }
