@@ -191,15 +191,10 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
         assert!(size_of::<U>() > 0);
 
         let base_layout = Layout::new::<HeaderSlice<T, [MaybeUninit<U>; 0]>>();
-        let layout = Layout::from_size_align(
-            base_layout
-                .size()
-                .checked_add(size_of::<U>().checked_mul(cap).unwrap())
-                .unwrap(),
-            base_layout.align(),
-        )
-        .unwrap()
-        .pad_to_align();
+        let layout = base_layout
+            .extend_packed(Layout::array::<U>(cap).unwrap())
+            .unwrap()
+            .pad_to_align();
 
         // SAFETY: `layout` is correctly constructed and is non-empty.
         let alloc = unsafe { alloc(layout) };
@@ -354,6 +349,7 @@ mod tests {
     use super::HeaderVec;
     use alloc::vec::Vec;
     use core::fmt::Debug;
+    use test_with_tracing::test;
 
     fn test<T: Copy + Eq + Debug, U: Copy + Eq + Debug, const N: usize>(
         head: T,
@@ -499,6 +495,55 @@ mod tests {
             assert_eq!(v.total_byte_len(), 8);
             assert_eq!(v.total_byte_capacity(), 8 + capacity.next_multiple_of(8));
         }
+    }
+
+    #[test]
+    fn test_overaligned_layout_and_growth() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(align(64))]
+        struct Aligned(u8);
+
+        fn check<T: Copy + Debug + Eq, U: Copy + Debug + Eq>(head: T, tail: U) {
+            let mut v = HeaderVec::<T, U, 0>::with_capacity(head, 3);
+            assert_eq!(v.tail_capacity(), 3);
+            assert_eq!(v.total_byte_capacity(), size_of::<HeaderSlice<T, [U; 3]>>());
+            assert!(
+                v.as_ptr()
+                    .addr()
+                    .is_multiple_of(align_of::<T>().max(align_of::<U>()))
+            );
+            v.extend_tail_from_slice(&[tail; 3]);
+            assert_eq!(v.total_byte_len(), size_of::<HeaderSlice<T, [U; 3]>>());
+            assert!(v.tail.as_ptr().addr().is_multiple_of(align_of::<U>()));
+
+            v.push_tail(tail);
+            assert_eq!(v.tail_capacity(), 8);
+            assert_eq!(v.total_byte_capacity(), size_of::<HeaderSlice<T, [U; 8]>>());
+            assert_eq!(v.total_byte_len(), size_of::<HeaderSlice<T, [U; 4]>>());
+            assert!(
+                v.as_ptr()
+                    .addr()
+                    .is_multiple_of(align_of::<T>().max(align_of::<U>()))
+            );
+            assert!(v.tail.as_ptr().addr().is_multiple_of(align_of::<U>()));
+            assert_eq!(v.head, head);
+            assert_eq!(v.tail, [tail; 4]);
+        }
+
+        check(Aligned(1), 2u8);
+        check(1u8, Aligned(2));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_capacity_overflow() {
+        let _ = HeaderVec::<u8, u64, 0>::with_capacity(0, usize::MAX);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_capacity_with_header_overflow() {
+        let _ = HeaderVec::<u64, u8, 0>::with_capacity(0, isize::MAX as usize);
     }
 
     #[test]

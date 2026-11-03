@@ -3504,6 +3504,9 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+dependencies = [
+ "test_with_tracing",
+]
 
 [[package]]
 name = "heapless"
