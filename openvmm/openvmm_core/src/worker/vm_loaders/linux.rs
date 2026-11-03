@@ -674,7 +674,7 @@ mod tests {
 
         let completed_ranges: Vec<_> = page_imports
             .iter()
-            .filter(|page| page.tag == "linux-snp-direct-ram")
+            .filter(|page| page.tag == "linux-direct-cvm-ram")
             .map(|page| page.range)
             .collect();
         assert_eq!(

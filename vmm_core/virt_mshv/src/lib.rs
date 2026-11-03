@@ -567,15 +567,18 @@ impl MshvPartitionInner {
 
     fn accept_initial_pages_inner(&self, pages: &[virt::InitialPageImport]) -> Result<(), Error> {
         #[cfg(guest_arch = "x86_64")]
-        if let Some(snp) = self.snp() {
-            self.snp_pre_accept_initial_pages(snp, pages)?;
-        }
+        let snp = if let Some(snp) = self.snp() {
+            let vmsa_gpa = self.snp_pre_accept_initial_pages(snp, pages)?;
+            Some((snp, vmsa_gpa))
+        } else {
+            None
+        };
 
         self.accept_initial_pages_inner_common(pages)?;
 
         #[cfg(guest_arch = "x86_64")]
-        if let Some(snp) = self.snp() {
-            self.snp_post_accept_initial_pages(snp)?;
+        if let Some((snp, vmsa_gpa)) = snp {
+            self.snp_post_accept_initial_pages(snp, vmsa_gpa)?;
         }
 
         #[cfg(guest_arch = "aarch64")]

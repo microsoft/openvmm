@@ -1006,7 +1006,12 @@ impl PetriVmConfigSetupCore<'_> {
                         }
                         Some(t) => anyhow::bail!("openvmm does not support {t:?} isolation"),
                     },
-                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
+                    boot_mode: if matches!(isolation, Some(IsolationType::Cca)) {
+                        // CCA only supports DT boot mode, so set it by default.
+                        openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+                    } else {
+                        openvmm_defs::config::LinuxDirectBootMode::Acpi
+                    },
                     smbios: Default::default(),
                 }
             }

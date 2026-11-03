@@ -24,7 +24,7 @@ pub(crate) enum CvmError {
     MapGuestMemory(#[source] KernelError),
     #[error("failed to import pages")]
     ImportIsolatedPages(#[source] KernelError),
-    #[error("failed to complete SNP isolated import")]
+    #[error("failed to complete isolated import")]
     CompleteIsolatedImport(#[source] KernelError),
 }
 
@@ -72,7 +72,7 @@ impl MshvPartitionInner {
 
         let mut batch_type = None;
         let mut batch = Vec::with_capacity(IMPORT_CHUNK_PAGES);
-        for page in ordered_import_pages(pages, true) {
+        for page in pages {
             let Some(page_type) = isolated_page_type(page.import_type)? else {
                 continue;
             };
@@ -121,22 +121,6 @@ impl MshvPartitionInner {
             .map_err(|e| CvmError::ImportIsolatedPages(e.into()))?;
         Ok(())
     }
-}
-
-/// Returns launch pages in the order required by the active launch source.
-///
-/// IGVM page directives must retain file order so MSHV reproduces the launch
-/// digest signed by the ID block. Loader-generated launches have no external
-/// measurement order, so they retain the existing deterministic GPA sort.
-pub(crate) fn ordered_import_pages(
-    pages: &[virt::InitialPageImport],
-    preserve_measurement_order: bool,
-) -> Vec<virt::InitialPageImport> {
-    let mut ordered_pages = pages.to_vec();
-    if !preserve_measurement_order {
-        ordered_pages.sort_by_key(|page| page.range.start());
-    }
-    ordered_pages
 }
 
 pub(crate) fn isolated_page_type(

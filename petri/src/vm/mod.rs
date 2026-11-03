@@ -3408,31 +3408,40 @@ impl BootDeviceType {
 }
 
 impl Firmware {
-    /// Constructs a standard [`Firmware::LinuxDirect`] configuration, or a
-    /// [`Firmware::IgvmLinuxDirect`] configuration if `isolation` is set.
+    /// Constructs a standard [`Firmware::LinuxDirect`] configuration.
     pub fn linux_direct(
         resolver: &ArtifactResolver<'_>,
         arch: MachineArch,
         isolation: Option<IsolationType>,
     ) -> Self {
         use petri_artifacts_vmm_test::artifacts::loadable::*;
-        use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
-        match (arch, isolation) {
-            (MachineArch::X86_64, None) => Firmware::LinuxDirect {
+        match arch {
+            MachineArch::X86_64 => Firmware::LinuxDirect {
                 isolation,
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_X64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_X64).erase(),
             },
-            (MachineArch::Aarch64, None) => Firmware::LinuxDirect {
+            MachineArch::Aarch64 => Firmware::LinuxDirect {
                 isolation,
                 kernel: resolver.require(LINUX_DIRECT_TEST_KERNEL_AARCH64).erase(),
                 initrd: resolver.require(LINUX_DIRECT_TEST_INITRD_AARCH64).erase(),
             },
+        }
+    }
+
+    /// Constructs a standard [`Firmware::IgvmLinuxDirect`] configuration.
+    pub fn igvm_linux_direct(
+        resolver: &ArtifactResolver<'_>,
+        arch: MachineArch,
+        isolation: Option<IsolationType>,
+    ) -> Self {
+        use petri_artifacts_vmm_test::artifacts::snp_igvm::SNP_LINUX_DIRECT_IGVM_X64;
+        match (arch, isolation) {
             (MachineArch::X86_64, Some(IsolationType::Snp)) => Firmware::IgvmLinuxDirect {
                 igvm_path: resolver.require(SNP_LINUX_DIRECT_IGVM_X64).erase(),
                 isolation: IsolationType::Snp,
             },
-            (arch, Some(isolation)) => {
+            _ => {
                 panic!("Linux direct does not support {isolation:?} isolation on {arch:?}")
             }
         }

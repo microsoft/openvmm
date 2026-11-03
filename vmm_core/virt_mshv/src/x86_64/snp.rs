@@ -13,8 +13,6 @@ use std::io;
 pub(crate) enum SnpError {
     #[error("failed to map the SNP GHCB page")]
     MapGhcbPage(#[source] io::Error),
-    #[error("invalid SNP initial page range")]
-    InvalidPageRange,
     #[error("missing SNP VMSA import")]
     MissingVmsa,
     #[error("multiple SNP VMSA imports")]
@@ -584,7 +582,7 @@ impl MshvPartitionInner {
         &self,
         snp: &SnpPartitionState,
         pages: &[virt::InitialPageImport],
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         let (vmsa_gpa, cpuid_gpa) = snp_launch_pages(pages)?;
         let sev_features = if let Some(config) = &snp.config {
             if vmsa_gpa != config.vmsa_gpa {
@@ -604,7 +602,7 @@ impl MshvPartitionInner {
         *snp.sev_features.lock() = Some(sev_features);
         self.write_snp_cpuid_page(cpuid_gpa)?;
 
-        Ok(())
+        Ok(vmsa_gpa)
     }
 
     fn write_snp_cpuid_page(&self, cpuid_gpa: u64) -> Result<(), Error> {
@@ -674,6 +672,7 @@ impl MshvPartitionInner {
     pub(crate) fn snp_post_accept_initial_pages(
         &self,
         state: &SnpPartitionState,
+        vmsa_gpa: u64,
     ) -> Result<(), Error> {
         let config = state.config.as_deref();
         let mut data = mshv_bindings::mshv_complete_isolated_import::default();
@@ -691,6 +690,16 @@ impl MshvPartitionInner {
         self.vmfd
             .complete_isolated_import(&data)
             .map_err(|e| CvmError::CompleteIsolatedImport(e.into()))?;
+
+        let sev_control =
+            mshv_bindings::snp::get_sev_control_register(vmsa_gpa / hvdef::HV_PAGE_SIZE);
+        self.bsp_vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvX64RegisterName::SevControl,
+                sev_control,
+            ))])
+            .map_err(ErrorInner::Register)?;
+
         Ok(())
     }
 }
@@ -836,7 +845,7 @@ fn snp_launch_pages(pages: &[virt::InitialPageImport]) -> Result<(u64, u64), Err
         }
         validate_page_range(page.range)?;
         if page.range.len() != hvdef::HV_PAGE_SIZE {
-            return Err(SnpError::InvalidPageRange.into());
+            return Err(CvmError::InvalidPageRange.into());
         }
         *slot = Some(page.range.start());
     }
@@ -1651,7 +1660,6 @@ mod tests {
     use super::*;
     use crate::cvm::CvmError;
     use crate::cvm::isolated_page_type;
-    use crate::cvm::ordered_import_pages;
     use test_with_tracing::test;
 
     fn snp_config(features: x86defs::snp::SevFeatures) -> virt::SnpConfig {
@@ -2058,28 +2066,6 @@ mod tests {
     }
 
     #[test]
-    fn orders_snp_import_pages_for_launch_source() {
-        let pages = [
-            virt::InitialPageImport {
-                range: MemoryRange::new(0x3000..0x4000),
-                import_type: virt::InitialPageImportType::Normal,
-                tag: "third",
-            },
-            virt::InitialPageImport {
-                range: MemoryRange::new(0x1000..0x2000),
-                import_type: virt::InitialPageImportType::Normal,
-                tag: "first",
-            },
-        ];
-
-        assert_eq!(ordered_import_pages(&pages, true), pages);
-        assert_eq!(
-            ordered_import_pages(&pages, false),
-            [pages[1].clone(), pages[0].clone()]
-        );
-    }
-
-    #[test]
     fn validates_unique_snp_pages() {
         let pages = [
             virt::InitialPageImport {
@@ -2107,7 +2093,7 @@ mod tests {
     fn rejects_invalid_snp_page_ranges() {
         assert!(matches!(
             validate_page_range(MemoryRange::EMPTY),
-            Err(Error(ErrorInner::Snp(SnpError::InvalidPageRange)))
+            Err(Error(ErrorInner::Cvm(CvmError::InvalidPageRange)))
         ));
 
         let pages = [
@@ -2124,7 +2110,7 @@ mod tests {
         ];
         assert!(matches!(
             snp_launch_pages(&pages),
-            Err(Error(ErrorInner::Snp(SnpError::InvalidPageRange)))
+            Err(Error(ErrorInner::Cvm(CvmError::InvalidPageRange)))
         ));
     }
 

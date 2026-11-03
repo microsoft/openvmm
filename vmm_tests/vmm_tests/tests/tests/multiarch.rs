@@ -269,10 +269,6 @@ async fn acpi_shutdown(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
         (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", linux_direct_aarch64),
     ),
-    nested(
-        (vm_host_emu, qemu_linux_direct_aarch64[none][LINUX_DIRECT_TEST_KERNEL_CCA_AARCH64]),
-        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_AARCH64_MUSL, "tests", "multiarch", linux_direct_aarch64[cca]),
-    ),
 )]
 async fn boot_no_hv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config

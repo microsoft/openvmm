@@ -79,6 +79,7 @@ enum HostVendor {
 enum Firmware {
     LinuxDirect(IsolationType),
     LinuxDirectBzImage,
+    IgvmLinuxDirect(IsolationType),
     Pcat(PcatGuest),
     Uefi(IsolationType, UefiGuest),
     OpenhclLinuxDirect,
@@ -94,6 +95,7 @@ impl Firmware {
             | Firmware::OpenhclLinuxDirect
             | Firmware::OpenhclPcat(_) => IsolationType::None,
             Firmware::LinuxDirect(isolation)
+            | Firmware::IgvmLinuxDirect(isolation)
             | Firmware::Uefi(isolation, _)
             | Firmware::OpenhclUefi(isolation, _) => *isolation,
         }
@@ -168,6 +170,7 @@ impl ResolvedConfig {
         let firmware_prefix = match &self.firmware {
             Firmware::LinuxDirect(..) => "linux",
             Firmware::LinuxDirectBzImage => "linux_bzimage",
+            Firmware::IgvmLinuxDirect(..) => "igvm_linux",
             Firmware::Pcat(..) => "pcat",
             Firmware::Uefi(..) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
@@ -178,6 +181,7 @@ impl ResolvedConfig {
         let guest_prefix = match &self.firmware {
             Firmware::LinuxDirect(..)
             | Firmware::LinuxDirectBzImage
+            | Firmware::IgvmLinuxDirect(..)
             | Firmware::OpenhclLinuxDirect => None,
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(_, guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
@@ -263,6 +267,9 @@ impl ToTokens for FirmwareAndArch {
             }
             Firmware::LinuxDirectBzImage => {
                 quote!(::petri::Firmware::linux_direct_bzimage(resolver))
+            }
+            Firmware::IgvmLinuxDirect(isolation) => {
+                quote!(::petri::Firmware::igvm_linux_direct(resolver, #arch, #isolation))
             }
             Firmware::Pcat(guest) => {
                 quote!(::petri::Firmware::pcat(resolver, #guest))
@@ -673,6 +680,10 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
             MachineArch::Aarch64,
             Firmware::LinuxDirect(parse_isolation(input)?),
         ),
+        "igvm_linux_direct_x64" => (
+            MachineArch::X86_64,
+            Firmware::IgvmLinuxDirect(parse_isolation(input)?),
+        ),
         "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
         "pcat_x64" => (
             MachineArch::X86_64,
@@ -1027,13 +1038,14 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// `vmm_test_with` to apply either to the whole list of configs.
 ///
 /// Valid configuration options are:
-/// - `{vmm}_linux_direct_{arch}[list,of,options]`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_{arch}[isolation]`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
+/// - `{vmm}_igvm_linux_direct_{arch}[isolation]`: A Linux direct image packaged in an IGVM file
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
-/// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
+/// - `{vmm}_uefi_{arch}[isolation](<UEFI guest>)`: A Gen 2 configuration
 /// - `{vmm}_openhcl_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration with OpenHCL
-/// - `{vmm}_openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
+/// - `{vmm}_openhcl_uefi_{arch}[isolation](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
 ///
 /// Valid VMMs are:
 /// - openvmm

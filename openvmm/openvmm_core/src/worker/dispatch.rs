@@ -3130,7 +3130,7 @@ impl InitializedVm {
                             VirtioPciDevice::new(
                                 device.0,
                                 &driver_source.simple(),
-                                gm.clone(),
+                                device_gm.clone(),
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),
