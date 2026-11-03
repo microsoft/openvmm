@@ -75,8 +75,10 @@ mod guest {
     /// The number of vectors that x86 reserves for exceptions (Intel SDM
     /// Vol. 3A 6.2; AMD APM Vol. 2 8.2).
     const EXCEPTION_COUNT: usize = 32;
-    /// The length of the `CPUID` instruction (`0F A2`).
-    const CPUID_LENGTH: u64 = 2;
+    /// The `CPUID` instruction.
+    const CPUID_OPCODE: [u8; 2] = [0x0f, 0xa2];
+    /// The length of the `CPUID` instruction.
+    const CPUID_LENGTH: u64 = CPUID_OPCODE.len() as u64;
 
     #[repr(C, align(16))]
     struct Idt([IdtEntry64; EXCEPTION_COUNT]);
@@ -180,6 +182,15 @@ mod guest {
 
     extern "C" fn vc_handler(frame: &mut VcFrame) {
         if frame.error_code != SevExitCode::CPUID.0 {
+            terminate(Failure::UnhandledVc);
+        }
+        // The host can inject a `#VC` with any error code, so check that the
+        // interrupted instruction really is `CPUID` before changing the frame.
+        // SAFETY: RIP points to the code that was running, which is in
+        // accepted memory. The shim's identity map covers all guest RAM, so
+        // the second byte is mapped even at the end of a page.
+        let instruction = unsafe { (frame.rip as *const [u8; 2]).read_unaligned() };
+        if instruction != CPUID_OPCODE {
             terminate(Failure::UnhandledVc);
         }
         // SAFETY: `install` set this to the measured, accepted CPUID page,
