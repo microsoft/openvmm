@@ -125,12 +125,13 @@ impl Ssdt {
         obj.append_to_vec(&mut self.objects);
     }
 
-    /// Add a power button driven by a dedicated, edge-triggered, active-high
-    /// global system interrupt (GSI).
+    /// Add a power button driven by a dedicated, level-triggered, active-high
+    /// global system interrupt (GSI), with a 32-bit write-one-to-clear status
+    /// register at `mmio_base`.
     ///
     /// See [`crate::dsdt::Dsdt::add_power_button`] for the generated ASL.
-    pub fn add_power_button(&mut self, gsi: u32) {
-        self.add_object(&crate::power_button::device(gsi));
+    pub fn add_power_button(&mut self, gsi: u32, mmio_base: u32) {
+        self.add_object(&crate::power_button::device(gsi, mmio_base));
     }
 
     /// Adds a PCI Express root complex with the specified bus number and MMIO ranges.

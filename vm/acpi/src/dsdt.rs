@@ -126,8 +126,9 @@ impl Dsdt {
         obj.append_to_vec(&mut self.objects);
     }
 
-    /// Add a power button driven by a dedicated, edge-triggered, active-high
-    /// global system interrupt (GSI).
+    /// Add a power button driven by a dedicated, level-triggered, active-high
+    /// global system interrupt (GSI), with a 32-bit write-one-to-clear status
+    /// register at `mmio_base`.
     ///
     /// ```text
     /// Device (\_SB.OVPB)
@@ -136,18 +137,35 @@ impl Dsdt {
     ///     Name (_UID, 0)
     ///     Name (_CRS, ResourceTemplate ()
     ///     {
-    ///         Interrupt (ResourceConsumer, Edge, ActiveHigh, Exclusive) { <GSI> }
+    ///         Interrupt (ResourceConsumer, Level, ActiveHigh, Exclusive) { <GSI> }
     ///     })
+    ///     Device (MRES)
+    ///     {
+    ///         Name (_HID, EisaId ("PNP0C02"))
+    ///         Name (_CRS, ResourceTemplate ()
+    ///         {
+    ///             Memory32Fixed (ReadWrite, <mmio_base>, 4)
+    ///         })
+    ///     }
+    ///     OperationRegion (PREG, SystemMemory, <mmio_base>, 4)
+    ///     Field (PREG, DWordAcc, NoLock, Preserve) { PEND, 32 }
     ///     Device (PBTN)
     ///     {
     ///         Name (_HID, EisaId ("PNP0C0C"))
     ///         Name (_UID, 0)
     ///     }
-    ///     Method (_EVT, 1) { Notify (PBTN, 0x80) }
+    ///     Method (_EVT, 1, Serialized)
+    ///     {
+    ///         If (PEND)
+    ///         {
+    ///             Store (One, PEND)
+    ///             Notify (PBTN, 0x80)
+    ///         }
+    ///     }
     /// }
     /// ```
-    pub fn add_power_button(&mut self, gsi: u32) {
-        self.add_object(&crate::power_button::device(gsi));
+    pub fn add_power_button(&mut self, gsi: u32, mmio_base: u32) {
+        self.add_object(&crate::power_button::device(gsi, mmio_base));
     }
 
     /// Add an APIC device to the DSDT with the following ASL code:

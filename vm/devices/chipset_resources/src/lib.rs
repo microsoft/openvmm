@@ -420,6 +420,10 @@ pub mod acpi_power_button {
     use vm_resource::ResourceId;
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
+    /// Power-button status register, in the architectural MMIO reservation on
+    /// both x86_64 and AArch64. Bit 0 is pending and write-one-to-clear.
+    pub const ACPI_POWER_BUTTON_MMIO_BASE: u32 = 0xfed8_0000;
+
     /// Host requests to inject an ACPI power-button event.
     #[derive(MeshPayload)]
     pub enum PowerButtonRpc {
@@ -427,12 +431,12 @@ pub mod acpi_power_button {
         Press(Rpc<(), ()>),
     }
 
-    /// A handle to an interrupt-only ACPI generic event device.
+    /// A handle to an ACPI generic event device with a latched power-button event.
     #[derive(MeshPayload)]
     pub struct AcpiPowerButtonDeviceHandle {
         /// Interrupt line in the platform's IRQ line set.
         pub irq: u32,
-        /// Button presses, acknowledged after interrupt injection.
+        /// Button presses, acknowledged after the event is latched.
         pub recv: mesh::Receiver<PowerButtonRpc>,
     }
 

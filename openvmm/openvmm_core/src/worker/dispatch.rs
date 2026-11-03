@@ -30,6 +30,7 @@ use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::acpi_power_button::ACPI_POWER_BUTTON_MMIO_BASE;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
@@ -4419,7 +4420,7 @@ impl LoadedVm {
 fn build_ssdt(capabilities: &VmChipsetCapabilities) -> Option<Vec<u8>> {
     capabilities.acpi_power_button_gsi.map(|gsi| {
         let mut ssdt = acpi::ssdt::Ssdt::new();
-        ssdt.add_power_button(gsi);
+        ssdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
         ssdt.to_bytes()
     })
 }
@@ -4438,7 +4439,7 @@ fn add_devices_to_dsdt_x64(
 ) {
     dsdt.add_apic();
     if let Some(gsi) = capabilities.acpi_power_button_gsi {
-        dsdt.add_power_button(gsi);
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
     }
 
     // Any serial port configured means all are enabled.
@@ -4501,7 +4502,7 @@ fn add_devices_to_dsdt_arm64(
     with_hv: bool,
 ) {
     if let Some(gsi) = capabilities.acpi_power_button_gsi {
-        dsdt.add_power_button(gsi);
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
     }
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
