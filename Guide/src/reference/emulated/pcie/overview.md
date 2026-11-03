@@ -70,6 +70,13 @@ guest access is permanently revoked so late accesses cannot reach the
 removed device. Issued disk I/O is drained, not discarded by dropping its
 future.
 
+`stop()` is a save-consistent pause, not a disk-I/O drain or a guarantee
+that DMA has ceased. Disk-backed devices retain issued requests across
+pause and account for them in saved state where save/restore is supported.
+Resume continues the original requests; restore replays saved requests.
+Terminal teardown, including VM shutdown of boot-time devices, finishes
+issued I/O before releasing its resources.
+
 `ChangeDeviceState::teardown(self)` is a required terminal operation that
 consumes a stopped device. Removal permanently closes the shared wrapper,
 takes ownership of its payload, and stops it if running; paused and

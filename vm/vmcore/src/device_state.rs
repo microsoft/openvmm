@@ -27,12 +27,17 @@ pub trait ChangeDeviceState {
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
 
-    /// Stops a device's asynchronous work.
+    /// Pauses guest-request processing in a save-consistent state.
     ///
     /// After this returns, the device must not process additional guest requests
     /// in software. It
     /// should be in a stable state where it can be saved without losing data
     /// (if it implements the appropriate trait).
+    ///
+    /// Stop is not a backend drain or a guarantee that DMA has ceased.
+    /// Issued I/O may remain owned by the device across pause. Save/restore
+    /// must account for such requests; start resumes their processing, while
+    /// terminal teardown must finish them before releasing their resources.
     ///
     /// Assigned hardware that cannot be paused losslessly may remain active
     /// until teardown. Such a device must not claim save/restore support without

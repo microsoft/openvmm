@@ -18,8 +18,8 @@ use spec::PackedEventSuppression;
 use std::sync::atomic;
 
 pub struct PackedQueueCompletionContext {
-    buffer_id: u16,
-    descriptor_count: u16,
+    pub(super) buffer_id: u16,
+    pub(super) descriptor_count: u16,
 }
 
 impl PackedQueueCompletionContext {

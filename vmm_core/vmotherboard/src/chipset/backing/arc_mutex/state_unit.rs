@@ -34,7 +34,7 @@ pub struct ArcMutexChipsetDeviceUnit {
     _static_pio: Vec<Box<dyn ControlPortIoIntercept>>,
 }
 
-/// A unit handle for a dynamically managed device.
+/// A removal handle for a chipset device.
 pub struct DynamicDeviceUnit {
     unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
     driver: VmTaskDriver,
@@ -554,13 +554,58 @@ mod tests {
         assert!(pio_ranges.is_occupied(0x100));
 
         release.send(());
-        DynamicDeviceUnit::new(unit, source.simple(), device.clone())
-            .remove()
-            .await;
+        unit.remove().await;
 
         assert!(!mmio_ranges.is_occupied(0x1000));
         assert!(!pio_ranges.is_occupied(0x100));
         assert!(device.lock_if_open().is_none());
+    }
+
+    #[pal_async::async_test]
+    async fn static_teardown_keeps_issued_io_owned_when_waiter_is_abandoned(driver: DefaultDriver) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let units = StateUnits::new();
+        let (time_send, _time_recv) = mesh::channel();
+        let time_unit = units.add("vmtime").build(time_send).unwrap();
+        let keeper =
+            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
+        let time = keeper.builder().build(&driver).await.unwrap();
+        let builder = crate::ChipsetBuilder::new(
+            &source,
+            &units,
+            Arc::new(TestDebugEventHandler),
+            &time,
+            &time_unit,
+            false,
+            false,
+            None,
+        );
+        let (entered, mut entered_recv) = mesh::channel();
+        let (release, release_recv) = mesh::channel();
+        let (finished, mut finished_recv) = mesh::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let device = builder
+            .arc_mutex_device("test")
+            .add(|_| RemovingDevice {
+                stopped: true,
+                stop_count: Arc::new(AtomicUsize::new(0)),
+                accesses: Arc::new(AtomicUsize::new(0)),
+                entered,
+                release: release_recv,
+                finished,
+                io: Some(DropMarker(dropped.clone())),
+            })
+            .unwrap();
+        let (_chipset, mut devices) = builder.build().unwrap();
+        let teardown = devices.teardown();
+        entered_recv.recv().await.unwrap();
+        assert!(device.lock_if_open().is_none());
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(teardown);
+        drop(devices);
+        release.send(());
+        finished_recv.recv().await.unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
     }
 
     #[pal_async::async_test]

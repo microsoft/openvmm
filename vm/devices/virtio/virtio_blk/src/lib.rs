@@ -36,7 +36,9 @@ use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::device::PausedQueueState;
 use virtio::queue::QueueState;
+use virtio::queue::SavedQueueWork;
 use virtio::regions::DataRegion;
 use virtio::regions::data_regions;
 use virtio::regions::try_build_gpn_list;
@@ -75,8 +77,8 @@ pub struct VirtioBlkDevice {
 /// Holds the disk backend, stats counters, and the
 /// `FuturesUnordered` that tracks in-flight IOs. The IO futures
 /// live here (not in `BlkQueueState`) so they survive when the
-/// task is stopped — they're drained in `poll_disable()` before
-/// the queue state is removed.
+/// task is paused. Terminal `stop_queue()` drains them before removing
+/// the queue state; VM pause retains them and saves accepted descriptors.
 #[derive(InspectMut)]
 struct BlkWorker {
     disk: Disk,
@@ -84,10 +86,12 @@ struct BlkWorker {
     serial: Option<[u8; VIRTIO_BLK_ID_BYTES]>,
     stats: WorkerStats,
     #[inspect(with = "FuturesUnordered::len")]
-    ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
+    ios: FuturesUnordered<Pin<Box<dyn Future<Output = (usize, IoCompletion)> + Send>>>,
+    #[inspect(with = "slab::Slab::len")]
+    pending: slab::Slab<SavedQueueWork>,
 }
 
-/// Transient queue state, created in `enable()` and removed in `poll_disable()`.
+/// Queue state retained across pause and removed when the queue is retired.
 #[derive(InspectMut)]
 struct BlkQueueState {
     queue: VirtioQueue,
@@ -117,6 +121,7 @@ struct IoCompletion {
     bytes_written: u32,
     stat: IoStat,
     bounced: bool,
+    status: u8,
 }
 
 /// Which stat counter to increment for a completed IO.
@@ -130,9 +135,38 @@ enum IoStat {
 }
 
 impl BlkWorker {
+    fn start_io(&mut self, memory: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+        if let Err(error) = work.capture_readable_prefix(memory, size_of::<VirtioBlkReqHeader>()) {
+            tracelimit::warn_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                "failed to capture virtio-blk request header"
+            );
+        }
+        let id = self.pending.insert(work.save());
+        let disk = self.disk.clone();
+        let mem = memory.clone();
+        let read_only = self.read_only;
+        let serial = self.serial;
+        self.ios.push(Box::pin(async move {
+            (
+                id,
+                process_request(&disk, &mem, read_only, serial, work).await,
+            )
+        }));
+    }
+
     /// Complete a descriptor and accumulate stats.
-    fn finish_io(&mut self, queue: &mut VirtioQueue, completion: IoCompletion) {
-        queue.complete(completion.work, completion.bytes_written);
+    fn finish_io(&mut self, state: &mut BlkQueueState, (id, completion): (usize, IoCompletion)) {
+        self.pending.remove(id);
+        if let Err(error) = write_status_byte(&state.memory, &completion.work, completion.status) {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                "failed to write virtio-blk status byte"
+            );
+        }
+        state
+            .queue
+            .complete(completion.work, completion.bytes_written);
         match completion.stat {
             IoStat::Read => self.stats.read_ops.increment(),
             IoStat::Write => self.stats.write_ops.increment(),
@@ -148,14 +182,14 @@ impl BlkWorker {
 
     /// Poll all in-flight IOs to completion.
     ///
-    /// Called during `poll_disable()` after the worker task has been stopped.
+    /// Called during terminal `stop_queue()` after the worker task is stopped.
     /// The `FuturesUnordered` still holds any IOs that were in flight when
     /// `until_stopped` returned. This drains them, ensuring all descriptor
     /// completions are written to the used ring before the queue is dropped.
-    fn poll_drain(&mut self, queue: &mut VirtioQueue, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_drain(&mut self, state: &mut BlkQueueState, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             match self.ios.poll_next_unpin(cx) {
-                Poll::Ready(Some(completion)) => self.finish_io(queue, completion),
+                Poll::Ready(Some(completion)) => self.finish_io(state, completion),
                 Poll::Ready(None) => return Poll::Ready(()),
                 Poll::Pending => return Poll::Pending,
             }
@@ -181,7 +215,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                 check.check()?;
                 enum Event {
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    Completed(IoCompletion),
+                    Completed((usize, IoCompletion)),
                 }
 
                 let event = poll_fn(|cx| {
@@ -202,13 +236,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
 
                 match event {
                     Event::NewWork(Ok(work)) => {
-                        let disk = self.disk.clone();
-                        let mem = state.memory.clone();
-                        let read_only = self.read_only;
-                        let serial = self.serial;
-                        self.ios.push(Box::pin(async move {
-                            process_request(&disk, &mem, read_only, serial, work).await
-                        }));
+                        self.start_io(&state.memory, work);
                     }
                     Event::NewWork(Err(err)) => {
                         // The queue is retired: the rejected chain is never
@@ -220,7 +248,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         queue_done = true;
                     }
                     Event::Completed(completion) => {
-                        self.finish_io(&mut state.queue, completion);
+                        self.finish_io(state, completion);
                     }
                 }
             }
@@ -231,6 +259,29 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
 }
 
 impl VirtioBlkDevice {
+    fn queue_state(
+        &self,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<BlkQueueState> {
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create queue event")?;
+        let queue = VirtioQueue::new(
+            *features,
+            resources.params,
+            resources.guest_memory.clone(),
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed to create virtio queue")?;
+        Ok(BlkQueueState {
+            queue,
+            memory: resources.guest_memory,
+        })
+    }
+
     /// Creates a new virtio-blk device backed by the given disk.
     pub fn new(
         driver_source: &VmTaskDriverSource,
@@ -311,6 +362,7 @@ impl VirtioBlkDevice {
                 serial,
                 stats: WorkerStats::default(),
                 ios: FuturesUnordered::new(),
+                pending: slab::Slab::new(),
             }),
             driver: driver_source.simple(),
             read_only,
@@ -401,27 +453,10 @@ impl VirtioDevice for VirtioBlkDevice {
     ) -> anyhow::Result<()> {
         assert_eq!(idx, 0);
 
-        let queue_event = PolledWait::new(&self.driver, resources.event)
-            .context("failed to create queue event")?;
+        let state = self.queue_state(resources, features, initial_state)?;
 
-        let queue = VirtioQueue::new(
-            *features,
-            resources.params,
-            resources.guest_memory.clone(),
-            resources.notify,
-            queue_event,
-            initial_state,
-        )
-        .context("failed to create virtio queue")?;
-
-        self.worker.insert(
-            self.driver.clone(),
-            "virtio-blk-worker",
-            BlkQueueState {
-                queue,
-                memory: resources.guest_memory,
-            },
-        );
+        self.worker
+            .insert(self.driver.clone(), "virtio-blk-worker", state);
         self.worker.start();
         Ok(())
     }
@@ -437,11 +472,78 @@ impl VirtioDevice for VirtioBlkDevice {
         // BlkWorker and survives the stop — its pending disk IO futures are
         // polled here until all descriptors are completed in the used ring.
         let (worker, queue_state) = self.worker.get_mut();
-        let queue = &mut queue_state.expect("state exists after stop").queue;
-        poll_fn(|cx| worker.poll_drain(queue, cx)).await;
+        let state = queue_state.expect("state exists after stop");
+        poll_fn(|cx| worker.poll_drain(state, cx)).await;
         // Remove the queue state (drops VirtioQueue).
         let state = self.worker.remove().queue.queue_state();
         Some(state)
+    }
+
+    async fn teardown_queue(&mut self, idx: u16) {
+        assert_eq!(idx, 0);
+        self.worker.stop().await;
+        let worker = self.worker.task_mut();
+        while let Some((id, completion)) = worker.ios.next().await {
+            worker.pending.remove(id);
+            drop(completion);
+        }
+        if self.worker.has_state() {
+            self.worker.remove();
+        }
+    }
+
+    async fn pause_queue(&mut self, idx: u16) -> Option<PausedQueueState> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return None;
+        }
+        self.worker.stop().await;
+        let (worker, state) = self.worker.get();
+        Some(PausedQueueState {
+            queue: state.unwrap().queue.queue_state(),
+            pending_work: worker
+                .pending
+                .iter()
+                .map(|(_, work)| work.clone())
+                .collect(),
+        })
+    }
+
+    async fn resume_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: Option<PausedQueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
+        if self.worker.has_state() {
+            anyhow::ensure!(
+                !self.worker.is_running(),
+                "virtio-blk queue is already running"
+            );
+            anyhow::ensure!(
+                state.as_ref().is_none_or(|saved| {
+                    saved.queue == self.worker.state().unwrap().queue.queue_state()
+                }),
+                "cannot replace a paused virtio-blk queue with issued I/O"
+            );
+            self.worker.start();
+            return Ok(());
+        }
+        let (initial, pending) = match state {
+            Some(state) => (Some(state.queue), state.pending_work),
+            None => (None, Vec::new()),
+        };
+        let queue_state = self.queue_state(resources, features, initial)?;
+        let pending = queue_state.queue.restore_pending_work(pending)?;
+        for work in pending {
+            self.worker.task_mut().start_io(&queue_state.memory, work);
+        }
+        self.worker
+            .insert(&self.driver, "virtio-blk-worker", queue_state);
+        self.worker.start();
+        Ok(())
     }
 
     fn supports_save_restore(&self) -> bool {
@@ -463,31 +565,21 @@ async fn process_request(
 ) -> IoCompletion {
     match process_request_inner(disk, mem, read_only, serial, &work).await {
         Ok((bytes_written, stat, bounced)) => {
-            if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to write status byte"
-                );
-            }
             IoCompletion {
                 work,
                 bytes_written: bytes_written + 1, // +1 for status byte
                 stat,
                 bounced,
+                status: VIRTIO_BLK_S_OK,
             }
         }
         Err(status) => {
-            if let Err(err) = write_status_byte(mem, &work, status) {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to write error status byte"
-                );
-            }
             IoCompletion {
                 work,
                 bytes_written: 1, // just the status byte
                 stat: IoStat::Error,
                 bounced: false,
+                status,
             }
         }
     }

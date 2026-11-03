@@ -61,8 +61,6 @@ pub struct IoState {
     #[inspect(skip)]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = (IoResult, Command)> + Send>>>,
     #[inspect(skip)]
-    ready_ios: std::collections::VecDeque<(IoResult, Command)>,
-    #[inspect(skip)]
     delayed_completion: Option<(spec::Completion, std::time::Instant)>,
     io_count: usize,
     queue_state: IoQueueState,
@@ -103,7 +101,6 @@ impl IoState {
             ),
             namespaces,
             ios: FuturesUnordered::new(),
-            ready_ios: Default::default(),
             delayed_completion: None,
             io_count: 0,
             queue_state: IoQueueState::Active,
@@ -123,17 +120,9 @@ impl IoState {
     ///
     /// This future may be dropped and reissued.
     pub async fn drain(&mut self) {
-        self.io_count -= self.ready_ios.len();
-        self.ready_ios.clear();
         self.delayed_completion = None;
         while self.ios.next().await.is_some() {
             self.io_count -= 1;
-        }
-    }
-
-    pub async fn stop(&mut self) {
-        while let Some(result) = self.ios.next().await {
-            self.ready_ios.push_back(result);
         }
     }
 }
@@ -236,7 +225,7 @@ impl IoHandler {
                     false
                 }
                 IoQueueState::Deleting => {
-                    if state.ios.is_empty() && state.ready_ios.is_empty() {
+                    if state.ios.is_empty() {
                         self.admin_response.send(self.sqid);
                         state.queue_state = IoQueueState::Deleted;
                         break;
@@ -260,9 +249,7 @@ impl IoHandler {
             };
 
             let next_io_completion = async {
-                if let Some(result) = state.ready_ios.pop_front() {
-                    Event::Io(result)
-                } else if state.ios.is_empty() {
+                if state.ios.is_empty() {
                     pending().await
                 } else {
                     Event::Io(state.ios.next().await.unwrap())
@@ -430,6 +417,54 @@ mod tests {
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
     use zerocopy::IntoBytes;
+
+    #[async_test]
+    async fn pause_retains_issued_io_without_waiting_for_completion(driver: DefaultDriver) {
+        use task_control::TaskControl;
+        let memory = GuestMemory::allocate(0x4000);
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let (send, _recv) = mesh::channel();
+        let mut fault_active = mesh::CellUpdater::new(false);
+        let mut state = IoState::new(
+            &memory,
+            Arc::new(RwLock::new(DoorbellMemory::new(4))),
+            0,
+            8,
+            1,
+            0x1000,
+            8,
+            1,
+            None,
+            BTreeMap::new(),
+            Arc::new(IoQueueFaultConfig::new(fault_active.cell())),
+        );
+        let (entered, started) = mesh::oneshot();
+        let (release, wait) = mesh::oneshot();
+        state.io_count = 1;
+        state.ios.push(Box::pin(async move {
+            entered.send(());
+            wait.await.unwrap();
+            (
+                IoResult {
+                    nsid: 1,
+                    cid: 17,
+                    opcode: nvm::NvmOpcode::READ,
+                    result: Ok(CommandResult::default()),
+                },
+                Command::new_zeroed(),
+            )
+        }));
+        let mut task = TaskControl::new(IoHandler::new(source.simple(), memory, 1, send));
+        task.insert(&driver, "test-fault-nvme-io", state);
+        task.start();
+        started.await.unwrap();
+        task.stop().await;
+        assert_eq!(task.state().unwrap().ios.len(), 1);
+        assert_eq!(task.state().unwrap().io_count, 1);
+        release.send(());
+        task.state_mut().unwrap().drain().await;
+        assert_eq!(task.state().unwrap().io_count, 0);
+    }
 
     #[async_test]
     async fn delayed_completion_survives_stopping_and_resuming(driver: DefaultDriver) {

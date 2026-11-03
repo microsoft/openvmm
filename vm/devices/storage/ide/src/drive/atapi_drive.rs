@@ -234,7 +234,10 @@ impl AtapiDriveState {
     }
 }
 
-struct Io(Pin<Box<dyn Send + Future<Output = ScsiResult>>>);
+struct Io {
+    future: Pin<Box<dyn Send + Future<Output = ScsiResult>>>,
+    request: scsi_core::Request,
+}
 
 impl std::fmt::Debug for Io {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -843,18 +846,25 @@ impl AtapiDrive {
         assert!(self.io.is_none());
         let scsi_disk = self.scsi_disk.clone();
         let access = self.command_buffer.access();
+        let saved_request = scsi_core::Request {
+            cdb: request.cdb,
+            srb_flags: request.srb_flags,
+        };
         let fut = async move {
             let buffers = access.buffers(0, MAX_TRANSFER_LEN, true);
             scsi_disk.execute_scsi(&buffers, &request).await
         };
-        self.io = Some(Io(Box::pin(fut)));
+        self.io = Some(Io {
+            future: Box::pin(fut),
+            request: saved_request,
+        });
         // Ensure poll_device gets called again.
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
     }
 
-    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.waker = Some(cx.waker().clone());
         self.poll_device(cx);
         if self.io.is_none() {
@@ -866,7 +876,7 @@ impl AtapiDrive {
 
     pub fn poll_device(&mut self, cx: &mut Context<'_>) {
         if let Some(io) = self.io.as_mut() {
-            if let Poll::Ready(result) = io.0.as_mut().poll(cx) {
+            if let Poll::Ready(result) = io.future.as_mut().poll(cx) {
                 self.io = None;
                 self.process_atapi_command_result(result);
 
@@ -877,6 +887,52 @@ impl AtapiDrive {
             }
         }
         self.waker = Some(cx.waker().clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disk_backend::Disk;
+    use disk_file::FileDisk;
+    use scsidisk::atapi_scsi::AtapiScsiDisk;
+    use scsidisk::scsidvd::SimpleScsiDvd;
+    use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn saved_packet_request_is_replayed_after_restore() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(0x20000).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let make_drive = || {
+            AtapiDrive::new(
+                Arc::new(AtapiScsiDisk::new(Arc::new(SimpleScsiDvd::new(Some(
+                    disk.clone(),
+                ))))),
+                IdePath {
+                    channel: 0,
+                    drive: 0,
+                },
+            )
+        };
+        let mut source = make_drive();
+        let mut request = scsi_core::Request {
+            cdb: [0; 16],
+            srb_flags: 0,
+        };
+        request.cdb[0] = 0x28;
+        request.cdb[8] = 1;
+        source.set_io(request);
+        let saved = mesh::payload::encode(source.save().unwrap());
+        let mut restored = make_drive();
+        restored
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        assert_eq!(restored.io.as_ref().unwrap().request.cdb[0], 0x28);
+        assert_eq!(restored.io.as_ref().unwrap().request.cdb[8], 1);
+        std::future::poll_fn(|cx| restored.poll_drain(cx)).await;
+        std::future::poll_fn(|cx| source.poll_drain(cx)).await;
+        assert!(restored.io.is_none());
     }
 }
 
@@ -957,6 +1013,17 @@ pub(crate) mod save_restore {
             pub pending_packet_command: bool,
             #[mesh(8)]
             pub pending_software_reset: bool,
+            #[mesh(9)]
+            pub pending_io: Option<SavedScsiRequest>,
+        }
+
+        #[derive(Protobuf)]
+        #[mesh(package = "storage.ide.device.atapi")]
+        pub struct SavedScsiRequest {
+            #[mesh(1)]
+            pub cdb: [u8; 16],
+            #[mesh(2)]
+            pub srb_flags: u32,
         }
     }
 
@@ -1018,6 +1085,10 @@ pub(crate) mod save_restore {
                 command_buffer,
                 pending_packet_command: *pending_packet_command,
                 pending_software_reset: *pending_software_reset,
+                pending_io: self.io.as_ref().map(|io| state::SavedScsiRequest {
+                    cdb: io.request.cdb,
+                    srb_flags: io.request.srb_flags,
+                }),
             })
         }
 
@@ -1042,8 +1113,19 @@ pub(crate) mod save_restore {
                 command_buffer,
                 pending_packet_command,
                 pending_software_reset,
+                pending_io,
             } = state;
 
+            if self.io.is_some() {
+                return Err(RestoreError::Other(
+                    crate::drive::save_restore::DriveRestoreError::IoPending.into(),
+                ));
+            }
+            if command_buffer.len() > MAX_TRANSFER_LEN {
+                return Err(RestoreError::InvalidSavedState(
+                    crate::drive::save_restore::DriveRestoreError::InvalidPendingIo.into(),
+                ));
+            }
             self.scsi_disk.restore(&scsi)?;
 
             *self.state_mut() = AtapiDriveState {
@@ -1079,6 +1161,12 @@ pub(crate) mod save_restore {
                 },
             };
 
+            if let Some(request) = pending_io {
+                self.set_io(scsi_core::Request {
+                    cdb: request.cdb,
+                    srb_flags: request.srb_flags,
+                });
+            }
             Ok(())
         }
     }

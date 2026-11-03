@@ -43,6 +43,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::Weak;
 use vmcore::line_interrupt::LineSetTarget;
+use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTimeSource;
 
@@ -50,12 +51,32 @@ use vmcore::vmtime::VmTimeSource;
 pub struct ChipsetDevices {
     chipset_unit: UnitHandle,
     _chipset_task: Task<()>,
-    _arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
+    arc_mutex_device_units: Vec<DynamicDeviceUnit>,
     _line_set_units: Vec<SpawnedUnit<()>>,
     mmio_ranges: IoRanges<u64>,
+    driver: VmTaskDriver,
 }
 
 impl ChipsetDevices {
+    /// Releases boot-time devices before their state-unit tasks are dropped.
+    ///
+    /// Cleanup remains owned even if the completion future is abandoned.
+    pub fn teardown(&mut self) -> impl Future<Output = ()> {
+        let devices = std::mem::take(&mut self.arc_mutex_device_units);
+        let (send, recv) = mesh::oneshot();
+        self.driver
+            .spawn("teardown-chipset-devices", async move {
+                for device in devices.into_iter().rev() {
+                    device.remove().await;
+                }
+                send.send(());
+            })
+            .detach();
+        async move {
+            recv.await.expect("chipset teardown task failed");
+        }
+    }
+
     /// The root chipset unit handle.
     ///
     /// All devices that have MMIO, PIO, or PCI callbacks have a "stop after"
@@ -105,7 +126,7 @@ pub(crate) struct ChipsetBuilderInner {
     pub(crate) vm_chipset: Chipset,
     pub(crate) bus_resolver: BusResolver,
     pub(crate) line_sets: super::line_sets::LineSets,
-    pub(crate) arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
+    pub(crate) arc_mutex_device_units: Vec<DynamicDeviceUnit>,
     chipset_recv: mesh::Receiver<state_unit::StateRequest>,
 }
 
@@ -335,9 +356,10 @@ impl<'a> ChipsetBuilder<'a> {
         let devices = ChipsetDevices {
             chipset_unit: self.chipset_unit,
             _chipset_task: chipset_task,
-            _arc_mutex_device_units: inner.arc_mutex_device_units,
+            arc_mutex_device_units: inner.arc_mutex_device_units,
             _line_set_units: inner.line_sets.units,
             mmio_ranges,
+            driver: self.driver_source.simple(),
         };
 
         Ok((vm_chipset, devices))

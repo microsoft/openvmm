@@ -6,6 +6,7 @@
 use self::device_range::DeviceRangeMapper;
 use super::device::ArcMutexChipsetServicesFinalize;
 use super::state_unit::ArcMutexChipsetDeviceUnit;
+use super::state_unit::DynamicDeviceUnit;
 use crate::BusIdPci;
 use crate::BusIdPcieDownstreamPort;
 use crate::BusIdPcieEnumerator;
@@ -138,13 +139,16 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
             }
         }
 
-        let device = ArcMutexChipsetDeviceUnit::new(device.clone(), self.omit_saved_state)
+        let device_unit = ArcMutexChipsetDeviceUnit::new(device.clone(), self.omit_saved_state)
             .with_static_regions(self.static_mmio, self.static_pio);
+        let driver = self.builder.driver_source.simple();
         let unit = builder
-            .spawn(self.builder.driver_source.simple(), |recv| device.run(recv))
+            .spawn(driver.clone(), |recv| device_unit.run(recv))
             .map_err(FinalizeError::NameInUse)?;
 
-        inner.arc_mutex_device_units.push(unit);
+        inner
+            .arc_mutex_device_units
+            .push(DynamicDeviceUnit::new(unit, driver, device.clone()));
         Ok(())
     }
 }

@@ -272,13 +272,10 @@ impl AdminState {
         }
     }
 
-    /// Stops workers and retains completed requests for resume.
+    /// Pauses workers, retaining issued I/O for resume or terminal draining.
     pub async fn stop(&mut self) {
         for sq in &mut self.io_sqs {
             sq.task.stop().await;
-            if let Some(state) = sq.task.state_mut() {
-                state.stop().await;
-            }
         }
     }
 

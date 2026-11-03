@@ -8,12 +8,20 @@ use crate::DEFAULT_QUEUE_SIZE;
 use crate::DeviceTraits;
 use crate::QueueResources;
 use crate::queue::QueueState;
+use crate::queue::SavedQueueWork;
 use crate::spec::VirtioDeviceFeatures;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+
+/// Paused ring progress and accepted work that must be replayed after restore.
+#[derive(Clone)]
+pub struct PausedQueueState {
+    pub queue: QueueState,
+    pub pending_work: Vec<SavedQueueWork>,
+}
 
 /// Per-queue virtio device trait. Ergonomic async fn — not object-safe.
 ///
@@ -83,7 +91,10 @@ pub trait VirtioDevice: InspectMut + Send {
         initial_state: Option<QueueState>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
-    /// Stop a single queue and return its state.
+    /// Retire a single queue and return its state.
+    ///
+    /// Used for guest reset/disable and frontend detach. VM pause instead uses
+    /// [`pause_queue`](Self::pause_queue), which may retain issued backend work.
     ///
     /// `idx` is in `0..DeviceTraits::max_queues`. The caller will never
     /// pass an index outside that range.
@@ -96,6 +107,60 @@ pub trait VirtioDevice: InspectMut + Send {
     /// immediately. Transports rely on this during reset/disable by
     /// iterating all queue indices, not just active ones.
     fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
+
+    /// Releases a queue for VM reset or teardown without needing guest completion.
+    fn teardown_queue(&mut self, idx: u16) -> impl Future<Output = ()> + Send {
+        async move {
+            self.stop_queue(idx).await;
+        }
+    }
+
+    /// Consumes the device after all issued backend work has finished.
+    fn teardown(self) -> impl Future<Output = ()> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            let mut device = self;
+            for idx in 0..device.traits().max_queues {
+                device.teardown_queue(idx).await;
+            }
+        }
+    }
+
+    /// Pauses admission without requiring issued backend I/O to finish.
+    ///
+    /// The default retires stateless queues. Implementations retaining issued
+    /// work must override this and
+    /// `resume_queue`, and include that work in the returned state.
+    fn pause_queue(&mut self, idx: u16) -> impl Future<Output = Option<PausedQueueState>> + Send {
+        async move {
+            self.stop_queue(idx).await.map(|queue| PausedQueueState {
+                queue,
+                pending_work: Vec::new(),
+            })
+        }
+    }
+
+    /// Resumes a paused queue or replays its saved accepted work after restore.
+    fn resume_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        state: Option<PausedQueueState>,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async move {
+            anyhow::ensure!(
+                state
+                    .as_ref()
+                    .is_none_or(|state| state.pending_work.is_empty()),
+                "device cannot restore pending queue work"
+            );
+            self.start_queue(idx, resources, features, state.map(|state| state.queue))
+                .await
+        }
+    }
 
     /// Reset device-internal state to initial values.
     ///
@@ -161,6 +226,27 @@ pub trait DynVirtioDevice: InspectMut + Send {
         idx: u16,
     ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
 
+    /// Releases a queue for VM reset or terminal teardown.
+    fn teardown_queue(&mut self, idx: u16) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Finishes backend work and drops the owned device.
+    fn teardown(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// Pause a queue while retaining accepted backend work.
+    fn pause_queue(
+        &mut self,
+        idx: u16,
+    ) -> Pin<Box<dyn Future<Output = Option<PausedQueueState>> + Send + '_>>;
+
+    /// Resume a queue and replay accepted work on a restored device.
+    fn resume_queue<'a>(
+        &'a mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &'a VirtioDeviceFeatures,
+        state: Option<PausedQueueState>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
     /// Reset device-internal state.
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 
@@ -168,7 +254,7 @@ pub trait DynVirtioDevice: InspectMut + Send {
     fn supports_save_restore(&self) -> bool;
 }
 
-impl<T: VirtioDevice> DynVirtioDevice for T {
+impl<T: 'static + VirtioDevice> DynVirtioDevice for T {
     fn traits(&self) -> DeviceTraits {
         VirtioDevice::traits(self)
     }
@@ -224,6 +310,33 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(VirtioDevice::reset(self))
+    }
+
+    fn teardown_queue(&mut self, idx: u16) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::teardown_queue(self, idx))
+    }
+
+    fn teardown(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(VirtioDevice::teardown(*self))
+    }
+
+    fn pause_queue(
+        &mut self,
+        idx: u16,
+    ) -> Pin<Box<dyn Future<Output = Option<PausedQueueState>> + Send + '_>> {
+        Box::pin(VirtioDevice::pause_queue(self, idx))
+    }
+
+    fn resume_queue<'a>(
+        &'a mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &'a VirtioDeviceFeatures,
+        state: Option<PausedQueueState>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(VirtioDevice::resume_queue(
+            self, idx, resources, features, state,
+        ))
     }
 
     fn supports_save_restore(&self) -> bool {

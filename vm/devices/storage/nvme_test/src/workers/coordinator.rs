@@ -85,6 +85,7 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
+            paused: false,
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -187,22 +188,11 @@ impl NvmeWorkers {
 
     // Reset the workers from whatever state they are in.
     pub async fn reset(&mut self) {
-        loop {
-            match &mut self.state {
-                EnableState::Disabled => break,
-                EnableState::Enabling(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Enabled;
-                }
-                EnableState::Enabled => {
-                    self.controller_reset();
-                }
-                EnableState::Resetting(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Disabled;
-                }
-            }
-        }
+        self.send
+            .call(CoordinatorRequest::Reset, ())
+            .await
+            .expect("NVMe coordinator is gone");
+        self.state = EnableState::Disabled;
         self.doorbells.write().reset();
     }
 }
@@ -238,12 +228,14 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
+    paused: bool,
 }
 
 enum CoordinatorRequest {
     Start,
     Stop(Rpc<(), ()>),
     Teardown(Rpc<(), ()>),
+    Reset(Rpc<(), ()>),
     EnableAdmin(Rpc<EnableAdminParams, ()>),
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
@@ -267,7 +259,7 @@ impl Coordinator {
             }
 
             let controller_reset = async {
-                if self.reset.is_some() {
+                if self.reset.is_some() && !self.paused {
                     self.admin.stop().await;
                     if let Some(state) = self.admin.state_mut() {
                         state.drain().await;
@@ -288,21 +280,30 @@ impl Coordinator {
             match event {
                 Event::Request(Some(req)) => match req {
                     CoordinatorRequest::Start => {
-                        if let Some(state) = self.admin.state_mut() {
-                            state.start();
+                        self.paused = false;
+                        if self.reset.is_none() {
+                            if let Some(state) = self.admin.state_mut() {
+                                state.start();
+                            }
+                            self.admin.start();
                         }
-                        self.admin.start();
                     }
                     CoordinatorRequest::Stop(rpc) => {
+                        self.paused = true;
                         self.admin.stop().await;
-                        if let Some(reset) = self.reset.take() {
-                            if let Some(state) = self.admin.state_mut() {
-                                state.drain().await;
-                                self.admin.remove();
-                            }
-                            reset.complete(());
-                        } else if let Some(state) = self.admin.state_mut() {
+                        if let Some(state) = self.admin.state_mut() {
                             state.stop().await;
+                        }
+                        rpc.complete(());
+                    }
+                    CoordinatorRequest::Reset(rpc) => {
+                        self.admin.stop().await;
+                        if let Some(state) = self.admin.state_mut() {
+                            state.drain().await;
+                            self.admin.remove();
+                        }
+                        if let Some(reset) = self.reset.take() {
+                            reset.complete(());
                         }
                         rpc.complete(());
                     }

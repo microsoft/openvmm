@@ -12,8 +12,8 @@ use super::task::run_device_task;
 use crate::DynVirtioDevice;
 use crate::QueueResources;
 use crate::VirtioDoorbells;
+use crate::device::PausedQueueState;
 use crate::queue::QueueParams;
-use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::VirtioDeviceStatus;
 use chipset_device::io::deferred::DeferredWrite;
@@ -41,7 +41,7 @@ pub(crate) struct QueueData {
     #[inspect(skip)]
     pub event: pal_event::Event,
     #[inspect(skip)]
-    pub saved_state: Option<QueueState>,
+    pub saved_state: Option<PausedQueueState>,
 }
 
 /// Transport-specific operations that the core delegates to PCI or MMIO.
@@ -472,7 +472,12 @@ impl VirtioTransportCore {
             desc_addr: qd.params.desc_addr,
             avail_addr: qd.params.avail_addr,
             used_addr: qd.params.used_addr,
-            queue_state: qd.saved_state,
+            queue_state: qd.saved_state.as_ref().map(|state| state.queue),
+            pending_work: qd
+                .saved_state
+                .as_ref()
+                .map(|state| state.pending_work.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -494,6 +499,17 @@ impl VirtioTransportCore {
         }
 
         let queue_items: Vec<_> = queue_states.collect();
+        for (index, (queue, _)) in queue_items.iter().enumerate() {
+            if !queue.pending_work.is_empty()
+                && (!queue.enable
+                    || queue.queue_state.is_none()
+                    || !VirtioDeviceStatus::from(common.device_status).driver_ok())
+            {
+                return Err(RestoreError::InvalidSavedState(
+                    super::saved_state::VirtioRestoreError::InvalidPendingWork { index }.into(),
+                ));
+            }
+        }
 
         super::saved_state::validate_restore(
             common,
@@ -528,7 +544,10 @@ impl VirtioTransportCore {
                 used_addr: q.used_addr,
             };
             qd.msix_vector = msix_vector;
-            qd.saved_state = q.queue_state;
+            qd.saved_state = q.queue_state.map(|queue| PausedQueueState {
+                queue,
+                pending_work: q.pending_work,
+            });
         }
 
         self.device_status = VirtioDeviceStatus::from(common.device_status);

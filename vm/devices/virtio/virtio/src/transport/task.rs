@@ -10,7 +10,7 @@
 
 use crate::DynVirtioDevice;
 use crate::QueueResources;
-use crate::queue::QueueState;
+use crate::device::PausedQueueState;
 use crate::spec::VirtioDeviceFeatures;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredRead;
@@ -36,12 +36,12 @@ pub enum DeviceCommand {
     /// Guest writes status=0 — stop all queues, reset device.
     Disable(Rpc<(), ()>),
     /// ChangeDeviceState::stop() — stop queues, return states for resume.
-    Stop(Rpc<(), Vec<Option<QueueState>>>),
+    Stop(Rpc<(), Vec<Option<PausedQueueState>>>),
     /// ChangeDeviceState::start() — restart queues with saved states.
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
-    /// ChangeDeviceState::teardown() — drop the stopped device and exit
+    /// ChangeDeviceState::teardown() — drain queues, drop the device and exit
     /// the task. Completes only after the device has been dropped.
     Teardown(Rpc<(), ()>),
     /// Config register read at byte offset with byte length.
@@ -83,7 +83,7 @@ pub struct EnableParams {
 
 /// Parameters for the Start command.
 pub struct StartParams {
-    pub queues: Vec<(u16, QueueResources, Option<QueueState>)>,
+    pub queues: Vec<(u16, QueueResources, Option<PausedQueueState>)>,
     pub features: VirtioDeviceFeatures,
 }
 
@@ -217,10 +217,10 @@ impl DeviceTask {
         self.device.reset().await;
     }
 
-    async fn stop(&mut self) -> Vec<Option<QueueState>> {
+    async fn stop(&mut self) -> Vec<Option<PausedQueueState>> {
         let mut states = vec![None; self.max_queues as usize];
         for idx in 0..self.max_queues {
-            states[idx as usize] = self.device.stop_queue(idx).await;
+            states[idx as usize] = self.device.pause_queue(idx).await;
         }
         states
     }
@@ -228,7 +228,7 @@ impl DeviceTask {
     async fn start(&mut self, params: StartParams) -> anyhow::Result<()> {
         for (idx, resources, initial_state) in params.queues {
             self.device
-                .start_queue(idx, resources, &params.features, initial_state)
+                .resume_queue(idx, resources, &params.features, initial_state)
                 .await
                 .map_err(|err| {
                     tracelimit::error_ratelimited!(
@@ -243,7 +243,9 @@ impl DeviceTask {
     }
 
     async fn reset(&mut self) {
-        self.stop_all_queues().await;
+        for idx in 0..self.max_queues {
+            self.device.teardown_queue(idx).await;
+        }
         self.device.reset().await;
     }
 
@@ -290,7 +292,7 @@ pub async fn run_device_task(
             DeviceCommand::Teardown(rpc) => {
                 // Drop the device before completing so that its backing
                 // resources are released by the time the caller resumes.
-                drop(task);
+                task.device.teardown().await;
                 rpc.complete(());
                 return;
             }

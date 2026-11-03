@@ -607,7 +607,7 @@ impl HardDrive {
         }
     }
 
-    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.waker = Some(cx.waker().clone());
         self.poll_device(cx);
         if self.io.is_none() {
@@ -1196,23 +1196,25 @@ impl HardDrive {
                 ..
             })
         ) {
-            let command = self.state.command.as_ref().unwrap();
-            let lba = command.next_lba;
             let size = buffer.total_bytes;
-            let write_sector_count = size / protocol::HARD_DRIVE_SECTOR_BYTES;
-            let fua = command.fua;
-
-            let command_buffer = self.command_buffer.access();
-            tracing::trace!(
-                lba,
-                sector_count = write_sector_count,
-                "starting disk write"
-            );
-            self.set_io(async move |disk| {
-                let buffers = command_buffer.buffers(0, size as usize, false);
-                disk.write_vectored(&buffers, lba, fua).await
-            });
+            self.write_media_sectors(size);
         }
+    }
+
+    fn write_media_sectors(&mut self, size: u32) {
+        let command = self.state.command.as_ref().unwrap();
+        let lba = command.next_lba;
+        let fua = command.fua;
+        let command_buffer = self.command_buffer.access();
+        tracing::trace!(
+            lba,
+            sector_count = size / protocol::HARD_DRIVE_SECTOR_BYTES,
+            "starting disk write"
+        );
+        self.set_io(async move |disk| {
+            let buffers = command_buffer.buffers(0, size as usize, false);
+            disk.write_vectored(&buffers, lba, fua).await
+        });
     }
 
     fn update_command_io_sector_count(&mut self) {
@@ -1234,6 +1236,10 @@ impl HardDrive {
     /// Reads data from the attachment.
     fn read(&mut self) {
         self.update_command_io_sector_count();
+        self.read_media_sectors();
+    }
+
+    fn read_media_sectors(&mut self) {
         let command = self.state.command.as_ref().unwrap();
         let lba = command.next_lba;
 
@@ -1511,6 +1517,8 @@ pub(crate) mod save_restore {
             // Whether PRDs have been exhausted for current operation
             #[mesh(11)]
             pub prd_exhausted: bool,
+            #[mesh(12)]
+            pub io_pending: bool,
         }
     }
 
@@ -1539,7 +1547,21 @@ pub(crate) mod save_restore {
                 prd_exhausted,
             } = &self.state;
 
-            let command_buffer = if let Some(buffer_state) = &self.state.buffer {
+            let command_buffer = if self.io.is_some()
+                && matches!(
+                    command,
+                    Some(CommandState {
+                        io_type: IoType::Write,
+                        ..
+                    })
+                ) {
+                let len = command.as_ref().unwrap().sectors_before_interrupt as usize
+                    * protocol::HARD_DRIVE_SECTOR_BYTES as usize;
+                self.command_buffer.buffer[..len]
+                    .iter()
+                    .map(|val| val.load(Ordering::Relaxed))
+                    .collect()
+            } else if let Some(buffer_state) = &self.state.buffer {
                 self.command_buffer.buffer[buffer_state.range()]
                     .iter()
                     .map(|val| val.load(Ordering::Relaxed))
@@ -1603,6 +1625,7 @@ pub(crate) mod save_restore {
                 command_buffer,
                 pending_software_reset: *pending_software_reset,
                 prd_exhausted: *prd_exhausted,
+                io_pending: self.io.is_some(),
             })
         }
 
@@ -1629,8 +1652,34 @@ pub(crate) mod save_restore {
                 command_buffer,
                 pending_software_reset,
                 prd_exhausted,
+                io_pending,
             } = state;
 
+            if self.io.is_some() {
+                return Err(RestoreError::Other(
+                    crate::drive::save_restore::DriveRestoreError::IoPending.into(),
+                ));
+            }
+            if command_buffer.len() > MAX_CMD_BUFFER_BYTES
+                || (io_pending
+                    && command.as_ref().is_none_or(|command| {
+                        command.sectors_before_interrupt == 0
+                            && !matches!(command.io_type, state::SavedIoType::Flush)
+                            || command.sectors_before_interrupt > command.sectors_remaining
+                            || command.sectors_before_interrupt as usize
+                                > MAX_CMD_BUFFER_BYTES / protocol::HARD_DRIVE_SECTOR_BYTES as usize
+                            || (matches!(command.io_type, state::SavedIoType::Write)
+                                && command_buffer.len()
+                                    != command.sectors_before_interrupt as usize
+                                        * protocol::HARD_DRIVE_SECTOR_BYTES as usize)
+                    }))
+            {
+                return Err(RestoreError::InvalidSavedState(
+                    crate::drive::save_restore::DriveRestoreError::InvalidPendingIo.into(),
+                ));
+            }
+            self.command_buffer.buffer[..command_buffer.len()]
+                .atomic_write(command_buffer.as_bytes());
             self.state = DriveState {
                 regs: Registers {
                     error: error.into(),
@@ -1677,12 +1726,9 @@ pub(crate) mod save_restore {
                         sectors_before_interrupt,
                     }
                 }),
-                buffer: if command_buffer.is_empty() {
+                buffer: if command_buffer.is_empty() || io_pending {
                     None
                 } else {
-                    self.command_buffer.buffer[..command_buffer.len()]
-                        .atomic_write(command_buffer.as_bytes());
-
                     Some(BufferState {
                         current_byte: 0,
                         total_bytes: command_buffer.len() as u32,
@@ -1695,6 +1741,16 @@ pub(crate) mod save_restore {
                 prd_exhausted,
             };
 
+            if io_pending {
+                let command = self.state.command.as_ref().unwrap();
+                match command.io_type {
+                    IoType::Read => self.read_media_sectors(),
+                    IoType::Write => self.write_media_sectors(
+                        command.sectors_before_interrupt * protocol::HARD_DRIVE_SECTOR_BYTES,
+                    ),
+                    IoType::Flush => self.flush(),
+                }
+            }
             Ok(())
         }
     }
@@ -1719,9 +1775,103 @@ mod tests {
     use std::task::Wake;
     use std::task::Waker;
     use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    #[test]
+    fn restore_rejects_pending_io_larger_than_the_remaining_command() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(0x20000).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        for command in [CommandState::read(1), CommandState::write(1)] {
+            let mut drive = HardDrive::new(
+                disk.clone(),
+                IdePath {
+                    channel: 0,
+                    drive: 0,
+                },
+            )
+            .unwrap();
+            drive.state.command = Some(CommandState {
+                sectors_before_interrupt: 2,
+                ..command
+            });
+            let mut saved = drive.save().unwrap();
+            saved.io_pending = true;
+            if matches!(
+                saved.command.as_ref().unwrap().io_type,
+                super::save_restore::state::SavedIoType::Write
+            ) {
+                saved.command_buffer = vec![0; 1024];
+            }
+            assert!(drive.restore(saved).is_err());
+            assert!(drive.io.is_none());
+        }
+    }
 
     #[pal_async::async_test]
-    async fn stopping_verify_wakes_the_stop_caller_for_the_next_chunk() {
+    async fn pause_saves_pending_writes_and_teardown_waits_for_them() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(0x20000).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let make_device = || {
+            crate::IdeDevice::new(
+                guestmem::GuestMemory::allocate(0x4000),
+                &mut chipset_device::pio::ExternallyManagedPortIoIntercepts,
+                [Some(crate::DriveMedia::hard_disk(disk.clone())), None],
+                [None, None],
+                vmcore::line_interrupt::LineInterrupt::detached(),
+                vmcore::line_interrupt::LineInterrupt::detached(),
+            )
+            .unwrap()
+        };
+        let mut source = make_device();
+        let crate::drive::DiskDrive::HardDevice(drive) =
+            source.channels[0].drives[0].as_mut().unwrap()
+        else {
+            unreachable!()
+        };
+        drive.state.regs.device_head.set_lba(true);
+        drive.state.command = Some(CommandState {
+            sectors_before_interrupt: 1,
+            ..CommandState::write(1)
+        });
+        drive
+            .command_buffer
+            .access()
+            .memory
+            .write_at(0, &[0x5a; 512])
+            .unwrap();
+        let (release, wait) = mesh::oneshot();
+        drive.set_io(async |_| {
+            wait.await.unwrap();
+            Ok(())
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        drive.poll_device(&mut cx);
+        {
+            let mut stop = std::pin::pin!(source.stop());
+            assert!(stop.as_mut().poll(&mut cx).is_ready());
+        }
+        let saved = mesh::payload::encode(source.save().unwrap());
+        let mut restored = make_device();
+        restored
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        restored.drain_io().await;
+        let mut data = [0; 512];
+        std::io::Read::read_exact(&mut file.reopen().unwrap(), &mut data).unwrap();
+        assert_eq!(data, [0x5a; 512]);
+
+        let mut teardown = std::pin::pin!(source.teardown());
+        assert!(teardown.as_mut().poll(&mut cx).is_pending());
+        release.send(());
+        teardown.await;
+        restored.teardown().await;
+    }
+
+    #[pal_async::async_test]
+    async fn draining_verify_wakes_the_drain_caller_for_the_next_chunk() {
         struct CountWakes(AtomicUsize);
         impl Wake for CountWakes {
             fn wake(self: Arc<Self>) {
@@ -1753,12 +1903,12 @@ mod tests {
 
         assert!(
             drive
-                .poll_stop(&mut Context::from_waker(&waker))
+                .poll_drain(&mut Context::from_waker(&waker))
                 .is_pending()
         );
         assert_eq!(old.0.load(Ordering::SeqCst), 0);
         assert!(stopping.0.load(Ordering::SeqCst) > 0);
-        poll_fn(|cx| drive.poll_stop(cx)).await;
+        poll_fn(|cx| drive.poll_drain(cx)).await;
         assert!(drive.state.command.is_none());
     }
 

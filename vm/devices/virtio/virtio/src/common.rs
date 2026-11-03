@@ -7,6 +7,8 @@ use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
+use crate::queue::SavedQueuePayload;
+use crate::queue::SavedQueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
@@ -100,15 +102,64 @@ fn read_from_payload_at_offset(
 /// A descriptor chain popped from a [`VirtioQueue`].
 ///
 /// The device must call [`VirtioQueue::complete`] exactly once to post a
-/// completion to the guest's used ring. Dropping without completing is a bug
-/// and will not automatically post a completion.
+/// completion, unless a VM reset or terminal teardown discards the request.
+/// Dropping the work does not automatically post a completion.
 #[must_use]
 pub struct VirtioQueueCallbackWork {
     completion: QueueCompletion,
     pub payload: Vec<VirtioQueuePayload>,
+    readable_prefix: Option<Vec<u8>>,
 }
 
 impl VirtioQueueCallbackWork {
+    /// Captures an accepted chain without completing or cancelling its I/O.
+    pub fn save(&self) -> SavedQueueWork {
+        SavedQueueWork {
+            completion: self.completion.save(),
+            payload: self
+                .payload
+                .iter()
+                .map(|payload| SavedQueuePayload {
+                    writeable: payload.writeable,
+                    address: payload.address,
+                    length: payload.length,
+                })
+                .collect(),
+            readable_prefix: self.readable_prefix.clone(),
+        }
+    }
+
+    /// Captures request input that must survive DMA overwriting guest memory.
+    ///
+    /// A restored prefix is retained rather than read again from guest memory.
+    /// On a read error the prefix is empty, so parsing fails without issuing I/O.
+    pub fn capture_readable_prefix(
+        &mut self,
+        mem: &GuestMemory,
+        len: usize,
+    ) -> Result<(), GuestMemoryError> {
+        if self.readable_prefix.is_some() {
+            return Ok(());
+        }
+        let mut prefix = vec![0; len];
+        match read_from_payload(&self.payload, mem, &mut prefix) {
+            Ok(len) => {
+                prefix.truncate(len);
+                self.readable_prefix = Some(prefix);
+                Ok(())
+            }
+            Err(error) => {
+                self.readable_prefix = Some(Vec::new());
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn with_readable_prefix(mut self, prefix: Option<Vec<u8>>) -> Self {
+        self.readable_prefix = prefix;
+        self
+    }
+
     pub(crate) fn from_parts(
         completion: QueueCompletion,
         payload: Vec<VirtioQueuePayload>,
@@ -116,6 +167,7 @@ impl VirtioQueueCallbackWork {
         Self {
             completion,
             payload,
+            readable_prefix: None,
         }
     }
 
@@ -149,7 +201,7 @@ impl VirtioQueueCallbackWork {
 
     // Read all payload into a buffer.
     pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
-        read_from_payload(&self.payload, mem, target)
+        self.read_at_offset(0, mem, target)
     }
 
     /// Read readable payload into `target`, skipping the first `offset`
@@ -160,6 +212,26 @@ impl VirtioQueueCallbackWork {
         mem: &GuestMemory,
         target: &mut [u8],
     ) -> Result<usize, GuestMemoryError> {
+        if let Some(prefix) = &self.readable_prefix {
+            if offset == 0 && prefix.is_empty() {
+                return Ok(0);
+            }
+            if offset < prefix.len() as u64 {
+                let prefix = &prefix[offset as usize..];
+                let len = target.len().min(prefix.len());
+                target[..len].copy_from_slice(&prefix[..len]);
+                if len == target.len() {
+                    return Ok(len);
+                }
+                let remaining = read_from_payload_at_offset(
+                    &self.payload,
+                    offset + len as u64,
+                    mem,
+                    &mut target[len..],
+                )?;
+                return Ok(len + remaining);
+            }
+        }
         read_from_payload_at_offset(&self.payload, offset, mem, target)
     }
 
@@ -291,6 +363,14 @@ pub struct VirtioQueue {
 }
 
 impl VirtioQueue {
+    /// Reconstructs accepted work, validating it against the saved ring cursors.
+    pub fn restore_pending_work(
+        &self,
+        pending: Vec<SavedQueueWork>,
+    ) -> Result<Vec<VirtioQueueCallbackWork>, QueueError> {
+        self.core.restore_pending_work(pending)
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         params: QueueParams,

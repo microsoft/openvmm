@@ -586,28 +586,106 @@ impl CommandBufferAccess {
     }
 }
 
-struct Io(Pin<Box<dyn Send + Future<Output = Result<(), disk_backend::DiskError>>>>);
+#[derive(Clone, Copy)]
+struct IoRequest {
+    lba: u64,
+    size: usize,
+    is_write: bool,
+}
+
+struct Io {
+    future: Pin<Box<dyn Send + Future<Output = Result<(), disk_backend::DiskError>>>>,
+    request: IoRequest,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+    use disk_file::FileDisk;
+    use test_with_tracing::test;
+    use vmcore::isa_dma_channel::FloatingDmaChannel;
+    use vmcore::save_restore::SaveRestore;
+
+    #[pal_async::async_test]
+    async fn pause_saves_pending_writes_without_draining_them() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(1_474_560).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let make_device = || {
+            FloppyDiskController::new(
+                GuestMemory::allocate(0x4000),
+                LineInterrupt::detached(),
+                &mut ExternallyManagedPortIoIntercepts,
+                0x3f0,
+                DriveRibbon::Single(disk.clone()),
+                Box::new(FloatingDmaChannel),
+            )
+            .unwrap()
+        };
+        let mut source = make_device();
+        source.state.pending_command = FloppyCommand::WRITE_DATA;
+        source
+            .command_buffer
+            .access()
+            .memory
+            .write_at(0, &[0x5a; 512])
+            .unwrap();
+        source.start_io(IoRequest {
+            lba: 0,
+            size: 512,
+            is_write: true,
+        });
+        let io = source.io.as_mut().unwrap();
+        let future = std::mem::replace(&mut io.future, Box::pin(std::future::pending()));
+        let (release, wait) = mesh::oneshot();
+        io.future = Box::pin(async move {
+            wait.await.unwrap();
+            future.await
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        source.poll_device(&mut cx);
+        {
+            let mut stop = std::pin::pin!(source.stop());
+            assert!(stop.as_mut().poll(&mut cx).is_ready());
+        }
+        assert!(source.io.is_some());
+        let saved = mesh::payload::encode(source.save().unwrap());
+        let mut restored = make_device();
+        restored
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        restored.drain_io().await;
+        let mut data = [0; 512];
+        std::io::Read::read_exact(&mut file.reopen().unwrap(), &mut data).unwrap();
+        assert_eq!(data, [0x5a; 512]);
+        let mut teardown = std::pin::pin!(source.teardown());
+        assert!(teardown.as_mut().poll(&mut cx).is_pending());
+        release.send(());
+        teardown.await;
+        restored.teardown().await;
+    }
+}
+
+#[derive(Debug, Error)]
+enum IoRestoreError {
+    #[error("cannot restore a floppy controller with issued I/O")]
+    IoPending,
+    #[error("invalid pending floppy I/O")]
+    InvalidPendingIo,
+}
 
 impl ChangeDeviceState for FloppyDiskController {
-    async fn teardown(self) {
-        assert!(self.io.is_none(), "floppy must be stopped before teardown");
+    async fn teardown(mut self) {
+        self.drain_io().await;
     }
 
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {
-        std::future::poll_fn(|cx| {
-            self.poll_device(cx);
-            if self.io.is_none() {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
-    }
+    async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
+        self.drain_io().await;
         self.reset(false);
     }
 }
@@ -625,7 +703,7 @@ impl ChipsetDevice for FloppyDiskController {
 impl PollDevice for FloppyDiskController {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         if let Some(io) = self.io.as_mut() {
-            if let Poll::Ready(result) = io.0.as_mut().poll(cx) {
+            if let Poll::Ready(result) = io.future.as_mut().poll(cx) {
                 self.io = None;
                 self.handle_io_completion(result);
             }
@@ -1040,22 +1118,43 @@ impl FloppyDiskController {
     }
 
     /// Sets the asynchronous IO to be polled in `poll_device`.
-    fn set_io<F, Fut>(&mut self, f: F)
-    where
-        F: FnOnce(Disk) -> Fut,
-        Fut: 'static + Future<Output = Result<(), disk_backend::DiskError>> + Send,
-    {
+    fn start_io(&mut self, request: IoRequest) {
         let DriveRibbon::Single(disk) = &self.disk_drive else {
             panic!();
         };
-
-        let fut = (f)(disk.clone());
+        let disk = disk.clone();
+        let buffer = self.command_buffer.access();
+        let fut = async move {
+            let buffers = buffer.buffers(0, request.size, !request.is_write);
+            if request.is_write {
+                disk.write_vectored(&buffers, request.lba, false).await?;
+                disk.sync_cache().await
+            } else {
+                disk.read_vectored(&buffers, request.lba).await
+            }
+        };
         assert!(self.io.is_none());
-        self.io = Some(Io(Box::pin(fut)));
+        self.io = Some(Io {
+            future: Box::pin(fut),
+            request,
+        });
         // Ensure poll_device gets called again.
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
+    }
+
+    async fn drain_io(&mut self) {
+        std::future::poll_fn(|cx| {
+            self.waker = Some(cx.waker().clone());
+            self.poll_device(cx);
+            if self.io.is_none() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
     }
 
     fn handle_io_completion(&mut self, result: Result<(), disk_backend::DiskError>) {
@@ -1091,6 +1190,10 @@ impl FloppyDiskController {
         };
 
         if let Err(err) = result {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "floppy disk I/O failed"
+            );
             let wo_error = matches!(err, disk_backend::DiskError::ReadOnly);
             self.set_output_status(true, wo_error, true);
         }
@@ -1625,12 +1728,11 @@ impl FloppyDiskController {
             }
         };
 
-        let command_buffer = self.command_buffer.access();
-
         tracing::trace!(lba, size, "starting disk read");
-        self.set_io(async move |disk| {
-            let buffers = command_buffer.buffers(0, size as usize, true);
-            disk.read_vectored(&buffers, lba).await
+        self.start_io(IoRequest {
+            lba,
+            size: size as usize,
+            is_write: false,
         });
 
         true
@@ -1704,8 +1806,6 @@ impl FloppyDiskController {
 
         let size = buffer.size.div_ceil(STANDARD_FLOPPY_SECTOR_SIZE) * STANDARD_FLOPPY_SECTOR_SIZE;
 
-        let command_buffer = self.command_buffer.access();
-
         let buffer_ptr = &self.command_buffer.buffer[0..size as usize][..size as usize];
         let r = self.guest_memory.read_to_atomic(buffer.address, buffer_ptr);
 
@@ -1730,26 +1830,10 @@ impl FloppyDiskController {
             return false;
         }
 
-        self.set_io(async move |disk| {
-            let buffers = command_buffer.buffers(0, size as usize, false);
-            let result = disk.write_vectored(&buffers, lba, false).await;
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "write failed"
-                );
-                return Err(err);
-            }
-            let result = disk.sync_cache().await;
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "flush failed"
-                );
-                return Err(err);
-            }
-
-            result
+        self.start_io(IoRequest {
+            lba,
+            size: size as usize,
+            is_write: true,
         });
 
         true
@@ -1823,25 +1907,10 @@ impl FloppyDiskController {
 
         tracing::trace!(?cylinder, ?head, ?lba, ?buffer_ptr, "Format: ");
 
-        self.set_io(async move |disk| {
-            let buffers = command_buffer.buffers(0, size, false);
-            let result = disk.write_vectored(&buffers, lba, false).await;
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "write failed"
-                );
-                return Err(err);
-            }
-            let result = disk.sync_cache().await;
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "flush failed"
-                );
-                return Err(err);
-            }
-            result
+        self.start_io(IoRequest {
+            lba,
+            size,
+            is_write: true,
         });
 
         true
@@ -2007,6 +2076,21 @@ mod save_restore {
             pub floppies: [SavedFloppyState; 1],
             #[mesh(14)]
             pub pending_command: u8,
+            #[mesh(15)]
+            pub pending_io: Option<SavedIoRequest>,
+        }
+
+        #[derive(Protobuf)]
+        #[mesh(package = "chipset.floppy")]
+        pub struct SavedIoRequest {
+            #[mesh(1)]
+            pub lba: u64,
+            #[mesh(2)]
+            pub size: u32,
+            #[mesh(3)]
+            pub is_write: bool,
+            #[mesh(4)]
+            pub write_data: Vec<u8>,
         }
 
         #[derive(Protobuf)]
@@ -2191,6 +2275,19 @@ mod save_restore {
                     internals: internals.into(),
                 }],
                 pending_command: pending_command.0,
+                pending_io: self.io.as_ref().map(|io| state::SavedIoRequest {
+                    lba: io.request.lba,
+                    size: io.request.size as u32,
+                    is_write: io.request.is_write,
+                    write_data: if io.request.is_write {
+                        self.command_buffer.buffer[..io.request.size]
+                            .iter()
+                            .map(|byte| byte.load(Ordering::Relaxed))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                }),
             };
 
             Ok(saved_state)
@@ -2212,8 +2309,30 @@ mod save_restore {
                 drive: _,
                 floppies,
                 pending_command,
+                pending_io,
             } = state;
 
+            if self.io.is_some() {
+                return Err(RestoreError::Other(IoRestoreError::IoPending.into()));
+            }
+            if let Some(io) = &pending_io {
+                if io.size == 0
+                    || io.size as usize > MAX_CMD_BUFFER_BYTES
+                    || !(io.size as usize).is_multiple_of(STANDARD_FLOPPY_SECTOR_SIZE)
+                    || (io.is_write && io.write_data.len() != io.size as usize)
+                    || (!io.is_write && !io.write_data.is_empty())
+                    || !matches!(self.disk_drive, DriveRibbon::Single(_))
+                {
+                    return Err(RestoreError::InvalidSavedState(
+                        IoRestoreError::InvalidPendingIo.into(),
+                    ));
+                }
+                self.command_buffer
+                    .access()
+                    .memory
+                    .write_at(0, &io.write_data)
+                    .map_err(|error| RestoreError::InvalidSavedState(error.into()))?;
+            }
             self.state = FloppyState {
                 digital_output: digital_output.into(),
                 main_status: main_status.into(),
@@ -2241,6 +2360,13 @@ mod save_restore {
 
             self.rt.interrupt.set_level(interrupt_level);
 
+            if let Some(io) = pending_io {
+                self.start_io(IoRequest {
+                    lba: io.lba,
+                    size: io.size as usize,
+                    is_write: io.is_write,
+                });
+            }
             Ok(())
         }
     }

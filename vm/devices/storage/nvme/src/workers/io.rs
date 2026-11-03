@@ -137,18 +137,6 @@ impl IoState {
             self.sqs[io_result.sq_idx].io_count -= 1;
         }
     }
-
-    pub async fn stop(&mut self) {
-        while let Some(result) = self.ios.next().await {
-            let sq = &mut self.sqs[result.sq_idx];
-            if sq.deleting {
-                sq.io_count -= 1;
-                tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
-            } else {
-                self.completions.push_back(result);
-            }
-        }
-    }
 }
 
 struct IoResult {
@@ -324,10 +312,12 @@ impl IoHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
+
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
+    use task_control::TaskControl;
     use test_with_tracing::test;
     use zerocopy::FromZeros;
 
@@ -340,17 +330,19 @@ mod tests {
     }
 
     #[async_test]
-    async fn stop_retains_issued_io_and_completed_results() {
+    async fn stop_retains_issued_io_without_waiting_for_completion(driver: DefaultDriver) {
         let memory = GuestMemory::allocate(0x4000);
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(4)));
         let mut state = IoState::new(&memory, doorbells, 0x1000, 8, 1, None, BTreeMap::new());
         let sq_idx = state.create_sq(1, 0, 8);
         state.sqs[sq_idx].io_count = 1;
         let (release, wait) = mesh::oneshot();
+        let (entered, started) = mesh::oneshot();
         let dropped = Arc::new(AtomicBool::new(false));
         let issued = IssuedIo(dropped.clone());
         state.ios.push(Box::pin(async move {
             let _issued = issued;
+            entered.send(());
             wait.await.unwrap();
             IoResult {
                 sq_idx,
@@ -358,19 +350,25 @@ mod tests {
                 result: CommandResult::default(),
             }
         }));
-        assert!(state.stop().now_or_never().is_none());
+        let (send, _recv) = mesh::channel();
+        let mut task = TaskControl::new(IoHandler::new(memory, send));
+        task.insert(&driver, "test-nvme-io", state);
+        task.start();
+        started.await.unwrap();
+        task.stop().await;
         assert!(!dropped.load(Ordering::SeqCst));
+        assert_eq!(task.state().unwrap().ios.len(), 1);
+        assert!(task.state().unwrap().completions.is_empty());
         release.send(());
-        state.stop().await;
+        task.state_mut().unwrap().drain().await;
         assert!(dropped.load(Ordering::SeqCst));
-        assert!(state.ios.is_empty());
-        assert_eq!(state.completions.len(), 1);
-        assert_eq!(state.completions[0].cid, 17);
-        assert_eq!(state.sqs[sq_idx].io_count, 1);
+        assert_eq!(task.state().unwrap().sqs[sq_idx].io_count, 0);
     }
 
     #[async_test]
-    async fn stop_allows_queue_deletion_with_a_full_completion_queue() {
+    async fn queue_deletion_resumes_after_pause_with_a_full_completion_queue(
+        driver: DefaultDriver,
+    ) {
         let memory = GuestMemory::allocate(0x4000);
         let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(4)));
         let mut state = IoState::new(&memory, doorbells, 0x1000, 8, 1, None, BTreeMap::new());
@@ -378,7 +376,11 @@ mod tests {
         state.sqs[sq_idx].io_count = 1;
         state.delete_sq(sq_idx);
         while state.cq.write(spec::Completion::new_zeroed()).unwrap() {}
+        let (release, wait) = mesh::oneshot();
+        let (entered, started) = mesh::oneshot();
         state.ios.push(Box::pin(async move {
+            entered.send(());
+            wait.await.unwrap();
             IoResult {
                 sq_idx,
                 cid: 17,
@@ -386,11 +388,18 @@ mod tests {
             }
         }));
 
-        state.stop().await;
         let (send, mut recv) = mesh::channel();
-        let mut handler = IoHandler::new(memory, send);
-        assert!(handler.process(&mut state).now_or_never().is_none());
+        let mut task = TaskControl::new(IoHandler::new(memory, send));
+        task.insert(&driver, "test-deleting-nvme-io", state);
+        task.start();
+        started.await.unwrap();
+        task.stop().await;
+        assert_eq!(task.state().unwrap().sqs[sq_idx].io_count, 1);
+        release.send(());
+        task.start();
         assert_eq!(recv.recv().await.unwrap(), 1);
+        task.stop().await;
+        let state = task.state().unwrap();
         assert!(!state.sqs.contains(sq_idx));
         assert!(state.completions.is_empty());
     }
