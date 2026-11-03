@@ -27,6 +27,7 @@ use crate::queue::QueueCompletion;
 use inspect::Inspect;
 use std::collections::VecDeque;
 use std::io::Error;
+use std::io::ErrorKind;
 
 /// Enforces in-order used-ring publication for a single [`VirtioQueue`].
 ///
@@ -40,11 +41,14 @@ pub struct InOrderCompletion {
     /// The front is the next descriptor eligible to be published.
     #[inspect(with = "VecDeque::len")]
     order: VecDeque<u16>,
+    /// An ID remains in use until its completion is published, including while
+    /// the completion is buffered behind earlier work.
+    #[inspect(skip)]
+    in_flight: Vec<bool>,
     /// Completed-but-not-yet-published work, indexed by descriptor index.
     /// Bounded by the queue size, so a descriptor index (always
     /// `< queue_size`) is a unique key for the outstanding set: a repeated
-    /// index while still outstanding is a guest protocol violation that the
-    /// device detects and treats as fatal.
+    /// index while still outstanding is rejected by `try_next`.
     #[inspect(skip)]
     completed: Vec<Option<Completed>>,
 }
@@ -59,33 +63,42 @@ impl InOrderCompletion {
     pub fn new(queue_size: u16) -> Self {
         Self {
             order: VecDeque::with_capacity(queue_size as usize),
+            in_flight: vec![false; queue_size as usize],
             completed: (0..queue_size).map(|_| None).collect(),
         }
     }
 
     /// Consumes the next available descriptor from `queue`, recording it for
     /// in-order completion. Returns `Ok(None)` if no work is available.
+    /// Reusing an outstanding descriptor returns `InvalidData` without consuming it.
     ///
     /// Use this in place of [`VirtioQueue::try_next`].
     pub fn try_next(
         &mut self,
         queue: &mut VirtioQueue,
     ) -> Result<Option<VirtioQueueCallbackWork>, Error> {
-        let work = queue.try_next()?;
-        if let Some(work) = &work {
-            let idx = work.descriptor_index() as usize;
-            // The queue validates the descriptor index against the ring size
-            // when it reads the descriptor, so an out-of-range index fails
-            // above rather than reaching here. Assert the invariant so a
-            // violation fails fast at entry instead of corrupting later state.
-            assert!(
-                idx < self.completed.len(),
-                "descriptor index {idx} exceeds queue size {}",
-                self.completed.len()
-            );
-            self.order.push_back(work.descriptor_index());
+        let Some(work) = queue.try_peek()? else {
+            return Ok(None);
+        };
+        let idx = work.descriptor_index() as usize;
+        // The queue validates the descriptor index against the ring size
+        // when it reads the descriptor, so an out-of-range index fails
+        // above rather than reaching here. Assert the invariant so a
+        // violation fails fast at entry instead of corrupting later state.
+        assert!(
+            idx < self.completed.len(),
+            "descriptor index {idx} exceeds queue size {}",
+            self.completed.len()
+        );
+        if self.in_flight[idx] {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("descriptor {idx} is already outstanding"),
+            ));
         }
-        Ok(work)
+        self.in_flight[idx] = true;
+        self.order.push_back(work.descriptor_index());
+        Ok(Some(work.consume()))
     }
 
     /// Records a completion for the descriptor identified by `completion` and
@@ -122,6 +135,7 @@ impl InOrderCompletion {
         if self.order.front() == Some(&idx) {
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
+            self.in_flight[idx as usize] = false;
             if !self.order.is_empty() {
                 self.drain_completed_prefix(queue);
             }
@@ -158,6 +172,7 @@ impl InOrderCompletion {
             };
             self.order.pop_front();
             queue.complete_prepared(completion, bytes_written);
+            self.in_flight[front as usize] = false;
         }
     }
 

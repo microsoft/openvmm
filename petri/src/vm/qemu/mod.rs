@@ -63,6 +63,20 @@ pub struct QemuPetriBackend {
 pub struct QemuPetriConfig {
     share_9p: Option<PathBuf>,
     devices: Vec<DeviceConfig>,
+    machine: Option<String>,
+    cpu: Option<String>,
+    smp: Option<String>,
+    memory: Option<String>,
+    command_line: String,
+}
+
+impl QemuPetriBackend {
+    /// Use a caller-supplied QEMU executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            qemu_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
 }
 
 /// Resources needed at runtime for a QEMU Petri VM
@@ -109,10 +123,7 @@ impl PetriVmmBackend for QemuPetriBackend {
         Ok(None)
     }
 
-    fn build_custom_init_script(
-        pipette_path: &str,
-        mount_shares: Vec<(String, String)>,
-    ) -> Option<String> {
+    fn build_custom_init_script(pipette_path: &str) -> Option<String> {
         let mut script = String::from(
             "#!/bin/sh\n\
             ip link set eth0 up\n\
@@ -120,13 +131,6 @@ impl PetriVmmBackend for QemuPetriBackend {
             ip route add default via 10.0.2.2\n\
             echo 'nameserver 10.0.2.3' > /etc/resolv.conf\n",
         );
-
-        for (tag, path) in mount_shares {
-            script.push_str(&format!(
-                "mkdir -p {path}\n\
-                mount -t 9p -o trans=virtio,version=9p2000.L {tag} {path}\n"
-            ));
-        }
 
         script.push_str(&format!(
             "exec '/{}' --transport tcp\n",
@@ -188,6 +192,7 @@ impl PetriVmmBackend for QemuPetriBackend {
 
         let qemu_process = PolledChild::<std::process::Child>::new(driver, qemu_process)
             .context("failed to create PolledChild")?;
+        let qemu_process = TestChild::new(qemu_process);
 
         let mut log_tasks = Vec::new();
 
@@ -214,7 +219,7 @@ impl PetriVmmBackend for QemuPetriBackend {
         Ok((
             QemuPetriRuntime {
                 driver: driver.clone(),
-                qemu_process: Arc::new(Mutex::new(TestChild::new(qemu_process))),
+                qemu_process: Arc::new(Mutex::new(qemu_process)),
                 host_pipette_port,
                 log_tasks,
                 output_dir: log_source.output_dir().to_owned(),
@@ -227,6 +232,23 @@ impl PetriVmmBackend for QemuPetriBackend {
 }
 
 impl QemuPetriConfig {
+    /// Override the emulated machine, CPU, topology, and kernel command line.
+    pub fn with_platform(
+        mut self,
+        machine: String,
+        cpu: String,
+        smp: String,
+        memory: String,
+        command_line: String,
+    ) -> Self {
+        self.machine = Some(machine);
+        self.cpu = Some(cpu);
+        self.smp = Some(smp);
+        self.memory = Some(memory);
+        self.command_line = command_line;
+        self
+    }
+
     /// Share a directory with the guest via 9p.
     pub fn with_share_9p(mut self, path: impl AsRef<Path>) -> Self {
         self.share_9p = Some(path.as_ref().to_path_buf());
@@ -480,7 +502,15 @@ pub fn build_qemu_command(
         guest_shares,
     } = config;
 
-    let QemuPetriConfig { share_9p, devices } = qemu_config;
+    let QemuPetriConfig {
+        share_9p,
+        devices,
+        machine,
+        cpu,
+        smp,
+        memory,
+        command_line,
+    } = qemu_config;
 
     // make sure we aren't silently ignoring any configurations
     assert!(matches!(arch, MachineArch::Aarch64));
@@ -505,14 +535,21 @@ pub fn build_qemu_command(
 
     let mut cmd = Command::new(binary);
 
-    cmd.arg("-machine")
-        .arg("virt,virtualization=on,iommu=smmuv3,gic-version=3");
-    cmd.arg("-cpu").arg("max");
+    cmd.arg("-machine").arg(
+        machine
+            .as_deref()
+            .unwrap_or("virt,virtualization=on,iommu=smmuv3,gic-version=3"),
+    );
+    cmd.arg("-cpu").arg(cpu.as_deref().unwrap_or("max"));
     // TODO: more complex memory topologies
-    cmd.arg("-m")
-        .arg((startup_bytes / (1024 * 1024)).to_string());
+    cmd.arg("-m").arg(
+        memory
+            .clone()
+            .unwrap_or_else(|| (startup_bytes / (1024 * 1024)).to_string()),
+    );
     // TODO: more complex CPU topologies
-    cmd.arg("-smp").arg(vp_count.to_string());
+    cmd.arg("-smp")
+        .arg(smp.clone().unwrap_or_else(|| vp_count.to_string()));
     cmd.arg("-nographic");
 
     let PetriInitrd { path, rdinit_param } = prebuilt_initrd;
@@ -525,13 +562,14 @@ pub fn build_qemu_command(
         _ => anyhow::bail!("qemu backend only supports linux direct"),
     };
 
-    cmd.arg("-append").arg(format!("rdinit={rdinit_param}"));
+    cmd.arg("-append")
+        .arg(format!("{command_line} rdinit={rdinit_param}").trim());
     cmd.arg("-no-reboot");
 
     // 9p: share the host directory into the guest
     let mut guest_shares = guest_shares
         .iter()
-        .map(|(k, v)| (k.as_str(), v.as_path()))
+        .map(|(k, v)| (k.as_str(), v.host_path.as_path()))
         .collect::<Vec<_>>();
     if let Some(custom_share) = share_9p {
         guest_shares.push((SHARE_9P_MOUNT_TAG, custom_share.as_path()));
@@ -606,4 +644,71 @@ pub fn build_qemu_command(
     }
 
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn preserves_standalone_platform_options() -> anyhow::Result<()> {
+        let config = PetriVmConfig {
+            name: "test".into(),
+            arch: MachineArch::Aarch64,
+            host_log_levels: None,
+            firmware: Firmware::LinuxDirect {
+                kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
+                initrd: ResolvedArtifact::from_local_path("base-initrd".into()),
+            },
+            hibernation_enabled: false,
+            ipmi_enabled: false,
+            memory: Default::default(),
+            proc_topology: Default::default(),
+            nested_virt_enabled: true,
+            vmgs: crate::PetriVmgsResource::Ephemeral,
+            tpm: None,
+            vmbus_storage_controllers: Default::default(),
+            pcie_nvme_drives: Vec::new(),
+            pcie_virtio_blk_drives: Vec::new(),
+            physical_nvme_devices: Default::default(),
+            guest_shares: Default::default(),
+        };
+        let platform = QemuPetriConfig::default().with_platform(
+            "virt,gic-version=3".into(),
+            "max,sve=off".into(),
+            "4,sockets=2,cores=2".into(),
+            "4096".into(),
+            "console=ttyAMA0 debug".into(),
+        );
+        let initrd = PetriInitrd {
+            path: crate::TempOrPersistentPath::Persistent("patched initrd".into()),
+            rdinit_param: "/tcg-init.sh".into(),
+        };
+        let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, &initrd)?;
+        let args = cmd
+            .get_args()
+            .map(|s| s.to_str().unwrap())
+            .collect::<Vec<_>>();
+        for pair in [
+            ["-machine", "virt,gic-version=3"],
+            ["-cpu", "max,sve=off"],
+            ["-m", "4096"],
+            ["-smp", "4,sockets=2,cores=2"],
+            ["-kernel", "kernel with spaces"],
+            ["-initrd", "patched initrd"],
+            ["-append", "console=ttyAMA0 debug rdinit=/tcg-init.sh"],
+        ] {
+            assert!(args.windows(2).any(|args| args == pair), "{pair:?}");
+        }
+        let default_cmd = build_qemu_command(
+            Path::new("qemu"),
+            &config,
+            &QemuPetriConfig::default(),
+            12345,
+            &initrd,
+        )?;
+        assert!(default_cmd.get_args().any(|a| a == "rdinit=/tcg-init.sh"));
+        Ok(())
+    }
 }

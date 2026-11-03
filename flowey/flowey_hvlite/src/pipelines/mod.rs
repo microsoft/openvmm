@@ -18,6 +18,7 @@ pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod openvmm_source_release;
 pub mod restore_packages;
+pub mod unit_test_coverage;
 pub mod vmm_perf;
 pub mod vmm_tests_run;
 pub mod vmm_tests_run_target;
@@ -44,6 +45,9 @@ pub enum OpenvmmPipelines {
 
     /// Install tools needed to build OpenVMM
     RestorePackages(RestorePackagesCli),
+
+    /// Collect agent-readable local unit-test coverage.
+    UnitTestCoverage(unit_test_coverage::UnitTestCoverageCli),
 
     /// Build and run VMM tests with automatic artifact discovery
     VmmTestsRun(VmmTestsRunCli),
@@ -97,6 +101,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::BurnIn(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::UnitTestCoverage(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmPerf(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRunTarget(cmd) => cmd.into_pipeline(pipeline_hint),

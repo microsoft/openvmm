@@ -125,7 +125,8 @@ pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
 /// The public components of an RSA key.
 ///
-/// All components are unsigned big-endian integers.
+/// All components are unsigned big-endian integers. Exported components have
+/// no leading zero padding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsaPublicKeyComponents {
     /// The RSA modulus, `n`.
@@ -136,7 +137,8 @@ pub struct RsaPublicKeyComponents {
 
 /// The full components of a two-prime RSA private key.
 ///
-/// All components are unsigned big-endian integers.
+/// All components are unsigned big-endian integers. Exported components have
+/// no leading zero padding.
 #[cfg(any(test, feature = "export_private"))]
 #[derive(Clone, PartialEq, Eq)]
 pub struct RsaPrivateKeyComponents {
@@ -200,8 +202,9 @@ impl RsaPublicKey {
         self.0.modulus_size()
     }
 
-    /// Returns the RSA public components as big-endian byte vectors.
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
+    /// Returns the RSA public components as big-endian byte vectors,
+    /// without leading zero padding.
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
         self.0.to_components()
     }
 }
@@ -274,7 +277,10 @@ mod tests {
         let key = RsaKeyPair::generate(2048).unwrap();
         let der = key.to_pkcs8_der().unwrap();
         let imported = RsaKeyPair::from_pkcs8_der(&der).unwrap();
-        assert_eq!(key.to_components(), imported.to_components());
+        assert_eq!(
+            key.to_components().unwrap(),
+            imported.to_components().unwrap()
+        );
 
         // Sign with the original and verify with the imported, to confirm
         // the private-key components survived the round-trip.
@@ -370,13 +376,17 @@ mod tests {
     #[test]
     fn private_components_match_pkcs8() {
         let key = RsaKeyPair::generate(2048).unwrap();
+        let der = key.to_pkcs8_der().unwrap();
+        assert_private_components_match_der(&key, &der);
+    }
+
+    fn assert_private_components_match_der(key: &RsaKeyPair, der: &[u8]) {
         let components = key.to_private_components().unwrap();
-        let public = key.to_components();
+        let public = key.to_components().unwrap();
         assert_eq!(components.modulus, public.modulus);
         assert_eq!(components.public_exponent, public.public_exponent);
 
-        let der = key.to_pkcs8_der().unwrap();
-        let pki = pkcs8::PrivateKeyInfoRef::from_der(&der).unwrap();
+        let pki = pkcs8::PrivateKeyInfoRef::from_der(der).unwrap();
         let decoded = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes()).unwrap();
         for (actual, expected) in [
             (&components.modulus, decoded.modulus),

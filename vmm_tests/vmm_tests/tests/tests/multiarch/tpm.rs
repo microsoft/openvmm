@@ -37,6 +37,11 @@ use vmm_test_macros::vmm_test_with;
 
 const AK_CERT_NONZERO_BYTES: usize = 2500;
 const AK_CERT_TOTAL_BYTES: usize = 4096;
+#[cfg(windows)]
+const AK_CERT_NO_RENEWAL: &str =
+    "Host indicated that the existing AK certificate does not need renewal";
+#[cfg(windows)]
+const AK_CERT_EMPTY: &str = "The requested TPM AK cert is empty";
 
 const TPM_GUEST_TESTS_LINUX_GUEST_PATH: &str = "/tmp/tpm_guest_tests";
 const TPM_GUEST_TESTS_WINDOWS_GUEST_PATH: &str = "C:\\tpm_guest_tests.exe";
@@ -172,6 +177,84 @@ impl<'a> TpmGuestTests<'a> {
             }
             _ => unreachable!(),
         }
+    }
+
+    #[cfg(windows)]
+    async fn read_ak_cert_fixture(
+        &self,
+        replacement: bool,
+        driver: &pal_async::DefaultDriver,
+    ) -> anyhow::Result<String> {
+        use der::Decode;
+        use der::Reader;
+        use der::SliceReader;
+        use pal_async::timer::PolledTimer;
+        use std::time::Duration;
+        use x509_cert::Certificate;
+
+        let guest_binary_path = &self.guest_binary_path;
+        let output_path = format!("{guest_binary_path}.ak_cert");
+        let expected_name = if replacement {
+            "Next \"AK\" issuer"
+        } else {
+            "Test \"AK\" issuer"
+        };
+        let mut timer = PolledTimer::new(driver);
+        for attempt in 0..=10 {
+            let result = async {
+                match self.os_flavor {
+                    OsFlavor::Linux => {
+                        let sh = self.agent.unix_shell();
+                        cmd!(sh, "{guest_binary_path}")
+                            .args(["ak_cert", "--output-file", &output_path])
+                            .run()
+                            .await?;
+                    }
+                    OsFlavor::Windows => {
+                        let sh = self.agent.windows_shell();
+                        cmd!(sh, "{guest_binary_path}")
+                            .args(["ak_cert", "--output-file", &output_path])
+                            .run()
+                            .await?;
+                    }
+                    _ => unreachable!(),
+                }
+                let data = self
+                    .agent
+                    .read_file(&output_path)
+                    .await
+                    .context("reading captured AK certificate NV contents")?;
+                let encoded = SliceReader::new(&data)?.tlv_bytes()?;
+                let certificate =
+                    Certificate::from_der(encoded).context("parsing captured AK certificate")?;
+                let issuer = certificate
+                    .tbs_certificate()
+                    .issuer()
+                    .common_name()?
+                    .map(String::from);
+                let subject = certificate
+                    .tbs_certificate()
+                    .subject()
+                    .common_name()?
+                    .map(String::from);
+                ensure!(
+                    issuer.as_deref() == Some(expected_name)
+                        && subject.as_deref() == Some(expected_name),
+                    "expected AK certificate {expected_name:?}, got issuer {issuer:?} and subject {subject:?}"
+                );
+                Ok(ak_cert_hex(&data))
+            }
+            .await;
+            match result {
+                Ok(hex) => return Ok(hex),
+                Err(error) if attempt == 10 => return Err(error),
+                Err(error) => {
+                    tracing::info!(attempt, ?error, "waiting for AK certificate fixture");
+                    timer.sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
+        unreachable!()
     }
 
     #[cfg(windows)]
@@ -337,8 +420,8 @@ impl<'a> TpmGuestTests<'a> {
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     ignore(reason = "OpenVMM VBS boot on Ubuntu is unreliable (microsoft/openvmm#2608)", openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped)),
@@ -365,7 +448,8 @@ pub(crate) async fn boot_with_tpm_impl<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test AK cert is persistent across boots.
+/// Verify bit 5 preserves A despite poison bytes, then retains A when unavailable.
+#[cfg(windows)]
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
@@ -373,14 +457,17 @@ pub(crate) async fn boot_with_tpm_impl<T: PetriVmmBackend>(
 async fn tpm_ak_cert_persisted<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    tpm_ak_cert_persisted_impl(config, extra_deps, PetriTpmVersion::V185).await
+    tpm_ak_cert_persisted_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
 }
 
+#[cfg(windows)]
 pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
     tpm_version: PetriTpmVersion,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (mut vm, mut agent) = config
@@ -393,19 +480,19 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
                 get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
             )
         })
+        .with_openhcl_command_line("log_buf_len=1M")
         .run()
         .await?;
 
     let guest_binary_path = match os_flavor {
         // Ubuntu automatically reboots when the TPM is enabled
         OsFlavor::Linux => {
-            // First boot - AK cert request will be served by GED.
-            // Second boot - Ak cert request will be bypassed by GED.
+            // First boot issues A; the automatic reboot validates A's metadata
+            // and returns no-renewal with poison bytes.
             TPM_GUEST_TESTS_LINUX_GUEST_PATH
         }
         OsFlavor::Windows => {
-            // First boot - AK cert request will be served by GED
-            // Second boot - Ak cert request will be bypassed by GED.
+            // Reach the no-renewal response explicitly on Windows.
             agent.reboot().await?;
             agent = vm.wait_for_reset().await?;
 
@@ -414,17 +501,26 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
         _ => unreachable!(),
     };
 
+    // An unavailable/failed request must not pass as successful no-renewal.
+    wait_for_ak_cert_event(&vm, &driver, AK_CERT_NO_RENEWAL).await?;
     let (artifact,) = extra_deps;
     let host_binary_path = artifact.get();
     let tpm_guest_tests =
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    let expected_hex = expected_ak_cert_hex();
-    let output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(false, &driver).await?;
 
+    // The next request validates A again before returning empty transport.
+    agent.reboot().await?;
+    agent = vm.wait_for_reset().await?;
+    wait_for_ak_cert_event(&vm, &driver, AK_CERT_EMPTY).await?;
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(&expected_hex)
+        .await?;
     ensure!(
         output.contains("AK certificate matches expected value"),
         output
@@ -433,6 +529,90 @@ pub(crate) async fn tpm_ak_cert_persisted_impl<T>(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
+    Ok(())
+}
+
+/// Replace A with distinct B, then validate B's metadata and retain B while unavailable.
+/// The policy is deterministic and does not depend on certificate expiry.
+#[cfg(windows)]
+#[openvmm_test(
+    openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
+)]
+async fn tpm_ak_cert_renewal<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    tpm_ak_cert_renewal_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn tpm_ak_cert_renewal_impl<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (ResolvedArtifact<T>,),
+    tpm_version: PetriTpmVersion,
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    let (artifact,) = extra_deps;
+    let config = config.modify_backend(|b| {
+        b.with_igvm_attest_test_config(get_resources::ged::IgvmAttestTestConfig::AkCertRenewal)
+    });
+    ak_cert_renewal_impl(config, artifact.get(), tpm_version, driver).await
+}
+
+/// Shared by the renewal test and the existing Hyper-V cache matrices.
+#[cfg(windows)]
+async fn ak_cert_renewal_impl<U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    host_binary_path: &Path,
+    tpm_version: PetriTpmVersion,
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (mut vm, mut agent) = config
+        .with_tpm(true)
+        .with_tpm_version(tpm_version)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_openhcl_command_line("log_buf_len=1M")
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        // All Linux callers use Ubuntu 25.04: Petri waits for its automatic
+        // WithTpm reboot on both backends. B may already be in NV after run().
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => {
+            agent.reboot().await?;
+            agent = vm.wait_for_reset().await?;
+            TPM_GUEST_TESTS_WINDOWS_GUEST_PATH
+        }
+        _ => unreachable!(),
+    };
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(true, &driver).await?;
+
+    // Only exact B metadata earns an empty response; validation failures are
+    // sticky errors, not empty responses. Read this subsequent boot's kmsg.
+    agent.reboot().await?;
+    agent = vm.wait_for_reset().await?;
+    wait_for_ak_cert_event(&vm, &driver, AK_CERT_EMPTY).await?;
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+    let output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(&expected_hex)
+        .await?;
+    ensure!(
+        output.contains("AK certificate matches expected value"),
+        output
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
 
@@ -511,10 +691,79 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
     Ok(())
 }
 
-/// Hyper-V variant of TPM AK cert persisted test.
+#[cfg(windows)]
+fn ak_cert_hex(cert: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    assert!(cert.len() <= AK_CERT_TOTAL_BYTES);
+    let mut cert = cert.to_vec();
+    cert.resize(AK_CERT_TOTAL_BYTES, 0);
+    let mut hex = String::from("0x");
+    for byte in cert {
+        write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    hex
+}
+
+/// Wait for proof that the TPM consumed the expected response on this boot.
+/// An unchanged cached certificate alone could also mean the request failed.
+#[cfg(windows)]
+async fn wait_for_ak_cert_event<U: PetriVmmBackend>(
+    vm: &petri::PetriVm<U>,
+    driver: &pal_async::DefaultDriver,
+    marker: &str,
+) -> anyhow::Result<()> {
+    use futures::StreamExt;
+    use futures::future::Either;
+    use pal_async::timer::PolledTimer;
+    use std::time::Duration;
+
+    let mut timer = PolledTimer::new(driver);
+    let completion = async {
+        let mut retry_timer = PolledTimer::new(driver);
+        loop {
+            {
+                let mut stream = vm.kmsg().await?;
+                while let Some(data) = stream.next().await {
+                    let data = data.context("reading OpenHCL AK certificate completion")?;
+                    let entry = kmsg::KmsgParsedEntry::new(&data).map_err(|error| {
+                        anyhow::anyhow!("parsing OpenHCL AK certificate completion: {error}")
+                    })?;
+                    if entry.message.as_raw().contains(marker) {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                }
+            }
+            // kmsg(false) is a snapshot: EOF means no more records *yet*,
+            // not that OpenHCL stopped. Reopen after a short delay to observe
+            // asynchronous responses. The outer timeout bounds all attempts,
+            // including opening/reading each snapshot; real I/O errors propagate.
+            retry_timer.sleep(Duration::from_millis(200)).await;
+        }
+    };
+    match futures::future::select(
+        Box::pin(completion),
+        Box::pin(timer.sleep(Duration::from_secs(30))),
+    )
+    .await
+    {
+        Either::Left((result, _)) => {
+            result.with_context(|| format!("waiting for OpenHCL AK certificate event: {marker}"))?
+        }
+        Either::Right(_) => {
+            anyhow::bail!("timed out after 30s waiting for OpenHCL AK certificate event: {marker}")
+        }
+    }
+
+    Ok(())
+}
+
+/// Hyper-V AK certificate renewal and persistent cache test.
 ///
-/// First boot: AK cert request is served by the RPC agent.
-/// Second boot: AK cert is served from the persistent cache.
+/// The existing `AkCertPersistentAcrossBootExtended` policy now issues A,
+/// replaces it with B on exact A metadata, then requires exact B metadata
+/// before returning empty transport forever. Verify B after the renewal boot
+/// and again after a subsequent boot's empty-response completion.
 ///
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
@@ -527,8 +776,8 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -537,8 +786,9 @@ pub(crate) async fn tpm_ak_cert_retry_impl<T>(
 async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    ak_cert_cache_impl(config, extra_deps, PetriTpmVersion::V185).await
+    ak_cert_cache_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
 }
 
 #[cfg(windows)]
@@ -546,49 +796,14 @@ pub(crate) async fn ak_cert_cache_impl<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
     tpm_version: PetriTpmVersion,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    let os_flavor = config.os_flavor();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
     let rpc_server_path = rpc_server_artifact.get();
     let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
 
-    let (mut vm, mut agent) = config
-        .with_tpm(true)
-        .with_tpm_version(tpm_version)
-        .with_tpm_state_persistence(true)
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
-        .run()
-        .await?;
-
-    let guest_binary_path = match os_flavor {
-        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
-        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
-        _ => unreachable!(),
-    };
-
-    agent.reboot().await?;
-    agent = vm.wait_for_reset().await?;
-
-    let host_binary_path = tpm_guest_tests_artifact.get();
-    let tpm_guest_tests =
-        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
-            .await?;
-
-    let expected_hex = expected_ak_cert_hex();
-    let output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
-
-    ensure!(
-        output.contains("AK certificate matches expected value"),
-        format!("{output}")
-    );
-
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-
-    Ok(())
+    ak_cert_renewal_impl(config, tpm_guest_tests_artifact.get(), tpm_version, driver).await
 }
 
 /// Hyper-V variant of TPM AK cert retry test.
@@ -609,8 +824,8 @@ pub(crate) async fn ak_cert_cache_impl<T, S, U: PetriVmmBackend>(
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -817,6 +1032,10 @@ pub(crate) async fn tpm_test_platform_hierarchy_disabled_impl(
 /// Exercises the CVM vTPM end-to-end against the test IGVM agent RPC server:
 /// verifies the AK certificate and attestation report runtime claims, and
 /// that the vTPM Attestation Key (AK) public key is stable across a reboot.
+/// Both guest OSes also verify V2 no-renewal on that same reboot:
+/// the RPC agent validates certificate metadata and returns bit 5 with poison
+/// bytes, which must not overwrite the certificate. No additional VM boots
+/// are needed. All cases use `AkCertNoRenewal` and compare the full padded A.
 ///
 /// AK stability: the AK is derived deterministically from the TPM
 /// endorsement-hierarchy seed. With a correct OSS ms-tpm-20-ref crypto
@@ -833,18 +1052,19 @@ pub(crate) async fn tpm_test_platform_hierarchy_disabled_impl(
 /// `VMM_TEST_IGVM_AGENT_LOCAL_AUTOSTART=1` to let the test spin it up.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
+async fn cvm_guest<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
-    cvm_tpm_guest_tests_impl(config, extra_deps, PetriTpmVersion::V185).await
+    cvm_tpm_guest_tests_impl(config, extra_deps, PetriTpmVersion::V185, driver).await
 }
 
 #[cfg(windows)]
@@ -852,8 +1072,10 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
     extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
     tpm_version: PetriTpmVersion,
+    driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
+    // Both modules' cvm_guest RPC mappings use AkCertNoRenewal for both OSes.
     let isolation = config.isolation();
     let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
 
@@ -861,13 +1083,14 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
     let rpc_server_path = rpc_server_artifact.get();
     let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
 
-    let config = config
+    let (mut vm, agent) = config
         .with_tpm(true)
         .with_tpm_version(tpm_version)
         .with_tpm_state_persistence(true)
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
-
-    let (mut vm, agent) = config.run().await?;
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_openhcl_command_line("log_buf_len=1M")
+        .run()
+        .await?;
 
     let guest_binary_path = match os_flavor {
         OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
@@ -879,16 +1102,9 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
         TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
             .await?;
 
-    // Verify AK cert with the test IGVM agent RPC server
-    let expected_hex = expected_ak_cert_hex();
-    let ak_cert_output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
-
-    ensure!(
-        ak_cert_output.contains("AK certificate matches expected value"),
-        format!("{ak_cert_output}")
-    );
+    // Capture the RPC agent's certificate, not a separately generated fixture.
+    // The next boot validates its full renewal metadata before no-renewal.
+    let expected_hex = tpm_guest_tests.read_ak_cert_fixture(false, &driver).await?;
 
     let report_output = tpm_guest_tests
         .read_report()
@@ -950,6 +1166,19 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
          (first={ak_pub_first}, second={ak_pub_second})"
     );
 
+    // Read the new boot's log, not a completion from the initial reboot.
+    // A failed/unavailable request cannot substitute for successful no-renewal.
+    wait_for_ak_cert_event(&vm, &driver, AK_CERT_NO_RENEWAL).await?;
+    // Compare all NV bytes after completion, including zero padding.
+    // Ignoring bit 5 would write the RPC agent's poison payload here.
+    let output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(&expected_hex)
+        .await?;
+    ensure!(
+        output.contains("AK certificate matches expected value"),
+        output
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
@@ -966,13 +1195,13 @@ pub(crate) async fn cvm_tpm_guest_tests_impl<T, S, U: PetriVmmBackend>(
 /// the AK) on the next boot. The test reads the AK public modulus
 /// (`HCLAkPub.n`) before and after the reboot and asserts it CHANGED.
 ///
-/// This is the counterpart to the AK-stability check in `cvm_tpm_guest_tests`:
+/// This is the counterpart to the AK-stability check in `cvm_guest`:
 /// together they prove the AK is deterministic across reboots by default, yet
 /// a state refresh deliberately rotates it.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64]),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],

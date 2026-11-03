@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# The package install commands are replaced at pipeline generation time
+# with the appropriate commands for the target distro.
+- run: |
+    set -x
+    {{LINUX_INSTALL_DEPS}}
+    curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain={{RUSTUP_TOOLCHAIN}} -y
+    . "$HOME/.cargo/env"
+    echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+    rustup show
+  if: runner.os == 'Linux'
+  name: rustup (Linux)
+  shell: bash

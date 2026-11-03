@@ -591,10 +591,8 @@ impl PetriVmInner {
         while self.resources.firmware_event_recv.try_recv().is_ok() {}
         // Guest state is lost on reset, so CIDATA needs to be remounted.
         self.cidata_mounted = false;
-        // On linux direct, pipette won't auto-start unless it is the init
-        // process. When it isn't, restart it over serial. (When pipette runs
-        // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
-        // this block is skipped and pipette restarts automatically on reboot.)
+        // Restart Petri-managed Linux-direct agents over serial. Image-owned
+        // and initrd-injected agents restart through their own boot path.
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 

@@ -32,6 +32,7 @@ before their implementation is connected end to end.
 * TeardownVM
 * PauseVM
 * ResumeVM
+* ShutdownVM
 * WaitVM
 * CapabilitiesVM
 * PropertiesVM
@@ -41,6 +42,55 @@ before their implementation is connected end to end.
 * AddVpciDevice
 * RemoveVpciDevice
 * Quit
+
+## Virtio-console file output
+
+`VmService` can write a virtio-console stream directly to a host file. Set the
+console's `SerialBackend` to `SerialFile`:
+
+```text
+pcie {
+  root_complexes {
+    name: "rc0"
+    root_ports {
+      name: "console"
+      attached { device { virtio { console {
+        backend { file {
+          path: "path/to/console.log"
+          append: false
+        } }
+      } } } }
+    }
+  }
+}
+```
+
+The file is opened while `CreateVM` processes the device configuration, so an
+invalid path or permission failure causes `CreateVM` to fail. With `append`
+unset or `false`, OpenVMM creates or truncates the file. With `append: true`,
+OpenVMM preserves existing contents and appends new guest output.
+
+The backend remains open for the console lifetime. OpenVMM does not rotate or
+limit the file, so the management client owns retention. `SerialRelay` remains
+available when the client needs an interactive or externally managed stream.
+The backend writes synchronously to the file, without an intermediate socket,
+named pipe, or background copy task. Successful writes complete before returning
+to the serial device, so there is no background output to drain during teardown.
+A slow or stalled file write can block the calling device thread. After
+`TeardownVM` or `Quit` completes, the management client can read the completed
+output. Writes do not force a disk synchronization and do not guarantee that the
+output survives a host crash or power failure.
+If a write fails, OpenVMM logs the error and disconnects the file backend.
+Further console output is discarded; the backend does not automatically retry
+or reopen the file.
+
+## Graceful guest shutdown
+
+`ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
+request fields, shutdown lifecycle.
+
+## VPCI hotplug
 
 `AddVpciDevice` dynamically exposes a PCI device to VTL0 over Hyper-V VPCI.
 The VM must have Hyper-V enlightenments and VMBus enabled, and the host
@@ -82,6 +132,37 @@ To remove a listener, send `REMOVE` with the same service selector; `path` is
 ignored. Removal waits for the listening socket to close, but established relay
 connections remain active. Removing an unknown service returns an error.
 Remove the socket file yourself before reusing its path.
+
+## Consomme NIC modifications
+
+Use `ModifyResource` with `type: UPDATE` and `nic_config.nic_id` to modify
+an existing Consomme NIC. Select `nic_config.consomme` and supply either
+`ports`, `add_dns_record`, or `create_virtual_address`. DNS and virtual-address
+operations cannot be combined with port modifications or used at VM creation.
+They are not supported for other NIC backends.
+
+For example, this protobuf text-format request adds a static DNS A record:
+
+```text
+type: UPDATE
+nic_config {
+    nic_id: "11111111-1111-1111-1111-111111111111"
+    consomme {
+        add_dns_record { name: "host.example" address: "192.0.2.1" }
+    }
+}
+```
+
+To allocate a guest-visible alias for a host IPv4 or IPv6 address, use
+`create_virtual_address { destination: "127.0.0.1" }` instead. The allocated
+address is returned in
+`ModifyResourceResponse.virtual_address.virtual_address`. Repeating the
+operation for the same destination returns the same alias.
+
+DNS and port changes return a `ModifyResourceResponse` without a result.
+Port forwarding retains its existing semantics: `UPDATE` binds the supplied
+ports and `REMOVE` unbinds them. DNS and virtual-address operations only
+support `UPDATE`.
 
 ## VFIO and accelerated SMMU
 
@@ -146,5 +227,10 @@ advertised width; subsequent hot-add must be compatible with it. A fixed width
 cannot exceed the physical SMMU's width with acceleration. SMMU configuration
 cannot be changed at runtime. See [the CLI reference](cli.md) and [Arm
 SMMUv3](../../emulated/iommu/smmuv3.md) for platform requirements.
+
+## Extending the API
+
+When editing `vmservice.proto`, follow the
+[Protocol Buffers enum conventions](../../../dev_guide/contrib/code.md#protocol-buffers-enums).
 
 [`vmservice.proto`]: https://github.com/microsoft/openvmm/blob/main/openvmm/openvmm_ttrpc_vmservice/src/vmservice.proto

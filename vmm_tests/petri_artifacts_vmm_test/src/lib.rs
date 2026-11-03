@@ -338,6 +338,8 @@ pub mod artifacts {
             FLOWEY_HVLITE_WINDOWS_X64("flowey_hvlite.exe", WINDOWS_X64),
             /// Linux x86_64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_LINUX_X64("flowey_hvlite", LINUX_X64),
+            /// Linux musl x86_64 build of `flowey_hvlite`.
+            FLOWEY_HVLITE_LINUX_X64_MUSL("flowey_hvlite", LINUX_X64_MUSL),
             /// Windows aarch64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_WINDOWS_AARCH64("flowey_hvlite.exe", WINDOWS_AARCH64),
             /// Windows x86_64 build of the `prep_steps` binary.
@@ -485,6 +487,22 @@ pub mod artifacts {
             PETRITOOLS_EROFS_X64("petritools.erofs", X64),
             /// Petritools erofs image (aarch64)
             PETRITOOLS_EROFS_AARCH64("petritools.erofs", AARCH64),
+        }
+    }
+
+    /// SNP Linux-direct IGVM artifacts.
+    pub mod snp_igvm {
+        use petri_artifacts_common::tags::IsLoadable;
+        use petri_artifacts_common::tags::MachineArch;
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// SNP Linux-direct IGVM for x86_64.
+            SNP_LINUX_DIRECT_IGVM_X64("snp-linux-direct.bin", X64),
+        }
+
+        impl IsLoadable for SNP_LINUX_DIRECT_IGVM_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
         }
     }
 

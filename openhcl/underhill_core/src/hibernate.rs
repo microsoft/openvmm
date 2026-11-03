@@ -157,7 +157,7 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disklayer_ram::ram_disk;
+    use disk_hook::HookDisk;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Task;
@@ -166,7 +166,7 @@ mod tests {
     use vmgs_broker::spawn_vmgs_broker;
 
     async fn new_client(driver: &DefaultDriver) -> (VmgsClient, Task<()>) {
-        let disk = ram_disk(4 * 1024 * 1024, false).unwrap();
+        let disk = HookDisk::new(4 * 1024 * 1024, 512).into_disk();
         let vmgs = Vmgs::format_new(disk, None).await.unwrap();
         spawn_vmgs_broker(driver.clone(), vmgs)
     }
