@@ -14,7 +14,6 @@ use chipset_resources::microvm::MicrovmShutdownHandle;
 use chipset_resources::microvm::MicrovmSnapshotRequestHandle;
 use chipset_resources::pit::PitDeviceHandle;
 use cpu_profile::HostCpuSignature;
-use futures::AsyncWriteExt;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::LinuxDirectBootMode;
 use openvmm_defs::config::LinuxIsolationConfig;
@@ -24,7 +23,6 @@ use openvmm_defs::microvm::MicrovmConfig;
 use openvmm_defs::time_abi::TimeAbiParameters;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
-use pal_async::socket::WriteHalf;
 use pal_async::task::Spawn;
 use petri_artifacts_common::tags::MachineArch;
 use serial_core::resources::DisconnectedSerialBackendHandle;
@@ -38,8 +36,9 @@ use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
 
 pub(super) struct RuntimeResources {
-    input: WriteHalf<UnixStream>,
     output: mesh::Receiver<Vec<u8>>,
+    /// The output that followed the marker of the latest wait.
+    unread: Vec<u8>,
 }
 
 pub(super) struct PortbSerial {
@@ -356,11 +355,10 @@ pub(super) fn configure_serial(
     host: PolledSocket<UnixStream>,
     io: Option<Resource<SerialBackendHandle>>,
 ) -> anyhow::Result<SerialData> {
-    let (read, input) = host.split();
     let (output_send, output) = mesh::channel();
     let task = driver.spawn(
         "microvm-portb-console",
-        crate::log_task_with_output(log_file, read, "microvm-portb-console", output_send),
+        crate::log_task_with_output(log_file, host, "microvm-portb-console", output_send),
     );
     Ok(SerialData {
         emulated_serial_config: [None, None, None, None],
@@ -368,7 +366,10 @@ pub(super) fn configure_serial(
         linux_direct_serial_agent: None,
         microvm: Some(PortbSerial {
             io: io.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
-            runtime: RuntimeResources { input, output },
+            runtime: RuntimeResources {
+                output,
+                unread: Vec::new(),
+            },
         }),
     })
 }
@@ -465,44 +466,35 @@ impl PetriVmInner {
         self.wait_for_microvm_portb_bytes(marker.as_bytes()).await
     }
 
+    /// Waits for `marker` in the microVM portb output, consuming the output
+    /// through it. The output that follows it is kept for the next wait, so
+    /// that consecutive waits find markers that arrived together.
     pub(super) async fn wait_for_microvm_portb_bytes(
         &mut self,
         marker: &[u8],
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!marker.is_empty(), "microVM portb marker cannot be empty");
-        let output = &mut self
+        let RuntimeResources { output, unread } = self
             .resources
             .microvm
             .as_mut()
-            .context("microVM portb output is not configured")?
-            .output;
-        let mut buffered = Vec::new();
+            .context("microVM portb output is not configured")?;
         loop {
+            if let Some(start) = unread
+                .windows(marker.len())
+                .position(|window| window == marker)
+            {
+                unread.drain(..start + marker.len());
+                return Ok(());
+            }
             let chunk = output.recv().await.map_err(|error| {
                 anyhow::anyhow!(
                     "microVM portb output disconnected ({error}) after bytes {:?}",
-                    String::from_utf8_lossy(&buffered[..buffered.len().min(256)])
+                    String::from_utf8_lossy(&unread[..unread.len().min(256)])
                 )
             })?;
-            buffered.extend_from_slice(&chunk);
-            if buffered
-                .windows(marker.len())
-                .any(|window| window == marker)
-            {
-                return Ok(());
-            }
+            unread.extend_from_slice(&chunk);
         }
-    }
-
-    pub(super) async fn write_microvm_portb_input(&mut self, input: &[u8]) -> anyhow::Result<()> {
-        self.resources
-            .microvm
-            .as_mut()
-            .context("microVM portb input is not configured")?
-            .input
-            .write_all(input)
-            .await
-            .context("writing microVM portb input")
     }
 
     pub(super) async fn pulse_save_restore(&self) -> anyhow::Result<()> {
