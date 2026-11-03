@@ -126,6 +126,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::future;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use thiserror::Error;
@@ -3265,7 +3266,7 @@ async fn new_underhill_vm(
         deps_winbond_super_io_and_floppy_full: None,
     };
 
-    let fallback_mmio_device = if use_mmio_hypercalls {
+    let (fallback_mmio_device, pending_host_mmios) = if use_mmio_hypercalls {
         let mshv_hvcall =
             hcl::ioctl::MshvHvcall::new().context("failed to open mshv_hvcall device")?;
         mshv_hvcall.set_allowed_hypercalls(&[
@@ -3293,12 +3294,17 @@ async fn new_underhill_vm(
                 Some(untrusted_mmio_ranges)
             };
 
-        Some(Arc::new(CloseableMutex::new(FallbackMmioDevice {
-            mmio_ranges: untrusted_mmio_ranges,
-            mshv_hvcall: Arc::new(mshv_hvcall),
-        })) as _)
+        let counter = Arc::new(AtomicUsize::new(0));
+        (
+            Some(Arc::new(CloseableMutex::new(FallbackMmioDevice {
+                mmio_ranges: untrusted_mmio_ranges,
+                mshv_hvcall: Arc::new(mshv_hvcall),
+                pending_mmios: counter.clone(),
+            })) as _),
+            Some(counter),
+        )
     } else {
-        None
+        (None, None)
     };
 
     let BaseChipsetBuilderOutput {
@@ -4094,6 +4100,7 @@ async fn new_underhill_vm(
         crash_notification_recv,
         control_send,
 
+        pending_host_mmios,
         _periodic_telemetry_task: periodic_telemetry_task,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
         mana_keep_alive: env_cfg.mana_keep_alive,
