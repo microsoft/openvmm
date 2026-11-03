@@ -694,6 +694,7 @@ impl Device {
             virtio_state.tx_queue_size,
         );
         let worker = Worker {
+            driver: driver.clone(),
             virtio_state,
             active_state,
             negotiated_features,
@@ -798,9 +799,11 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let queue_config = (0..self.workers.len())
-            .map(|_| QueueConfig {
-                driver: Box::new(c_state.adapter.driver.clone()),
+        let queue_config = self
+            .workers
+            .iter()
+            .map(|worker| QueueConfig {
+                driver: Box::new(worker.state().unwrap().driver.clone()),
                 enabled_rx_offloads: self.enabled_rx_offloads,
             })
             .collect::<Vec<_>>();
@@ -892,6 +895,8 @@ impl From<task_control::Cancelled> for WorkerError {
 
 #[derive(InspectMut)]
 struct Worker {
+    #[inspect(skip)]
+    driver: VmTaskDriver,
     virtio_state: VirtioState,
     active_state: ActiveState,
     #[inspect(skip)]
