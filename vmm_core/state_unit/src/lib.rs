@@ -30,6 +30,7 @@
 
 #![forbid(unsafe_code)]
 
+mod quiesce;
 mod start;
 
 use futures::FutureExt;
@@ -41,6 +42,7 @@ use inspect::InspectMut;
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::Sender;
+use mesh::error::RemoteError;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
@@ -64,6 +66,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::Instrument;
+use vmcore::device_state::InputHookCompletion;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -81,6 +84,18 @@ pub enum StateRequest {
     ///
     /// The handler must be safe after any delivered start attempt.
     Stop(Rpc<(), ()>),
+
+    /// Stop accepting new host input before a snapshot vCPU boundary.
+    ///
+    /// A [`StateRequest::ResumeInput`] may follow even if this request returns
+    /// an error or its response is not observed.
+    QuiesceInput(FailableRpc<(), ()>),
+
+    /// Resume host input after a failed snapshot transaction.
+    ///
+    /// The handler must be safe whether or not input quiesce completed and
+    /// idempotent across repeated recovery attempts.
+    ResumeInput(FailableRpc<(), ()>),
 
     /// Reset a stopped unit to initial state.
     Reset(FailableRpc<(), ()>),
@@ -107,6 +122,26 @@ pub trait StateUnit: InspectMut {
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
+
+    /// Stops accepting new host input while preserving runtime state.
+    ///
+    /// This runs synchronously, and the work that it must wait for completes
+    /// in the returned completion, which is awaited before the request is
+    /// answered. [`StateUnit::resume_input`] may be called even if the
+    /// completion fails or is not awaited.
+    fn quiesce_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
+
+    /// Resumes host input after a failed snapshot transaction.
+    ///
+    /// This must be safe whether or not [`StateUnit::quiesce_input`] completed
+    /// and idempotent across repeated recovery attempts. Like that hook, it
+    /// runs synchronously, and its completion is awaited before the request is
+    /// answered.
+    fn resume_input(&mut self) -> InputHookCompletion {
+        InputHookCompletion::ready()
+    }
 
     /// Reset to initial state.
     ///
@@ -173,6 +208,8 @@ impl StateRequest {
 
             StateRequest::Start(_)
             | StateRequest::Stop(_)
+            | StateRequest::QuiesceInput(_)
+            | StateRequest::ResumeInput(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
             | StateRequest::Restore(_) => {
@@ -201,6 +238,8 @@ impl StateRequest {
         match self {
             StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::QuiesceInput(rpc) => complete_input_hook(rpc, unit.quiesce_input()).await,
+            StateRequest::ResumeInput(rpc) => complete_input_hook(rpc, unit.resume_input()).await,
             StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
             StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
             StateRequest::Restore(rpc) => {
@@ -210,6 +249,15 @@ impl StateRequest {
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
+}
+
+/// Answers `rpc` once the completion of an input hook finishes.
+///
+/// This is not generic, so that the state requests of every unit type share
+/// it.
+async fn complete_input_hook(rpc: FailableRpc<(), ()>, completion: InputHookCompletion) {
+    let result = completion.await;
+    rpc.complete(result.map_err(RemoteError::new));
 }
 
 /// A set of state units.
@@ -1127,6 +1175,7 @@ impl Ready {
 
 #[cfg(test)]
 mod tests {
+    mod quiesce;
     mod start;
 
     use super::StateTransitionErrorKind;
