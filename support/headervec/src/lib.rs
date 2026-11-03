@@ -198,7 +198,8 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
                 .unwrap(),
             base_layout.align(),
         )
-        .unwrap();
+        .unwrap()
+        .pad_to_align();
 
         // SAFETY: `layout` is correctly constructed and is non-empty.
         let alloc = unsafe { alloc(layout) };
@@ -271,13 +272,13 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
     /// Retrieves a pointer to the head. The tail is guaranteed to immediately
     /// after the head (with appropriate padding).
     pub fn as_ptr(&self) -> *const T {
-        &self.head
+        core::ptr::from_ref(self.data.storage()).cast()
     }
 
     /// Retrieves a mutable pointer to the head. The tail is guaranteed to
     /// immediately after the head (with appropriate padding).
     pub fn as_mut_ptr(&mut self) -> *mut T {
-        &mut self.head
+        core::ptr::from_mut(self.data.storage_mut()).cast()
     }
 
     /// Returns the number of tail elements that can be stored without
@@ -349,6 +350,7 @@ impl<T: Copy, U: Copy, const N: usize> Extend<U> for HeaderVec<T, U, N> {
 
 #[cfg(test)]
 mod tests {
+    use super::HeaderSlice;
     use super::HeaderVec;
     use alloc::vec::Vec;
     use core::fmt::Debug;
@@ -413,6 +415,109 @@ mod tests {
     #[test]
     fn test_zero_array() {
         test::<u8, u32, 0>(0x10, 0..200);
+    }
+
+    #[test]
+    fn test_with_capacity_and_growth() {
+        for requested in [0, 3, 5] {
+            let mut v = HeaderVec::<u8, u32, 3>::with_capacity(0x10, requested);
+            assert!(v.tail.is_empty());
+            assert_eq!(v.head, 0x10);
+            let capacity = v.tail_capacity();
+            assert!(capacity >= requested);
+            let ptr = v.as_ptr();
+            let vals: Vec<_> = (0..capacity as u32).collect();
+            v.extend_tail_from_slice(&vals);
+            assert_eq!(v.as_ptr(), ptr);
+            assert_eq!(&v.tail, vals.as_slice());
+
+            v.head = 0x20;
+            v.tail[0] = 100;
+            v.push_tail(200);
+            assert!(v.tail_capacity() > capacity);
+            assert_eq!(v.head, 0x20);
+            assert_eq!(v.tail[0], 100);
+            assert_eq!(&v.tail[1..capacity], &vals[1..]);
+            assert_eq!(v.tail[capacity], 200);
+            assert_eq!(v.tail.len(), capacity + 1);
+        }
+    }
+
+    #[test]
+    fn test_truncate_and_clear_reuse_capacity() {
+        for capacity in [3, 5] {
+            let mut v = HeaderVec::<u8, u32, 3>::with_capacity(0x10, capacity);
+            v.extend_tail_from_slice(&[1, 2, 3]);
+            let ptr = v.as_ptr();
+
+            v.truncate_tail(3);
+            v.truncate_tail(usize::MAX);
+            assert_eq!(&v.tail, &[1, 2, 3]);
+            v.truncate_tail(1);
+            assert_eq!(&v.tail, &[1]);
+            v.extend_tail_from_slice(&[4, 5]);
+            assert_eq!(&v.tail, &[1, 4, 5]);
+
+            v.clear_tail();
+            assert!(v.tail.is_empty());
+            v.push_tail(9);
+            assert_eq!(&v.tail, &[9]);
+            assert_eq!(v.head, 0x10);
+            assert_eq!(v.tail_capacity(), capacity);
+            assert_eq!(v.as_ptr(), ptr);
+        }
+    }
+
+    #[test]
+    fn test_contiguous_layout() {
+        for capacity in [3, 5] {
+            let mut v = HeaderVec::<u8, u32, 3>::with_capacity(0x10, capacity);
+            assert_eq!(v.total_byte_len(), 4);
+            assert_eq!(v.total_byte_capacity(), 4 + capacity * 4);
+            v.extend_tail_from_slice(&[1, 2]);
+            assert_eq!(v.total_byte_len(), size_of::<HeaderSlice<u8, [u32; 2]>>());
+            // SAFETY: the buffer has a u8 header and two initialized u32 elements.
+            let buffer = unsafe { &*v.as_ptr().cast::<HeaderSlice<u8, [u32; 2]>>() };
+            assert_eq!(buffer.head, 0x10);
+            assert_eq!(buffer.tail, [1, 2]);
+            // SAFETY: the same layout is valid for exclusive access through v.
+            let buffer = unsafe { &mut *v.as_mut_ptr().cast::<HeaderSlice<u8, [u32; 2]>>() };
+            buffer.head = 0x20;
+            buffer.tail[1] = 3;
+            assert_eq!(v.head, 0x20);
+            assert_eq!(&v.tail, &[1, 3]);
+            assert_eq!(v.total_byte_capacity(), 4 + capacity * 4);
+        }
+
+        for capacity in [9, 17] {
+            let mut v = HeaderVec::<u64, u8, 9>::with_capacity(0x10, capacity);
+            assert_eq!(v.total_byte_len(), 8);
+            v.extend_tail_from_slice(&[1, 2, 3]);
+            assert_eq!(v.total_byte_len(), 16);
+            assert_eq!(v.total_byte_capacity(), 8 + capacity.next_multiple_of(8));
+            v.truncate_tail(0);
+            assert_eq!(v.total_byte_len(), 8);
+            assert_eq!(v.total_byte_capacity(), 8 + capacity.next_multiple_of(8));
+        }
+    }
+
+    #[test]
+    fn test_zst_tail_reuse() {
+        let mut v = HeaderVec::<u32, (), 0>::with_capacity(0x10, usize::MAX);
+        v.extend_tail_from_slice(&[(); 3]);
+        v.head = 0x20;
+        v.truncate_tail(1);
+        assert_eq!(v.tail.len(), 1);
+        v.extend_tail_from_slice(&[(); 2]);
+        assert_eq!(v.tail.len(), 3);
+        v.clear_tail();
+        assert!(v.tail.is_empty());
+        v.push_tail(());
+        assert_eq!(v.tail.len(), 1);
+        assert_eq!(v.head, 0x20);
+        assert_eq!(v.tail_capacity(), usize::MAX);
+        assert_eq!(v.total_byte_len(), 4);
+        assert_eq!(v.total_byte_capacity(), 4);
     }
 
     #[test]
