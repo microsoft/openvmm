@@ -22,6 +22,8 @@ use super::network::microvm_network_endpoint;
 use super::network::microvm_restore_network;
 use super::output::MicrovmOutputDrain;
 use super::output::OutputCompletion;
+use super::output::RelayDrain;
+use super::output::spawn_drainable_output;
 use super::output::spawn_output;
 use super::restore::fresh_microvm_generation_id;
 use crate::ConsoleState;
@@ -78,6 +80,8 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     control_broker_config: Option<VirtioControlConsoleBrokerConfig>,
     control_console_backend: Option<Resource<SerialBackendHandle>>,
     portb: Option<(Resource<SerialBackendHandle>, OutputCompletion)>,
+    /// The drain of the boot console's relay to the terminal.
+    console_relay: Option<RelayDrain>,
     resources: MicrovmResources,
 }
 
@@ -224,6 +228,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             control_broker_config,
             control_console_backend: None,
             portb: None,
+            console_relay: None,
             resources,
         })
     }
@@ -264,13 +269,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
         } else {
             SerialConfigCli::Console
         };
-        self.portb = Some(setup_host_console(
+        let (backend, output, _) = setup_host_console(
             "microvm-portb",
             backend,
             "hvc0",
             console_state,
             serial_driver,
-        )?);
+        )?;
+        self.portb = Some((backend, output));
         Ok(())
     }
 
@@ -320,13 +326,14 @@ impl<'a> MicrovmConfigBuilder<'a> {
                     )?)
                 }
                 SerialConfigCli::Console => {
-                    let (backend, _) = setup_host_console(
+                    let (backend, _, relay) = setup_host_console(
                         "virtio-console",
                         SerialConfigCli::Console,
                         "hvc1",
                         console_state,
                         serial_driver,
                     )?;
+                    self.console_relay = relay;
                     Some(backend)
                 }
                 SerialConfigCli::None => Some(DisconnectedSerialBackendHandle.into_resource()),
@@ -407,7 +414,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
             return Ok(());
         };
         let opt = self.opt;
-        let (drain, output_drain) = MicrovmOutputDrain::new(Some(output_completion));
+        let (drain, output_drain) =
+            MicrovmOutputDrain::new(Some(output_completion), self.console_relay.take());
         self.resources.output_drain = Some(drain);
         let (generation_id, time_abi_restore) = if self.restore.machine_contract.is_some() {
             let network = if self.restore.network_settings {
@@ -853,32 +861,39 @@ fn aggregate_child_kind(
 }
 
 /// Connects a portb or boot virtio-console endpoint to the host console or
-/// stderr, returning its backend and output-relay completion.
+/// stderr, returning its backend, its output-relay completion, and, for the
+/// console, the drain of its relay.
 fn setup_host_console(
     name: &str,
     backend: SerialConfigCli,
     device: &'static str,
     console_state: &RefCell<Option<ConsoleState<'static>>>,
     serial_driver: &DefaultDriver,
-) -> anyhow::Result<(Resource<SerialBackendHandle>, OutputCompletion)> {
+) -> anyhow::Result<(
+    Resource<SerialBackendHandle>,
+    OutputCompletion,
+    Option<RelayDrain>,
+)> {
     Ok(match backend {
         SerialConfigCli::Console => {
             if let Some(console_state) = console_state.borrow().as_ref() {
                 bail!("console already set by {}", console_state.device);
             }
-            let (config, serial) = serial_io::anonymous_serial_pair(serial_driver)?;
+            let (config, serial, pending) =
+                serial_io::anonymous_serial_pair_with_pending(serial_driver)?;
             let (serial_read, serial_write) = AsyncReadExt::split(serial);
             *console_state.borrow_mut() = Some(ConsoleState {
                 device,
                 input: Box::new(serial_write),
             });
-            let completed = spawn_output(name, serial_read, term::raw_stdout())?;
-            (config, completed)
+            let (completed, relay) =
+                spawn_drainable_output(name, serial_read, pending, term::raw_stdout())?;
+            (config, completed, Some(relay))
         }
         SerialConfigCli::Stderr => {
             let (config, serial) = serial_io::anonymous_serial_pair(serial_driver)?;
             let completed = spawn_output(name, serial, term::raw_stderr())?;
-            (config, completed)
+            (config, completed, None)
         }
         _ => unreachable!("microVM host consoles use the console or stderr"),
     })

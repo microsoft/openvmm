@@ -718,7 +718,7 @@ impl CreateVm {
             return Ok(());
         };
         let output_drain = self.portb_has_output.then(|| {
-            let (drain, requests) = crate::microvm::output::MicrovmOutputDrain::new(None);
+            let (drain, requests) = crate::microvm::output::MicrovmOutputDrain::new(None, None);
             self.resources.output_drain = Some(drain);
             requests
         });
