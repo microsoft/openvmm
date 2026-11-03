@@ -50,28 +50,26 @@ pub struct SnapshotManifest {
     /// Length of `state.bin` in bytes.
     #[mesh(8)]
     pub state_size_bytes: u64,
-    // Fields 9 and 10 held the artifact digests of manifest version 2. They
-    // are retired, and their numbers are never reused.
     /// Authoritative machine composition for versioned machine profiles.
-    #[mesh(11)]
+    #[mesh(9)]
     pub machine_contract: Option<microvm::SnapshotMachineContract>,
     /// Snapshot format magic.
-    #[mesh(12)]
+    #[mesh(10)]
     pub format_magic: Vec<u8>,
     /// Version of the serialized VM saved-state schema.
-    #[mesh(13)]
+    #[mesh(11)]
     pub saved_state_schema_version: u32,
     /// Fully qualified protobuf root type stored in `state.bin`.
-    #[mesh(14)]
+    #[mesh(12)]
     pub saved_state_root_type: String,
     /// Sandbox capture tier. Empty for blockless microVM snapshots.
-    #[mesh(15)]
+    #[mesh(13)]
     pub snapshot_tier: String,
     /// `clone` for reusable artifacts or `resume` for single-use artifacts.
-    #[mesh(16)]
+    #[mesh(14)]
     pub restore_policy: String,
     /// Bitmask of configuration sections consumed before capture.
-    #[mesh(17)]
+    #[mesh(15)]
     pub consumed_config_sections: u32,
     /// Unique snapshot identifier generated at save time. Zero if the manifest
     /// has no snapshot ID.
