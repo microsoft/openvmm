@@ -125,7 +125,7 @@ impl ErasedVecDeque {
     /// Creates a new empty `ErasedVecDeque` with the given element vtable.
     pub fn new(vtable: &'static ElementVtable) -> Self {
         Self {
-            buf: NonNull::dangling(),
+            buf: vtable.layout.dangling_ptr(),
             cap: if vtable.layout.size() == 0 {
                 isize::MAX as usize
             } else {
@@ -313,6 +313,7 @@ mod tests {
     use super::ElementVtable;
     use super::ErasedVecDeque;
     use std::mem::MaybeUninit;
+    use test_with_tracing::test;
 
     #[test]
     fn test_erased_vecdeque() {
@@ -358,5 +359,42 @@ mod tests {
             }
         }
         drop(deque);
+    }
+
+    #[test]
+    fn test_aligned_zst() {
+        #[repr(align(4096))]
+        struct AlignedZst;
+
+        assert_eq!(size_of::<AlignedZst>(), 0);
+        let mut deque = ErasedVecDeque::new(const { &ElementVtable::new::<AlignedZst>() });
+        for _ in 0..3 {
+            let reserved = deque.reserve_one();
+            let ptr = reserved.as_ptr().cast::<AlignedZst>();
+            assert!(ptr.is_aligned());
+            // SAFETY: the reserved pointer is aligned and valid for this zero-sized type.
+            unsafe {
+                ptr.write(AlignedZst);
+                reserved.commit();
+            }
+        }
+
+        let mut taken = deque.take();
+        assert!(deque.is_empty());
+        assert!(
+            deque
+                .reserve_one()
+                .as_ptr()
+                .cast::<AlignedZst>()
+                .is_aligned()
+        );
+        for _ in 0..3 {
+            let element = taken.pop_front_in_place().unwrap();
+            let ptr = element.as_ptr().cast::<AlignedZst>();
+            assert!(ptr.is_aligned());
+            // SAFETY: the element is an initialized, aligned AlignedZst.
+            let _ = unsafe { ptr.read() };
+        }
+        assert!(taken.is_empty());
     }
 }
