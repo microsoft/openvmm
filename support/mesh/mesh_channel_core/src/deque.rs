@@ -238,13 +238,11 @@ impl ErasedVecDeque {
     pub fn clear_and_shrink(&mut self) {
         self.clear();
         if self.cap > 0 && self.vtable.layout.size() != 0 {
+            let layout = Layout::from_size_align(self.cap, self.vtable.layout.align()).unwrap();
             // SAFETY: `buf` contains a valid unaliased allocation with the
             // given size and alignment.
             unsafe {
-                std::alloc::dealloc(
-                    self.buf.as_ptr(),
-                    Layout::from_size_align_unchecked(self.cap, self.vtable.layout.align()),
-                );
+                std::alloc::dealloc(self.buf.as_ptr(), layout);
             }
             self.cap = 0;
         }
@@ -252,41 +250,29 @@ impl ErasedVecDeque {
 
     fn grow(&mut self) {
         assert!(self.vtable.layout.size() != 0, "zst overflow");
-        let align = self.vtable.layout.align();
-        let (new_cap, buf) = if self.cap == 0 {
+        let old_layout = Layout::from_size_align(self.cap, self.vtable.layout.align()).unwrap();
+        let (layout, buf) = if self.cap == 0 {
             let element_size = self.vtable.layout.size();
             // Start with 4 elements, but only if the element size is not too
             // big (these constants are arbitrary).
-            let new_cap = if element_size >= 256 {
-                element_size
-            } else {
-                element_size * 4
-            };
-            // SAFETY: `new_cap` is non-zero and at least as big as `align`,
-            // which is a power of 2.
-            let buf =
-                unsafe { std::alloc::alloc(Layout::from_size_align_unchecked(new_cap, align)) };
-            (new_cap, buf)
+            let count = if element_size >= 256 { 1 } else { 4 };
+            let (layout, _) = self.vtable.layout.repeat(count).unwrap();
+            // SAFETY: `layout` is non-empty.
+            let buf = unsafe { std::alloc::alloc(layout) };
+            (layout, buf)
         } else {
             // Double the capacity (geometric growth) to ensure amortized O(1)
             // push_back.
-            let new_cap = self.cap.checked_mul(2).unwrap();
+            let (layout, _) = old_layout.repeat(2).unwrap();
             // SAFETY: `buf` is a valid allocation with the given layout, and
-            // `new_cap` is non-zero.
-            let buf = unsafe {
-                std::alloc::realloc(
-                    self.buf.as_ptr(),
-                    Layout::from_size_align_unchecked(self.cap, align),
-                    new_cap,
-                )
-            };
-            (new_cap, buf)
+            // the new size is non-zero.
+            let buf = unsafe { std::alloc::realloc(self.buf.as_ptr(), old_layout, layout.size()) };
+            (layout, buf)
         };
         let Some(buf) = NonNull::new(buf) else {
-            // SAFETY: these layout parameters were validated above.
-            let layout = unsafe { Layout::from_size_align_unchecked(new_cap, align) };
             std::alloc::handle_alloc_error(layout);
         };
+        let new_cap = layout.size();
         // Move the trailing elements to the end of the new buffer.
         if self.len > 0 && self.head + self.len > self.cap {
             let n = self.cap - self.head;
@@ -312,8 +298,65 @@ impl Drop for ErasedVecDeque {
 mod tests {
     use super::ElementVtable;
     use super::ErasedVecDeque;
+    use std::fmt::Debug;
     use std::mem::MaybeUninit;
+    use std::ptr::from_ref;
     use test_with_tracing::test;
+
+    #[test]
+    fn test_allocation_layout_and_growth() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(align(64))]
+        struct Aligned(u8);
+
+        fn check<T: Copy + Debug + Eq>(values: [T; 6], initial_capacity: usize) {
+            let mut deque = ErasedVecDeque::new(const { &ElementVtable::new::<T>() });
+            for value in &values[..initial_capacity] {
+                // SAFETY: copying a valid value of the vtable's Copy type.
+                unsafe { deque.push_back(from_ref(value).cast()) };
+            }
+            assert_eq!(deque.cap, initial_capacity * size_of::<T>());
+            assert!(deque.buf.as_ptr().addr().is_multiple_of(align_of::<T>()));
+            // SAFETY: the queue contains initialized values of type T.
+            let first = unsafe {
+                deque
+                    .pop_front_in_place()
+                    .unwrap()
+                    .as_ptr()
+                    .cast::<T>()
+                    .read()
+            };
+            assert_eq!(first, values[0]);
+
+            for value in &values[initial_capacity..initial_capacity + 2] {
+                // SAFETY: copying a valid value of the vtable's Copy type.
+                unsafe { deque.push_back(from_ref(value).cast()) };
+            }
+            assert_eq!(deque.cap, initial_capacity * 2 * size_of::<T>());
+            assert!(deque.buf.as_ptr().addr().is_multiple_of(align_of::<T>()));
+            for expected in &values[1..initial_capacity + 2] {
+                // SAFETY: the queue contains initialized values of type T.
+                let value = unsafe {
+                    deque
+                        .pop_front_in_place()
+                        .unwrap()
+                        .as_ptr()
+                        .cast::<T>()
+                        .read()
+                };
+                assert_eq!(&value, expected);
+            }
+            assert!(deque.is_empty());
+            deque.clear_and_shrink();
+            assert_eq!(deque.cap, 0);
+        }
+
+        let values = [0u8, 1, 2, 3, 4, 5];
+        check(values.map(|value| [value; 255]), 4);
+        check(values.map(|value| [value; 256]), 1);
+        check(values.map(|value| [value; 257]), 1);
+        check(values.map(Aligned), 4);
+    }
 
     #[test]
     fn test_erased_vecdeque() {
