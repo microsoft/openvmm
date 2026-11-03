@@ -156,6 +156,18 @@ an unused line must not clear independently pending interrupts in that
 namespace. The target-specific unconnected-input policy preserves that
 distinction.
 
+On ARM64, platform wiring explicitly reserves SPIs 32 through 63 for fixed
+line inputs, plus the separately allocated SMMU inputs in OpenVMM. Only these
+SPIs are mapped to the GIC line target; other SPIs, including MSI allocations,
+are left untouched by line replay. A reserved line with no producer replays low
+even in a fresh restore destination. The reservation belongs to the platform,
+not the producer handle, and must remain in the VM configuration when removing
+a producer across save/restore. Changing the SPI allocation layout is not
+handled by line replay.
+
+These mappings do not enforce MSI allocation conflicts; MSI producers must
+respect the platform's line reservations.
+
 For API details, including target callback constraints, see the
 [`vmcore::line_interrupt` rustdoc][interrupts]. Device lifecycle requirements
 are documented on [`ChangeDeviceState`][device-state].

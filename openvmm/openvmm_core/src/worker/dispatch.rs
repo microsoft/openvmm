@@ -2149,17 +2149,39 @@ impl InitializedVm {
                 })?;
         }
 
-        // Add the GIC.
+        // Reserve platform line inputs independently of the connected devices.
+        // Do not map the MSI portion of the SPI namespace into the line set.
         #[cfg(guest_arch = "aarch64")]
-        chipset_builder.add_external_line_target(
-            IRQ_LINE_SET,
-            0..=vmm_core::emuplat::gic::SPI_RANGE.end() - vmm_core::emuplat::gic::SPI_RANGE.start(),
-            *vmm_core::emuplat::gic::SPI_RANGE.start(),
-            "gic",
-            Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
+        {
+            use vmm_core::emuplat::gic::GicInterruptTarget;
+            use vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE;
+            use vmm_core::emuplat::gic::SPI_RANGE;
+
+            let gic = Arc::new(GicInterruptTarget::new(
                 partition.clone().control_gic(Vtl::Vtl0),
-            )),
-        );
+            ));
+            chipset_builder.add_external_line_target(
+                IRQ_LINE_SET,
+                0..=PLATFORM_LINE_SPI_RANGE.end() - SPI_RANGE.start(),
+                *PLATFORM_LINE_SPI_RANGE.start(),
+                "gic",
+                gic.clone(),
+            );
+            if let ResolvedIommu::Smmu(resolved) = &resolved_iommu {
+                for smmu in &resolved.instances {
+                    for intid in [smmu.evtq_intid, smmu.gerr_intid] {
+                        let vector = intid - SPI_RANGE.start();
+                        chipset_builder.add_external_line_target(
+                            IRQ_LINE_SET,
+                            vector..=vector,
+                            intid,
+                            "gic-smmu",
+                            gic.clone(),
+                        );
+                    }
+                }
+            }
+        }
 
         // Add the x86 BSP's LINTs for the PIC to use.
         #[cfg(guest_arch = "x86_64")]
