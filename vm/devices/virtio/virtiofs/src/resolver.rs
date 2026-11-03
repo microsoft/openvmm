@@ -19,13 +19,6 @@ use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::VirtioDeviceHandle;
 
-cfg_if! {
-    if #[cfg(windows)] {
-        use crate::impersonation::duplicate_user_token;
-        use std::os::windows::io::OwnedHandle;
-    }
-}
-
 const VIRTIO_FS_TAG_LEN: usize = 36;
 #[cfg(windows)]
 const SECTION_FS_SHARED_MEMORY_SIZE: u64 = 8 * 1024 * 1024 * 1024;
@@ -46,53 +39,6 @@ enum ParsedVirtioFsBackend {
     Aggregate {
         children: Vec<VirtioFsAggregateChild>,
     },
-}
-
-cfg_if! {
-    if #[cfg(windows)] {
-        struct ParsedHostFsPlatform {
-            user_token: Option<OwnedHandle>,
-        }
-
-        impl ParsedHostFsPlatform {
-            fn open_fs(
-                &self,
-                root_path: &str,
-                mount_options: &LxVolumeOptions,
-            ) -> anyhow::Result<VirtioFs> {
-                let _impersonation = self
-                    .user_token
-                    .as_ref()
-                    .map(crate::impersonation::ImpersonationGuard::new)
-                    .transpose()
-                    .context("failed to impersonate virtio-fs user token")?;
-                Ok(VirtioFs::new(root_path, Some(mount_options))?)
-            }
-
-            fn device_options(self) -> VirtioFsDeviceOptions {
-                VirtioFsDeviceOptions {
-                    user_token: self.user_token,
-                    ..Default::default()
-                }
-            }
-        }
-    } else {
-        struct ParsedHostFsPlatform;
-
-        impl ParsedHostFsPlatform {
-            fn open_fs(
-                &self,
-                root_path: &str,
-                mount_options: &LxVolumeOptions,
-            ) -> anyhow::Result<VirtioFs> {
-                Ok(VirtioFs::new(root_path, Some(mount_options))?)
-            }
-
-            fn device_options(self) -> VirtioFsDeviceOptions {
-                Default::default()
-            }
-        }
-    }
 }
 
 impl ParsedVirtioFs {
@@ -123,8 +69,12 @@ impl ParsedVirtioFs {
                     "virtio-fs root path must not contain NUL bytes"
                 );
 
-                return parse_host_fs(root_path, mount_options, windows_options)
-                    .map(|backend| Self { tag, backend });
+                let platform = ParsedHostFsPlatform::parse(windows_options)?;
+                ParsedVirtioFsBackend::HostFs {
+                    root_path,
+                    mount_options: LxVolumeOptions::from_option_string(&mount_options),
+                    platform,
+                }
             }
             #[cfg(windows)]
             VirtioFsBackend::SectionFs { root_path } => {
@@ -140,48 +90,6 @@ impl ParsedVirtioFs {
         };
 
         Ok(Self { tag, backend })
-    }
-}
-
-cfg_if! {
-    if #[cfg(windows)] {
-        fn parse_host_fs(
-            root_path: String,
-            mount_options: String,
-            windows_options: Option<VirtioFsWindowsOptions>,
-        ) -> anyhow::Result<ParsedVirtioFsBackend> {
-            let user_token = windows_options
-                .as_ref()
-                .map(|options| options.user_token_handle)
-                .filter(|handle| *handle != 0)
-                .map(duplicate_user_token)
-                .transpose()
-                .context("invalid virtio-fs user token")?;
-
-            Ok(ParsedVirtioFsBackend::HostFs {
-                root_path,
-                mount_options: LxVolumeOptions::from_option_string(&mount_options),
-                platform: ParsedHostFsPlatform { user_token },
-            })
-        }
-    } else {
-        fn parse_host_fs(
-            root_path: String,
-            mount_options: String,
-            windows_options: Option<VirtioFsWindowsOptions>,
-        ) -> anyhow::Result<ParsedVirtioFsBackend> {
-            if let Some(options) = windows_options {
-                anyhow::ensure!(
-                    options.user_token_handle == 0,
-                    "virtio-fs windows_options are only supported on Windows"
-                );
-            }
-            Ok(ParsedVirtioFsBackend::HostFs {
-                root_path,
-                mount_options: LxVolumeOptions::from_option_string(&mount_options),
-                platform: ParsedHostFsPlatform,
-            })
-        }
     }
 }
 
@@ -246,6 +154,79 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
     }
 }
 
+cfg_if! {
+    if #[cfg(windows)] {
+        use crate::impersonation::duplicate_user_token;
+        use crate::impersonation::ImpersonationGuard;
+        use std::os::windows::io::OwnedHandle;
+
+        struct ParsedHostFsPlatform {
+            user_token: Option<OwnedHandle>,
+        }
+
+        impl ParsedHostFsPlatform {
+            fn parse(windows_options: Option<VirtioFsWindowsOptions>) -> anyhow::Result<Self> {
+                let user_token = windows_options
+                    .as_ref()
+                    .map(|options| options.user_token_handle)
+                    .filter(|handle| *handle != 0)
+                    .map(duplicate_user_token)
+                    .transpose()
+                    .context("invalid virtio-fs user token")?;
+
+                Ok(Self { user_token })
+            }
+
+            fn open_fs(
+                &self,
+                root_path: &str,
+                mount_options: &LxVolumeOptions,
+            ) -> anyhow::Result<VirtioFs> {
+                let _impersonation = self
+                    .user_token
+                    .as_ref()
+                    .map(ImpersonationGuard::new)
+                    .transpose()
+                    .context("failed to impersonate virtio-fs user token")?;
+                Ok(VirtioFs::new(root_path, Some(mount_options))?)
+            }
+
+            fn device_options(self) -> VirtioFsDeviceOptions {
+                VirtioFsDeviceOptions {
+                    user_token: self.user_token,
+                    ..Default::default()
+                }
+            }
+        }
+    } else {
+        struct ParsedHostFsPlatform;
+
+        impl ParsedHostFsPlatform {
+            fn parse(windows_options: Option<VirtioFsWindowsOptions>) -> anyhow::Result<Self> {
+                if let Some(options) = windows_options {
+                    anyhow::ensure!(
+                        options.user_token_handle == 0,
+                        "virtio-fs windows_options are only supported on Windows"
+                    );
+                }
+                Ok(Self)
+            }
+
+            fn open_fs(
+                &self,
+                root_path: &str,
+                mount_options: &LxVolumeOptions,
+            ) -> anyhow::Result<VirtioFs> {
+                Ok(VirtioFs::new(root_path, Some(mount_options))?)
+            }
+
+            fn device_options(self) -> VirtioFsDeviceOptions {
+                Default::default()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ParsedVirtioFs;
@@ -294,5 +275,37 @@ mod tests {
         };
         *windows_options = Some(Default::default());
         assert!(ParsedVirtioFs::parse(resource).is_ok());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn parse_rejects_windows_backends_and_tokens_on_non_windows() {
+        let mut resource = host_fs("tag", "root", "");
+        let VirtioFsBackend::HostFs {
+            windows_options, ..
+        } = &mut resource.fs
+        else {
+            unreachable!();
+        };
+        *windows_options = Some(virtio_resources::fs::VirtioFsWindowsOptions {
+            user_token_handle: 1,
+        });
+        let error = ParsedVirtioFs::parse(resource).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "virtio-fs windows_options are only supported on Windows"
+        );
+
+        let resource = VirtioFsHandle {
+            tag: "tag".to_owned(),
+            fs: VirtioFsBackend::SectionFs {
+                root_path: "root".to_owned(),
+            },
+        };
+        let error = ParsedVirtioFs::parse(resource).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "section fs not supported on this platform"
+        );
     }
 }
