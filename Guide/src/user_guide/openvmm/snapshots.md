@@ -507,9 +507,7 @@ cookies, and queue progress. Native file descriptors and Windows handles are
 never serialized. For an aggregate filesystem (`--mount-aggregate`), the
 manifest records each child's name, kind (directory or file), canonical host
 path, root identity, access mode, and denied, allowed, and writable paths, and
-the device-private payload records the children and the inodes of each. A
-snapshot that an earlier OpenVMM captured with a second virtio-fs slot cannot
-be restored.
+the device-private payload records the children and the inodes of each.
 
 Restoring an active slot requires a fresh
 `--mount <GUEST_TARGET,HOST_PATH[,ro|rw]>` attachment, or `--mount-aggregate`
