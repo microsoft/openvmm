@@ -367,7 +367,7 @@ impl ChangeDeviceState for VirtioMmioDevice {
         self.core.reset(&mut self.mmio).await;
     }
 
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         self.core.teardown().await;
         self.mmio.reset_interrupts();
     }

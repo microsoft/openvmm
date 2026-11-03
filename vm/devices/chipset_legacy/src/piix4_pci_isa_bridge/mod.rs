@@ -166,7 +166,7 @@ impl PciIsaBridge {
 }
 
 impl ChangeDeviceState for PciIsaBridge {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

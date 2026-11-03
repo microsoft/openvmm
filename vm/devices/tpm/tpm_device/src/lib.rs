@@ -1645,7 +1645,7 @@ impl Tpm {
 }
 
 impl ChangeDeviceState for Tpm {
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         self.flush_pending_nvram().await;
     }
 

@@ -6254,6 +6254,60 @@ impl VirtioDevice for DropTrackingDevice {
     }
 }
 
+struct TeardownMmioRegistrar(Arc<AtomicUsize>);
+
+struct TeardownMmioRegion {
+    mappings: Arc<AtomicUsize>,
+    address: Option<u64>,
+    len: u64,
+}
+
+impl chipset_device::mmio::RegisterMmioIntercept for TeardownMmioRegistrar {
+    fn new_io_region(
+        &mut self,
+        _: &str,
+        len: u64,
+    ) -> Box<dyn chipset_device::mmio::ControlMmioIntercept> {
+        Box::new(TeardownMmioRegion {
+            mappings: self.0.clone(),
+            address: None,
+            len,
+        })
+    }
+}
+
+impl chipset_device::mmio::ControlMmioIntercept for TeardownMmioRegion {
+    fn region_name(&self) -> &str {
+        "teardown"
+    }
+
+    fn map(&mut self, address: u64) {
+        if self.address.replace(address).is_none() {
+            self.mappings.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn unmap(&mut self) {
+        if self.address.take().is_some() {
+            self.mappings.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    fn addr(&self) -> Option<u64> {
+        self.address
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn offset_of(&self, address: u64) -> Option<u64> {
+        address
+            .checked_sub(self.address?)
+            .filter(|&offset| offset < self.len)
+    }
+}
+
 /// Teardown must drop the device (and thus release its backing resources)
 /// before returning, rather than leaving that to an asynchronously cancelled
 /// task.
@@ -6263,6 +6317,7 @@ async fn verify_teardown_drops_device(driver: DefaultDriver) {
     let mem = GuestMemory::new("test", test_mem);
     let msi_conn = MsiConnection::new();
     let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mappings = Arc::new(AtomicUsize::new(0));
 
     let mut dev = VirtioPciDevice::new(
         Box::new(DropTrackingDevice(dropped.clone())),
@@ -6270,7 +6325,7 @@ async fn verify_teardown_drops_device(driver: DefaultDriver) {
         mem,
         PciInterruptModel::Msix(&msi_conn.target()),
         None,
-        &mut ExternallyManagedMmioIntercepts,
+        &mut TeardownMmioRegistrar(mappings.clone()),
         None,
     )
     .unwrap();
@@ -6285,13 +6340,11 @@ async fn verify_teardown_drops_device(driver: DefaultDriver) {
         .unwrap();
     let mut data = [0; 4];
     dev.mmio_read(bar_address.into(), &mut data).unwrap();
+    assert!(mappings.load(Ordering::SeqCst) > 0);
     assert!(!dropped.load(Ordering::SeqCst));
     dev.teardown().await;
     assert!(dropped.load(Ordering::SeqCst));
-    assert!(matches!(
-        dev.mmio_read(bar_address.into(), &mut data),
-        IoResult::Err(_)
-    ));
+    assert_eq!(mappings.load(Ordering::SeqCst), 0);
 }
 
 #[async_test]
@@ -6300,7 +6353,7 @@ async fn verify_mmio_teardown_drops_device(driver: DefaultDriver) {
     let intc = TestLineInterruptTarget::new_arc();
     let line = LineInterrupt::new_with_target("teardown", intc.clone(), 0);
     line.set_level(true);
-    let mut dev = VirtioMmioDevice::new(
+    let dev = VirtioMmioDevice::new(
         Box::new(DropTrackingDevice(dropped.clone())),
         &driver,
         GuestMemory::allocate(0x1000),

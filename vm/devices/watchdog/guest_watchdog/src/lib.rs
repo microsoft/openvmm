@@ -133,7 +133,7 @@ impl PollDevice for GuestWatchdogServices {
 }
 
 impl ChangeDeviceState for GuestWatchdogServices {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

@@ -34,7 +34,7 @@ impl Piix4UsbUhciStub {
 }
 
 impl ChangeDeviceState for Piix4UsbUhciStub {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

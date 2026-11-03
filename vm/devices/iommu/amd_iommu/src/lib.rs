@@ -1621,7 +1621,7 @@ impl InspectMut for AmdIommuDevice {
 }
 
 impl vmcore::device_state::ChangeDeviceState for AmdIommuDevice {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

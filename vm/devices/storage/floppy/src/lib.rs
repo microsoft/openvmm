@@ -589,7 +589,7 @@ impl CommandBufferAccess {
 struct Io(Pin<Box<dyn Send + Future<Output = Result<(), disk_backend::DiskError>>>>);
 
 impl ChangeDeviceState for FloppyDiskController {
-    async fn teardown(&mut self) {
+    async fn teardown(self) {
         assert!(self.io.is_none(), "floppy must be stopped before teardown");
     }
 

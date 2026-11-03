@@ -431,9 +431,8 @@ impl NvmeController {
 }
 
 impl ChangeDeviceState for NvmeController {
-    async fn teardown(&mut self) {
+    async fn teardown(self) {
         self.workers.teardown().await;
-        self.cfg_space.reset();
     }
 
     fn start(&mut self) {

@@ -458,7 +458,7 @@ impl AssignedPciDevice {
 }
 
 impl ChangeDeviceState for AssignedPciDevice {
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         self.disable_mmio();
         self.device.delete();
     }

@@ -483,7 +483,7 @@ impl UefiDevice {
 }
 
 impl ChangeDeviceState for UefiDevice {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

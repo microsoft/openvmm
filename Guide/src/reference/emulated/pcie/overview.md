@@ -70,12 +70,14 @@ guest access is permanently revoked so late accesses cannot reach the
 removed device. Issued disk I/O is drained, not discarded by dropping its
 future.
 
-`ChangeDeviceState::teardown` is a required terminal operation on a stopped
-device. Removal stops a running unit first; paused and never-started units
-are already stopped. After async teardown, removal destroys the device
-payload even if stale references still hold its inaccessible wrapper.
-Synchronous devices explicitly implement a no-op teardown and release
-their resources through that destructor.
+`ChangeDeviceState::teardown(self)` is a required terminal operation that
+consumes a stopped device. Removal permanently closes the shared wrapper,
+takes ownership of its payload, and stops it if running; paused and
+never-started units are already stopped. Async teardown owns the device
+until cleanup completes and its remaining fields are dropped, even if stale
+references still hold the inaccessible wrapper. Synchronous devices
+explicitly implement an empty teardown and release their resources through
+ordinary destruction.
 
 Chipset MMIO and PIO mapping controls unregister their active ranges when
 dropped. Devices own remappable controls; the device state unit retains

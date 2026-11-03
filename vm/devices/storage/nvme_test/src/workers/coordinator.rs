@@ -35,7 +35,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[derive(InspectMut)]
 pub struct NvmeWorkers {
     #[inspect(skip)]
-    _task: Option<Task<()>>,
+    _task: Task<()>,
     #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
     #[inspect(skip)]
@@ -89,7 +89,7 @@ impl NvmeWorkers {
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
         Self {
-            _task: Some(task),
+            _task: task,
             send,
             doorbells,
             state: EnableState::Disabled,
@@ -107,15 +107,12 @@ impl NvmeWorkers {
             .expect("NVMe coordinator is gone");
     }
 
-    pub async fn teardown(&mut self) {
+    pub async fn teardown(self) {
         self.send
             .call(CoordinatorRequest::Teardown, ())
             .await
             .expect("NVMe coordinator is gone");
-        self._task
-            .take()
-            .expect("NVMe coordinator already removed")
-            .await;
+        self._task.await;
     }
 
     pub fn client(&self) -> NvmeFaultControllerClient {

@@ -69,7 +69,7 @@ impl Piix4CmosRtc {
 }
 
 impl ChangeDeviceState for Piix4CmosRtc {
-    async fn teardown(&mut self) {
+    async fn teardown(self) {
         self.inner.teardown().await;
     }
 

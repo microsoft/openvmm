@@ -271,7 +271,8 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                                 "remote device must be stopped before teardown"
                             );
                             self.device.teardown().await;
-                            drop(self);
+                            drop(self.deferred_reads);
+                            drop(self.deferred_writes);
                             rpc.complete(());
                             return Ok(());
                         }

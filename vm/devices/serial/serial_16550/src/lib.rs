@@ -514,7 +514,7 @@ impl Serial16550 {
 }
 
 impl ChangeDeviceState for Serial16550 {
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         if let Err(error) = futures::io::AsyncWriteExt::close(&mut self.io).await {
             tracing::warn!(
                 error = &error as &dyn std::error::Error,

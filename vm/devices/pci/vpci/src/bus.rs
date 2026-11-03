@@ -316,7 +316,7 @@ impl PendingVpciBusOffer {
 }
 
 impl ChangeDeviceState for VpciBus {
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         self.revoke().await;
     }
 

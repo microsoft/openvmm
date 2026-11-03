@@ -82,7 +82,7 @@ impl Piix4PciBus {
 }
 
 impl ChangeDeviceState for Piix4PciBus {
-    async fn teardown(&mut self) {
+    async fn teardown(self) {
         self.bus.teardown().await;
     }
 

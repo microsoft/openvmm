@@ -266,7 +266,7 @@ impl PollDevice for ChipsetDeviceProxy {
 }
 
 impl ChangeDeviceState for ChipsetDeviceProxy {
-    async fn teardown(&mut self) {
+    async fn teardown(mut self) {
         self.req_send
             .call(DeviceRequest::Teardown, ())
             .await
@@ -275,8 +275,6 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
             .join()
             .await
             .expect("remote device worker failed");
-        self.in_flight_reads.clear();
-        self.in_flight_writes.clear();
     }
 
     fn start(&mut self) {

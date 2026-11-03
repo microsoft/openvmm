@@ -606,7 +606,7 @@ impl PitDevice {
 }
 
 impl ChangeDeviceState for PitDevice {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

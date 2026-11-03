@@ -90,7 +90,7 @@ impl ChipsetDevices {
             .spawn(driver.clone(), |recv| device_unit.run(recv))
             .context("name in use")?;
 
-        Ok((DynamicDeviceUnit { unit, driver }, device))
+        Ok((DynamicDeviceUnit::new(unit, driver, device.clone()), device))
     }
 }
 

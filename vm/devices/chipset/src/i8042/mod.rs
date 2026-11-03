@@ -128,7 +128,7 @@ impl I8042Device {
 }
 
 impl ChangeDeviceState for I8042Device {
-    async fn teardown(&mut self) {}
+    async fn teardown(self) {}
 
     fn start(&mut self) {}
 

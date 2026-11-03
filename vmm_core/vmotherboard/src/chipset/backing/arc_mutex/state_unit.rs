@@ -8,6 +8,7 @@ use chipset_device::pio::ControlPortIoIntercept;
 use closeable_mutex::CloseableMutex;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::BoxFuture;
 use futures::task::ArcWake;
 use futures::task::WakerRef;
 use futures::task::waker_ref;
@@ -35,11 +36,32 @@ pub struct ArcMutexChipsetDeviceUnit {
 
 /// A unit handle for a dynamically managed device.
 pub struct DynamicDeviceUnit {
-    pub(crate) unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
-    pub(crate) driver: VmTaskDriver,
+    unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
+    driver: VmTaskDriver,
+    teardown: Box<dyn FnOnce(bool) -> BoxFuture<'static, ()> + Send + Sync>,
 }
 
 impl DynamicDeviceUnit {
+    pub(crate) fn new<T: 'static + VmmChipsetDevice>(
+        unit: SpawnedUnit<ArcMutexChipsetDeviceUnit>,
+        driver: VmTaskDriver,
+        device: Arc<CloseableMutex<T>>,
+    ) -> Self {
+        Self {
+            unit,
+            driver,
+            teardown: Box::new(move |running| {
+                Box::pin(async move {
+                    let mut device = device.close_permanently().take();
+                    if running {
+                        device.stop().await;
+                    }
+                    device.teardown().await;
+                })
+            }),
+        }
+    }
+
     /// Removes the dynamically managed device and releases its backing resources.
     ///
     /// Waits for the state-unit task to exit, stops a running device, and then
@@ -52,14 +74,8 @@ impl DynamicDeviceUnit {
         let (send, recv) = mesh::oneshot();
         self.driver
             .spawn("remove-chipset-device", async move {
-                let mut unit = self.unit.remove().await;
-                let mut device = unit.device.clone().close_permanently();
-                if unit.running {
-                    device.stop().await;
-                    unit.running = false;
-                }
-                device.teardown().await;
-                device.destroy();
+                let unit = self.unit.remove().await;
+                (self.teardown)(unit.running).await;
                 drop(unit);
                 send.send(());
             })
@@ -82,7 +98,6 @@ trait DynDevice: InspectMut + Send {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
-    async fn teardown(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
     async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
@@ -100,10 +115,6 @@ impl<T: VmmChipsetDevice> DynDevice for T {
 
     async fn reset(&mut self) {
         self.reset().await
-    }
-
-    async fn teardown(&mut self) {
-        self.teardown().await
     }
 
     fn poll_device(&mut self, cx: &mut Context<'_>) {
@@ -374,6 +385,7 @@ mod tests {
     use chipset_device::io::IoResult;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::pio::PortIoIntercept;
+    use chipset_device_resources::ResolvedChipsetDevice;
     use pal_async::DefaultDriver;
     use state_unit::StateUnits;
     use std::sync::atomic::AtomicBool;
@@ -486,7 +498,7 @@ mod tests {
 
         async fn reset(&mut self) {}
 
-        async fn teardown(&mut self) {
+        async fn teardown(mut self) {
             assert!(self.stopped, "teardown before stop");
             let io = self.io.take();
             self.entered.send(());
@@ -542,12 +554,9 @@ mod tests {
         assert!(pio_ranges.is_occupied(0x100));
 
         release.send(());
-        DynamicDeviceUnit {
-            unit,
-            driver: source.simple(),
-        }
-        .remove()
-        .await;
+        DynamicDeviceUnit::new(unit, source.simple(), device.clone())
+            .remove()
+            .await;
 
         assert!(!mmio_ranges.is_occupied(0x1000));
         assert!(!pio_ranges.is_occupied(0x100));
@@ -564,15 +573,18 @@ mod tests {
                 let io_dropped = Arc::new(AtomicBool::new(false));
                 let accesses = Arc::new(AtomicUsize::new(0));
                 let stop_count = Arc::new(AtomicUsize::new(0));
-                let device = Arc::new(CloseableMutex::new(RemovingDevice {
-                    stopped: true,
-                    stop_count: stop_count.clone(),
-                    accesses: accesses.clone(),
-                    entered,
-                    release: release_recv,
-                    finished,
-                    io: Some(DropMarker(io_dropped.clone())),
-                }));
+                let device = Arc::new(CloseableMutex::new(
+                    ResolvedChipsetDevice::from(RemovingDevice {
+                        stopped: true,
+                        stop_count: stop_count.clone(),
+                        accesses: accesses.clone(),
+                        entered,
+                        release: release_recv,
+                        finished,
+                        io: Some(DropMarker(io_dropped.clone())),
+                    })
+                    .0,
+                ));
                 let erased: Arc<CloseableMutex<dyn ChipsetDevice>> = device.clone();
                 let mmio_ranges = IoRanges::<u64>::new(false, None);
                 mmio_ranges
@@ -619,13 +631,8 @@ mod tests {
                     .add("test")
                     .spawn(task_driver.clone(), |recv| unit.run(recv))
                     .unwrap();
-                let mut removal = Some(
-                    DynamicDeviceUnit {
-                        unit,
-                        driver: task_driver,
-                    }
-                    .remove(),
-                );
+                let mut removal =
+                    Some(DynamicDeviceUnit::new(unit, task_driver, device.clone()).remove());
                 entered_recv.recv().await.unwrap();
                 if abandon_waiter {
                     drop(removal.take());
