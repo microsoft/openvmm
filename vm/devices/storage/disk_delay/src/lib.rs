@@ -80,6 +80,11 @@ impl DiskIo for DelayDisk {
         self.inner.pr()
     }
 
+    /// Passthrough
+    fn zoned(&self) -> Option<&dyn disk_backend::zoned::ZonedDisk> {
+        self.inner.zoned()
+    }
+
     /// Delay and then Passthrough
     async fn read_vectored(
         &self,

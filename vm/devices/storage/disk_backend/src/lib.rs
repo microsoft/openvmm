@@ -30,6 +30,9 @@
 //!   Force Unit Access (write-through to stable storage). Whether FUA is
 //!   actually respected depends on the backend — check
 //!   [`DiskIo::is_fua_respected`].
+//! - [`DiskIo::write_same`] — write one logical block repeatedly across a
+//!   range. The default implementation issues ordinary writes; backends can
+//!   override it to preserve media-specific transaction semantics.
 //! - [`DiskIo::sync_cache`] — flush (equivalent to SCSI SYNCHRONIZE CACHE
 //!   or NVMe FLUSH).
 //! - [`DiskIo::unmap`] — trim / deallocate sectors. The
@@ -68,6 +71,7 @@
 //! | `CryptDisk` | `disk_crypt` | XTS-AES-256 encryption wrapper |
 //! | `DelayDisk` | `disk_delay` | Injected I/O latency wrapper |
 //! | `DiskWithReservations` | `disk_prwrap` | In-memory PR emulation wrapper |
+//! | `ZoneEmulationDisk` | `disk_zone_emu` | Host-managed zoned media emulation wrapper |
 //! | `LayeredDisk` | `disk_layered` | Layered disk with per-sector presence |
 
 #![forbid(unsafe_code)]
@@ -75,6 +79,7 @@
 pub mod pr;
 pub mod resolve;
 pub mod sync_wrapper;
+pub mod zoned;
 
 use guestmem::AccessError;
 use inspect::Inspect;
@@ -117,6 +122,9 @@ pub enum DiskError {
     /// The request failed because eject is not supported.
     #[error("unsupported eject")]
     UnsupportedEject,
+    /// The request violated a zoned block device constraint.
+    #[error("zoned disk error")]
+    Zone(#[from] zoned::ZoneError),
 }
 
 /// Failure details for [`DiskError::MediumError`].
@@ -227,6 +235,11 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
         None
     }
 
+    /// Optionally returns an interface for zoned block device operations.
+    fn zoned(&self) -> Option<&dyn zoned::ZonedDisk> {
+        None
+    }
+
     /// Issues an asynchronous eject media operation to the disk.
     ///
     /// The default implementation returns [`DiskError::UnsupportedEject`].
@@ -259,6 +272,25 @@ pub trait DiskIo: 'static + Send + Sync + Inspect {
         sector: u64,
         fua: bool,
     ) -> impl Future<Output = Result<(), DiskError>> + Send;
+
+    /// Writes one logical block repeatedly across a sector range.
+    ///
+    /// `buffer` must contain exactly one logical sector.
+    fn write_same(
+        &self,
+        buffer: &RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
+        fua: bool,
+    ) -> impl Future<Output = Result<(), DiskError>> + Send {
+        async move {
+            let end = sector.checked_add(count).ok_or(DiskError::IllegalBlock)?;
+            for offset in sector..end {
+                self.write_vectored(buffer, offset, fua).await?;
+            }
+            Ok(())
+        }
+    }
 
     /// Issues an asynchronous flush operation to the disk.
     fn sync_cache(&self) -> impl Future<Output = Result<(), DiskError>> + Send;
@@ -293,7 +325,8 @@ impl Disk {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field("disk_type", self.0.disk.disk_type())
             .field("sector_count", self.0.disk.sector_count())
-            .field("supports_pr", self.0.disk.pr().is_some());
+            .field("supports_pr", self.0.disk.pr().is_some())
+            .field("zoned", self.0.disk.zoned().is_some());
     }
 }
 
@@ -486,6 +519,11 @@ impl Disk {
         self.0.disk.pr()
     }
 
+    /// Optionally returns an interface for zoned block device operations.
+    pub fn zoned(&self) -> Option<&dyn zoned::ZonedDisk> {
+        self.0.disk.zoned()
+    }
+
     /// Issues an asynchronous eject media operation to the disk.
     pub fn eject(&self) -> impl use<'_> + Future<Output = Result<(), DiskError>> + Send {
         self.0.disk.eject()
@@ -525,6 +563,21 @@ impl Disk {
     ) -> Result<(), DiskError> {
         self.check_representable(sector, self.buffer_sectors(buffers))?;
         self.0.disk.write_vectored(buffers, sector, fua).await
+    }
+
+    /// Writes one logical block repeatedly across a sector range.
+    pub async fn write_same(
+        &self,
+        buffer: &RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        self.check_representable(sector, count)?;
+        if buffer.len() != self.sector_size() as usize {
+            return Err(DiskError::InvalidInput);
+        }
+        self.0.disk.write_same(buffer, sector, count, fua).await
     }
 
     /// Issues an asynchronous flush operation to the disk.
@@ -571,6 +624,7 @@ trait DynDisk: Send + Sync + Inspect {
     fn unmap(&self, sector_offset: u64, sector_count: u64, block_level_only: bool) -> IoFuture<'_>;
 
     fn pr(&self) -> Option<&dyn pr::PersistentReservation>;
+    fn zoned(&self) -> Option<&dyn zoned::ZonedDisk>;
     fn eject(&self) -> IoFuture<'_>;
 
     fn read_vectored<'a>(&'a self, buffers: &'a RequestBuffers<'_>, sector: u64) -> IoFuture<'a>;
@@ -579,6 +633,14 @@ trait DynDisk: Send + Sync + Inspect {
         &'a self,
         buffers: &'a RequestBuffers<'_>,
         sector: u64,
+        fua: bool,
+    ) -> IoFuture<'a>;
+
+    fn write_same<'a>(
+        &'a self,
+        buffer: &'a RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
         fua: bool,
     ) -> IoFuture<'a>;
 
@@ -612,6 +674,10 @@ impl<T: DiskIo> DynDisk for T {
         self.pr()
     }
 
+    fn zoned(&self) -> Option<&dyn zoned::ZonedDisk> {
+        self.zoned()
+    }
+
     fn eject(&self) -> IoFuture<'_> {
         StackFuture::from_or_box(self.eject())
     }
@@ -627,6 +693,16 @@ impl<T: DiskIo> DynDisk for T {
         fua: bool,
     ) -> IoFuture<'a> {
         StackFuture::from_or_box(self.write_vectored(buffers, sector, fua))
+    }
+
+    fn write_same<'a>(
+        &'a self,
+        buffer: &'a RequestBuffers<'_>,
+        sector: u64,
+        count: u64,
+        fua: bool,
+    ) -> IoFuture<'a> {
+        StackFuture::from_or_box(self.write_same(buffer, sector, count, fua))
     }
 
     fn sync_cache(&self) -> IoFuture<'_> {

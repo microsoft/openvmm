@@ -255,5 +255,6 @@ fn map_disk_error(err: disk_backend::DiskError) -> NvmeError {
             spec::Status::ATTEMPTED_WRITE_TO_READ_ONLY_RANGE.into()
         }
         disk_backend::DiskError::UnsupportedEject => spec::Status::INVALID_COMMAND_OPCODE.into(),
+        disk_backend::DiskError::Zone(_) => spec::Status::INVALID_FIELD_IN_COMMAND.into(),
     }
 }

@@ -41,6 +41,7 @@ disk_delay.workspace = true
 disk_file.workspace = true
 disk_layered.workspace = true
 disk_prwrap.workspace = true
+disk_zone_emu.workspace = true
 disk_vhd1.workspace = true
 disk_vmdk.workspace = true
 disklayer_vhdx.workspace = true

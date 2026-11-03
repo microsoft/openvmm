@@ -36,6 +36,7 @@ mod reservation;
 pub mod resolver;
 pub mod scsidvd;
 mod unmap;
+mod zoned;
 
 #[cfg(test)]
 mod tests;
@@ -138,6 +139,7 @@ pub struct SimpleScsiDisk {
     sector_size: u32,
     sense_data: SenseDataSlot,
     scsi_parameters: ScsiParameters,
+    zoned_scsi_telemetry: Option<zoned::ScsiTelemetry>,
     support_pr: bool,
     last_sector_count: AtomicU64,
 }
@@ -163,6 +165,7 @@ impl SimpleScsiDisk {
         let sector_size = disk.sector_size();
         let sector_shift = sector_size.trailing_zeros() as u8;
         let mut sector_count = disk.sector_count();
+        let is_zoned = disk.zoned().is_some();
 
         // Update the reported disk size.
         if let Some(size) = disk_parameters.scsi_disk_size_in_bytes {
@@ -187,7 +190,6 @@ impl SimpleScsiDisk {
                 optimal_unmap_sectors,
                 get_lba_status,
             } = disk_parameters;
-
             fn nonzero_id(id: [u8; 16]) -> Option<[u8; 16]> {
                 if id == [0; 16] { None } else { Some(id) }
             }
@@ -207,11 +209,16 @@ impl SimpleScsiDisk {
                 write_cache_enabled: write_cache.unwrap_or(true),
                 support_odx: odx.unwrap_or(false),
                 support_get_lba_status: get_lba_status,
-                support_unmap: unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
+                support_unmap: !is_zoned
+                    && unmap.unwrap_or(disk.unmap_behavior() != UnmapBehavior::Ignored),
                 maximum_transfer_length: max_transfer_length.unwrap_or(8 * 1024 * 1024),
                 identity: identity.unwrap_or_else(DiskIdentity::msft),
                 serial_number,
-                medium_rotation_rate: medium_rotation_rate.unwrap_or(1), // non-rotating media (SSD)
+                medium_rotation_rate: medium_rotation_rate.unwrap_or(if is_zoned {
+                    7200
+                } else {
+                    1
+                }),
                 optimal_unmap_sectors: optimal_unmap_sectors.unwrap_or(1),
             }
         };
@@ -227,6 +234,7 @@ impl SimpleScsiDisk {
             sector_size,
             sense_data: Default::default(),
             scsi_parameters,
+            zoned_scsi_telemetry: is_zoned.then(zoned::ScsiTelemetry::new),
             support_pr,
             last_sector_count: AtomicU64::new(sector_count),
         }
@@ -601,6 +609,9 @@ impl SimpleScsiDisk {
                     //  - trim is supported
                     //  - read zero after trim is not supported
                     data.lowest_aligned_block_msb |= scsi::READ_CAPACITY16_LBPME;
+                }
+                if self.disk.zoned().is_some() {
+                    data.flags |= scsi::READ_CAPACITY16_RC_BASIS_LAST_LBA;
                 }
 
                 let tx = std::cmp::min(external_data.len(), size_of::<scsi::ReadCapacity16Data>());
@@ -1110,6 +1121,7 @@ impl SimpleScsiDisk {
                                     AdditionalSenseCode::ILLEGAL_COMMAND,
                                 )),
                             },
+                            DiskError::Zone(error) => zoned::error_result(error, op),
                             DiskError::InvalidInput
                             | DiskError::MemoryAccess(_)
                             | DiskError::ReadOnly => unreachable!(), //handled above
@@ -1228,13 +1240,10 @@ impl SimpleScsiDisk {
         if p.tx > 0 {
             // Note that `p.sector_size` is validated above to be in range.
             let external_data = external_data.subrange(0, p.sector_size);
-            // TODO: pass this request through to the disk rather than looping like this.
-            for offset in p.start_lba..p.start_lba + (p.lba_count as u64) {
-                self.disk
-                    .write_vectored(&external_data, offset, p.fua)
-                    .await
-                    .map_err(ScsiError::Disk)?;
-            }
+            self.disk
+                .write_same(&external_data, p.start_lba, p.lba_count as u64, p.fua)
+                .await
+                .map_err(ScsiError::Disk)?;
         }
 
         Ok(p.tx)
@@ -1271,9 +1280,8 @@ impl AsyncScsiDisk for SimpleScsiDisk {
         external_data: &'a RequestBuffers<'a>,
         request: &'a Request,
     ) -> StackFuture<'a, ScsiResult, { ASYNC_SCSI_DISK_STACK_SIZE }> {
-        StackFuture::from(async move {
-            let op = request.scsiop();
-
+        let op = request.scsiop();
+        StackFuture::from_or_box(async move {
             let sector_count = match self.get_and_update_sector_count(op) {
                 Ok(c) => c,
                 Err(_) => {
@@ -1284,7 +1292,11 @@ impl AsyncScsiDisk for SimpleScsiDisk {
                         }
                         _ => Err(ScsiError::UnitAttention),
                     };
-                    return self.process_result(result, op);
+                    let result = self.process_result(result, op);
+                    if let Some(telemetry) = &self.zoned_scsi_telemetry {
+                        telemetry.record(op, &result);
+                    }
+                    return result;
                 }
             };
 
@@ -1326,13 +1338,19 @@ impl AsyncScsiDisk for SimpleScsiDisk {
                         .instrument(tracing::trace_span!("handle_persistent_reserve_async", ?op,))
                         .await
                 }
+                ScsiOp::ZBC_IN => zoned::report_zones(&self.disk, external_data, request).await,
+                ScsiOp::ZBC_OUT => zoned::zbc_out(&self.disk, request).await,
                 _ => {
                     let _span = tracing::trace_span!("handle_control_cdb", ?op,).entered();
                     self.handle_control_cdb(external_data, request, sector_count)
                 }
             };
 
-            self.process_result(result, op)
+            let result = self.process_result(result, op);
+            if let Some(telemetry) = &self.zoned_scsi_telemetry {
+                telemetry.record(op, &result);
+            }
+            result
         })
     }
 }
@@ -1352,6 +1370,8 @@ impl Inspect for SimpleScsiDisk {
             )
             .field("scsi_parameters", &self.scsi_parameters)
             .field("pr", self.support_pr)
+            .field("zoned", self.disk.zoned().is_some())
+            .field("zoned_scsi_telemetry", &self.zoned_scsi_telemetry)
             .field("backend", &self.disk);
     }
 }
