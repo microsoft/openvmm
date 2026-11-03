@@ -519,10 +519,13 @@ impl InternalNode {
                     // Poll each child, even if a previous one returned pending,
                     // in order to collect as many results as possible. This is
                     // important in case the resolve operation is timed out.
-                    if !children
-                        .iter_mut()
-                        .all(|entry| entry.node.poll_resolve(cx).is_ready())
-                    {
+                    let mut all_ready = true;
+                    for entry in children.iter_mut() {
+                        if entry.node.poll_resolve(cx).is_pending() {
+                            all_ready = false;
+                        }
+                    }
+                    if !all_ready {
                         break Poll::Pending;
                     }
                     // Remember that this node is resolved to avoid recursing
