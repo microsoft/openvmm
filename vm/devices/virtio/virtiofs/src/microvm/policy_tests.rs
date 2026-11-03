@@ -8,7 +8,6 @@ use super::profile::MICROVM_ATTACHMENT_ID;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_root_identity;
 use super::saved_state::SCHEMA_VERSION;
-use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
 use super::state::save_dormant_microvm_state;
 use super::state::validate_dormant_microvm_state;
 use super::state::validate_microvm_state;
@@ -645,7 +644,7 @@ fn access_policy_survives_save_and_restore() {
     let state = source
         .save_microvm_state(&profile, SessionState::default())
         .unwrap();
-    assert_eq!(state.schema_version, SUBTREE_POLICY_SCHEMA_VERSION);
+    assert_eq!(state.schema_version, SCHEMA_VERSION);
     assert_eq!(state.denied_paths, ["logs"]);
     assert_eq!(state.allowed_paths, ["logs/payloads"]);
     assert_eq!(state.writable_paths, ["out"]);
@@ -694,21 +693,20 @@ fn restore_rejects_a_writable_handle_outside_the_writable_paths() {
 }
 
 #[test]
-fn saved_state_records_only_policies_that_restrict_writes() {
+fn saved_state_records_the_access_policy() {
     let share = Share::new();
-    // A deny-only attachment keeps the earlier schema, so that earlier
-    // releases, which enforce denied paths, can restore it.
+    // A deny-only attachment records its denied paths.
     let deny_only = share.profile(&["logs"], &[], &[]);
     let source = VirtioFs::new_microvm(&share.root, deny_only.clone()).unwrap();
     let mut state = source
         .save_microvm_state(&deny_only, SessionState::default())
         .unwrap();
     assert_eq!(state.schema_version, SCHEMA_VERSION);
-    assert!(state.denied_paths.is_empty() && state.allowed_paths.is_empty());
+    assert_eq!(state.denied_paths, ["logs"]);
+    assert!(state.allowed_paths.is_empty() && state.writable_paths.is_empty());
     validate_microvm_state(&state, &deny_only).unwrap();
 
-    // A state without a policy cannot restore an attachment with one, and an
-    // earlier schema cannot carry one.
+    // A state cannot restore an attachment with another policy.
     let narrowed = share.profile(&[], &[], &["out"]);
     assert!(validate_microvm_state(&state, &narrowed).is_err());
     state.writable_paths = owned(&["out"]);
