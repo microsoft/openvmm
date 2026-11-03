@@ -656,7 +656,7 @@ impl GetReferenceTime for TscReferenceTimeSource {
         #[cfg(guest_arch = "x86_64")]
         {
             let tsc = safe_intrinsics::rdtsc();
-            let ref_time = ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64;
+            let ref_time = self.tsc_scale.carrying_mul(tsc, 0).1;
             ReferenceTimeResult {
                 ref_time,
                 system_time: None,

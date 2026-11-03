@@ -258,7 +258,7 @@ impl fuse::Fuse for SectionFs {
         Ok(fuse::protocol::fuse_entry_out::new(
             node_id,
             Duration::from_secs(0),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             attr,
         ))
     }
@@ -288,7 +288,7 @@ impl fuse::Fuse for SectionFs {
             inode.attr(request.node_id(), &self.attr)
         };
         Ok(fuse::protocol::fuse_attr_out::new(
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             attr,
         ))
     }
@@ -366,7 +366,7 @@ impl fuse::Fuse for SectionFs {
             entry: fuse::protocol::fuse_entry_out::new(
                 node_id,
                 Duration::from_secs(0),
-                Duration::from_secs(60),
+                Duration::from_mins(1),
                 attr,
             ),
             open: fuse::protocol::fuse_open_out::new(0, 0),

@@ -194,8 +194,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
         let layout = Layout::from_size_align(
             base_layout
                 .size()
-                .checked_add(size_of::<U>().checked_mul(cap).unwrap())
-                .unwrap(),
+                .strict_add(size_of::<U>().strict_mul(cap)),
             base_layout.align(),
         )
         .unwrap()
@@ -228,10 +227,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
             assert!(size_of::<U>() > 0, "ZST tail slice overflow");
             // Double the current capacity to ensure a geometric progression
             // (avoiding O(n^2) allocations).
-            let new_cap = cmp::max(
-                cmp::max(8, cap.checked_mul(2).unwrap()),
-                self.len.checked_add(n).unwrap(),
-            );
+            let new_cap = cmp::max(cmp::max(8, cap.strict_mul(2)), self.len.strict_add(n));
             self.realloc(new_cap);
         }
         &mut self.spare_tail_capacity_mut()[..n]

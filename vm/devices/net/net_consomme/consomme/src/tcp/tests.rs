@@ -3579,7 +3579,7 @@ async fn test_tcp_close_before_syn_ack_retransmits_syn_then_fin(driver: DefaultD
         conn.inner.state = TcpState::SynReceived;
         conn.inner.tx_acked = conn.inner.tx_acked - 1;
         conn.inner.tx_syn = TxSynState::SynAck;
-        conn.inner.close(Duration::from_secs(60), flow);
+        conn.inner.close(Duration::from_mins(1), flow);
         conn.inner.retransmission.timer = RetransmissionTimer::Rto {
             deadline: Instant::now() - Duration::from_millis(1),
             recover: None,
@@ -3953,7 +3953,7 @@ async fn test_tcp_time_wait_accepts_newer_syn(driver: DefaultDriver) {
         let connection = h.consomme.tcp.connections.get_mut(&h.four_tuple()).unwrap();
         connection.inner.state = TcpState::TimeWait;
         connection.inner.lifetime_timer =
-            LifetimeTimer::Close(Instant::now() + Duration::from_secs(60));
+            LifetimeTimer::Close(Instant::now() + Duration::from_mins(1));
     }
 
     let new_isn = old_rx_seq + 10_000;

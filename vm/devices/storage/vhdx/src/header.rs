@@ -548,9 +548,7 @@ mod tests {
 
         let mut header = Header::read_from_prefix(&buf).unwrap().0.clone();
         header.log_offset = format::HEADER_AREA_SIZE;
-        header.log_length = format::MAXIMUM_LOG_SIZE
-            .checked_add(format::REGION_ALIGNMENT as u32)
-            .unwrap();
+        header.log_length = format::MAXIMUM_LOG_SIZE.strict_add(format::REGION_ALIGNMENT as u32);
         header.sequence_number = 100; // Make this the winning header.
         header.checksum = 0;
 
