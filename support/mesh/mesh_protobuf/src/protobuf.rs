@@ -1107,7 +1107,8 @@ mod tests {
             );
             assert_eq!(state.resource(0).unwrap(), 10);
             assert_eq!(state.resource(1).unwrap(), 20);
-
+        }
+    }
 
     #[test]
     fn test_nested_resource_isolation() {
