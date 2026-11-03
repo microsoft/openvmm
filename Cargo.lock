@@ -2150,15 +2150,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fast_select"
-version = "0.0.0"
-dependencies = [
- "futures",
- "pal_async",
- "parking_lot",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8495,7 +8486,6 @@ dependencies = [
  "criterion",
  "disklayer_ram",
  "event-listener",
- "fast_select",
  "futures",
  "guestmem",
  "guid",

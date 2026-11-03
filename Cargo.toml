@@ -142,7 +142,6 @@ console_relay = { path = "support/console_relay" }
 crypto = { path = "support/crypto" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_memcpy = { path = "support/fast_memcpy" }
-fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
