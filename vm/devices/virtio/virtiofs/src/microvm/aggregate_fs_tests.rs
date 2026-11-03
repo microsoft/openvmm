@@ -22,10 +22,9 @@ use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmVirtioFsProfile;
 use super::profile::microvm_file_identity;
 use super::profile::microvm_root_identity;
-use super::saved_state::AGGREGATE_SCHEMA_VERSION;
-use super::saved_state::FILE_CHILD_SCHEMA_VERSION;
 use super::saved_state::SAVED_DIRECTORY_CHILD;
 use super::saved_state::SAVED_FILE_CHILD;
+use super::saved_state::SCHEMA_VERSION;
 use super::saved_state::SavedHandle;
 use super::saved_state::SavedObjectIdentity;
 use super::state::encode_relative_path;
@@ -437,7 +436,7 @@ fn aggregate_state_restores_children_handles_and_cookies() {
     let state = source
         .save_microvm_state(&profile, SessionState::default())
         .unwrap();
-    assert_eq!(state.schema_version, AGGREGATE_SCHEMA_VERSION);
+    assert_eq!(state.schema_version, SCHEMA_VERSION);
     assert_eq!(
         state
             .aggregate_children
@@ -882,7 +881,7 @@ fn file_child_state_restores_and_rejects_changes() {
             .unwrap()
     };
     let saved = state();
-    assert_eq!(saved.schema_version, FILE_CHILD_SCHEMA_VERSION);
+    assert_eq!(saved.schema_version, SCHEMA_VERSION);
     assert_eq!(
         saved
             .aggregate_children
@@ -905,11 +904,11 @@ fn file_child_state_restores_and_rejects_changes() {
         lx::Error::EROFS
     );
 
-    // A state with file children records them under its own schema version,
-    // and a profile with a directory in place of a file rejects it.
-    let mut downgraded = state();
-    downgraded.schema_version = AGGREGATE_SCHEMA_VERSION;
-    assert!(validate_microvm_state(&downgraded, &file_profile).is_err());
+    // A state that records a file child as a directory, and a profile with a
+    // directory in place of a file, are rejected.
+    let mut as_directory_state = state();
+    as_directory_state.aggregate_children[0].kind = SAVED_DIRECTORY_CHILD;
+    assert!(validate_microvm_state(&as_directory_state, &file_profile).is_err());
     let as_directory = [
         Child::new("settings", &files.config, true),
         Child::file("output", &files.output, false),
