@@ -141,10 +141,9 @@ pub const MICROVM_HOST_LOOPBACK_INGRESS_COMMAND_LINE_TOKEN: &str = "virtnet_ingr
 /// MicroVM virtio MMIO reservations in stable device order.
 ///
 /// Each slot keeps its place whether or not the slots before it are present.
-/// The windows at `0xd0004000` and `0xd0005000`, which held the retired
-/// `runtime` and `custom` sandbox layers, stay unassigned, as do their IOAPIC
-/// inputs 20 and 21 and the shared-status words at offsets `0x10` and `0x14`:
-/// the slots after them kept their places.
+/// The windows at `0xd0004000` and `0xd0005000` are unassigned, as are their
+/// IOAPIC inputs 20 and 21 and the shared-status words at offsets `0x10` and
+/// `0x14`.
 pub const MICROVM_VIRTIO_MMIO_BASES: [u64; 6] = [
     MICROVM_VIRTIO_NET_MMIO_BASE,
     MICROVM_VIRTIO_FS_MMIO_BASE,
@@ -2660,8 +2659,8 @@ mod tests {
         ] {
             assert_eq!(microvm_virtio_irq(role.mmio_base()), Some(irq));
         }
-        // The windows of the retired runtime and custom layers keep inputs 20
-        // and 21 free, and no window past them has an input.
+        // The unassigned windows keep inputs 20 and 21 free, and no window
+        // past the last slot has an input.
         for mmio_base in [0xd000_4000, 0xd000_5000, 0xd000_8000] {
             assert_eq!(microvm_virtio_irq(mmio_base), None);
         }
@@ -2777,10 +2776,10 @@ mod tests {
                 expected_gpa < MICROVM_SHARED_STATUS_PAGE_GPA + MICROVM_SHARED_STATUS_PAGE_SIZE
             );
         }
-        // The windows of the retired runtime and custom layers are free.
+        // The unassigned windows have no status word, and neither does any
+        // window past the last slot.
         assert_eq!(microvm_virtio_status_gpa(0xd000_4000), None);
         assert_eq!(microvm_virtio_status_gpa(0xd000_5000), None);
-        // The window of the retired second virtio-fs slot is free.
         assert_eq!(microvm_virtio_status_gpa(0xd000_8000), None);
         assert_eq!(microvm_virtio_status_gpa(0xd000_9000), None);
     }
