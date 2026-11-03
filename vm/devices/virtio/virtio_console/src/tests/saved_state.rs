@@ -269,7 +269,7 @@ async fn direct_and_broker_saved_state_schemas_are_not_interchangeable(driver: D
     let direct_state: crate::saved_state::SavedState = direct_saved.parse().unwrap();
     assert_eq!(
         direct_state.schema_version,
-        crate::saved_state::DIRECT_SAVED_STATE_VERSION
+        crate::saved_state::SAVED_STATE_VERSION
     );
     assert!(direct_state.broker.is_none());
 
@@ -283,7 +283,7 @@ async fn direct_and_broker_saved_state_schemas_are_not_interchangeable(driver: D
     let broker_state: crate::saved_state::SavedState = broker_saved.parse().unwrap();
     assert_eq!(
         broker_state.schema_version,
-        crate::saved_state::BROKER_SAVED_STATE_VERSION
+        crate::saved_state::SAVED_STATE_VERSION
     );
     assert!(broker_state.broker.is_some());
 
@@ -294,12 +294,12 @@ async fn direct_and_broker_saved_state_schemas_are_not_interchangeable(driver: D
 }
 
 #[async_test]
-async fn direct_schema_v1_allows_staged_rx_without_receive_queue(driver: DefaultDriver) {
+async fn direct_state_allows_staged_rx_without_receive_queue(driver: DefaultDriver) {
     let (io, _) = new_mock_serial();
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     let state = crate::saved_state::SavedState {
-        schema_version: crate::saved_state::DIRECT_SAVED_STATE_VERSION,
+        schema_version: crate::saved_state::SAVED_STATE_VERSION,
         columns: 0,
         rows: 0,
         partial_transmit: 0,
@@ -326,7 +326,7 @@ async fn oversized_saved_state_is_rejected_before_nested_decode(driver: DefaultD
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     let state = crate::saved_state::SavedState {
-        schema_version: crate::saved_state::DIRECT_SAVED_STATE_VERSION,
+        schema_version: crate::saved_state::SAVED_STATE_VERSION,
         columns: 0,
         rows: 0,
         partial_transmit: 0,
