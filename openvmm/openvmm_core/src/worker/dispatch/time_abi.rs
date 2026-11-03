@@ -1043,7 +1043,8 @@ pub(super) fn capture_records(
             host_id: identity.host_id.to_vec(),
             host_boot_id: identity.boot_id.to_vec(),
             capture_generation: state.generation,
-            vm_time_cut_to_anchor_ns: None,
+            // Recorded once the saved state holds the VM-time cut.
+            vm_time_cut_to_anchor_ns: 0,
         },
         cpu_profile: SnapshotCpuProfile {
             id: record.id.to_owned(),
@@ -1091,7 +1092,7 @@ fn read_vm_time_cut(
     let cut_to_anchor_ns =
         vm_time_cut_to_anchor_ns(contract.capture_monotonic_ns, stop_monotonic_ns)?;
     let mut candidate = contract.clone();
-    candidate.vm_time_cut_to_anchor_ns = Some(cut_to_anchor_ns);
+    candidate.vm_time_cut_to_anchor_ns = cut_to_anchor_ns;
     candidate.vm_time_downtime_ns(0)?;
     Ok(cut_to_anchor_ns)
 }
@@ -1100,19 +1101,16 @@ fn read_vm_time_cut(
 /// on the host monotonic clock that the anchor samples, so that a host
 /// wall-clock step cannot enter the interval.
 ///
-/// If the cut cannot be recovered, the snapshot remains usable with the
-/// legacy capture-anchor downtime calculation.
-pub(super) fn record_vm_time_cut(contract: &mut SnapshotTimeContract, saved_state: &SavedState) {
-    contract.vm_time_cut_to_anchor_ns = match read_vm_time_cut(contract, saved_state) {
-        Ok(cut_to_anchor_ns) => Some(cut_to_anchor_ns),
-        Err(error) => {
-            tracing::warn!(
-                error = error.as_ref() as &dyn std::error::Error,
-                "failed to record snapshot VM-time cut; using capture-anchor downtime"
-            );
-            None
-        }
-    };
+/// Fails, leaving `contract` unchanged, if the saved state does not recover
+/// the cut, so that the capture fails rather than publish a snapshot whose
+/// restore would misplace VM time.
+pub(super) fn record_vm_time_cut(
+    contract: &mut SnapshotTimeContract,
+    saved_state: &SavedState,
+) -> anyhow::Result<()> {
+    contract.vm_time_cut_to_anchor_ns = read_vm_time_cut(contract, saved_state)
+        .context("failed to record the snapshot's VM-time cut")?;
+    Ok(())
 }
 
 impl LoadedVm {
@@ -1177,12 +1175,6 @@ impl LoadedVm {
             vm_time_downtime_ns,
             "time ABI synchronized TSC set"
         );
-        if input.contract.vm_time_cut_to_anchor_ns.is_none() {
-            tracing::warn!(
-                "snapshot does not record the VM-time cut; using capture-anchor downtime"
-            );
-        }
-
         // The LAPIC advance and the VM-time and RTC advance touch disjoint
         // state, since no backend's LAPIC reads VM time under the time ABI, so
         // they run concurrently. Both run to completion, so a failure never
@@ -2979,7 +2971,7 @@ mod tests {
             host_id: vec![0; 16],
             host_boot_id: vec![0; 16],
             capture_generation: 1,
-            vm_time_cut_to_anchor_ns: None,
+            vm_time_cut_to_anchor_ns: 0,
         }
     }
 
@@ -2993,7 +2985,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_vm_time_stop_sample_falls_back_to_the_capture_anchor() {
+    fn missing_vm_time_stop_sample_fails_the_capture() {
         let mut contract = test_time_contract();
         let vmtime = vmcore::vmtime::SavedState::from_vmtime(vmcore::vmtime::VmTime::from_100ns(0));
         let saved_state = SavedState {
@@ -3003,9 +2995,9 @@ mod tests {
             }],
             inventory: vec![crate::worker::dispatch::VMTIME_UNIT_NAME.to_string()],
         };
-        contract.vm_time_cut_to_anchor_ns = Some(1);
-        record_vm_time_cut(&mut contract, &saved_state);
-        assert!(contract.vm_time_cut_to_anchor_ns.is_none());
+        contract.vm_time_cut_to_anchor_ns = 1;
+        record_vm_time_cut(&mut contract, &saved_state).unwrap_err();
+        assert_eq!(contract.vm_time_cut_to_anchor_ns, 1);
     }
 
     #[pal_async::async_test]
@@ -3028,7 +3020,7 @@ mod tests {
         // A host wall-clock step between the cut and the anchor moves UTC by
         // an hour but leaves the monotonic clock alone.
         contract.capture_utc_ns += 3_600_000_000_000;
-        record_vm_time_cut(&mut contract, &saved_state);
-        assert_eq!(contract.vm_time_cut_to_anchor_ns, Some(500_000_000));
+        record_vm_time_cut(&mut contract, &saved_state).unwrap();
+        assert_eq!(contract.vm_time_cut_to_anchor_ns, 500_000_000);
     }
 }
