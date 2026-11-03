@@ -384,9 +384,9 @@ pub(super) mod tests {
     fn time_contract_rules() {
         validate_time_contract(&test_time_contract()).unwrap();
         let mutations: [(fn(&mut SnapshotTimeContract), TimeAbiCode); 9] = [
-            // A snapshot of time ABI 1 must be recaptured.
-            (|c| c.time_abi_version = 1, TimeAbiCode::ManifestTime),
-            (|c| c.time_abi_version = 3, TimeAbiCode::ManifestTime),
+            // A snapshot of any other time ABI version must be recaptured.
+            (|c| c.time_abi_version = 0, TimeAbiCode::ManifestTime),
+            (|c| c.time_abi_version = 2, TimeAbiCode::ManifestTime),
             (|c| c.tsc_tolerance_ppm = 251, TimeAbiCode::ManifestTime),
             (|c| c.tsc_frequency_hz = 100, TimeAbiCode::ManifestTime),
             (
