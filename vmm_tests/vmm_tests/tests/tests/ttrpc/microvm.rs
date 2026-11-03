@@ -7,7 +7,6 @@ use super::launch_openvmm;
 use anyhow::Context;
 use futures::AsyncBufReadExt;
 use futures::AsyncReadExt;
-use futures::AsyncWriteExt;
 #[cfg(windows)]
 use guid::Guid;
 use mesh::CancelContext;
@@ -180,8 +179,6 @@ pub(super) async fn test_ttrpc_microvm_linux_direct_lifecycle_and_snapshot(
     const READY_MARKER: &[u8] = b"OPENVMM-LINUX-MPTABLE-SNAPSHOT-READY";
     const SNAPSHOT_CONTINUED_MARKER: &[u8] = b"SNAPSHOT-CONTINUED=1";
     const STATE_MARKER: &[u8] = b"STATE=1";
-    const COMMAND_STATE: u8 = 5;
-    const COMMAND_SHUTDOWN: u8 = 6;
     const KERNEL_OVERRIDE: &str = "OPENVMM_MICROVM_TEST_KERNEL";
     const INITRD_OVERRIDE: &str = "OPENVMM_MICROVM_TEST_INITRD";
 
@@ -361,25 +358,6 @@ write_port() {{
     octal=$(printf '%03o' "$2")
     printf "\\$octal" | dd of=/dev/port bs=1 seek="$1" count=1 conv=notrunc 2>/dev/null
 }}
-# Only kernels with the portb hvc driver expose /dev/hvc0, which then owns the
-# portb input. Other kernels, such as the packaged test kernel, poll portb.
-if [ -c /dev/hvc0 ]; then
-    stty -F /dev/hvc0 raw -echo
-    next_byte() {{
-        dd if=/dev/hvc0 bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' '
-    }}
-else
-    next_byte() {{
-        while :; do
-            input_status=$(read_port 234)
-            [ -n "$input_status" ] || input_status=0
-            if [ $((input_status & 1)) -ne 0 ]; then
-                read_port 233
-                return
-            fi
-        done
-    }}
-fi
 generation=0
 {}
 write_port 1541 0
@@ -426,26 +404,15 @@ case "$range_count" in
         while :; do sleep 1; done
         ;;
 esac
-while :; do
-    command=$(next_byte)
-    case "$command" in
-        {COMMAND_STATE})
-            if [ "$generation" = 1 ]; then
+# portb takes no host input, so the restored guest reports its state and
+# shuts down without commands.
+if [ "$generation" = 1 ]; then
 {}
-            else
+else
 {}
-            fi
-            ;;
-        {COMMAND_SHUTDOWN})
-            exit_status=$(next_byte)
-            write_port 1540 "$exit_status"
-            while :; do sleep 1; done
-            ;;
-        *)
-{}
-            ;;
-    esac
-done
+fi
+write_port 1540 0
+while :; do sleep 1; done
 "#,
         portb_output(READY_MARKER)?,
         portb_output(SNAPSHOT_CONTINUED_MARKER)?,
@@ -457,7 +424,6 @@ done
         portb_output(b"RESTORE-RANGE-COUNT-INVALID")?,
         portb_output(STATE_MARKER)?,
         portb_output(b"STATE-INVALID")?,
-        portb_output(b"UNKNOWN-COMMAND")?,
     );
 
     let tempdir = if cfg!(target_os = "linux") {
@@ -610,7 +576,7 @@ done
                 )
             })?;
         let portb = PolledSocket::new(&driver, UnixStream::connect(&portb_path)?)?;
-        let (mut portb_read, mut portb_write) = portb.split();
+        let (mut portb_read, _portb_write) = portb.split();
         let mut resume_cancel = CancelContext::new().with_timeout(Duration::from_secs(15));
         let (resume, readiness) = futures::join!(
             resume_cancel.until_cancelled(client.call().start(vmservice::Vm::ResumeVm, ())),
@@ -644,15 +610,11 @@ done
             .with_context(|| {
                 format!("Linux direct restore {restore_index} did not report restore targets")
             })?;
-        portb_write.write_all(&[COMMAND_STATE]).await?;
-        portb_write.flush().await?;
         wait_for_bytes(&mut portb_read, &mut restore_output, STATE_MARKER)
             .await
             .with_context(|| {
-                format!("Linux direct restore {restore_index} did not answer state query")
+                format!("Linux direct restore {restore_index} did not report its state")
             })?;
-        portb_write.write_all(&[COMMAND_SHUTDOWN, 0]).await?;
-        portb_write.flush().await?;
         CancelContext::new()
             .with_timeout(Duration::from_secs(15))
             .until_cancelled(drain_until_closed(&mut portb_read, &mut restore_output))
