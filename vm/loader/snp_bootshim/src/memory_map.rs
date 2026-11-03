@@ -245,10 +245,19 @@ impl MemoryMap {
                     AllocateType::Max(max) => max.saturating_add(1),
                     _ => u64::MAX,
                 };
-                // Prefer accepted memory, as firmware allocates from the top.
-                self.find_free(EfiMemoryType::EFI_CONVENTIONAL_MEMORY, size, limit)
+                // Prefer accepted memory. Then use free memory that may need
+                // acceptance, which can span conventional and unaccepted
+                // entries. Firmware allocates from the top.
+                self.find_free(&[EfiMemoryType::EFI_CONVENTIONAL_MEMORY], size, limit)
                     .or_else(|| {
-                        self.find_free(EfiMemoryType::EFI_UNACCEPTED_MEMORY_TYPE, size, limit)
+                        self.find_free(
+                            &[
+                                EfiMemoryType::EFI_CONVENTIONAL_MEMORY,
+                                EfiMemoryType::EFI_UNACCEPTED_MEMORY_TYPE,
+                            ],
+                            size,
+                            limit,
+                        )
                     })
                     .ok_or(Error::OutOfResources)?
             }
@@ -257,17 +266,36 @@ impl MemoryMap {
         Ok(range.start())
     }
 
-    /// Finds the highest range of `size` bytes below `limit` in one entry of
-    /// type `ty`.
-    fn find_free(&self, ty: EfiMemoryType, size: u64, limit: u64) -> Option<MemoryRange> {
-        self.entries.iter().rev().find_map(|entry| {
-            if entry.ty != ty {
-                return None;
-            }
-            let end = entry.range.end().min(limit) & !(EFI_PAGE_SIZE - 1);
+    /// Finds the highest range of `size` bytes below `limit` in one
+    /// contiguous run of entries whose types are all in `types`.
+    fn find_free(&self, types: &[EfiMemoryType], size: u64, limit: u64) -> Option<MemoryRange> {
+        let fit = |run: MemoryRange| {
+            let end = run.end().min(limit) & !(EFI_PAGE_SIZE - 1);
             let start = end.checked_sub(size)?;
-            (start >= entry.range.start()).then(|| MemoryRange::new(start..end))
-        })
+            (start >= run.start()).then(|| MemoryRange::new(start..end))
+        };
+        let mut run: Option<MemoryRange> = None;
+        for entry in self.entries.iter().rev() {
+            if !types.contains(&entry.ty) {
+                if let Some(found) = run.take().and_then(fit) {
+                    return Some(found);
+                }
+                continue;
+            }
+            run = Some(match run {
+                Some(run) if run.start() == entry.range.end() => {
+                    MemoryRange::new(entry.range.start()..run.end())
+                }
+                Some(run) => {
+                    if let Some(found) = fit(run) {
+                        return Some(found);
+                    }
+                    entry.range
+                }
+                None => entry.range,
+            });
+        }
+        run.and_then(fit)
     }
 
     /// Frees `pages` pages at `address`, which the allocator must have handed
@@ -473,6 +501,43 @@ mod tests {
             .unwrap();
         assert_eq!(address, 64 * MB - (4096 + 1) * EFI_PAGE_SIZE);
         assert_eq!(accepted, [range(address, 64 * MB)]);
+    }
+
+    #[test]
+    fn allocate_spans_accepted_and_unaccepted_memory() {
+        let mut map = test_map();
+        let mut accepted = Vec::new();
+        let address = map
+            .allocate(
+                AllocateType::Any,
+                LOADER_DATA,
+                (40 * MB) / EFI_PAGE_SIZE,
+                &mut |range| {
+                    accepted.push(range);
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(address, 24 * MB);
+        assert_eq!(accepted, [range(32 * MB, 64 * MB)]);
+        assert_eq!(
+            layout(&map),
+            [
+                (0, 16 * MB, BS_DATA),
+                (16 * MB, 24 * MB, CONVENTIONAL),
+                (24 * MB, 64 * MB, LOADER_DATA),
+            ]
+        );
+        // A run that is too small still fails.
+        assert_eq!(
+            map.allocate(
+                AllocateType::Any,
+                LOADER_DATA,
+                (9 * MB) / EFI_PAGE_SIZE,
+                &mut no_accept()
+            ),
+            Err(Error::OutOfResources)
+        );
     }
 
     #[test]
