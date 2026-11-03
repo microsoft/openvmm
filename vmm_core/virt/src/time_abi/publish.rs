@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The host's side of a time sample under time ABI 2: host UTC paired with
+//! The host's side of a time sample under the time ABI: host UTC paired with
 //! the guest TSC, and the discipline of host UTC, which the VMM publishes so
 //! that the guest applies the host's clock correction instead of estimating
 //! it.

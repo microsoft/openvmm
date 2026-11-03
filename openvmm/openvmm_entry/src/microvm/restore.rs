@@ -131,9 +131,9 @@ impl MicrovmRestore {
 
     /// Returns the controller's fields of the restore packet for a time ABI
     /// restore, with `network`, the network settings of the restore's policy
-    /// when [`network_settings`](Self::network_settings) asks for them, which
-    /// make it version 6, and the generation ID they imply. The generation
-    /// counter is the snapshot's plus one.
+    /// when [`network_settings`](Self::network_settings) asks for them, and
+    /// the generation ID they imply. The generation counter is the snapshot's
+    /// plus one.
     pub(crate) fn time_abi_restore_packet(
         &self,
         restore_online_vp_count: Option<u32>,
@@ -464,9 +464,7 @@ pub(super) fn validate_network_policy_restore(
 /// template is captured under the complete deny-all, which asks neither. A
 /// platform clone learns them from its activation, after the restore, but a
 /// snapshot without a tier has no activation, so its restore packet carries
-/// them, as version 6, and the restore gates host input until the guest has
-/// applied them. A guest that reads version 5 alone fails such a restore
-/// rather than ignore them.
+/// them, and the restore gates host input until the guest has applied them.
 fn restore_packet_carries_network_settings(
     snapshot_tier: &str,
     restore_network_policy: bool,
@@ -1094,17 +1092,13 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(base.network, None);
-        assert_eq!(
-            base.version(),
-            chipset_resources::microvm_time::RESTORE_PACKET_VERSION
-        );
         assert_eq!(generation_id, microvm_generation_id(&base.entropy));
         let (_, other) = restore.time_abi_restore_packet(None, None).unwrap();
         assert_eq!(other.online_vp_count, 0);
         assert_ne!(other.entropy, base.entropy);
 
-        // The network settings of an untiered restore that replaces its
-        // policy make the packet version 6.
+        // The packet carries the network settings of an untiered restore
+        // that replaces its policy.
         let network = RestoreNetwork {
             dns_server: Some(chipset_resources::microvm_time::RestoreDnsServer::Ipv4(
                 std::net::Ipv4Addr::new(10, 0, 0, 1),
@@ -1120,10 +1114,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(base.network, Some(network));
         assert!(base.ack_required);
-        assert_eq!(
-            base.version(),
-            chipset_resources::microvm_time::RESTORE_PACKET_NETWORK_VERSION
-        );
 
         assert!(restore.time_abi_restore_packet(Some(3), None).is_err());
         let err = time_abi_restore(u32::MAX)
