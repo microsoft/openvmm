@@ -138,13 +138,14 @@ mod gicd {
             }
             let mut state = self.state.lock();
             let state = &mut *state;
-            if let Some((i, p, a, v)) = state
+            if let Some((i, (p, a))) = state
                 .pending
                 .iter_mut()
                 .zip(&mut state.active)
                 .enumerate()
-                .find_map(|(i, (p, a))| (*p & !*a).highest_one().map(|v| (i, p, a, v)))
+                .find(|(_, (p, a))| **p & !**a != 0)
             {
+                let v = 31 - (*p & !*a).leading_zeros();
                 *p &= !(1 << v);
                 *a |= 1 << v;
                 let intid = i as u32 * 32 + v;

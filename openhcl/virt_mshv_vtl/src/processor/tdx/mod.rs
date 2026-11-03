@@ -2281,8 +2281,7 @@ impl UhProcessor<'_, TdxBacked> {
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
                     // four breakpoints triggered.
-                    breakpoint_debug_exception =
-                        debug_regs.dr6.lowest_one().is_some_and(|bit| bit < 4);
+                    breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hw_interrupt
             }

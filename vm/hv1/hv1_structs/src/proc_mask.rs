@@ -82,10 +82,10 @@ impl Iterator for ProcessorSetIter<'_> {
         while self.mask == 0 {
             self.mask = *self.masks.first()?;
             self.masks = &self.masks[1..];
-            self.bit = self.remaining_valid.lowest_one()?;
+            self.bit = self.remaining_valid.trailing_zeros();
             self.remaining_valid &= !(1 << self.bit);
         }
-        let proc = self.mask.lowest_one()?;
+        let proc = self.mask.trailing_zeros();
         self.mask &= !(1 << proc);
         Some(self.bit * 64 + proc)
     }

@@ -654,12 +654,9 @@ impl<T: Backing> UhProcessor<'_, T> {
             }
 
             // Last four bits of DR6 indicate which breakpoint was triggered.
-            const BREAKPOINT_INDEX_OFFSET: u32 = 4;
-            let Some(i) = debug_regs
-                .dr6
-                .lowest_one()
-                .filter(|&i| i < BREAKPOINT_INDEX_OFFSET)
-            else {
+            const BREAKPOINT_INDEX_OFFSET: usize = 4;
+            let i = debug_regs.dr6.trailing_zeros() as usize;
+            if i >= BREAKPOINT_INDEX_OFFSET {
                 // Received a debug exception not triggered by a breakpoint or single step.
                 return Err(dev.fatal_error(
                     UnexpectedDebugException {
@@ -667,8 +664,7 @@ impl<T: Backing> UhProcessor<'_, T> {
                     }
                     .into(),
                 ));
-            };
-            let i = i as usize;
+            }
             let bp = virt::x86::HardwareBreakpoint::from_dr7(debug_regs.dr7, dr[i], i);
 
             return Err(VpHaltReason::HwBreak(bp));

@@ -485,7 +485,7 @@ impl RsaPublicKeyInner {
         let bit_length = n
             .iter()
             .enumerate()
-            .find_map(|(i, &b)| (b != 0).then(|| ((n.len() - i - 1) as u32) * 8 + b.bit_width()))
+            .find_map(|(i, &b)| (b != 0).then(|| ((n.len() - i) as u32) * 8 - b.leading_zeros()))
             .unwrap_or(0);
         let header = BCRYPT_RSAKEY_BLOB {
             Magic: BCRYPT_RSAPUBLIC_MAGIC,

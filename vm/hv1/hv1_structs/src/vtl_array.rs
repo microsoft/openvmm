@@ -181,7 +181,7 @@ impl VtlSet {
 
     /// Returns the highest set [`Vtl`] in the set, if any.
     pub fn highest_set(&self) -> Option<Vtl> {
-        Some(Vtl::try_from(self.bits.into_inner().highest_one()? as u8).unwrap())
+        Some(Vtl::try_from(self.bits.last_one()? as u8).unwrap())
     }
 
     /// Returns true if the given [`Vtl`] is set.

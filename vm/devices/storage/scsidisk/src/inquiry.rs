@@ -409,8 +409,10 @@ impl SimpleScsiDisk {
         //     ((LastLBA + 1) / 2^(threshold exponent)) < 2^32
         //
         // and the exponent must be at least 1.
-        // bit_width(n - 1) gives the exponent of n's next power of two.
-        let threshold_exponent = (sector_count >> 32).saturating_sub(1).bit_width().max(1) as u8;
+        let threshold_exponent = (sector_count >> 32)
+            .next_power_of_two()
+            .trailing_zeros()
+            .max(1) as u8;
 
         let mut page = scsi::VpdLogicalBlockProvisioningPage {
             threshold_exponent,

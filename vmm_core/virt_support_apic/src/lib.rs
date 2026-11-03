@@ -516,9 +516,10 @@ impl GlobalState {
                         let lowest_priority = delivery_mode == DeliveryMode::LOWEST_PRIORITY;
                         let id = X2ApicLogicalId::from(id);
                         let base = (id.cluster_id() as u32) << 4;
-                        let mut logical_ids = id.logical_id();
-                        while let Some(i) = logical_ids.lowest_one() {
-                            logical_ids &= !(1 << i);
+                        for i in 0..16 {
+                            if id.logical_id() & (1 << i) == 0 {
+                                continue;
+                            }
                             let phys_id = base | i;
                             if let Some(slot) = mutable.by_apic_id.get(phys_id as usize) {
                                 // For now, just pick the first enabled APIC in the set for lowest priority.

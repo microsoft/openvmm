@@ -764,7 +764,7 @@ fn encode_pkcs1_rsa_pubkey(n: &[u8], e: &[u8]) -> Result<Vec<u8>, windows_result
         let mut bits = 0u32;
         for (i, &b) in n.iter().enumerate() {
             if b != 0 {
-                bits = ((n.len() - i - 1) as u32) * 8 + b.bit_width();
+                bits = ((n.len() - i) as u32) * 8 - b.leading_zeros();
                 break;
             }
         }
