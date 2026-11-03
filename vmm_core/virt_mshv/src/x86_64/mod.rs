@@ -678,6 +678,10 @@ impl virt::Partition for MshvPartition {
         self.inner.isolation.snp().is_none().then_some(self)
     }
 
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+        crate::processor_qos::apply(&self.inner.vmfd, self.inner.vps.len() as u32, qos)
+    }
+
     fn doorbell_registration(
         self: &Arc<Self>,
         _minimum_vtl: Vtl,

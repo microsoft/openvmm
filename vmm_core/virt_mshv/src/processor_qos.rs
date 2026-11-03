@@ -3,6 +3,10 @@
 
 //! Processor limit, weight and reserve on MSHV.
 
+use anyhow::Context as _;
+use hvdef::HvPartitionPropertyCode;
+use mshv_ioctls::VmFd;
+
 /// The scheduler the host runs, which decides how processor settings apply.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MshvScheduler {
@@ -32,10 +36,104 @@ pub fn host_scheduler() -> anyhow::Result<MshvScheduler> {
     Ok(parse_scheduler(&states))
 }
 
+/// Which processor settings this host can enforce.
+pub fn processor_qos_support() -> virt::ProcessorQosSupport {
+    match host_scheduler() {
+        Ok(MshvScheduler::Hypervisor) => virt::ProcessorQosSupport {
+            limit: true,
+            weight: true,
+            reserve: true,
+        },
+        Ok(MshvScheduler::Root) | Err(_) => virt::ProcessorQosSupport::default(),
+    }
+}
+
+pub(crate) fn mshv_prop(p: virt::HvCpuProp) -> (HvPartitionPropertyCode, u64) {
+    match p {
+        virt::HvCpuProp::Cap(v) => (HvPartitionPropertyCode::CpuCap, v.into()),
+        virt::HvCpuProp::Reserve(v) => (HvPartitionPropertyCode::CpuReserve, v.into()),
+        virt::HvCpuProp::Weight(v) => (HvPartitionPropertyCode::CpuWeight, v.into()),
+    }
+}
+
+fn read_hv(vmfd: &VmFd) -> anyhow::Result<virt::HvCpuProps> {
+    let get = |code: HvPartitionPropertyCode| -> anyhow::Result<u32> {
+        let v = vmfd
+            .get_partition_property(code.0)
+            .with_context(|| format!("failed to read {code:?}"))?;
+        Ok(v as u32)
+    };
+    Ok(virt::HvCpuProps {
+        cap: get(HvPartitionPropertyCode::CpuCap)?,
+        reserve: get(HvPartitionPropertyCode::CpuReserve)?,
+        weight: get(HvPartitionPropertyCode::CpuWeight)?,
+    })
+}
+
+fn write_hv(vmfd: &VmFd, from: virt::HvCpuProps, to: virt::HvCpuProps) -> anyhow::Result<()> {
+    for prop in from.writes_to(to) {
+        let (code, v) = mshv_prop(prop);
+        vmfd.set_partition_property(code.0, v)
+            .with_context(|| format!("failed to set {code:?} to {v}"))?;
+    }
+    Ok(())
+}
+
+/// Applies `qos` to the partition, through the mechanism the host scheduler
+/// enforces.
+pub(crate) fn apply(vmfd: &VmFd, _vp_count: u32, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+    qos.validate()?;
+    match host_scheduler()? {
+        MshvScheduler::Hypervisor => {
+            let old = read_hv(vmfd)?;
+            let new = old.target(qos)?;
+            if let Err(err) = write_hv(vmfd, old, new) {
+                // Put back what was written so the partition keeps its old settings.
+                if let Err(restore) = read_hv(vmfd).and_then(|cur| write_hv(vmfd, cur, old)) {
+                    return Err(err.context(format!(
+                        "processor settings are inconsistent, restore failed: {restore:#}"
+                    )));
+                }
+                return Err(err);
+            }
+            let p = read_hv(vmfd)?;
+            tracing::info!(
+                cap = p.cap,
+                reserve = p.reserve,
+                weight = p.weight,
+                "processor scheduler properties applied"
+            );
+            Ok(())
+        }
+        MshvScheduler::Root => {
+            anyhow::bail!("processor limit/weight/reserve are not supported on the root scheduler")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MshvScheduler;
+    use super::mshv_prop;
     use super::parse_scheduler;
+    use hvdef::HvPartitionPropertyCode;
+    use virt::HvCpuProp;
+
+    #[test]
+    fn hv_writes_map_to_mshv_property_codes() {
+        assert_eq!(
+            mshv_prop(HvCpuProp::Cap(32768)),
+            (HvPartitionPropertyCode::CpuCap, 32768)
+        );
+        assert_eq!(
+            mshv_prop(HvCpuProp::Reserve(6553)),
+            (HvPartitionPropertyCode::CpuReserve, 6553)
+        );
+        assert_eq!(
+            mshv_prop(HvCpuProp::Weight(200)),
+            (HvPartitionPropertyCode::CpuWeight, 200)
+        );
+    }
 
     // Excerpts of /sys/devices/system/cpu/hotplug/states captured on an Azure
     // Linux dom0 (kernel 6.18.34.mshv4) under each scheduler.
