@@ -728,7 +728,6 @@ struct RestoreParameters {
     /// expectations and the host.
     manifest: openvmm_helpers::snapshot::SnapshotManifest,
     state_bytes: Vec<u8>,
-    resume: bool,
 }
 
 struct PreparedRestore {
@@ -759,15 +758,6 @@ impl PendingWorker {
     fn commit(mut self) -> (VmmMesh, mesh_worker::WorkerHandle) {
         self.inner.take().expect("pending worker already taken")
     }
-
-    /// Stops the worker and waits for it to exit.
-    async fn shutdown(mut self) {
-        if let Some((mesh, mut worker)) = self.inner.take() {
-            worker.stop();
-            let _ = worker.join().await;
-            mesh.shutdown().await;
-        }
-    }
 }
 
 impl Drop for PendingWorker {
@@ -797,7 +787,6 @@ fn prepare_snapshot_restore(
         source_dir,
         manifest,
         state_bytes,
-        resume: _,
     } = restore;
     openvmm_helpers::snapshot::validate_manifest(
         manifest,
@@ -972,12 +961,25 @@ impl VmService {
                 response.send(map_grpc(r));
             }
             vmservice::Vm::RestoreVm(request, response) => {
+                // Restore the VM paused, and resume it only after it has been
+                // committed to the service. A cancel can then only abandon the
+                // restore before the guest runs and modifies the snapshot's
+                // memory.bin.
+                let resume = request.resume;
                 let mut ctx = ctx;
                 let r = ctx
                     .until_cancelled(self.restore_vm(request))
                     .await
                     .map_err(anyhow::Error::from)
                     .and_then(|r| r);
+                let r = match r {
+                    Ok(result) if resume => self
+                        .resume_vm()
+                        .await
+                        .context("failed to resume restored VM")
+                        .map(|()| result),
+                    r => r,
+                };
                 response.send(map_grpc(r));
             }
             vmservice::Vm::ShutdownVm(request, response) => {
@@ -1130,7 +1132,6 @@ impl VmService {
                     source_dir,
                     manifest,
                     state_bytes,
-                    resume: request.resume,
                 }),
             )
             .await?
@@ -1626,13 +1627,6 @@ impl VmService {
 
         let memory = config_mem_size;
         let processors = config_proc_count;
-        let restore_resume = restore.as_ref().is_some_and(|restore| restore.resume);
-        if restore_resume {
-            if let Err(err) = send.call(VmRpc::Resume, ()).await {
-                pending_worker.shutdown().await;
-                return Err(err).context("failed to resume restored VM");
-            }
-        }
 
         // Create channels for VmController.
         let (vm_controller_send, vm_controller_recv) = mesh::channel();
@@ -1679,11 +1673,7 @@ impl VmService {
         }));
         self.snapshot_saved = false;
         self.memory_backing_file = active_memory_backing_file;
-        self.lifecycle = if restore_resume {
-            VmLifecycle::Running
-        } else {
-            VmLifecycle::Paused
-        };
+        self.lifecycle = VmLifecycle::Paused;
         Ok(snapshot_id)
     }
 

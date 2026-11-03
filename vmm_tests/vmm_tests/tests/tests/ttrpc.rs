@@ -12,6 +12,7 @@ mod fd_passing;
 use anyhow::Context;
 use futures::AsyncBufReadExt;
 use futures::AsyncReadExt;
+use futures::AsyncWriteExt;
 use guid::Guid;
 use mesh::CancelContext;
 use openvmm_ttrpc_vmservice as vmservice;
@@ -1010,10 +1011,11 @@ async fn test_ttrpc_interface(
                 ),
             )
         } else {
-            let guest_command = if i == 1 { "sleep 30" } else { "poweroff -f" };
+            // The save/restore iteration runs a shell on the serial port, so
+            // the test can check that the guest keeps running across restore.
             (
                 initrd_path.get(),
-                format!("console={console} rdinit=/bin/busybox panic=-1 -- {guest_command}"),
+                format!("console={console} rdinit=/bin/busybox panic=-1 -- sh"),
             )
         };
 
@@ -1346,14 +1348,18 @@ async fn test_ttrpc_interface(
             consoles.push(PolledSocket::new(&driver, console)?);
         }
 
-        let _com1_task = driver.spawn(
-            "com1",
-            petri::log_task(
-                params.log_source.log_file("linux").unwrap(),
-                PolledSocket::new(&driver, com1).unwrap(),
-                "linux com1",
-            ),
-        );
+        let com1 = PolledSocket::new(&driver, com1).unwrap();
+        let com1_log = params.log_source.log_file("linux").unwrap();
+        // The save/restore iteration drives a shell on COM1; the others only
+        // log it.
+        let (_com1_task, mut com1_shell) = if i == 1 {
+            (None, Some(SerialShell::new(&driver, com1, com1_log)))
+        } else {
+            (
+                Some(driver.spawn("com1", petri::log_task(com1_log, com1, "linux com1"))),
+                None,
+            )
+        };
 
         assert_eq!(
             client
@@ -1502,6 +1508,35 @@ async fn test_ttrpc_interface(
                     vmservice::VmState::Running as i32,
                     "after ResumeVm, expected RUNNING"
                 );
+
+                let shell = com1_shell.as_mut().unwrap();
+                shell
+                    .wait_for("job control turned off", 0, SERIAL_BOOT_TIMEOUT)
+                    .await?;
+
+                client
+                    .call()
+                    .start(vmservice::Vm::PauseVm, ())
+                    .await
+                    .unwrap();
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Paused as i32,
+                    "after PauseVm, expected PAUSED"
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap();
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "after ResumeVm, expected RUNNING"
+                );
+                shell.run("echo PRE-$((40+2))", "PRE-42").await?;
 
                 // An existing destination is rejected before the VM is paused.
                 std::fs::create_dir_all(&snapshot_path).unwrap();
@@ -1652,7 +1687,7 @@ async fn test_ttrpc_interface(
                         vmservice::Vm::RestoreVm,
                         vmservice::RestoreVmRequest {
                             source_dir: snapshot_path.to_string_lossy().into_owned(),
-                            config: restore_config,
+                            config: restore_config.clone(),
                             // The expected ID is compared as a GUID, so case
                             // doesn't matter.
                             expected_snapshot_id: Some(snapshot_id.to_uppercase()),
@@ -1671,6 +1706,87 @@ async fn test_ttrpc_interface(
                     vmservice::VmState::Paused as i32,
                     "RestoreVm should leave the VM paused when resume is false"
                 );
+
+                // The restored guest continues where it was saved, without
+                // rebooting.
+                let mut shell = SerialShell::new(
+                    &driver,
+                    PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                    params.log_source.log_file("linux-restored")?,
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap();
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "after resuming the restored VM, expected RUNNING"
+                );
+                shell.run("echo POST-$((40+3))", "POST-43").await?;
+                assert!(
+                    !shell.output.contains("Linux version"),
+                    "the restored guest rebooted"
+                );
+
+                // Save the restored VM to a new snapshot, and restore that one
+                // with `resume: true`. The first snapshot can't be restored
+                // again because restore uses its memory in place.
+                let save_result = client
+                    .call()
+                    .start(
+                        vmservice::Vm::SaveVm,
+                        vmservice::SaveVmRequest {
+                            destination_dir: second_snapshot_path.to_string_lossy().into_owned(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let second_snapshot_id = save_result.snapshot_id;
+                assert_ne!(
+                    second_snapshot_id, snapshot_id,
+                    "each SaveVm should generate a new snapshot ID"
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::TeardownVm, ())
+                    .await
+                    .unwrap();
+                drop(shell);
+
+                let restore_result = client
+                    .call()
+                    .start(
+                        vmservice::Vm::RestoreVm,
+                        vmservice::RestoreVmRequest {
+                            source_dir: second_snapshot_path.to_string_lossy().into_owned(),
+                            config: restore_config,
+                            expected_snapshot_id: Some(second_snapshot_id.clone()),
+                            resume: true,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(restore_result.snapshot_id, second_snapshot_id);
+                let props = query_props().await.unwrap();
+                assert_eq!(
+                    props.state,
+                    vmservice::VmState::Running as i32,
+                    "RestoreVm should leave the VM running when resume is true"
+                );
+                let mut shell = SerialShell::new(
+                    &driver,
+                    PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                    params.log_source.log_file("linux-restored-resume")?,
+                );
+                shell.run("echo RESUME-$((40+4))", "RESUME-44").await?;
+                assert!(
+                    !shell.output.contains("Linux version"),
+                    "the guest restored with resume rebooted"
+                );
+
                 client
                     .call()
                     .start(vmservice::Vm::TeardownVm, ())
@@ -1982,6 +2098,86 @@ async fn test_ttrpc_uefi_boot(
 
 /// The first thing `guest_test_uefi` prints once the firmware hands off to it.
 const UEFI_BANNER: &str = "UEFI vendor =";
+
+/// How long to wait for the guest shell to start after the VM is resumed.
+const SERIAL_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A busybox shell on a guest serial port.
+///
+/// The output is drained and logged in the background for the lifetime of the
+/// connection, because the guest stalls if its serial output is not read.
+struct SerialShell {
+    writer: pal_async::socket::WriteHalf<UnixStream>,
+    chunks: mesh::Receiver<String>,
+    /// Everything read from the serial port so far.
+    output: String,
+    _reader: Task<()>,
+}
+
+impl SerialShell {
+    fn new(
+        driver: &DefaultDriver,
+        socket: PolledSocket<UnixStream>,
+        log_file: petri::PetriLogFile,
+    ) -> Self {
+        let (mut reader, writer) = socket.split();
+        let (send, chunks) = mesh::channel();
+        let reader = driver.spawn("serial-shell", async move {
+            let mut buf = [0; 4096];
+            let mut line = String::new();
+            while let Ok(n @ 1..) = reader.read(&mut buf).await {
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                line.push_str(&text);
+                while let Some(end) = line.find('\n') {
+                    log_file.write_entry(line[..end].trim_end());
+                    line.drain(..=end);
+                }
+                send.send(text);
+            }
+        });
+        Self {
+            writer,
+            chunks,
+            output: String::new(),
+            _reader: reader,
+        }
+    }
+
+    /// Waits until `marker` appears in the output after byte offset `start`.
+    async fn wait_for(
+        &mut self,
+        marker: &str,
+        start: usize,
+        timeout: Duration,
+    ) -> anyhow::Result<()> {
+        let wait = async {
+            while !self.output[start..].contains(marker) {
+                let chunk = self
+                    .chunks
+                    .recv()
+                    .await
+                    .context("guest serial port closed")?;
+                self.output.push_str(&chunk);
+            }
+            anyhow::Ok(())
+        };
+        CancelContext::new()
+            .with_timeout(timeout)
+            .until_cancelled(wait)
+            .await
+            .with_context(|| format!("timed out waiting for {marker:?} on the guest serial port"))?
+    }
+
+    /// Runs `command` in the shell and waits for `expected` in its output.
+    async fn run(&mut self, command: &str, expected: &str) -> anyhow::Result<()> {
+        let start = self.output.len();
+        self.writer
+            .write_all(format!("{command}\n").as_bytes())
+            .await?;
+        self.wait_for(expected, start, Duration::from_secs(60))
+            .await
+    }
+}
 
 /// Logs everything read from `reader` until the stream ends, signalling
 /// `marker_send` the first time `marker` appears in the output.
