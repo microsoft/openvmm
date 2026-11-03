@@ -54,9 +54,9 @@ pub struct PcieHostBridgeEntry {
     pub end_bus: u8,
     /// Memory range for ECAM configuration space access.
     pub ecam_range: MemoryRange,
-    /// Memory range for low MMIO.
+    /// Memory range for low MMIO. Empty ranges are omitted from `_CRS`.
     pub low_mmio: MemoryRange,
-    /// Memory range for high MMIO.
+    /// Memory range for high MMIO. Empty ranges are omitted from `_CRS`.
     pub high_mmio: MemoryRange,
     /// Whether this host bridge supports CXL.
     pub cxl: bool,
@@ -392,14 +392,11 @@ impl Ssdt {
             start_bus.into(),
             (end_bus as u16) - (start_bus as u16) + 1,
         ));
-        crs.add_resource(&QwordMemory::new(
-            low_mmio.start(),
-            low_mmio.end() - low_mmio.start(),
-        ));
-        crs.add_resource(&QwordMemory::new(
-            high_mmio.start(),
-            high_mmio.end() - high_mmio.start(),
-        ));
+        for mmio in [low_mmio, high_mmio] {
+            if !mmio.is_empty() {
+                crs.add_resource(&QwordMemory::new(mmio.start(), mmio.len()));
+            }
+        }
         pcie.add_object(&crs);
 
         self.add_object(&pcie);
@@ -411,6 +408,7 @@ impl Ssdt {
 mod tests {
     use super::*;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use test_with_tracing::test;
 
     fn verify_header(bytes: &[u8]) {
         assert!(bytes.len() >= 36);
@@ -508,6 +506,42 @@ mod tests {
 
     fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
         bytes.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn pcie_omits_empty_mmio_windows() {
+        for (include_low, include_high) in
+            [(true, true), (true, false), (false, true), (false, false)]
+        {
+            let mut entry = test_pcie_entry(None);
+            let low_resource =
+                QwordMemory::new(entry.low_mmio.start(), entry.low_mmio.len()).to_bytes();
+            let high_resource =
+                QwordMemory::new(entry.high_mmio.start(), entry.high_mmio.len()).to_bytes();
+            let ecam_resource =
+                QwordMemory::new(entry.ecam_range.start(), entry.ecam_range.len()).to_bytes();
+            if !include_low {
+                entry.low_mmio = MemoryRange::EMPTY;
+            }
+            if !include_high {
+                entry.high_mmio = MemoryRange::EMPTY;
+            }
+
+            let mut ssdt = Ssdt::new();
+            ssdt.add_pcie(entry);
+            let bytes = ssdt.to_bytes();
+            verify_header(&bytes);
+            assert_eq!(contains_bytes(&bytes, &low_resource), include_low);
+            assert_eq!(contains_bytes(&bytes, &high_resource), include_high);
+            assert!(contains_bytes(&bytes, &ecam_resource));
+            assert_eq!(
+                bytes
+                    .windows(5)
+                    .filter(|w| *w == [0x8a, 0x2b, 0, 0, 0xc])
+                    .count(),
+                1 + usize::from(include_low) + usize::from(include_high)
+            );
+        }
     }
 
     #[test]

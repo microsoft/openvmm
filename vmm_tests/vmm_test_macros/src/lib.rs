@@ -77,17 +77,17 @@ enum HostVendor {
 }
 
 enum Firmware {
-    LinuxDirect,
+    LinuxDirect(FirmwareOptions),
     LinuxDirectBzImage,
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
     OpenhclPcat(PcatGuest),
-    OpenhclUefi(OpenhclUefiOptions, UefiGuest),
+    OpenhclUefi(FirmwareOptions, UefiGuest),
 }
 
 #[derive(Default)]
-struct OpenhclUefiOptions {
+struct FirmwareOptions {
     isolation: Option<IsolationType>,
 }
 
@@ -153,7 +153,7 @@ impl ResolvedConfig {
         };
 
         let firmware_prefix = match &self.firmware {
-            Firmware::LinuxDirect => "linux",
+            Firmware::LinuxDirect(_) => "linux",
             Firmware::LinuxDirectBzImage => "linux_bzimage",
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
@@ -163,21 +163,20 @@ impl ResolvedConfig {
         };
 
         let guest_prefix = match &self.firmware {
-            Firmware::LinuxDirect | Firmware::LinuxDirectBzImage | Firmware::OpenhclLinuxDirect => {
-                None
-            }
+            Firmware::LinuxDirect(_)
+            | Firmware::LinuxDirectBzImage
+            | Firmware::OpenhclLinuxDirect => None,
             Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
         let options_prefix = match &self.firmware {
-            Firmware::LinuxDirect
-            | Firmware::LinuxDirectBzImage
+            Firmware::LinuxDirectBzImage
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
             | Firmware::OpenhclLinuxDirect
             | Firmware::OpenhclPcat(_) => None,
-            Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
+            Firmware::LinuxDirect(opt) | Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
         let mut name_prefix = format!("{}_{}_{}", vmm_prefix, firmware_prefix, arch_prefix);
@@ -253,8 +252,12 @@ impl ToTokens for FirmwareAndArch {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         let arch = arch_to_tokens(self.arch);
         tokens.extend(match &self.firmware {
-            Firmware::LinuxDirect => {
-                quote!(::petri::Firmware::linux_direct(resolver, #arch))
+            Firmware::LinuxDirect(FirmwareOptions { isolation }) => {
+                let isolation = match isolation {
+                    Some(i) => quote!(Some(#i)),
+                    None => quote!(None),
+                };
+                quote!(::petri::Firmware::linux_direct(resolver, #arch, #isolation))
             }
             Firmware::LinuxDirectBzImage => {
                 quote!(::petri::Firmware::linux_direct_bzimage(resolver))
@@ -271,7 +274,7 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclPcat(guest) => {
                 quote!(::petri::Firmware::openhcl_pcat(resolver, #guest))
             }
-            Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
+            Firmware::OpenhclUefi(FirmwareOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
@@ -663,9 +666,15 @@ fn parse_config(input: ParseStream<'_>, word: Ident) -> syn::Result<Config> {
     };
 
     let (arch, firmware) = match remainder {
-        "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
+        "linux_direct_x64" => (
+            MachineArch::X86_64,
+            Firmware::LinuxDirect(parse_linux_direct_options(input, MachineArch::X86_64)?),
+        ),
         "linux_direct_bzimage_x64" => (MachineArch::X86_64, Firmware::LinuxDirectBzImage),
-        "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
+        "linux_direct_aarch64" => (
+            MachineArch::Aarch64,
+            Firmware::LinuxDirect(parse_linux_direct_options(input, MachineArch::Aarch64)?),
+        ),
         "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
         "pcat_x64" => (
             MachineArch::X86_64,
@@ -870,7 +879,7 @@ fn parse_iso(input: ParseStream<'_>) -> syn::Result<ImageInfo> {
     })
 }
 
-impl OpenhclUefiOptions {
+impl FirmwareOptions {
     fn name_prefix(&self) -> Option<String> {
         let mut prefix = String::new();
         if let Some(isolation) = &self.isolation {
@@ -888,7 +897,7 @@ impl OpenhclUefiOptions {
     }
 }
 
-impl Parse for OpenhclUefiOptions {
+impl Parse for FirmwareOptions {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut options = Self::default();
 
@@ -913,7 +922,7 @@ impl Parse for OpenhclUefiOptions {
                     }
                     options.isolation = Some(IsolationType::Tdx);
                 }
-                _ => return Err(Error::new(word.span(), "unrecognized openhcl uefi option")),
+                _ => return Err(Error::new(word.span(), "unrecognized firmware option")),
             }
         }
         Ok(options)
@@ -930,7 +939,7 @@ impl ToTokens for IsolationType {
     }
 }
 
-fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<OpenhclUefiOptions> {
+fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<FirmwareOptions> {
     if input.peek(syn::token::Paren) {
         return Ok(Default::default());
     }
@@ -938,6 +947,42 @@ fn parse_openhcl_uefi_options(input: ParseStream<'_>) -> syn::Result<OpenhclUefi
     let brackets;
     syn::bracketed!(brackets in input);
     brackets.parse()
+}
+
+/// Parses optional `[isolation]` options for Linux direct.
+///
+/// A bracket after Linux direct can also hold extra artifact dependencies, so
+/// it holds options only when every entry is a known option word.
+fn parse_linux_direct_options(
+    input: ParseStream<'_>,
+    arch: MachineArch,
+) -> syn::Result<FirmwareOptions> {
+    if !bracket_holds_options(&input.fork()).unwrap_or(false) {
+        return Ok(Default::default());
+    }
+
+    let span = input.span();
+    let brackets;
+    syn::bracketed!(brackets in input);
+    let options: FirmwareOptions = brackets.parse()?;
+    match (arch, &options.isolation) {
+        (_, None) | (MachineArch::X86_64, Some(IsolationType::Snp)) => Ok(options),
+        _ => Err(Error::new(
+            span,
+            "Linux direct supports only SNP isolation, and only on x64",
+        )),
+    }
+}
+
+fn bracket_holds_options(input: ParseStream<'_>) -> syn::Result<bool> {
+    let brackets;
+    syn::bracketed!(brackets in input);
+    let words = brackets.parse_terminated(Path::parse, Token![,])?;
+    Ok(!words.is_empty()
+        && words.iter().all(|p| {
+            p.get_ident()
+                .is_some_and(|i| matches!(&*i.to_string(), "vbs" | "snp" | "tdx"))
+        }))
 }
 
 fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
@@ -1042,7 +1087,7 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 /// `vmm_test_with` to apply either to the whole list of configs.
 ///
 /// Valid configuration options are:
-/// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_linux_direct_{arch}[list,of,options]`: Our provided Linux direct image
 /// - `{vmm}_linux_direct_bzimage_x64`: Our provided Linux direct bzImage (compressed kernel, x86_64 only)
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
@@ -1087,6 +1132,9 @@ fn parse_nested(input: ParseStream<'_>) -> syn::Result<MaybeNestedConfig> {
 ///
 /// Valid x64 ISO options are:
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 installer from the FreeBSD Project
+///
+/// Valid Linux direct options are:
+/// - `snp`: Boot an SNP-isolated guest from an IGVM file (x64 only).
 ///
 /// Valid OpenHCL UEFI options are:
 /// - `nvme`: Attach the boot drive via NVMe assigned to VTL2.
@@ -1404,8 +1452,11 @@ fn build_requirements(
     let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
-    if let Firmware::OpenhclUefi(
-        OpenhclUefiOptions {
+    if let Firmware::LinuxDirect(FirmwareOptions {
+        isolation: Some(isolation),
+    })
+    | Firmware::OpenhclUefi(
+        FirmwareOptions {
             isolation: Some(isolation),
         },
         _,

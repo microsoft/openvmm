@@ -8,15 +8,16 @@ use crate::win::*;
 use std::sync::LazyLock;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO;
+use windows::Win32::Security::Cryptography::BCRYPT_CHAIN_MODE_GCM;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS;
 use zerocopy::IntoBytes;
 
 static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(|| {
-    const CHAINING_MODE: &[u16] = wchar::wchz!("ChainingModeGCM");
     let mut handle = BCRYPT_ALG_HANDLE::default();
 
     // SAFETY: Errors are handled before the handle is used, and the handle is closed on drop.
+    // BCRYPT_CHAIN_MODE_GCM is a static, null-terminated wide string.
     unsafe {
         let handle = windows::Win32::Security::Cryptography::BCryptOpenAlgorithmProvider(
             &mut handle,
@@ -28,10 +29,12 @@ static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(
         .map(|()| AlgHandle(handle))
         .map_err(|e| err(e, "opening the AES algorithm provider"))?;
 
+        let mut chaining_mode = BCRYPT_CHAIN_MODE_GCM.as_wide().to_vec();
+        chaining_mode.push(0);
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
             windows::Win32::Security::Cryptography::BCRYPT_CHAINING_MODE,
-            CHAINING_MODE.as_bytes(),
+            chaining_mode.as_bytes(),
             0,
         )
         .ok()

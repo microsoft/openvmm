@@ -24,5 +24,12 @@ serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+pal_async.workspace = true
+test_with_tracing.workspace = true
+vmbus_channel = { workspace = true, features = ["test_helpers"] }
+
 [lints]
 workspace = true

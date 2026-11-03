@@ -33,7 +33,7 @@ use vm_resource::Resource;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 
 /// Worker ID for ChipsetDevice workers.
 pub(crate) const fn remote_chipset_device_worker_id<T: RemoteDynamicResolvers>()
@@ -319,10 +319,12 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             self.handle_write_result(id, result);
                         }
                         DeviceRequest::Save(rpc) => {
-                            rpc.handle_failable_sync(|()| self.device.save())
+                            rpc.handle_failable(async |()| self.device.save().await)
+                                .await
                         }
                         DeviceRequest::Restore(rpc) => {
-                            rpc.handle_failable_sync(|state| self.device.restore(state))
+                            rpc.handle_failable(async |state| self.device.restore(state).await)
+                                .await
                         }
                     },
                 }

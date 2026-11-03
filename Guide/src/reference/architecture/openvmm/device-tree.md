@@ -27,6 +27,8 @@ system table, and the kernel then finds the hardware through ACPI.
 
 The `bootargs` property in `/chosen` holds the command line. When a console is
 selected, the `stdout-path` property in `/chosen` points to its UART node.
+The `/openhcl` node is present only for an IGVM file with
+`personality=openhcl`.
 
 On x86, the memory nodes tell OpenHCL which RAM is VTL2-protectable.
 

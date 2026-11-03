@@ -82,7 +82,9 @@ struct TdiReportStructSerialized {
     pub tph_control: u32,
     pub mmio_range_count: u32,
     // Follows is a variable-sized # of `MmioInterfaceInfo` structs
-    // based on the value of `mmio_range_count`.
+    // based on the value of `mmio_range_count`, then a 4 byte
+    // `device_specific_info_len`, then that many bytes of
+    // vendor/device specific information.
 }
 
 static_assertions::const_assert_eq!(size_of::<TdiReportStructSerialized>(), 0x10);
@@ -112,6 +114,12 @@ pub struct TdiReportStruct {
     /// Each MMIO Range of the TDI is reported with the MMIO reporting offset added.
     /// Base and size in units of 4K pages
     pub mmio_interface_info: Vec<TdispTdiReportMmioInterfaceInfo>,
+
+    /// Vendor/Device specific bytes that follow the MMIO range array, with the
+    /// length prefix already consumed. Interpreted according to the
+    /// vendor/device specific format. Empty if the device gives none, which
+    /// includes a device that omits the length entirely.
+    pub device_specific_info: Vec<u8>,
 }
 
 /// Reads a TDI interface report provided from the host into a struct.
@@ -129,8 +137,28 @@ pub fn deserialize_tdi_report(data: &[u8]) -> anyhow::Result<TdiReportStruct> {
     )
     .map_err(|e| anyhow::anyhow!("failed to deserialize TDI report mmio_interface_info: {e:?}"))?;
 
-    // TDISP TODO: Parse the vendor specific info
-    let _vendor_specific_info = read_mmio_elems.1.to_vec();
+    // The length and the device specific info follow the MMIO range array, so
+    // they can only be read once the array's length is known. A device with
+    // nothing to report may end the report after the ranges rather than
+    // appending a zero length, so handle the case of absent trailer as not an error.
+    let device_specific_info = if read_mmio_elems.1.is_empty() {
+        Vec::new()
+    } else {
+        let (device_specific_info_len, trailing_bytes) = u32::read_from_prefix(read_mmio_elems.1)
+            .map_err(|e| {
+            anyhow::anyhow!("failed to deserialize DEVICE_SPECIFIC_INFO_LEN: {e:?}")
+        })?;
+
+        trailing_bytes
+            .get(..device_specific_info_len as usize)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "TDI report claims {device_specific_info_len} bytes of device specific info, but only {} follow",
+                    trailing_bytes.len()
+                )
+            })?
+            .to_vec()
+    };
 
     Ok(TdiReportStruct {
         interface_info: report.interface_info,
@@ -138,6 +166,7 @@ pub fn deserialize_tdi_report(data: &[u8]) -> anyhow::Result<TdiReportStruct> {
         lnr_control: report.lnr_control,
         tph_control: report.tph_control,
         mmio_interface_info: read_mmio_elems.0.to_vec(),
+        device_specific_info,
     })
 }
 
@@ -161,5 +190,7 @@ pub fn serialize_tdi_report(report: &TdiReportStruct) -> Vec<u8> {
     for range in &report.mmio_interface_info {
         buffer.extend_from_slice(range.as_bytes());
     }
+    buffer.extend_from_slice(&(report.device_specific_info.len() as u32).to_ne_bytes());
+    buffer.extend_from_slice(&report.device_specific_info);
     buffer
 }

@@ -1476,6 +1476,7 @@ mod test {
     use super::*;
     use acpi_spec::madt::MadtParser;
     use acpi_spec::mcfg::parse_mcfg;
+    use test_with_tracing::test;
     use virt::VpIndex;
     use virt::VpInfo;
     use vm_topology::processor::TopologyBuilder;
@@ -1516,6 +1517,76 @@ mod test {
                 acpi_irq: 2,
                 iommu: None,
             },
+        }
+    }
+
+    #[test]
+    fn minimal_tables_match_hosted_fixed_chipset() {
+        let memory = MemoryLayout::new_with_numa(
+            &[2 * GB, 4 * GB],
+            &[MemoryRange::new(3 * GB..4 * GB)],
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        let bridges = vec![];
+        // Use APIC IDs above 254, which need x2APIC entries, and two NUMA
+        // nodes.
+        for (count, apic_id_offset) in [(1, 0), (255, 0), (4, 300)] {
+            let topology = TopologyBuilder::new_x86()
+                .build_with_vp_info((0..count).map(|id| X86VpInfo {
+                    base: VpInfo {
+                        vp_index: VpIndex::new(id),
+                        vnode: id % 2,
+                    },
+                    apic_id: id + apic_id_offset,
+                }))
+                .unwrap();
+            let mut hosted = new_builder(&memory, &topology, &bridges);
+            hosted.arch = AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: true,
+                with_pit: true,
+                with_psp: false,
+                pm_base: chipset_resources::pm::DEFAULT_PM_PIO_BASE,
+                acpi_irq: chipset_resources::pm::DEFAULT_ACPI_IRQ,
+                iommu: None,
+            };
+            let cpus = topology
+                .vps_arch()
+                .map(|vp| acpi::minimal::Cpu {
+                    id: vp.apic_id,
+                    vnode: vp.base.vnode,
+                })
+                .collect::<Vec<_>>();
+            let ram = memory
+                .ram()
+                .iter()
+                .map(|r| acpi::minimal::Ram {
+                    range: r.range,
+                    vnode: r.vnode,
+                })
+                .collect::<Vec<_>>();
+            let tables = acpi::minimal::Platform {
+                cpus: &cpus,
+                ram: &ram,
+                arch: acpi::minimal::Arch::X86(acpi::minimal::X86 {
+                    com_ports: [false; 4],
+                }),
+            }
+            .build(&OEM_INFO);
+            assert_eq!(tables.madt, hosted.build_madt(), "{count} CPUs");
+            assert_eq!(tables.srat, hosted.build_srat(), "{count} CPUs");
+
+            let all = hosted.build_acpi_tables(0xe0000, |dsdt| {
+                dsdt.add_apic();
+                dsdt.add_rtc();
+            });
+            assert_eq!(&all.tables[..tables.dsdt.len()], &tables.dsdt);
+            let fadt = tables.fadt(0xe1000, &OEM_INFO);
+            let offset = tables.dsdt.len().next_multiple_of(8);
+            assert_eq!(&all.tables[offset..offset + fadt.len()], &fadt);
         }
     }
 

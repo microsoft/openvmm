@@ -10,6 +10,8 @@
 
 //! NOTE: This is a test implementation and should not be used in production.
 
+pub mod ak_cert;
+
 use base64::Engine;
 use crypto::rsa::RsaKeyPair;
 use crypto::rsa::RsaPublicKey;
@@ -54,6 +56,8 @@ pub enum Error {
     WrappedKeyError(#[source] WrappedKeyError),
     #[error("failed to generate mock key release response")]
     KeyReleaseError(#[source] KeyReleaseError),
+    #[error("AK certificate test validation failed: {0}")]
+    AkCertValidation(String),
 }
 
 #[expect(missing_docs)] // self-explanatory fields
@@ -104,6 +108,8 @@ pub struct TestIgvmAgent {
     plan: Option<IgvmAgentTestPlan>,
     /// Track whether the plan has been installed to prevent multiple installations.
     plan_installed: bool,
+    /// Opt-in stateful AK certificate test policy.
+    ak_cert: Option<ak_cert::State>,
 }
 
 /// Possible actions for the IGVM agent to take in response to a request.
@@ -154,6 +160,12 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
     let mut plan = IgvmAgentTestPlan::default();
 
     match test_config {
+        IgvmAttestTestConfig::AkCertNoRenewal
+        | IgvmAttestTestConfig::AkCertRenewal
+        | IgvmAttestTestConfig::AkCertPersistentAcrossBoot
+        | IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
+            // These configurations use the stateful AK certificate handler.
+        }
         IgvmAttestTestConfig::AkCertRequestFailureAndRetry => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
@@ -180,30 +192,6 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
-                ]),
-            );
-        }
-        IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
-            plan.insert(
-                IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::AlwaysNoResponse,
-                ]),
-            );
-        }
-        IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
-            // Hyper-V VMs go through an `initial_reboot` that can consume
-            // the first success action.  The extra RespondSuccess ensures
-            // the cert is still provisioned after the reboot, so the
-            // subsequent boot can validate that the cert is served from
-            // the persistent cache.
-            plan.insert(
-                IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::AlwaysNoResponse,
                 ]),
             );
         }
@@ -266,6 +254,7 @@ impl TestIgvmAgent {
             des_key: None,
             plan: None,
             plan_installed: false,
+            ak_cert: None,
         }
     }
 
@@ -285,6 +274,7 @@ impl TestIgvmAgent {
             }
             IgvmAgentTestSetting::TestConfig(config) => {
                 self.plan = Some(test_config_to_plan(config));
+                self.ak_cert = ak_cert::State::from_config(config);
             }
         }
 
@@ -386,6 +376,12 @@ impl TestIgvmAgent {
             return Err(Error::InvalidIgvmAttestRequest);
         }
         let runtime_claims_bytes = &request_bytes[runtime_claims_start..runtime_claims_end];
+
+        if request.header.request_type == IgvmAttestRequestType::AK_CERT_REQUEST {
+            if let Some(state) = &mut self.ak_cert {
+                return state.handle_request(runtime_claims_bytes);
+            }
+        }
 
         // Extract the request capability bitmap, appended right after the
         // request base. This tells the agent whether the guest requested the

@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Measured SEV-SNP boot stage that accepts sparse guest RAM before entering a
-//! direct-boot Linux kernel.
+//! Measured SEV-SNP boot stage that reads host devices, accepts sparse guest
+//! RAM, builds complete ACPI, and enters a direct-boot Linux kernel.
 //!
 //! The IGVM generator starts this x86_64 bare-metal payload with `RSI` pointing
 //! to a measured [`SnpBootShimParams`] page. After validating that complete
@@ -12,7 +12,8 @@
 //!
 //! It has no command-line interface and is only useful as an IGVM component.
 //! SNP Linux-direct image generation builds and embeds it; invalid parameters
-//! or page-state transitions fault instead of continuing with unsafe memory.
+//! or page-state transitions stop the guest instead of continuing with unsafe
+//! memory.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: The bootshim issues PVALIDATE, reads freshly accepted pages, and
@@ -22,9 +23,17 @@
 // only tests and the minimal-runtime entry point call it.
 #![cfg_attr(not(any(minimal_rt, test)), allow(dead_code))]
 
+extern crate alloc;
+
+mod acpi_tables;
+mod host_dt;
+
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
+use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
+use loader_defs::linux::SnpBootShimPlatformParams;
 use loader_defs::linux::SnpBootShimRange;
 
 const PAGE_SIZE: u64 = 4096;
@@ -38,7 +47,6 @@ enum ParamsError {
     InvalidRamEnd,
     InvalidLinuxEntry,
     InvalidLinuxZeroPage,
-    ReservedNotZero,
     EmptyRange,
     RangeOverflow,
     RangeOutsideRam,
@@ -50,7 +58,7 @@ enum ParamsError {
 ///
 /// The IGVM generator measures both this parameter page and the initial RSI
 /// that points to it. A validation failure therefore indicates an incompatible
-/// or corrupt image, or a generator bug. The runtime faults instead of using
+/// or corrupt image, or a generator bug. The runtime stops instead of using
 /// an invalid address or accepting an invalid RAM range.
 fn validate_params(
     params: &SnpBootShimParams,
@@ -73,9 +81,6 @@ fn validate_params(
         .ok_or(ParamsError::TooManyRanges)?;
     if params.ram_end == 0 || !params.ram_end.is_multiple_of(PAGE_SIZE) {
         return Err(ParamsError::InvalidRamEnd);
-    }
-    if params.reserved != 0 {
-        return Err(ParamsError::ReservedNotZero);
     }
     let params_end = params_gpa
         .checked_add(PAGE_SIZE)
@@ -128,6 +133,159 @@ fn validate_params(
     }
 
     Ok(ranges)
+}
+
+/// Checks that the generator wrote the platform page that this shim expects.
+fn check_platform(platform: &SnpBootShimPlatformParams) -> bool {
+    platform.magic == SNP_BOOT_SHIM_PLATFORM_MAGIC
+        && platform.version == SNP_BOOT_SHIM_PLATFORM_VERSION
+}
+
+/// Why the shim stopped the guest.
+///
+/// The shim sends this code in the GHCB termination request, so the host can
+/// log it.
+#[cfg(minimal_rt)]
+#[derive(Copy, Clone)]
+#[repr(u8)]
+enum Failure {
+    Params = 0x01,
+    Platform = 0x02,
+    Accept = 0x03,
+    E820Full = 0x04,
+    Heap = 0x05,
+    AcpiTooLarge = 0x06,
+    Panic = 0x07,
+    DeviceTree = 0x10,
+    DeviceTreeProperty = 0x11,
+    TooManyCpus = 0x12,
+    TooManyRamRanges = 0x13,
+    TooManyBridges = 0x14,
+    DuplicateSegment = 0x15,
+    Ram = 0x16,
+    Window = 0x17,
+}
+
+#[cfg(minimal_rt)]
+impl From<host_dt::Error<'_>> for Failure {
+    fn from(error: host_dt::Error<'_>) -> Self {
+        match error {
+            host_dt::Error::Fdt(_) => Self::DeviceTree,
+            host_dt::Error::Property(_) => Self::DeviceTreeProperty,
+            host_dt::Error::TooManyCpus => Self::TooManyCpus,
+            host_dt::Error::TooManyRamRanges => Self::TooManyRamRanges,
+            host_dt::Error::TooManyBridges => Self::TooManyBridges,
+            host_dt::Error::DuplicateSegment => Self::DuplicateSegment,
+            host_dt::Error::Ram => Self::Ram,
+            host_dt::Error::Window => Self::Window,
+        }
+    }
+}
+
+/// Terminates the guest with the GHCB MSR protocol and reports `failure`.
+///
+/// The shim has no #VC handler, so it cannot report errors through port I/O,
+/// such as a serial port. Linux uses reason-code set 1, so the shim uses its
+/// own set.
+#[cfg(minimal_rt)]
+fn terminate(failure: Failure) -> ! {
+    const REASON_SET: u64 = 0xf;
+    let request =
+        x86defs::snp::GhcbInfo::SHUTDOWN_REQUEST.0 | (REASON_SET << 12) | ((failure as u64) << 16);
+    // SAFETY: GHCB MSR protocol accesses do not require a shared GHCB page.
+    unsafe {
+        minimal_rt::arch::msr::write_msr(x86defs::X86X_AMD_MSR_GHCB, request);
+        core::arch::asm!("rep vmmcall", options(nostack));
+    }
+    minimal_rt::arch::fault()
+}
+
+/// The heap for building the ACPI tables. Allocations outside
+/// [`install_platform_acpi`] panic.
+#[cfg(minimal_rt)]
+#[global_allocator]
+// SAFETY: The shim runs only on the BSP.
+static ALLOCATOR: minimal_rt::bump_alloc::BumpAllocator =
+    unsafe { minimal_rt::bump_alloc::BumpAllocator::new() };
+
+#[cfg(minimal_rt)]
+fn install_platform_acpi(
+    params: &SnpBootShimParams,
+    platform: &SnpBootShimPlatformParams,
+    devices: &host_dt::HostDevices,
+) {
+    let heap = platform
+        .heap_gpa
+        .checked_add(platform.heap_size)
+        .and_then(|end| memory_range::MemoryRange::try_new(platform.heap_gpa..end).ok());
+    let Some(heap) = heap else {
+        terminate(Failure::Heap)
+    };
+    // SAFETY: The measured platform page gives this heap region, which the
+    // shim accepted with the other omitted RAM. The shim runs with an
+    // identity map.
+    unsafe { ALLOCATOR.init(heap) };
+    let (rsdp, tables) =
+        ALLOCATOR.with_alloc(|| acpi_tables::build(devices, platform.acpi_output_gpa));
+    // Do not write past the measured output region.
+    if tables.len() as u64 > platform.acpi_output_size {
+        terminate(Failure::AcpiTooLarge);
+    }
+
+    // SAFETY: The measured platform page gives the output and RSDP regions,
+    // which are disjoint from the heap that owns these buffers. Publish the
+    // RSDP only after all tables exist.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            tables.as_ptr(),
+            platform.acpi_output_gpa as *mut u8,
+            tables.len(),
+        );
+        core::ptr::copy_nonoverlapping(rsdp.as_ptr(), platform.rsdp_gpa as *mut u8, rsdp.len());
+        let zero_page = &mut *(params.linux_zero_page as *mut loader_defs::linux::boot_params);
+        zero_page.acpi_rsdp_addr = platform.rsdp_gpa;
+    }
+}
+
+/// Returns the parts of the host RAM ranges above the measured RAM.
+///
+/// The image measures and imports pages only below `measured_ram_end`, so the
+/// shim can accept these parts.
+fn extra_ram(
+    ram: &[acpi::minimal::Ram],
+    measured_ram_end: u64,
+) -> impl Iterator<Item = memory_range::MemoryRange> + '_ {
+    let above =
+        memory_range::MemoryRange::new(measured_ram_end..memory_range::MemoryRange::MAX_ADDRESS);
+    ram.iter()
+        .map(move |r| r.range.intersection(&above))
+        .filter(|r| !r.is_empty())
+}
+
+/// Adds the host RAM above the measured RAM to the Linux E820 map.
+///
+/// The measured zero page already describes the measured RAM. Returns `false`
+/// if the map is full.
+fn add_e820_ram(
+    zero_page: &mut loader_defs::linux::boot_params,
+    ram: &[acpi::minimal::Ram],
+    measured_ram_end: u64,
+) -> bool {
+    for range in extra_ram(ram, measured_ram_end) {
+        let Some(entry) = zero_page
+            .e820_map
+            .get_mut(usize::from(zero_page.e820_entries))
+        else {
+            return false;
+        };
+        *entry = loader_defs::linux::e820entry {
+            addr: range.start().into(),
+            size: range.len().into(),
+            typ: loader_defs::linux::E820_RAM.into(),
+        };
+        zero_page.e820_entries += 1;
+    }
+    true
 }
 
 #[cfg(minimal_rt)]
@@ -239,6 +397,47 @@ mod arch {
         }
     }
 
+    #[repr(C, align(4096))]
+    struct PageTable([u64; 512]);
+
+    static mut PML4: PageTable = PageTable([0; 512]);
+    static mut PDPT: PageTable = PageTable([0; 512]);
+
+    const _: () = assert!(loader_defs::linux::SNP_BOOT_SHIM_MAX_RAM_END == 512 << 30);
+
+    /// Runs `f` with an identity map of the low 512 GiB in 1-GiB pages.
+    ///
+    /// The measured page tables map only the low 4 GiB, but `PVALIDATE` takes
+    /// a virtual address. The original page tables are restored afterward.
+    pub fn with_large_identity_map(c_bit_mask: u64, f: impl FnOnce()) {
+        const PRESENT: u64 = 1 << 0;
+        const WRITABLE: u64 = 1 << 1;
+        const LARGE_PAGE: u64 = 1 << 7;
+
+        let (pml4, pdpt) = (&raw mut PML4, &raw mut PDPT);
+        // SAFETY: The shim runs on one thread, and only this function uses
+        // these page tables.
+        unsafe {
+            for (index, entry) in (*pdpt).0.iter_mut().enumerate() {
+                *entry = ((index as u64) << 30) | c_bit_mask | LARGE_PAGE | WRITABLE | PRESENT;
+            }
+            (*pml4).0[0] = pdpt as u64 | c_bit_mask | WRITABLE | PRESENT;
+        }
+
+        let old_cr3: u64;
+        // SAFETY: Reading CR3 has no side effects.
+        unsafe { asm!("mov {}, cr3", out(reg) old_cr3, options(nomem, nostack, preserves_flags)) };
+        // Keep the C-bit of the original CR3 so the CPU reads the tables
+        // as private memory.
+        let new_cr3 = pml4 as u64 | (old_cr3 & c_bit_mask);
+        // SAFETY: The new tables identity-map all memory that the shim uses,
+        // with the same encryption, so execution continues unchanged.
+        unsafe { asm!("mov cr3, {}", in(reg) new_cr3, options(nostack, preserves_flags)) };
+        f();
+        // SAFETY: These are the original page tables.
+        unsafe { asm!("mov cr3, {}", in(reg) old_cr3, options(nostack, preserves_flags)) };
+    }
+
     pub fn accept_range(range: SnpBootShimRange) -> Result<(), AcceptError> {
         let pages_per_large_page = LARGE_PAGE_SIZE / PAGE_SIZE;
         let mut page_base = range.start_gpn;
@@ -280,7 +479,7 @@ mod arch {
 }
 
 #[cfg(minimal_rt)]
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 32 * 1024;
 
 #[cfg(minimal_rt)]
 #[repr(C, align(16))]
@@ -342,7 +541,7 @@ fn jump_to_linux() -> ! {
 #[cfg(minimal_rt)]
 extern "C" fn start(params_gpa: u64) -> ! {
     if !params_gpa.is_multiple_of(PAGE_SIZE) {
-        minimal_rt::arch::fault();
+        terminate(Failure::Params);
     }
 
     // SAFETY: The VMSA points RSI at a measured, accepted, identity-mapped
@@ -350,14 +549,50 @@ extern "C" fn start(params_gpa: u64) -> ! {
     let params = unsafe { &*(params_gpa as *const SnpBootShimParams) };
     let ranges = match validate_params(params, params_gpa) {
         Ok(ranges) => ranges,
-        Err(_) => minimal_rt::arch::fault(),
+        Err(_) => terminate(Failure::Params),
+    };
+    // SAFETY: The measured parameter page gives the address of this measured,
+    // imported platform page.
+    let platform = unsafe { &*(params.platform_gpa as *const SnpBootShimPlatformParams) };
+    if !check_platform(platform) {
+        terminate(Failure::Platform);
+    }
+    // SAFETY: The measured platform page gives the location and size of this
+    // imported, private device-tree area. Read it before accepting RAM, so
+    // that an unsupported device tree stops the shim early.
+    let dt = unsafe {
+        core::slice::from_raw_parts(platform.dt_gpa as *const u8, platform.dt_size as usize)
+    };
+    let devices = match host_dt::read(dt, params.ram_end, platform.c_bit_mask) {
+        Ok(devices) => devices,
+        Err(error) => terminate(error.into()),
     };
 
     for &range in ranges {
         if arch::accept_range(range).is_err() {
-            minimal_rt::arch::fault();
+            terminate(Failure::Accept);
         }
     }
+    arch::with_large_identity_map(platform.c_bit_mask, || {
+        for range in extra_ram(&devices.ram, params.ram_end) {
+            let range = SnpBootShimRange {
+                start_gpn: range.start() / PAGE_SIZE,
+                page_count: range.len() / PAGE_SIZE,
+            };
+            if arch::accept_range(range).is_err() {
+                terminate(Failure::Accept);
+            }
+        }
+    });
+    // SAFETY: The measured parameter page gives the address of this measured,
+    // imported zero page. Nothing else references it.
+    let zero_page =
+        unsafe { &mut *(params.linux_zero_page as *mut loader_defs::linux::boot_params) };
+    if !add_e820_ram(zero_page, &devices.ram, params.ram_end) {
+        terminate(Failure::E820Full);
+    }
+
+    install_platform_acpi(params, platform, &devices);
 
     // SAFETY: These statics are single-threaded bootshim handoff state. Their
     // values came from the measured parameter page and are consumed
@@ -381,7 +616,7 @@ core::arch::global_asm! {
 #[cfg(minimal_rt)]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
-    minimal_rt::arch::fault()
+    terminate(Failure::Panic)
 }
 
 #[cfg(not(minimal_rt))]
@@ -391,6 +626,60 @@ fn main() {}
 mod tests {
     use super::*;
     use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+
+    #[test]
+    fn adds_only_ram_above_the_measured_ram_to_e820() {
+        use acpi::minimal::Ram;
+        use memory_range::MemoryRange;
+
+        let ram = [
+            Ram {
+                range: MemoryRange::new(0..0x8000_0000),
+                vnode: 0,
+            },
+            Ram {
+                range: MemoryRange::new(0x1_0000_0000..0x2_0000_0000),
+                vnode: 1,
+            },
+        ];
+        let mut zero_page = loader_defs::linux::boot_params::new_zeroed();
+        zero_page.e820_entries = 1;
+        assert!(add_e820_ram(&mut zero_page, &ram, 0x1000_0000));
+        let entries = zero_page.e820_map[..usize::from(zero_page.e820_entries)]
+            .iter()
+            .map(|e| (e.addr.get(), e.size.get(), e.typ.get()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries[1..],
+            [
+                (0x1000_0000, 0x7000_0000, 1),
+                (0x1_0000_0000, 0x1_0000_0000, 1)
+            ]
+        );
+
+        zero_page.e820_entries = zero_page.e820_map.len() as u8;
+        assert!(!add_e820_ram(&mut zero_page, &ram, 0x1000_0000));
+    }
+
+    #[test]
+    fn checks_platform_magic_and_version() {
+        let platform = SnpBootShimPlatformParams {
+            magic: SNP_BOOT_SHIM_PLATFORM_MAGIC,
+            version: SNP_BOOT_SHIM_PLATFORM_VERSION,
+            ..FromZeros::new_zeroed()
+        };
+        assert!(check_platform(&platform));
+        assert!(!check_platform(&SnpBootShimPlatformParams {
+            magic: 0,
+            ..platform
+        }));
+        assert!(!check_platform(&SnpBootShimPlatformParams {
+            version: SNP_BOOT_SHIM_PLATFORM_VERSION + 1,
+            ..platform
+        }));
+    }
 
     fn valid_params() -> SnpBootShimParams {
         SnpBootShimParams {
@@ -400,7 +689,7 @@ mod tests {
             linux_entry: 0x10_0000,
             linux_zero_page: 0x2000,
             ram_end: 0x20_0000,
-            reserved: 0,
+            platform_gpa: 0x3000,
             ranges: {
                 let mut ranges = [SnpBootShimRange {
                     start_gpn: 0,
@@ -444,12 +733,14 @@ mod tests {
             Err(ParamsError::InvalidMagic)
         );
 
-        params = valid_params();
-        params.version += 1;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::UnsupportedVersion)
-        );
+        for version in [1, 2, SNP_BOOT_SHIM_PARAMS_VERSION + 1] {
+            params = valid_params();
+            params.version = version;
+            assert_eq!(
+                validate_params(&params, 0x1000),
+                Err(ParamsError::UnsupportedVersion)
+            );
+        }
     }
 
     #[test]
@@ -587,19 +878,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_too_many_ranges_and_nonzero_reserved_data() {
+    fn rejects_too_many_ranges() {
         let mut params = valid_params();
         params.range_count = (SNP_BOOT_SHIM_MAX_RANGES + 1) as u32;
         assert_eq!(
             validate_params(&params, 0x1000),
             Err(ParamsError::TooManyRanges)
-        );
-
-        params = valid_params();
-        params.reserved = 1;
-        assert_eq!(
-            validate_params(&params, 0x1000),
-            Err(ParamsError::ReservedNotZero)
         );
     }
 }

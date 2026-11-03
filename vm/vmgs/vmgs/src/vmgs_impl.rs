@@ -486,7 +486,10 @@ impl Vmgs {
         Self::format_new_inner(storage, VMGS_VERSION_3_0, reason, logger).await
     }
 
-    /// Format and open a new VMGS file.
+    /// Request formatting unless the VMGS reprovisioned marker is already set.
+    ///
+    /// Formatting sets the marker, so repeated requests preserve guest state.
+    /// Opening without a format request clears the marker.
     pub async fn request_format(
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
@@ -1264,6 +1267,36 @@ impl Vmgs {
     /// Whether the VMGS file is encrypted
     pub fn encrypted(&self) -> bool {
         self.state.encrypted()
+    }
+
+    /// Returns the active root encryption key, not a per-file or metadata key.
+    ///
+    /// Returns [`Error::NotEncrypted`] for a plaintext store,
+    /// [`Error::NeedsUnlock`] for a locked store, or
+    /// [`Error::NoActiveDatastoreKey`] if the active slot is invalid or empty.
+    /// The returned key is sensitive and must not be logged or inspected.
+    #[cfg(feature = "encryption")]
+    pub fn active_encryption_key(&self) -> Result<&[u8; VMGS_ENCRYPTION_KEY_SIZE], Error> {
+        if !self.encrypted() {
+            return Err(Error::NotEncrypted);
+        }
+
+        let index = self
+            .state
+            .active_datastore_key_index
+            .ok_or(Error::NeedsUnlock)?;
+        self.state
+            .datastore_keys
+            .get(index)
+            .filter(|key| !is_empty_key(*key))
+            .ok_or(Error::NoActiveDatastoreKey)
+    }
+
+    /// Flushes buffered writes, including the latest header, to the backing store.
+    ///
+    /// Returns [`Error::FlushDisk`] if the backing store cannot complete the flush.
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.storage.flush().await.map_err(Error::FlushDisk)
     }
 
     /// Whether the VMGS file was provisioned during the most recent boot
@@ -2110,6 +2143,7 @@ mod tests {
     use pal_async::async_test;
     use parking_lot::Mutex;
     use std::sync::Arc;
+    use test_with_tracing::test;
     #[cfg(feature = "encryption")]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
     use vmgs_format::VmgsProvisioner;
@@ -2132,6 +2166,85 @@ mod tests {
         disklayer_ram::ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
     }
 
+    #[cfg(feature = "encryption")]
+    #[async_test]
+    async fn active_key_plaintext_locked_and_rotated() {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        assert!(matches!(
+            vmgs.active_encryption_key(),
+            Err(Error::NotEncrypted)
+        ));
+
+        let first_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
+        vmgs.update_encryption_key(&first_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        assert!(vmgs.active_encryption_key().unwrap() == &first_key);
+        vmgs.write_file_encrypted(FileId::BIOS_NVRAM, b"encrypted contents")
+            .await
+            .unwrap();
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        assert!(matches!(
+            vmgs.active_encryption_key(),
+            Err(Error::NeedsUnlock)
+        ));
+        assert!(vmgs.unlock_with_encryption_key(&[9; 32]).await.is_err());
+        assert!(matches!(
+            vmgs.active_encryption_key(),
+            Err(Error::NeedsUnlock)
+        ));
+        vmgs.unlock_with_encryption_key(&first_key).await.unwrap();
+        assert!(vmgs.active_encryption_key().unwrap() == &first_key);
+
+        // Exercise both active slots, not just the first one, and ensure the
+        // root key is returned rather than the unchanged per-file key.
+        for key in [[2; VMGS_ENCRYPTION_KEY_SIZE], [3; VMGS_ENCRYPTION_KEY_SIZE]] {
+            vmgs.update_encryption_key(&key, EncryptionAlgorithm::AES_GCM)
+                .await
+                .unwrap();
+            assert!(vmgs.active_encryption_key().unwrap() == &key);
+            assert_eq!(
+                vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+                b"encrypted contents"
+            );
+            vmgs.flush().await.unwrap();
+            drop(vmgs);
+            vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+            assert!(matches!(
+                vmgs.active_encryption_key(),
+                Err(Error::NeedsUnlock)
+            ));
+            vmgs.unlock_with_encryption_key(&key).await.unwrap();
+            assert!(vmgs.active_encryption_key().unwrap() == &key);
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    #[async_test]
+    async fn active_key_invalid_or_empty_slot() {
+        let mut vmgs = Vmgs::format_new(new_test_file(), None).await.unwrap();
+        vmgs.update_encryption_key(&[1; VMGS_ENCRYPTION_KEY_SIZE], EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+
+        // Invalid saved-state indices must return an error rather than panic.
+        vmgs.state.active_datastore_key_index = Some(usize::MAX);
+        assert!(matches!(
+            vmgs.active_encryption_key(),
+            Err(Error::NoActiveDatastoreKey)
+        ));
+        vmgs.state.active_datastore_key_index = Some(0);
+        vmgs.state.datastore_keys[0].fill(0);
+        assert!(matches!(
+            vmgs.active_encryption_key(),
+            Err(Error::NoActiveDatastoreKey)
+        ));
+    }
+
     #[async_test]
     async fn empty_vmgs() {
         let disk = new_test_file();
@@ -2145,6 +2258,50 @@ mod tests {
         let disk = new_test_file();
         let result = Vmgs::format_new(disk, None).await;
         assert!(result.is_ok());
+    }
+
+    #[async_test]
+    async fn repeated_format_requests_preserve_guest_state() {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        vmgs.write_file(FileId::BIOS_NVRAM, b"old guest state")
+            .await
+            .unwrap();
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk.clone(), None).await.unwrap();
+        assert!(matches!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await,
+            Err(Error::FileInfoNotAllocated(id)) if id == FileId::BIOS_NVRAM
+        ));
+        let guest_state = b"reprovisioned guest state";
+        vmgs.write_file(FileId::BIOS_NVRAM, guest_state)
+            .await
+            .unwrap();
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk.clone(), None).await.unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+            guest_state
+        );
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+            guest_state
+        );
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk, None).await.unwrap();
+        assert!(matches!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await,
+            Err(Error::FileInfoNotAllocated(id)) if id == FileId::BIOS_NVRAM
+        ));
     }
 
     #[async_test]

@@ -6,6 +6,8 @@
 mod ipmi;
 mod openhcl_linux_direct;
 mod openhcl_uefi;
+#[cfg(target_os = "linux")]
+mod snp_linux_direct;
 mod storage;
 
 use anyhow::Context;
@@ -253,6 +255,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                         resource: VirtioPciDeviceHandle(
                             VirtioNetHandle {
                                 max_queues: None,
+                                enable_rx_gso: false,
                                 mac_address: MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
                                 endpoint: NullHandle.into_resource(),
                             }

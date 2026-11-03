@@ -1274,6 +1274,7 @@ impl WhpPartitionInner {
             )
             .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
+            caps.tsc_deadline &= matches!(vtl0.lapic, LocalApicKind::Offloaded);
             caps.xsaves_state_bv_broken = true;
             caps.dr6_tsx_broken = true;
             caps.nested_virt = nested_virt;
