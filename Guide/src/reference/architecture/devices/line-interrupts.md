@@ -150,11 +150,9 @@ An input with no connected producer is different from a connected producer
 that has not published a level. This distinction matters when restoring with a
 different device topology or removing the last producer from a wire.
 
-Pure line-controller inputs should be deasserted when unconnected. However,
-some targets share an interrupt namespace with non-line sources. Initializing
-an unused line must not clear independently pending interrupts in that
-namespace. The target-specific unconnected-input policy preserves that
-distinction.
+A target mapping declares a line-owned wire independently of its producers.
+Mapped inputs without producers replay low. Inputs owned by non-line sources
+must remain outside these mappings, so replay leaves their state untouched.
 
 On ARM64, platform wiring explicitly reserves SPIs 32 through 63 for fixed
 line inputs, plus the separately allocated SMMU inputs in OpenVMM. Only these

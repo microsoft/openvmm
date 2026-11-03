@@ -113,10 +113,6 @@ impl<T: ChipsetDevice> LineSetTarget for LineSetTargetDevice<T> {
             .unwrap()
             .set_irq(vector, high);
     }
-
-    fn set_unconnected_irq(&self, vector: u32) {
-        self.replay_irq(vector, false);
-    }
 }
 
 #[cfg(test)]

@@ -57,10 +57,6 @@ impl LineSetTarget for GicInterruptTarget {
     fn set_irq(&self, vector: u32, high: bool) {
         self.0.set_spi_irq(vector, high)
     }
-
-    fn set_unconnected_irq(&self, vector: u32) {
-        self.0.set_spi_irq(vector, false)
-    }
 }
 
 #[cfg(test)]

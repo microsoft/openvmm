@@ -49,7 +49,8 @@ pub trait LineSetTarget: Send + Sync {
     /// publish back onto that same wire.
     fn set_irq(&self, vector: u32, high: bool);
 
-    /// Replays a final wire level when forwarding starts.
+    /// Replays a final wire level when forwarding starts, or low when attaching
+    /// an input with no producers.
     ///
     /// Has the same locking constraints as `set_irq`. Targets may distinguish
     /// unchanged input history from a new publication; the default treats both
@@ -57,13 +58,6 @@ pub trait LineSetTarget: Send + Sync {
     fn replay_irq(&self, vector: u32, high: bool) {
         self.set_irq(vector, high);
     }
-
-    /// Reconciles an input with no connected source during startup or attachment.
-    ///
-    /// Pure line controllers should deassert the input. The default leaves it
-    /// untouched because a target's namespace can also contain non-line
-    /// interrupts whose pending state must not be cleared.
-    fn set_unconnected_irq(&self, _vector: u32) {}
 }
 
 #[derive(Debug)]
@@ -176,9 +170,7 @@ impl LineInterruptInner {
             tracelimit::warn_ratelimited!(%self, "LineInterrupt not hooked up to any targets!");
         }
         for target in &self.targets {
-            if self.lines.is_empty() {
-                target.inner.set_unconnected_irq(target.vector);
-            } else if replay {
+            if replay {
                 target.inner.replay_irq(target.vector, is_high);
             } else {
                 target.inner.set_irq(target.vector, is_high);
@@ -423,8 +415,9 @@ impl LineSet {
         for mapping in &state.targets {
             for vector in mapping.source_range.clone() {
                 if !state.lines.contains_key(&vector) {
-                    mapping.target.set_unconnected_irq(
+                    mapping.target.replay_irq(
                         vector - mapping.source_range.start() + mapping.target_start,
+                        false,
                     );
                 }
             }
@@ -459,6 +452,10 @@ impl LineSet {
 
     /// Adds a target mapping to the set.
     ///
+    /// Declares line ownership of the mapped inputs, even with no producers.
+    /// Empty wires replay low; inputs owned by non-line sources must not be
+    /// included in the mapping.
+    ///
     /// The mapping is over a portion of the line set as specified by
     /// `source_range`, and it is mapped into the target's vector space starting
     /// at `target_start`.
@@ -484,7 +481,7 @@ impl LineSet {
                 });
                 if line.running {
                     if line.lines.is_empty() {
-                        target.set_unconnected_irq(target_vector);
+                        target.replay_irq(target_vector, false);
                     } else {
                         target.set_irq(target_vector, line.is_high());
                     }
@@ -494,7 +491,7 @@ impl LineSet {
         if state.running {
             for vector in source_range.clone() {
                 if !state.lines.contains_key(&vector) {
-                    target.set_unconnected_irq(vector - source_range.start() + target_start);
+                    target.replay_irq(vector - source_range.start() + target_start, false);
                 }
             }
         }
@@ -629,10 +626,6 @@ mod tests {
         fn set_irq(&self, _: u32, high: bool) {
             self.0.lock().push(high);
         }
-
-        fn set_unconnected_irq(&self, vector: u32) {
-            self.set_irq(vector, false);
-        }
     }
 
     #[test]
@@ -647,10 +640,6 @@ mod tests {
 
             fn replay_irq(&self, vector: u32, high: bool) {
                 self.0.lock().push((vector, high, true));
-            }
-
-            fn set_unconnected_irq(&self, vector: u32) {
-                self.replay_irq(vector, false);
             }
         }
 
@@ -715,11 +704,11 @@ mod tests {
     }
 
     #[test]
-    fn replay_does_not_clear_non_line_target_state() {
+    fn replay_leaves_unmapped_inputs_untouched() {
         let target = TestLineInterruptTarget::new_arc();
         target.set_irq(0, true);
         let set = LineSet::new();
-        set.add_target(0..=1, 0, "shared namespace", target.clone());
+        set.add_target(1..=1, 1, "line input", target.clone());
         let line = set.new_line(1, "device").unwrap();
         line.set_level(false);
         set.start();
@@ -728,40 +717,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_wire_replay_and_attachment_preserve_non_line_target_state() {
+    fn empty_wire_replay_and_attachment_deassert_only_mapped_inputs() {
         for running in [false, true] {
             let target = TestLineInterruptTarget::new_arc();
             target.set_irq(0, true);
+            target.set_irq(1, true);
             let set = LineSet::new();
             let line = set.new_line(0, "removed device").unwrap();
             drop(line);
             if running {
                 set.start();
             }
-            set.add_target(0..=0, 0, "shared namespace", target.clone());
+            set.add_target(0..=0, 0, "line input", target.clone());
             if !running {
                 set.start();
             }
-            assert!(target.is_high(0));
-            set.stop();
-        }
-    }
-
-    #[test]
-    fn empty_wire_replay_and_attachment_deassert_pure_line_targets() {
-        for running in [false, true] {
-            let target = Arc::new(RecordingTarget::default());
-            let set = LineSet::new();
-            let line = set.new_line(0, "removed device").unwrap();
-            drop(line);
-            if running {
-                set.start();
-            }
-            set.add_target(0..=0, 0, "line controller", target.clone());
-            if !running {
-                set.start();
-            }
-            assert_eq!(*target.0.lock(), [false]);
+            assert!(!target.is_high(0));
+            assert!(target.is_high(1));
             set.stop();
         }
     }
