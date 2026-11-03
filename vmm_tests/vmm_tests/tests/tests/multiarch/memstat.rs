@@ -82,7 +82,7 @@ fn assert_against_baseline(proc_json: Value, build_flavor: &str, arch_str: &str,
         .unwrap();
     assert!(
         is_under_threshold(usage_baseline, usage, 0.5),
-        ">50% regrassion in overall memory usage: {} (expected: {})",
+        ">50% regression in overall memory usage: {} (expected: {})",
         usage,
         usage_baseline
     );
@@ -93,7 +93,7 @@ fn assert_against_baseline(proc_json: Value, build_flavor: &str, arch_str: &str,
         .unwrap();
     assert!(
         is_under_threshold(reservation_baseline, reservation, 0.5),
-        ">50% regrassion in kernel memory reservation: {} (expected: {})",
+        ">50% regression in kernel memory reservation: {} (expected: {})",
         reservation,
         reservation_baseline
     );
@@ -104,7 +104,7 @@ fn assert_against_baseline(proc_json: Value, build_flavor: &str, arch_str: &str,
         .unwrap();
     assert!(
         is_under_threshold(active_anon_baseline, active_anon, 0.5),
-        ">50% regrassion in active anonymous memory: {} (expected: {})",
+        ">50% regression in active anonymous memory: {} (expected: {})",
         active_anon,
         active_anon_baseline
     );
@@ -116,7 +116,7 @@ fn assert_against_baseline(proc_json: Value, build_flavor: &str, arch_str: &str,
         .unwrap();
     assert!(
         is_under_threshold(inactive_anon_baseline, inactive_anon, 0.5),
-        ">50% regrassion in inactive anonymous memory: {} (expected: {})",
+        ">50% regression in inactive anonymous memory: {} (expected: {})",
         inactive_anon,
         inactive_anon_baseline
     );
@@ -132,7 +132,7 @@ fn assert_against_baseline(proc_json: Value, build_flavor: &str, arch_str: &str,
 
         assert!(
             is_under_threshold(rss_baseline, rss, 0.5),
-            ">50% regrassion in {} rss: {} (expected: {})",
+            ">50% regression in {} rss: {} (expected: {})",
             underhill_process,
             rss,
             rss_baseline
