@@ -845,15 +845,12 @@ fn gateway_dns_prefers_ipv4_and_falls_back_to_ipv6() {
 }
 
 #[test]
-fn ipv6_policies_have_their_own_canonical_encoding() {
+fn ipv6_policies_have_distinct_canonical_encodings() {
     let ipv4 = ipv4_policy(rules(EgressAction::Deny, &["192.0.2.0/24:tcp:443"], &[]));
-    assert_eq!(ipv4.encoding_version(), 3);
     assert_eq!(
-        ipv4.canonical_bytes_for_version(3),
-        Some(ipv4.canonical_bytes())
+        ipv4.canonical_bytes()[0],
+        EGRESS_POLICY_ENCODING_VERSION as u8
     );
-    assert_eq!(ipv4.canonical_bytes()[0], 3);
-    assert!(ipv4.canonical_bytes_for_version(4).is_some());
 
     let dual = dual_stack(rules(EgressAction::Deny, &["192.0.2.0/24:tcp:443"], &[]));
     let with_rule = dual_stack(rules(
@@ -863,18 +860,14 @@ fn ipv6_policies_have_their_own_canonical_encoding() {
     ));
     let unbound_rule = ipv4_policy(rules(EgressAction::Deny, &["2001:db8::/32:tcp:443"], &[]));
     for policy in [&dual, &with_rule, &unbound_rule] {
-        assert_eq!(policy.encoding_version(), EGRESS_POLICY_ENCODING_VERSION);
         assert_eq!(
-            policy.canonical_bytes_for_version(EGRESS_POLICY_ENCODING_VERSION),
-            Some(policy.canonical_bytes())
+            policy.canonical_bytes()[0],
+            EGRESS_POLICY_ENCODING_VERSION as u8
         );
-        for version in 1..EGRESS_POLICY_ENCODING_VERSION {
-            assert_eq!(policy.canonical_bytes_for_version(version), None);
-        }
         assert!(policy.validate().is_ok());
     }
     let encodings = [
-        ipv4.canonical_bytes_for_version(4).unwrap(),
+        ipv4.canonical_bytes(),
         dual.canonical_bytes(),
         with_rule.canonical_bytes(),
         unbound_rule.canonical_bytes(),

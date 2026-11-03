@@ -40,16 +40,8 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use thiserror::Error;
 
-/// Encoding version of a policy that allows ingress, from the host's private
-/// networks or from host loopback alone, which no snapshot records.
-pub const INGRESS_EGRESS_POLICY_ENCODING_VERSION: u32 = 5;
-/// Current encoding version used for snapshot egress-policy digests, which a
-/// policy with an IPv6 identity or IPv6 rules requires.
-pub const EGRESS_POLICY_ENCODING_VERSION: u32 = 4;
-/// Encoding version of policies without IPv6, which keep their digests.
-const IPV4_EGRESS_POLICY_ENCODING_VERSION: u32 = 3;
-const PREVIOUS_EGRESS_POLICY_ENCODING_VERSION: u32 = 2;
-const LEGACY_EGRESS_POLICY_ENCODING_VERSION: u32 = 1;
+/// Encoding version of the snapshot egress-policy digests.
+pub const EGRESS_POLICY_ENCODING_VERSION: u32 = 1;
 const ETHERNET_BROADCAST: [u8; 6] = [0xff; 6];
 const ETHERNET_UNSPECIFIED: [u8; 6] = [0; 6];
 
@@ -1072,95 +1064,19 @@ impl EgressPolicy {
         )
     }
 
-    /// Returns whether the policy has an IPv6 identity or an IPv6 rule.
-    fn has_ipv6(&self) -> bool {
-        self.ipv6.is_some()
-            || matches!(
-                &self.mode,
-                EgressPolicyMode::Rules { allow, deny, .. }
-                    if allow.iter().chain(deny).any(|rule| rule.destination.is_ipv6())
-            )
-    }
-
-    /// Returns the encoding version of [`Self::canonical_bytes`]: the ingress
-    /// version for a policy that allows ingress, including from host loopback
-    /// alone, the current version for a policy with IPv6, and otherwise the
-    /// previous one, so that IPv4 policies keep their digests.
-    pub fn encoding_version(&self) -> u32 {
-        if self.allows_ingress() {
-            INGRESS_EGRESS_POLICY_ENCODING_VERSION
-        } else if self.has_ipv6() {
-            EGRESS_POLICY_ENCODING_VERSION
-        } else {
-            IPV4_EGRESS_POLICY_ENCODING_VERSION
-        }
-    }
-
-    /// Returns stable bytes suitable for a policy digest, in the encoding of
-    /// [`Self::encoding_version`].
+    /// Returns stable bytes suitable for a policy digest, in encoding version
+    /// [`EGRESS_POLICY_ENCODING_VERSION`]: the IPv4 identity, the policy
+    /// mode with every rule tagged by its address family, the next hops, the
+    /// host-loopback action and proxy, the IPv6 identity, and the ingress
+    /// action: 0 allows ingress, 1 denies it, and 2 allows it from host
+    /// loopback alone.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        self.canonical_bytes_for_version(self.encoding_version())
-            .expect("a policy's encoding version represents it")
-    }
-
-    /// Returns canonical bytes for a supported snapshot encoding version, or
-    /// `None` when that version cannot represent the policy's ingress action,
-    /// IPv6 identity, or rules.
-    pub fn canonical_bytes_for_version(&self, version: u32) -> Option<Vec<u8>> {
-        match version {
-            INGRESS_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v5()),
-            _ if self.allows_ingress() => None,
-            EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v4()),
-            _ if self.has_ipv6() => None,
-            LEGACY_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v1()),
-            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v2()),
-            IPV4_EGRESS_POLICY_ENCODING_VERSION => Some(self.canonical_bytes_v3()),
-            _ => None,
-        }
-    }
-
-    fn canonical_bytes_v1(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.push(LEGACY_EGRESS_POLICY_ENCODING_VERSION as u8);
-        bytes.extend_from_slice(&self.guest_ipv4.octets());
-        bytes.extend_from_slice(&self.gateway_ipv4.octets());
-        append_policy_mode(&mut bytes, &self.mode, false);
-        bytes
-    }
-
-    fn canonical_bytes_v2(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        // Version 2 bytes begin with the version 3 marker, as version 3 bytes
-        // do.
-        bytes.push(IPV4_EGRESS_POLICY_ENCODING_VERSION as u8);
-        bytes.extend_from_slice(&self.guest_ipv4.octets());
-        bytes.push(self.prefix_length);
-        bytes.extend_from_slice(&self.guest_mac.to_bytes());
-        bytes.extend_from_slice(&self.gateway_ipv4.octets());
-        append_policy_mode(&mut bytes, &self.mode, false);
-        bytes.push(0xff);
-        bytes.extend_from_slice(&(self.next_hops.len() as u64).to_be_bytes());
-        for next_hop in &self.next_hops {
-            bytes.extend_from_slice(&next_hop.octets());
-        }
-        bytes
-    }
-
-    fn canonical_bytes_v3(&self) -> Vec<u8> {
-        let mut bytes = self.canonical_bytes_v2();
-        self.append_host_loopback(&mut bytes);
-        bytes
-    }
-
-    /// Encodes the version 3 fields with every rule tagged by its address
-    /// family, followed by the IPv6 identity.
-    fn canonical_bytes_v4(&self) -> Vec<u8> {
         let mut bytes = vec![EGRESS_POLICY_ENCODING_VERSION as u8];
         bytes.extend_from_slice(&self.guest_ipv4.octets());
         bytes.push(self.prefix_length);
         bytes.extend_from_slice(&self.guest_mac.to_bytes());
         bytes.extend_from_slice(&self.gateway_ipv4.octets());
-        append_policy_mode(&mut bytes, &self.mode, true);
+        append_policy_mode(&mut bytes, &self.mode);
         bytes.push(0xff);
         bytes.extend_from_slice(&(self.next_hops.len() as u64).to_be_bytes());
         for next_hop in &self.next_hops {
@@ -1176,15 +1092,6 @@ impl EgressPolicy {
             }
             None => bytes.push(0),
         }
-        bytes
-    }
-
-    /// Encodes the version 4 fields under the version 5 marker, followed by
-    /// the ingress action: 0 allows ingress, 1 denies it, and 2 allows it from
-    /// host loopback alone.
-    fn canonical_bytes_v5(&self) -> Vec<u8> {
-        let mut bytes = self.canonical_bytes_v4();
-        bytes[0] = INGRESS_EGRESS_POLICY_ENCODING_VERSION as u8;
         bytes.push(match (self.ingress, self.host_loopback_ingress) {
             (EgressAction::Allow, _) => 0,
             (EgressAction::Deny, EgressAction::Deny) => 1,
@@ -1665,10 +1572,9 @@ fn invalid_special_endpoint_address(
     }
 }
 
-/// Appends the canonical encoding of `mode`. With `tagged_rules`, each rule
-/// begins with its address family, which encodings that predate IPv6 rules
-/// omit.
-fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode, tagged_rules: bool) {
+/// Appends the canonical encoding of `mode`, in which each rule begins with its
+/// address family.
+fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode) {
     match mode {
         EgressPolicyMode::AllowAll => bytes.push(0),
         EgressPolicyMode::DenyAll => bytes.push(4),
@@ -1700,8 +1606,8 @@ fn append_policy_mode(bytes: &mut Vec<u8>, mode: &EgressPolicyMode, tagged_rules
                 EgressAction::Allow => 0,
                 EgressAction::Deny => 1,
             });
-            append_rules(bytes, allow, tagged_rules);
-            append_rules(bytes, deny, tagged_rules);
+            append_rules(bytes, allow);
+            append_rules(bytes, deny);
         }
     }
 }
@@ -1716,7 +1622,7 @@ fn append_cidrs(bytes: &mut Vec<u8>, rules: &[Ipv4Cidr]) {
     }
 }
 
-fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule], tagged: bool) {
+fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule]) {
     let mut rules = rules.to_vec();
     rules.sort_unstable();
     rules.dedup();
@@ -1724,14 +1630,11 @@ fn append_rules(bytes: &mut Vec<u8>, rules: &[EgressRule], tagged: bool) {
     for rule in rules {
         match rule.destination {
             EgressDestination::Ipv4(network) => {
-                if tagged {
-                    bytes.push(4);
-                }
+                bytes.push(4);
                 bytes.extend_from_slice(&network.network.octets());
                 bytes.push(network.prefix_length);
             }
             EgressDestination::Ipv6(network) => {
-                assert!(tagged, "only tagged encodings represent IPv6 rules");
                 bytes.push(6);
                 bytes.extend_from_slice(&network.network().octets());
                 bytes.push(network.prefix_length());
@@ -2013,11 +1916,9 @@ mod tests {
         assert_eq!(policy.next_hops(), &[GATEWAY_IPV4]);
         assert!(policy.allows_gateway_dns());
         assert!(policy.validate().is_ok());
-        assert_ne!(
-            policy
-                .canonical_bytes_for_version(LEGACY_EGRESS_POLICY_ENCODING_VERSION)
-                .unwrap(),
-            policy.canonical_bytes()
+        assert_eq!(
+            policy.canonical_bytes()[0],
+            EGRESS_POLICY_ENCODING_VERSION as u8
         );
     }
 
@@ -2852,25 +2753,17 @@ mod tests {
             assert!(!encodings[index + 1..].contains(encoding));
         }
 
-        // A range of one port encodes as that port, and a snapshot of either
-        // encoding version cannot be restored with a range in place of its
-        // first port.
+        // A range of one port encodes as that port, and a snapshot cannot be
+        // restored with a range in place of its first port.
         let canonical = |rule: &str| rule_policy(EgressAction::Deny, &[rule], &[]);
         assert_eq!(
             canonical("192.0.2.0/24:tcp:8000-8000").canonical_bytes(),
             canonical("192.0.2.0/24:tcp:8000").canonical_bytes()
         );
-        for version in [
-            LEGACY_EGRESS_POLICY_ENCODING_VERSION,
-            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION,
-            EGRESS_POLICY_ENCODING_VERSION,
-        ] {
-            assert_ne!(
-                canonical("192.0.2.0/24:tcp:8000").canonical_bytes_for_version(version),
-                canonical("192.0.2.0/24:tcp:8000-8010").canonical_bytes_for_version(version),
-                "{version}"
-            );
-        }
+        assert_ne!(
+            canonical("192.0.2.0/24:tcp:8000").canonical_bytes(),
+            canonical("192.0.2.0/24:tcp:8000-8010").canonical_bytes()
+        );
     }
 
     #[test]
@@ -2931,12 +2824,6 @@ mod tests {
         assert_eq!(
             policy.authorize_frame(&denied, denied.len()),
             Err(EgressDenied::AllTrafficDenied)
-        );
-        assert_ne!(
-            policy
-                .canonical_bytes_for_version(PREVIOUS_EGRESS_POLICY_ENCODING_VERSION)
-                .unwrap(),
-            policy.canonical_bytes()
         );
         assert!(policy.validate().is_ok());
 
@@ -3157,13 +3044,9 @@ mod tests {
     }
 
     #[test]
-    fn ingress_has_its_own_canonical_encoding() {
+    fn the_canonical_encoding_ends_with_the_ingress_action() {
         let denied = rule_policy(EgressAction::Deny, &["192.0.2.0/24:tcp:443"], &[]);
         let allowed = denied.clone().with_ingress(EgressAction::Allow);
-        assert_eq!(
-            denied.encoding_version(),
-            IPV4_EGRESS_POLICY_ENCODING_VERSION
-        );
         assert_eq!(
             denied
                 .clone()
@@ -3171,22 +3054,15 @@ mod tests {
                 .canonical_bytes(),
             denied.canonical_bytes()
         );
-        assert_eq!(
-            allowed.encoding_version(),
-            INGRESS_EGRESS_POLICY_ENCODING_VERSION
-        );
         let bytes = allowed.canonical_bytes();
-        assert_eq!(bytes[0], INGRESS_EGRESS_POLICY_ENCODING_VERSION as u8);
-        assert_eq!(bytes[1..bytes.len() - 1], denied.canonical_bytes_v4()[1..]);
+        let denied_bytes = denied.canonical_bytes();
+        assert_eq!(bytes[0], EGRESS_POLICY_ENCODING_VERSION as u8);
+        assert_eq!(
+            bytes[..bytes.len() - 1],
+            denied_bytes[..denied_bytes.len() - 1]
+        );
         assert_eq!(bytes.last(), Some(&0));
-        for version in [
-            LEGACY_EGRESS_POLICY_ENCODING_VERSION,
-            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION,
-            IPV4_EGRESS_POLICY_ENCODING_VERSION,
-            EGRESS_POLICY_ENCODING_VERSION,
-        ] {
-            assert_eq!(allowed.canonical_bytes_for_version(version), None);
-        }
+        assert_eq!(denied_bytes.last(), Some(&1));
         allowed.validate().unwrap();
         assert_ne!(allowed, denied);
     }
@@ -3326,7 +3202,7 @@ mod tests {
     }
 
     #[test]
-    fn host_loopback_ingress_has_its_own_ingress_encoding() {
+    fn host_loopback_ingress_has_its_own_ingress_action() {
         let denied = rule_policy(EgressAction::Deny, &["192.0.2.0/24:tcp:443"], &[]);
         let host_loopback = denied
             .clone()
@@ -3339,23 +3215,13 @@ mod tests {
                 .canonical_bytes(),
             denied.canonical_bytes()
         );
-        assert_eq!(
-            host_loopback.encoding_version(),
-            INGRESS_EGRESS_POLICY_ENCODING_VERSION
-        );
         let bytes = host_loopback.canonical_bytes();
         assert_eq!(
             bytes[..bytes.len() - 1],
             ingress.canonical_bytes()[..bytes.len() - 1]
         );
         assert_eq!(bytes.last(), Some(&2));
-        assert_eq!(
-            denied
-                .canonical_bytes_for_version(INGRESS_EGRESS_POLICY_ENCODING_VERSION)
-                .unwrap()
-                .last(),
-            Some(&1)
-        );
+        assert_eq!(denied.canonical_bytes().last(), Some(&1));
         // Ingress already admits the host's publications' frames.
         assert_eq!(
             ingress
@@ -3364,14 +3230,6 @@ mod tests {
                 .canonical_bytes(),
             ingress.canonical_bytes()
         );
-        for version in [
-            LEGACY_EGRESS_POLICY_ENCODING_VERSION,
-            PREVIOUS_EGRESS_POLICY_ENCODING_VERSION,
-            IPV4_EGRESS_POLICY_ENCODING_VERSION,
-            EGRESS_POLICY_ENCODING_VERSION,
-        ] {
-            assert_eq!(host_loopback.canonical_bytes_for_version(version), None);
-        }
         host_loopback.validate().unwrap();
         assert_ne!(host_loopback, denied);
     }
