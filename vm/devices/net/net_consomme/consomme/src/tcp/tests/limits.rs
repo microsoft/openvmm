@@ -6,6 +6,7 @@
 use super::*;
 use crate::limits::DEFAULT_MAX_ACTIVE_TCP_FLOWS;
 use pal_async::task::Spawn;
+use test_with_tracing::test;
 
 /// Returns default parameters with the TCP active-flow limit set to `limit`.
 fn params_with_tcp_limit(limit: Option<usize>) -> ConsommeParams {
@@ -172,6 +173,8 @@ async fn test_tcp_port_forward_repolls_after_limit_rejection(driver: DefaultDriv
                         .get_mut(&key)
                         .unwrap()
                         .socket
+                        .as_mut()
+                        .unwrap()
                         .poll_ready(cx, PollEvents::IN)
                         .is_pending()
                 );

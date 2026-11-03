@@ -4,9 +4,6 @@
 // UNSAFETY: needed to cast the socket buffer to `MaybeUninit`.
 #![expect(unsafe_code)]
 
-#[cfg(test)]
-mod tests;
-
 use super::Access;
 use super::Client;
 use super::ConsommeState;
@@ -367,6 +364,8 @@ impl<T: Client> Access<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    mod limits;
+
     use super::*;
     use crate::Consomme;
     use crate::ConsommeParams;
@@ -397,6 +396,7 @@ mod tests {
                 socket: Some(socket),
                 guest_mac,
                 stats: Default::default(),
+                last_activity: Instant::now(),
             },
         );
         let old_wake = WakeChannel::new();

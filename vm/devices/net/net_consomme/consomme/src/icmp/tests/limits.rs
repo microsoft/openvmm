@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tests of the ICMP active-flow limit.
+
 use super::*;
 use crate::Consomme;
 use crate::ConsommeParams;
@@ -8,6 +10,7 @@ use crate::limits::DEFAULT_MAX_ACTIVE_ICMP_FLOWS;
 use crate::limits::FlowLimits;
 use pal_async::DefaultDriver;
 use pal_async::driver::Driver;
+use test_with_tracing::test;
 
 struct TestClient {
     driver: DefaultDriver,
@@ -39,7 +42,7 @@ async fn test_icmp_connection_limit_rejects_and_recovers(driver: DefaultDriver) 
     consomme.icmp.connections.insert(
         existing_addr,
         IcmpConnection {
-            socket,
+            socket: Some(socket),
             guest_mac: EthernetAddress([0, 0, 0, 0, 0, 1]),
             stats: Default::default(),
             last_activity: Instant::now() - 2 * timeout,
@@ -68,7 +71,7 @@ fn insert_flows(consomme: &mut Consomme, driver: &DefaultDriver, count: usize) {
         consomme.icmp.connections.insert(
             SocketAddrV4::new(Ipv4Addr::new(10, 0, 1, host), 0),
             IcmpConnection {
-                socket: PolledSocket::new(driver, socket).unwrap(),
+                socket: Some(PolledSocket::new(driver, socket).unwrap()),
                 guest_mac: EthernetAddress([0, 0, 0, 0, 0, 1]),
                 stats: Default::default(),
                 last_activity: Instant::now(),
