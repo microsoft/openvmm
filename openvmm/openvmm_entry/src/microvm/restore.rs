@@ -48,24 +48,6 @@ pub(crate) fn fresh_microvm_generation_id() -> anyhow::Result<[u8; 16]> {
     Ok(generation_id)
 }
 
-pub(super) fn align_legacy_network_policy_contract(
-    saved: &SnapshotMachineContract,
-    expected: &mut SnapshotMachineContract,
-) {
-    let (Some(saved), Some(expected)) = (
-        saved.microvm_network.as_ref(),
-        expected.microvm_network.as_mut(),
-    ) else {
-        return;
-    };
-    if matches!(saved.egress_policy_encoding_version, 0 | 1) {
-        expected.egress_policy_encoding_version = saved.egress_policy_encoding_version;
-        expected
-            .egress_policy_sha256
-            .clone_from(&saved.egress_policy_sha256);
-    }
-}
-
 fn align_restore_console_listener_contract(
     saved: &SnapshotMachineContract,
     expected: &mut SnapshotMachineContract,
@@ -687,7 +669,6 @@ pub(crate) fn validate_restore_contract(
         contract,
         cpu_profile,
     )?;
-    align_legacy_network_policy_contract(saved_contract, &mut expected_contract);
     align_restore_console_listener_contract(saved_contract, &mut expected_contract);
     openvmm_helpers::snapshot::microvm::validate_microvm_machine_contract(
         manifest,
