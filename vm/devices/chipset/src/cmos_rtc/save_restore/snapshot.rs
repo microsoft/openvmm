@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! The snapshot fields of the RTC saved state: the guest-visible UTC time,
-//! the calendar validity, the retired coherent-transaction state, the last
-//! update blip, and the deadlines of the timers.
+//! the calendar validity, the last update blip, and the deadlines of the
+//! timers.
 //!
 //! A restore keeps each enabled timer's saved deadline, so that its next
 //! interrupt comes at the same VM time as it would have without the
@@ -32,7 +32,6 @@ const ALARM_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 /// The validated snapshot fields of a saved state.
 pub(super) struct Fields {
     pub(super) time_valid: bool,
-    pub(super) transaction_read_mask: Option<u16>,
     pub(super) clock_time_millis: i64,
     pub(super) last_update_millis: i64,
     pub(super) deadlines: Deadlines,
@@ -49,14 +48,6 @@ impl Fields {
     /// Validates the snapshot fields of `state` at VM time `now` before any
     /// RTC state changes.
     pub(super) fn validate(state: &SavedState, now: VmTime) -> Result<Self, RestoreError> {
-        let time_valid = state.time_valid.unwrap_or(true);
-
-        if state.transaction_read_mask.is_some() {
-            return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
-                "invalid RTC coherent transaction state"
-            )));
-        }
-
         let status_c = StatusRegC::from(state.cmos[CmosReg::STATUS_C.0 as usize]);
         if status_c.irq_combined()
             != (status_c.irq_update() || status_c.irq_periodic() || status_c.irq_alarm())
@@ -97,8 +88,7 @@ impl Fields {
         };
 
         Ok(Self {
-            time_valid,
-            transaction_read_mask: state.transaction_read_mask,
+            time_valid: state.time_valid,
             clock_time_millis: state.clock_time_millis,
             last_update_millis: state.last_update_millis,
             deadlines,
