@@ -517,7 +517,8 @@ impl SnapshotMicrovmNetwork {
             egress_policy_mode: egress_policy.mode_name().to_owned(),
             egress_policy_sha256: sha2::Sha256::digest(egress_policy.canonical_bytes()).to_vec(),
             egress_policy_required: egress_policy.is_active(),
-            egress_policy_encoding_version: egress_policy.encoding_version(),
+            egress_policy_encoding_version:
+                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
             guest_ipv6,
             ipv6_prefix_length,
             gateway_ipv6,
@@ -581,22 +582,13 @@ pub fn validate_microvm_network_policy(
     saved: &SnapshotMicrovmNetwork,
     policy: &net_backend_resources::egress::EgressPolicy,
 ) -> anyhow::Result<()> {
-    let encoding_version = match saved.egress_policy_encoding_version {
-        0 => 1,
-        version => version,
-    };
-    let canonical = policy
-        .canonical_bytes_for_version(encoding_version)
-        .with_context(|| {
-            if encoding_version < net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION {
-                format!(
-                    "restore-time egress policy has IPv6, which snapshot egress policy encoding version {encoding_version} predates"
-                )
-            } else {
-                format!("snapshot egress policy encoding version {encoding_version} is unsupported")
-            }
-        })?;
-    let digest = sha2::Sha256::digest(canonical);
+    anyhow::ensure!(
+        saved.egress_policy_encoding_version
+            == net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
+        "snapshot egress policy encoding version {} is unsupported",
+        saved.egress_policy_encoding_version
+    );
+    let digest = sha2::Sha256::digest(policy.canonical_bytes());
     anyhow::ensure!(
         saved.egress_policy_mode == policy.mode_name()
             && saved.egress_policy_sha256 == digest.as_slice()
@@ -632,10 +624,7 @@ pub fn microvm_network_template_policy(
 /// place of `policy`.
 ///
 /// `saved` must record the [complete deny-all policy](microvm_network_template_policy)
-/// of its own identity in the encoding that the policy has today: version 3
-/// without IPv6, or version 4 with it. Versions 0 to 2 encode neither the
-/// host-loopback action nor the proxy endpoint, so no snapshot that records
-/// one is a template. `policy` must be bound to the identity that `saved`
+/// of its own identity. `policy` must be bound to the identity that `saved`
 /// records, which it keeps; it may name IPv6 destinations only when that
 /// identity has IPv6.
 pub fn validate_microvm_network_replacement(
@@ -1861,7 +1850,7 @@ pub(super) fn validate_machine_contract_shape(
         );
         anyhow::ensure!(
             network.egress_policy_encoding_version
-                <= net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
+                == net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
             "snapshot egress policy encoding version {} is unsupported",
             network.egress_policy_encoding_version
         );
@@ -3544,8 +3533,10 @@ mod tests {
         let saved = contract.microvm_network.as_ref().unwrap();
         assert!(saved.guest_ipv6.is_empty() && saved.gateway_ipv6.is_empty());
         assert_eq!(saved.ipv6_prefix_length, 0);
-        // A policy without IPv6 keeps the digest encoding that predates IPv6.
-        assert_eq!(saved.egress_policy_encoding_version, 3);
+        assert_eq!(
+            saved.egress_policy_encoding_version,
+            net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
+        );
         assert!(!contract.effective_command_line.contains("virtnet_ip6="));
         assert_eq!(
             microvm_network_config_from_snapshot(saved).unwrap(),
@@ -3605,25 +3596,12 @@ mod tests {
             )
             .unwrap();
         let mut saved = SnapshotMicrovmNetwork::new(&network, &policy);
-        saved.egress_policy_encoding_version = 0;
-        saved.egress_policy_sha256 =
-            sha2::Sha256::digest(policy.canonical_bytes_for_version(1).unwrap()).to_vec();
-
         validate_microvm_network_policy(&saved, &policy).unwrap();
-        saved.egress_policy_encoding_version = u32::MAX;
-        assert!(validate_microvm_network_policy(&saved, &policy).is_err());
-
-        // A restore-time policy with IPv6 cannot match a digest that predates IPv6.
-        saved.egress_policy_encoding_version = 3;
-        let ipv6_rules = network
-            .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::Rules {
-                default_action: net_backend_resources::egress::EgressAction::Deny,
-                allow: vec!["2001:db8::/32:tcp:443".parse().unwrap()],
-                deny: Vec::new(),
-            })
-            .unwrap();
-        let error = validate_microvm_network_policy(&saved, &ipv6_rules).unwrap_err();
-        assert!(error.to_string().contains("predates"), "{error:#}");
+        for version in [0, 2, u32::MAX] {
+            saved.egress_policy_encoding_version = version;
+            let error = validate_microvm_network_policy(&saved, &policy).unwrap_err();
+            assert!(error.to_string().contains("is unsupported"), "{error:#}");
+        }
     }
 
     #[test]
@@ -3635,9 +3613,14 @@ mod tests {
             .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
             .unwrap();
         for (network, encoding_version) in [
-            (dual_stack.clone(), 4),
-            // A network that predates IPv6 keeps the encoding without it.
-            (dual_stack.clone().without_ipv6(), 3),
+            (
+                dual_stack.clone(),
+                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
+            ),
+            (
+                dual_stack.clone().without_ipv6(),
+                net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION,
+            ),
         ] {
             let template = microvm_network_template_policy(&network).unwrap();
             assert_eq!(template.mode_name(), "deny-all");
@@ -3705,28 +3688,9 @@ mod tests {
             }
         }
 
-        // Encodings before version 3 cannot tell a complete deny-all from one
-        // with host loopback or a proxy, so they never record a template.
+        // The template's identity must be canonical.
         let ipv4_only = dual_stack.without_ipv6();
         let template = microvm_network_template_policy(&ipv4_only).unwrap();
-        for version in [0, 1, 2] {
-            let mut saved = SnapshotMicrovmNetwork::new(&ipv4_only, &template);
-            saved.egress_policy_encoding_version = version;
-            saved.egress_policy_sha256 = sha2::Sha256::digest(
-                template
-                    .canonical_bytes_for_version(version.max(1))
-                    .unwrap(),
-            )
-            .to_vec();
-            validate_microvm_network_policy(&saved, &template).unwrap();
-            let error = validate_microvm_network_replacement(&saved, &template).unwrap_err();
-            assert!(
-                error.to_string().contains("not a complete deny-all"),
-                "{error:#}"
-            );
-        }
-
-        // The template's identity must be canonical.
         let mut saved = SnapshotMicrovmNetwork::new(&ipv4_only, &template);
         saved.guest_mac[5] ^= 1;
         let error = validate_microvm_network_replacement(&saved, &template).unwrap_err();
