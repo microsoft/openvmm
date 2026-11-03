@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restore_packet_with_network_settings_is_version_6() {
+    fn a_restore_packet_carries_network_settings() {
         let base = RestorePacketBase {
             online_vp_count: 0,
             memory_target: false,
