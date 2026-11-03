@@ -542,7 +542,7 @@ mod tests {
     fn successful_drain_preserves_guest_exit_status() {
         block_on(async {
             for code in [0, 37] {
-                let (drain, mut requests) = MicrovmOutputDrain::new(None);
+                let (drain, mut requests) = MicrovmOutputDrain::new(None, None);
                 let (event, ()) = futures::join!(guest_exit_event(code, Some(drain)), async {
                     requests.recv().await.unwrap().complete(Ok(()));
                 });
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn failed_drain_requests_process_exit_not_worker_stopped() {
-        let (drain, requests) = MicrovmOutputDrain::new(None);
+        let (drain, requests) = MicrovmOutputDrain::new(None, None);
         drop(requests);
         let event = block_on(guest_exit_event(0, Some(drain)));
         assert!(matches!(
