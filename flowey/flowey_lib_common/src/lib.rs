@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod _util;
+pub mod ado_add_build_tag;
 pub mod ado_task_azure_key_vault;
 pub mod ado_task_npm_authenticate;
 pub mod ado_task_nuget_authenticate;
