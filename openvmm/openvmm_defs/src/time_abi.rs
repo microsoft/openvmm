@@ -20,7 +20,7 @@ use virt::time_abi::downtime::MAX_DOWNTIME_NS;
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
 #[mesh(package = "openvmm.snapshot")]
 pub struct SnapshotTimeContract {
-    /// The time ABI version: 2.
+    /// The time ABI version: 1.
     #[mesh(1)]
     pub time_abi_version: u32,
     /// `F_s`, the declared TSC rate of the snapshot lineage, in Hz.
@@ -56,10 +56,8 @@ pub struct SnapshotTimeContract {
     pub capture_generation: u32,
     /// The host monotonic interval from the saved VM-time cut to the capture
     /// anchor, on the clock that the anchor samples.
-    ///
-    /// Absent in snapshots captured before this interval was recorded.
     #[mesh(12)]
-    pub vm_time_cut_to_anchor_ns: Option<u64>,
+    pub vm_time_cut_to_anchor_ns: u64,
 }
 
 impl SnapshotTimeContract {
@@ -97,7 +95,7 @@ impl SnapshotTimeContract {
     /// Returns the interval by which VM time and the RTC must advance from
     /// their saved cut to the destination restore anchor.
     pub fn vm_time_downtime_ns(&self, anchor_downtime_ns: u64) -> Result<u64, TimeAbiError> {
-        let cut_to_anchor_ns = self.vm_time_cut_to_anchor_ns.unwrap_or(0);
+        let cut_to_anchor_ns = self.vm_time_cut_to_anchor_ns;
         let downtime_ns = anchor_downtime_ns
             .checked_add(cut_to_anchor_ns)
             .filter(|value| *value <= MAX_DOWNTIME_NS)

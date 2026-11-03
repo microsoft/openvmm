@@ -293,7 +293,7 @@ pub(super) mod tests {
             host_id: vec![1; 16],
             host_boot_id: vec![2; 16],
             capture_generation: 3,
-            vm_time_cut_to_anchor_ns: Some(200),
+            vm_time_cut_to_anchor_ns: 200,
         }
     }
 
@@ -425,12 +425,8 @@ pub(super) mod tests {
         let contract = test_time_contract();
         assert_eq!(contract.vm_time_downtime_ns(1_000).unwrap(), 1_200);
 
-        let mut legacy = contract.clone();
-        legacy.vm_time_cut_to_anchor_ns = None;
-        assert_eq!(legacy.vm_time_downtime_ns(1_000).unwrap(), 1_000);
-
         let mut excessive = contract;
-        excessive.vm_time_cut_to_anchor_ns = Some(virt::time_abi::downtime::MAX_DOWNTIME_NS);
+        excessive.vm_time_cut_to_anchor_ns = virt::time_abi::downtime::MAX_DOWNTIME_NS;
         assert_eq!(
             excessive.vm_time_downtime_ns(1).unwrap_err().code,
             TimeAbiCode::DowntimeExcessive
