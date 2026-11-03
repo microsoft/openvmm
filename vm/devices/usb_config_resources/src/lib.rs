@@ -157,8 +157,9 @@ mod tests {
                 block_count: Some(4096),
             },
         ] {
+            let serialized = mesh::OwnedMessage::new(config.clone()).serialize();
             let decoded: MockStorageConfig =
-                mesh::OwnedMessage::new(config.clone()).parse().unwrap();
+                mesh::OwnedMessage::serialized(serialized).parse().unwrap();
             // In particular, an explicitly empty serial must remain distinct from None.
             assert_eq!(decoded, config);
         }
@@ -179,7 +180,9 @@ mod tests {
                 UsbDeviceConfig::Discover(WinUsbAllConfig::default().into_resource()),
             ],
         };
-        let decoded: UsbControllerConfig = mesh::OwnedMessage::new(config).parse().unwrap();
+        let serialized = mesh::OwnedMessage::new(config).serialize();
+        let decoded: UsbControllerConfig =
+            mesh::OwnedMessage::serialized(serialized).parse().unwrap();
         let UsbDeviceConfig::Device { connector, device } = &decoded.devices[0] else {
             panic!("expected a fixed attachment");
         };
