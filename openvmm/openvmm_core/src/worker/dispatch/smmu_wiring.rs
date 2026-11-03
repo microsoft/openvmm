@@ -13,6 +13,7 @@ use anyhow::Context as _;
 use chipset_device_resources::IRQ_LINE_SET;
 use guestmem::GuestMemory;
 use std::sync::Arc;
+use virt::irqcon::ControlGic;
 use vm_topology::pcie::PcieHostBridge;
 use vmotherboard::ChipsetBuilder;
 
@@ -112,6 +113,7 @@ pub(super) fn setup_smmu(
     resolved: &ResolvedSmmu,
     pcie_host_bridges: &mut [PcieHostBridge],
     chipset_builder: &ChipsetBuilder<'_>,
+    irqcon: Arc<dyn ControlGic>,
     gm: &GuestMemory,
     acpi_available: bool,
 ) -> anyhow::Result<SmmuDevicesResult> {
@@ -141,6 +143,14 @@ pub(super) fn setup_smmu(
         let evtq_irq_vector = smmu.evtq_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let gerror_irq_vector = smmu.gerr_intid - *vmm_core::emuplat::gic::SPI_RANGE.start();
         let device_name = format!("smmu:{}", rc.name);
+
+        for intid in [smmu.evtq_intid, smmu.gerr_intid] {
+            vmm_core::emuplat::gic::add_gic_line_target(
+                chipset_builder,
+                irqcon.clone(),
+                intid..=intid,
+            );
+        }
 
         // Resolve the requested OAS into a backend policy. Both policy variants
         // carry a concrete OAS: `Fixed` the requested value, `Auto` the

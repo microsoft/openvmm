@@ -2149,39 +2149,13 @@ impl InitializedVm {
                 })?;
         }
 
-        // Reserve platform line inputs independently of the connected devices.
-        // Do not map the MSI portion of the SPI namespace into the line set.
+        // Fixed platform wires exist even when their devices are absent.
         #[cfg(guest_arch = "aarch64")]
-        {
-            use vmm_core::emuplat::gic::GicInterruptTarget;
-            use vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE;
-            use vmm_core::emuplat::gic::SPI_RANGE;
-
-            let gic = Arc::new(GicInterruptTarget::new(
-                partition.clone().control_gic(Vtl::Vtl0),
-            ));
-            chipset_builder.add_external_line_target(
-                IRQ_LINE_SET,
-                0..=PLATFORM_LINE_SPI_RANGE.end() - SPI_RANGE.start(),
-                *PLATFORM_LINE_SPI_RANGE.start(),
-                "gic",
-                gic.clone(),
-            );
-            if let ResolvedIommu::Smmu(resolved) = &resolved_iommu {
-                for smmu in &resolved.instances {
-                    for intid in [smmu.evtq_intid, smmu.gerr_intid] {
-                        let vector = intid - SPI_RANGE.start();
-                        chipset_builder.add_external_line_target(
-                            IRQ_LINE_SET,
-                            vector..=vector,
-                            intid,
-                            "gic-smmu",
-                            gic.clone(),
-                        );
-                    }
-                }
-            }
-        }
+        vmm_core::emuplat::gic::add_gic_line_target(
+            &chipset_builder,
+            partition.control_gic(Vtl::Vtl0),
+            vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE,
+        );
 
         // Add the x86 BSP's LINTs for the PIC to use.
         #[cfg(guest_arch = "x86_64")]
@@ -2616,6 +2590,7 @@ impl InitializedVm {
                     resolved,
                     &mut pcie_host_bridges,
                     &chipset_builder,
+                    partition.control_gic(Vtl::Vtl0),
                     &gm,
                     acpi_available,
                 )?,

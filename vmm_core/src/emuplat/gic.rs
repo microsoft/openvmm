@@ -4,10 +4,31 @@
 //! Code to bridge between the `vmotherboard` interrupt controller and a `virt`
 //! partition GIC.
 
+use chipset_device_resources::IRQ_LINE_SET;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use virt::irqcon::ControlGic;
 use vmcore::line_interrupt::LineSetTarget;
+use vmotherboard::ChipsetBuilder;
+
+/// Declares persistent GIC line wiring, independent of producer handles.
+///
+/// `spis` must be a nonempty range of platform-owned SPI INTIDs. Unconnected
+/// inputs in this range replay low; MSI allocations must not be included.
+pub fn add_gic_line_target(
+    chipset: &ChipsetBuilder<'_>,
+    irqcon: Arc<dyn ControlGic>,
+    spis: RangeInclusive<u32>,
+) {
+    assert!(!spis.is_empty() && SPI_RANGE.contains(spis.start()) && SPI_RANGE.contains(spis.end()));
+    chipset.add_external_line_target(
+        IRQ_LINE_SET,
+        spis.start() - SPI_RANGE.start()..=spis.end() - SPI_RANGE.start(),
+        *spis.start(),
+        "gic",
+        Arc::new(GicInterruptTarget::new(irqcon)),
+    );
+}
 
 /// Interrupt target for the GIC.
 ///
@@ -29,6 +50,7 @@ pub const SPI_RANGE: RangeInclusive<u32> = 32..=1019;
 ///
 /// IRQ line-set vectors 0 through 31 map to these SPIs. Higher SPIs are used
 /// for MSI delivery or explicitly allocated platform lines such as SMMU IRQs.
+// TODO: Describe fixed line wiring in platform configuration rather than a range.
 pub const PLATFORM_LINE_SPI_RANGE: RangeInclusive<u32> = 32..=63;
 
 impl LineSetTarget for GicInterruptTarget {

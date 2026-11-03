@@ -3347,18 +3347,12 @@ async fn new_underhill_vm(
         )),
     );
 
-    // Reserve fixed platform line inputs even when their devices are absent.
-    // Higher SPIs can belong to MSI sources and must not be replayed as lines.
+    // Fixed platform wires exist even when their devices are absent.
     #[cfg(guest_arch = "aarch64")]
-    chipset_builder.add_external_line_target(
-        chipset_device_resources::IRQ_LINE_SET,
-        0..=vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE.end()
-            - vmm_core::emuplat::gic::SPI_RANGE.start(),
-        *vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE.start(),
-        "gic",
-        Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
-            partition.clone().control_gic(Vtl::Vtl0),
-        )),
+    vmm_core::emuplat::gic::add_gic_line_target(
+        &chipset_builder,
+        partition.control_gic(Vtl::Vtl0),
+        vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE,
     );
 
     // TODO: Enable for isolated VMs.
