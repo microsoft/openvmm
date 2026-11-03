@@ -24,6 +24,7 @@ impl ConsommeQueue {
                 ipv4: meta.flags.offload_ip_header_checksum(),
                 tcp: meta.flags.offload_tcp_checksum(),
                 udp: meta.flags.offload_udp_checksum(),
+                partial: false,
                 tso: meta
                     .flags
                     .offload_tcp_segmentation()
@@ -64,7 +65,10 @@ impl ConsommeQueue {
                 tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
                 match err {
                     consomme::DropReason::SendBufferFull
-                    | consomme::DropReason::DestinationNotAllowed => {
+                    | consomme::DropReason::DestinationNotAllowed
+                    | consomme::DropReason::TcpConnectionLimit
+                    | consomme::DropReason::UdpConnectionLimit
+                    | consomme::DropReason::IcmpConnectionLimit => {
                         self.stats.tx_dropped.increment()
                     }
                     consomme::DropReason::UnsupportedEthertype(_)

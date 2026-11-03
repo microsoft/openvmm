@@ -26,6 +26,7 @@ pub(crate) async fn receive(
     receiveq: &mut Option<VirtioQueue>,
     io: &parking_lot::Mutex<&mut Box<dyn SerialIo>>,
     mem: &GuestMemory,
+    check: &task_control::StopCheck<'_>,
 ) -> Result<bool, WorkerError> {
     let Some(receiveq) = receiveq.as_mut() else {
         poll_fn(|cx| io.lock().poll_disconnect(cx))
@@ -34,6 +35,7 @@ pub(crate) async fn receive(
         return Ok(false);
     };
     'rx: loop {
+        check.check()?;
         let work = {
             let mut wait_work = pin!(receiveq.peek());
             poll_fn(|cx| {

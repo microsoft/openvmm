@@ -43,6 +43,7 @@ pub mod build_xtask;
 pub mod cfg_openvmm_magicpath;
 pub mod cfg_rustup_version;
 pub mod cleanup_leftover_hyperv_vms;
+pub mod collect_unit_test_coverage;
 pub mod common;
 pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_release_igvm_files_from_gh;

@@ -1126,6 +1126,9 @@ impl VmService {
         } else {
             None
         };
+        if req_config.guest_watchdog {
+            chipset_builder = chipset_builder.with_guest_watchdog();
+        }
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
         }
@@ -3875,6 +3878,7 @@ mod tests {
             }
         }
         let defaults = vmservice::VmConfig::default();
+        assert!(!defaults.guest_watchdog);
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());

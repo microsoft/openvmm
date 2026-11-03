@@ -923,12 +923,13 @@ impl Worker {
         stop: &mut StopTask<'_>,
         queue: &mut NetQueue,
     ) -> Result<(), WorkerError> {
+        let check = stop.check_handle()?;
         let epqueue_state = queue.state.as_mut().unwrap();
 
         loop {
             let did_some_work = self.process_endpoint_rx(epqueue_state.queue.as_mut())?
-                | self.process_virtio_rx(epqueue_state.queue.as_mut())?
-                | self.process_virtio_tx(epqueue_state)?
+                | self.process_virtio_rx(epqueue_state.queue.as_mut(), &check)?
+                | self.process_virtio_tx(epqueue_state, &check)?
                 | self.process_endpoint_tx(epqueue_state.queue.as_mut())?;
 
             if !did_some_work {
@@ -966,9 +967,11 @@ impl Worker {
     fn process_virtio_tx(
         &mut self,
         queue_state: &mut EndpointQueueState,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         let mut did_work = false;
         loop {
+            check.check()?;
             did_work |= self.transmit_pending_segments(queue_state)?;
             if !self.active_state.data.tx_segments.is_empty() {
                 break;
@@ -1306,15 +1309,24 @@ impl Worker {
     fn process_virtio_rx(
         &mut self,
         epqueue: &mut dyn net_backend::Queue,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         // Fill the receive queue with any available buffers.
         let mut rx_ids = Vec::new();
-        while let Some(work) = self
-            .virtio_state
-            .rx_in_order
-            .try_next(&mut self.virtio_state.rx_queue)
-            .map_err(WorkerError::VirtioQueue)?
-        {
+        let cancelled = loop {
+            // Rejected buffers complete inline and can be reposted, so queue
+            // capacity does not bound this loop.
+            if let Err(cancelled) = check.check() {
+                break Some(cancelled);
+            }
+            let Some(work) = self
+                .virtio_state
+                .rx_in_order
+                .try_next(&mut self.virtio_state.rx_queue)
+                .map_err(WorkerError::VirtioQueue)?
+            else {
+                break None;
+            };
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
@@ -1329,13 +1341,15 @@ impl Worker {
                     );
                 }
             }
-        }
-        if !rx_ids.is_empty() {
+        };
+        let did_work = !rx_ids.is_empty();
+        if did_work {
             epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
-            Ok(true)
-        } else {
-            Ok(false)
         }
+        if let Some(cancelled) = cancelled {
+            return Err(cancelled.into());
+        }
+        Ok(did_work)
     }
 
     fn process_endpoint_rx(

@@ -792,6 +792,9 @@ message VMConfig {
     // Guest state storage, including UEFI variables. If absent, guest state
     // remains in memory and is lost when the VM is torn down.
     VmgsConfig vmgs = 21;
+    // Enable the guest watchdog device. Timeout behavior is configured
+    // separately by guest_power_actions.watchdog.
+    bool guest_watchdog = 22;
 }
 
 // WindowsOptions contains virtual machine configurations that are only present on a Windows host.
