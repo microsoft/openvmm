@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The microVM restore packet, version 5 or, with network settings, version 6,
-//! and the time sample of NVX time ABI 2, as the guest reads them through the
-//! portb device, and the platform resource that pairs each time sample's host
-//! UTC with the guest TSC.
+//! The microVM restore packet and the time sample of the NVX time ABI, as the
+//! guest reads them through the portb device, and the platform resource that
+//! pairs each time sample's host UTC with the guest TSC.
 //!
 //! Every byte the guest reads is a port exit, so the records are compact and
 //! readable four bytes at a time.
@@ -20,21 +19,15 @@ use vm_resource::ResourceKind;
 
 /// The restore packet magic.
 pub const RESTORE_PACKET_MAGIC: [u8; 3] = *b"OVR";
-/// The version of a restore packet without network settings.
-pub const RESTORE_PACKET_VERSION: u8 = 5;
-/// The version of a restore packet that carries network settings: version
-/// 5's fields, with the network byte in place of the reserved byte, and the
-/// DNS server after the entropy. Only a restore that replaces the network
-/// policy of a snapshot without a tier gives one, so that a guest that reads
-/// version 5 alone fails such a restore rather than ignore its settings.
-pub const RESTORE_PACKET_NETWORK_VERSION: u8 = 6;
+/// The restore packet version.
+pub const RESTORE_PACKET_VERSION: u8 = 1;
 /// The length of the restore packet header.
 pub const RESTORE_PACKET_HEADER_LEN: usize = 24;
 /// The length of one memory range record.
 pub const RESTORE_RANGE_LEN: usize = 16;
 /// The length of the restore entropy.
 pub const RESTORE_ENTROPY_LEN: usize = 64;
-/// The length of the DNS server record of a version 6 packet: an IPv6
+/// The length of the DNS server record, which follows the entropy: an IPv6
 /// address, or an IPv4 address and twelve zero bytes, or zeros without a DNS
 /// server.
 pub const RESTORE_DNS_SERVER_LEN: usize = 16;
@@ -53,11 +46,15 @@ pub const FLAG_MEMORY_TARGET: u8 = 1 << 1;
 pub const FLAG_ACK_REQUIRED: u8 = 1 << 2;
 /// A test hook altered time ABI behavior.
 pub const FLAG_TEST_HOOKS: u8 = 1 << 3;
+/// The network byte and the DNS server carry the network settings of a
+/// restore that replaces the network policy of a snapshot without a tier.
+/// Without it, both are zero.
+pub const FLAG_NETWORK: u8 = 1 << 4;
 const RESTORE_PACKET_FLAGS: u8 =
-    FLAG_DOWNTIME_UTC | FLAG_MEMORY_TARGET | FLAG_ACK_REQUIRED | FLAG_TEST_HOOKS;
+    FLAG_DOWNTIME_UTC | FLAG_MEMORY_TARGET | FLAG_ACK_REQUIRED | FLAG_TEST_HOOKS | FLAG_NETWORK;
 
-/// The bits of a version 6 packet's network byte that give the family of its
-/// DNS server: 0 for none, [`NETWORK_DNS_IPV4`], or [`NETWORK_DNS_IPV6`].
+/// The bits of the network byte that give the family of the DNS server: 0
+/// for none, [`NETWORK_DNS_IPV4`], or [`NETWORK_DNS_IPV6`].
 pub const NETWORK_DNS_MASK: u8 = 0x3;
 /// The network byte's family of an IPv4 DNS server.
 pub const NETWORK_DNS_IPV4: u8 = 1;
@@ -78,7 +75,7 @@ pub const TIME_WINDOW_PORT: u16 = 0xeb;
 /// The portb status bit advertising the time-sample window.
 pub const STATUS_TIME_SAMPLE_AVAILABLE: u8 = 1 << 6;
 /// The time sample version.
-pub const TIME_SAMPLE_VERSION: u8 = 2;
+pub const TIME_SAMPLE_VERSION: u8 = 1;
 /// The length of a time sample.
 pub const TIME_SAMPLE_LEN: usize = 48;
 /// The encoding of an unknown bound in a time sample.
@@ -114,13 +111,11 @@ pub enum RestorePacketError {
     /// The host clock status of a time sample is unknown to this version.
     #[error("unknown host clock status {0}")]
     Status(u8),
-    /// The network byte of a version 6 packet sets reserved bits, or names no
-    /// DNS server family.
+    /// The network byte sets reserved bits, or names no DNS server family.
     #[error("invalid network byte {0:#04x}")]
     Network(u8),
-    /// The DNS server of a version 6 packet is unspecified, pads an IPv4
-    /// address with a byte that is not zero, or is not zero although the
-    /// network byte names no DNS server.
+    /// The DNS server is unspecified, pads an IPv4 address with a byte that is
+    /// not zero, or is not zero although the network byte names no DNS server.
     #[error("invalid DNS server")]
     DnsServer,
     /// The record length does not match its counts.
@@ -170,9 +165,9 @@ impl From<RestoreDnsServer> for IpAddr {
 }
 
 /// The network settings of a restore that replaces the network policy of a
-/// snapshot without a tier, which a version 6 packet carries: what a cold
-/// boot under the new policy names on the guest's command line, and the
-/// guest learns from no other source after such a restore.
+/// snapshot without a tier, which the packet carries with [`FLAG_NETWORK`]:
+/// what a cold boot under the new policy names on the guest's command line,
+/// and the guest learns from no other source after such a restore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, MeshPayload)]
 pub struct RestoreNetwork {
     /// The guest's DNS server, one of its gateway's addresses, which a cold
@@ -262,7 +257,7 @@ pub struct RestorePacketBase {
     /// The restore entropy; its first 16 bytes are the generation ID.
     pub entropy: [u8; RESTORE_ENTROPY_LEN],
     /// The network settings of a restore that replaces the network policy of
-    /// a snapshot without a tier, which make the packet version 6.
+    /// a snapshot without a tier, which set [`FLAG_NETWORK`].
     pub network: Option<RestoreNetwork>,
 }
 
@@ -286,27 +281,12 @@ impl RestorePacketBase {
         Ok(())
     }
 
-    /// Returns the version of the packet: [`RESTORE_PACKET_NETWORK_VERSION`]
-    /// with network settings, and [`RESTORE_PACKET_VERSION`] without.
-    pub fn version(&self) -> u8 {
-        if self.network.is_some() {
-            RESTORE_PACKET_NETWORK_VERSION
-        } else {
-            RESTORE_PACKET_VERSION
-        }
-    }
-
     /// Returns the encoded length of the packet.
     pub fn encoded_len(&self) -> usize {
-        let dns_server = if self.network.is_some() {
-            RESTORE_DNS_SERVER_LEN
-        } else {
-            0
-        };
         RESTORE_PACKET_HEADER_LEN
             + RESTORE_RANGE_LEN * self.ranges.len()
             + RESTORE_ENTROPY_LEN
-            + dns_server
+            + RESTORE_DNS_SERVER_LEN
     }
 }
 
@@ -324,8 +304,7 @@ pub struct RestoreTimeRecord {
     pub test_hooks: bool,
 }
 
-/// A complete restore packet: version 5, or version 6 when its base carries
-/// network settings.
+/// A complete restore packet.
 ///
 /// It carries no host UTC: the guest takes a time sample, which pairs host
 /// UTC with its TSC, to set its clock.
@@ -350,6 +329,7 @@ impl RestorePacket {
             (self.base.memory_target, FLAG_MEMORY_TARGET),
             (self.base.ack_required, FLAG_ACK_REQUIRED),
             (self.time.test_hooks, FLAG_TEST_HOOKS),
+            (self.base.network.is_some(), FLAG_NETWORK),
         ] {
             if set {
                 flags |= flag;
@@ -358,7 +338,7 @@ impl RestorePacket {
         let mut bytes = Vec::with_capacity(self.base.encoded_len());
         bytes.extend_from_slice(&RESTORE_PACKET_MAGIC);
         bytes.extend_from_slice(&[
-            self.base.version(),
+            RESTORE_PACKET_VERSION,
             flags,
             self.base.online_vp_count,
             self.base.ranges.len() as u8,
@@ -372,9 +352,14 @@ impl RestorePacket {
             bytes.extend_from_slice(&range.length.to_le_bytes());
         }
         bytes.extend_from_slice(&self.base.entropy);
-        if let Some(network) = &self.base.network {
-            bytes.extend_from_slice(&network.dns_server_record());
-        }
+        bytes.extend_from_slice(
+            &self
+                .base
+                .network
+                .map_or([0; RESTORE_DNS_SERVER_LEN], |network| {
+                    network.dns_server_record()
+                }),
+        );
         debug_assert_eq!(bytes.len(), self.base.encoded_len());
         Ok(bytes)
     }
@@ -388,24 +373,17 @@ impl RestorePacket {
         if header[..3] != RESTORE_PACKET_MAGIC {
             return Err(RestorePacketError::Magic);
         }
-        // Version 6 puts its network byte in version 5's reserved byte.
-        let network_byte = match header[3] {
-            RESTORE_PACKET_VERSION => None,
-            RESTORE_PACKET_NETWORK_VERSION => Some(header[7]),
-            version => return Err(RestorePacketError::Version(version)),
-        };
+        if header[3] != RESTORE_PACKET_VERSION {
+            return Err(RestorePacketError::Version(header[3]));
+        }
         let flags = header[4];
-        if flags & !RESTORE_PACKET_FLAGS != 0 || (network_byte.is_none() && header[7] != 0) {
+        if flags & !RESTORE_PACKET_FLAGS != 0 {
             return Err(RestorePacketError::Reserved);
         }
         let range_count = usize::from(header[6]);
         let entropy_offset = RESTORE_PACKET_HEADER_LEN + RESTORE_RANGE_LEN * range_count;
         let dns_server_offset = entropy_offset + RESTORE_ENTROPY_LEN;
-        let expected = if network_byte.is_some() {
-            dns_server_offset + RESTORE_DNS_SERVER_LEN
-        } else {
-            dns_server_offset
-        };
+        let expected = dns_server_offset + RESTORE_DNS_SERVER_LEN;
         if bytes.len() != expected {
             return Err(RestorePacketError::Length {
                 expected,
@@ -425,11 +403,15 @@ impl RestorePacket {
                 }
             })
             .collect();
-        let network = network_byte
-            .map(|byte| {
-                RestoreNetwork::decode(byte, bytes[dns_server_offset..].try_into().unwrap())
-            })
-            .transpose()?;
+        let dns_server_record: &[u8; RESTORE_DNS_SERVER_LEN] =
+            bytes[dns_server_offset..].try_into().unwrap();
+        let network = if flags & FLAG_NETWORK != 0 {
+            Some(RestoreNetwork::decode(header[7], dns_server_record)?)
+        } else if header[7] != 0 || *dns_server_record != [0; RESTORE_DNS_SERVER_LEN] {
+            return Err(RestorePacketError::Reserved);
+        } else {
+            None
+        };
         let packet = Self {
             base: RestorePacketBase {
                 online_vp_count: header[5],
@@ -521,7 +503,7 @@ pub struct HostTimeFields {
     pub max_error_us: Option<u32>,
 }
 
-/// A time sample version 2, latched by selector [`TIME_SAMPLE_SELECT`] and
+/// A time sample, latched by selector [`TIME_SAMPLE_SELECT`] and
 /// read from port [`TIME_WINDOW_PORT`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeSample {
@@ -686,15 +668,16 @@ mod tests {
     #[test]
     fn golden_packet_without_ranges() {
         let mut expected = vec![
-            b'O', b'V', b'R', 5, 0x05, 2, 0, 0, // header
+            b'O', b'V', b'R', 1, 0x05, 2, 0, 0, // header
             7, 0, 0, 0, // generation
             0xfe, 0xff, 0xff, 0xff, // rate deviation
             0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // downtime
         ];
         expected.extend(entropy());
+        expected.extend([0; RESTORE_DNS_SERVER_LEN]);
         let packet = packet_without_ranges();
         let bytes = packet.encode().unwrap();
-        assert_eq!(bytes.len(), 88);
+        assert_eq!(bytes.len(), 104);
         assert_eq!(bytes, expected);
         assert_eq!(RestorePacket::decode(&bytes).unwrap(), packet);
     }
@@ -702,7 +685,7 @@ mod tests {
     #[test]
     fn golden_packet_with_ranges() {
         let mut expected = vec![
-            b'O', b'V', b'R', 5, 0x0a, 0, 2, 0, // header
+            b'O', b'V', b'R', 1, 0x0a, 0, 2, 0, // header
             1, 0, 0, 0, // generation
             0x00, 0x00, 0xfa, 0x00, // rate deviation 250 * 2^16
             0x00, 0xac, 0x23, 0xfc, 0x06, 0x00, 0x00, 0x00, // downtime 30 s
@@ -712,9 +695,10 @@ mod tests {
             0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, // range 1 length
         ];
         expected.extend(entropy());
+        expected.extend([0; RESTORE_DNS_SERVER_LEN]);
         let packet = packet_with_ranges();
         let bytes = packet.encode().unwrap();
-        assert_eq!(bytes.len(), 120);
+        assert_eq!(bytes.len(), 136);
         assert_eq!(bytes, expected);
         assert_eq!(RestorePacket::decode(&bytes).unwrap(), packet);
     }
@@ -729,7 +713,7 @@ mod tests {
         };
         assert_eq!(mutate(0, b'X'), RestorePacketError::Magic);
         assert_eq!(mutate(3, 4), RestorePacketError::Version(4));
-        assert_eq!(mutate(4, 0x1a), RestorePacketError::Reserved);
+        assert_eq!(mutate(4, 0x2a), RestorePacketError::Reserved);
         assert_eq!(mutate(7, 1), RestorePacketError::Reserved);
         assert_eq!(mutate(5, 3), RestorePacketError::OnlineVpCount(3));
         assert_eq!(mutate(4, 0x08), RestorePacketError::MemoryRanges(2));
@@ -830,8 +814,8 @@ mod tests {
                 b'O',
                 b'V',
                 b'R',
-                6,
-                0x05,
+                1,
+                0x15,
                 2,
                 0,
                 network_byte, // header
@@ -899,16 +883,22 @@ mod tests {
             RestorePacket::decode(&unspecified).unwrap_err(),
             RestorePacketError::DnsServer
         );
-        // Version 5 keeps its reserved byte zero, and its packet ends with the
-        // entropy.
-        assert_eq!(mutate(3, 5), RestorePacketError::Reserved);
-        let mut version_5 = good.clone();
-        version_5[3] = 5;
-        version_5[7] = 0;
-        assert!(matches!(
-            RestorePacket::decode(&version_5).unwrap_err(),
-            RestorePacketError::Length { .. }
-        ));
+        // Without the network flag, the network byte and the DNS server are
+        // zero.
+        assert_eq!(mutate(4, 0x05), RestorePacketError::Reserved);
+        let mut no_network = good.clone();
+        no_network[4] = 0x05;
+        no_network[7] = 0;
+        assert_eq!(
+            RestorePacket::decode(&no_network).unwrap_err(),
+            RestorePacketError::Reserved
+        );
+        no_network[dns_server..].fill(0);
+        assert_eq!(
+            RestorePacket::decode(&no_network).unwrap().base.network,
+            None
+        );
+        assert_eq!(mutate(3, 6), RestorePacketError::Version(6));
         assert!(matches!(
             RestorePacket::decode(&good[..dns_server]).unwrap_err(),
             RestorePacketError::Length { .. }
@@ -939,7 +929,7 @@ mod tests {
         assert_eq!(
             bytes,
             [
-                2, 0x08, 1, 0, // version, flags, status, reserved
+                1, 0x08, 1, 0, // version, flags, status, reserved
                 3, 0, 0, 0, // generation
                 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // UTC
                 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, // TSC
@@ -953,10 +943,10 @@ mod tests {
         assert_eq!(TimeSample::decode(&bytes).unwrap(), sample);
 
         let mut bad = bytes;
-        bad[0] = 1;
+        bad[0] = 2;
         assert_eq!(
             TimeSample::decode(&bad).unwrap_err(),
-            RestorePacketError::Version(1)
+            RestorePacketError::Version(2)
         );
         let mut bad = bytes;
         bad[1] = 0x01;
