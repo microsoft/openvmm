@@ -258,8 +258,7 @@ describes the source definitions.
   platform snapshot or of a snapshot without a tier, the same active egress
   policy rules. The policy digest binds the
   saved static identity, including the IPv6 identity, and its derived ARP
-  next hops, which are reconstructed before vCPUs start. A snapshot whose
-  network predates IPv6 restores IPv4-only, with its original digest. Native
+  next hops, which are reconstructed before vCPUs start. Native
   sockets and NAT flow tables are not serialized. The capture
   protocol does not retain pre-capture endpoint completions; restored guest
   software must establish new host-side flows.
@@ -572,8 +571,7 @@ describes the source definitions.
   forwards bound, before any vCPU runs; a policy that fails validation, or a
   forward that cannot bind its port, fails the restore. A restore that wants
   no connectivity passes the template's own deny-all. The restore cannot
-  readdress the NIC, and a policy may name IPv6 destinations only when the
-  captured identity has IPv6. OpenVMM rejects the option before any vCPU
+  readdress the NIC. OpenVMM rejects the option before any vCPU
   starts for a cold boot, for a `workload-start` or `instance-checkpoint`
   snapshot, for a snapshot without a NIC, and for a NIC captured with any
   other policy. The guest keeps its captured command line, so it learns its DNS
