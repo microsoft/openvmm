@@ -516,10 +516,9 @@ impl GlobalState {
                         let lowest_priority = delivery_mode == DeliveryMode::LOWEST_PRIORITY;
                         let id = X2ApicLogicalId::from(id);
                         let base = (id.cluster_id() as u32) << 4;
-                        for i in 0..16 {
-                            if id.logical_id() & (1 << i) == 0 {
-                                continue;
-                            }
+                        let mut logical_ids = id.logical_id();
+                        while let Some(i) = logical_ids.lowest_one() {
+                            logical_ids &= !(1 << i);
                             let phys_id = base | i;
                             if let Some(slot) = mutable.by_apic_id.get(phys_id as usize) {
                                 // For now, just pick the first enabled APIC in the set for lowest priority.
@@ -2094,6 +2093,52 @@ mod tests {
     fn software_enable(apic: &mut LocalApic, client: &mut TestClient) {
         apic.access(client)
             .mmio_write(SVR_ADDR, &SVR_ENABLED.to_le_bytes());
+    }
+
+    #[test]
+    fn x2apic_logical_targets_follow_set_bit_order() {
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apics = Vec::new();
+        for (index, apic_id) in [0, 2, 15].into_iter().enumerate() {
+            let mut apic = set.add_apic(
+                &X86VpInfo {
+                    base: VpInfo {
+                        vp_index: VpIndex::new(index as u32),
+                        vnode: 0,
+                    },
+                    apic_id,
+                },
+                false,
+            );
+            software_enable(&mut apic, &mut client);
+            apic.set_apic_base(ApicBase::from(apic_base(true)).with_x2apic(true).into())
+                .unwrap();
+            apics.push(apic);
+        }
+
+        for (mask, mode, vector, expected) in [
+            (0, DeliveryMode::FIXED, TEST_VECTOR, &[][..]),
+            (
+                (1 << 0) | (1 << 15),
+                DeliveryMode::FIXED,
+                TEST_VECTOR,
+                &[0, 2][..],
+            ),
+            (
+                (1 << 0) | (1 << 2) | (1 << 15),
+                DeliveryMode::LOWEST_PRIORITY,
+                TEST_VECTOR + 1,
+                &[0][..],
+            ),
+        ] {
+            let mut woken = Vec::new();
+            set.global
+                .request_interrupt(Destination::Logical(mask), mode, vector, false, |vp| {
+                    woken.push(vp.index())
+                });
+            assert_eq!(woken, expected);
+        }
     }
 
     #[test]

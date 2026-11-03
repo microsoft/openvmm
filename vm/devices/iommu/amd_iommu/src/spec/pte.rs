@@ -156,9 +156,8 @@ impl IommuPte {
     /// Returns `None` if the encoding is invalid (no zero bit found in the
     /// address field, or a page size outside the supported range).
     pub fn mode7_page_size(raw_pte: u64) -> Option<u64> {
-        // First zero bit, starting from bit 0 (forced to bit 12 or higher
-        // by the `| 0xFFF`).
-        let first_zero = (raw_pte | 0xFFF).trailing_ones();
+        // First zero bit in the address field, starting at bit 12.
+        let first_zero = (!raw_pte & !0xFFF).lowest_one()?;
         // Hardware addresses are 52-bit (PM_ADDR_MASK covers bits 51:12), so
         // the highest meaningful page-size bit is 51. That yields a max
         // page size of 1 << 52. Anything beyond is malformed.
@@ -184,6 +183,22 @@ impl IommuPte {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn mode7_first_zero_boundaries() {
+        for bit in 0..64 {
+            let raw = !(1u64 << bit);
+            let expected = if (12..52).contains(&bit) {
+                Some(1u64 << (bit + 1))
+            } else {
+                None
+            };
+            assert_eq!(IommuPte::mode7_page_size(raw), expected, "bit {bit}");
+        }
+        assert_eq!(IommuPte::mode7_page_size(u64::MAX), None);
+        assert_eq!(IommuPte::mode7_page_size(0), Some(1 << 13));
+    }
 
     #[test]
     fn test_pte_size() {

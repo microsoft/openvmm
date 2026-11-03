@@ -129,10 +129,10 @@ mod windows {
 
                 let mut cpus = Vec::new();
                 for group in groups {
-                    for i in 0..usize::BITS {
-                        if group.Mask & (1 << i) != 0 {
-                            cpus.push(group.Group as u32 * usize::BITS + i);
-                        }
+                    let mut mask = group.Mask;
+                    while let Some(i) = mask.lowest_one() {
+                        mask &= !(1 << i);
+                        cpus.push(group.Group as u32 * usize::BITS + i);
                     }
                 }
 
