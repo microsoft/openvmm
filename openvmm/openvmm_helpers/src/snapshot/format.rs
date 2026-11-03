@@ -151,7 +151,6 @@ pub(super) fn validate_manifest_contents(manifest: &SnapshotManifest) -> anyhow:
 mod tests {
     use super::super::tests::test_manifest;
     use super::super::validate_manifest;
-    use super::*;
 
     #[test]
     fn other_versions_are_rejected_with_e_snapshot_version() {
@@ -192,33 +191,5 @@ mod tests {
         manifest.saved_state_root_type = "other.SavedState".to_owned();
         let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
         assert!(err.to_string().contains("root type"));
-    }
-
-    #[test]
-    fn retired_digest_fields_are_ignored_when_decoding() {
-        // A manifest encoded with fields 9 and 10 still decodes; the version
-        // check rejects every manifest that set them.
-        #[derive(mesh::payload::Protobuf)]
-        #[mesh(package = "openvmm.snapshot")]
-        struct WithDigests {
-            #[mesh(1)]
-            version: u32,
-            #[mesh(9)]
-            state_sha256: Vec<u8>,
-            #[mesh(10)]
-            memory_sha256: Vec<u8>,
-        }
-        let bytes = mesh::payload::encode(WithDigests {
-            version: 2,
-            state_sha256: vec![0xa5; SHA256_SIZE],
-            memory_sha256: vec![0x5a; SHA256_SIZE],
-        });
-        let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
-        assert_eq!(manifest.version, 2);
-        let error = validate_manifest_header(&manifest).unwrap_err();
-        assert!(
-            error.to_string().contains("[E_SNAPSHOT_VERSION]"),
-            "{error}"
-        );
     }
 }

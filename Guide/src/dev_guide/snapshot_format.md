@@ -199,7 +199,7 @@ Key unsupported categories:
 ## Extending the format
 
 When adding new fields to `SnapshotManifest`, use the next available mesh
-tag number, never a retired one; the struct definitions list the retired tags.
+tag number.
 The protobuf encoding is forward-compatible: older readers will
 ignore unknown fields. However, removing or reordering existing fields is a
 breaking change. See [Save State](contrib/save-state.md) for the full set of
