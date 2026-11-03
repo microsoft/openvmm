@@ -339,8 +339,7 @@ pub struct MicrovmNetworkConfig {
     pub guest_mac: MacAddress,
     pub gateway_mac: MacAddress,
     /// IPv6 identity of the dual-stack NIC, derived from the IPv4 identity.
-    /// A snapshot whose network predates IPv6 restores without one.
-    pub ipv6: Option<MicrovmIpv6Config>,
+    pub ipv6: MicrovmIpv6Config,
 }
 
 /// Unique local prefix that embeds a microVM's IPv4 identity in its IPv6
@@ -1008,21 +1007,11 @@ impl MicrovmNetworkConfig {
     pub fn is_gateway(&self, address: std::net::IpAddr) -> bool {
         match address {
             std::net::IpAddr::V4(address) => address == self.derived_gateway_ipv4,
-            std::net::IpAddr::V6(address) => self
-                .ipv6
-                .is_some_and(|ipv6| address == ipv6.derived_gateway_ipv6),
+            std::net::IpAddr::V6(address) => address == self.ipv6.derived_gateway_ipv6,
         }
     }
 
-    /// Returns this identity without its IPv6 identity, as a snapshot whose
-    /// network predates IPv6 records it.
-    pub fn without_ipv6(mut self) -> Self {
-        self.ipv6 = None;
-        self
-    }
-
-    /// Binds `mode` to this identity: the IPv4 identity and, on a dual-stack
-    /// NIC, the IPv6 identity.
+    /// Binds `mode` to this identity: its IPv4 and IPv6 identities.
     pub fn bind_egress_policy(
         &self,
         mode: net_backend_resources::egress::EgressPolicyMode,
@@ -1037,14 +1026,11 @@ impl MicrovmNetworkConfig {
             self.derived_gateway_ipv4,
             mode,
         )?;
-        match self.ipv6 {
-            Some(ipv6) => policy.with_ipv6(
-                ipv6.guest_ipv6,
-                ipv6.prefix_length,
-                ipv6.derived_gateway_ipv6,
-            ),
-            None => Ok(policy),
-        }
+        policy.with_ipv6(
+            self.ipv6.guest_ipv6,
+            self.ipv6.prefix_length,
+            self.ipv6.derived_gateway_ipv6,
+        )
     }
 
     /// Returns the pinned NVX guest-bootstrap command-line tokens.
@@ -1068,12 +1054,10 @@ impl MicrovmNetworkConfig {
         ingress: Option<MicrovmIngress>,
     ) -> String {
         let dns = gateway_dns.map_or_else(String::new, |server| format!(" virtnet_dns={server}"));
-        let ipv6 = self.ipv6.map_or_else(String::new, |ipv6| {
-            format!(
-                " virtnet_ip6={}/{} virtnet_gw6={}",
-                ipv6.guest_ipv6, ipv6.prefix_length, ipv6.derived_gateway_ipv6
-            )
-        });
+        let ipv6 = format!(
+            " virtnet_ip6={}/{} virtnet_gw6={}",
+            self.ipv6.guest_ipv6, self.ipv6.prefix_length, self.ipv6.derived_gateway_ipv6
+        );
         let ingress = ingress.map_or_else(String::new, |ingress| {
             format!(" {}", ingress.command_line_token())
         });
@@ -1154,11 +1138,7 @@ impl std::str::FromStr for MicrovmNetworkConfig {
             derived_gateway_ipv4,
             guest_mac: Self::derive_mac(guest_ipv4),
             gateway_mac: Self::derive_mac(derived_gateway_ipv4),
-            ipv6: Some(MicrovmIpv6Config::embedding(
-                guest_ipv4,
-                prefix_length,
-                derived_gateway_ipv4,
-            )),
+            ipv6: MicrovmIpv6Config::embedding(guest_ipv4, prefix_length, derived_gateway_ipv4),
         })
     }
 }
@@ -1566,13 +1546,7 @@ fn validate_microvm_command_line(config: &Config) -> anyhow::Result<()> {
         let expected = match prefix {
             "virtio_mmio.device=" => config.virtio_devices.len(),
             "virtnet_ip=" | "virtnet_mask=" | "virtnet_gw=" => usize::from(has_network),
-            "virtnet_ip6=" | "virtnet_gw6=" => usize::from(
-                config
-                    .microvm
-                    .network
-                    .as_ref()
-                    .is_some_and(|network| network.ipv6.is_some()),
-            ),
+            "virtnet_ip6=" | "virtnet_gw6=" => usize::from(has_network),
             "virtfs_dir=" | "virtfs_tag=" | "virtfs_mode=" => bootstrapped.len(),
             "virtfs_aggregate=" => bootstrapped
                 .iter()
@@ -2466,11 +2440,11 @@ mod tests {
             let network: MicrovmNetworkConfig = spec.parse().unwrap();
             assert_eq!(
                 network.ipv6,
-                Some(MicrovmIpv6Config {
+                MicrovmIpv6Config {
                     guest_ipv6: guest.parse().unwrap(),
                     prefix_length,
                     derived_gateway_ipv6: gateway.parse().unwrap(),
-                }),
+                },
                 "{spec}"
             );
             assert!(
@@ -2490,17 +2464,6 @@ mod tests {
                     prefix_length,
                     gateway.parse().unwrap()
                 )
-            );
-
-            let ipv4_only = network.without_ipv6();
-            assert_eq!(ipv4_only.ipv6, None);
-            assert!(!ipv4_only.command_line_fragment().contains("virtnet_ip6="));
-            assert!(
-                ipv4_only
-                    .bind_egress_policy(net_backend_resources::egress::EgressPolicyMode::AllowAll)
-                    .unwrap()
-                    .ipv6_link()
-                    .is_none()
             );
         }
         for reserved in ["virtnet_ip6=fd00::2/120", "virtnet_gw6=fd00::1"] {
@@ -2552,13 +2515,11 @@ mod tests {
             None
         );
 
-        let ipv4_only = network.clone().without_ipv6();
         for (network, tokens) in [
             (Some(&network), &["virtnet_dns=fd00::a00:2"][..]),
             (Some(&network), &["virtnet_dns=fd00:0::a00:1"]),
             (Some(&network), &["virtnet_dns=010.0.0.1"]),
             (Some(&network), &["virtnet_dns=10.0.0.1,fd00::a00:1"]),
-            (Some(&ipv4_only), &["virtnet_dns=fd00::a00:1"]),
             (
                 Some(&network),
                 &["virtnet_dns=10.0.0.1", "virtnet_dns=fd00::a00:1"],
