@@ -9,17 +9,17 @@
 
 mod devmsr;
 
-cfg_if::cfg_if!(
-    if #[cfg(guest_arch = "x86_64")] {
+cfg_select! {
+    guest_arch = "x86_64" => {
         mod cvm_cpuid;
 
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
 
+        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use devmsr::MsrDevice;
         use processor::LapicState;
         use processor::snp::SnpBackedShared;
@@ -34,16 +34,18 @@ cfg_if::cfg_if!(
         /// Bitarray type for representing IRR bits in a x86-64 APIC
         /// Each bit represent the 256 possible vectors.
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    }
+    guest_arch = "aarch64" => {
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
         pub use processor::cca::CcaBacked;
 
-        use aarch64defs::Vendor;
         use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        use aarch64defs::Vendor;
         use processor::cca::CcaBackedShared;
         use safe_intrinsics::read_cntfrq_el0;
     }
-);
+    _ => {}
+}
 
 mod processor;
 use hv1_emulator::hv::ProcessorVtlHv;
@@ -1910,8 +1912,8 @@ impl<'a> UhProtoPartition<'a> {
                 return Err(Error::InvalidDebugConfiguration);
             }
 
-            cfg_if::cfg_if! {
-                if #[cfg(guest_arch = "x86_64")] {
+            cfg_select! {
+                guest_arch = "x86_64" => {
                     if isolation != IsolationType::Tdx {
                         let debug_exception_vector = 0x1;
                         hcl.register_intercept(
@@ -1919,9 +1921,12 @@ impl<'a> UhProtoPartition<'a> {
                             HV_INTERCEPT_ACCESS_MASK_EXECUTE,
                             HvInterceptParameters::new_exception(debug_exception_vector),
                         )
-                        .map_err(|err| Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err))?;
+                        .map_err(|err| {
+                            Error::InstallIntercept(HvInterceptType::HvInterceptTypeException, err)
+                        })?;
                     }
-                } else {
+                }
+                _ => {
                     return Err(Error::InvalidDebugConfiguration);
                 }
             }

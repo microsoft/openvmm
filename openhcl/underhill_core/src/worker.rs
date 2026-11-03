@@ -3,17 +3,19 @@
 
 //! The Underhill VM worker.
 
-cfg_if::cfg_if! {
-    if #[cfg(guest_arch = "x86_64")] {
-        pub use hvdef::HvX64RegisterName as HvArchRegisterName;
+cfg_select! {
+    guest_arch = "x86_64" => {
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use chipset_resources::pm::DEFAULT_ACPI_IRQ;
         use chipset_resources::pm::DEFAULT_PM_PIO_BASE;
+        pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
-    } else if #[cfg(guest_arch = "aarch64")] {
+    }
+    guest_arch = "aarch64" => {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
         use virt::Aarch64Partition;
     }
+    _ => {}
 }
 
 use crate::ControlRequest;

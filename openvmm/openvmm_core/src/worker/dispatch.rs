@@ -22,7 +22,6 @@ use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
-use cfg_if::cfg_if;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
@@ -1172,13 +1171,10 @@ impl InitializedVm {
         }
 
         let hv_config = if cfg.hypervisor.with_hv {
-            cfg_if::cfg_if! {
-                if #[cfg(all(windows, feature = "virt_whp"))] {
-                    let allow_device_assignment = !cfg.vpci_resources.is_empty();
-                } else {
-                    let allow_device_assignment = false;
-                }
-            }
+            let allow_device_assignment = cfg_select! {
+                all(windows, feature = "virt_whp") => !cfg.vpci_resources.is_empty(),
+                _ => false,
+            };
 
             Some(virt::HvConfig {
                 allow_device_assignment,
@@ -1494,20 +1490,19 @@ impl InitializedVm {
             memory_builder = memory_builder.pin_mappings(true);
         }
 
-        cfg_if! {
-            if #[cfg(windows)] {
-                let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
+        let vtl2_memory_process = cfg_select! {
+            windows => {
+                if cfg.hypervisor.with_vtl2.is_some() {
                     // VTL2 needs a separate memory hosting process.
                     let process = pal::windows::process::empty_process()
                         .context("could not launch a memory process for VTL2")?;
                     Some(Box::new(process) as _)
                 } else {
                     None
-                };
-            } else {
-                let vtl2_memory_process = None;
+                }
             }
-        }
+            _ => None,
+        };
 
         let max_addr = mem_layout
             .end_of_layout()
