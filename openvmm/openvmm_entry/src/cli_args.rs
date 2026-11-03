@@ -1390,13 +1390,15 @@ Options:
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_remote: Vec<PcieRemoteCli>,
 
+    // TODO: Unhide both USB options once USB emulation is ready for use.
     /// Attach an emulated xHCI USB controller to a PCIe port (repeatable).
-    #[clap(long, value_name = "PORT_NAME", conflicts_with("pcat"))]
+    #[clap(long, hide = true, value_name = "PORT_NAME", conflicts_with("pcat"))]
     pub usb_xhci: Vec<UsbXhciCli>,
 
     /// Attach a device backend to an xHCI USB controller (repeatable).
     #[clap(
         long,
+        hide = true,
         value_name = "SPEC",
         requires("usb_xhci"),
         long_help = r#"Attach an initial USB device to a controller declared with --usb-xhci.
