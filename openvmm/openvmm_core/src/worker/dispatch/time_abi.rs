@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI 2 in the VM worker, which every microVM uses: the partition
+//! The NVX time ABI in the VM worker, which every microVM uses: the partition
 //! configuration, the backend preflight and rate policy, the `time-abi` state
 //! unit, the guest TSC's offset from the host TSC, which the VM measures at
 //! every start, the source of the host fields of time samples, the capture
