@@ -6,6 +6,8 @@
 use anyhow::Context as _;
 use hvdef::HvPartitionPropertyCode;
 use mshv_ioctls::VmFd;
+use std::path::Path;
+use std::path::PathBuf;
 
 /// The scheduler the host runs, which decides how processor settings apply.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -44,7 +46,18 @@ pub fn processor_qos_support() -> virt::ProcessorQosSupport {
             weight: true,
             reserve: true,
         },
-        Ok(MshvScheduler::Root) | Err(_) => virt::ProcessorQosSupport::default(),
+        Ok(MshvScheduler::Root) => {
+            let w = fs_err::read_to_string("/proc/self/cgroup")
+                .ok()
+                .and_then(|s| own_cgroup_dir(&s))
+                .is_some_and(|d| cgroup_writable(&d));
+            virt::ProcessorQosSupport {
+                limit: w,
+                weight: w,
+                reserve: false,
+            }
+        }
+        Err(_) => virt::ProcessorQosSupport::default(),
     }
 }
 
@@ -81,7 +94,7 @@ fn write_hv(vmfd: &VmFd, from: virt::HvCpuProps, to: virt::HvCpuProps) -> anyhow
 
 /// Applies `qos` to the partition, through the mechanism the host scheduler
 /// enforces.
-pub(crate) fn apply(vmfd: &VmFd, _vp_count: u32, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+pub(crate) fn apply(vmfd: &VmFd, vp_count: u32, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
     qos.validate()?;
     match host_scheduler()? {
         MshvScheduler::Hypervisor => {
@@ -106,9 +119,86 @@ pub(crate) fn apply(vmfd: &VmFd, _vp_count: u32, qos: &virt::ProcessorQos) -> an
             Ok(())
         }
         MshvScheduler::Root => {
-            anyhow::bail!("processor limit/weight/reserve are not supported on the root scheduler")
+            let dir = fs_err::read_to_string("/proc/self/cgroup")
+                .ok()
+                .and_then(|s| own_cgroup_dir(&s));
+            match dir {
+                Some(dir) if cgroup_writable(&dir) => apply_cgroup(&dir, vp_count, qos),
+                dir => anyhow::bail!(
+                    "processor controls need a delegated cgroup v2 at {}",
+                    dir.map_or("<unknown>".into(), |d| d.display().to_string())
+                ),
+            }
         }
     }
+}
+
+/// Returns the cgroup v2 directory from `/proc/self/cgroup` contents.
+pub(crate) fn own_cgroup_dir(proc_self_cgroup: &str) -> Option<PathBuf> {
+    let path = proc_self_cgroup
+        .lines()
+        .find_map(|l| l.strip_prefix("0::"))?;
+    Some(Path::new("/sys/fs/cgroup").join(path.trim().trim_start_matches('/')))
+}
+
+/// Returns the `cpu.max` line for a per-VP limit across `vp_count` VPs.
+pub(crate) fn cpu_max_line(limit: u32, vp_count: u32) -> anyhow::Result<String> {
+    const PERIOD_US: u64 = 100000;
+    if limit >= 100000 {
+        return Ok(format!("max {PERIOD_US}"));
+    }
+    // Per-VP fraction of one LP, times VPs, in microseconds per period.
+    let quota = u64::from(limit) * u64::from(vp_count);
+    // The kernel rejects quotas below 1 ms.
+    anyhow::ensure!(
+        quota >= 1000,
+        "processor limit too small for cgroup cpu.max ({quota} us per {PERIOD_US} us)"
+    );
+    Ok(format!("{quota} {PERIOD_US}"))
+}
+
+/// Returns whether `dir` has writable `cpu.max` and `cpu.weight`.
+pub(crate) fn cgroup_writable(dir: &Path) -> bool {
+    ["cpu.max", "cpu.weight"].iter().all(|f| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(dir.join(f))
+            .is_ok()
+    })
+}
+
+/// Applies limit and weight to the cgroup at `dir`. These cover the whole
+/// cgroup, device threads included.
+pub(crate) fn apply_cgroup(
+    dir: &Path,
+    vp_count: u32,
+    qos: &virt::ProcessorQos,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        qos.reserve.unwrap_or(0) == 0,
+        "processor reserve has no equivalent under the root scheduler"
+    );
+    let max = qos.limit.map(|l| cpu_max_line(l, vp_count)).transpose()?;
+    let weight_path = dir.join("cpu.weight");
+    let old_weight = match qos.weight {
+        Some(w) => {
+            let old = fs_err::read_to_string(&weight_path)?;
+            fs_err::write(&weight_path, w.to_string())?;
+            Some(old)
+        }
+        None => None,
+    };
+    if let Some(max) = max {
+        if let Err(err) = fs_err::write(dir.join("cpu.max"), &max) {
+            if let Some(old) = old_weight {
+                fs_err::write(&weight_path, old.trim())
+                    .context("processor settings are inconsistent, restoring cpu.weight failed")?;
+            }
+            return Err(err.into());
+        }
+    }
+    tracing::info!(cgroup = %dir.display(), ?qos, "processor cgroup settings applied");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -146,5 +236,68 @@ mod tests {
         assert_eq!(parse_scheduler(ROOT), MshvScheduler::Root);
         assert_eq!(parse_scheduler(CORE), MshvScheduler::Hypervisor);
         assert_eq!(parse_scheduler(""), MshvScheduler::Hypervisor);
+    }
+
+    #[test]
+    fn own_cgroup_dir_parses_v2_line() {
+        assert_eq!(
+            super::own_cgroup_dir("0::/system.slice/ovm.scope\n"),
+            Some(std::path::PathBuf::from(
+                "/sys/fs/cgroup/system.slice/ovm.scope"
+            ))
+        );
+        assert_eq!(super::own_cgroup_dir("4:cpu:/x\n"), None);
+    }
+
+    #[test]
+    fn cpu_max_line_rejects_below_minimum() {
+        assert_eq!(super::cpu_max_line(50000, 4).unwrap(), "200000 100000");
+        assert_eq!(super::cpu_max_line(100000, 4).unwrap(), "max 100000");
+        let err = super::cpu_max_line(100, 1).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("too small for cgroup cpu.max"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn cgroup_not_writable_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!super::cgroup_writable(dir.path()));
+        std::fs::write(dir.path().join("cpu.max"), "max 100000\n").unwrap();
+        std::fs::write(dir.path().join("cpu.weight"), "100\n").unwrap();
+        assert!(super::cgroup_writable(dir.path()));
+    }
+
+    #[test]
+    fn cgroup_apply_restores_weight_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("cpu.weight"), "100").unwrap();
+        // A directory in place of cpu.max makes that write fail.
+        std::fs::create_dir(dir.path().join("cpu.max")).unwrap();
+        let qos = virt::ProcessorQos {
+            limit: Some(50000),
+            weight: Some(300),
+            reserve: None,
+        };
+        assert!(super::apply_cgroup(dir.path(), 4, &qos).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
+            "100"
+        );
+    }
+
+    #[test]
+    fn cgroup_rejects_reserve() {
+        let dir = tempfile::tempdir().unwrap();
+        let qos = virt::ProcessorQos {
+            reserve: Some(1000),
+            ..Default::default()
+        };
+        let err = super::apply_cgroup(dir.path(), 4, &qos).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no equivalent under the root scheduler"),
+            "{err:#}"
+        );
     }
 }
