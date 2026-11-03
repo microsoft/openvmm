@@ -49,6 +49,59 @@ pub fn anonymous_serial_pair(
     ))
 }
 
+/// Returns an anonymous serial pair, as [`anonymous_serial_pair`] does, and a
+/// non-blocking duplicate of its host end. The duplicate reads what the pair
+/// holds without waiting for the reactor to report it, and then reports that
+/// the pair is empty.
+pub(crate) fn anonymous_serial_pair_with_pending(
+    driver: &(impl Driver + ?Sized),
+) -> io::Result<(Resource<SerialBackendHandle>, PolledHostEnd, PendingHostEnd)> {
+    let (vm, host, pending) = pending_pair(driver)?;
+    #[cfg(unix)]
+    let vm = OpenSocketSerialConfig::from(vm).into_resource();
+    #[cfg(windows)]
+    let vm = serial_socket::windows::OpenWindowsPipeSerialConfig::from(vm).into_resource();
+    Ok((vm, host, pending))
+}
+
+#[cfg(unix)]
+pub(crate) type PolledHostEnd = pal_async::socket::PolledSocket<unix_socket::UnixStream>;
+#[cfg(unix)]
+pub(crate) type PendingHostEnd = unix_socket::UnixStream;
+#[cfg(windows)]
+pub(crate) type PolledHostEnd = PolledPipe;
+#[cfg(windows)]
+pub(crate) type PendingHostEnd = std::fs::File;
+
+/// Returns the VM end of an anonymous pair, its polled host end, and a
+/// non-blocking duplicate of the host end.
+#[cfg(unix)]
+pub(crate) fn pending_pair(
+    driver: &(impl Driver + ?Sized),
+) -> io::Result<(unix_socket::UnixStream, PolledHostEnd, PendingHostEnd)> {
+    let (vm, host) = unix_socket::UnixStream::pair()?;
+    let pending = host.try_clone()?;
+    let host = pal_async::socket::PolledSocket::new(driver, host)?;
+    pending.set_nonblocking(true)?;
+    Ok((vm, host, pending))
+}
+
+/// Returns the VM end of an anonymous pair, its polled host end, and a
+/// non-blocking duplicate of the host end.
+#[cfg(windows)]
+pub(crate) fn pending_pair(
+    driver: &(impl Driver + ?Sized),
+) -> io::Result<(std::fs::File, PolledHostEnd, PendingHostEnd)> {
+    use pal::windows::pipe::PipeExt;
+
+    // As in anonymous_serial_pair, the VM takes the client.
+    let (server, client) = pal::windows::pipe::bidirectional_pair(false)?;
+    let pending = server.try_clone()?;
+    let server = PolledPipe::new(driver, server)?;
+    pending.set_pipe_mode(windows_sys::Win32::System::Pipes::PIPE_NOWAIT)?;
+    Ok((client, server, pending))
+}
+
 pub fn file_serial(path: &Path, append: bool) -> anyhow::Result<Resource<SerialBackendHandle>> {
     let file = fs_err::OpenOptions::new()
         .create(true)
