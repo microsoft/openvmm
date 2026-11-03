@@ -54,9 +54,13 @@ async fn logical_block_provisioning_threshold_boundaries() {
         (1, 1),
         ((1 << 32) - 1, 1),
         (1 << 32, 1),
-        (2 << 32, 1),
+        ((2 << 32) - 1, 1),
+        (2 << 32, 2),
+        ((2 << 32) + 1, 2),
         (3 << 32, 2),
-        (4 << 32, 2),
+        ((4 << 32) - 1, 2),
+        (4 << 32, 3),
+        ((4 << 32) + 1, 3),
         (5 << 32, 3),
         (u64::MAX, 32),
     ] {
@@ -75,6 +79,10 @@ async fn logical_block_provisioning_threshold_boundaries() {
         .unwrap()
         .0;
         assert_eq!(page.threshold_exponent, expected, "{sector_count}");
+        assert!(
+            u128::from(sector_count) < (1u128 << (32 + page.threshold_exponent)),
+            "{sector_count}"
+        );
     }
 }
 
