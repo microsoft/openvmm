@@ -160,7 +160,6 @@ fn microvm_restore_request(
         log_id: String::new(),
         microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
             restore_path: snapshot_path.to_string_lossy().into_owned(),
-            restore_entropy: true,
             restore_processor_count: 1,
             restore_memory_bytes,
             restore_ready_path: restore_ready_path.to_string_lossy().into_owned(),
