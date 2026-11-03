@@ -247,10 +247,13 @@ impl<'a> MicrovmConfigBuilder<'a> {
         }
     }
 
-    /// Connects the host side of the portb console (`hvc0`).
+    /// Connects the host side of the portb console (`hvc0`), which takes no
+    /// host input.
     ///
-    /// This must run before the other serial devices so that portb owns the
-    /// interactive console when the boot virtio-console does not.
+    /// When the boot virtio-console does not own the terminal, portb does: it
+    /// writes to stdout, and OpenVMM discards keystrokes until Ctrl-Q opens
+    /// the REPL. This must run before the other serial devices, which would
+    /// otherwise take the terminal.
     pub(crate) fn setup_portb(
         &mut self,
         console_state: &RefCell<Option<ConsoleState<'static>>>,
@@ -273,6 +276,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
             "microvm-portb",
             backend,
             "hvc0",
+            false,
             console_state,
             serial_driver,
         )?;
@@ -330,6 +334,7 @@ impl<'a> MicrovmConfigBuilder<'a> {
                         "virtio-console",
                         SerialConfigCli::Console,
                         "hvc1",
+                        true,
                         console_state,
                         serial_driver,
                     )?;
@@ -862,11 +867,13 @@ fn aggregate_child_kind(
 
 /// Connects a portb or boot virtio-console endpoint to the host console or
 /// stderr, returning its backend, its output-relay completion, and, for the
-/// console, the drain of its relay.
+/// console, the drain of its relay. The device receives the console's input
+/// when `input` is set; otherwise, OpenVMM discards it.
 fn setup_host_console(
     name: &str,
     backend: SerialConfigCli,
     device: &'static str,
+    input: bool,
     console_state: &RefCell<Option<ConsoleState<'static>>>,
     serial_driver: &DefaultDriver,
 ) -> anyhow::Result<(
@@ -882,10 +889,12 @@ fn setup_host_console(
             let (config, serial, pending) =
                 serial_io::anonymous_serial_pair_with_pending(serial_driver)?;
             let (serial_read, serial_write) = AsyncReadExt::split(serial);
-            *console_state.borrow_mut() = Some(ConsoleState {
-                device,
-                input: Box::new(serial_write),
-            });
+            let input: Box<dyn futures::AsyncWrite + Unpin + Send> = if input {
+                Box::new(serial_write)
+            } else {
+                Box::new(futures::io::sink())
+            };
+            *console_state.borrow_mut() = Some(ConsoleState { device, input });
             let (completed, relay) =
                 spawn_drainable_output(name, serial_read, pending, term::raw_stdout())?;
             (config, completed, Some(relay))
