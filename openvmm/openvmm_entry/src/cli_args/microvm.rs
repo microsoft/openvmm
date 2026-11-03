@@ -1840,7 +1840,7 @@ mod tests {
         .unwrap();
         valid.validate_microvm_options().unwrap();
 
-        // The retired runtime and custom layers are unknown roles.
+        // Unknown roles are rejected.
         for role in ["runtime", "custom"] {
             let block = format!("{role}:mem:1M,ro");
             let error = Options::try_parse_from([
