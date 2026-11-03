@@ -246,6 +246,7 @@ enum QueuePairState {
     Empty,
     /// One queue started, waiting for its partner.
     HalfOpen {
+        driver: VmTaskDriver,
         queue: VirtioQueue,
         queue_size: u16,
         /// true if this is the RX queue (even index), false if TX (odd).
@@ -331,35 +332,46 @@ impl VirtioDevice for Device {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
-        let guest_memory = resources.guest_memory.clone();
-        let queue_size = resources.params.size;
-        let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
-            .context("failed creating queue event")?;
-        let queue = VirtioQueue::new(
-            *features,
-            resources.params,
-            resources.guest_memory,
-            resources.notify,
-            queue_event,
-            initial_state,
-        )
-        .context("failed creating virtio net queue")?;
-
-        let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
-        let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
 
         match &self.pairs[pair_idx] {
             QueuePairState::Empty => {
                 // First queue of the pair — buffer it.
+
+                // Build the driver for this queue pair
+                let mut builder = self.driver_source.builder();
+                // TODO: set this correctly
+                builder.target_vp(0);
+                // If tx completions arrive quickly, then just do tx processing
+                // on whatever processor the guest happens to signal from.
+                // Subsequent transmits will be pulled from the completion
+                // processor.
+                builder.run_on_target(!self.adapter.tx_fast_completions);
+                let driver = builder.build("virtio-net");
+
+                let queue_size = resources.params.size;
+                let queue_event = PolledWait::new(&driver, resources.event)
+                    .context("failed creating queue event")?;
+                let queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    queue_event,
+                    initial_state,
+                )
+                .context("failed creating virtio net queue")?;
+
                 self.pairs[pair_idx] = QueuePairState::HalfOpen {
+                    driver,
                     queue,
                     queue_size,
                     is_rx,
                 };
             }
             QueuePairState::HalfOpen {
+                driver,
                 is_rx: pending_is_rx,
                 ..
             } => {
@@ -370,7 +382,21 @@ impl VirtioDevice for Device {
                     );
                 }
 
-                // Second queue — extract the first, form the pair.
+                let guest_memory = resources.guest_memory.clone();
+                let queue_size = resources.params.size;
+                let queue_event = PolledWait::new(driver, resources.event)
+                    .context("failed creating queue event")?;
+                let queue = VirtioQueue::new(
+                    *features,
+                    resources.params,
+                    resources.guest_memory,
+                    resources.notify,
+                    queue_event,
+                    initial_state,
+                )
+                .context("failed creating virtio net queue")?;
+
+                // Both queues are successfully constructed; extract the first and form the pair.
                 let first_pair = !self
                     .pairs
                     .iter()
@@ -378,6 +404,7 @@ impl VirtioDevice for Device {
 
                 let prev = std::mem::replace(&mut self.pairs[pair_idx], QueuePairState::Active);
                 let QueuePairState::HalfOpen {
+                    driver,
                     queue: pending_queue,
                     queue_size: pending_queue_size,
                     is_rx: pending_is_rx,
@@ -385,6 +412,9 @@ impl VirtioDevice for Device {
                 else {
                     unreachable!()
                 };
+
+                let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
+                let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
 
                 let (rx_queue, rx_queue_size, tx_queue, tx_queue_size) = if pending_is_rx {
                     (pending_queue, pending_queue_size, queue, queue_size)
@@ -410,6 +440,7 @@ impl VirtioDevice for Device {
                     &guest_memory,
                     negotiated_features,
                     negotiated_features_bank1,
+                    driver,
                 );
 
                 if first_pair {
@@ -677,17 +708,8 @@ impl Device {
         guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
         negotiated_features_bank1: NetworkFeaturesBank1,
+        driver: VmTaskDriver,
     ) {
-        let mut builder = self.driver_source.builder();
-        // TODO: set this correctly
-        builder.target_vp(0);
-        // If tx completions arrive quickly, then just do tx processing
-        // on whatever processor the guest happens to signal from.
-        // Subsequent transmits will be pulled from the completion
-        // processor.
-        builder.run_on_target(!self.adapter.tx_fast_completions);
-        let driver = builder.build("virtio-net");
-
         let active_state = ActiveState::new(
             guest_memory.clone(),
             virtio_state.rx_queue_size,
