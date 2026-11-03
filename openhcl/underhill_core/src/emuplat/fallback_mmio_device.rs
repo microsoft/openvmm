@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Forwards unhandled MMIO accesses to the host. Hypercalls run in deferred tasks
+//! on the current thread's executor so the device lock is released ASAP.
+
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::defer_read;
@@ -9,12 +12,14 @@ use chipset_device::mmio::MmioIntercept;
 use cvm_tracing::CVM_ALLOWED;
 use hcl::ioctl::MshvHvcall;
 use memory_range::MemoryRange;
+use pal_async::task::SpawnLocal;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
-// Represents a stub MMIO device that handles unhandled MMIO accesses by
-// forwarding them to the host on the blocking thread pool.
+const SLOW_HYPERCALL_THRESHOLD: Duration = Duration::from_secs(1);
+
+/// A stub MMIO device that forwards unhandled MMIO accesses to the host.
 pub(crate) struct FallbackMmioDevice {
     pub(crate) mmio_ranges: Option<Vec<MemoryRange>>,
     pub(crate) mshv_hvcall: Arc<MshvHvcall>,
@@ -40,29 +45,32 @@ impl MmioIntercept for FallbackMmioDevice {
         let (deferred, token) = defer_read();
         let mshv_hvcall = self.mshv_hvcall.clone();
         let len = data.len();
-        blocking::unblock(move || {
-            let mut buffer = vec![!0; len];
-            let start = Instant::now();
-            let result = mshv_hvcall.mmio_read(addr, &mut buffer);
-            let elapsed = start.elapsed();
-            if elapsed > Duration::from_secs(1) {
-                tracelimit::warn_ratelimited!(
-                    CVM_ALLOWED,
-                    addr,
-                    ?elapsed,
-                    "host MMIO read hypercall took longer than 1 second"
-                );
-            }
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    "failed host MMIO read"
-                );
-            }
-            deferred.complete(&buffer);
-        })
-        .detach();
+        underhill_threadpool::Thread::current()
+            .unwrap()
+            .spawn_local("fallback-mmio-read", async move {
+                let mut buffer = vec![!0; len];
+                let start = Instant::now();
+                let result = mshv_hvcall.mmio_read(addr, &mut buffer);
+                let elapsed = start.elapsed();
+                if elapsed > SLOW_HYPERCALL_THRESHOLD {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        addr,
+                        ?elapsed,
+                        threshold = ?SLOW_HYPERCALL_THRESHOLD,
+                        "host MMIO read hypercall took too long"
+                    );
+                }
+                if let Err(err) = result {
+                    tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "failed host MMIO read"
+                    );
+                }
+                deferred.complete(&buffer);
+            })
+            .detach();
 
         IoResult::Defer(token)
     }
@@ -75,28 +83,31 @@ impl MmioIntercept for FallbackMmioDevice {
         let (deferred, token) = defer_write();
         let mshv_hvcall = self.mshv_hvcall.clone();
         let data = data.to_vec();
-        blocking::unblock(move || {
-            let start = Instant::now();
-            let result = mshv_hvcall.mmio_write(addr, &data);
-            let elapsed = start.elapsed();
-            if elapsed > Duration::from_secs(1) {
-                tracelimit::warn_ratelimited!(
-                    CVM_ALLOWED,
-                    addr,
-                    ?elapsed,
-                    "host MMIO write hypercall took longer than 1 second"
-                );
-            }
-            if let Err(err) = result {
-                tracelimit::error_ratelimited!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    "failed host MMIO write"
-                );
-            }
-            deferred.complete();
-        })
-        .detach();
+        underhill_threadpool::Thread::current()
+            .expect("fallback MMIO must run on an underhill thread")
+            .spawn_local("fallback-mmio-write", async move {
+                let start = Instant::now();
+                let result = mshv_hvcall.mmio_write(addr, &data);
+                let elapsed = start.elapsed();
+                if elapsed > SLOW_HYPERCALL_THRESHOLD {
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        addr,
+                        ?elapsed,
+                        threshold = ?SLOW_HYPERCALL_THRESHOLD,
+                        "host MMIO write hypercall took too long"
+                    );
+                }
+                if let Err(err) = result {
+                    tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
+                        error = &err as &dyn std::error::Error,
+                        "failed host MMIO write"
+                    );
+                }
+                deferred.complete();
+            })
+            .detach();
 
         IoResult::Defer(token)
     }
