@@ -311,10 +311,10 @@ a restore whose values differ (`E_TSC_SYNC_READBACK`), and one-shot LAPIC
 timers advance by the same downtime. The guest TSC is never scaled, and
 RDTSC is never trapped or emulated.
 VM time and the RTC stop with the state units shortly before the public
-capture anchor. New snapshots record that cut-to-anchor interval, measured on
-the host monotonic clock that the anchor samples, and add it to their VM-time
-and RTC advancement; older snapshots retain the previous anchor-based
-behavior.
+capture anchor. Every snapshot records that cut-to-anchor interval, measured
+on the host monotonic clock that the anchor samples, and a restore adds it to
+the VM-time and RTC advancement; a capture that cannot recover the interval
+fails.
 Snapshots without the explicit capture-time `maxcpus` opt-in reject a restore
 target. This is not a post-readiness hotplug API and cannot add VPs absent
 from the saved topology.
