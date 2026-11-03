@@ -618,6 +618,46 @@ impl MshvProcessor<'_> {
         Ok(())
     }
 
+    async fn handle_mmio_intercept(
+        &mut self,
+        message: &HvMessage,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason> {
+        let info = message.as_message::<hvdef::HvArm64MmioInterceptMessage>();
+        let gpa = info.guest_physical_address;
+        let len = info.access_size as usize;
+
+        match info.header.intercept_access_type {
+            hvdef::HvInterceptAccessType::WRITE => {
+                dev.write_mmio(
+                    self.vpindex,
+                    self.partition.mmio_address(gpa),
+                    &info.data[..len],
+                )
+                .await;
+            }
+            hvdef::HvInterceptAccessType::READ => {
+                let mut data = [0u8; 8];
+                dev.read_mmio(
+                    self.vpindex,
+                    self.partition.mmio_address(gpa),
+                    &mut data[..len],
+                )
+                .await;
+                let value = u64::from_ne_bytes(data) & ((1u128 << (len * 8)) - 1) as u64;
+                tracing::error!("unhandled MMIO read: gpa: {gpa:#x} value: {value:#x}");
+                // TODO: What to do with value?
+            }
+            iat => {
+                return Err(
+                    dev.fatal_error(format!("invalid mmio intercept access type: {iat:?}").into())
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     fn handle_hypercall_intercept(&mut self, message: &HvMessage) {
         let info = message.as_message::<hvdef::HvArm64HypercallInterceptMessage>();
 
@@ -744,10 +784,11 @@ impl MshvProcessor<'_> {
             HvMessageType::HvMessageTypeUnrecoverableException => {
                 return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
             }
-            HvMessageType::HvMessageTypeUnmappedGpa
-            | HvMessageType::HvMessageTypeGpaIntercept
-            | HvMessageType::HvMessageTypeMmioIntercept => {
+            HvMessageType::HvMessageTypeUnmappedGpa | HvMessageType::HvMessageTypeGpaIntercept => {
                 self.handle_memory_intercept(exit, dev).await?;
+            }
+            HvMessageType::HvMessageTypeMmioIntercept => {
+                self.handle_mmio_intercept(exit, dev).await?;
             }
             HvMessageType::HvMessageTypeSynicSintDeliverable => {
                 let info = exit.as_message::<hvdef::HvArm64SynicSintDeliverableMessage>();
