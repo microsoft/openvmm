@@ -43,17 +43,14 @@ storage version, not a byte digest; OpenVMM validates role, size, geometry, and
 the shared generation without scanning block contents. Export or transport
 layers must provide broader integrity and authentication outside this format.
 
-The optional microVM network contract stores a versioned SHA-256 digest of its
-bound egress policy. Encoding version 2 includes the static prefix, guest MAC,
-and canonical ARP next-hop set in addition to the policy rules. An absent
-encoding-version field denotes version 1, allowing network snapshots produced
-before endpoint next-hop binding to retain their original digest semantics.
-A platform snapshot, or a snapshot without a tier, whose digest is that of the
-complete deny-all policy bound to its identity, in encoding version 3, or
-version 4 with IPv6, is a NIC template, whose restore may install another
-policy with `--restore-network-policy`. Earlier encodings do not record the
-host-loopback action or the proxy endpoint, so they never identify a template,
-and the format records nothing else for it.
+The optional microVM network contract stores the SHA-256 digest of its bound
+egress policy in encoding version 1, which covers the static IPv4 and IPv6
+identities, guest MAC, policy rules, canonical ARP next-hop set, host-loopback
+action and proxy endpoint, and ingress action. A platform snapshot, or a
+snapshot without a tier, whose digest is that of the complete deny-all policy
+bound to its identity is a NIC template, whose restore may install another
+policy with `--restore-network-policy`, and the format records nothing else for
+it.
 
 ## Device state (`state.bin`)
 
