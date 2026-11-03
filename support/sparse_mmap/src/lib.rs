@@ -538,6 +538,16 @@ mod tests {
             );
         }
 
+        for offset in [0, page_size, mapping.len()] {
+            assert_eq!(
+                mapping
+                    .map_file(offset, 0, &shmem, 0, true)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+
         let mut bytes = vec![0; mapping.len()];
         mapping.read_at(0, &mut bytes).unwrap();
         assert_eq!(bytes, vec![0xa5; mapping.len()]);
