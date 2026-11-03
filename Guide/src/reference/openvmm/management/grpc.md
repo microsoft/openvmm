@@ -293,11 +293,10 @@ restore flow over both transports:
   Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
   fields are rejected. A saved listener is reconstructed from the manifest; a saved
   client requires the matching path configuration.
-* `restore_entropy` is accepted for compatibility and is valid only with
-  `restore_path`; it has no effect, because every restore delivers the
-  restore packet with fresh entropy. Every microVM process also receives a
-  fresh, non-serialized 16-byte generation ID through the fixed portb selector.
-  On restore, the ID is the first 16 bytes of the restore packet's entropy.
+* Every restore delivers the restore packet with fresh entropy, and every
+  microVM process receives a fresh, non-serialized 16-byte generation ID
+  through the fixed portb selector. On restore, the ID is the first 16 bytes
+  of the restore packet's entropy.
 * `restore_processor_count` requests restore-time activation of the contiguous
   VP prefix `0..count-1`. Zero requests no activation. A nonzero value is
   valid only for a snapshot that advertises processor activation, implies the
@@ -345,13 +344,11 @@ directory: it cannot attach an aggregate of several host directories, as the
 command line's `--mount-aggregate` does, and it cannot restore a snapshot of
 one.
 
-The fork retains `VirtioFs.guest_mount_target` at protobuf field 3 and
-`read_write` at field 4 for existing microVM clients. Standard-machine
-`read_only` uses field 5, rather than upstream's conflicting field 3; clients
-using that flag must generate bindings from this fork's `vmservice.proto`.
-Standard-machine attachments reject the microVM mount fields, and microVM
-attachments reject `read_only=true` before opening device resources. Use
-`read_write` to select a microVM attachment's access mode.
+`VirtioFs.read_only` keeps upstream's protobuf field 3, and the microVM's
+`guest_mount_target` and `read_write` use fields 4 and 5. Standard-machine
+attachments reject the microVM mount fields, and microVM attachments reject
+`read_only=true` before opening device resources. Use `read_write` to select
+a microVM attachment's access mode.
 
 Capture and restore paths are mutually exclusive. A successful capture halts
 the managed source VM at the committed boundary and terminates the OpenVMM
@@ -364,16 +361,11 @@ The readiness endpoint is a process-local orchestration attachment and is not
 part of saved state. Each successful restore publishes one event; validation,
 attachment, or worker-start failure publishes none.
 
-`VMConfig.MICROVM` is numeric value 2 and accepts exactly 1, 2, 4, or 8
-processors. Numeric value 1 is reserved and rejected before host resources are
-opened. Clients must regenerate bindings because `machine_profile` moved from
-field 15 to field 17 when upstream assigned field 15 to `iommufds`; the
-colliding legacy encoding is rejected. Clients that used the former
-`MICROVM_V2` source name must also update their bindings. RPC construction is
-currently blockless; role-bearing sandbox blocks remain CLI-only. Snapshots
-record microVM ABI value 1 and boot layout value 1, which identifies the
-Linux-direct MP-table layout, and restore refuses a snapshot of any other
-value.
+`VMConfig.MICROVM` is numeric value 1 and accepts exactly 1, 2, 4, or 8
+processors. RPC construction is currently blockless; role-bearing sandbox
+blocks remain CLI-only. Snapshots record microVM ABI value 1 and boot layout
+value 1, which identifies the Linux-direct MP-table layout, and restore
+refuses a snapshot of any other value.
 
 `VMConfig.cpu_profile` selects the microVM's CPU profile as
 [`--cpu-profile`](cli.md) does, with the same values and checks: `auto`, the
@@ -387,14 +379,10 @@ for a profile that the host cannot boot, such as with
 `host`; any other value fails with `E_PROFILE_UNKNOWN`. A standard VM rejects
 a nonempty `cpu_profile`.
 
-`VMConfig.pvh_boot` and protobuf field 14 are reserved, upstream `iommufds`
-retains field 15, `crash_dump_path` uses field 16, and `machine_profile` uses
-field 17. Upstream's `disable_vmbus` and `disable_hv` use fields 20 and 21
-instead of upstream's fields 16 and 17, and upstream's `nested_virt` and `vmgs`
-use fields 23 and 24 instead of upstream's fields 20 and 21, while the `igvm`
-boot configuration and `isolation_config` keep upstream's fields 18 and 19.
-The fork's `cpu_profile` uses field 25. Generate bindings from this fork for
-the combined schema.
+Every upstream `VMConfig` field keeps upstream's protobuf field number. The
+fork's `machine_profile` and `cpu_profile` use fields 23 and 24, after
+upstream's, so bindings generated from this fork's `vmservice.proto` also
+encode upstream's requests.
 
 The API has the same KVM/MSHV/WHP backend, no-block device, artifact integrity,
 and security restrictions documented under [`--snapshot-destination`].
