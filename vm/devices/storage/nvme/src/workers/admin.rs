@@ -38,10 +38,12 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::collections::btree_map;
+use std::future::Future;
 use std::future::pending;
 use std::future::poll_fn;
 use std::io::Cursor;
 use std::io::Write;
+use std::pin::Pin;
 use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::Cancelled;
@@ -137,6 +139,36 @@ pub struct AdminState {
     #[inspect(skip)]
     poll_namespace_change: BTreeMap<u32, Task<()>>,
     features: FeatureState,
+    /// An admin command whose backend query has not answered yet. Only a
+    /// Get Features of Reservation Persistence gets here
+    /// (`handle_get_features`). The run loop completes it before it takes
+    /// the next admin event, so admin commands keep their order.
+    ///
+    /// The command and its query live here, not in the run loop, so the
+    /// query can be awaited under `until_stopped`: a stop (a VM stop, an
+    /// inspect, `update_with`) leaves both in place, and the next run polls
+    /// the same query. Awaiting the backend outside `until_stopped`, as the
+    /// other handlers await, would make the stop wait for the disk. A query
+    /// rebuilt on each run would be dropped by every inspect of a running VM
+    /// (`TaskControl` stops and restarts the task for it), so a slow backend
+    /// would never answer, and each restart would ask it again.
+    ///
+    /// A controller reset drops it with the rest of the admin state.
+    #[inspect(
+        rename = "held_command_cid",
+        with = "|x| x.as_ref().map(|h| h.command.cdw0.cid())"
+    )]
+    held_command: Option<HeldCommand>,
+}
+
+/// An admin command held in [`AdminState`] with the backend query that
+/// answers it.
+struct HeldCommand {
+    command: spec::Command,
+    /// Built once, when the command is taken; see `AdminState::held_command`.
+    /// Owns the command and the namespace it reads, so it outlives the run
+    /// that built it, and a namespace removed meanwhile stays alive in it.
+    query: Pin<Box<dyn Future<Output = CommandResult> + Send>>,
 }
 
 /// Stored configuration for the mandatory Set/Get Features that the controller
@@ -244,6 +276,7 @@ impl AdminState {
             send_changed_namespace,
             poll_namespace_change,
             features: FeatureState::new(handler.config.interrupts.len()),
+            held_command: None,
         };
         state.set_max_queues(handler, handler.config.max_sqs, handler.config.max_cqs);
         state
@@ -258,6 +291,28 @@ impl AdminState {
             if let Some(state) = cq.task.state_mut() {
                 state.drain().await;
                 cq.task.remove();
+            }
+        }
+    }
+
+    /// Stops every I/O queue task without waiting for its in-flight
+    /// commands. They are futures in the task's state, not in its run loop,
+    /// so `resume` runs them on. The admin task must already be stopped.
+    ///
+    /// A failed task has already ended, and its in-flight commands are not
+    /// polled again, as on a running VM.
+    pub async fn stop_io(&mut self) {
+        for cq in &mut self.io_cqs {
+            cq.task.stop().await;
+        }
+    }
+
+    /// Restarts every I/O queue task that has a queue. Starting a failed
+    /// task is a no-op.
+    pub fn resume(&mut self) {
+        for cq in &mut self.io_cqs {
+            if cq.task.has_state() {
+                cq.task.start();
             }
         }
     }
@@ -350,6 +405,70 @@ impl AdminState {
         // Notify the guest driver of the change.
         self.add_changed_namespace(nsid);
     }
+
+    /// Completes `held_command`: waits for room in the admin CQ, waits for
+    /// the backend's answer, and posts it, each await under `until_stopped`.
+    /// The answer is posted in the same synchronous step that drops the held
+    /// command, so the command completes exactly once.
+    ///
+    /// The CQ wait returns at once today, because `next_event` took the
+    /// command only with room for its completion and only this task writes
+    /// the admin CQ. It is kept so this path does not depend on that:
+    /// `post_admin_completion` panics on a full CQ.
+    ///
+    /// The outer error is a stop; the inner one is a queue error that fails
+    /// the admin task.
+    async fn complete_held_command(
+        &mut self,
+        stop: &mut StopTask<'_>,
+    ) -> Result<Result<(), QueueError>, Cancelled> {
+        if let Err(err) = stop
+            .until_stopped(poll_fn(|cx| self.admin_cq.poll_ready(cx)))
+            .await?
+        {
+            return Ok(Err(err));
+        }
+        let held = self.held_command.as_mut().expect("caller checked");
+        let result = stop.until_stopped(&mut held.query).await?;
+        let cid = held.command.cdw0.cid();
+        self.held_command = None;
+        Ok(post_admin_completion(self, cid, result))
+    }
+}
+
+/// The completion for an admin command that failed, logged as every admin
+/// command error is.
+fn command_error(command: &spec::Command, err: NvmeError) -> CommandResult {
+    tracelimit::warn_ratelimited!(
+        error = &err as &dyn std::error::Error,
+        cid = command.cdw0.cid(),
+        opcode = ?spec::AdminOpcode(command.cdw0.opcode()),
+        "command error"
+    );
+    err.into()
+}
+
+/// Posts `result` for admin command `cid` on the admin CQ.
+///
+/// SQHD is read at the post. For a held command that is still the head just
+/// past it, because the run loop takes no further admin SQ entry until the
+/// held one is posted.
+fn post_admin_completion(
+    state: &mut AdminState,
+    cid: u16,
+    result: CommandResult,
+) -> Result<(), QueueError> {
+    let completion = spec::Completion {
+        dw0: result.dw[0],
+        dw1: result.dw[1],
+        sqid: 0,
+        sqhd: state.admin_sq.sqhd(),
+        status: result.completion_status(),
+        cid,
+    };
+    let posted = state.admin_cq.write(completion)?;
+    assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
+    Ok(())
 }
 
 fn spawn_namespace_notifier(
@@ -523,6 +642,14 @@ impl AdminHandler {
         Ok(event)
     }
 
+    /// Handles one admin event to its end.
+    ///
+    /// Runs outside `until_stopped`, so a stop of the admin task waits for it
+    /// to return, and no handler here may await the disk. The awaits left
+    /// are each an I/O task's `TaskControl::stop` (create and delete SQ,
+    /// delete CQ), which returns once that task's run loop sees the stop, and
+    /// Doorbell Buffer Config, which awaits nothing. The one command that
+    /// needs the backend is held instead; see `AdminState::held_command`.
     async fn process_event(
         &mut self,
         state: &mut AdminState,
@@ -539,9 +666,7 @@ impl AdminHandler {
                     spec::AdminOpcode::IDENTIFY => self
                         .handle_identify(state, &command)
                         .map(|()| Some(Default::default())),
-                    spec::AdminOpcode::GET_FEATURES => {
-                        self.handle_get_features(state, &command).await.map(Some)
-                    }
+                    spec::AdminOpcode::GET_FEATURES => self.handle_get_features(state, &command),
                     spec::AdminOpcode::SET_FEATURES => {
                         self.handle_set_features(state, &command).map(Some)
                     }
@@ -583,15 +708,7 @@ impl AdminHandler {
                 let result = match result {
                     Ok(Some(cr)) => cr,
                     Ok(None) => return Ok(()),
-                    Err(err) => {
-                        tracelimit::warn_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            cid = command.cdw0.cid(),
-                            ?opcode,
-                            "command error"
-                        );
-                        err.into()
-                    }
+                    Err(err) => command_error(&command, err),
                 };
 
                 (command.cdw0.cid(), result)
@@ -607,18 +724,7 @@ impl AdminHandler {
             }
         };
 
-        let completion = spec::Completion {
-            dw0: result.dw[0],
-            dw1: result.dw[1],
-            sqid: 0,
-            sqhd: state.admin_sq.sqhd(),
-            status: result.completion_status(),
-            cid,
-        };
-
-        let posted = state.admin_cq.write(completion)?;
-        assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
-        Ok(())
+        post_admin_completion(state, cid, result)
     }
 
     fn handle_identify(
@@ -835,11 +941,14 @@ impl AdminHandler {
         Ok(CommandResult::new(spec::Status::SUCCESS, dw))
     }
 
-    async fn handle_get_features(
+    /// Answers a Get Features at once, except Reservation Persistence, which
+    /// asks the backend: that one is put in `state.held_command` and returns
+    /// `Ok(None)`.
+    fn handle_get_features(
         &mut self,
         state: &mut AdminState,
         command: &spec::Command,
-    ) -> Result<CommandResult, NvmeError> {
+    ) -> Result<Option<CommandResult>, NvmeError> {
         let cdw10: spec::Cdw10GetFeatures = command.cdw10.into();
         let mut dw = [0; 2];
 
@@ -887,9 +996,19 @@ impl AdminHandler {
                 let namespace = self
                     .namespaces
                     .get(&command.nsid)
-                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?;
-
-                return namespace.get_feature(command).await;
+                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?
+                    .clone();
+                let command = *command;
+                state.held_command = Some(HeldCommand {
+                    command,
+                    query: Box::pin(async move {
+                        match namespace.get_feature(&command).await {
+                            Ok(result) => result,
+                            Err(err) => command_error(&command, err),
+                        }
+                    }),
+                });
+                return Ok(None);
             }
             spec::Feature::ARBITRATION => {
                 dw[0] = state.features.arbitration;
@@ -931,7 +1050,7 @@ impl AdminHandler {
                 return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
             }
         }
-        Ok(CommandResult::new(spec::Status::SUCCESS, dw))
+        Ok(Some(CommandResult::new(spec::Status::SUCCESS, dw)))
     }
 
     fn handle_create_io_completion_queue(
@@ -1263,12 +1382,22 @@ impl AsyncRun<AdminState> for AdminHandler {
         state: &mut AdminState,
     ) -> Result<(), Cancelled> {
         loop {
-            let event = stop.until_stopped(self.next_event(state)).await?;
-            if let Err(err) = self.process_event(state, event).await {
+            // A held command first, to keep the admin order.
+            let result = if state.held_command.is_some() {
+                state.complete_held_command(stop).await?
+            } else {
+                let event = stop.until_stopped(self.next_event(state)).await?;
+                self.process_event(state, event).await
+            };
+            if let Err(err) = result {
                 tracing::error!(
                     error = &err as &dyn std::error::Error,
                     "admin queue failure"
                 );
+                // A failed admin task never runs again, so nothing would
+                // answer a held command, and its query would keep the
+                // namespace alive.
+                state.held_command = None;
                 break;
             }
         }
