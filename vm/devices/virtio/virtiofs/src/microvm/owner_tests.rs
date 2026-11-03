@@ -30,8 +30,6 @@ mod linux {
     use super::super::profile::MicroVmOwnerMode;
     use super::super::profile::MicroVmVirtioFsProfile;
     use super::super::profile::microvm_root_identity;
-    use super::super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
-    use super::super::saved_state::PREVIOUS_SCHEMA_VERSION;
     use super::super::saved_state::SCHEMA_VERSION;
     use super::super::state::validate_microvm_state;
     use crate::VirtioFs;
@@ -449,39 +447,15 @@ mod linux {
         let caller = profile(directory.path(), MicroVmOwnerMode::Caller);
         let vmm = profile(directory.path(), MicroVmOwnerMode::Vmm);
         for (saved, other) in [(&caller, &vmm), (&vmm, &caller)] {
-            let mut state = VirtioFs::new_microvm(directory.path(), saved.clone())
+            let state = VirtioFs::new_microvm(directory.path(), saved.clone())
                 .unwrap()
                 .save_microvm_state(saved, SessionState::default())
                 .unwrap();
             let caller_owned = saved.owner_mode() == MicroVmOwnerMode::Caller;
             assert_eq!(state.caller_identity, caller_owned);
-            assert_eq!(
-                state.schema_version,
-                if caller_owned {
-                    CALLER_IDENTITY_SCHEMA_VERSION
-                } else {
-                    SCHEMA_VERSION
-                }
-            );
-            // Readers that predate caller ownership accept only the previous
-            // versions, so they refuse to restore a caller-owned attachment as
-            // the VMM.
-            assert_eq!(
-                matches!(
-                    state.schema_version,
-                    PREVIOUS_SCHEMA_VERSION | SCHEMA_VERSION
-                ),
-                !caller_owned
-            );
+            assert_eq!(state.schema_version, SCHEMA_VERSION);
             validate_microvm_state(&state, saved).unwrap();
             assert!(validate_microvm_state(&state, other).is_err());
-
-            state.schema_version = if caller_owned {
-                SCHEMA_VERSION
-            } else {
-                CALLER_IDENTITY_SCHEMA_VERSION
-            };
-            assert!(validate_microvm_state(&state, saved).is_err());
         }
     }
 

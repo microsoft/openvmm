@@ -15,7 +15,7 @@ use super::saved_state::MAX_DIRECTORY_BYTES;
 use super::saved_state::MAX_DIRECTORY_ENTRIES;
 use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
-use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
+use super::saved_state::SCHEMA_VERSION;
 use super::saved_state::SavedHandle;
 use super::saved_state::SavedInode;
 use super::saved_state::SavedState;
@@ -26,7 +26,6 @@ use super::state::saved_aggregate_children;
 use super::state::saved_identity;
 use super::state::saved_negotiation;
 use super::state::saved_policy_paths;
-use super::state::schema_version;
 use super::state::session_state_from_saved;
 use super::state::validate_identity;
 use super::state::validate_microvm_state;
@@ -544,20 +543,19 @@ impl VirtioFs {
             *self.inner.negotiation.read() == negotiation,
             "FUSE session and filesystem negotiation state disagree"
         );
-        let schema_version = schema_version(profile);
+        // An aggregate's children record their own policies.
         let policy = profile.subtree_policy();
-        let (denied_paths, allowed_paths, writable_paths) =
-            if schema_version == SUBTREE_POLICY_SCHEMA_VERSION {
-                (
-                    saved_policy_paths(policy.denied_paths()),
-                    saved_policy_paths(policy.allowed_paths()),
-                    saved_policy_paths(policy.writable_paths()),
-                )
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
-            };
+        let (denied_paths, allowed_paths, writable_paths) = if profile.is_aggregate() {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else {
+            (
+                saved_policy_paths(policy.denied_paths()),
+                saved_policy_paths(policy.allowed_paths()),
+                saved_policy_paths(policy.writable_paths()),
+            )
+        };
         Ok(SavedState {
-            schema_version,
+            schema_version: SCHEMA_VERSION,
             attachment_id: profile.attachment_id().to_owned(),
             access_mode: match profile.access_mode() {
                 super::profile::MicroVmAccessMode::ReadOnly => 1,
