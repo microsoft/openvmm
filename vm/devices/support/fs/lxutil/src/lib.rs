@@ -2281,6 +2281,13 @@ mod tests {
         let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
         file.fsync(false).unwrap();
         file.fsync(true).unwrap();
+
+        let dir = env
+            .volume
+            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        dir.fsync(false).unwrap();
+        dir.fsync(true).unwrap();
     }
 
     #[test]
