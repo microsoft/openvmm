@@ -3,14 +3,11 @@
 
 //! Add a single tag to the pipeline running in an ADO environment.
 //!
-//! Uses `az pipelines build tag add` with the job's `System.AccessToken`, since
-//! OneBranch build containers block the `##vso[build.addbuildtag]` logging
-//! command. Assumes `az` and its `azure-devops` extension are installed.
+//! Assumes `az` and its `azure-devops` extension are installed.
+//! Tagging is best-effort: Failures are reported as ADO warnings, and the step still succeeds.
 //!
-//! Tagging is best-effort: any failure is reported as an ADO warning, and the
-//! step still succeeds.
-//!
-//! Only Windows jobs are supported for now.
+//! TODO: Only Windows jobs are supported for now. Adding linux support should
+//! be straightforward but will need to be tested.
 
 use flowey::node::prelude::*;
 
