@@ -576,12 +576,11 @@ describes the source definitions.
   captured identity has IPv6. OpenVMM rejects the option before any vCPU
   starts for a cold boot, for a `workload-start` or `instance-checkpoint`
   snapshot, for a snapshot without a NIC, and for a NIC captured with any
-  other policy, including one whose digest encoding predates version 3. The
-  guest keeps its captured command line, so it learns its DNS server and
-  whether to announce its listeners after the restore: a platform clone from
-  its host, and the guest of a snapshot without a tier from the restore
-  packet, which carries them, and whose restore gates host input until the
-  guest acknowledges that it applied them.
+  other policy. The guest keeps its captured command line, so it learns its DNS
+  server and whether to announce its listeners after the restore: a platform
+  clone from its host, and the guest of a snapshot without a tier from the
+  restore packet, which carries them, and whose restore gates host input until
+  the guest acknowledges that it applied them.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
