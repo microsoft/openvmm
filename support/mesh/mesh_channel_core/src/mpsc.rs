@@ -1019,6 +1019,7 @@ mod tests {
         _sender: Sender<()>,
     }
 
+    #[expect(clippy::manual_noop_waker)]
     impl Wake for SenderWake {
         fn wake(self: Arc<Self>) {}
     }
