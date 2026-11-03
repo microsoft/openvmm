@@ -39,7 +39,11 @@ describes the source definitions.
 
   The kernel must be an uncompressed ELF64 image. The profile owns the base command line
   (`earlycon=xe9 console=hvc0 reboot=t panic=-1`) and switches the primary
-  console to `hvc1` when `--virtio-console` is present. It appends
+  console to `hvc1` when `--virtio-console` is present. The portb console,
+  `hvc0`, takes no host input, so an interactive guest console needs
+  `--virtio-console console`; without a boot console on the terminal, portb
+  writes to stdout, and OpenVMM discards keystrokes until Ctrl-Q opens the
+  REPL. It appends
   `nr_cpus=<capacity>` from the validated processor topology. It reserves a 1-GiB
   MMIO gap from 3 to 4 GiB and exposes only PIC/IOAPIC, PIT, a CMOS RTC
   anchored to UTC,
@@ -1006,7 +1010,8 @@ Serial devices can be configured to appear as different devices inside the guest
 * `--virtio-console <BACKEND>`: Expose a virtio console device. It normally
   appears as `/dev/hvc0`. Under `--machine microvm`, it occupies fixed MMIO
   `0xd0002000`, IRQ 18, and is selected as `/dev/hvc1`; the raw portb path
-  remains available as `hvc0` for early output and recovery.
+  remains available as `hvc0` for early output and failure reports, and takes
+  no host input.
 
   A microVM accepts these explicit attachment policies:
 

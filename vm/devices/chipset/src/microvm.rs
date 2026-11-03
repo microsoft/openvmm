@@ -19,7 +19,6 @@ use chipset_resources::microvm_time::RestorePacketBase;
 use chipset_resources::microvm_time::RestoreTimeRecord;
 use chipset_resources::microvm_time::TimeSample;
 use chipset_resources::microvm_time::TimeSampleSource;
-use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::InspectMut;
 use power_resources::PowerRequest;
@@ -52,7 +51,6 @@ const RESTORE_PACKET_SELECT: u8 = 0xa5;
 const GENERATION_ID_SELECT: u8 = 0xa6;
 const TIME_SAMPLE_SELECT: u8 = chipset_resources::microvm_time::TIME_SAMPLE_SELECT;
 const GENERATION_ID_SIZE: usize = 16;
-const STATUS_INPUT_AVAILABLE: u8 = 1 << 0;
 const STATUS_RESTORE_PACKET_AVAILABLE: u8 = 1 << 1;
 const STATUS_RESTORE_PROCESSOR_TARGET_AVAILABLE: u8 = 1 << 2;
 const STATUS_RESTORE_MEMORY_TARGET_AVAILABLE: u8 = 1 << 3;
@@ -109,15 +107,15 @@ impl PortbTimeAbi {
     }
 }
 
-/// Raw bidirectional microVM portb console.
+/// microVM portb byte channel: raw guest output, the restore packet, the
+/// generation ID, and time samples. It takes no host input: it never reads
+/// its host endpoint, and its input-pending status bit, bit 0, stays clear.
 #[derive(InspectMut)]
 pub struct MicrovmPortb {
     #[inspect(skip)]
     io_region: (&'static str, RangeInclusive<u16>),
     #[inspect(mut)]
     io: Box<dyn SerialIo>,
-    #[inspect(with = "VecDeque::len")]
-    rx_buffer: VecDeque<u8>,
     #[inspect(with = "VecDeque::len")]
     tx_buffer: VecDeque<u8>,
     generation_id: [u8; GENERATION_ID_SIZE],
@@ -129,13 +127,10 @@ pub struct MicrovmPortb {
     restore_processor_target_available: bool,
     restore_memory_target_available: bool,
     restore_memory_expansion_available: bool,
-    input_gated: bool,
     #[inspect(skip)]
     time_abi: PortbTimeAbi,
     #[inspect(with = "VecDeque::len")]
     time_window: VecDeque<u8>,
-    #[inspect(skip)]
-    rx_waker: Option<Waker>,
     #[inspect(skip)]
     tx_waker: Option<Waker>,
     #[inspect(skip)]
@@ -145,11 +140,11 @@ pub struct MicrovmPortb {
 }
 
 impl MicrovmPortb {
-    /// Creates a portb console using `io` as its host endpoint, with the NVX
-    /// time ABI configuration `time_abi`: the restore packet and the
-    /// time-sample window at port `0xeb`, which stays empty until
-    /// [`Self::with_time_sample_source`] provides the host fields of its
-    /// samples.
+    /// Creates a portb console that writes its output to the host endpoint
+    /// `io`, which it never reads, with the NVX time ABI configuration
+    /// `time_abi`: the restore packet and the time-sample window at port
+    /// `0xeb`, which stays empty until [`Self::with_time_sample_source`]
+    /// provides the host fields of its samples.
     pub fn new(
         io: Box<dyn SerialIo>,
         generation_id: [u8; GENERATION_ID_SIZE],
@@ -179,7 +174,6 @@ impl MicrovmPortb {
         Self {
             io_region: ("microvm-portb", DATA_PORT..=TIME_WINDOW_PORT),
             io,
-            rx_buffer: VecDeque::new(),
             tx_buffer: VecDeque::new(),
             generation_id,
             generation_id_read_index: None,
@@ -188,7 +182,6 @@ impl MicrovmPortb {
             restore_processor_target_available: processor_target,
             restore_memory_target_available: memory_target,
             restore_memory_expansion_available: memory_expansion,
-            input_gated: false,
             time_abi: PortbTimeAbi {
                 generation,
                 sample_delay: std::time::Duration::from_micros(sample_delay_us.into()),
@@ -198,7 +191,6 @@ impl MicrovmPortb {
                 packet_selected,
             },
             time_window: VecDeque::new(),
-            rx_waker: None,
             tx_waker: None,
             output_drain_requests: None,
             output_drain: None,
@@ -307,30 +299,6 @@ impl MicrovmPortb {
         }
     }
 
-    fn poll_rx(&mut self, cx: &mut Context<'_>) {
-        let mut buffer = [0; 256];
-        loop {
-            if self.rx_buffer.len() == BUFFER_MAX {
-                self.rx_waker = Some(cx.waker().clone());
-                return;
-            }
-
-            let available = BUFFER_MAX - self.rx_buffer.len();
-            let read_len = available.min(buffer.len());
-            match Pin::new(&mut self.io).poll_read(cx, &mut buffer[..read_len]) {
-                Poll::Ready(Ok(0)) | Poll::Pending => return,
-                Poll::Ready(Ok(count)) => self.rx_buffer.extend(&buffer[..count]),
-                Poll::Ready(Err(error)) => {
-                    tracelimit::error_ratelimited!(
-                        error = &error as &dyn std::error::Error,
-                        "microVM portb input failed"
-                    );
-                    return;
-                }
-            }
-        }
-    }
-
     fn poll_tx(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         while !self.tx_buffer.is_empty() {
             let (buffer, _) = self.tx_buffer.as_slices();
@@ -340,6 +308,11 @@ impl MicrovmPortb {
                     self.tx_buffer.drain(..count);
                 }
                 Poll::Ready(Err(error)) if error.kind() == ErrorKind::BrokenPipe => {
+                    // A write that disconnected the backend leaves the next
+                    // peer to `poll_connect`, so poll again to wait for it.
+                    if !self.io.is_connected() {
+                        cx.waker().wake_by_ref();
+                    }
                     return Poll::Ready(Err(error));
                 }
                 Poll::Ready(Err(error)) => {
@@ -364,27 +337,10 @@ impl MicrovmPortb {
             waker.wake();
         }
     }
-
-    fn wake_rx(&mut self) {
-        if let Some(waker) = self.rx_waker.take() {
-            waker.wake();
-        }
-    }
 }
 
 impl ChangeDeviceState for MicrovmPortb {
     fn start(&mut self) {}
-
-    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
-        self.input_gated = true;
-        Ok(())
-    }
-
-    async fn resume_input(&mut self) -> anyhow::Result<()> {
-        self.input_gated = false;
-        self.wake_rx();
-        Ok(())
-    }
 
     async fn stop(&mut self) {
         // Drain every byte the endpoint accepts immediately. A guest-requested
@@ -395,10 +351,8 @@ impl ChangeDeviceState for MicrovmPortb {
     }
 
     async fn reset(&mut self) {
-        self.rx_buffer.clear();
         self.tx_buffer.clear();
         self.generation_id_read_index = None;
-        self.input_gated = false;
         self.time_window.clear();
         self.clear_restore_packet();
     }
@@ -433,6 +387,16 @@ impl PollDevice for MicrovmPortb {
                 Poll::Pending => {}
             }
         }
+        // portb never reads its endpoint, whose reads would report a departed
+        // peer, so ask the backend, to wait for the next peer meanwhile.
+        if self.io.is_connected()
+            && let Poll::Ready(Err(error)) = self.io.poll_disconnect(cx)
+        {
+            tracelimit::warn_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                "microVM portb backend disconnection failed"
+            );
+        }
         if !self.io.is_connected() {
             match self.io.poll_connect(cx) {
                 Poll::Ready(Ok(())) => {}
@@ -449,9 +413,6 @@ impl PollDevice for MicrovmPortb {
                     return;
                 }
             }
-        }
-        if !self.input_gated {
-            self.poll_rx(cx);
         }
         let output = self.poll_tx(cx);
         if self.output_drain.is_some() {
@@ -488,8 +449,8 @@ impl PortIoIntercept for MicrovmPortb {
         }
         data.fill(0);
         match io_port {
-            // Selected records are read 1, 2, or 4 bytes at a time; console
-            // input stays one byte per read.
+            // Selected records are read 1, 2, or 4 bytes at a time; without a
+            // selected record, a read returns zeros.
             DATA_PORT => {
                 if self.generation_id_read_index.is_some() {
                     for byte in data.iter_mut() {
@@ -513,21 +474,9 @@ impl PortIoIntercept for MicrovmPortb {
                         self.restore_memory_target_available = false;
                         self.restore_memory_expansion_available = false;
                     }
-                } else if !self.input_gated {
-                    data[0] = self.rx_buffer.pop_front().unwrap_or(0);
-                    self.wake_rx();
                 }
             }
             STATUS_PORT => {
-                data[0] = if !self.input_gated
-                    && self.generation_id_read_index.is_none()
-                    && !self.restore_packet_selected
-                    && !self.rx_buffer.is_empty()
-                {
-                    STATUS_INPUT_AVAILABLE
-                } else {
-                    0
-                };
                 let sealed_packet = self.time_abi.poll_sealed();
                 if matches!(self.time_abi.restore, RestorePacketState::None)
                     && self.restore_packet.is_empty()
@@ -602,13 +551,26 @@ impl SaveRestore for MicrovmPortb {
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
         Ok(MicrovmPortbSavedState {
-            rx_buffer: self.rx_buffer.iter().copied().collect(),
+            rx_buffer: Vec::new(),
             tx_buffer: self.tx_buffer.iter().copied().collect(),
         })
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-        if state.rx_buffer.len() > BUFFER_MAX || state.tx_buffer.len() > BUFFER_MAX {
+        if !state.rx_buffer.is_empty() {
+            return Err(RestoreError::InvalidSavedState(
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "microVM portb saved state holds {} bytes of host input, which portb \
+                         no longer accepts",
+                        state.rx_buffer.len()
+                    ),
+                )
+                .into(),
+            ));
+        }
+        if state.tx_buffer.len() > BUFFER_MAX {
             return Err(RestoreError::InvalidSavedState(
                 io::Error::new(
                     ErrorKind::InvalidData,
@@ -617,7 +579,6 @@ impl SaveRestore for MicrovmPortb {
                 .into(),
             ));
         }
-        self.rx_buffer = state.rx_buffer.into();
         self.tx_buffer = state.tx_buffer.into();
         self.generation_id_read_index = None;
         self.restore_packet_selected = false;
@@ -630,7 +591,8 @@ impl SaveRestore for MicrovmPortb {
 #[derive(mesh::payload::Protobuf, SavedStateRoot)]
 #[mesh(package = "chipset.microvm_portb")]
 pub struct MicrovmPortbSavedState {
-    /// Host bytes accepted but not consumed by the guest.
+    /// Always empty, as portb takes no host input. Restore refuses a state
+    /// that holds input, which an earlier VMM saved before the guest read it.
     #[mesh(1)]
     pub rx_buffer: Vec<u8>,
     /// Guest bytes accepted but not acknowledged by the host endpoint.
@@ -1244,7 +1206,6 @@ mod tests {
         ));
         assert_eq!(portb.tx_buffer, b"\0\xffA\x80");
 
-        portb.rx_buffer.extend([0x5a, 0x6b]);
         let mut status = [0xff; 4];
         assert!(matches!(
             portb.io_read(STATUS_PORT, &mut status),
@@ -1253,9 +1214,7 @@ mod tests {
         assert_eq!(
             status,
             [
-                STATUS_INPUT_AVAILABLE
-                    | STATUS_GENERATION_ID_AVAILABLE
-                    | STATUS_TIME_SAMPLE_AVAILABLE,
+                STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE,
                 0,
                 0,
                 0
@@ -1264,13 +1223,212 @@ mod tests {
 
         let mut data = [0xff; 4];
         assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-        assert_eq!(data, [0x5a, 0, 0, 0]);
+        assert_eq!(data, [0; 4]);
+    }
+
+    #[test]
+    fn host_input_never_reaches_the_guest() {
+        let mut portb = MicrovmPortb::new(
+            Box::new(ConnectWithByte {
+                connected: false,
+                byte: Some(0x5a),
+            }),
+            TEST_GENERATION_ID,
+            test_time_abi(None),
+        );
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        // An accepted connection receives the pending output at once, and
+        // its input stays unread.
+        portb.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(portb.tx_buffer.is_empty());
+        assert_eq!(
+            read_status(&mut portb),
+            STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
+        );
+        let mut data = [0xff; 4];
+        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
+        assert_eq!(data, [0; 4]);
+    }
+
+    /// A listening endpoint whose peers the test connects and disconnects.
+    #[derive(Default)]
+    struct ListenerState {
+        connected: bool,
+        /// The connected peer has left.
+        departed: bool,
+        /// The backend reports a departed peer when polled for disconnection,
+        /// as a socket does once it sees the peer's hangup.
+        reports_departure: bool,
+        /// A peer waits to connect.
+        next_peer: bool,
+        bytes: Vec<u8>,
+    }
+
+    struct Listener(Arc<Mutex<ListenerState>>);
+
+    impl InspectMut for Listener {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.respond();
+        }
+    }
+
+    impl SerialIo for Listener {
+        fn is_connected(&self) -> bool {
+            self.0.lock().connected
+        }
+
+        fn poll_connect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let mut state = self.0.lock();
+            if !state.connected {
+                if !state.next_peer {
+                    return Poll::Pending;
+                }
+                state.next_peer = false;
+                state.departed = false;
+                state.connected = true;
+            }
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_disconnect(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let mut state = self.0.lock();
+            if state.departed && state.reports_departure {
+                state.connected = false;
+                Poll::Ready(Ok(()))
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+
+    impl AsyncRead for Listener {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _data: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Listener {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let mut state = self.0.lock();
+            if state.departed {
+                // As a socket backend does, a failed write disconnects.
+                state.connected = false;
+                return Poll::Ready(Err(ErrorKind::BrokenPipe.into()));
+            }
+            state.bytes.extend_from_slice(data);
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn listening_portb() -> (MicrovmPortb, Arc<Mutex<ListenerState>>) {
+        let state = Arc::new(Mutex::new(ListenerState {
+            connected: true,
+            ..Default::default()
+        }));
+        let portb = MicrovmPortb::new(
+            Box::new(Listener(state.clone())),
+            TEST_GENERATION_ID,
+            test_time_abi(None),
+        );
+        (portb, state)
+    }
+
+    #[test]
+    fn portb_waits_for_the_next_peer_once_an_idle_peer_leaves() {
+        let (mut portb, state) = listening_portb();
+        let mut cx = Context::from_waker(Waker::noop());
+        state.lock().departed = true;
+        state.lock().reports_departure = true;
+        // The backend's hangup wakes the idle device, which sees the peer go.
+        portb.poll_device(&mut cx);
+        assert!(!state.lock().connected);
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        portb.poll_device(&mut cx);
+        assert_eq!(portb.tx_buffer, b"output");
+
+        state.lock().next_peer = true;
+        portb.poll_device(&mut cx);
+        assert_eq!(state.lock().bytes, b"output");
+    }
+
+    #[test]
+    fn portb_waits_for_the_next_peer_once_a_write_finds_the_peer_gone() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+        use std::task::Wake;
+
+        struct PollWake(AtomicBool);
+        impl Wake for PollWake {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let wake = Arc::new(PollWake(AtomicBool::new(false)));
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        let (mut portb, state) = listening_portb();
+        // The peer leaves before the backend reports it, so only the failed
+        // write finds out.
+        state.lock().departed = true;
+        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
+        portb.poll_device(&mut cx);
+        assert!(!state.lock().connected);
+        assert!(wake.0.load(Ordering::Relaxed));
+        assert_eq!(portb.tx_buffer, b"output");
+
+        state.lock().next_peer = true;
+        portb.poll_device(&mut cx);
+        assert_eq!(state.lock().bytes, b"output");
+    }
+
+    #[test]
+    fn restore_refuses_saved_host_input() {
+        let mut portb = time_abi_portb(None);
+        portb.tx_buffer.extend([4, 5, 6]);
+        let state = portb.save().unwrap();
+        assert!(state.rx_buffer.is_empty());
+
+        // An earlier VMM saved host input that the guest had not read.
+        let mut restored = time_abi_portb(None);
+        let error = restored
+            .restore(MicrovmPortbSavedState {
+                rx_buffer: vec![1, 2, 3],
+                tx_buffer: vec![4, 5, 6],
+            })
+            .unwrap_err();
+        let RestoreError::InvalidSavedState(error) = error else {
+            panic!("unexpected restore error: {error}");
+        };
+        assert!(
+            error.to_string().contains("3 bytes of host input"),
+            "unexpected restore error: {error}"
+        );
+        assert!(restored.tx_buffer.is_empty());
+
+        restored.restore(state).unwrap();
+        assert_eq!(restored.tx_buffer, [4, 5, 6]);
     }
 
     #[test]
     fn pending_portb_bytes_survive_restore_and_the_restore_packet_is_private() {
         let mut portb = time_abi_portb(None);
-        portb.rx_buffer.extend([1, 2, 3]);
         portb.tx_buffer.extend([4, 5, 6]);
         let state = portb.save().unwrap();
 
@@ -1296,23 +1454,8 @@ mod tests {
             )),
         );
         restored.restore(state).unwrap();
-        assert_eq!(restored.rx_buffer, [1, 2, 3]);
         assert_eq!(restored.tx_buffer, [4, 5, 6]);
         assert_eq!(restored.generation_id, [2; 16]);
-
-        let mut data = [0];
-        for expected in [1, 2, 3] {
-            assert!(matches!(
-                restored.io_read(DATA_PORT, &mut data),
-                IoResult::Ok
-            ));
-            assert_eq!(data, [expected]);
-        }
-        assert!(matches!(
-            restored.io_read(DATA_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(data, [0]);
 
         // The restored process serves its own packet, never saved state.
         send.send(RestoreTimeRecord {
@@ -1480,20 +1623,6 @@ mod tests {
             read_status(&mut portb),
             STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE
         );
-    }
-
-    #[test]
-    fn accepted_connection_is_polled_immediately() {
-        let mut portb = MicrovmPortb::new(
-            Box::new(ConnectWithByte {
-                connected: false,
-                byte: Some(0x5a),
-            }),
-            TEST_GENERATION_ID,
-            test_time_abi(None),
-        );
-        portb.poll_device(&mut Context::from_waker(Waker::noop()));
-        assert_eq!(portb.rx_buffer, [0x5a]);
     }
 
     fn time_abi_portb(
@@ -1744,41 +1873,6 @@ mod tests {
         ));
         futures::executor::block_on(portb.reset());
         assert_eq!(read_record(&mut portb, TIME_WINDOW_PORT, 4), [0; 4]);
-    }
-
-    #[test]
-    fn portb_input_gate_blocks_rx_but_not_tx() {
-        let mut portb = MicrovmPortb::new(
-            Box::new(ConnectWithByte {
-                connected: true,
-                byte: Some(0x5a),
-            }),
-            TEST_GENERATION_ID,
-            test_time_abi(None),
-        );
-        portb.rx_buffer.push_back(0x44);
-        futures::executor::block_on(portb.quiesce_input()).unwrap();
-        assert!(matches!(portb.io_write(DATA_PORT, b"output"), IoResult::Ok));
-        portb.poll_device(&mut Context::from_waker(Waker::noop()));
-        let mut data = [0xff];
-        assert!(matches!(
-            portb.io_read(STATUS_PORT, &mut data),
-            IoResult::Ok
-        ));
-        assert_eq!(
-            data,
-            [STATUS_GENERATION_ID_AVAILABLE | STATUS_TIME_SAMPLE_AVAILABLE]
-        );
-        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-        assert_eq!(data, [0]);
-        assert_eq!(portb.rx_buffer, [0x44]);
-        assert!(portb.tx_buffer.is_empty());
-
-        futures::executor::block_on(portb.resume_input()).unwrap();
-        portb.poll_device(&mut Context::from_waker(Waker::noop()));
-        assert_eq!(portb.rx_buffer, [0x44, 0x5a]);
-        assert!(matches!(portb.io_read(DATA_PORT, &mut data), IoResult::Ok));
-        assert_eq!(data, [0x44]);
     }
 
     #[test]

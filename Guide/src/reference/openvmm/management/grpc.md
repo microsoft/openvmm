@@ -190,7 +190,7 @@ restore flow over both transports:
   absent, or may contain only the matching microVM profile, an optional exact
   processor-count assertion, a `cpu_profile` that the restore accepts (see
   below), serial port 0 host
-  attachment, matching `DevicesConfig.virtio_consoles` and
+  attachment, which receives portb's output and is never read, matching `DevicesConfig.virtio_consoles` and
   `DevicesConfig.virtiofs_config` attachments, and guest power actions.
   Guest-visible boot, memory, processor topology, other device, NUMA, and PCIe
   fields are rejected. A saved listener is reconstructed from the manifest; a saved
