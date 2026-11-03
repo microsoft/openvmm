@@ -562,7 +562,7 @@ impl BounceBufferTracker {
         loop {
             let listener = event.listen();
             if free_pages
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| x.checked_sub(pages))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |x| x.checked_sub(pages))
                 .is_ok()
             {
                 break;
