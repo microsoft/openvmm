@@ -901,14 +901,13 @@ mod tests {
     use crate::try_write64;
     use test_with_tracing::test;
 
-    #[cfg(unix)]
     struct GuardedMapping {
         ptr: *mut u8,
         page_size: usize,
     }
 
-    #[cfg(unix)]
     impl GuardedMapping {
+        #[cfg(unix)]
         fn new() -> Self {
             initialize_try_copy();
             // SAFETY: reserve three owned pages, then protect the middle page.
@@ -936,20 +935,71 @@ mod tests {
                 mapping
             }
         }
+
+        #[cfg(windows)]
+        fn new() -> Self {
+            use windows_sys::Win32::System::Memory;
+            use windows_sys::Win32::System::SystemInformation::GetSystemInfo;
+
+            initialize_try_copy();
+            // SAFETY: reserve three owned pages, then protect the middle page.
+            unsafe {
+                let mut info = std::mem::zeroed();
+                GetSystemInfo(&mut info);
+                let page_size = info.dwPageSize as usize;
+                let ptr = Memory::VirtualAlloc(
+                    std::ptr::null(),
+                    3 * page_size,
+                    Memory::MEM_RESERVE | Memory::MEM_COMMIT,
+                    Memory::PAGE_READWRITE,
+                );
+                assert!(!ptr.is_null(), "{}", std::io::Error::last_os_error());
+                let mapping = Self {
+                    ptr: ptr.cast(),
+                    page_size,
+                };
+                let mut old_protection = 0;
+                assert_ne!(
+                    Memory::VirtualProtect(
+                        ptr.add(page_size),
+                        page_size,
+                        Memory::PAGE_NOACCESS,
+                        &mut old_protection,
+                    ),
+                    0,
+                    "{}",
+                    std::io::Error::last_os_error()
+                );
+                mapping
+            }
+        }
     }
 
-    #[cfg(unix)]
     impl Drop for GuardedMapping {
         fn drop(&mut self) {
+            #[cfg(unix)]
             // SAFETY: this object owns the complete three-page reservation.
             assert_eq!(
                 unsafe { libc::munmap(self.ptr.cast(), 3 * self.page_size) },
                 0
             );
+            #[cfg(windows)]
+            // SAFETY: this object owns the reservation, released in its entirety.
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::System::Memory::VirtualFree(
+                        self.ptr.cast(),
+                        0,
+                        windows_sys::Win32::System::Memory::MEM_RELEASE,
+                    )
+                },
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_overlapping_copy_reports_source_fault() {
         let mapping = GuardedMapping::new();
@@ -1011,7 +1061,6 @@ mod tests {
         check(std::array::from_fn::<_, 17, _>(|i| i as u8));
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_copy_and_fill_fault_offsets() {
         let mapping = GuardedMapping::new();
@@ -1039,7 +1088,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn test_public_volatile_and_atomic_faults() {
         let mapping = GuardedMapping::new();
@@ -1067,7 +1115,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(unix, target_arch = "x86_64"))]
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn test_backward_copy_fault_restores_direction_flag() {
         let mapping = GuardedMapping::new();
