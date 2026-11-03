@@ -1117,6 +1117,13 @@ impl VmService {
             // runtime services, so it is required for a UEFI boot.
             chipset_builder = chipset_builder.with_uefi(uefi_manifest);
         }
+        let generation_id_send = if !matches!(load_mode, LoadMode::Igvm { .. }) {
+            let (send, recv) = mesh::channel();
+            chipset_builder = chipset_builder.with_generation_id(recv);
+            Some(send)
+        } else {
+            None
+        };
         let layout_config = chipset_builder.layout_config();
         let layout_config = apply_mmio_overrides(layout_config, req_config.memory_config.as_ref())?;
         let chipset = chipset_builder
@@ -1211,6 +1218,7 @@ impl VmService {
             chipset_capabilities: chipset.capabilities,
             layout: layout_config,
             rtc_delta_milliseconds: 0,
+            generation_id_send,
         };
 
         let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;

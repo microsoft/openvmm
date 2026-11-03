@@ -36,6 +36,7 @@ pub struct ArcMutexChipsetServices<'a, 'b> {
     line_error: Option<NewLineError>,
 
     omit_saved_state: bool,
+    start_before_processors: bool,
 }
 
 #[derive(Debug, Error)]
@@ -80,12 +81,15 @@ impl<T: VmmChipsetDevice> ArcMutexChipsetServicesFinalize<T> for ArcMutexChipset
 
             let mut builder = self.builder.units.add(dev_name.clone());
             // Before stopping the device, the chipset interface must stop
-            // running so that it stops issuing MMIO/PIO requests.
+            // running so that it stops issuing MMIO/PIO requests. This also
+            // starts the device before the processors, which depend on the
+            // chipset interface.
             if device.supports_mmio().is_some()
                 || device.supports_pio().is_some()
                 || device.supports_pci().is_some()
                 || device.supports_handle_eoi().is_some()
                 || device.supports_acknowledge_pic_interrupt().is_some()
+                || self.start_before_processors
             {
                 builder = builder.dependency_of(&self.builder.chipset_unit);
             }
@@ -158,11 +162,18 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
             line_error: None,
 
             omit_saved_state: false,
+            start_before_processors: false,
         }
     }
 
     pub fn omit_saved_state(&mut self) {
         self.omit_saved_state = true
+    }
+
+    /// Starts the device before the processors, even if it has no MMIO, PIO,
+    /// or PCI interface.
+    pub fn start_before_processors(&mut self) {
+        self.start_before_processors = true
     }
 
     pub fn register_vmtime(&self) -> &VmTimeSource {
@@ -360,4 +371,207 @@ mod device_range {
 
     impl_device_range!(RegisterMmioIntercept, ControlMmioIntercept, u64);
     impl_device_range!(RegisterPortIoIntercept, ControlPortIoIntercept, u16);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ChipsetBuilder;
+    use crate::DebugEventHandler;
+    use chipset_device::ChipsetDevice;
+    use inspect::InspectMut;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pal_async::timer::PolledTimer;
+    use state_unit::StateUnit;
+    use state_unit::StateUnits;
+    use state_unit::run_unit;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+    use vmcore::vmtime::VmTime;
+    use vmcore::vmtime::VmTimeKeeper;
+
+    struct NoDebug;
+
+    impl DebugEventHandler for NoDebug {
+        fn on_debug_break(&self, _vp: Option<u32>) {}
+    }
+
+    /// A device with no MMIO, PIO, or PCI interface that records when it
+    /// starts.
+    #[derive(InspectMut)]
+    struct PollOnlyDevice {
+        #[inspect(skip)]
+        started: Arc<AtomicBool>,
+    }
+
+    impl ChipsetDevice for PollOnlyDevice {}
+
+    impl ChangeDeviceState for PollOnlyDevice {
+        fn start(&mut self) {
+            self.started.store(true, Ordering::SeqCst);
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) {}
+    }
+
+    impl SaveRestore for PollOnlyDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// A unit that delays its start, standing in for vmtime, which all
+    /// devices depend on.
+    #[derive(InspectMut)]
+    struct SlowUnit {
+        #[inspect(skip)]
+        driver: DefaultDriver,
+    }
+
+    impl StateUnit for SlowUnit {
+        async fn start(&mut self) {
+            PolledTimer::new(&self.driver)
+                .sleep(Duration::from_millis(100))
+                .await;
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+            Ok(None)
+        }
+
+        async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// A unit standing in for the processors, which depend on the chipset.
+    /// Records whether the device had started when this unit started.
+    #[derive(InspectMut)]
+    struct ProcessorsUnit {
+        #[inspect(skip)]
+        device_started: Arc<AtomicBool>,
+        #[inspect(skip)]
+        device_started_first: Arc<AtomicBool>,
+    }
+
+    impl StateUnit for ProcessorsUnit {
+        async fn start(&mut self) {
+            self.device_started_first
+                .store(self.device_started.load(Ordering::SeqCst), Ordering::SeqCst);
+        }
+
+        async fn stop(&mut self) {}
+
+        async fn reset(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+            Ok(None)
+        }
+
+        async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    /// Returns whether a poll-only device started before a unit that depends
+    /// on the chipset unit (as the processors do).
+    async fn device_starts_before_processors(
+        driver: DefaultDriver,
+        start_before_processors: bool,
+    ) -> bool {
+        let mut units = StateUnits::new();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let vmtime = keeper.builder().build(&driver).await.unwrap();
+        let vmtime_unit = units
+            .add("vmtime")
+            .spawn(&driver, |recv| {
+                run_unit(
+                    SlowUnit {
+                        driver: driver.clone(),
+                    },
+                    recv,
+                )
+            })
+            .unwrap();
+
+        let builder = ChipsetBuilder::new(
+            &driver_source,
+            &units,
+            Arc::new(NoDebug),
+            &vmtime,
+            vmtime_unit.handle(),
+            false,
+            false,
+            None,
+        );
+        let device_started = Arc::new(AtomicBool::new(false));
+        builder
+            .arc_mutex_device("poll-only")
+            .add(|services| {
+                if start_before_processors {
+                    services.start_before_processors();
+                }
+                PollOnlyDevice {
+                    started: device_started.clone(),
+                }
+            })
+            .unwrap();
+        let (_chipset, devices) = builder.build().unwrap();
+
+        let device_started_first = Arc::new(AtomicBool::new(false));
+        let _processors = units
+            .add("processors")
+            .depends_on(devices.chipset_unit())
+            .spawn(&driver, |recv| {
+                run_unit(
+                    ProcessorsUnit {
+                        device_started: device_started.clone(),
+                        device_started_first: device_started_first.clone(),
+                    },
+                    recv,
+                )
+            })
+            .unwrap();
+
+        units.start().await;
+        assert!(device_started.load(Ordering::SeqCst));
+        device_started_first.load(Ordering::SeqCst)
+    }
+
+    #[async_test]
+    async fn poll_only_device_not_ordered_by_default(driver: DefaultDriver) {
+        assert!(!device_starts_before_processors(driver, false).await);
+    }
+
+    #[async_test]
+    async fn start_before_processors_orders_poll_only_device(driver: DefaultDriver) {
+        assert!(device_starts_before_processors(driver, true).await);
+    }
 }

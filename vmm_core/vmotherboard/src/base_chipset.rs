@@ -641,6 +641,10 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
     fn omit_saved_state(&mut self) {
         self.omit_saved_state();
     }
+
+    fn start_before_processors(&mut self) {
+        self.start_before_processors();
+    }
 }
 
 mod weak_mutex_pci {

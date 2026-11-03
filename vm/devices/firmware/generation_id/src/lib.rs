@@ -5,6 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod device;
+pub mod resolver;
+
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::RecvError;
@@ -27,6 +30,12 @@ pub struct GenerationId {
     // Runtime glue
     #[inspect(skip)]
     rt: GenerationIdRuntimeDeps,
+
+    // Static configuration
+    /// Address, within `rt.gm`, of a buffer provided by the platform instead
+    /// of reported by firmware (e.g. Linux direct boot).
+    #[inspect(hex)]
+    fixed_address: Option<u64>,
 
     // Volatile state
     id: [u8; 16],
@@ -58,17 +67,33 @@ impl GenerationId {
     /// Construct a new GenerationId device.
     pub fn new(initial_generation_id: [u8; 16], platform: GenerationIdRuntimeDeps) -> Self {
         Self {
+            fixed_address: None,
             id: initial_generation_id,
             ptr: [None, None],
             rt: platform,
         }
     }
 
+    /// Use a platform-provided buffer at `address` within
+    /// `GenerationIdRuntimeDeps::gm` instead of waiting for the firmware to
+    /// report one. The current ID is written immediately.
+    pub fn set_fixed_address(&mut self, address: u64) {
+        self.fixed_address = Some(address);
+        self.ptr = gpa_to_ptr(address);
+        self.update_generation_id();
+    }
+
     /// Reset the GenerationId state back to what it was when first constructed.
     pub fn reset(&mut self) {
         // Just reset the pointer, not the ID. Since this is not a "time travel"
         // event, there is no need to change the ID.
-        self.ptr = [None; 2];
+        self.ptr = self.initial_ptr();
+    }
+
+    /// Writes the current generation ID to guest memory, if the buffer
+    /// location is known.
+    pub fn write_to_guest(&self) {
+        self.update_generation_id();
     }
 
     /// Update the low bits of the generation id pointer.
@@ -85,7 +110,10 @@ impl GenerationId {
     pub fn poll(&mut self, cx: &mut Context<'_>) {
         while let Poll::Ready(val) = self.rt.generation_id_recv.poll_recv(cx) {
             match val {
-                Ok(val) => self.set_and_update_generation_id(val),
+                Ok(val) => {
+                    tracing::info!("new VM generation ID from host");
+                    self.set_and_update_generation_id(val)
+                }
                 Err(RecvError::Closed) => break,
                 Err(err) => {
                     tracing::error!(
@@ -95,6 +123,13 @@ impl GenerationId {
                     break;
                 }
             }
+        }
+    }
+
+    fn initial_ptr(&self) -> [Option<u32>; 2] {
+        match self.fixed_address {
+            Some(address) => gpa_to_ptr(address),
+            None => [None; 2],
         }
     }
 
@@ -137,6 +172,10 @@ fn ptr_to_opt_u64(ptr: &[Option<u32>; 2]) -> Option<u64> {
     Some(((ptr[1]? as u64) << 32) | ptr[0]? as u64)
 }
 
+fn gpa_to_ptr(gpa: u64) -> [Option<u32>; 2] {
+    [Some(gpa as u32), Some((gpa >> 32) as u32)]
+}
+
 mod save_restore {
     use super::*;
     use vmcore::save_restore::RestoreError;
@@ -160,7 +199,12 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            let Self { rt: _, id, ptr } = *self;
+            let Self {
+                rt: _,
+                fixed_address: _,
+                id,
+                ptr,
+            } = *self;
 
             let saved_state = state::SavedState { id, ptr };
             Ok(saved_state)
@@ -173,5 +217,86 @@ mod save_restore {
             self.ptr = ptr;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Waker;
+    use vmcore::line_interrupt::LineSetTarget;
+
+    const GPA: u64 = 0x1000;
+
+    #[derive(Default)]
+    struct EdgeCounter(AtomicUsize);
+
+    impl EdgeCounter {
+        fn count(&self) -> usize {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl LineSetTarget for EdgeCounter {
+        fn set_irq(&self, _vector: u32, high: bool) {
+            if high {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn new_device(gm: &GuestMemory) -> (GenerationId, Arc<EdgeCounter>, mesh::Sender<[u8; 16]>) {
+        let edges = Arc::new(EdgeCounter::default());
+        let (send, recv) = mesh::channel();
+        let mut dev = GenerationId::new(
+            [1; 16],
+            GenerationIdRuntimeDeps {
+                gm: gm.clone(),
+                generation_id_recv: recv,
+                notify_interrupt: LineInterrupt::new_with_target("genid", edges.clone(), 0),
+            },
+        );
+        dev.set_fixed_address(GPA);
+        (dev, edges, send)
+    }
+
+    fn guest_id(gm: &GuestMemory) -> [u8; 16] {
+        let mut id = [0; 16];
+        gm.read_at(GPA, &mut id).unwrap();
+        id
+    }
+
+    fn poll(dev: &mut GenerationId) {
+        dev.poll(&mut Context::from_waker(Waker::noop()));
+    }
+
+    #[test]
+    fn fixed_address_publishes_id_without_firmware() {
+        let gm = GuestMemory::allocate(0x10000);
+        let (mut dev, edges, _send) = new_device(&gm);
+        assert_eq!(guest_id(&gm), [1; 16]);
+        poll(&mut dev);
+        assert_eq!(edges.count(), 0);
+
+        // The fixed buffer survives reset.
+        dev.reset();
+        gm.write_at(GPA, &[0; 16]).unwrap();
+        dev.write_to_guest();
+        assert_eq!(guest_id(&gm), [1; 16]);
+    }
+
+    #[test]
+    fn update_queued_before_start_applies_on_first_poll() {
+        let gm = GuestMemory::allocate(0x10000);
+        let (mut dev, edges, send) = new_device(&gm);
+        send.send([3; 16]);
+        poll(&mut dev);
+        assert_eq!(guest_id(&gm), [3; 16]);
+        assert_eq!(edges.count(), 1);
+        poll(&mut dev);
+        assert_eq!(edges.count(), 1);
     }
 }

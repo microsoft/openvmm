@@ -65,6 +65,7 @@ disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_resources.workspace = true
 framebuffer.workspace = true
+generation_id.workspace = true
 get_resources.workspace = true
 ide.workspace = true
 floppy.workspace = true
