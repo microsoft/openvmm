@@ -132,7 +132,7 @@ impl Request {
 
     fn read_operation(header: &fuse_in_header, mut reader: impl RequestReader) -> FuseOperation {
         if header.len as usize > reader.remaining_len() + size_of_val(header) {
-            tracing::error!(
+            tracelimit::error_ratelimited!(
                 opcode = header.opcode,
                 unique = header.unique,
                 header_len = header.len,
@@ -150,7 +150,7 @@ impl Request {
             let payload_len = (header.len as usize) - size_of::<fuse_in_header>();
             let available = payload_len.min(size_of::<fuse_init_in>());
             if available < FUSE_COMPAT_INIT_IN_SIZE as usize {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     len = available,
@@ -160,7 +160,7 @@ impl Request {
             }
             let mut init = fuse_init_in::new_zeroed();
             if let Err(e) = reader.read_exact(&mut init.as_mut_bytes()[..available]) {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     error = &e as &dyn std::error::Error,
@@ -174,7 +174,7 @@ impl Request {
         match FuseOperation::read(header.opcode, reader) {
             Ok(operation) => operation,
             Err(e) => {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
                     opcode = header.opcode,
                     unique = header.unique,
                     error = &e as &dyn std::error::Error,

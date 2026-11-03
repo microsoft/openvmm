@@ -274,9 +274,11 @@ pub struct SnpIdBlock {
     pub author_public_key: x86defs::snp::SnpIdBlockPublicKey,
 }
 
-/// Backend-neutral SNP launch configuration extracted from an IGVM file.
+/// Backend-neutral SNP launch configuration combining IGVM metadata and host parameters.
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct SnpConfig {
+    /// Optional host-provided data included in SNP launch finish.
+    pub host_data: Option<[u8; 32]>,
     /// The SNP guest policy.
     pub policy: u64,
     /// The highest VTL requested by the selected IGVM platform.

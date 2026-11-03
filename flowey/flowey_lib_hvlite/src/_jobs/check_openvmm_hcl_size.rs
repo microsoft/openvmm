@@ -88,8 +88,8 @@ impl SimpleFlowNode for Node {
         });
 
         let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm".into(),
+            repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+            repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
             commit_or_branch: gh_workflow_id::GitCommitOrBranch::Commit(merge_commit),
             pipeline_name,
             require_run_status: Some(gh_workflow_id::GhRunStatus::Completed),
@@ -100,8 +100,8 @@ impl SimpleFlowNode for Node {
         let run_id = merge_run.map(ctx, |r| r.id);
         // TODO: this should return a `ReadVar<OpenvmmHclBaselineOutput>`
         let merge_head_artifact = ctx.reqv(|old_openhcl| download_gh_artifact::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm".into(),
+            repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+            repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,

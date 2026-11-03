@@ -172,8 +172,8 @@ impl OneshotSenderCore {
                     waker.wake();
                 }
             }
-            SlotState::Sent(v) => {
-                *state = SlotState::Sent(v);
+            sent @ (SlotState::Sent(_) | SlotState::Failed(_)) => {
+                *state = sent;
             }
             SlotState::Done => {}
             SlotState::ReceiverRemote(port, _) => {
@@ -186,7 +186,7 @@ impl OneshotSenderCore {
     fn is_closed(&self) -> bool {
         match &*self.0.state.lock() {
             SlotState::Done => true,
-            SlotState::Sent(_) => true,
+            SlotState::Sent(_) | SlotState::Failed(_) => true,
             SlotState::Waiting(_) => false,
             SlotState::ReceiverRemote(port, _) => port.is_closed().unwrap_or(false),
             SlotState::SenderRemote { .. } => unreachable!(),
@@ -215,7 +215,9 @@ impl OneshotSenderCore {
                     None
                 }
                 SlotState::Done => Some(value),
-                SlotState::Sent { .. } | SlotState::SenderRemote { .. } => unreachable!(),
+                SlotState::Sent(_) | SlotState::Failed(_) | SlotState::SenderRemote(..) => {
+                    unreachable!()
+                }
             }
         }
         if let Some(value) = send(self, BoxedValue::new(Box::new(value))) {
@@ -242,7 +244,9 @@ impl OneshotSenderCore {
                 }
                 SlotState::ReceiverRemote(port, _) => port,
                 SlotState::Done => Port::new_pair().0,
-                SlotState::Sent(_) | SlotState::SenderRemote { .. } => unreachable!(),
+                SlotState::Sent(_) | SlotState::Failed(_) | SlotState::SenderRemote(..) => {
+                    unreachable!()
+                }
             }
         }
         into_port(self, decode_message::<T>)
@@ -368,9 +372,9 @@ impl OneshotReceiverCore {
             // avoid taking the lock here. A naive implementation would require
             // extra storage in `OneshotReceiverCore` to remember this, which is
             // probably undesirable.
-            if let SlotState::Sent(value) =
-                std::mem::replace(&mut *slot.state.lock(), SlotState::Done)
-            {
+            // Detach first so discarded wakers are dropped without the lock.
+            let state = std::mem::replace(&mut *slot.state.lock(), SlotState::Done);
+            if let SlotState::Sent(value) | SlotState::Failed(value) = state {
                 Some(value)
             } else {
                 None
@@ -389,7 +393,7 @@ impl OneshotReceiverCore {
         fn poll_recv(
             this: &mut OneshotReceiverCore,
             cx: &mut Context<'_>,
-        ) -> Poll<Result<BoxedValue, RecvError>> {
+        ) -> Poll<Result<BoxedValue, (RecvError, Option<BoxedValue>)>> {
             let (slot, recv) = this.split_mut();
             let v = loop {
                 let mut state = slot.state.lock();
@@ -405,22 +409,34 @@ impl OneshotReceiverCore {
                         continue;
                     }
                     SlotState::Waiting(mut waker) => {
-                        if let Some(waker) = &mut waker {
-                            waker.clone_from(cx.waker());
+                        let old_waker = if waker
+                            .as_ref()
+                            .is_some_and(|waker| waker.will_wake(cx.waker()))
+                        {
+                            None
                         } else {
-                            waker = Some(cx.waker().clone());
-                        }
+                            waker.replace(cx.waker().clone())
+                        };
                         *state = SlotState::Waiting(waker);
+                        // Dropping the old waker may close this channel.
+                        drop(state);
+                        drop(old_waker);
                         return Poll::Pending;
                     }
                     SlotState::Sent(data) => Ok(data),
-                    SlotState::Done => {
+                    done @ (SlotState::Done | SlotState::Failed(_)) => {
+                        let failed_value = if let SlotState::Failed(value) = done {
+                            Some(value)
+                        } else {
+                            None
+                        };
+                        drop(state);
                         let err = recv.port.as_ref().map_or(RecvError::Closed, |port| {
                             port.is_closed()
                                 .map(|_| RecvError::Closed)
                                 .unwrap_or_else(|err| RecvError::Error(err.into()))
                         });
-                        Err(err)
+                        Err((err, failed_value))
                     }
                     SlotState::ReceiverRemote { .. } => {
                         unreachable!()
@@ -429,32 +445,44 @@ impl OneshotReceiverCore {
             };
             Poll::Ready(v)
         }
-        ready!(poll_recv(self, cx))
-            .map(|v| {
+        match ready!(poll_recv(self, cx)) {
+            Ok(value) => {
                 // SAFETY: the slot is of type `T`.
-                unsafe { v.cast::<T>() }
-            })
-            .into()
+                Poll::Ready(Ok(unsafe { value.cast::<T>() }))
+            }
+            Err((err, failed_value)) => {
+                if let Some(value) = failed_value {
+                    // SAFETY: the slot is of type `T`.
+                    unsafe { value.drop::<T>() };
+                }
+                Poll::Ready(Err(err))
+            }
+        }
     }
 
     /// # Safety
     /// The caller must ensure that `encode` is a valid function to encode
     /// values of type `T`, the type of this slot.
     unsafe fn into_port<T: MeshField>(self) -> Port {
-        fn into_port(this: OneshotReceiverCore, send: SendFn) -> Port {
+        fn into_port(this: OneshotReceiverCore, send: SendFn) -> (Port, Option<BoxedValue>) {
             let (slot, ReceiverState { port }) = this.split();
             let existing = port.map(|port| port.remove_handler().0);
             let mut state = slot.state.lock();
-            match std::mem::replace(&mut *state, SlotState::Done) {
+            let mut old_waker = None;
+            let mut failed_value = None;
+            let port = match std::mem::replace(&mut *state, SlotState::Done) {
                 SlotState::SenderRemote(port, _) => {
                     assert!(existing.is_none());
                     port
                 }
-                SlotState::Waiting(_) => existing.unwrap_or_else(|| {
-                    let (sender, recv) = Port::new_pair();
-                    *state = SlotState::ReceiverRemote(recv, send);
-                    sender
-                }),
+                SlotState::Waiting(waker) => {
+                    old_waker = waker;
+                    existing.unwrap_or_else(|| {
+                        let (sender, recv) = Port::new_pair();
+                        *state = SlotState::ReceiverRemote(recv, send);
+                        sender
+                    })
+                }
                 SlotState::Sent(value) => {
                     let (sender, recv) = Port::new_pair();
                     // SAFETY: `send` has been set to operate on values of type
@@ -466,10 +494,22 @@ impl OneshotReceiverCore {
                     recv
                 }
                 SlotState::Done => existing.unwrap_or_else(|| Port::new_pair().0),
+                SlotState::Failed(value) => {
+                    failed_value = Some(value);
+                    existing.unwrap_or_else(|| Port::new_pair().0)
+                }
                 SlotState::ReceiverRemote { .. } => unreachable!(),
-            }
+            };
+            drop(state);
+            drop(old_waker);
+            (port, failed_value)
         }
-        into_port(self, send_message::<T>)
+        let (port, failed_value) = into_port(self, send_message::<T>);
+        if let Some(value) = failed_value {
+            // SAFETY: the slot is of type `T`.
+            unsafe { value.drop::<T>() };
+        }
+        port
     }
 
     fn from_port<T: MeshField>(port: Port) -> Self {
@@ -489,6 +529,8 @@ enum SlotState {
     Done,
     Waiting(Option<Waker>),
     Sent(BoxedValue),
+    // Retained after failure for cleanup by the typed receiver.
+    Failed(BoxedValue),
     SenderRemote(Port, DecodeFn),
     ReceiverRemote(Port, SendFn),
 }
@@ -552,9 +594,14 @@ impl SlotHandler {
                 }
             }
             SlotState::Sent(v) => {
-                if !fail {
-                    *state = SlotState::Sent(v);
-                }
+                *state = if fail {
+                    SlotState::Failed(v)
+                } else {
+                    SlotState::Sent(v)
+                };
+            }
+            SlotState::Failed(v) => {
+                *state = SlotState::Failed(v);
             }
             SlotState::Done => {}
             SlotState::SenderRemote { .. } | SlotState::ReceiverRemote { .. } => unreachable!(),
@@ -589,8 +636,8 @@ impl HandlePortEvent for SlotHandler {
                     control.wake(waker);
                 }
             }
-            SlotState::Sent(v) => {
-                *state = SlotState::Sent(v);
+            sent @ (SlotState::Sent(_) | SlotState::Failed(_)) => {
+                *state = sent;
                 return Err(HandleMessageError::new(UnexpectedMessage));
             }
             SlotState::Done => {
@@ -623,14 +670,27 @@ mod tests {
     use super::oneshot;
     use crate::OneshotReceiver;
     use crate::OneshotSender;
+    use crate::Receiver;
     use crate::RecvError;
+    use crate::Sender;
+    use crate::TryRecvError;
+    use crate::channel;
     use futures::FutureExt;
     use futures::executor::block_on;
     use futures::task::SpawnExt;
     use mesh_node::local_node::Port;
     use mesh_node::message::Message;
     use std::cell::Cell;
+    use std::future::Future;
     use std::future::poll_fn;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
+    use std::task::Waker;
+    use std::time::Duration;
     use test_with_tracing::test;
 
     // Ensure `Send` and `Sync` are implemented correctly.
@@ -640,6 +700,144 @@ mod tests {
     static_assertions::assert_impl_all!(OneshotReceiver<Cell<i32>>: Send, Sync);
     static_assertions::assert_not_impl_any!(OneshotSender<*const ()>: Send, Sync);
     static_assertions::assert_not_impl_any!(OneshotReceiver<*const ()>: Send, Sync);
+
+    fn assert_completes(f: impl FnOnce() + Send + 'static) {
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            f();
+            send.send(()).unwrap();
+        });
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("oneshot operation deadlocked during reentrant destruction");
+        worker.join().unwrap();
+    }
+
+    struct SenderWake {
+        _sender: OneshotSender<u32>,
+    }
+
+    impl Wake for SenderWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    struct WakeFlag(AtomicBool);
+
+    impl Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_oneshot_drop_receiver_with_sender_in_waker() {
+        assert_completes(|| {
+            let (sender, mut receiver) = oneshot();
+            let wake = Arc::new(SenderWake { _sender: sender });
+            let weak = Arc::downgrade(&wake);
+            let waker = Waker::from(wake);
+            assert!(
+                Pin::new(&mut receiver)
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            drop(receiver);
+            assert!(weak.upgrade().is_none());
+        });
+    }
+
+    #[test]
+    fn test_oneshot_replace_waker_owning_sender() {
+        assert_completes(|| {
+            let (sender, mut receiver) = oneshot();
+            let wake = Arc::new(SenderWake { _sender: sender });
+            let weak = Arc::downgrade(&wake);
+            let waker = Waker::from(wake);
+            assert!(
+                Pin::new(&mut receiver)
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+            let new_waker = Waker::from(flag.clone());
+            let result = Pin::new(&mut receiver).poll(&mut Context::from_waker(&new_waker));
+            assert!(weak.upgrade().is_none());
+            if result.is_pending() {
+                assert!(flag.0.load(Ordering::SeqCst));
+            }
+            assert!(matches!(block_on(receiver), Err(RecvError::Closed)));
+        });
+    }
+
+    #[test]
+    fn test_oneshot_convert_receiver_with_sender_in_waker() {
+        assert_completes(|| {
+            let (sender, mut receiver) = oneshot();
+            let wake = Arc::new(SenderWake { _sender: sender });
+            let weak = Arc::downgrade(&wake);
+            let waker = Waker::from(wake);
+            assert!(
+                Pin::new(&mut receiver)
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            drop(waker);
+            let receiver = OneshotReceiver::<u32>::from(Port::from(receiver));
+            assert!(weak.upgrade().is_none());
+            assert!(matches!(block_on(receiver), Err(RecvError::Closed)));
+        });
+    }
+
+    fn failed_oneshot_with_payload() -> (OneshotReceiver<Sender<()>>, Receiver<()>) {
+        let (sender, mut receiver) = oneshot::<Sender<()>>();
+        let sender = Port::from(sender);
+        assert!(
+            Pin::new(&mut receiver)
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let (payload, mut payload_receiver) = channel();
+        sender.send_protobuf((Box::new(payload),));
+        assert!(matches!(
+            payload_receiver.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        sender.send_protobuf(());
+        (receiver, payload_receiver)
+    }
+
+    #[test]
+    fn test_oneshot_failed_payload_dropped_on_receive() {
+        let (receiver, mut payload_receiver) = failed_oneshot_with_payload();
+        assert!(matches!(block_on(receiver), Err(RecvError::Error(_))));
+        assert!(matches!(
+            payload_receiver.try_recv(),
+            Err(TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
+    fn test_oneshot_failed_payload_dropped_on_receiver_drop() {
+        let (receiver, mut payload_receiver) = failed_oneshot_with_payload();
+        drop(receiver);
+        assert!(matches!(
+            payload_receiver.try_recv(),
+            Err(TryRecvError::Closed)
+        ));
+    }
+
+    #[test]
+    fn test_oneshot_failed_payload_dropped_on_receiver_conversion() {
+        let (receiver, mut payload_receiver) = failed_oneshot_with_payload();
+        let receiver = OneshotReceiver::<Sender<()>>::from(Port::from(receiver));
+        assert!(matches!(
+            payload_receiver.try_recv(),
+            Err(TryRecvError::Closed)
+        ));
+        assert!(matches!(block_on(receiver), Err(RecvError::Error(_))));
+    }
 
     #[test]
     fn test_oneshot() {

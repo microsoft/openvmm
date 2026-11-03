@@ -127,10 +127,7 @@ impl SimpleFlowNode for Node {
             xtask: v,
         });
 
-        let profile = match profile {
-            CommonProfile::Release => CargoBuildProfile::Release,
-            CommonProfile::Debug => CargoBuildProfile::Debug,
-        };
+        let profile: CargoBuildProfile = profile.into();
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 

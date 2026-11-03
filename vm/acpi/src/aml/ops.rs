@@ -5,6 +5,7 @@
 //! Machine Language (AML).
 
 use super::helpers::encode_package_len;
+use alloc::vec::Vec;
 
 /// An AML operation.
 pub trait OperationObject {
@@ -149,6 +150,7 @@ mod tests {
     use super::*;
     use crate::aml::encode_integer;
     use crate::aml::test_helpers::verify_expected_bytes;
+    use alloc::vec;
 
     #[test]
     fn verify_and_operation() {

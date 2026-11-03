@@ -29,12 +29,12 @@ impl SimpleFlowNode for Node {
                     flowey_hvlite_windows_x64,
                     flowey_hvlite_windows_aarch64,
                     flowey_hvlite_linux_x64,
+                    flowey_hvlite_linux_musl_x64,
                     nextest_vmm_tests_archive_windows_x64,
                     nextest_vmm_tests_archive_windows_aarch64,
                     nextest_vmm_tests_archive_linux_x64,
                     nextest_vmm_tests_archive_linux_musl_x64,
                     nextest_vmm_tests_archive_linux_musl_aarch64,
-                    incubator_linux_x64,
                     prep_steps_windows_x64,
                     prep_steps_linux_musl_x64,
                     test_igvm_agent_rpc_server_windows_x64,
@@ -59,7 +59,9 @@ impl SimpleFlowNode for Node {
                     openhcl_standard_dev_x64,
                     openhcl_standard_dev_aarch64,
                     openhcl_cvm_x64,
+                    vmfirmwareigvm_cvm_x64,
                     openhcl_linux_direct_x64,
+                    snp_linux_direct_igvm_x64,
                     tmks_x64,
                     tmks_aarch64,
                     tmk_vmm_windows_x64,
@@ -78,8 +80,8 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let run = ctx.reqv(|v| gh_workflow_id::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm".into(),
+            repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+            repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
             commit_or_branch: gh_workflow_id::GitCommitOrBranch::Branch(ReadVar::from_static(
                 "main".into(),
             )),
@@ -101,6 +103,7 @@ impl SimpleFlowNode for Node {
         if flowey_hvlite_windows_x64.is_some()
             || flowey_hvlite_windows_aarch64.is_some()
             || flowey_hvlite_linux_x64.is_some()
+            || flowey_hvlite_linux_musl_x64.is_some()
         {
             anyhow::bail!("downloading flowey_hvlite is not supported");
         }
@@ -126,7 +129,6 @@ impl SimpleFlowNode for Node {
             "aarch64-linux-musl-vmm-tests-archive"
         );
 
-        download!(incubator_linux_x64, "x64-linux-incubator");
         download!(prep_steps_windows_x64, "x64-windows-prep_steps");
         download!(prep_steps_linux_musl_x64, "x64-linux-musl-prep_steps");
         download!(
@@ -162,10 +164,12 @@ impl SimpleFlowNode for Node {
         download!(openhcl_standard_dev_x64, "x64-openhcl-igvm-devkern");
         download!(openhcl_standard_dev_aarch64, "aarch64-openhcl-igvm-devkern");
         download!(openhcl_cvm_x64, "x64-openhcl-igvm-cvm");
+        download!(vmfirmwareigvm_cvm_x64, "x64-vmfirmwareigvm-cvm");
         download!(
             openhcl_linux_direct_x64,
             "x64-openhcl-igvm-test-linux-direct"
         );
+        download!(snp_linux_direct_igvm_x64, "x64-linux-snp-linux-direct-igvm");
 
         download!(tmks_x64, "x64-tmks");
         download!(tmks_aarch64, "aarch64-tmks");
@@ -197,8 +201,8 @@ fn download_artifact<T: Artifact>(
     output: WriteVar<T>,
 ) {
     let downloaded_artifact = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
-        repo_owner: "microsoft".into(),
-        repo_name: "openvmm".into(),
+        repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+        repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
         file_name,
         path: v,
         run_id,

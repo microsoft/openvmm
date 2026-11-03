@@ -38,6 +38,7 @@ pub mod git_checkout;
 pub mod git_merge_commit;
 pub mod install_azure_cli;
 pub mod install_cargo_hack;
+pub mod install_cargo_llvm_cov;
 pub mod install_cargo_nextest;
 pub mod install_dist_pkg;
 pub mod install_dotnet_cli;

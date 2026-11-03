@@ -30,6 +30,12 @@
 //! vmfirmwareigvm_dll` invocation should be sufficient to build the DLL. This
 //! assumes you're running on Windows (or have Windows cross-compile set up).
 //!
+//! On Linux, resource-only DLLs can be built without the Windows SDK by installing
+//! `clang`, `llvm`, and `lld`, setting `CC_<target>` to `clang`, `RC_<target>` to
+//! `llvm-rc`, and `CARGO_TARGET_<TARGET>_LINKER` to `lld-link`. Replace `<target>`
+//! with the Windows MSVC triple using underscores, and `<TARGET>` with its
+//! uppercase form. Set `RUSTFLAGS=""` as required below.
+//!
 //! The resulting DLL will be emitted in the standard Rust output directory
 //! (i.e: under target/...), and will be named `vmfirmwareigvm_dll.dll`.
 //!
@@ -46,6 +52,7 @@ fn main() {
 
     println!("cargo:rerun-if-env-changed=UH_DLL_NAME");
     println!("cargo:rerun-if-env-changed=UH_IGVM_PATH");
+    println!("cargo:rerun-if-env-changed=UH_RESOURCE_ID");
     println!("cargo:rerun-if-env-changed=UH_MAJOR");
     println!("cargo:rerun-if-env-changed=UH_MINOR");
     println!("cargo:rerun-if-env-changed=UH_PATCH");
@@ -54,6 +61,7 @@ fn main() {
     // If none of our env vars are set, do nothing instead of erroring.
     if std::env::var_os("UH_DLL_NAME").is_none()
         && std::env::var_os("UH_IGVM_PATH").is_none()
+        && std::env::var_os("UH_RESOURCE_ID").is_none()
         && std::env::var_os("UH_MAJOR").is_none()
         && std::env::var_os("UH_MINOR").is_none()
         && std::env::var_os("UH_PATCH").is_none()
@@ -72,6 +80,11 @@ fn main() {
 
     // (path) absolute path to an IGVM file to package up
     let uh_igvm_path = std::env::var("UH_IGVM_PATH").expect("must set UH_IGVM_PATH");
+
+    // (u32) VMFW resource ID (defaults to 1).
+    let uh_resource_id = std::env::var("UH_RESOURCE_ID")
+        .map(|id| id.parse::<u32>().expect("UH_RESOURCE_ID must be a u32"))
+        .unwrap_or(1);
 
     // (u16) Major version number of the DLL
     let uh_major = std::env::var("UH_MAJOR")
@@ -116,14 +129,17 @@ fn main() {
     let macros = [
         ("UH_DLL_NAME", format!(r#""{uh_dll_name}""#)),
         ("UH_IGVM_PATH", format!(r#""{uh_igvm_path}""#)),
+        ("UH_RESOURCE_ID", uh_resource_id.to_string()),
         ("UH_VERSION", uh_version),
         ("UH_VERSION_STR", uh_version_str),
     ];
 
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
         println!("cargo:rustc-link-arg=/NOENTRY"); // resource DLL
+        println!("cargo:rustc-link-arg=/NODEFAULTLIB");
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-changed=resources.rc");
+        println!("cargo:rerun-if-changed={uh_igvm_path}");
         embed_resource::compile("resources.rc", macros.map(|(k, v)| format!("{k}={v}")))
             .manifest_required()
             .unwrap();

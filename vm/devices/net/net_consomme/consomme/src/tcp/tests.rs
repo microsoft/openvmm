@@ -21,7 +21,6 @@ use smoltcp::wire::DnsQueryType;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Repr;
-use socket2::SockRef;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
@@ -29,6 +28,7 @@ use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::time::Duration;
+use test_with_tracing::test;
 
 // ── Mock client ────────────────────────────────────────────────────
 
@@ -36,6 +36,10 @@ struct TestClient {
     driver: DefaultDriver,
     received_packets: Arc<Mutex<Vec<Vec<u8>>>>,
     rx_buffers: Option<usize>,
+    rx_capacity: usize,
+    rx_checksum: bool,
+    rx_gso: [bool; 2],
+    received_checksums: Vec<ChecksumState>,
 }
 
 #[test]
@@ -259,6 +263,10 @@ impl TestClient {
             driver,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: None,
+            rx_capacity: 1514,
+            rx_checksum: false,
+            rx_gso: [false; 2],
+            received_checksums: Vec::new(),
         }
     }
 
@@ -267,6 +275,10 @@ impl TestClient {
             driver,
             received_packets: Arc::new(Mutex::new(Vec::new())),
             rx_buffers: Some(rx_buffers),
+            rx_capacity: 1514,
+            rx_checksum: false,
+            rx_gso: [false; 2],
+            received_checksums: Vec::new(),
         }
     }
 
@@ -280,16 +292,229 @@ impl Client for TestClient {
         &self.driver
     }
 
-    fn recv(&mut self, data: &[u8], _checksum: &ChecksumState) {
+    fn recv(&mut self, data: &[u8], checksum: &ChecksumState) {
         if let Some(rx_buffers) = &mut self.rx_buffers {
             assert_ne!(*rx_buffers, 0, "packet sent without an RX buffer");
             *rx_buffers -= 1;
         }
         self.received_packets.lock().push(data.to_vec());
+        self.received_checksums.push(*checksum);
     }
 
     fn rx_mtu(&mut self) -> usize {
-        if self.rx_buffers == Some(0) { 0 } else { 1514 }
+        if self.rx_buffers == Some(0) {
+            0
+        } else {
+            self.rx_capacity
+        }
+    }
+
+    fn rx_checksum_supported(&self) -> bool {
+        self.rx_checksum
+    }
+
+    fn rx_gso_supported(&self, ipv6: bool) -> bool {
+        self.rx_gso[usize::from(ipv6)]
+    }
+}
+
+#[pal_async::async_test]
+async fn test_tcp_receive_gso(driver: DefaultDriver) {
+    for ipv6 in [false, true] {
+        for (capacity, gso, partial, window, payload_len) in [
+            (65536, false, false, 10000, 5001),
+            (65536, false, true, 10000, 5001),
+            (1514, false, true, 10000, 5001),
+            (65536, true, false, 10000, 5001),
+            (65536, true, true, 10000, 5001),
+            (1514, true, false, 10000, 5001),
+            (65536, true, false, 2000, 5001),
+            (65536, true, false, 10000, 1000),
+            (100000, true, false, 100000, 90001),
+        ] {
+            let mut client = TestClient::new(driver.clone());
+            client.rx_capacity = capacity;
+            client.rx_checksum = partial;
+            client.rx_gso[usize::from(ipv6)] = gso;
+            // Enable the other family's offload even in the disabled case.
+            client.rx_gso[usize::from(!ipv6)] = true;
+            let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+            let ft = if ipv6 {
+                FourTuple {
+                    src: "[fd00::2]:1234".parse().unwrap(),
+                    dst: "[fd00::1]:80".parse().unwrap(),
+                }
+            } else {
+                FourTuple {
+                    src: "10.0.0.2:1234".parse().unwrap(),
+                    dst: "10.0.0.1:80".parse().unwrap(),
+                }
+            };
+            let mut connection = TcpConnection::new_base(&ConnectionParams {
+                rx_buffer: NormalizedBufferBounds::from_bounds(crate::TcpBufferBounds::fixed(
+                    131072,
+                )),
+                tx_buffer: NormalizedBufferBounds::from_bounds(crate::TcpBufferBounds::fixed(
+                    131072,
+                )),
+            });
+            connection.state = TcpState::Established;
+            connection.tx_mss = 1460;
+            connection.tx_window_scale = 2;
+            connection.tx_window_scale_active = true;
+            connection.tx_window_len = (window / 4) as u16;
+            connection.tx_send = TcpSeqNumber(1000);
+            connection.tx_acked = connection.tx_send;
+            // Wrap the payload at an odd boundary to exercise scatter/gather checksums.
+            connection.tx_buffer.extend_by(131071);
+            connection.tx_buffer.consume(131071);
+            let payload: Vec<_> = (0..payload_len).map(|i| i as u8).collect();
+            connection.tx_buffer.write_at(0, &payload);
+            connection.tx_buffer.extend_by(payload.len());
+            connection.send_data(
+                &mut Sender {
+                    ft: &ft,
+                    client: &mut client,
+                    state: &mut consomme.state,
+                },
+                AckPolicy::Flush,
+            );
+
+            let packets = client.received_packets.lock();
+            let mut received_payload = Vec::new();
+            let mut saw_gso = false;
+            for (packet, state) in packets.iter().zip(&client.received_checksums) {
+                assert!(packet.len() <= capacity.min(65536));
+                let eth = EthernetFrame::new_checked(packet.as_slice()).unwrap();
+                let tcp_data = if ipv6 {
+                    let ip = Ipv6Packet::new_checked(eth.payload()).unwrap();
+                    assert_eq!(ip.total_len(), eth.payload().len());
+                    &eth.payload()[IPV6_HEADER_LEN..]
+                } else {
+                    let ip = Ipv4Packet::new_checked(eth.payload()).unwrap();
+                    assert!(ip.verify_checksum());
+                    assert_eq!(ip.total_len() as usize, eth.payload().len());
+                    &eth.payload()[IPV4_HEADER_LEN..]
+                };
+                let mut tcp_bytes = tcp_data.to_vec();
+                let mut tcp = TcpPacket::new_unchecked(&mut tcp_bytes[..]);
+                assert_eq!(
+                    tcp.seq_number(),
+                    TcpSeqNumber(1000) + received_payload.len()
+                );
+                let segment_payload_len = tcp.payload_mut().len();
+                received_payload.extend_from_slice(tcp.payload_mut());
+                if segment_payload_len > 1460 {
+                    saw_gso = true;
+                    assert!(gso);
+                    assert_eq!(state.tso, Some(1460));
+                } else {
+                    assert!(state.tso.is_none());
+                }
+                assert_eq!(state.partial, partial || state.tso.is_some());
+                if state.partial {
+                    assert_eq!(
+                        tcp.checksum(),
+                        checksum::pseudo_header(
+                            &ft.dst.ip().into(),
+                            &ft.src.ip().into(),
+                            IpProtocol::Tcp,
+                            tcp_data.len() as u32,
+                        )
+                    );
+                    let completed = !checksum::data(tcp.as_ref());
+                    tcp.set_checksum(completed);
+                }
+                assert!(tcp.verify_checksum(&ft.dst.ip().into(), &ft.src.ip().into()));
+            }
+            assert_eq!(received_payload, payload[..payload_len.min(window)]);
+            assert_eq!(
+                connection.tx_send,
+                TcpSeqNumber(1000) + received_payload.len()
+            );
+            assert_eq!(
+                saw_gso,
+                gso && capacity > 1514 && payload_len.min(window) > 1460
+            );
+        }
+    }
+}
+
+#[pal_async::async_test]
+async fn test_tcp_receive_partial_checksum_without_payload(driver: DefaultDriver) {
+    for ipv6 in [false, true] {
+        for partial in [false, true] {
+            for control in [
+                TcpControl::Syn,
+                TcpControl::Fin,
+                TcpControl::Rst,
+                TcpControl::None,
+            ] {
+                let mut client = TestClient::new(driver.clone());
+                client.rx_checksum = partial;
+                let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+                let ft = FourTuple {
+                    src: if ipv6 {
+                        "[fd00::2]:1234"
+                    } else {
+                        "10.0.0.2:1234"
+                    }
+                    .parse()
+                    .unwrap(),
+                    dst: if ipv6 { "[fd00::1]:80" } else { "10.0.0.1:80" }
+                        .parse()
+                        .unwrap(),
+                };
+                let tcp = TcpRepr {
+                    src_port: ft.dst.port(),
+                    dst_port: ft.src.port(),
+                    control,
+                    seq_number: TcpSeqNumber(1000),
+                    ack_number: Some(TcpSeqNumber(2000)),
+                    window_len: 4096,
+                    window_scale: None,
+                    max_seg_size: (control == TcpControl::Syn).then_some(1460),
+                    sack_permitted: false,
+                    sack_ranges: [None; 3],
+                    timestamp: None,
+                    payload: &[],
+                };
+                Sender {
+                    ft: &ft,
+                    client: &mut client,
+                    state: &mut consomme.state,
+                }
+                .send_packet(&tcp, None, None);
+
+                let state = &client.received_checksums[0];
+                assert_eq!(state.partial, partial);
+                assert!(state.tso.is_none());
+                let packets = client.received_packets.lock();
+                let offset = ETHERNET_HEADER_LEN
+                    + if ipv6 {
+                        IPV6_HEADER_LEN
+                    } else {
+                        IPV4_HEADER_LEN
+                    };
+                let mut bytes = packets[0][offset..].to_vec();
+                let mut packet = TcpPacket::new_unchecked(&mut bytes[..]);
+                assert_eq!(packet.header_len() as usize, tcp.header_len());
+                if partial {
+                    assert_eq!(
+                        packet.checksum(),
+                        checksum::pseudo_header(
+                            &ft.dst.ip().into(),
+                            &ft.src.ip().into(),
+                            IpProtocol::Tcp,
+                            tcp.header_len() as u32,
+                        )
+                    );
+                    let completed = !checksum::data(packet.as_ref());
+                    packet.set_checksum(completed);
+                }
+                assert!(packet.verify_checksum(&ft.dst.ip().into(), &ft.src.ip().into()));
+            }
+        }
     }
 }
 
@@ -2512,11 +2737,17 @@ async fn test_tcp_zero_window_reopen_sends_update(driver: DefaultDriver) {
     };
     let mut h = TcpTestHarness::connect_with_params(driver, params).await;
 
-    // Shrink the host receive buffer so the egress path backs up after only a
-    // modest amount of data, keeping the flood bounded.
-    SockRef::from(h.host_stream.get())
-        .set_recv_buffer_size(8 << 10)
-        .unwrap();
+    // Bound the sender backlog without shrinking the host's TCP receive
+    // window, which can make draining the backlog exceed the test timeout.
+    let connection = h.consomme.tcp.connections.get(&h.four_tuple()).unwrap();
+    let TcpBackend::Socket {
+        socket: Some(socket),
+        ..
+    } = &connection.backend
+    else {
+        panic!("expected a connected host socket");
+    };
+    socket.get().set_send_buffer_size(8 << 10).unwrap();
 
     // Flood until consomme's advertised receive window closes to zero.
     let sent = h.flood_guest_until_window_closed().await;

@@ -5,30 +5,49 @@
 
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use inspect::Inspect;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
 use pci_core::spec::caps::dvsec::DvsecHeader1;
 use pci_core::spec::caps::dvsec::DvsecHeader2;
 
-use super::spec::CXL_DVSEC_VENDOR_ID;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT_WRITABLE_MASK;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_CONTROL_WRITABLE_MASK;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_ID;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_LENGTH;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_REVISION;
-use super::spec::cxl_port_dvsec::CXL_PORT_DVSEC_STATUS_RW1C_MASK;
-use super::spec::cxl_port_dvsec::CxlPortDvsecAltMemoryBase;
-use super::spec::cxl_port_dvsec::CxlPortDvsecAltMemoryLimit;
-use super::spec::cxl_port_dvsec::CxlPortDvsecAltPrefetchableMemoryBase;
-use super::spec::cxl_port_dvsec::CxlPortDvsecAltPrefetchableMemoryLimit;
-use super::spec::cxl_port_dvsec::CxlPortDvsecControl;
-use super::spec::cxl_port_dvsec::CxlPortDvsecExtendedCapability;
-use super::spec::cxl_port_dvsec::CxlPortDvsecRcrbBase;
-use super::spec::cxl_port_dvsec::CxlPortDvsecRegisterOffset;
-use super::spec::cxl_port_dvsec::CxlPortDvsecStatus;
+use cxl_spec::pci_registers::CXL_DVSEC_VENDOR_ID;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_ALT_MEMORY_BASE_LIMIT_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_ALT_PREFETCHABLE_MEMORY_BASE_LIMIT_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_CONTROL_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_CXL_RCRB_BASE_WRITABLE_MASK;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_ID;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_LENGTH;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_REVISION;
+use cxl_spec::pci_registers::cxl_port_dvsec::CXL_PORT_DVSEC_STATUS_RW1C_MASK;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecAltMemoryBase;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecAltMemoryLimit;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecAltPrefetchableMemoryBase;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecAltPrefetchableMemoryLimit;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecControl;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecRcrbBase;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecRegisterOffset;
+use cxl_spec::pci_registers::cxl_port_dvsec::CxlPortDvsecStatus;
+
+/// CXL Port PCIe Designated Vendor-Specific Extended Capability (DVSEC).
+#[derive(Clone, Inspect)]
+pub struct CxlPortDvsecExtendedCapability {
+    pub(crate) status: CxlPortDvsecStatus,
+    pub(crate) control: CxlPortDvsecControl,
+    pub(crate) alt_bus_base: u8,
+    pub(crate) alt_bus_limit: u8,
+    pub(crate) alt_mem_base: CxlPortDvsecAltMemoryBase,
+    pub(crate) alt_mem_limit: CxlPortDvsecAltMemoryLimit,
+    pub(crate) alt_prefetch_mem_base: CxlPortDvsecAltPrefetchableMemoryBase,
+    pub(crate) alt_prefetch_mem_limit: CxlPortDvsecAltPrefetchableMemoryLimit,
+    pub(crate) alt_prefetch_mem_base_high: u32,
+    pub(crate) alt_prefetch_mem_limit_high: u32,
+    pub(crate) cxl_rcrb_base: CxlPortDvsecRcrbBase,
+    pub(crate) cxl_rcrb_base_high: u32,
+    pub(crate) supports_uio_to_hdm_enable: bool,
+    pub(crate) supports_viral: bool,
+}
 
 impl Default for CxlPortDvsecExtendedCapability {
     fn default() -> Self {

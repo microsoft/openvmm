@@ -46,7 +46,16 @@ pub trait PollWait: Unpin + Send + Sync {
 
     /// Cancels a polled wait.
     ///
-    /// Returns true if the wait signal was consumed.
+    /// Returns `true` if the outstanding wait consumed a signal, or `false` if
+    /// it was cancelled without consuming one. Cancellation does not drain the
+    /// wait object: a signal not consumed by the outstanding wait remains
+    /// available to a subsequent wait.
+    ///
+    /// If cancellation is pending, registers `cx.waker()` to be woken when it
+    /// can make progress. Once cancellation completes, no further signals are
+    /// consumed until [`Self::poll_wait`] is called again.
+    ///
+    /// A backend may retain the registered waker after cancellation completes.
     fn poll_cancel_wait(&mut self, cx: &mut Context<'_>) -> Poll<bool>;
 }
 
@@ -112,6 +121,13 @@ impl<T> PolledWait<T> {
     /// Polls for the wait object to be signaled.
     pub fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.wait.poll_wait(cx)
+    }
+
+    /// Cancels the wait, reporting whether it consumed a signal.
+    ///
+    /// See [`PollWait::poll_cancel_wait`] for cancellation semantics.
+    pub fn poll_cancel_wait(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
+        self.wait.poll_cancel_wait(cx)
     }
 
     /// Waits for the wait object to be signaled.

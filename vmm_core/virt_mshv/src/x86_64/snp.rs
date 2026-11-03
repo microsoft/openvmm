@@ -67,6 +67,8 @@ pub(crate) enum SnpLaunchState {
 #[derive(Debug, inspect::Inspect)]
 pub(crate) struct MshvSnpConfig {
     #[inspect(hex)]
+    host_data: Option<[u8; 32]>,
+    #[inspect(hex)]
     snp_policy: u64,
     #[inspect(rename = "id_block_enabled", with = "Option::is_some")]
     id_block: Option<virt::SnpIdBlock>,
@@ -145,6 +147,7 @@ pub(super) fn prepare_snp_config(
     let vmsa_gpa = vmsa.gpa;
 
     Ok(MshvSnpConfig {
+        host_data: config.host_data,
         snp_policy: config.policy,
         id_block: config.id_block.clone(),
         vmsa_gpa,
@@ -280,6 +283,7 @@ pub(super) const GHCB_SHARED_BUFFER_OFFSET: u64 =
     std::mem::offset_of!(x86defs::snp::GhcbPage, shared_buffer) as u64;
 pub(super) const SVM_NAE_SNP_AP_CREATE: u32 = 1;
 pub(super) const GHCB_ERROR_RESPONSE: u64 = 2;
+pub(super) const GHCB_ERROR_MISSING_VALID_BITMAP_BIT: u64 = 4;
 pub(super) const GHCB_ERROR_INVALID_INPUT: u64 = 5;
 pub(super) const SNP_UNSAFE_VMSA_ALIGNMENT: u64 = 2 * 1024 * 1024;
 
@@ -541,10 +545,10 @@ pub(super) fn snp_hv_cpuid_overrides(native_max_leaf: u32) -> [virt::CpuidLeaf; 
     // isolation CPUID contract from MSHV_PT_ISOLATION_SNP. Cloud Hypervisor
     // does not install an equivalent override, but we have not confirmed
     // whether its environment receives the isolation leaves correctly from
-    // MSHV. Without these overrides, ACI Linux does not recognize a
+    // MSHV. Without these overrides, the guest kernel does not recognize a
     // non-paravisor Hyper-V SNP guest and uses the hypercall-page overlay
     // instead of direct VMMCALL hypercalls. Correctly describing isolation
-    // also keeps ACI's restricted-injection doorbell EOI path active, making
+    // also keeps the restricted-injection doorbell EOI path active, making
     // the previous APIC-access recommendation mask unnecessary.
     [
         // Make the isolation configuration leaf discoverable.
@@ -577,8 +581,8 @@ pub(super) fn snp_start_vp_vmsa_gpa(
     context: &hvdef::hypercall::InitialVpContextX64,
 ) -> Option<u64> {
     let encoded = context.rip;
-    // TODO: Confirm this ACI-specific overload is the intended Microsoft
-    // Hypervisor SNP contract. ACI zeroes the nominal register context and
+    // TODO: Confirm this launch-context overload is the intended Microsoft
+    // Hypervisor SNP contract. The guest zeroes the nominal register context and
     // stores `vmsa_gpa | 1` in its first eight bytes for HvCallStartVP.
     if encoded & 1 == 0
         || context.as_bytes()[size_of::<u64>()..]
@@ -840,6 +844,72 @@ impl MshvPartitionInner {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct SnpGuestRequest {
+    request_gpa: u64,
+    response_gpa: u64,
+}
+
+#[derive(Debug, Error, Copy, Clone, Eq, PartialEq)]
+enum SnpGuestRequestError {
+    #[error("response address bit is not set in the GHCB valid bitmap")]
+    ResponseAddressValidBitNotSet,
+    #[error("request and response addresses are identical")]
+    SameRequestAndResponseAddress,
+    #[error("page at {0:#x} is the active GHCB")]
+    AddressMatchesGhcb(u64),
+    #[error("address {0:#x} is not page-aligned")]
+    UnalignedAddress(u64),
+    #[error("page at {0:#x} overflows the address space")]
+    AddressOverflow(u64),
+    #[error("page at {0:#x} is not fully within guest RAM")]
+    PageOutsideGuestRam(u64),
+}
+
+fn parse_snp_guest_request(
+    ghcb: &x86defs::snp::GhcbPage,
+    ghcb_gpa: u64,
+    mem_layout: &vm_topology::memory::MemoryLayout,
+) -> Result<SnpGuestRequest, SnpGuestRequestError> {
+    if !ghcb_exit_info2_is_valid(ghcb) {
+        return Err(SnpGuestRequestError::ResponseAddressValidBitNotSet);
+    }
+    let request_gpa = ghcb.save.sw_exit_info1;
+    let response_gpa = ghcb.save.sw_exit_info2;
+    if request_gpa == response_gpa {
+        return Err(SnpGuestRequestError::SameRequestAndResponseAddress);
+    }
+    // GHCB specification 56421, section 4.1.7, requires distinct, page-aligned pages.
+    for gpa in [request_gpa, response_gpa] {
+        if !gpa.is_multiple_of(hvdef::HV_PAGE_SIZE) {
+            return Err(SnpGuestRequestError::UnalignedAddress(gpa));
+        }
+        if gpa == ghcb_gpa {
+            return Err(SnpGuestRequestError::AddressMatchesGhcb(gpa));
+        }
+        let end = gpa
+            .checked_add(hvdef::HV_PAGE_SIZE)
+            .ok_or(SnpGuestRequestError::AddressOverflow(gpa))?;
+        if !mem_layout
+            .ram()
+            .iter()
+            .any(|range| range.range.contains(&MemoryRange::new(gpa..end)))
+        {
+            return Err(SnpGuestRequestError::PageOutsideGuestRam(gpa));
+        }
+    }
+    Ok(SnpGuestRequest {
+        request_gpa,
+        response_gpa,
+    })
+}
+
+fn complete_snp_guest_request(ghcb: &mut x86defs::snp::GhcbPage) {
+    ghcb.save.sw_exit_info1 = 0;
+    ghcb.save.sw_exit_info2 = 0;
+    ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO1_VALID_BIT | GHCB_SW_EXIT_INFO2_VALID_BIT;
+}
+
 /// Builds the PSP launch-finish data from the prepared MSHV SNP configuration.
 ///
 /// The returned `u64` is the effective SNP policy, which the caller records in
@@ -857,6 +927,9 @@ fn snp_launch_finish_data(
         |config| config.snp_policy,
     );
     parameters.id_block.policy = mshv_bindings::hv_snp_guest_policy { as_uint64: policy };
+    parameters.host_data = config
+        .and_then(|config| config.host_data)
+        .unwrap_or_default();
 
     if let Some(source) = config.and_then(|config| config.id_block.as_ref()) {
         let id_block = virt::x86::snp::snp_id_block(source, policy);
@@ -1569,6 +1642,9 @@ impl MshvProcessor<'_> {
             exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_AP_CREATION) => {
                 self.handle_snp_ap_create(info, ghcb_gpa)?;
             }
+            exit_code if exit_code == u64::from(SVM_EXITCODE_SNP_GUEST_REQUEST) => {
+                self.handle_snp_guest_request(info, ghcb_gpa)?;
+            }
             exit_code => {
                 tracelimit::warn_ratelimited!(
                     exit_code,
@@ -1581,6 +1657,70 @@ impl MshvProcessor<'_> {
             }
         }
 
+        Ok(())
+    }
+
+    fn handle_snp_guest_request(
+        &mut self,
+        info: &hvdef::HvX64VmgexitInterceptMessage,
+        ghcb_gpa: u64,
+    ) -> Result<(), VpHaltReason> {
+        let request_gpa = info.ghcb_page.standard.sw_exit_info1;
+        let response_gpa = info.ghcb_page.standard.sw_exit_info2;
+        let request = {
+            let ghcb = self.runner.ghcb_page().ok_or_else(|| {
+                tracelimit::error_ratelimited!("missing GHCB for SNP guest request");
+                VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+            })?;
+            if ghcb.save.sw_exit_info2 != response_gpa {
+                tracelimit::warn_ratelimited!(
+                    ghcb_response_gpa = ghcb.save.sw_exit_info2,
+                    response_gpa,
+                    "SNP guest request response address differs from the intercept"
+                );
+                return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+            }
+            match parse_snp_guest_request(ghcb, ghcb_gpa, &self.partition.mem_layout) {
+                Ok(request) => request,
+                Err(error) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &error as &dyn std::error::Error,
+                        request_gpa,
+                        response_gpa,
+                        "rejected invalid SNP guest request"
+                    );
+                    // AMD GHCB specification 56421, revision 2.04, section 4.1, Table 8 (p. 49):
+                    // https://docs.amd.com/api/khub/documents/oJly8EPzLO1Bt7ncrkCytw/content
+                    let reason = match error {
+                        SnpGuestRequestError::ResponseAddressValidBitNotSet => {
+                            GHCB_ERROR_MISSING_VALID_BITMAP_BIT
+                        }
+                        _ => GHCB_ERROR_INVALID_INPUT,
+                    };
+                    set_ghcb_error(ghcb, reason);
+                    return Ok(());
+                }
+            }
+        };
+        let request = mshv_bindings::mshv_issue_psp_guest_request {
+            req_gpa: request.request_gpa,
+            rsp_gpa: request.response_gpa,
+        };
+        if let Err(error) = self.partition.vmfd.psp_issue_guest_request(&request) {
+            tracelimit::error_ratelimited!(
+                error = &error as &dyn std::error::Error,
+                request_gpa,
+                response_gpa,
+                "MSHV SNP guest request failed"
+            );
+            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
+        }
+
+        let ghcb = self.runner.ghcb_page().ok_or_else(|| {
+            tracelimit::error_ratelimited!("missing GHCB after SNP guest request");
+            VpHaltReason::TripleFault { vtl: Vtl::Vtl0 }
+        })?;
+        complete_snp_guest_request(ghcb);
         Ok(())
     }
 
@@ -1710,6 +1850,7 @@ mod tests {
         vmsa.sev_features = features;
         vmsa.rip = 0x1234;
         virt::SnpConfig {
+            host_data: None,
             policy: 0x30000,
             highest_vtl: 0,
             shared_gpa_boundary: 0,
@@ -1729,8 +1870,7 @@ mod tests {
             &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                 restricted_injection: true,
             }),
-            false,
-            false,
+            Default::default(),
         )
         .unwrap();
         for restricted in [false, true] {
@@ -1744,8 +1884,7 @@ mod tests {
                 &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
                     config.clone(),
                 ))),
-                false,
-                false,
+                Default::default(),
             )
             .unwrap();
             assert_eq!(
@@ -1779,8 +1918,7 @@ mod tests {
                 &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
                     restricted_injection,
                 }),
-                false,
-                false,
+                Default::default(),
             )
             .unwrap();
             let vmsa = virt::x86::snp::vmsa_from_initial_regs(
@@ -1807,8 +1945,8 @@ mod tests {
 
     #[test]
     fn injection_policy_is_snp_only() {
-        let args =
-            partition_create_args(&virt::ProtoPartitionIsolation::None, false, false).unwrap();
+        let args = partition_create_args(&virt::ProtoPartitionIsolation::None, Default::default())
+            .unwrap();
         assert_eq!(args.pt_flags & (3 << MSHV_PT_SNP_INJECTION_POLICY_SHIFT), 0);
     }
 
@@ -1830,8 +1968,7 @@ mod tests {
                     &virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(Box::new(
                         config
                     ))),
-                    false,
-                    false,
+                    Default::default(),
                 )
                 .unwrap_err()
                 .0,
@@ -1884,6 +2021,100 @@ mod tests {
         for width in [13, 48, 64] {
             prepare_snp_config(&config, width).unwrap();
         }
+    }
+
+    #[test]
+    fn validates_snp_guest_request_pages() {
+        let layout = vm_topology::memory::MemoryLayout::new(0x4000, &[], &[], &[], None).unwrap();
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO2_VALID_BIT;
+        for (request_gpa, response_gpa) in [(0, 0x3000), (0x1000, 0x2000)] {
+            ghcb.save.sw_exit_info1 = request_gpa;
+            ghcb.save.sw_exit_info2 = response_gpa;
+            assert_eq!(
+                parse_snp_guest_request(&ghcb, 0x8000, &layout),
+                Ok(SnpGuestRequest {
+                    request_gpa,
+                    response_gpa,
+                })
+            );
+        }
+
+        let last_page = !(hvdef::HV_PAGE_SIZE - 1);
+        for (request_gpa, response_gpa, error) in [
+            (
+                0x1000,
+                0x1000,
+                SnpGuestRequestError::SameRequestAndResponseAddress,
+            ),
+            (
+                0x1001,
+                0x2000,
+                SnpGuestRequestError::UnalignedAddress(0x1001),
+            ),
+            (
+                0x1000,
+                0x2001,
+                SnpGuestRequestError::UnalignedAddress(0x2001),
+            ),
+            (
+                last_page,
+                0x2000,
+                SnpGuestRequestError::AddressOverflow(last_page),
+            ),
+            (
+                0x1000,
+                last_page,
+                SnpGuestRequestError::AddressOverflow(last_page),
+            ),
+            (
+                0x4000,
+                0x2000,
+                SnpGuestRequestError::PageOutsideGuestRam(0x4000),
+            ),
+            (
+                0x1000,
+                0x4000,
+                SnpGuestRequestError::PageOutsideGuestRam(0x4000),
+            ),
+        ] {
+            ghcb.save.sw_exit_info1 = request_gpa;
+            ghcb.save.sw_exit_info2 = response_gpa;
+            assert_eq!(parse_snp_guest_request(&ghcb, 0x8000, &layout), Err(error));
+        }
+    }
+
+    #[test]
+    fn requires_snp_guest_request_response_valid_bit() {
+        let layout = vm_topology::memory::MemoryLayout::new(0x4000, &[], &[], &[], None).unwrap();
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.sw_exit_info1 = 0x1000;
+        ghcb.save.sw_exit_info2 = 0x2000;
+        assert_eq!(
+            parse_snp_guest_request(&ghcb, 0x8000, &layout),
+            Err(SnpGuestRequestError::ResponseAddressValidBitNotSet)
+        );
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_INFO2_VALID_BIT;
+        assert_eq!(
+            parse_snp_guest_request(&ghcb, 0x8000, &layout),
+            Ok(SnpGuestRequest {
+                request_gpa: 0x1000,
+                response_gpa: 0x2000,
+            })
+        );
+    }
+
+    #[test]
+    fn completes_snp_guest_request() {
+        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+        ghcb.save.sw_exit_info1 = 0x400000;
+        ghcb.save.sw_exit_info2 = 0x500000;
+        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
+        complete_snp_guest_request(&mut ghcb);
+        assert_eq!(ghcb.save.sw_exit_info1, 0);
+        assert_eq!(ghcb.save.sw_exit_info2, 0);
+        assert!(ghcb_exit_fields_are_valid(&ghcb));
+        assert!(ghcb_exit_info2_is_valid(&ghcb));
     }
 
     #[test]
@@ -1968,7 +2199,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_aci_snp_start_vp_context() {
+    fn parses_snp_start_vp_context() {
         let mut context = hvdef::hypercall::InitialVpContextX64::new_zeroed();
         context.rip = 0x517001;
         assert_eq!(snp_start_vp_vmsa_gpa(&context), Some(0x517000));
@@ -2203,14 +2434,19 @@ mod tests {
 
     #[test]
     fn encodes_ghcb_errors() {
-        let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
-        ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
-        set_ghcb_error(&mut ghcb, GHCB_ERROR_INVALID_INPUT);
+        for reason in [
+            GHCB_ERROR_MISSING_VALID_BITMAP_BIT,
+            GHCB_ERROR_INVALID_INPUT,
+        ] {
+            let mut ghcb = x86defs::snp::GhcbPage::new_zeroed();
+            ghcb.save.valid_bitmap1 |= GHCB_SW_EXIT_CODE_VALID_BIT;
+            set_ghcb_error(&mut ghcb, reason);
 
-        assert_eq!(ghcb.save.sw_exit_info1, GHCB_ERROR_RESPONSE);
-        assert_eq!(ghcb.save.sw_exit_info2, GHCB_ERROR_INVALID_INPUT);
-        assert!(ghcb_exit_fields_are_valid(&ghcb));
-        assert!(ghcb_exit_info2_is_valid(&ghcb));
+            assert_eq!(ghcb.save.sw_exit_info1, GHCB_ERROR_RESPONSE);
+            assert_eq!(ghcb.save.sw_exit_info2, reason);
+            assert!(ghcb_exit_fields_are_valid(&ghcb));
+            assert!(ghcb_exit_info2_is_valid(&ghcb));
+        }
     }
 
     #[test]

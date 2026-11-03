@@ -197,7 +197,9 @@ impl FlowNodeWithConfig for Node {
 
                 move |rt| {
                     for (arch, kinds) in local_reqs {
-                        let (kernel_var, modules_var) = local_paths.get(&arch).unwrap();
+                        let (kernel_var, modules_var) = local_paths
+                            .get(&arch)
+                            .with_context(|| format!("missing local kernel paths for {arch:?}"))?;
                         let kernel_path = rt.read(kernel_var.clone());
                         let modules_path = rt.read(modules_var.clone());
 
@@ -249,7 +251,9 @@ impl FlowNodeWithConfig for Node {
         let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (kind, arch) in download_reqs {
-            let version = versions.get(&kind).expect("checked above");
+            let version = versions
+                .get(&kind)
+                .with_context(|| format!("missing kernel package version for {kind:?}"))?;
             let tag = format!(
                 "rolling-lts/hcl-{}/{}",
                 match kind {
@@ -278,7 +282,7 @@ impl FlowNodeWithConfig for Node {
 
             let kernel_package_tar_gz =
                 ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
-                    repo_owner: "microsoft".into(),
+                    repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
                     repo_name: "OHCL-Linux-Kernel".into(),
                     needs_auth: false,
                     tag,

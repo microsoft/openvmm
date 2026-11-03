@@ -48,11 +48,11 @@ open_enum! {
     /// Power management I/O offsets from base port address
     pub enum DynReg: u8 {
         #![expect(missing_docs)] // self explanatory constants
-        STATUS             = 0x00, // two-byte value
+        STATUS             = acpi_spec::hyperv::PM_STATUS as u8, // two-byte value
         RESUME_ENABLE      = 0x02, // two-byte value
-        CONTROL            = 0x04, // two-byte value
-        TIMER              = 0x08, // four-byte value (read only)
-        GEN_PURPOSE_STATUS = 0x0C, // two-byte value
+        CONTROL            = acpi_spec::hyperv::PM_CONTROL as u8, // two-byte value
+        TIMER              = acpi_spec::hyperv::PM_TIMER as u8, // four-byte value (read only)
+        GEN_PURPOSE_STATUS = acpi_spec::hyperv::PM_GPE0_STATUS as u8, // two-byte value
         GEN_PURPOSE_ENABLE = 0x0E, // two-byte value
         PROC_CONTROL       = 0x10, // four-byte value
         PROC_L2            = 0x14, // one-byte value
@@ -65,7 +65,7 @@ open_enum! {
         GENERAL_INPUT1     = 0x30, // one-byte value (read only)
         GENERAL_INPUT2     = 0x31, // one-byte value (read only)
         GENERAL_INPUT3     = 0x32, // one-byte value (read only)
-        RESET              = 0x33, // one-byte value
+        RESET              = acpi_spec::hyperv::PM_RESET as u8, // one-byte value
         GENERAL_OUTPUT0    = 0x34, // one-byte value
         GENERAL_OUTPUT2    = 0x35, // one-byte value
         GENERAL_OUTPUT3    = 0x36, // one-byte value
@@ -84,7 +84,7 @@ const STATUS_PM_MASK: u16 = 0x0040; // One of the PM event flags is set
 const TIMER_OVERFLOW_MASK: u16 = 0x0001; // The PM timer overflowed
 
 /// Value that initiates a system reset when written to [`DynReg::RESET`].
-pub const RESET_VALUE: u8 = 0x01; // Reset the VM
+pub const RESET_VALUE: u8 = acpi_spec::hyperv::RESET_VALUE;
 
 #[derive(Clone, Debug, Inspect)]
 struct PmState {
@@ -452,8 +452,8 @@ impl PowerManagementDevice {
     /// reSearch query: `CheckInterruptAssertion`
     pub fn check_interrupt_assertion(&self) {
         // Check if any power events should cause an interrupt to be asserted.
-        let level = (self.state.resume_enable > 0 && self.state.status > 0)
-            || (self.state.general_purpose_status > 0 && self.state.general_purpose_enable > 0);
+        let level = (self.state.resume_enable & self.state.status != 0)
+            || (self.state.general_purpose_status & self.state.general_purpose_enable != 0);
 
         self.rt.acpi_interrupt.set_level(level)
     }
@@ -730,6 +730,114 @@ mod saved_state {
             self.check_interrupt_assertion();
 
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+        use pal_async::DefaultDriver;
+        use pal_async::async_test;
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::vmtime::VmTime;
+        use vmcore::vmtime::VmTimeKeeper;
+
+        const BASE: u16 = 0x1000;
+
+        struct PioRegion(Option<u16>);
+
+        impl ControlPortIoIntercept for PioRegion {
+            fn region_name(&self) -> &str {
+                "pm"
+            }
+            fn map(&mut self, addr: u16) {
+                self.0 = Some(addr);
+            }
+            fn unmap(&mut self) {
+                self.0 = None;
+            }
+            fn addr(&self) -> Option<u16> {
+                self.0
+            }
+            fn len(&self) -> u16 {
+                0x37
+            }
+            fn offset_of(&self, addr: u16) -> Option<u16> {
+                addr.checked_sub(self.0?)
+                    .filter(|offset| *offset < self.len())
+            }
+        }
+
+        async fn new_pm(
+            driver: &DefaultDriver,
+            line: LineInterrupt,
+        ) -> (VmTimeKeeper, PowerManagementDevice) {
+            let time = VmTimeKeeper::new(driver, VmTime::from_100ns(0));
+            let access = time.builder().build(driver).await.unwrap();
+            let mut pm = PowerManagementDevice::new(
+                Box::new(|_| panic!("unexpected power action")),
+                line,
+                &mut ExternallyManagedPortIoIntercepts,
+                access.access("pm"),
+                Some(EnableAcpiMode {
+                    default_pio_dynamic: BASE,
+                }),
+                None,
+            );
+            pm.rt.pio_dynamic = Box::new(PioRegion(Some(BASE)));
+            (time, pm)
+        }
+
+        fn write(pm: &mut PowerManagementDevice, reg: DynReg, value: u16) {
+            pm.io_write(BASE + u16::from(reg.0), &value.to_le_bytes())
+                .unwrap();
+        }
+
+        fn gpe_status(pm: &mut PowerManagementDevice) -> u16 {
+            let mut data = [0; 2];
+            pm.io_read(BASE + u16::from(DynReg::GEN_PURPOSE_STATUS.0), &mut data)
+                .unwrap();
+            u16::from_le_bytes(data)
+        }
+
+        #[async_test]
+        async fn sci_requires_a_matching_enabled_gpe(driver: DefaultDriver) {
+            let target = TestLineInterruptTarget::new_arc();
+            let (_time, mut pm) = new_pm(
+                &driver,
+                LineInterrupt::new_with_target("pm", target.clone(), 0),
+            )
+            .await;
+            write(&mut pm, DynReg::GEN_PURPOSE_ENABLE, 1);
+            pm.set_irq(8, true);
+            pm.set_irq(8, false);
+            assert_eq!(gpe_status(&mut pm), 1 << 8);
+            assert!(!target.is_high(0), "GPE0 enable must not enable GPE8");
+            write(&mut pm, DynReg::GEN_PURPOSE_ENABLE, 1 << 8);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::GEN_PURPOSE_STATUS, 1 << 8);
+            assert!(!target.is_high(0));
+        }
+
+        #[async_test]
+        async fn sci_requires_a_matching_enabled_pm_event(driver: DefaultDriver) {
+            let target = TestLineInterruptTarget::new_arc();
+            let (_time, mut pm) = new_pm(
+                &driver,
+                LineInterrupt::new_with_target("pm", target.clone(), 0),
+            )
+            .await;
+            pm.state.status = 1 << 5;
+            write(&mut pm, DynReg::RESUME_ENABLE, ENABLE_TIMER_OVERFLOW_MASK);
+            assert!(
+                !target.is_high(0),
+                "timer enable must not enable the global event"
+            );
+            write(&mut pm, DynReg::RESUME_ENABLE, 1 << 5);
+            assert!(target.is_high(0));
+            write(&mut pm, DynReg::STATUS, 1 << 5);
+            assert!(!target.is_high(0));
         }
     }
 }

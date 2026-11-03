@@ -100,6 +100,11 @@ impl VirtioVsockDevice {
         base_path: PathBuf,
         listener: UnixListener,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            (3..u64::from(u32::MAX)).contains(&guest_cid),
+            "virtio-vsock guest CID must be between 3 and {}",
+            u32::MAX - 1
+        );
         let driver = driver_source.simple();
         let listener = PolledSocket::new(&driver, listener)
             .context("failed to create polled socket for vsock relay listener")?;
@@ -473,8 +478,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop: &mut StopTask<'_>,
         state: &mut VsockWorkerState,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
             loop {
+                check.check()?;
                 let peeked = match state.rx_queue.try_peek() {
                     Ok(p) => p,
                     Err(err) => {
@@ -482,7 +489,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             error = &err as &dyn std::error::Error,
                             "error peeking virtio rx queue"
                         );
-                        return;
+                        return Ok(());
                     }
                 };
 
@@ -513,7 +520,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                     error = &err as &dyn std::error::Error,
                                     "error reading from virtio tx queue, stopping worker"
                                 );
-                                return;
+                                return Ok(());
                             }
                         }
                     }
@@ -550,7 +557,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                 };
             }
         })
-        .await
+        .await?
     }
 }
 

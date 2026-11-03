@@ -3,6 +3,7 @@
 
 //! Configuration for the VM worker.
 
+pub use serial_uart_resources::UartId;
 pub use smbios_defs::SmbiosBiosOverrides;
 pub use smbios_defs::SmbiosConfig;
 pub use smbios_defs::SmbiosSystemOverrides;
@@ -183,15 +184,21 @@ pub enum LoadMode {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
-        com_serial: Option<SerialInformation>,
+        com_serial: Option<UartId>,
+        personality: IgvmPersonality,
     },
     None,
 }
 
-#[derive(Debug, Clone, Copy, MeshPayload)]
-pub struct SerialInformation {
-    pub io_port: u16,
-    pub irq: u32,
+/// The firmware that an IGVM file contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub enum IgvmPersonality {
+    /// The OpenHCL paravisor, hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware.
+    Uefi,
+    /// A Linux kernel.
+    LinuxDirect,
 }
 
 /// Different types to specify the base address for the VTL2 region of the IGVM
@@ -251,6 +258,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    /// Whether this root complex owns legacy PCI configuration I/O ports.
+    pub legacy_pci_config_io: bool,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PciePortConfig>,
@@ -624,7 +633,10 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
-    Snp,
+    Snp {
+        /// Optional host-provided data included in SNP launch finish.
+        host_data: Option<[u8; 32]>,
+    },
     Cca,
 }
 
@@ -632,7 +644,7 @@ impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp,
+            IsolationType::Snp { .. } => Self::Snp,
             IsolationType::Cca => Self::Cca,
         }
     }

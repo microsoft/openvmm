@@ -50,11 +50,17 @@ impl Agent {
                 let socket = (connect_client(&driver), connect_server(&driver))
                     .race()
                     .await;
-                Self::from_conn(driver, socket)
+                #[cfg(target_os = "linux")]
+                let local_vsock_cid = Some(
+                    vmsocket::local_vsock_cid().context("failed to query local AF_VSOCK CID")?,
+                );
+                #[cfg(windows)]
+                let local_vsock_cid = None;
+                Self::from_conn(driver, socket, local_vsock_cid)
             }
             Transport::Tcp => {
                 let socket = connect_server_tcp(&driver).await?;
-                Self::from_conn(driver, socket)
+                Self::from_conn(driver, socket, None)
             }
         }
     }
@@ -62,6 +68,7 @@ impl Agent {
     fn from_conn(
         driver: DefaultDriver,
         conn: impl 'static + AsyncRead + AsyncWrite + Send + Unpin,
+        local_vsock_cid: Option<u32>,
     ) -> anyhow::Result<Self> {
         eprintln!("Pipette handshaking with host");
         let (bootstrap_send, bootstrap_recv) = mesh::oneshot::<PipetteBootstrap>();
@@ -75,6 +82,7 @@ impl Agent {
 
         bootstrap_send.send(PipetteBootstrap {
             requests: request_send,
+            local_vsock_cid,
             diag_file_recv,
             watch: watch_recv,
             log,
@@ -242,6 +250,7 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::ListDir(rpc) => rpc.handle_failable(list_dir).await,
         PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
         PipetteRequest::Crash(rpc) => rpc.handle_sync(|()| panic!("crash requested")),
         PipetteRequest::KernelCrash(rpc) => {
@@ -279,6 +288,24 @@ async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::
     .await?;
     tracing::debug!("file write request complete");
     Ok(n)
+}
+
+async fn list_dir(
+    request: pipette_protocol::ListDirRequest,
+) -> anyhow::Result<pipette_protocol::ListDirResponse> {
+    tracing::debug!(path = request.path, "Beginning list dir request");
+    let mut files = Vec::new();
+    for entry in fs_err::read_dir(request.path)? {
+        files.push(
+            entry?
+                .file_name()
+                .to_str()
+                .context("filename not utf8")?
+                .to_string(),
+        );
+    }
+    tracing::debug!("list dir request complete");
+    Ok(pipette_protocol::ListDirResponse { files })
 }
 
 impl DiagnosticSender {

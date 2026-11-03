@@ -73,3 +73,11 @@ pub struct DisconnectedSerialBackendHandle;
 impl ResourceId<SerialBackendHandle> for DisconnectedSerialBackendHandle {
     const ID: &'static str = "disconnected";
 }
+
+/// Handle for a connected serial backend that discards output.
+#[derive(MeshPayload)]
+pub struct NullSerialBackendHandle;
+
+impl ResourceId<SerialBackendHandle> for NullSerialBackendHandle {
+    const ID: &'static str = "null";
+}

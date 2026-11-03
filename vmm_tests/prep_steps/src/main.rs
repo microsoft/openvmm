@@ -93,7 +93,8 @@ fn build(
     })?;
 
     let output_dir = output_dir.get();
-    let logger = petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)?;
+    let logger =
+        petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG, None)?;
     Ok((logger, artifacts, source_disk.erase()))
 }
 
@@ -186,7 +187,8 @@ fn build_no_vmbus(
     )?;
 
     let output_dir = output_dir.get();
-    let logger = petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)?;
+    let logger =
+        petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG, None)?;
     Ok((logger, artifacts, source_disk.erase(), virtio_win.erase()))
 }
 
@@ -454,7 +456,7 @@ fn prepare_result_disk(
             .replace(".vhd", suffix),
     );
     if result_disk.exists() {
-        if std::env::var("PETRI_REUSE_PREPPED_VHDS")
+        if std::env::var(petri_artifacts_vmm_test::env::PETRI_REUSE_PREPPED_VHDS)
             .ok()
             .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
         {

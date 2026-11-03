@@ -103,6 +103,45 @@ Device tree mode is not supported on x86_64. Passing `--device-tree` on x86
 will result in an error.
 ```
 
+## SEV-SNP IGVM Boot
+
+OpenVMM can also boot an SEV-SNP Linux guest from an IGVM image that
+`igvmfilegen` builds from the `snp-linux-direct*.json` manifests in
+`vm/loader/manifests/`. Select the image with `--isolation snp` and
+`--igvm firmware=<FILE>,personality=linux-direct`. The image contains the
+kernel, the initrd, the boot metadata, and a small measured bootshim,
+`snp_bootshim`.
+
+The image does not contain ACPI tables. At launch, OpenVMM writes its
+[device tree](../../architecture/openvmm/device-tree.md) into an unmeasured
+IGVM parameter area. The bootshim reads the CPUs, RAM, PCIe host bridges, and
+COM ports from that tree, accepts the guest RAM, and then builds the DSDT,
+FADT, MADT, SRAT, XSDT, and RSDP. It adds an MCFG and a PCIe SSDT when the
+device tree describes host bridges.
+
+### Launch Requirements
+
+One image boots with any supported CPU count, RAM size, and NUMA layout:
+
+- Give the guest at least the RAM that the image measures, which is
+  `memory_page_count` pages in the manifest. The shim trusts and accepts any
+  RAM that the device tree describes above that.
+- Use up to 255 processors and 64 RAM ranges, with all RAM below 512 GiB.
+  The bootshim stops the guest when the configuration is larger.
+
+### PCIe
+
+The image does not fix the ECAM or BAR-window addresses. Use the usual
+`--pcie-root-complex`, `--pcie-root-port`, and PCIe virtio device options.
+Some direct-boot kernels reject an ECAM above 4 GiB unless SMBIOS reports a
+recent BIOS date. For these kernels, also use `--pcie-ecam-below-4gb`.
+
+The bootshim supports up to eight generic ECAM host bridges in distinct
+segments. It puts every bridge on NUMA node 0, with identity MMIO windows and
+native x86 MSI/MSI-X. The guest does not see an IOMMU or CXL.
+
+See `vm/loader/manifests/README.md` for the build and launch recipe.
+
 ## SMBIOS / DMI Identity
 
 On both architectures the synthesized SMBIOS tables expose a default identity,

@@ -2397,12 +2397,10 @@ mod tests {
     use crate::scsi;
     use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::scsidvd::SimpleScsiDvd;
-    use disk_backend::Disk;
-    use disk_backend::DiskError;
     use disk_backend::DiskIo;
+    use disk_backend::UnmapBehavior;
+    use disk_hook::HookDisk;
     use guestmem::GuestMemory;
-    use guestmem::MemoryWrite;
-    use inspect::Inspect;
     use pal_async::async_test;
     use scsi::AdditionalSenseCode;
     use scsi::ScsiOp;
@@ -2416,137 +2414,49 @@ mod tests {
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
-    #[derive(Debug)]
-    struct TestDisk {
-        sector_count: u64,
-        sector_size: u32,
-        storage: Vec<u8>,
-        read_only: bool,
-    }
-
-    impl Inspect for TestDisk {
-        fn inspect(&self, req: inspect::Request<'_>) {
-            req.respond();
-        }
-    }
-
-    impl TestDisk {
-        pub fn new(sector_size: u32, sector_count: u64, read_only: bool) -> TestDisk {
-            let buffer = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
-
-            TestDisk {
-                sector_count,
-                sector_size,
-                storage: buffer,
-                read_only,
-            }
-        }
-    }
-
-    impl DiskIo for TestDisk {
-        fn disk_type(&self) -> &str {
-            "test"
-        }
-
-        fn sector_count(&self) -> u64 {
-            self.sector_count
-        }
-
-        fn sector_size(&self) -> u32 {
-            self.sector_size
-        }
-
-        fn is_read_only(&self) -> bool {
-            self.read_only
-        }
-
-        fn disk_id(&self) -> Option<[u8; 16]> {
-            None
-        }
-
-        fn physical_sector_size(&self) -> u32 {
-            self.sector_size
-        }
-
-        fn is_fua_respected(&self) -> bool {
-            false
-        }
-
-        async fn eject(&self) -> Result<(), DiskError> {
-            Err(DiskError::UnsupportedEject)
-        }
-
-        async fn read_vectored(
-            &self,
-            buffers: &RequestBuffers<'_>,
-            sector: u64,
-        ) -> Result<(), DiskError> {
-            let offset = sector as usize * self.sector_size() as usize;
-            let end_point = offset + buffers.len();
-
-            if self.storage.len() < end_point {
-                return Err(DiskError::IllegalBlock);
-            }
-
-            buffers.writer().write(&self.storage[offset..end_point])?;
-            Ok(())
-        }
-
-        async fn write_vectored(
-            &self,
-            _buffers: &RequestBuffers<'_>,
-            _sector: u64,
-            _fua: bool,
-        ) -> Result<(), DiskError> {
-            todo!()
-        }
-
-        async fn sync_cache(&self) -> Result<(), DiskError> {
-            todo!()
-        }
-
-        async fn unmap(
-            &self,
-            _sector: u64,
-            _count: u64,
-            _block_level_only: bool,
-        ) -> Result<(), DiskError> {
-            Ok(())
-        }
-
-        fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-            disk_backend::UnmapBehavior::Ignored
-        }
-    }
-
-    fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
-        let disk = TestDisk::new(sector_size, sector_count, read_only);
-        let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
+    async fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
+        let size = sector_count * u64::from(sector_size);
+        let disk = HookDisk::new(size, sector_size)
+            .with_fua_respected(false)
+            .with_unmap_behavior(UnmapBehavior::Ignored);
+        let len = usize::try_from(size).unwrap();
+        let mut mem = GuestMemory::allocate(len);
+        fill_repeat_data_buffer(
+            &mut mem.inner_buf_mut().unwrap()[..len],
+            sector_size as usize,
+        );
+        disk.write_vectored(
+            &OwnedRequestBuffers::linear(0, len, false).buffer(&mem),
+            0,
+            false,
+        )
+        .await
+        .unwrap();
+        let scsi_dvd = SimpleScsiDvd::new(Some(disk.with_read_only(read_only).into_disk()));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);
         if let Media::Loaded(disk) = &*scsi_dvd.media.read() {
             assert_eq!(disk.is_read_only(), read_only);
             assert_eq!(disk.sector_size(), sector_size);
+            assert_eq!(disk.physical_sector_size(), sector_size);
+            assert_eq!(disk.disk_id(), None);
+            assert!(!disk.is_fua_respected());
+            assert_eq!(disk.unmap_behavior(), UnmapBehavior::Ignored);
         } else {
             panic!("unexpected Media::Unloaded");
         }
         scsi_dvd
     }
 
-    fn make_repeat_data_buffer(sector_count: usize, sector_size: usize) -> Vec<u8> {
-        let mut buf = vec![0u8; sector_count * sector_size];
-        let mut temp = vec![0u8; sector_size];
+    fn fill_repeat_data_buffer(buf: &mut [u8], sector_size: usize) {
         assert!(sector_size > 2);
-        temp[sector_size / 2 - 1] = 2;
-        temp[sector_size / 2] = 3;
-
-        for i in (0..buf.len()).step_by(temp.len()) {
-            let end_point = i + temp.len();
-            buf[i..end_point].copy_from_slice(&temp);
+        assert!(buf.len().is_multiple_of(sector_size));
+        buf.fill(0);
+        for sector in buf.chunks_exact_mut(sector_size) {
+            sector[sector_size / 2 - 1] = 2;
+            sector[sector_size / 2] = 3;
         }
-
-        buf
     }
 
     async fn check_execute_scsi(
@@ -2653,9 +2563,13 @@ mod tests {
         assert_eq!(saved_state.sense_data, sense_data);
     }
 
-    #[test]
-    fn validate_new_scsi_dvd() {
-        new_scsi_dvd(512, 2048, true);
+    #[async_test]
+    async fn validate_new_scsi_dvd() {
+        for sector_size in [512, ISO_SECTOR_SIZE] {
+            for read_only in [false, true] {
+                new_scsi_dvd(sector_size, 2048, read_only).await;
+            }
+        }
     }
 
     fn make_medium_removal_request(prevent: bool, persistent: bool) -> Request {
@@ -2705,7 +2619,7 @@ mod tests {
     /// ejecting works, not that clearing the nexus is what made it work.
     #[async_test]
     async fn validate_tray_lock_does_not_outlive_the_nexus() {
-        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true);
+        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true).await;
         let external_data = OwnedRequestBuffers::new(&[0]);
         let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
 
@@ -2758,7 +2672,7 @@ mod tests {
     /// test passed against a `clear_nexus_state` mutated to do nothing at all.
     #[async_test]
     async fn validate_sense_clears_but_the_tray_state_survives() {
-        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true);
+        let mut scsi_dvd = new_scsi_dvd(ISO_SECTOR_SIZE, 2048, true).await;
         let external_data = OwnedRequestBuffers::new(&[0]);
         let guest_mem = GuestMemory::allocate(ISO_SECTOR_SIZE as usize);
 
@@ -2802,51 +2716,45 @@ mod tests {
 
     #[async_test]
     async fn validate_read16() {
-        let sector_size = 512;
-        let sector_count = 2048;
-        let mut scsi_dvd = new_scsi_dvd(sector_size, sector_count, true);
+        for sector_size in [512, ISO_SECTOR_SIZE] {
+            let mut scsi_dvd = new_scsi_dvd(sector_size, 2048, true).await;
+            let lba_count = 2;
+            let len = (ISO_SECTOR_SIZE * lba_count) as usize;
+            let external_data = OwnedRequestBuffers::linear(0, len, true);
+            let guest_mem = GuestMemory::allocate(len);
+            let mut data = vec![0; len];
+            fill_repeat_data_buffer(&mut data, sector_size as usize);
 
-        let dvd_sector_size = ISO_SECTOR_SIZE as u64;
-        let dvd_sector_count = scsi_dvd.sector_count();
-        let external_data =
-            OwnedRequestBuffers::linear(0, (dvd_sector_size * dvd_sector_count) as usize, true);
-        let guest_mem = GuestMemory::allocate(4096);
-        let start_lba = 0;
-        let lba_count = 2;
-        let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
-
-        println!("read disk to guest_mem2 ...");
-        check_execute_scsi(
-            &mut scsi_dvd,
-            &external_data.buffer(&guest_mem),
-            &request,
-            true,
-        )
-        .await;
-
-        println!("validate guest_mem2 ...");
-        let data = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
-        assert_eq!(
-            check_guest_memory(
-                &guest_mem,
-                0,
-                &data[..(ISO_SECTOR_SIZE * lba_count) as usize],
-                sector_size as usize
-            ),
-            true
-        );
+            for start_lba in [0, 3, scsi_dvd.sector_count() - u64::from(lba_count)] {
+                guest_mem.fill_at(0, 0xff, len).unwrap();
+                let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
+                check_execute_scsi(
+                    &mut scsi_dvd,
+                    &external_data.buffer(&guest_mem),
+                    &request,
+                    true,
+                )
+                .await;
+                assert!(check_guest_memory(
+                    &guest_mem,
+                    0,
+                    &data,
+                    sector_size as usize
+                ));
+            }
+        }
     }
 
-    #[test]
-    fn validate_save_restore_scsi_dvd_no_change() {
-        let scsi_dvd = new_scsi_dvd(512, 2048, true);
+    #[async_test]
+    async fn validate_save_restore_scsi_dvd_no_change() {
+        let scsi_dvd = new_scsi_dvd(512, 2048, true).await;
         let saved_state = save_scsi_dvd(&scsi_dvd);
         restore_scsi_dvd(saved_state, &scsi_dvd);
     }
 
-    #[test]
-    fn validate_save_restore_scsi_dvd_with_sense_data() {
-        let scsi_dvd = new_scsi_dvd(512, 2048, true);
+    #[async_test]
+    async fn validate_save_restore_scsi_dvd_with_sense_data() {
+        let scsi_dvd = new_scsi_dvd(512, 2048, true).await;
         let mut saved_state = save_scsi_dvd(&scsi_dvd);
         saved_state.sense_data = Some(SavedSenseData {
             sense_key: SenseKey::UNIT_ATTENTION.0,

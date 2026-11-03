@@ -126,11 +126,10 @@ impl FlowNode for Node {
                     let windows_via_wsl2 = windows_target && crate::_util::running_in_wsl(rt);
 
                     let working_dir_ref = working_dir.as_path();
-                    let working_dir_win = windows_via_wsl2.then(|| {
-                        crate::_util::wslpath::linux_to_win(rt, working_dir_ref)
-                            .display()
-                            .to_string()
-                    });
+                    let working_dir_win = windows_via_wsl2
+                        .then(|| crate::_util::wslpath::linux_to_win(rt, working_dir_ref))
+                        .transpose()?
+                        .map(|path| path.display().to_string());
 
                     let tool_config_files: Vec<(String, PathBuf)> = tool_config_files
                         .into_iter()
@@ -219,7 +218,7 @@ impl FlowNode for Node {
                     // otherwise just make it absolute.
                     let wsl_convert_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
                         if windows_via_wsl2 {
-                            Ok(crate::_util::wslpath::linux_to_win(rt, path))
+                            crate::_util::wslpath::linux_to_win(rt, path)
                         } else {
                             path.absolute()
                                 .with_context(|| format!("invalid path {}", path.display()))
@@ -387,8 +386,8 @@ impl FlowNode for Node {
     }
 }
 
-// shared with `cargo_nextest_archive`
-pub(crate) fn cargo_nextest_build_args_and_env(
+/// Resolve the shared build arguments and environment for nextest invocations.
+pub fn cargo_nextest_build_args_and_env(
     cargo_flags: crate::cfg_cargo_common_flags::Flags,
     cargo_profile: CargoBuildProfile,
     target: target_lexicon::Triple,

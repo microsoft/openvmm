@@ -137,6 +137,11 @@ impl ErasedVecDeque {
         }
     }
 
+    /// Takes the queue's contents and allocation, leaving an empty queue.
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::new(self.vtable))
+    }
+
     /// Returns whether the queue is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0

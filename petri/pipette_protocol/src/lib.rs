@@ -32,6 +32,8 @@ pub struct PipetteBootstrap {
     pub watch: mesh::OneshotReceiver<()>,
     /// The log channel.
     pub log: ReadPipe,
+    /// The local CID of the agent's AF_VSOCK connection, when applicable.
+    pub local_vsock_cid: Option<u32>,
 }
 
 /// A request to the agent.
@@ -58,6 +60,8 @@ pub enum PipetteRequest {
     KernelCrash(FailableRpc<(), ()>),
     /// Mounts a filesystem (Linux only).
     Mount(FailableRpc<MountRequest, ()>),
+    /// List a directory
+    ListDir(FailableRpc<ListDirRequest, ListDirResponse>),
 }
 
 /// A request to execute a command inside the guest.
@@ -184,6 +188,20 @@ pub struct WriteFileRequest {
     pub path: String,
     /// The receiver of the contents of the file.
     pub receiver: ReadPipe,
+}
+
+/// A request to list a directory.
+#[derive(MeshPayload)]
+pub struct ListDirRequest {
+    /// directory to list.
+    pub path: String,
+}
+
+/// A response containing a list of files in a directory.
+#[derive(MeshPayload)]
+pub struct ListDirResponse {
+    /// files in the directory.
+    pub files: Vec<String>,
 }
 
 /// A request to mount a filesystem.

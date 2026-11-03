@@ -75,10 +75,17 @@ impl RsaKeyPair {
         sys::RsaKeyPairInner::from_pkcs8_der(der).map(Self)
     }
 
-    #[cfg(any(test, feature = "test_helpers"))]
+    #[cfg(any(test, feature = "export_private"))]
     /// Convert the RSA private key to PKCS#8 DER-encoded bytes.
     pub fn to_pkcs8_der(&self) -> Result<Vec<u8>, RsaError> {
         self.0.to_pkcs8_der()
+    }
+
+    #[cfg(any(test, feature = "export_private"))]
+    /// Returns the components of an RSA private key as big-endian
+    /// byte vectors, without leading zero padding.
+    pub fn to_private_components(&self) -> Result<RsaPrivateKeyComponents, RsaError> {
+        self.0.to_private_components()
     }
 
     /// Decrypt `input` using RSA-OAEP with the specified hash algorithm.
@@ -117,12 +124,34 @@ impl RsaKeyPair {
 pub struct RsaPublicKey(pub(crate) sys::RsaPublicKeyInner);
 
 /// The public components of an RSA key.
+///
+/// All components are unsigned big-endian integers. Exported components have
+/// no leading zero padding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsaPublicKeyComponents {
-    /// The RSA modulus as a big-endian byte vector.
+    /// The RSA modulus, `n`.
     pub modulus: Vec<u8>,
-    /// The RSA public exponent as a big-endian byte vector.
+    /// The RSA public exponent, `e`.
     pub public_exponent: Vec<u8>,
+}
+
+/// The full components of a two-prime RSA private key.
+///
+/// All components are unsigned big-endian integers. Exported components have
+/// no leading zero padding.
+#[cfg(any(test, feature = "export_private"))]
+#[derive(Clone, PartialEq, Eq)]
+pub struct RsaPrivateKeyComponents {
+    /// The RSA modulus, `n`.
+    pub modulus: Vec<u8>,
+    /// The RSA public exponent, `e`.
+    pub public_exponent: Vec<u8>,
+    /// The RSA private exponent, `d`.
+    pub private_exponent: Vec<u8>,
+    /// The first prime factor, `p`.
+    pub prime1: Vec<u8>,
+    /// The second prime factor, `q`.
+    pub prime2: Vec<u8>,
 }
 
 impl RsaPublicKey {
@@ -173,8 +202,9 @@ impl RsaPublicKey {
         self.0.modulus_size()
     }
 
-    /// Returns the RSA public components as big-endian byte vectors.
-    pub fn to_components(&self) -> RsaPublicKeyComponents {
+    /// Returns the RSA public components as big-endian byte vectors,
+    /// without leading zero padding.
+    pub fn to_components(&self) -> Result<RsaPublicKeyComponents, RsaError> {
         self.0.to_components()
     }
 }
@@ -191,6 +221,7 @@ impl std::ops::Deref for RsaKeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use der::Decode;
 
     /// Sign and verify a message of arbitrary (i.e. not pre-hashed) length.
     /// Both backends must hash the message internally before applying the
@@ -246,7 +277,10 @@ mod tests {
         let key = RsaKeyPair::generate(2048).unwrap();
         let der = key.to_pkcs8_der().unwrap();
         let imported = RsaKeyPair::from_pkcs8_der(&der).unwrap();
-        assert_eq!(key.to_components(), imported.to_components());
+        assert_eq!(
+            key.to_components().unwrap(),
+            imported.to_components().unwrap()
+        );
 
         // Sign with the original and verify with the imported, to confirm
         // the private-key components survived the round-trip.
@@ -337,5 +371,33 @@ mod tests {
             .unwrap();
         assert!(!pkcs1_as_pss);
         assert!(!pss_as_pkcs1);
+    }
+
+    #[test]
+    fn private_components_match_pkcs8() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let der = key.to_pkcs8_der().unwrap();
+        assert_private_components_match_der(&key, &der);
+    }
+
+    fn assert_private_components_match_der(key: &RsaKeyPair, der: &[u8]) {
+        let components = key.to_private_components().unwrap();
+        let public = key.to_components().unwrap();
+        assert_eq!(components.modulus, public.modulus);
+        assert_eq!(components.public_exponent, public.public_exponent);
+
+        let pki = pkcs8::PrivateKeyInfoRef::from_der(der).unwrap();
+        let decoded = pkcs1::RsaPrivateKey::from_der(pki.private_key.as_bytes()).unwrap();
+        for (actual, expected) in [
+            (&components.modulus, decoded.modulus),
+            (&components.public_exponent, decoded.public_exponent),
+            (&components.private_exponent, decoded.private_exponent),
+            (&components.prime1, decoded.prime1),
+            (&components.prime2, decoded.prime2),
+        ] {
+            assert!(!actual.is_empty());
+            assert_ne!(actual[0], 0);
+            assert_eq!(actual.as_slice(), expected.as_bytes());
+        }
     }
 }

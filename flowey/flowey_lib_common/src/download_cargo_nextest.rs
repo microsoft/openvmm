@@ -112,7 +112,11 @@ impl FlowNodeWithConfig for Node {
 
                     let cached_bin_path = cached_bin_path.absolute()?;
                     log::info!("downloaded to {}", cached_bin_path.to_string_lossy());
-                    assert!(cached_bin_path.exists());
+                    anyhow::ensure!(
+                        cached_bin_path.is_file(),
+                        "cargo-nextest cache entry is missing {}",
+                        cached_bin_path.display()
+                    );
                     for path in paths {
                         rt.write(path, &cached_bin_path);
                     }

@@ -13,9 +13,9 @@ const FILE_ALIGNMENT: usize = 8;
 const SECTION_ALIGNMENT: usize = 4;
 const ERASED_BYTE: u8 = 0xff;
 #[cfg(guest_arch = "x86_64")]
-const DXE_FIRMWARE_VOLUME_OFFSET: usize = 0;
+const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0;
 #[cfg(guest_arch = "aarch64")]
-const DXE_FIRMWARE_VOLUME_OFFSET: usize = 0x20_0000;
+const FIRST_FIRMWARE_VOLUME_OFFSET: usize = 0x1000;
 
 /// A parsed view of an MSVM firmware version record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,14 +187,42 @@ fn find_in_firmware_volume(fv: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>,
 /// `Ok(None)` means the dedicated version FFS file is not present.
 pub fn find_in_firmware_image(image: &[u8]) -> Result<Option<MsvmFirmwareVersion<'_>>, Error> {
     let fv = image
-        .get(DXE_FIRMWARE_VOLUME_OFFSET..)
+        .get(FIRST_FIRMWARE_VOLUME_OFFSET..)
         .ok_or(Error::VolumeHeader)?;
-    find_in_firmware_volume(fv)
+    #[cfg(guest_arch = "x86_64")]
+    return find_in_firmware_volume(fv);
+    #[cfg(guest_arch = "aarch64")]
+    {
+        // Locate the record before interpreting its interface version. Older
+        // images have separate PEI/DXE volumes; newer ones combine them.
+        let mut volumes = fv;
+        loop {
+            let header = firmware_volume::FirmwareVolumeHeader::read_from_prefix(volumes)
+                .map_err(|_| Error::VolumeHeader)?
+                .0;
+            let length = usize::try_from(header.fv_length)
+                .ok()
+                .filter(|&length| {
+                    length >= size_of::<firmware_volume::FirmwareVolumeHeader>()
+                        && length <= volumes.len()
+                })
+                .ok_or(Error::VolumeHeader)?;
+            let (fv, remaining) = volumes.split_at(length);
+            if let Some(version) = find_in_firmware_volume(fv)? {
+                return Ok(Some(version));
+            }
+            if remaining.is_empty() {
+                return Ok(None);
+            }
+            volumes = remaining;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     fn size24(value: usize) -> [u8; 3] {
@@ -246,19 +274,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn finds_record_by_ffs_file_guid() {
-        let record = record(1, 0);
-        let section_size = size_of::<firmware_volume::CommonSectionHeader>() + record.len();
-        let file_size = size_of::<firmware_volume::FfsFileHeader>() + section_size;
-        let file_offset = size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8);
-        let mut fv = [0xff; 0x1000];
-        let fv_length = fv.len() as u64;
-        fv[32..40].copy_from_slice(&fv_length.to_le_bytes());
+    fn volume(length: usize, interface: Option<(u16, u16)>) -> Vec<u8> {
+        let mut fv = vec![0xff; length];
+        fv[32..40].copy_from_slice(&(length as u64).to_le_bytes());
         fv[40..44].copy_from_slice(b"_FVH");
         fv[48..50].copy_from_slice(
             &(size_of::<firmware_volume::FirmwareVolumeHeader>() as u16).to_le_bytes(),
         );
+        let Some((major, minor)) = interface else {
+            return fv;
+        };
+        let record = record(major, minor);
+        let section_size = size_of::<firmware_volume::CommonSectionHeader>() + record.len();
+        let file_size = size_of::<firmware_volume::FfsFileHeader>() + section_size;
+        let file_offset = size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8);
         fv[file_offset..file_offset + 16].copy_from_slice(firmware_version::FILE_GUID.as_bytes());
         fv[file_offset + 20..file_offset + 23].copy_from_slice(&size24(file_size));
         let section_offset = file_offset + size_of::<firmware_volume::FfsFileHeader>();
@@ -267,15 +296,97 @@ mod tests {
         fv[section_offset + size_of::<firmware_volume::CommonSectionHeader>()
             ..file_offset + file_size]
             .copy_from_slice(&record);
+        fv
+    }
 
+    #[test]
+    fn finds_record_by_ffs_file_guid() {
+        let fv = volume(0x1000, Some((1, 0)));
         let version = find_in_firmware_volume(&fv).unwrap().unwrap();
         assert_eq!(version.interface_version_major, 1);
         assert_eq!(version.interface_version_minor, 0);
 
-        let mut image = vec![0; DXE_FIRMWARE_VOLUME_OFFSET];
+        let mut image = vec![0; FIRST_FIRMWARE_VOLUME_OFFSET];
         image.extend_from_slice(&fv);
         let version = find_in_firmware_image(&image).unwrap().unwrap();
         assert_eq!(version.interface_version_major, 1);
         assert_eq!(version.interface_version_minor, 0);
+    }
+
+    fn image(split: bool, interface: Option<(u16, u16)>) -> Vec<u8> {
+        #[cfg(guest_arch = "x86_64")]
+        let mut image = Vec::new();
+        #[cfg(guest_arch = "aarch64")]
+        let mut image = vec![0; 0x1000];
+        if split {
+            image.extend(volume(0x1ff000, None));
+        }
+        image.extend(volume(0x600000, interface));
+        image
+    }
+
+    #[test]
+    fn parses_combined_layout_with_both_interface_versions() {
+        for major in [1, 2] {
+            let image = image(false, Some((major, 0)));
+            let version = find_in_firmware_image(&image).unwrap().unwrap();
+            assert_eq!(version.interface_version_major, major);
+            assert_eq!(version.interface_version_minor, 0);
+        }
+        assert_eq!(find_in_firmware_image(&image(false, None)).unwrap(), None);
+    }
+
+    #[test]
+    #[cfg(guest_arch = "aarch64")]
+    fn parses_old_split_layout() {
+        let image = image(true, Some((1, 0)));
+        let version = find_in_firmware_image(&image).unwrap().unwrap();
+        assert_eq!(version.interface_version_major, 1);
+        assert_eq!(version.interface_version_minor, 0);
+        assert_eq!(
+            find_in_firmware_image(&self::image(true, None)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_volumes_and_records() {
+        #[cfg(guest_arch = "x86_64")]
+        let layouts = [(false, 0)];
+        #[cfg(guest_arch = "aarch64")]
+        let layouts = [(false, 0x1000), (true, 0x200000)];
+        for (split, offset) in layouts {
+            let original = image(split, Some((2, 0)));
+            let mut malformed = original.clone();
+            malformed[offset + 32..offset + 40].copy_from_slice(&u64::MAX.to_le_bytes());
+            assert_eq!(find_in_firmware_image(&malformed), Err(Error::VolumeHeader));
+            let mut malformed = original.clone();
+            malformed[offset + 40..offset + 44].fill(0);
+            assert_eq!(find_in_firmware_image(&malformed), Err(Error::VolumeHeader));
+            let mut truncated = original.clone();
+            truncated.pop();
+            assert_eq!(find_in_firmware_image(&truncated), Err(Error::VolumeHeader));
+            let mut malformed = original;
+            let record_offset = offset
+                + size_of::<firmware_volume::FirmwareVolumeHeader>().next_multiple_of(8)
+                + size_of::<firmware_volume::FfsFileHeader>()
+                + size_of::<firmware_volume::CommonSectionHeader>();
+            malformed[record_offset] = 0;
+            assert_eq!(
+                find_in_firmware_image(&malformed),
+                Err(Error::InvalidSignature)
+            );
+        }
+        assert_eq!(find_in_firmware_image(&[]), Err(Error::VolumeHeader));
+    }
+
+    #[test]
+    #[cfg(guest_arch = "aarch64")]
+    fn rejects_non_progressing_volume_lengths() {
+        for length in [0_u64, 1] {
+            let mut malformed = image(true, Some((1, 0)));
+            malformed[0x1000 + 32..0x1000 + 40].copy_from_slice(&length.to_le_bytes());
+            assert_eq!(find_in_firmware_image(&malformed), Err(Error::VolumeHeader));
+        }
     }
 }
