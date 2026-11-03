@@ -1269,17 +1269,28 @@ impl<T: Client> Sender<'_, T> {
 
         let checksum_state = ChecksumState {
             tso: tso_mss,
+            partial: tso_mss.is_some() || self.client.rx_checksum_supported(),
             ..match self.ft.dst {
                 SocketAddr::V4(_) => ChecksumState::TCP4,
                 SocketAddr::V6(_) => ChecksumState::TCP6,
             }
         };
         let n = ETHERNET_HEADER_LEN + ip_total_len;
+        let pseudo_header = checksum::pseudo_header(
+            &src_ip_addr,
+            &dst_ip_addr,
+            IpProtocol::Tcp,
+            (tcp.header_len() + payload_len) as u32,
+        );
 
         let payload = match payload {
             Some(p) if p.len() != 0 => p,
             _ => {
-                tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+                if checksum_state.partial {
+                    tcp_packet.set_checksum(pseudo_header);
+                } else {
+                    tcp_packet.fill_checksum(&dst_ip_addr, &src_ip_addr);
+                }
                 let buffer = &self.state.buffer;
                 self.client.recv(&buffer[..n], &checksum_state);
                 return;
@@ -1297,15 +1308,8 @@ impl<T: Client> Sender<'_, T> {
         // The TCP header length is a multiple of 4, so the header and `a` are
         // 16-bit aligned; `b` shifts by a byte only when `a` has odd length, in
         // which case its partial checksum is byte-swapped.
-        let pseudo_header = checksum::pseudo_header(
-            &src_ip_addr,
-            &dst_ip_addr,
-            IpProtocol::Tcp,
-            (tcp_header_len + payload_len) as u32,
-        );
-        let checksum = if tso_mss.is_some() {
-            // GSO uses an uncomplemented pseudo-header seed; the guest completes
-            // the checksum after segmentation, without a payload checksum pass here.
+        let checksum = if checksum_state.partial {
+            // The guest completes the checksum, after segmentation for GSO.
             pseudo_header
         } else {
             !checksum::combine(&[

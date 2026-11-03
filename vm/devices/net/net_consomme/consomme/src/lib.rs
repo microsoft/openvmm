@@ -525,8 +525,8 @@ pub trait Client {
     ///
     /// If `checksum.ipv4`, `checksum.tcp`, or `checksum.udp` are set, then the
     /// packet contains an IPv4 header, TCP header, and/or UDP header with a
-    /// valid checksum, except that a TCP GSO packet (`checksum.tso` is set)
-    /// contains a pseudo-header partial TCP checksum for the client to complete.
+    /// valid checksum, except that `checksum.partial` indicates an uncomplemented
+    /// pseudo-header TCP or UDP checksum for the client to complete.
     fn recv(&mut self, data: &[u8], checksum: &ChecksumState);
 
     /// Transmits a packet whose bytes are provided as multiple discontiguous
@@ -563,6 +563,12 @@ pub trait Client {
     /// data.
     fn rx_mtu(&mut self) -> usize;
 
+    /// Whether the client can complete partial TCP and UDP receive checksums
+    /// independently of GSO. Disabled by default.
+    fn rx_checksum_supported(&self) -> bool {
+        false
+    }
+
     /// Whether the client can receive TCP GSO packets with partial checksums
     /// for the specified IP version. Disabled by default.
     fn rx_gso_supported(&self, _ipv6: bool) -> bool {
@@ -577,11 +583,15 @@ pub struct ChecksumState {
     /// checksum should be ignored.
     pub ipv4: bool,
     /// On receive, the data has a valid TCP checksum, or a pseudo-header
-    /// partial checksum when `tso` is set. On send, the checksum should be ignored.
+    /// partial checksum when `partial` is set. On send, the checksum should be ignored.
     pub tcp: bool,
-    /// On receive, the data has a valid UDP checksum. On send, the checksum
-    /// should be ignored.
+    /// On receive, the data has a valid UDP checksum, or a pseudo-header
+    /// partial checksum when `partial` is set. On send, the checksum should be ignored.
     pub udp: bool,
+    /// On receive, the TCP or UDP checksum contains only the uncomplemented
+    /// pseudo-header sum, including the transport length. The client must
+    /// complete the checksum. Not used on send.
+    pub partial: bool,
     /// The data consists of multiple TCP segments, each with the provided
     /// segment size.
     ///
@@ -597,6 +607,7 @@ impl ChecksumState {
         ipv4: false,
         tcp: false,
         udp: false,
+        partial: false,
         tso: None,
         gso: None,
     };
@@ -604,6 +615,7 @@ impl ChecksumState {
         ipv4: true,
         tcp: false,
         udp: false,
+        partial: false,
         tso: None,
         gso: None,
     };
@@ -611,6 +623,7 @@ impl ChecksumState {
         ipv4: true,
         tcp: true,
         udp: false,
+        partial: false,
         tso: None,
         gso: None,
     };
@@ -618,6 +631,7 @@ impl ChecksumState {
         ipv4: true,
         tcp: false,
         udp: true,
+        partial: false,
         tso: None,
         gso: None,
     };
@@ -625,6 +639,7 @@ impl ChecksumState {
         ipv4: false,
         tcp: true,
         udp: false,
+        partial: false,
         tso: None,
         gso: None,
     };

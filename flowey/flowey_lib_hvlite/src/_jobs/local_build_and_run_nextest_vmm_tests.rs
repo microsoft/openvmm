@@ -150,7 +150,7 @@ impl SimpleFlowNode for Node {
         let test_label = build_test_label(&target_triple);
 
         // this is kind of a hack, since the artifacts will still appear in an
-        // ouput directly labeled MSVC, but it allows for windows-gnu local
+        // output directly labeled MSVC, but it allows for windows-gnu local
         // builds to continue to work without defining new windows-gnu artifact
         // variants for everything.
         let windows_guest_environment = match windows_guest_platform {

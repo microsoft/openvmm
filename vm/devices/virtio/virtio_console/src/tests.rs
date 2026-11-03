@@ -10,6 +10,7 @@
 use crate::VirtioConsoleDevice;
 use futures::AsyncRead;
 use futures::AsyncWrite;
+use futures::FutureExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
@@ -24,6 +25,7 @@ use std::io;
 use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -85,6 +87,7 @@ struct MockShared {
     write_limit_then_disconnect: Option<usize>,
     /// If set, each poll_write accepts at most this many bytes (persistent).
     max_write_size: Option<usize>,
+    write_gate: Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>,
 }
 
 /// A mock `SerialIo` implementation backed by shared state.
@@ -163,6 +166,10 @@ impl AsyncWrite for MockSerialIo {
         let mut shared = self.shared.lock();
         if !shared.connected {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
+        if let Some((entered, release)) = shared.write_gate.take() {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         if let Some(limit) = shared.write_limit_then_disconnect.take() {
             let n = buf.len().min(limit);
@@ -259,6 +266,7 @@ fn new_mock_serial() -> (MockSerialIo, MockSerialHandle) {
         disconnect_waker: None,
         write_limit_then_disconnect: None,
         max_write_size: None,
+        write_gate: None,
     }));
     (
         MockSerialIo {
@@ -508,6 +516,45 @@ impl TestHarness {
 }
 
 // --- Tests ---
+
+#[async_test]
+async fn stop_between_tx_chunks_preserves_partial_write_on_resume(driver: DefaultDriver) {
+    async fn stop(h: &mut TestHarness, driver: &DefaultDriver) {
+        let mut timer = PolledTimer::new(driver);
+        match futures::future::select(
+            pin!(h.device.worker.stop()),
+            pin!(timer.sleep(Duration::from_secs(5))),
+        )
+        .await
+        {
+            futures::future::Either::Left((stopped, _)) => assert!(stopped),
+            futures::future::Either::Right(_) => panic!("console worker did not stop"),
+        }
+    }
+
+    let (_thread, worker_driver) = pal_async::DefaultPool::spawn_on_thread("console-tx-stop");
+    let mut h = TestHarness::new(&worker_driver);
+    h.enable().await;
+    let (entered, recv_entered) = mpsc::channel();
+    let (release, recv_release) = mpsc::channel();
+    h.handle.shared.lock().write_gate = Some((entered, recv_release));
+    h.handle.set_max_write_size(512);
+    let data: Vec<u8> = (0..12288).map(|i| (i % 251) as u8).collect();
+    h.post_tx_and_signal(0, &data);
+    recv_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(h.device.worker.stop().now_or_never().is_none());
+    release.send(()).unwrap();
+    stop(&mut h, &driver).await;
+    assert_eq!(h.device.worker.state().unwrap().partial_transmit, 4096);
+    assert_eq!(h.handle.take_tx_data(), data[..4096]);
+    assert!(h.device.worker.start());
+    let (id, len) = h.wait_for_tx_used().await;
+    assert_eq!(id, 0);
+    assert_eq!(len, 0);
+    stop(&mut h, &driver).await;
+    assert_eq!(h.handle.take_tx_data(), data[4096..]);
+    assert_eq!(h.device.worker.state().unwrap().partial_transmit, 0);
+}
 
 /// Guest writes data via the transmitq; verify the mock backend receives it.
 #[async_test]

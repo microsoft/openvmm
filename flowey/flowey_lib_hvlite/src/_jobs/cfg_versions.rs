@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 pub const AZCOPY: &str = "10.27.1";
 pub const AZURE_CLI: &str = "2.56.0";
 pub const CARGO_HACK: &str = "0.6.45";
+pub const CARGO_LLVM_COV: &str = "0.8.5";
 pub const DOTNET: &str = "8.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
@@ -77,6 +78,7 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_cargo_hack::Node>();
+        ctx.import::<flowey_lib_common::install_cargo_llvm_cov::Node>();
         ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
     }
@@ -243,6 +245,9 @@ impl FlowNode for Node {
         });
         ctx.config(flowey_lib_common::install_cargo_hack::Config {
             version: Some(CARGO_HACK.into()),
+        });
+        ctx.config(flowey_lib_common::install_cargo_llvm_cov::Config {
+            version: Some(CARGO_LLVM_COV.into()),
         });
         ctx.config(flowey_lib_common::download_cargo_nextest::Config {
             version: Some(NEXTEST.into()),

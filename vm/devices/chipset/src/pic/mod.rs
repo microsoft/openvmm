@@ -598,6 +598,8 @@ mod save_restore {
             pub elcr: u8,
             #[mesh(7)]
             pub line_low_latch: u8,
+            #[mesh(8)]
+            pub lines: Option<u8>,
         }
 
         #[derive(Protobuf)]
@@ -632,6 +634,7 @@ mod save_restore {
                 isr,
                 elcr,
                 line_low_latch,
+                lines,
             } = self;
             pic.init = match init {
                 state::SavedInitStage::Uninitialized => InitStage::Uninitialized,
@@ -649,6 +652,9 @@ mod save_restore {
             pic.isr = isr;
             pic.elcr = elcr;
             pic.line_low_latch = line_low_latch;
+            if let Some(lines) = lines {
+                pic.lines = lines;
+            }
             Ok(())
         }
 
@@ -661,7 +667,7 @@ mod save_restore {
                 ocw3,
                 isr,
                 elcr,
-                lines: _,
+                lines,
                 line_low_latch,
             } = pic;
             Self {
@@ -678,6 +684,7 @@ mod save_restore {
                 isr,
                 elcr,
                 line_low_latch,
+                lines: Some(lines),
             }
         }
     }
@@ -701,14 +708,114 @@ mod save_restore {
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { primary, secondary } = state;
+            let has_inputs = primary.lines.is_some() && secondary.lines.is_some();
             primary
                 .restore(&mut self.pics[0])
                 .map_err(|err| RestoreError::Other(err.into()))?;
             secondary
                 .restore(&mut self.pics[1])
                 .map_err(|err| RestoreError::Other(err.into()))?;
-            self.sync_outputs();
+            if has_inputs {
+                // Restore the cascade's input history without recognizing a
+                // transition. Subsequent input changes use normal recognition.
+                self.ready.set_level(self.pics[0].interrupt_pending());
+            } else {
+                self.sync_outputs();
+            }
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::tests::create_pic;
+        use super::super::*;
+        use super::*;
+        use pal_async::async_test;
+        use test_with_tracing::test;
+        use vmcore::save_restore::SavedStateBlob;
+
+        fn consume_cascade(pic: &mut DualPic) {
+            pic.set_irq(11, true);
+            pic.io_write(PRIMARY_PIC_COMMAND_PORT, &[0x0c]).unwrap();
+            let mut data = [0];
+            pic.io_read(PRIMARY_PIC_COMMAND_PORT, &mut data).unwrap();
+            assert_eq!(data[0], 0x82);
+            assert!(pic.pics[1].interrupt_pending());
+            assert_eq!(pic.pics[0].line_low_latch & 4, 0);
+        }
+
+        #[async_test]
+        async fn restore_preserves_consumed_cascade_on_fresh_and_reset_destinations() {
+            let (_, mut source) = create_pic();
+            consume_cascade(&mut source);
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let (ready, mut destination) = create_pic();
+                if reset {
+                    destination.set_irq(9, true);
+                    destination.reset().await;
+                }
+                destination.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(destination.pics[0].lines & 4, 4);
+                assert_eq!(destination.pics[0].irr() & 4, 0);
+                assert_eq!(destination.pics[0].line_low_latch & 4, 0);
+                assert!(!ready());
+
+                // Saving again before updating inputs must preserve the history.
+                let saved_again = SavedStateBlob::new(destination.save().unwrap());
+                destination.reset().await;
+                destination.restore(saved_again.parse().unwrap()).unwrap();
+                for n in (0..16).filter(|&n| n != 2) {
+                    destination.set_irq(n, n == 11);
+                    assert_eq!(destination.pics[0].irr() & 4, 0);
+                    assert_eq!(destination.pics[0].line_low_latch & 4, 0);
+                }
+
+                // EOI the primary before acknowledging the secondary: ISR2
+                // must not be hiding a manufactured request.
+                destination
+                    .io_write(PRIMARY_PIC_COMMAND_PORT, &[0x62])
+                    .unwrap();
+                assert!(!ready());
+                destination.set_irq(11, false);
+                assert_ne!(destination.pics[0].line_low_latch & 4, 0);
+                destination.set_irq(11, true);
+                assert!(ready());
+            }
+        }
+
+        #[test]
+        fn restored_inputs_preserve_pending_outputs_and_recognize_changes() {
+            for irq in [1, 11] {
+                for history in [false, true] {
+                    for current in [false, true] {
+                        let (_, mut source) = create_pic();
+                        source.set_irq(irq, history);
+                        let saved = SavedStateBlob::new(source.save().unwrap());
+                        let (ready, mut destination) = create_pic();
+                        destination.restore(saved.parse().unwrap()).unwrap();
+                        assert_eq!(ready(), history, "restore must establish the output");
+                        destination.set_irq(irq, current);
+                        assert_eq!(ready(), current);
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn legacy_restore_retains_provisional_cascade_behavior() {
+            let (_, mut source) = create_pic();
+            consume_cascade(&mut source);
+            let mut saved = source.save().unwrap();
+            saved.primary.lines = None;
+            saved.secondary.lines = None;
+            let saved = SavedStateBlob::new(saved);
+            let (_, mut destination) = create_pic();
+            destination.restore(saved.parse().unwrap()).unwrap();
+            assert_ne!(destination.pics[0].line_low_latch & 4, 0);
+            destination.set_irq(11, true);
+            assert_ne!(destination.pics[0].irr() & 4, 0);
         }
     }
 }
@@ -723,7 +830,7 @@ mod tests {
 
     const IV_BASE: u8 = 0x30;
 
-    fn create_pic() -> (impl Fn() -> bool, DualPic) {
+    pub(super) fn create_pic() -> (impl Fn() -> bool, DualPic) {
         let ready = TestLineInterruptTarget::new_arc();
         let mut pic = DualPic::new(
             LineInterrupt::new_with_target("ready", ready.clone(), 0),
