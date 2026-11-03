@@ -628,6 +628,127 @@ mod tests {
     use vmbus_channel::bus::OfferResources;
     use vmbus_channel::bus::ParentBus;
 
+    use guestmem::GuestMemory;
+    use mesh::rpc::RpcSend;
+    use pal_event::Event;
+    use vmbus_channel::ChannelClosed;
+    use vmbus_channel::RawAsyncChannel;
+    use vmbus_channel::SignalVmbusChannel;
+    use vmbus_channel::bus::ChannelRequest;
+    use vmbus_channel::bus::GpadlRequest;
+    use vmbus_channel::bus::OpenData;
+    use vmbus_channel::bus::OpenRequest;
+    use vmbus_channel::gpadl::GpadlMap;
+    use vmbus_channel::gpadl_ring::AlignedGpadlView;
+    use vmbus_channel::gpadl_ring::GpadlRingMem;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_ring::IncomingRing;
+    use vmbus_ring::OutgoingRing;
+    use vmbus_ring::gparange::MultiPagedRangeBuf;
+    use vmcore::interrupt::Interrupt;
+    use vmcore::notify::Notify;
+    use vmcore::notify::PolledNotify;
+
+    struct TestBus {
+        memory: GuestMemory,
+        offers: mesh::Sender<OfferInput>,
+    }
+
+    #[async_trait]
+    impl ParentBus for TestBus {
+        async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
+            self.offers.send(request);
+            Ok(OfferResources::new(self.memory.clone(), None))
+        }
+
+        fn clone_bus(&self) -> Box<dyn ParentBus> {
+            Box::new(Self {
+                memory: self.memory.clone(),
+                offers: self.offers.clone(),
+            })
+        }
+    }
+
+    struct TestSignal {
+        event: PolledNotify,
+        interrupt: Interrupt,
+    }
+
+    impl SignalVmbusChannel for TestSignal {
+        fn signal_remote(&self) {
+            self.interrupt.deliver();
+        }
+
+        fn poll_for_signal(
+            &self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), ChannelClosed>> {
+            self.event.poll_wait(cx).map(Ok)
+        }
+    }
+
+    async fn open_guest_pipe(
+        driver: &DefaultDriver,
+        memory: &GuestMemory,
+        offer: &OfferInput,
+    ) -> BytePipe<GpadlRingMem> {
+        let buf = vec![4 * 4096, 0, 1, 2, 3];
+        assert!(
+            offer
+                .request_send
+                .call(
+                    ChannelRequest::Gpadl,
+                    GpadlRequest {
+                        id: GpadlId(1),
+                        count: 1,
+                        buf: buf.clone()
+                    }
+                )
+                .await
+                .unwrap()
+        );
+        let event = Event::new();
+        let open = offer.request_send.call(
+            ChannelRequest::Open,
+            OpenRequest {
+                open_data: OpenData {
+                    target_vp: None,
+                    ring_offset: 2,
+                    ring_gpadl_id: GpadlId(1),
+                    event_flag: 0,
+                    connection_id: 0,
+                    user_data: Default::default(),
+                },
+                interrupt: Interrupt::from_event(event.clone()),
+                use_confidential_ring: false,
+                use_confidential_external_memory: false,
+                is_external_memory_pinned: false,
+            },
+        );
+        assert!(open.await.unwrap());
+
+        let gpadls = GpadlMap::new();
+        gpadls.add(
+            GpadlId(1),
+            MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap(),
+        );
+        // The guest's outgoing ring is the host's incoming ring.
+        let (out_mem, in_mem) = AlignedGpadlView::new(gpadls.view().map(GpadlId(1)).unwrap())
+            .unwrap()
+            .split(2)
+            .ok()
+            .unwrap();
+        BytePipe::new(RawAsyncChannel {
+            in_ring: IncomingRing::new(GpadlRingMem::new(in_mem, memory).unwrap()).unwrap(),
+            out_ring: OutgoingRing::new(GpadlRingMem::new(out_mem, memory).unwrap()).unwrap(),
+            signal: Box::new(TestSignal {
+                event: Notify::from_event(event).pollable(driver).unwrap(),
+                interrupt: offer.event.clone(),
+            }),
+        })
+        .unwrap()
+    }
+
     /// A bus that reports each offer and then rejects it.
     struct OfferRecorder(mesh::Sender<OfferParams>);
 
@@ -750,8 +871,13 @@ mod tests {
         .unwrap();
 
         let service_id = Guid::new_random();
+        let other_service_id = Guid::new_random();
+        let other_path = dir.path().join("other");
         relay
             .add_service_listener(service_id, UnixListener::bind(&path).unwrap())
+            .unwrap();
+        relay
+            .add_service_listener(other_service_id, UnixListener::bind(&other_path).unwrap())
             .unwrap();
         relay
             .add_service_listener(
@@ -767,6 +893,15 @@ mod tests {
 
         relay.remove_service_listener(service_id).await.unwrap();
         assert!(UnixStream::connect(&path).is_err());
+        let _other_client = UnixStream::connect(&other_path).unwrap();
+        assert_eq!(
+            offer_recv.next().await.unwrap().interface_id,
+            other_service_id
+        );
+        relay
+            .remove_service_listener(other_service_id)
+            .await
+            .unwrap();
         relay.remove_service_listener(service_id).await.unwrap_err();
         relay
             .add_service_listener(
@@ -774,5 +909,110 @@ mod tests {
                 UnixListener::bind(dir.path().join("readded")).unwrap(),
             )
             .unwrap();
+    }
+
+    #[async_test]
+    async fn test_service_listener_preserves_stream_and_established_connections(
+        driver: DefaultDriver,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("service");
+        let memory = GuestMemory::allocate(4 * 4096);
+        let (offers, mut offer_recv) = mesh::channel();
+        let channel = HvsockRelayChannel::new();
+        let _server_half = channel.server_half;
+        let mut relay = HvsockRelay::new(
+            driver.clone(),
+            Arc::new(TestBus {
+                memory: memory.clone(),
+                offers,
+            }),
+            channel.relay_half,
+            None,
+            None,
+        )
+        .unwrap();
+        let service_id = Guid::new_random();
+        relay
+            .add_service_listener(service_id, UnixListener::bind(&path).unwrap())
+            .unwrap();
+        let mut client = PolledSocket::connect_unix(&driver, &path).await.unwrap();
+        let payload = b"application data\n";
+        client.write_all(payload).await.unwrap();
+        let offer = offer_recv.next().await.unwrap();
+        assert_eq!(offer.params.interface_id, service_id);
+        let mut guest = open_guest_pipe(&driver, &memory, &offer).await;
+        let mut received = [0; 17];
+        guest.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, payload);
+        guest.write_all(payload).await.unwrap();
+        client.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, payload);
+
+        relay.remove_service_listener(service_id).await.unwrap();
+        assert!(UnixStream::connect(&path).is_err());
+        assert!(path.exists());
+        assert!(UnixListener::bind(&path).is_err());
+        client.write_all(payload).await.unwrap();
+        guest.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, payload);
+        guest.write_all(payload).await.unwrap();
+        client.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, payload);
+
+        client.close().await.unwrap();
+        assert_eq!(guest.read(&mut received).await.unwrap(), 0);
+        guest.close().await.unwrap();
+        assert_eq!(client.read(&mut received).await.unwrap(), 0);
+        std::fs::remove_file(&path).unwrap();
+        relay
+            .add_service_listener(service_id, UnixListener::bind(&path).unwrap())
+            .unwrap();
+        relay.remove_service_listener(service_id).await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_hybrid_listener_handshake(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hybrid");
+        let memory = GuestMemory::allocate(4 * 4096);
+        let (offers, mut offer_recv) = mesh::channel();
+        let channel = HvsockRelayChannel::new();
+        let _server_half = channel.server_half;
+        let _relay = HvsockRelay::new(
+            driver.clone(),
+            Arc::new(TestBus {
+                memory: memory.clone(),
+                offers,
+            }),
+            channel.relay_half,
+            None,
+            Some(UnixListener::bind(&path).unwrap()),
+        )
+        .unwrap();
+        let mut client = PolledSocket::connect_unix(&driver, &path).await.unwrap();
+        client.write_all(b"CONNECT 50001\n").await.unwrap();
+        let offer = offer_recv.next().await.unwrap();
+        assert_eq!(
+            offer.params.interface_id,
+            guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3")
+        );
+        let mut guest = open_guest_pipe(&driver, &memory, &offer).await;
+        let expected = format!("OK {}\n", offer.params.instance_id.data1);
+        let mut response = vec![0; expected.len()];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, expected.as_bytes());
+
+        client.write_all(b"ping").await.unwrap();
+        let mut payload = [0; 4];
+        guest.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"ping");
+        guest.write_all(b"pong").await.unwrap();
+        client.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"pong");
+        client.close().await.unwrap();
+        assert_eq!(guest.read(&mut payload).await.unwrap(), 0);
+        guest.close().await.unwrap();
+        assert_eq!(client.read(&mut payload).await.unwrap(), 0);
     }
 }

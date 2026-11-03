@@ -1670,10 +1670,7 @@ impl VmService {
                 }
             }
             Resource::HvsocketListener(listener) => {
-                let service_id = listener
-                    .service_id
-                    .parse()
-                    .context("invalid hvsocket service ID")?;
+                let service_id = parse_hvsocket_service(listener.service)?;
                 if request.r#type == vmservice::ModifyType::Add as i32 {
                     let socket = UnixListener::bind(&listener.path).with_context(|| {
                         format!("failed to bind hvsocket listener path: {}", listener.path)
@@ -1701,6 +1698,16 @@ impl VmService {
                 anyhow::bail!("processor and memory resources not supported")
             }
         }
+    }
+}
+
+fn parse_hvsocket_service(
+    service: Option<vmservice::hv_socket_listener::Service>,
+) -> anyhow::Result<Guid> {
+    use vmservice::hv_socket_listener::Service;
+    match service.context("missing hvsocket service")? {
+        Service::ServiceId(id) => id.parse().context("invalid hvsocket service ID"),
+        Service::VsockPort(port) => Ok(crate::new_hvsock_service_id(port)),
     }
 }
 
@@ -2592,6 +2599,48 @@ mod tests {
     use test_with_tracing::test;
     use vfio_assigned_device_resources::BarAddressConfig;
     use vmservice::vfio_bar_address::Source;
+
+    #[test]
+    fn hvsocket_service_selection() {
+        use vmservice::hv_socket_listener::Service;
+
+        for (port, id) in [
+            (0, guid::guid!("00000000-facb-11e6-bd58-64006a7986d3")),
+            (50001, guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3")),
+            (
+                u32::MAX,
+                guid::guid!("ffffffff-facb-11e6-bd58-64006a7986d3"),
+            ),
+        ] {
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::VsockPort(port))).unwrap(),
+                id
+            );
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+                id
+            );
+        }
+        let id = Guid::new_random();
+        assert_eq!(
+            parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+            id
+        );
+        assert!(
+            parse_hvsocket_service(None)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        for id in ["", "not-a-guid"] {
+            assert!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.into())))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid hvsocket service ID")
+            );
+        }
+    }
 
     #[test]
     fn platform_config_flags() {
