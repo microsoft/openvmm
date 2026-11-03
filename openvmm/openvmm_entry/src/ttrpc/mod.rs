@@ -65,6 +65,8 @@ use net_backend_resources::mac_address::MacAddress;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::IgvmPersonality;
@@ -1115,7 +1117,11 @@ impl VmService {
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
         let acpi_power_button_rpc = if supports_acpi_power_button(&load_mode) {
             let (send, recv) = mesh::channel();
-            chipset_builder = chipset_builder.with_acpi_power_button(recv);
+            let irq = match arch {
+                vm_manifest_builder::MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+                vm_manifest_builder::MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+            };
+            chipset_builder = chipset_builder.with_acpi_power_button(irq, recv);
             Some(send)
         } else {
             None
@@ -1485,6 +1491,11 @@ impl VmService {
     ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::shutdown_vm_request::Mechanism;
 
+        enum ShutdownSender {
+            HypervIc(mesh::Sender<ShutdownRpc>),
+            Acpi(mesh::Sender<PowerButtonRpc>),
+        }
+
         let requested_mechanism = Mechanism::from_i32(request.mechanism)
             .ok_or_else(|| anyhow!(Code::InvalidArgument))
             .with_context(|| format!("unknown shutdown mechanism {}", request.mechanism))?;
@@ -1512,7 +1523,7 @@ impl VmService {
             anyhow!(Code::FailedPrecondition).context("VM must be running to request shutdown")
         );
         let send = if requested_mechanism == Mechanism::Acpi {
-            futures::future::Either::Right(
+            ShutdownSender::Acpi(
                 vm.acpi_power_button_rpc
                     .as_ref()
                     .ok_or_else(|| anyhow!(Code::FailedPrecondition))
@@ -1520,7 +1531,7 @@ impl VmService {
                     .clone(),
             )
         } else {
-            futures::future::Either::Left(
+            ShutdownSender::HypervIc(
                 vm.shutdown_rpc
                     .as_ref()
                     .ok_or_else(|| anyhow!(Code::FailedPrecondition))
@@ -1535,7 +1546,7 @@ impl VmService {
                 );
             }
             match send {
-                futures::future::Either::Left(send) => {
+                ShutdownSender::HypervIc(send) => {
                     let result = ctx
                         .until_cancelled(send.call(
                             ShutdownRpc::Shutdown,
@@ -1560,7 +1571,7 @@ impl VmService {
                             .context(format!("guest rejected shutdown with status {status:#x}"))),
                     }
                 }
-                futures::future::Either::Right(send) => ctx
+                ShutdownSender::Acpi(send) => ctx
                     .until_cancelled(send.call(PowerButtonRpc::Press, ()))
                     .await
                     .context("guest shutdown request cancelled or timed out")?

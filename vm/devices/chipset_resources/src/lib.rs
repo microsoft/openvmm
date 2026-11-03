@@ -420,14 +420,6 @@ pub mod acpi_power_button {
     use vm_resource::ResourceId;
     use vm_resource::kind::ChipsetDeviceHandleKind;
 
-    /// Dedicated IOAPIC interrupt for the power button on x86_64.
-    pub const X64_IRQ: u32 = 10;
-    /// Dedicated GIC SPI index (INTID 39) for the power button on AArch64.
-    ///
-    /// Firmware reserves INTIDs 35-38 for generation ID, battery, PMEM, and
-    /// processor-idle events.
-    pub const AARCH64_SPI: u32 = 7;
-
     /// Host requests to inject an ACPI power-button event.
     #[derive(MeshPayload)]
     pub enum PowerButtonRpc {

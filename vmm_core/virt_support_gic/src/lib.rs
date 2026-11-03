@@ -269,8 +269,8 @@ mod gicd {
                 r if GicdRegister::IPRIORITYR.contains(&r.0) => {
                     let n = (r.0 & 0x3ff) / 4;
                     if n >= 8 {
-                        if let Some(cfg) = self.state.lock().cfg.get_mut(n as usize) {
-                            *cfg = value;
+                        if let Some(priority) = self.state.lock().priority.get_mut(n as usize) {
+                            *priority = value;
                         }
                     }
                 }
@@ -830,7 +830,7 @@ mod tests {
         let mut distributor = Distributor::new(
             0,
             MemoryRange::new(0x20000..0x20000 + aarch64defs::GIC_REDISTRIBUTOR_SIZE),
-            64,
+            160,
         );
         let redistributor = distributor.add_redistributor(0, true);
         assert!(distributor.write(
@@ -871,6 +871,22 @@ mod tests {
         distributor.set_pending(39, true);
         assert!(distributor.irq_pending(&redistributor));
         distributor.set_pending(39, false);
+        assert!(!distributor.irq_pending(&redistributor));
+        assert_eq!(distributor.ack(&mut redistributor, true), 1023);
+    }
+
+    #[test]
+    fn priority_write_preserves_level_triggered_spi_configuration() {
+        let (distributor, mut redistributor) = spi(130, false);
+        let address = u64::from(GicdRegister::IPRIORITYR.start) + 8 * 4;
+        assert!(distributor.write(address, &0xa0a0a0a0u32.to_le_bytes()));
+        let mut priority = [0; 4];
+        assert!(distributor.read(address, &mut priority));
+        assert_eq!(u32::from_le_bytes(priority), 0xa0a0a0a0);
+
+        distributor.set_pending(130, true);
+        assert!(distributor.irq_pending(&redistributor));
+        distributor.set_pending(130, false);
         assert!(!distributor.irq_pending(&redistributor));
         assert_eq!(distributor.ack(&mut redistributor, true), 1023);
     }

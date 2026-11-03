@@ -1049,8 +1049,8 @@ pub mod options {
         pub with_psp: bool,
         /// Whether the VM exposes the Hyper-V guest watchdog device.
         pub with_guest_watchdog: bool,
-        /// Guest-visible interrupt ID (GSIV) for the ACPI power button, if present.
-        pub acpi_power_button_gsiv: Option<u32>,
+        /// Global system interrupt (GSI) for the ACPI power button, if present.
+        pub acpi_power_button_gsi: Option<u32>,
         /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
         pub with_i440bx_host_pci_bridge: bool,
         /// COM1 through COM4 ports to describe in the device tree. Device

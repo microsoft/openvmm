@@ -67,6 +67,8 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -1529,7 +1531,11 @@ async fn vm_config_from_command_line(
 
     if supports_acpi_power_button(&load_mode) {
         let (send, recv) = mesh::channel();
-        chipset = chipset.with_acpi_power_button(recv);
+        let irq = match arch {
+            MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+            MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+        };
+        chipset = chipset.with_acpi_power_button(irq, recv);
         resources.acpi_power_button = Some(send);
     }
 

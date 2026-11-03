@@ -85,7 +85,7 @@ pub struct VmManifestBuilder {
     proxy_vga: bool,
     stub_floppy: bool,
     battery_status_recv: Option<mesh::Receiver<HostBatteryUpdate>>,
-    acpi_power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
+    acpi_power_button: Option<(u32, mesh::Receiver<PowerButtonRpc>)>,
     framebuffer: bool,
     guest_watchdog: bool,
     ipmi_kcs: bool,
@@ -295,7 +295,7 @@ impl VmManifestBuilder {
             proxy_vga: false,
             stub_floppy: false,
             battery_status_recv: None,
-            acpi_power_button_recv: None,
+            acpi_power_button: None,
             framebuffer: false,
             guest_watchdog: false,
             ipmi_kcs: false,
@@ -403,8 +403,15 @@ impl VmManifestBuilder {
     /// PCAT uses the firmware's fixed PM1 power-button event. For other boot
     /// modes, the caller must include the button's AML in the guest's ACPI
     /// tables using the returned chipset capabilities.
-    pub fn with_acpi_power_button(mut self, recv: mesh::Receiver<PowerButtonRpc>) -> Self {
-        self.acpi_power_button_recv = Some(recv);
+    ///
+    /// `irq` is an IOAPIC interrupt on x86_64 or a GIC SPI index on AArch64,
+    /// and is ignored for PCAT.
+    pub fn with_acpi_power_button(
+        mut self,
+        irq: u32,
+        recv: mesh::Receiver<PowerButtonRpc>,
+    ) -> Self {
+        self.acpi_power_button = Some((irq, recv));
         self
     }
 
@@ -479,14 +486,14 @@ impl VmManifestBuilder {
                 with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
-                acpi_power_button_gsiv: None,
+                acpi_power_button_gsi: None,
                 with_i440bx_host_pci_bridge: false,
                 dt_com_ports: [false; 4],
                 dt_pl011_uarts: false,
             },
         };
         let is_x86 = matches!(self.arch, MachineArch::X86_64);
-        let mut acpi_power_button_recv = self.acpi_power_button_recv;
+        let mut acpi_power_button = self.acpi_power_button;
 
         if let Some((backend, port)) = self.debugcon {
             if is_x86 {
@@ -532,7 +539,7 @@ impl VmManifestBuilder {
                 result.attach_pit();
                 result.attach_piix4_power_management(
                     self.platform_pm_timer_assist,
-                    acpi_power_button_recv.take(),
+                    acpi_power_button.take().map(|(_, recv)| recv),
                 );
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
@@ -699,8 +706,8 @@ impl VmManifestBuilder {
             }
         }
 
-        if let Some(recv) = acpi_power_button_recv {
-            result.attach_acpi_power_button(self.arch, recv);
+        if let Some((irq, recv)) = acpi_power_button {
+            result.attach_acpi_power_button(self.arch, irq, recv);
         }
 
         Ok(result)
@@ -835,23 +842,18 @@ impl VmChipsetResult {
     fn attach_acpi_power_button(
         &mut self,
         arch: MachineArch,
+        irq: u32,
         recv: mesh::Receiver<PowerButtonRpc>,
     ) -> &mut Self {
-        let (irq, gsiv) = match arch {
-            MachineArch::X86_64 => {
-                let irq = chipset_resources::acpi_power_button::X64_IRQ;
-                (irq, irq)
-            }
-            MachineArch::Aarch64 => {
-                let spi = chipset_resources::acpi_power_button::AARCH64_SPI;
-                (spi, 32 + spi)
-            }
+        let gsi = match arch {
+            MachineArch::X86_64 => irq,
+            MachineArch::Aarch64 => 32 + irq,
         };
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "acpi-power-button".to_owned(),
             resource: AcpiPowerButtonDeviceHandle { irq, recv }.into_resource(),
         });
-        self.capabilities.acpi_power_button_gsiv = Some(gsiv);
+        self.capabilities.acpi_power_button_gsi = Some(gsi);
         self
     }
 
@@ -1145,10 +1147,10 @@ mod tests {
     fn pcat_power_button_uses_the_existing_pm_device() {
         let (_, recv) = mesh::channel();
         let manifest = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
-            .with_acpi_power_button(recv)
+            .with_acpi_power_button(10, recv)
             .build()
             .unwrap();
-        assert_eq!(manifest.capabilities.acpi_power_button_gsiv, None);
+        assert_eq!(manifest.capabilities.acpi_power_button_gsi, None);
         assert!(
             manifest
                 .chipset_devices
@@ -1166,8 +1168,13 @@ mod tests {
     }
 
     #[test]
-    fn acpi_power_button_is_opt_in_and_uses_arch_specific_interrupts() {
-        for (arch, gsiv) in [(MachineArch::X86_64, 10), (MachineArch::Aarch64, 39)] {
+    fn acpi_power_button_is_opt_in_and_uses_the_supplied_interrupt() {
+        for (arch, irq, gsi) in [
+            (MachineArch::X86_64, 10, 10),
+            (MachineArch::X86_64, 12, 12),
+            (MachineArch::Aarch64, 7, 39),
+            (MachineArch::Aarch64, 15, 47),
+        ] {
             for uefi in [false, true] {
                 let builder = || {
                     if uefi {
@@ -1177,7 +1184,7 @@ mod tests {
                     }
                 };
                 let manifest = builder().build().unwrap();
-                assert_eq!(manifest.capabilities.acpi_power_button_gsiv, None);
+                assert_eq!(manifest.capabilities.acpi_power_button_gsi, None);
                 assert!(
                     manifest
                         .chipset_devices
@@ -1188,10 +1195,10 @@ mod tests {
                 let (_, recv) = mesh::channel();
                 let manifest = builder()
                     .without_vmbus()
-                    .with_acpi_power_button(recv)
+                    .with_acpi_power_button(irq, recv)
                     .build()
                     .unwrap();
-                assert_eq!(manifest.capabilities.acpi_power_button_gsiv, Some(gsiv));
+                assert_eq!(manifest.capabilities.acpi_power_button_gsi, Some(gsi));
                 let buttons: Vec<_> = manifest
                     .chipset_devices
                     .iter()

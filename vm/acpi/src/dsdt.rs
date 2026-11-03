@@ -126,7 +126,8 @@ impl Dsdt {
         obj.append_to_vec(&mut self.objects);
     }
 
-    /// Add a power button driven by a dedicated, edge-triggered, active-high GSIV.
+    /// Add a power button driven by a dedicated, edge-triggered, active-high
+    /// global system interrupt (GSI).
     ///
     /// ```text
     /// Device (\_SB.OVPB)
@@ -135,7 +136,7 @@ impl Dsdt {
     ///     Name (_UID, 0)
     ///     Name (_CRS, ResourceTemplate ()
     ///     {
-    ///         Interrupt (ResourceConsumer, Edge, ActiveHigh, Exclusive) { <GSIV> }
+    ///         Interrupt (ResourceConsumer, Edge, ActiveHigh, Exclusive) { <GSI> }
     ///     })
     ///     Device (PBTN)
     ///     {
@@ -145,8 +146,8 @@ impl Dsdt {
     ///     Method (_EVT, 1) { Notify (PBTN, 0x80) }
     /// }
     /// ```
-    pub fn add_power_button(&mut self, gsiv: u32) {
-        self.add_object(&crate::power_button::device(gsiv));
+    pub fn add_power_button(&mut self, gsi: u32) {
+        self.add_object(&crate::power_button::device(gsi));
     }
 
     /// Add an APIC device to the DSDT with the following ASL code:

@@ -38,9 +38,9 @@ console for the commands supported by the running binary.
   Requires file-backed guest memory (`--memory file=<FILE>`).
 * `psr` / `pulse-save-restore`: do a pulsed save-restore cycle.
 * `reset`: reset the VM.
-* `shutdown [-r | -h] [-f]`: send a shutdown/reboot/hibernate
-  request through the Hyper-V shutdown integration component.
-  Use `shutdown -a` instead to inject an ACPI power-button event;
+* `shutdown [-a | [-r | -h] [-f]]`: send a shutdown/reboot/hibernate
+  request through the Hyper-V shutdown integration component, or use `-a`
+  to inject an ACPI power-button event.
   `-a` cannot be combined with `-r`, `-h`, or `-f`.
   Completion means event injection, not that the guest has halted.
   The guest must handle the power-button event and configure it to shut down.
