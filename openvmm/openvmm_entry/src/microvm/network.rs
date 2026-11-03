@@ -274,7 +274,6 @@ pub(crate) mod tests {
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             Some((network, policy.gateway_dns_server(), None)),
-            false,
             &[],
             false,
             false,
@@ -286,7 +285,6 @@ pub(crate) mod tests {
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             Some((network, policy, microvm_network_attachment())),
-            false,
             None,
             None,
             None,
@@ -305,6 +303,7 @@ pub(crate) mod tests {
                 "microvm-shutdown",
                 "microvm-snapshot-request",
                 "virtio-net-3489660928",
+                "virtiofs-3489665024",
             ]
             .map(str::to_owned)
             .to_vec(),

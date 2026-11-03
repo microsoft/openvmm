@@ -15,7 +15,6 @@ use super::console::validate_microvm_console_attachment_namespace;
 use super::filesystem::EffectiveMicrovmFilesystem;
 use super::filesystem::MicrovmFilesystemRequest;
 use super::filesystem::effective_microvm_filesystem;
-use super::filesystem::microvm_filesystem_slot_from_snapshot;
 use super::network::EffectiveMicrovmNetwork;
 use super::network::effective_microvm_network;
 use super::network::microvm_ingress;
@@ -72,7 +71,6 @@ pub(crate) struct MicrovmConfigBuilder<'a> {
     restore: &'a MicrovmRestore,
     active: bool,
     network: Option<EffectiveMicrovmNetwork>,
-    filesystem_slot: bool,
     filesystem: Option<EffectiveMicrovmFilesystem>,
     gateway_dns: Option<std::net::IpAddr>,
     console: Option<ConsoleEndpoint>,
@@ -97,14 +95,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
             effective_microvm_network(opt, restore_machine_contract)?
         } else {
             None
-        };
-        let filesystem_slot = if active {
-            restore_machine_contract
-                .map(microvm_filesystem_slot_from_snapshot)
-                .transpose()?
-                .unwrap_or(true)
-        } else {
-            false
         };
         let filesystem = if active {
             effective_microvm_filesystem(
@@ -227,7 +217,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
             restore,
             active,
             network,
-            filesystem_slot,
             filesystem,
             gateway_dns,
             console,
@@ -580,14 +569,8 @@ impl<'a> MicrovmConfigBuilder<'a> {
             );
         }
 
-        let slot_count = openvmm_defs::microvm::microvm_filesystem_slot_count(
-            self.filesystem_slot,
-            usize::from(self.filesystem.is_some()),
-        )?;
-        for slot in openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS
-            .iter()
-            .take(slot_count)
-        {
+        if self.active {
+            let slot = &openvmm_defs::microvm::MICROVM_FILESYSTEM_SLOTS[0];
             let (fs, profile) = match &self.filesystem {
                 Some(filesystem) if filesystem.config.is_aggregate() => (
                     virtio_resources::fs::VirtioFsBackend::Aggregate {
@@ -843,7 +826,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
             openvmm_defs::microvm::append_microvm_virtio_discovery(
                 cmdline,
                 network,
-                self.filesystem_slot,
                 &cfg.microvm.filesystems,
                 has_console,
                 has_control_console,
