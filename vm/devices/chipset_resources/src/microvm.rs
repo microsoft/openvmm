@@ -42,11 +42,11 @@ pub enum MicrovmPortbDrain {
     Close,
 }
 
-/// The microVM bidirectional portb console at ports `0xe9` and `0xea`, with
-/// the NVX time ABI time-sample window at `0xeb`.
+/// The microVM portb byte channel at ports `0xe9` and `0xea`, with the NVX
+/// time ABI time-sample window at `0xeb`. It takes no host input.
 #[derive(MeshPayload)]
 pub struct MicrovmPortbHandle {
-    /// Host serial endpoint used for raw input and output.
+    /// Host serial endpoint of the raw guest output, which portb never reads.
     pub io: Resource<SerialBackendHandle>,
     /// Fresh generation ID for this microVM instance.
     pub generation_id: [u8; 16],
