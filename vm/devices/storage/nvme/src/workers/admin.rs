@@ -60,6 +60,16 @@ const IOCQES: u8 = 4;
 const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
 
+/// Panic message for an admin CQ write that finds the queue full.
+///
+/// Every admin CQ write has a free slot: `next_event` waits for one before it
+/// takes an event, and only the admin task writes the admin CQ. A full queue
+/// would mean dropping the completion, which NVMe Base 2.1 section 3.3.1.2.1
+/// does not allow ("the controller shall not post status to that Completion
+/// Queue until slots become available").
+const ADMIN_CQ_SLOT_RESERVED: &str =
+    "admin completion queue full despite the slot next_event reserved";
+
 #[derive(Inspect)]
 pub struct AdminConfig {
     #[inspect(skip)]
@@ -470,7 +480,7 @@ impl AdminHandler {
                 && ns_aen_enabled
             {
                 if let Some(cid) = state.asynchronous_event_requests.pop() {
-                    state.admin_cq.write(
+                    let posted = state.admin_cq.write(
                         spec::Completion {
                             dw0: spec::AsynchronousEventRequestDw0::new()
                                 .with_event_type(spec::AsynchronousEventType::NOTICE.0)
@@ -484,6 +494,7 @@ impl AdminHandler {
                             status: spec::CompletionStatus::new(),
                         },
                     )?;
+                    assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
 
                     state.notified_changed_namespaces = true;
                     continue;
@@ -606,7 +617,8 @@ impl AdminHandler {
             cid,
         };
 
-        state.admin_cq.write(completion)?;
+        let posted = state.admin_cq.write(completion)?;
+        assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
         Ok(())
     }
 
