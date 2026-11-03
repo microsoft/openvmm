@@ -375,12 +375,9 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_microvm_portb_output(&mut self, marker: &str) -> anyhow::Result<()>
     );
     petri_vm_fn!(
-        /// Wait for an exact byte sequence from the microVM portb console.
+        /// Wait for an exact byte sequence from the microVM portb console,
+        /// consuming its output through the sequence.
         pub async fn wait_for_microvm_portb_bytes(&mut self, marker: &[u8]) -> anyhow::Result<()>
-    );
-    petri_vm_fn!(
-        /// Write raw bytes to the microVM portb console input stream.
-        pub async fn write_microvm_portb_input(&mut self, input: &[u8]) -> anyhow::Result<()>
     );
     petri_vm_fn!(
         /// Perform one pulse save/restore operation.
