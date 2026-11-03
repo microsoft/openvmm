@@ -57,6 +57,7 @@ safe_intrinsics.workspace = true
 aarch64defs.workspace = true
 aarch64emu.workspace = true
 virt_support_aarch64emu.workspace = true
+virt_support_gic.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true
