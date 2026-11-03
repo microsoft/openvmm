@@ -18,6 +18,8 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
+use disk_backend::Disk;
+use disk_prwrap::DiskWithReservations;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use guid::Guid;
@@ -1361,6 +1363,107 @@ async fn test_mandatory_features_roundtrip(driver: DefaultDriver) {
     #[expect(unused_assignments, reason = "final submit! bumps admin_slot")]
     {
         submit!(sel_cmd, spec::Status::INVALID_FIELD_IN_COMMAND.0);
+    }
+}
+
+/// Get Features of Reservation Persistence (FID 83h) answers each kind of
+/// NSID with the status NVMe Base 2.1 gives it: FFFFFFFFh with Invalid
+/// Field in Command (section 5.1.25.1.30), an invalid NSID (0h, or above NN)
+/// with Invalid Namespace or Format and an inactive one with Invalid Field in
+/// Command (Figure 92, section 3.2.1.5), and an attached namespace with
+/// reservations with its PTPL state.
+#[async_test]
+async fn test_get_features_reservation_persistence_status_per_nsid(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    // PTPL defaults to off; set it so the success row reads a value that
+    // only the backend can have supplied.
+    let disk = Disk::new(DiskWithReservations::new(ram_disk(1 << 20, false).unwrap())).unwrap();
+    disk.pr()
+        .unwrap()
+        .register(None, 0x1234, Some(true))
+        .await
+        .unwrap();
+    nvmec.client().add_namespace(1, disk).await.unwrap();
+
+    struct Row {
+        what: &'static str,
+        nsid: u32,
+        status: spec::Status,
+    }
+    let rows = [
+        Row {
+            what: "the broadcast NSID FFFFFFFFh",
+            nsid: 0xffff_ffff,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+        },
+        Row {
+            what: "the invalid NSID 0h",
+            nsid: 0,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        },
+        Row {
+            what: "an invalid NSID above NN",
+            nsid: MAX_NSID + 1,
+            status: spec::Status::INVALID_NAMESPACE_OR_FORMAT,
+        },
+        Row {
+            what: "an inactive NSID",
+            nsid: 2,
+            status: spec::Status::INVALID_FIELD_IN_COMMAND,
+        },
+        Row {
+            what: "the attached namespace with reservations",
+            nsid: 1,
+            status: spec::Status::SUCCESS,
+        },
+    ];
+    for (slot, row) in rows.iter().enumerate() {
+        let mut command = get_feature_command(spec::Feature::NVM_RESERVATION_PERSISTENCE, 0);
+        command.cdw0.set_cid(0x830 + slot as u16);
+        command.nsid = row.nsid;
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            slot as u32,
+            &command,
+        )
+        .await;
+        assert_eq!(
+            cqe.cid,
+            0x830 + slot as u16,
+            "{}: the completion is another command's",
+            row.what
+        );
+        assert_eq!(
+            cqe.status.status(),
+            row.status.0,
+            "{}: expected {:?}",
+            row.what,
+            row.status
+        );
+        if row.status == spec::Status::SUCCESS {
+            assert_eq!(cqe.dw0, 1, "{}: DW0 is not the PTPL state", row.what);
+        }
     }
 }
 
