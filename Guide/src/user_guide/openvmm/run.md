@@ -93,7 +93,7 @@ NUMA, xAPIC mode, and contiguous APIC IDs `0..N-1`; APIC ID 0 is the BSP.
 Custom socket, SMT, APIC, x2APIC, and NUMA options are rejected.
 
 The microVM uses fixed virtio device slots and sandbox block roles. Its
-persisted ABI is value 3 and its boot layout value 2. Each fixed virtio device
+persisted ABI is value 1 and its boot layout value 1. Each fixed virtio device
 offers an exact feature mask, which never includes `VIRTIO_F_ACCESS_PLATFORM`,
 since the microVM has no IOMMU, nor packed virtqueues, and interrupts on an
 IOAPIC input of its own past the ISA IRQs, the same on every backend. The
