@@ -1,7 +1,7 @@
-// Copyright (C) Microsoft Corporation.
+// Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Add a tag to the pipeline running in an ADO environment.
+//! Add a single tag to the pipeline running in an ADO environment.
 //!
 //! Uses `az pipelines build tag add` with the job's `System.AccessToken`, since
 //! OneBranch build containers block the `##vso[build.addbuildtag]` logging
@@ -41,16 +41,9 @@ impl SimpleFlowNode for Node {
         }
 
         let access_token = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_ACCESS_TOKEN);
-        let collection_uri = ctx.get_ado_variable(AdoRuntimeVar::dangerous_from_global(
-            "System.CollectionUri",
-            false,
-        ));
-        let project_id = ctx.get_ado_variable(AdoRuntimeVar::dangerous_from_global(
-            "System.TeamProjectId",
-            false,
-        ));
-        let build_id =
-            ctx.get_ado_variable(AdoRuntimeVar::dangerous_from_global("Build.BuildId", false));
+        let collection_uri = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_COLLECTION_URI);
+        let project_id = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_TEAM_PROJECT_ID);
+        let build_id = ctx.get_ado_variable(AdoRuntimeVar::BUILD_BUILD_ID);
 
         ctx.emit_rust_step("add build tag", |ctx| {
             let build_tag = build_tag.claim(ctx);
@@ -61,13 +54,10 @@ impl SimpleFlowNode for Node {
             done.claim(ctx);
             move |rt| {
                 let build_tag = rt.read(build_tag);
-                let build_tag = build_tag.trim();
                 let access_token = rt.read(access_token);
                 let collection_uri = rt.read(collection_uri);
                 let project_id = rt.read(project_id);
-                let project_id = project_id.trim();
                 let build_id = rt.read(build_id);
-                let build_id = build_id.trim();
 
                 // The azure-devops extension reads its credential from
                 // AZURE_DEVOPS_EXT_PAT, which keeps the token off the command
