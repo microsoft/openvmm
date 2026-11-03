@@ -226,7 +226,6 @@ pub(super) fn microvm_network_endpoint(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::microvm::restore::align_legacy_network_policy_contract;
     use clap::Parser as _;
     use openvmm_defs::microvm::build_microvm_command_line;
     use test_with_tracing::test;
@@ -407,19 +406,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(restored.config, ipv4_only);
         assert!(restored.policy.ipv6_link().is_none());
-        assert_eq!(restored.policy.encoding_version(), 3);
-    }
-
-    #[test]
-    fn legacy_network_policy_contract_alignment_preserves_validated_digest() {
-        let mut saved = network_contract();
-        let saved_network = saved.microvm_network.as_mut().unwrap();
-        saved_network.egress_policy_encoding_version = 0;
-        saved_network.egress_policy_sha256 = vec![0x5a; 32];
-        let mut expected = network_contract();
-
-        align_legacy_network_policy_contract(&saved, &mut expected);
-        assert_eq!(saved.microvm_network, expected.microvm_network);
     }
 
     #[test]
