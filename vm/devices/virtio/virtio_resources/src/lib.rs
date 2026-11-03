@@ -51,11 +51,18 @@ pub mod fs {
         pub fs: VirtioFsBackend,
     }
 
+    #[derive(MeshPayload, Default)]
+    pub struct VirtioFsWindowsOptions {
+        pub user_token_handle: u64,
+    }
+
     #[derive(MeshPayload)]
     pub enum VirtioFsBackend {
         HostFs {
             root_path: String,
             mount_options: String,
+            #[mesh(4)]
+            windows_options: Option<VirtioFsWindowsOptions>,
         },
         SectionFs {
             root_path: String,

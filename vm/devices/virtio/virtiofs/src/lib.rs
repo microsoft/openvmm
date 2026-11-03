@@ -6,12 +6,15 @@
 
 mod aggregate;
 mod file;
+#[cfg(windows)]
+mod impersonation;
 mod inode;
 #[cfg(test)]
 mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;
+mod session;
 #[cfg(test)]
 mod test_helpers;
 mod util;

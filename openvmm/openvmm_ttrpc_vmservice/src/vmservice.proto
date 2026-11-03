@@ -1083,6 +1083,16 @@ message VirtioFs {
     string tag = 1;
     string root_path = 2;
     bool read_only = 3;
+    // Host-specific virtio-fs options. Omit on non-Windows hosts.
+    WindowsOptions windows_options = 5;
+
+    message WindowsOptions {
+        // A token handle duplicated into the VM service process. OpenVMM
+        // duplicates the token for host filesystem access. The caller may
+        // close the handle after this RPC succeeds. Zero uses the VM service
+        // process token.
+        uint64 user_token_handle = 1;
+    }
 }
 
 message VirtioConsoleConfig {
