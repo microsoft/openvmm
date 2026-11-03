@@ -172,7 +172,7 @@ pub struct TimeAbiRestorePreflight {
     pub cpu_profile: String,
 }
 
-/// Runs the time ABI's restore preflight on a version 6 machine contract: it
+/// Runs the time ABI's restore preflight on a machine contract: it
 /// checks the time ABI records, the backend, the CPU profile and host CPU
 /// generation, and the downtime against the destination host's identity and
 /// clocks.
@@ -504,7 +504,7 @@ pub(super) mod tests {
         assert_eq!(record.identity.clock, HostClockKind::LinuxBoottime);
     }
 
-    fn version_6_manifest() -> SnapshotManifest {
+    fn time_abi_manifest() -> SnapshotManifest {
         let mut manifest = crate::snapshot::tests::test_manifest();
         manifest.machine_contract = Some(crate::snapshot::microvm::test_machine_contract());
         manifest
@@ -520,28 +520,28 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn version_6_manifest_is_accepted() {
-        let manifest = version_6_manifest();
-        assert_eq!(manifest.version, 6);
-        assert_eq!(manifest.format_magic, b"OPENVMM_SNAPSHOT_V6\0");
+    fn time_abi_manifest_is_accepted() {
+        let manifest = time_abi_manifest();
+        assert_eq!(manifest.version, crate::snapshot::MANIFEST_VERSION);
+        assert_eq!(manifest.format_magic, b"OPENVMM_SNAPSHOT_V2\0");
         validate(&manifest).unwrap();
     }
 
     #[test]
-    fn version_6_manifest_requires_records() {
-        let mut manifest = version_6_manifest();
+    fn time_abi_manifest_requires_records() {
+        let mut manifest = time_abi_manifest();
         manifest.machine_contract.as_mut().unwrap().time = None;
         let err = validate(&manifest).unwrap_err().to_string();
         assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
 
-        let mut manifest = version_6_manifest();
+        let mut manifest = time_abi_manifest();
         manifest.machine_contract.as_mut().unwrap().cpu_profile = None;
         let err = validate(&manifest).unwrap_err().to_string();
         assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
 
         // A manifest without a machine contract is a regular VM's; a microVM
         // restore requires the contract.
-        let mut manifest = version_6_manifest();
+        let mut manifest = time_abi_manifest();
         manifest.machine_contract = None;
         crate::snapshot::format::validate_manifest_contents(&manifest).unwrap();
         let err = required_machine_contract(&manifest).unwrap_err();
@@ -549,9 +549,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn version_6_manifest_rejects_clock_tokens_and_invalid_records() {
+    fn time_abi_manifest_rejects_clock_tokens_and_invalid_records() {
         for token in ["tsc_early_khz=2100000", "lapic_timer_hz=200000000"] {
-            let mut manifest = version_6_manifest();
+            let mut manifest = time_abi_manifest();
             manifest
                 .machine_contract
                 .as_mut()
@@ -561,7 +561,7 @@ pub(super) mod tests {
             assert!(err.contains("[E_CMDLINE_CLOCK_TOKEN]"), "{err}");
         }
 
-        let mut manifest = version_6_manifest();
+        let mut manifest = time_abi_manifest();
         manifest
             .machine_contract
             .as_mut()
@@ -574,7 +574,7 @@ pub(super) mod tests {
         assert!(err.contains("[E_MANIFEST_TIME]"), "{err}");
     }
 
-    /// A version 6 machine contract captured on WHP with the test profile,
+    /// A machine contract captured on WHP with the test profile,
     /// and a destination sample 5 s after its capture anchor on the same host
     /// boot.
     fn test_restore() -> (SnapshotMachineContract, HostIdentity, HostTimeSample) {
