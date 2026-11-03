@@ -275,6 +275,7 @@ async fn wait_waker_drop_tests(driver: &impl Driver) {
         }
     }
 
+    #[expect(clippy::manual_noop_waker)]
     impl<T: Send + Sync> Wake for ResourceWaker<T> {
         fn wake(self: Arc<Self>) {}
     }

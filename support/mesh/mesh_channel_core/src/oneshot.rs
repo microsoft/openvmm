@@ -717,6 +717,7 @@ mod tests {
         _sender: OneshotSender<u32>,
     }
 
+    #[expect(clippy::manual_noop_waker)]
     impl Wake for SenderWake {
         fn wake(self: Arc<Self>) {}
     }

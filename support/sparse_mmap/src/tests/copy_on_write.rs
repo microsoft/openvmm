@@ -4,10 +4,43 @@
 //! Tests for copy-on-write file mappings.
 
 use crate::SparseMapping;
+use crate::SparseMappingError;
 use crate::new_mappable_from_file_copy_on_write;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
+use test_with_tracing::test;
+
+#[test]
+fn copy_on_write_read_only_view_rejects_writes() {
+    let page_size = SparseMapping::page_size();
+    let original = vec![0xa5; page_size];
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&original).unwrap();
+    let mappable = new_mappable_from_file_copy_on_write(&file).unwrap();
+    let mapping = SparseMapping::new(page_size).unwrap();
+    mapping
+        .map_file_copy_on_write(0, page_size, &mappable, 0, false)
+        .unwrap();
+
+    let mut bytes = vec![0; page_size];
+    mapping.read_at(0, &mut bytes).unwrap();
+    assert_eq!(bytes, original);
+    assert!(matches!(
+        mapping.write_at(0, &[0]),
+        Err(SparseMappingError::Memory(_))
+    ));
+    assert!(matches!(
+        mapping.write_volatile(0, &0u64),
+        Err(SparseMappingError::Memory(_))
+    ));
+    assert!(matches!(
+        mapping.fill_at(0, 0, page_size),
+        Err(SparseMappingError::Memory(_))
+    ));
+    mapping.read_at(0, &mut bytes).unwrap();
+    assert_eq!(bytes, original);
+}
 
 #[test]
 fn copy_on_write_file_mapping_does_not_modify_file() {

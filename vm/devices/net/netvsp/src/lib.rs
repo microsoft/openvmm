@@ -4367,7 +4367,11 @@ impl Coordinator {
 
         // Best-effort attempt to coalesce any `RestartRequired` endpoint
         // action into this restart operation.
-        while let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() {
+        loop {
+            stop.check()?;
+            let Some(action) = state.endpoint.wait_for_endpoint_action().now_or_never() else {
+                break;
+            };
             self.handle_endpoint_action(action).await;
         }
 
@@ -4994,14 +4998,20 @@ impl<T: RingMem + 'static> Worker<T> {
         // guest actions, or waiting for network packets to arrive) without
         // wrapping the wait on `stop.until_stopped`.
         loop {
+            stop.check()?;
             match &mut self.state {
                 WorkerState::Init(initializing) => {
                     assert_eq!(self.channel_idx, 0);
 
                     tracelimit::info_ratelimited!("network accepted");
 
+                    let check = stop.check_handle()?;
                     let (buffers, state) = stop
-                        .until_stopped(self.channel.initialize(initializing, self.mem.clone()))
+                        .until_stopped(self.channel.initialize(
+                            initializing,
+                            self.mem.clone(),
+                            &check,
+                        ))
                         .await??;
 
                     let state = ReadyState {
@@ -5143,9 +5153,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
         &mut self,
         initializing: &mut Option<InitState>,
         mem: GuestMemory,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(ChannelBuffers, ActiveState), WorkerError> {
         let mut has_init_packet_arrived = false;
         loop {
+            check.check()?;
             if let Some(initializing) = &mut *initializing {
                 if Self::is_ready_to_initialize(initializing, false) || has_init_packet_arrived {
                     let recv_buffer = initializing.recv_buffer.take().unwrap();
@@ -5362,6 +5374,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         ready_state: &mut ReadyState,
         queue_state: &mut QueueState,
     ) -> Result<CoordinatorMessage, WorkerError> {
+        if let Some(restart) = self.restart.take() {
+            return Ok(restart);
+        }
+        let check = stop.check_handle()?;
         let buffers = &ready_state.buffers;
         let state = &mut ready_state.state;
         let data = &mut ready_state.data;
@@ -5483,7 +5499,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     queue_state.queue.as_mut(),
                     &mut queue_state.pool,
                 )?)
-                | self.process_ring_buffer(buffers, state, data, queue_state)?
+                | self.process_ring_buffer(buffers, state, data, queue_state, &check)?
                 | (!ring_full
                     && self.process_endpoint_tx(
                         state,
@@ -5501,6 +5517,12 @@ impl<T: 'static + RingMem> NetChannel<T> {
             // Process any outstanding control messages before sleeping in case
             // there are now suballocations available for use.
             self.process_control_messages(buffers, state)?;
+
+            // Finish a recorded coordinator handoff before a cancellable wait
+            // can leave the worker with a partially processed guest VF state.
+            if let Some(restart) = self.restart.take() {
+                return Ok(restart);
+            }
 
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
@@ -5758,6 +5780,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         queue_state: &mut QueueState,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<bool, WorkerError> {
         if !data.tx_segments.is_empty() {
             // There are still segments pending transmission. Skip polling the
@@ -5767,9 +5790,17 @@ impl<T: 'static + RingMem> NetChannel<T> {
         }
         let mut total_packets = 0;
         let mut did_some_work = false;
-        loop {
+        let cancelled = loop {
+            if self.restart.is_some() {
+                break None;
+            }
+            // Control packets can replenish TX credits inline, so the pool
+            // does not bound this loop.
+            if let Err(cancelled) = check.check() {
+                break Some(cancelled);
+            }
             if state.free_tx_packets.is_empty() {
-                break;
+                break None;
             }
             let packet = if let Some(packet) = self.try_next_packet(
                 buffers.send_buffer.as_ref(),
@@ -5778,7 +5809,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             )? {
                 packet
             } else {
-                break;
+                break None;
             };
 
             did_some_work = true;
@@ -5903,11 +5934,14 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     ));
                 }
             }
-        }
+        };
         if total_packets > 0 && !self.transmit_segments(state, data, queue_state)? {
             state.stats.tx_stalled.increment();
         }
         state.stats.tx_packets_per_wake.add_sample(total_packets);
+        if let Some(cancelled) = cancelled {
+            return Err(cancelled.into());
+        }
         Ok(did_some_work)
     }
 

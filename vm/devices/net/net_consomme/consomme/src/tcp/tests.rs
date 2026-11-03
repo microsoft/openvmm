@@ -3074,12 +3074,13 @@ async fn test_tcp_last_ack_restarts_timeout_after_close_wait(driver: DefaultDriv
     h.send_fin();
     assert_eq!(h.connection_inner().state, TcpState::CloseWait);
 
-    // Ensure LastAck gets a fresh timeout even if a previous close deadline
-    // happens to be present.
+    // Keep the old deadline far enough away that it cannot expire while
+    // waiting for the host socket's EOF.
+    let previous_deadline = Instant::now() + h.consomme.params_mut().tcp_close_timeout * 2;
     {
         let access = h.consomme.access(&mut h.client);
         let conn = access.inner.tcp.connections.values_mut().next().unwrap();
-        conn.inner.lifetime_timer = LifetimeTimer::Close(Instant::now() + Duration::from_millis(1));
+        conn.inner.lifetime_timer = LifetimeTimer::Close(previous_deadline);
     }
 
     h.host_shutdown_write();
@@ -3092,6 +3093,10 @@ async fn test_tcp_last_ack_restarts_timeout_after_close_wait(driver: DefaultDriv
         h.connection_inner().lifetime_timer.deadline()
             > Some(Instant::now() + Duration::from_secs(1)),
         "LastAck must receive a fresh peer-progress timeout"
+    );
+    assert!(
+        h.connection_inner().lifetime_timer.deadline() < Some(previous_deadline),
+        "LastAck must replace the previous close deadline"
     );
 }
 

@@ -7,6 +7,9 @@
 
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 use async_trait::async_trait;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -45,6 +48,8 @@ use zerocopy::KnownLayout;
 /// The error type returned by the serial device.
 #[derive(Debug, Error)]
 enum Error {
+    #[error("cancelled")]
+    Cancelled(task_control::Cancelled),
     #[error("channel i/o error")]
     Io(#[source] std::io::Error),
     #[error("invalid version during version negotiation")]
@@ -70,6 +75,12 @@ enum Error {
     UnknownHostRequest { request: HostRequests },
     #[error("bad message type {0}")]
     BadMessageType(u8),
+}
+
+impl From<task_control::Cancelled> for Error {
+    fn from(value: task_control::Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 /// Host VMBUS serial device.
@@ -153,13 +164,16 @@ impl SimpleVmbusDevice for Serial {
         stop: &mut StopTask<'_>,
         channel: &mut SerialChannel,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
-            match channel.process(self).await {
+            match channel.process(self, &check).await {
                 Ok(()) => {}
+                Err(Error::Cancelled(cancelled)) => return Err(cancelled),
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "serial error"),
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 
     fn supports_save_restore(
@@ -219,13 +233,22 @@ impl<T: RingMem + Unpin> SerialChannel<T> {
 
     #[doc(hidden)] // `pub` for `vmbus_serial_guest`'s tests.
     pub async fn test_process(&mut self, serial: &mut Serial) {
-        self.process(serial).await.unwrap()
+        StopTask::run_unstoppable(async |stop| {
+            let check = stop.check_handle().unwrap();
+            self.process(serial, &check).await.unwrap()
+        })
+        .await
     }
 
     /// Drive the protocol processing loop to communicate with the guest. This function returns `Ok(())` if the
     /// associated sender for `state_changed_notification` was dropped.
-    async fn process(&mut self, serial: &mut Serial) -> Result<(), Error> {
+    async fn process(
+        &mut self,
+        serial: &mut Serial,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), Error> {
         loop {
+            check.check()?;
             // Wait for enough space for a response message before processing incoming messages.
             self.channel
                 .wait_write_ready(protocol::MAX_MESSAGE_SIZE)
