@@ -35,9 +35,9 @@ pub(crate) use console::validate_microvm_console_attachment_namespace;
 pub(crate) use filesystem::microvm_filesystem_attachment;
 #[cfg(any(feature = "ttrpc", feature = "grpc"))]
 pub(crate) use filesystem::microvm_filesystem_from_snapshot;
-#[cfg(any(feature = "ttrpc", feature = "grpc"))]
-pub(crate) use filesystem::microvm_filesystem_slot_from_snapshot;
 pub(crate) use filesystem::validate_microvm_filesystem_private_storage;
+#[cfg(any(feature = "ttrpc", feature = "grpc"))]
+pub(crate) use filesystem::validate_microvm_filesystem_slot;
 pub(crate) use launch::MicrovmLaunch;
 pub(crate) use restore::ExpectedRestoreContract;
 pub(crate) use restore::MicrovmRestore;

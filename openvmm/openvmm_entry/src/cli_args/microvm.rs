@@ -2180,29 +2180,22 @@ mod tests {
                 read_only: false,
             },
         ];
-        append_microvm_virtio_discovery(&mut with_devices, None, false, &[], true, false, &blocks)
+        append_microvm_virtio_discovery(&mut with_devices, None, &[], true, false, &blocks)
             .unwrap();
         assert_eq!(
             with_devices,
             format!(
-                "{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0002000:18 virtio_mmio.device=0x1000@0xd0003000:19 virtio_mmio.device=0x1000@0xd0006000:22"
+                "{MICROVM_CONSOLE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0001000:17 virtio_mmio.device=0x1000@0xd0002000:18 virtio_mmio.device=0x1000@0xd0003000:19 virtio_mmio.device=0x1000@0xd0006000:22"
             )
         );
         let mut with_control_console = build_microvm_control_command_line(&[], true).unwrap();
-        append_microvm_virtio_discovery(
-            &mut with_control_console,
-            None,
-            false,
-            &[],
-            true,
-            true,
-            &[],
-        )
-        .unwrap();
+        append_microvm_virtio_discovery(&mut with_control_console, None, &[], true, true, &[])
+            .unwrap();
         assert_eq!(
             with_control_console,
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0001000:17 \
                  virtio_mmio.device=0x1000@0xd0002000:18 \
                  virtio_mmio.device=0x1000@0xd0007000:23 \
                  {}",
@@ -2215,7 +2208,6 @@ mod tests {
         append_microvm_virtio_discovery(
             &mut with_network,
             Some((&network, None, None)),
-            false,
             &[],
             false,
             false,
@@ -2225,7 +2217,7 @@ mod tests {
         assert_eq!(
             with_network,
             format!(
-                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:16 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
+                "{MICROVM_BASE_COMMAND_LINE} virtio_mmio.device=0x1000@0xd0000000:16 virtio_mmio.device=0x1000@0xd0001000:17 virtnet_ip=10.0.0.2 virtnet_mask=255.255.255.0 virtnet_gw=10.0.0.1 virtnet_ip6=fd00::a00:2/120 virtnet_gw6=fd00::a00:1"
             )
         );
         // The guest names either gateway as its DNS server.
@@ -2234,7 +2226,6 @@ mod tests {
             append_microvm_virtio_discovery(
                 &mut with_dns,
                 Some((&network, Some(server.parse().unwrap()), None)),
-                false,
                 &[],
                 false,
                 false,
@@ -2258,7 +2249,6 @@ mod tests {
         append_microvm_virtio_discovery(
             &mut with_filesystem,
             None,
-            true,
             std::slice::from_ref(&filesystem),
             false,
             false,
