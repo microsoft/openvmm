@@ -48,8 +48,8 @@ locations:
 | `scratch` | writable | `0xd0006000` | 22 |
 
 The windows `0xd0004000` and `0xd0005000` between them, and their IRQs 20 and
-21, stay unassigned, so that no slot moves. Each IRQ is an IOAPIC input past
-the ISA IRQs, which the PIC does not see.
+21, are unassigned. Each IRQ is an IOAPIC input past the ISA IRQs, which the
+PIC does not see.
 
 Use `--microvm-sandbox-block ROLE:DISK`, in the order shown. The `distro`
 role requires the normal disk `,ro` option and a non-empty topology must end
