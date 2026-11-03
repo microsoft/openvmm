@@ -39,10 +39,9 @@ use vmcore::save_restore::SavedStateRoot;
 /// most one [`BUF_SIZE`] read.
 pub(crate) const MAX_STAGED_RX_BYTES: usize = BUF_SIZE;
 pub(crate) const MAX_SAVED_STATE_BYTES: usize = 512 * 1024;
-pub(crate) const DIRECT_SAVED_STATE_VERSION: u32 = 1;
-pub(crate) const BROKER_SAVED_STATE_VERSION: u32 = 2;
-#[cfg(test)]
-pub(crate) const SAVED_STATE_VERSION: u32 = DIRECT_SAVED_STATE_VERSION;
+/// The version of the console's saved-state schema, which records the
+/// broker's state for a control console and none for a direct one.
+pub(crate) const SAVED_STATE_VERSION: u32 = 1;
 
 impl VirtioConsoleDevice {
     /// Resets the private state that persists across queue restarts.
@@ -91,11 +90,10 @@ impl VirtioConsoleDevice {
                 "virtio-console staged RX exceeds its ABI bound"
             )));
         }
-        let (schema_version, staged_rx, disconnect_policy_id, broker) = match &worker.mode {
+        let (staged_rx, disconnect_policy_id, broker) = match &worker.mode {
             ConsoleWorkerMode::Direct {
                 disconnect_policy, ..
             } => (
-                DIRECT_SAVED_STATE_VERSION,
                 state.staged_rx.iter().copied().collect(),
                 disconnect_policy_id(*disconnect_policy),
                 None,
@@ -107,11 +105,11 @@ impl VirtioConsoleDevice {
                     )));
                 }
                 let broker = SavedBrokerSnapshot::from(mode.broker.snapshot());
-                (BROKER_SAVED_STATE_VERSION, Vec::new(), 0, Some(broker))
+                (Vec::new(), 0, Some(broker))
             }
         };
         Ok(Some(SavedStateBlob::new(SavedState {
-            schema_version,
+            schema_version: SAVED_STATE_VERSION,
             columns: self.config.cols.into(),
             rows: self.config.rows.into(),
             partial_transmit: state.partial_transmit as u64,
@@ -259,14 +257,14 @@ fn validate_saved_state(
         ));
     }
     let saved: SavedState = state.parse()?;
+    if saved.schema_version != SAVED_STATE_VERSION {
+        return Err(invalid_saved_state(format!(
+            "console requires schema version {SAVED_STATE_VERSION}, got {}",
+            saved.schema_version
+        )));
+    }
     match mode {
         SavedStateMode::Direct(disconnect_policy) => {
-            if saved.schema_version != DIRECT_SAVED_STATE_VERSION {
-                return Err(invalid_saved_state(format!(
-                    "direct console requires schema version {DIRECT_SAVED_STATE_VERSION}, got {}",
-                    saved.schema_version
-                )));
-            }
             if saved.broker.is_some() {
                 return Err(invalid_saved_state(
                     "direct console saved state contains broker state",
@@ -281,12 +279,6 @@ fn validate_saved_state(
         SavedStateMode::Broker {
             current_instance_id,
         } => {
-            if saved.schema_version != BROKER_SAVED_STATE_VERSION {
-                return Err(invalid_saved_state(format!(
-                    "control console requires schema version {BROKER_SAVED_STATE_VERSION}, got {}",
-                    saved.schema_version
-                )));
-            }
             if !saved.staged_rx.is_empty() {
                 return Err(invalid_saved_state(
                     "control-console saved state contains direct-mode staged RX",
