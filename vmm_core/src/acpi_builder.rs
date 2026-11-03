@@ -1740,8 +1740,7 @@ mod test {
     }
 
     fn contains_signature(data: &[u8], signature: &[u8; 4]) -> bool {
-        data.windows(signature.len())
-            .any(|window| window == signature)
+        data.array_windows::<4>().any(|window| window == signature)
     }
 
     #[test]

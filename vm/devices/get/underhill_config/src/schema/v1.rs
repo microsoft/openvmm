@@ -173,7 +173,7 @@ fn parse_ntfs_guid(ntfs_guid: Option<&str>) -> Result<Option<Guid>, Error<'_>> {
 fn check_dups(errors: &mut ParseErrors<'_>, iter: impl IntoIterator<Item = u32>) {
     let mut v: Vec<_> = iter.into_iter().collect();
     v.sort();
-    for (a, b) in v.iter().zip(v.iter().skip(1)) {
+    for [a, b] in v.array_windows() {
         if a == b {
             errors.push(Error::StorageLunLocationDuplicated);
         }
@@ -390,7 +390,7 @@ impl ParseSchema<crate::IdeController> for StorageController {
 
             disks.sort_by_key(|a| a.location);
 
-            for (a, b) in disks.iter().zip(disks.iter().skip(1)) {
+            for [a, b] in disks.array_windows() {
                 if a.channel == b.channel && a.location == b.location {
                     // Only 1 disk can be attached to a single slot.
                     errors.push_with_context(
@@ -597,7 +597,7 @@ impl ParseSchema<crate::Vtl2SettingsDynamic> for Vtl2SettingsDynamic {
             .collect::<Vec<_>>();
 
         instance_ids.sort();
-        for (a, b) in instance_ids.iter().zip(instance_ids.iter().skip(1)) {
+        for [a, b] in instance_ids.array_windows() {
             if a == b {
                 errors.push_with_context(
                     ErrorContext::InstanceId(*a),

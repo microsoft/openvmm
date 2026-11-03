@@ -419,9 +419,7 @@ impl<'a> PageTableBuilder<'a> {
                 }
             }
 
-            for window in ranges.windows(2) {
-                let (l, r) = (&window[0], &window[1]);
-
+            for [l, r] in ranges.array_windows() {
                 if r.start() < l.start() {
                     return Err(Error::UnsortedMappings);
                 }

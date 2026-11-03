@@ -534,11 +534,11 @@ fn partition_memory(
         }
     }
     if ram
-        .windows(2)
-        .any(|pair| pair[0].range.end() > pair[1].range.start())
+        .array_windows()
+        .any(|[left, right]| left.range.end() > right.range.start())
         || protectable
-            .windows(2)
-            .any(|pair| pair[0].start() > pair[1].start())
+            .array_windows()
+            .any(|[left, right]| left.start() > right.start())
     {
         return Err(DeviceTreeError::Memory);
     }
