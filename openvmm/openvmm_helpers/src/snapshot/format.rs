@@ -14,7 +14,7 @@ use virt::time_abi::TimeAbiCode;
 use virt::time_abi::TimeAbiError;
 
 /// Magic identifying the OpenVMM snapshot manifest format.
-pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V6\0";
+pub const SNAPSHOT_FORMAT_MAGIC: &[u8] = b"OPENVMM_SNAPSHOT_V2\0";
 /// Saved-state schema version used by the VM worker envelope.
 pub const SAVED_STATE_SCHEMA_VERSION: u32 = 1;
 /// Protobuf root type stored in `state.bin`.
@@ -101,8 +101,8 @@ pub(super) fn verify_digest(
     Ok(())
 }
 
-/// Validates the manifest's format identity: version 6, the matching magic,
-/// and the saved-state schema. Any other version or magic is
+/// Validates the manifest's format identity: [`MANIFEST_VERSION`], the
+/// matching magic, and the saved-state schema. Any other version or magic is
 /// `E_SNAPSHOT_VERSION`, which asks for a recapture.
 pub(super) fn validate_manifest_header(manifest: &SnapshotManifest) -> anyhow::Result<()> {
     if manifest.version != MANIFEST_VERSION {
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn other_versions_are_rejected_with_e_snapshot_version() {
-        for version in [0, 1, 2, 3, 4, 5, 7, u32::MAX] {
+        for version in [0, 1, 3, u32::MAX] {
             let mut manifest = test_manifest();
             manifest.version = version;
             let error = format!(
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn validate_manifest_wrong_magic() {
-        for magic in [&b"NOT_OPENVMM"[..], b"OPENVMM_SNAPSHOT_V5\0"] {
+        for magic in [&b"NOT_OPENVMM"[..], b"OPENVMM_SNAPSHOT_V1\0"] {
             let mut manifest = test_manifest();
             manifest.format_magic = magic.to_vec();
             let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();

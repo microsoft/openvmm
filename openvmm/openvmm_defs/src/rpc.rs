@@ -69,8 +69,7 @@ pub struct SnapshotSaveResponse {
     pub state_unit_names: Vec<String>,
     /// Effective Linux direct command line loaded into the guest.
     pub effective_command_line: String,
-    /// The NVX time ABI records of the capture, which make the manifest
-    /// version 6.
+    /// The NVX time ABI records of the capture.
     pub time: crate::time_abi::TimeCapture,
 }
 
