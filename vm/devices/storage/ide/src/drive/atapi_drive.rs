@@ -890,52 +890,6 @@ impl AtapiDrive {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use disk_backend::Disk;
-    use disk_file::FileDisk;
-    use scsidisk::atapi_scsi::AtapiScsiDisk;
-    use scsidisk::scsidvd::SimpleScsiDvd;
-    use test_with_tracing::test;
-
-    #[pal_async::async_test]
-    async fn saved_packet_request_is_replayed_after_restore() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        file.as_file().set_len(0x20000).unwrap();
-        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
-        let make_drive = || {
-            AtapiDrive::new(
-                Arc::new(AtapiScsiDisk::new(Arc::new(SimpleScsiDvd::new(Some(
-                    disk.clone(),
-                ))))),
-                IdePath {
-                    channel: 0,
-                    drive: 0,
-                },
-            )
-        };
-        let mut source = make_drive();
-        let mut request = scsi_core::Request {
-            cdb: [0; 16],
-            srb_flags: 0,
-        };
-        request.cdb[0] = 0x28;
-        request.cdb[8] = 1;
-        source.set_io(request);
-        let saved = mesh::payload::encode(source.save().unwrap());
-        let mut restored = make_drive();
-        restored
-            .restore(mesh::payload::decode(&saved).unwrap())
-            .unwrap();
-        assert_eq!(restored.io.as_ref().unwrap().request.cdb[0], 0x28);
-        assert_eq!(restored.io.as_ref().unwrap().request.cdb[8], 1);
-        std::future::poll_fn(|cx| restored.poll_drain(cx)).await;
-        std::future::poll_fn(|cx| source.poll_drain(cx)).await;
-        assert!(restored.io.is_none());
-    }
-}
-
 pub(crate) mod save_restore {
     use self::state::SavedAtapiDriveState;
     use self::state::SavedDmaType;
@@ -1169,5 +1123,51 @@ pub(crate) mod save_restore {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disk_backend::Disk;
+    use disk_file::FileDisk;
+    use scsidisk::atapi_scsi::AtapiScsiDisk;
+    use scsidisk::scsidvd::SimpleScsiDvd;
+    use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn saved_packet_request_is_replayed_after_restore() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(0x20000).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let make_drive = || {
+            AtapiDrive::new(
+                Arc::new(AtapiScsiDisk::new(Arc::new(SimpleScsiDvd::new(Some(
+                    disk.clone(),
+                ))))),
+                IdePath {
+                    channel: 0,
+                    drive: 0,
+                },
+            )
+        };
+        let mut source = make_drive();
+        let mut request = scsi_core::Request {
+            cdb: [0; 16],
+            srb_flags: 0,
+        };
+        request.cdb[0] = 0x28;
+        request.cdb[8] = 1;
+        source.set_io(request);
+        let saved = mesh::payload::encode(source.save().unwrap());
+        let mut restored = make_drive();
+        restored
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        assert_eq!(restored.io.as_ref().unwrap().request.cdb[0], 0x28);
+        assert_eq!(restored.io.as_ref().unwrap().request.cdb[8], 1);
+        std::future::poll_fn(|cx| restored.poll_drain(cx)).await;
+        std::future::poll_fn(|cx| source.poll_drain(cx)).await;
+        assert!(restored.io.is_none());
     }
 }

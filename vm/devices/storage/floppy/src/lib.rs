@@ -598,75 +598,6 @@ struct Io {
     request: IoRequest,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
-    use disk_file::FileDisk;
-    use test_with_tracing::test;
-    use vmcore::isa_dma_channel::FloatingDmaChannel;
-    use vmcore::save_restore::SaveRestore;
-
-    #[pal_async::async_test]
-    async fn pause_saves_pending_writes_without_draining_them() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        file.as_file().set_len(1_474_560).unwrap();
-        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
-        let make_device = || {
-            FloppyDiskController::new(
-                GuestMemory::allocate(0x4000),
-                LineInterrupt::detached(),
-                &mut ExternallyManagedPortIoIntercepts,
-                0x3f0,
-                DriveRibbon::Single(disk.clone()),
-                Box::new(FloatingDmaChannel),
-            )
-            .unwrap()
-        };
-        let mut source = make_device();
-        source.state.pending_command = FloppyCommand::WRITE_DATA;
-        source
-            .command_buffer
-            .access()
-            .memory
-            .write_at(0, &[0x5a; 512])
-            .unwrap();
-        source.start_io(IoRequest {
-            lba: 0,
-            size: 512,
-            is_write: true,
-        });
-        let io = source.io.as_mut().unwrap();
-        let future = std::mem::replace(&mut io.future, Box::pin(std::future::pending()));
-        let (release, wait) = mesh::oneshot();
-        io.future = Box::pin(async move {
-            wait.await.unwrap();
-            future.await
-        });
-        let mut cx = Context::from_waker(Waker::noop());
-        source.poll_device(&mut cx);
-        {
-            let mut stop = std::pin::pin!(source.stop());
-            assert!(stop.as_mut().poll(&mut cx).is_ready());
-        }
-        assert!(source.io.is_some());
-        let saved = mesh::payload::encode(source.save().unwrap());
-        let mut restored = make_device();
-        restored
-            .restore(mesh::payload::decode(&saved).unwrap())
-            .unwrap();
-        restored.drain_io().await;
-        let mut data = [0; 512];
-        std::io::Read::read_exact(&mut file.reopen().unwrap(), &mut data).unwrap();
-        assert_eq!(data, [0x5a; 512]);
-        let mut teardown = std::pin::pin!(source.teardown());
-        assert!(teardown.as_mut().poll(&mut cx).is_pending());
-        release.send(());
-        teardown.await;
-        restored.teardown().await;
-    }
-}
-
 #[derive(Debug, Error)]
 enum IoRestoreError {
     #[error("cannot restore a floppy controller with issued I/O")]
@@ -2369,5 +2300,74 @@ mod save_restore {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+    use disk_file::FileDisk;
+    use test_with_tracing::test;
+    use vmcore::isa_dma_channel::FloatingDmaChannel;
+    use vmcore::save_restore::SaveRestore;
+
+    #[pal_async::async_test]
+    async fn pause_saves_pending_writes_without_draining_them() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(1_474_560).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let make_device = || {
+            FloppyDiskController::new(
+                GuestMemory::allocate(0x4000),
+                LineInterrupt::detached(),
+                &mut ExternallyManagedPortIoIntercepts,
+                0x3f0,
+                DriveRibbon::Single(disk.clone()),
+                Box::new(FloatingDmaChannel),
+            )
+            .unwrap()
+        };
+        let mut source = make_device();
+        source.state.pending_command = FloppyCommand::WRITE_DATA;
+        source
+            .command_buffer
+            .access()
+            .memory
+            .write_at(0, &[0x5a; 512])
+            .unwrap();
+        source.start_io(IoRequest {
+            lba: 0,
+            size: 512,
+            is_write: true,
+        });
+        let io = source.io.as_mut().unwrap();
+        let future = std::mem::replace(&mut io.future, Box::pin(std::future::pending()));
+        let (release, wait) = mesh::oneshot();
+        io.future = Box::pin(async move {
+            wait.await.unwrap();
+            future.await
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        source.poll_device(&mut cx);
+        {
+            let mut stop = std::pin::pin!(source.stop());
+            assert!(stop.as_mut().poll(&mut cx).is_ready());
+        }
+        assert!(source.io.is_some());
+        let saved = mesh::payload::encode(source.save().unwrap());
+        let mut restored = make_device();
+        restored
+            .restore(mesh::payload::decode(&saved).unwrap())
+            .unwrap();
+        restored.drain_io().await;
+        let mut data = [0; 512];
+        std::io::Read::read_exact(&mut file.reopen().unwrap(), &mut data).unwrap();
+        assert_eq!(data, [0x5a; 512]);
+        let mut teardown = std::pin::pin!(source.teardown());
+        assert!(teardown.as_mut().poll(&mut cx).is_pending());
+        release.send(());
+        teardown.await;
+        restored.teardown().await;
     }
 }
