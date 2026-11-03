@@ -62,10 +62,8 @@ impl<T: 'static + Send + Sync> ObjectCache<T> {
                                 waiters.push(send);
                                 break recv;
                             }
-                            Entry::Built(weak) => {
-                                if let Some(v) = weak.upgrade() {
-                                    return Ok(v);
-                                }
+                            Entry::Built(weak) if let Some(v) = weak.upgrade() => return Ok(v),
+                            Entry::Built(_) => {
                                 // The object went away after the reap above. Remove
                                 // it and loop around again.
                                 objects.swap_remove(i);

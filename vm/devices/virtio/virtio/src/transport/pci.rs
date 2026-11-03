@@ -153,13 +153,12 @@ struct PciTransport {
 impl TransportOps for PciTransport {
     fn create_queue_interrupt(&mut self, _idx: usize, msix_vector: u16) -> Interrupt {
         match &self.interrupt_kind {
-            InterruptKind::Msix(msix) => {
-                if let Some(interrupt) = msix.interrupt(msix_vector) {
-                    interrupt
-                } else {
-                    tracelimit::warn_ratelimited!(msix_vector, "invalid MSIx vector specified");
-                    Interrupt::null()
-                }
+            InterruptKind::Msix(msix) if let Some(interrupt) = msix.interrupt(msix_vector) => {
+                interrupt
+            }
+            InterruptKind::Msix(_) => {
+                tracelimit::warn_ratelimited!(msix_vector, "invalid MSIx vector specified");
+                Interrupt::null()
             }
             InterruptKind::IntX(line) => {
                 let interrupt_status = self.interrupt_status.clone();
@@ -175,11 +174,12 @@ impl TransportOps for PciTransport {
     fn signal_config_change(&mut self) {
         *self.interrupt_status.lock() |= 2;
         match &self.interrupt_kind {
-            InterruptKind::Msix(msix) => {
-                if let Some(interrupt) = msix.interrupt(self.msix_config_vector) {
-                    interrupt.deliver();
-                }
+            InterruptKind::Msix(msix)
+                if let Some(interrupt) = msix.interrupt(self.msix_config_vector) =>
+            {
+                interrupt.deliver();
             }
+            InterruptKind::Msix(_) => (),
             InterruptKind::IntX(line) => line.set_level(true),
         }
     }

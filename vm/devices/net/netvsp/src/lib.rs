@@ -5849,7 +5849,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         .queue
                         .rx_avail(&mut queue_state.pool, &data.rx_done);
                 }
-                PacketData::SubChannelRequest(request) if state.primary.is_some() => {
+                PacketData::SubChannelRequest(request)
+                    if let Some(primary) = state.primary.as_mut() =>
+                {
                     let mut subchannel_count = 0;
                     // The number of requested subchannels has to stay below the maximum queue limit
                     // because one queue is always reserved for the primary channel. In other words,
@@ -5888,7 +5890,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     )?;
 
                     if subchannel_count > 0 {
-                        let primary = state.primary.as_mut().unwrap();
                         primary.requested_num_queues = subchannel_count as u16 + 1;
                         primary.tx_spread_sent = false;
                         self.restart = Some(CoordinatorMessage::Restart { channel_idx: 0 });
