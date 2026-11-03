@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVX time ABI 2.
+//! The NVX time ABI.
 //!
 //! The guest-visible time contract of the microVM: a minimal Hyper-V
 //! frequency identity, the identity MSRs, the TSC rate policy, downtime
@@ -58,10 +58,8 @@ pub use rate::RateCheck;
 use mesh_protobuf::Protobuf;
 use std::fmt;
 
-/// The time ABI version this OpenVMM implements: 2 publishes the host's clock
-/// correction with every time sample, and pairs its host UTC with the guest
-/// TSC on the host.
-pub const TIME_ABI_VERSION: u32 = 2;
+/// The time ABI version this OpenVMM implements.
+pub const TIME_ABI_VERSION: u32 = 1;
 
 macro_rules! time_abi_codes {
     ($($(#[doc = $doc:literal])* $variant:ident => $name:literal,)*) => {

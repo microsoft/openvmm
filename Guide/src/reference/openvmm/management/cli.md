@@ -518,12 +518,12 @@ describes the source definitions.
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
 * `--restore-entropy`: Accepted for compatibility; it has no effect. Every
-  microVM restore makes restore packet version 5, or version 6 at a restore
-  that replaces the network policy of a snapshot without a tier, available on
-  the private portb restore channel. The packet carries 64 bytes of fresh
-  entropy, the online-VP target, the memory-expansion ranges, the downtime,
-  the TSC rate deviation, and, in version 6, the network settings of the
-  restore's policy; the guest must consume it and explicitly reseed its RNG.
+  microVM restore makes the restore packet available on the private portb
+  restore channel. The packet carries 64 bytes of fresh entropy, the
+  online-VP target, the memory-expansion ranges, the downtime, the TSC rate
+  deviation, and, at a restore that replaces the network policy of a
+  snapshot without a tier, the network settings of the restore's policy; the
+  guest must consume it and explicitly reseed its RNG.
   [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
   the portb status bits, and the time sample.
   Every microVM portb device also reports generation-ID support in status bit
@@ -579,10 +579,9 @@ describes the source definitions.
   other policy, including one whose digest encoding predates version 3. The
   guest keeps its captured command line, so it learns its DNS server and
   whether to announce its listeners after the restore: a platform clone from
-  its host, and the guest of a snapshot without a tier from restore packet
-  version 6, which carries them, and whose restore gates host input until the
-  guest acknowledges that it applied them. A guest that reads restore packet
-  version 5 alone fails such a restore rather than ignore them.
+  its host, and the guest of a snapshot without a tier from the restore
+  packet, which carries them, and whose restore gates host input until the
+  guest acknowledges that it applied them.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
