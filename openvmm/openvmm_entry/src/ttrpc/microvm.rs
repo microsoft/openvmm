@@ -116,7 +116,6 @@ impl CreateVm {
         let vmservice::MicrovmSnapshotConfig {
             destination_path,
             restore_path,
-            restore_entropy,
             quiesce_timeout_ms,
             restore_ready_path,
             restore_processor_count,
@@ -151,10 +150,6 @@ impl CreateVm {
         anyhow::ensure!(
             snapshot_destination.is_none() || restore_path.is_none(),
             "snapshot capture and restore paths are mutually exclusive"
-        );
-        anyhow::ensure!(
-            !restore_entropy || restore_path.is_some(),
-            "restore_entropy requires restore_path"
         );
         anyhow::ensure!(
             restore_online_vp_count.is_none() || restore_path.is_some(),
@@ -1530,101 +1525,61 @@ mod tests {
     }
 
     #[test]
-    fn ttrpc_virtio_fs_preserves_microvm_wire_fields() {
-        let encoded = b"\x1a\x06/share\x20\x01";
-        let filesystem: vmservice::VirtioFs = mesh::payload::decode(encoded).unwrap();
-        assert_eq!(filesystem.guest_mount_target, "/share");
-        assert!(filesystem.read_write);
-        assert!(!filesystem.read_only);
-        assert_eq!(mesh::payload::encode(filesystem), encoded);
-    }
+    fn ttrpc_fork_fields_follow_upstream_wire_fields() {
+        // Upstream's fields keep upstream's numbers, and the fork's follow
+        // them: `machine_profile` is field 22 and `cpu_profile` field 23.
+        let cases: [(vmservice::VmConfig, &[u8]); 4] = [
+            (
+                vmservice::VmConfig {
+                    crash_dump_path: Some("dump".to_owned()),
+                    ..Default::default()
+                },
+                b"\x72\x04dump",
+            ),
+            (
+                vmservice::VmConfig {
+                    disable_vmbus: true,
+                    ..Default::default()
+                },
+                b"\x80\x01\x01",
+            ),
+            (
+                vmservice::VmConfig {
+                    machine_profile: vmservice::vm_config::MachineProfile::Microvm as i32,
+                    ..Default::default()
+                },
+                b"\xb0\x01\x01",
+            ),
+            (
+                vmservice::VmConfig {
+                    cpu_profile: "host".to_owned(),
+                    ..Default::default()
+                },
+                b"\xba\x01\x04host",
+            ),
+        ];
+        for (config, encoded) in cases {
+            assert_eq!(mesh::payload::encode(config.clone()), encoded);
+            assert_eq!(
+                mesh::payload::decode::<vmservice::VmConfig>(encoded).unwrap(),
+                config
+            );
+        }
 
-    #[test]
-    fn ttrpc_virtio_fs_read_only_uses_a_distinct_wire_field() {
+        // `read_only` is upstream's field 3, and the microVM's mount fields
+        // follow it.
         let filesystem = vmservice::VirtioFs {
             read_only: true,
+            guest_mount_target: "/share".to_owned(),
+            read_write: true,
             ..Default::default()
         };
-        assert_eq!(mesh::payload::encode(filesystem), [0x28, 0x01]);
-        let decoded: vmservice::VirtioFs = mesh::payload::decode(&[0x28, 0x01]).unwrap();
-        assert!(decoded.read_only);
-        assert!(!decoded.read_write);
-        assert!(decoded.guest_mount_target.is_empty());
-        assert!(mesh::payload::decode::<vmservice::VirtioFs>(&[0x18, 0x01]).is_err());
-    }
-
-    #[test]
-    fn ttrpc_vm_config_uses_non_conflicting_microvm_wire_fields() {
-        let encoded = b"\x88\x01\x02";
-        let config: vmservice::VmConfig = mesh::payload::decode(encoded).unwrap();
-        assert!(config.boot_config.is_none());
+        let encoded = b"\x18\x01\x22\x06/share\x28\x01";
+        assert_eq!(mesh::payload::encode(filesystem.clone()), encoded);
         assert_eq!(
-            config.machine_profile,
-            vmservice::vm_config::MachineProfile::Microvm as i32
+            mesh::payload::decode::<vmservice::VirtioFs>(encoded).unwrap(),
+            filesystem
         );
-        assert!(config.crash_dump_path.is_none());
-        assert_eq!(mesh::payload::encode(config), encoded);
-        assert!(mesh::payload::decode::<vmservice::VmConfig>(b"\x72\x00\x78\x02").is_err());
-    }
-
-    #[test]
-    fn ttrpc_crash_dump_uses_a_distinct_wire_field() {
-        let config = vmservice::VmConfig {
-            crash_dump_path: Some("dump".to_owned()),
-            ..Default::default()
-        };
-        let encoded = b"\x82\x01\x04dump";
-        assert_eq!(mesh::payload::encode(config), encoded);
-        let decoded: vmservice::VmConfig = mesh::payload::decode(encoded).unwrap();
-        assert_eq!(decoded.crash_dump_path.as_deref(), Some("dump"));
-        assert!(decoded.boot_config.is_none());
-    }
-
-    #[test]
-    fn ttrpc_platform_flags_avoid_fork_wire_fields() {
-        let config = vmservice::VmConfig {
-            disable_vmbus: true,
-            disable_hv: true,
-            nested_virt: true,
-            vmgs: Some(Default::default()),
-            ..Default::default()
-        };
-        let encoded = b"\xa0\x01\x01\xa8\x01\x01\xb8\x01\x01\xc2\x01\x00";
-        assert_eq!(mesh::payload::encode(config), encoded);
-        let decoded: vmservice::VmConfig = mesh::payload::decode(encoded).unwrap();
-        assert!(decoded.disable_vmbus);
-        assert!(decoded.disable_hv);
-        assert!(decoded.nested_virt);
-        assert!(decoded.vmgs.is_some());
-        assert!(decoded.crash_dump_path.is_none());
-        assert_eq!(
-            decoded.machine_profile,
-            vmservice::vm_config::MachineProfile::Standard as i32
-        );
-        assert!(mesh::payload::decode::<vmservice::VmConfig>(b"\x80\x01\x01").is_err());
-    }
-
-    #[test]
-    fn ttrpc_cpu_profile_uses_a_new_wire_field() {
-        let config = vmservice::VmConfig {
-            cpu_profile: "host".to_owned(),
-            ..Default::default()
-        };
-        // Field 22, length-delimited.
-        let encoded = b"\xb2\x01\x04host";
-        assert_eq!(mesh::payload::encode(config), encoded);
-        let decoded: vmservice::VmConfig = mesh::payload::decode(encoded).unwrap();
-        assert_eq!(decoded.cpu_profile, "host");
-        assert!(decoded.crash_dump_path.is_none());
-        assert_eq!(
-            decoded.machine_profile,
-            vmservice::vm_config::MachineProfile::Standard as i32
-        );
-        // An unset selector adds nothing to the encoding, so requests that
-        // predate the field are unchanged.
-        let decoded: vmservice::VmConfig = mesh::payload::decode(b"\x88\x01\x02").unwrap();
-        assert!(decoded.cpu_profile.is_empty());
-        assert!(mesh::payload::encode(vmservice::VmConfig::default()).is_empty());
     }
 
     #[test]
@@ -1759,10 +1714,10 @@ mod tests {
     }
 
     #[test]
-    fn ttrpc_microvm_profile_preserves_wire_identity_and_processor_policy() {
-        // The profile keeps its numeric value 2, which clients send, whatever
-        // microVM ABI version it selects; the ABI version is a snapshot's.
-        assert_eq!(vmservice::vm_config::MachineProfile::Microvm as i32, 2);
+    fn ttrpc_microvm_profile_has_a_fixed_wire_identity_and_processor_policy() {
+        // The profile's numeric value is 1, whatever microVM ABI version it
+        // selects; the ABI version is a snapshot's.
+        assert_eq!(vmservice::vm_config::MachineProfile::Microvm as i32, 1);
         assert_eq!(
             openvmm_machine_profile(vmservice::vm_config::MachineProfile::Microvm),
             OpenvmmMachineProfile::Microvm
@@ -1771,7 +1726,7 @@ mod tests {
             ttrpc_machine_profile(MICROVM_ABI_VERSION).unwrap(),
             vmservice::vm_config::MachineProfile::Microvm
         );
-        assert!(vmservice::vm_config::MachineProfile::from_i32(1).is_none());
+        assert!(vmservice::vm_config::MachineProfile::from_i32(2).is_none());
         // Snapshots of any other microVM ABI version are unsupported.
         assert!(ttrpc_machine_profile(0).is_err());
         assert_eq!(
