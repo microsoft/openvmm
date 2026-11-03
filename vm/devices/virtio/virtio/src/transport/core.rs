@@ -68,7 +68,7 @@ pub(crate) struct VirtioTransportCore {
     #[inspect(rename = "device", send = "DeviceCommand::Inspect")]
     pub device_sender: mesh::Sender<DeviceCommand>,
     #[inspect(skip)]
-    pub _device_task: Task<()>,
+    pub device_task: Task<()>,
     pub state: TransportState,
     pub device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
@@ -131,13 +131,13 @@ impl VirtioTransportCore {
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();
-        let _device_task = driver.spawn("virtio-device-task", async move {
+        let device_task = driver.spawn("virtio-device-task", async move {
             run_device_task(device, receiver).await;
         });
 
         Ok(Self {
             device_sender: sender,
-            _device_task,
+            device_task,
             state: TransportState::Ready,
             device_feature,
             device_feature_select: 0,
@@ -186,7 +186,7 @@ impl VirtioTransportCore {
         let Self {
             // Immutable / long-lived — not reset.
             device_sender: _,
-            _device_task: _,
+            device_task: _,
             device_feature: _,
             supports_save_restore: _,
             guest_memory: _,
@@ -432,13 +432,13 @@ impl VirtioTransportCore {
         );
         // Wait for the device task to drop the device so that backing
         // resources (e.g. disk files) are closed before device removal
-        // completes. Simply dropping `_device_task` would cancel the task
+        // completes. Simply dropping `device_task` would cancel the task
         // and release them asynchronously at some later point.
         self.device_sender
             .call(DeviceCommand::Teardown, ())
             .await
             .expect("device task is gone");
-        self._device_task.await;
+        self.device_task.await;
     }
 
     /// Signal a queue notification by index.

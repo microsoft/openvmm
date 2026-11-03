@@ -237,18 +237,6 @@ impl BasicNic {
         Self { vports, config }
     }
 
-    pub async fn stop(&mut self) {
-        for port in &mut self.vports {
-            port.task.stop().await;
-        }
-    }
-
-    pub fn start(&mut self) {
-        for port in &mut self.vports {
-            port.task.start();
-        }
-    }
-
     pub async fn handle_req(
         &mut self,
         state: &mut HwState,

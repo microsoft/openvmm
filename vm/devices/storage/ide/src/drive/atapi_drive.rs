@@ -855,6 +855,7 @@ impl AtapiDrive {
     }
 
     pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.waker = Some(cx.waker().clone());
         self.poll_device(cx);
         if self.io.is_none() {
             Poll::Ready(())

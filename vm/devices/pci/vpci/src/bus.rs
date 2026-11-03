@@ -670,6 +670,43 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn pending_config_accesses_finish_when_bus_payload_is_removed() {
+        let rig = VpciTestRig::new();
+        rig.device.lock().start_deferring_reads(0x1234_5678);
+        rig.device.lock().start_deferring();
+        let mut data = [0; 4];
+        let IoResult::Defer(mut read) = rig
+            .bus
+            .lock()
+            .mmio_read(VpciTestRig::config_addr(4), &mut data)
+        else {
+            panic!("config read must defer");
+        };
+        let IoResult::Defer(mut write) = rig
+            .bus
+            .lock()
+            .mmio_write(VpciTestRig::config_addr(8), &[0; 4])
+        else {
+            panic!("config write must defer");
+        };
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(read.poll_read(&mut cx, &mut data).is_pending());
+        assert!(write.poll_write(&mut cx).is_pending());
+
+        drop(rig.bus.clone().close_permanently().take());
+
+        assert!(rig.bus.lock_if_open().is_none());
+        assert!(matches!(
+            read.poll_read(&mut cx, &mut data),
+            Poll::Ready(Err(IoError::NoResponse))
+        ));
+        assert!(matches!(
+            write.poll_write(&mut cx),
+            Poll::Ready(Err(IoError::NoResponse))
+        ));
+    }
+
     impl InspectMut for DeferWriteDevice {
         fn inspect_mut(&mut self, req: inspect::Request<'_>) {
             req.ignore();

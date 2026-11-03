@@ -1318,7 +1318,7 @@ pub(crate) struct VfioCdevBindingState {
     ioas_id: u32,
     /// Manager removal notification, transferred from the prepare response.
     #[inspect(skip)]
-    _removal: CdevDeviceRemoval,
+    removal: CdevDeviceRemoval,
     /// Registry of exported device-BAR dmabufs for this device's IOAS.
     #[inspect(skip)]
     dmabuf_registry: Arc<DmaBufRegistry>,
@@ -1345,7 +1345,7 @@ impl VfioCdevBindingState {
                 pci_id,
                 iommufd_devid: resp.iommufd_devid,
                 ioas_id: resp.ioas_id,
-                _removal: resp.removal,
+                removal: resp.removal,
                 dmabuf_registry: resp.dmabuf_registry,
                 dmabuf_inode: None,
             },
@@ -1384,7 +1384,7 @@ impl VfioBinding {
                     .expect("VFIO manager is gone");
             }
             Self::Cdev(binding) => {
-                let sender = binding._removal.manager_send.clone();
+                let sender = binding.removal.manager_send.clone();
                 drop(binding);
                 sender
                     .call(IoasManagerRpc::Synchronize, ())

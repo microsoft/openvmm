@@ -140,7 +140,13 @@ impl IoState {
 
     pub async fn stop(&mut self) {
         while let Some(result) = self.ios.next().await {
-            self.completions.push_back(result);
+            let sq = &mut self.sqs[result.sq_idx];
+            if sq.deleting {
+                sq.io_count -= 1;
+                tracelimit::warn_ratelimited!("dropped i/o completion during queue deletion");
+            } else {
+                self.completions.push_back(result);
+            }
         }
     }
 }
@@ -323,6 +329,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
     use test_with_tracing::test;
+    use zerocopy::FromZeros;
 
     struct IssuedIo(Arc<AtomicBool>);
 
@@ -360,5 +367,31 @@ mod tests {
         assert_eq!(state.completions.len(), 1);
         assert_eq!(state.completions[0].cid, 17);
         assert_eq!(state.sqs[sq_idx].io_count, 1);
+    }
+
+    #[async_test]
+    async fn stop_allows_queue_deletion_with_a_full_completion_queue() {
+        let memory = GuestMemory::allocate(0x4000);
+        let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(4)));
+        let mut state = IoState::new(&memory, doorbells, 0x1000, 8, 1, None, BTreeMap::new());
+        let sq_idx = state.create_sq(1, 0, 8);
+        state.sqs[sq_idx].io_count = 1;
+        state.delete_sq(sq_idx);
+        while state.cq.write(spec::Completion::new_zeroed()).unwrap() {}
+        state.ios.push(Box::pin(async move {
+            IoResult {
+                sq_idx,
+                cid: 17,
+                result: CommandResult::default(),
+            }
+        }));
+
+        state.stop().await;
+        let (send, mut recv) = mesh::channel();
+        let mut handler = IoHandler::new(memory, send);
+        assert!(handler.process(&mut state).now_or_never().is_none());
+        assert_eq!(recv.recv().await.unwrap(), 1);
+        assert!(!state.sqs.contains(sq_idx));
+        assert!(state.completions.is_empty());
     }
 }

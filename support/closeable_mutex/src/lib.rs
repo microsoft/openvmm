@@ -93,11 +93,11 @@ impl<T: ?Sized> CloseableMutex<T> {
     /// Closes the mutex permanently, returning exclusive access to its value.
     ///
     /// Other references cannot lock the mutex, even after this guard is dropped.
-    /// The guard cannot be reopened with [`ClosedGuard::open`].
-    pub fn close_permanently(self: Arc<Self>) -> ClosedGuard<T> {
+    /// The returned guard cannot reopen the mutex.
+    pub fn close_permanently(self: Arc<Self>) -> PermanentClosedGuard<T> {
         let mut guard = self.close();
         guard.reopen = false;
-        guard
+        PermanentClosedGuard(guard)
     }
 
     /// If the lock is open, waits for it to become available and returns a
@@ -175,31 +175,45 @@ impl<T: ?Sized> Drop for ClosedGuard<T> {
     }
 }
 
-impl<T> ClosedGuard<T> {
+/// Exclusive access to a permanently closed mutex.
+///
+/// Unlike [`ClosedGuard`], this guard cannot reopen the mutex.
+#[must_use]
+pub struct PermanentClosedGuard<T: ?Sized>(ClosedGuard<T>);
+
+impl<T> PermanentClosedGuard<T> {
     /// Takes the value while leaving all remaining references permanently closed.
     ///
-    /// # Panics
-    /// Panics unless the mutex was closed permanently.
     pub fn take(self) -> T {
-        assert!(!self.reopen, "mutex is not permanently closed");
         {
-            let mut state = self.mutex.mutex.lock();
+            let mut state = self.0.mutex.mutex.lock();
             assert!(!state.taken);
             state.taken = true;
         }
         // SAFETY: this guard has exclusive access, cannot reopen the mutex, and
         // records extraction before moving the value to prevent a double drop.
-        unsafe { ManuallyDrop::take(&mut *self.mutex.value.get()) }
+        unsafe { ManuallyDrop::take(&mut *self.0.mutex.value.get()) }
+    }
+}
+
+impl<T: ?Sized> Deref for PermanentClosedGuard<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: ?Sized> DerefMut for PermanentClosedGuard<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
     }
 }
 
 impl<T: ?Sized> ClosedGuard<T> {
     /// Opens the mutex, returning the inner instance.
     ///
-    /// # Panics
-    /// Panics if the mutex was closed permanently.
     pub fn open(mut self) -> Arc<CloseableMutex<T>> {
-        assert!(self.reopen, "mutex is permanently closed");
         // SAFETY: this has not yet been called and will not be called again due
         // to the `forget`.
         let v = unsafe { self.release_ownership() };
@@ -279,13 +293,6 @@ mod tests {
         assert!(x.lock_if_open().is_none());
         drop(closed);
         assert!(x.lock_if_open().is_none());
-    }
-
-    #[test]
-    #[should_panic(expected = "mutex is permanently closed")]
-    fn permanently_closed_mutex_cannot_reopen() {
-        let x = Arc::new(CloseableMutex::new(0));
-        x.close_permanently().open();
     }
 
     #[test]

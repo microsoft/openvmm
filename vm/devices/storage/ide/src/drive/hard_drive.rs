@@ -608,6 +608,7 @@ impl HardDrive {
     }
 
     pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.waker = Some(cx.waker().clone());
         self.poll_device(cx);
         if self.io.is_none() {
             Poll::Ready(())
@@ -1701,9 +1702,65 @@ pub(crate) mod save_restore {
 
 #[cfg(test)]
 mod tests {
+    use super::CommandState;
     use super::DriveState;
+    use super::HardDrive;
+    use super::Io;
     use super::MediaGeometry;
     use super::Registers;
+    use disk_backend::Disk;
+    use disk_file::FileDisk;
+    use ide_resources::IdePath;
+    use std::future::poll_fn;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
+    use std::task::Waker;
+    use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn stopping_verify_wakes_the_stop_caller_for_the_next_chunk() {
+        struct CountWakes(AtomicUsize);
+        impl Wake for CountWakes {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(0x20000).unwrap();
+        let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+        let mut drive = HardDrive::new(
+            disk,
+            IdePath {
+                channel: 0,
+                drive: 0,
+            },
+        )
+        .unwrap();
+        drive.state.regs.device_head.set_lba(true);
+        drive.state.command = Some(CommandState {
+            sectors_before_interrupt: 1,
+            ..CommandState::verify(2)
+        });
+        drive.io = Some(Io(Box::pin(async { Ok(()) })));
+        let old = Arc::new(CountWakes(AtomicUsize::new(0)));
+        let stopping = Arc::new(CountWakes(AtomicUsize::new(0)));
+        drive.waker = Some(Waker::from(old.clone()));
+        let waker = Waker::from(stopping.clone());
+
+        assert!(
+            drive
+                .poll_stop(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        assert_eq!(old.0.load(Ordering::SeqCst), 0);
+        assert!(stopping.0.load(Ordering::SeqCst) > 0);
+        poll_fn(|cx| drive.poll_stop(cx)).await;
+        assert!(drive.state.command.is_none());
+    }
 
     #[test]
     fn test_lba() {
