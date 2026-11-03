@@ -123,7 +123,7 @@ pub(super) fn effective_microvm_network(
     // keeps whatever policy replaces its own.
     let policy = opt.microvm_egress_policy(&config)?;
     let contract_policy = if opt.microvm.restore_network_policy {
-        openvmm_helpers::snapshot::microvm::validate_microvm_network_replacement(saved, &policy)?
+        openvmm_helpers::snapshot::microvm::validate_microvm_network_replacement(saved)?
     } else {
         openvmm_helpers::snapshot::microvm::validate_microvm_network_policy(saved, &policy)?;
         policy.clone()
@@ -208,10 +208,10 @@ pub(super) fn microvm_network_endpoint(
             gateway_ipv4: network.derived_gateway_ipv4,
             gateway_mac: network.gateway_mac,
         }),
-        static_ipv6: network.ipv6.map(|ipv6| StaticIpv6Config {
-            guest_ipv6: ipv6.guest_ipv6,
-            prefix_length: ipv6.prefix_length,
-            gateway_ipv6: ipv6.derived_gateway_ipv6,
+        static_ipv6: Some(StaticIpv6Config {
+            guest_ipv6: network.ipv6.guest_ipv6,
+            prefix_length: network.ipv6.prefix_length,
+            gateway_ipv6: network.ipv6.derived_gateway_ipv6,
         }),
         ports,
         recv: None,
@@ -388,7 +388,7 @@ pub(crate) mod tests {
         let dual_stack = effective_microvm_network(&options, Some(&network_contract()))
             .unwrap()
             .unwrap();
-        let ipv6 = dual_stack.config.ipv6.unwrap();
+        let ipv6 = dual_stack.config.ipv6;
         assert_eq!(
             ipv6.guest_ipv6,
             "fd00::a00:2".parse::<std::net::Ipv6Addr>().unwrap()
@@ -397,17 +397,6 @@ pub(crate) mod tests {
             dual_stack.policy.ipv6_link().map(|link| link.guest()),
             Some(ipv6.guest_ipv6)
         );
-
-        // A snapshot whose network predates IPv6 restores without IPv6.
-        let ipv4_only = "10.0.0.2/24"
-            .parse::<openvmm_defs::microvm::MicrovmNetworkConfig>()
-            .unwrap()
-            .without_ipv6();
-        let restored = effective_microvm_network(&options, Some(&network_contract_for(&ipv4_only)))
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored.config, ipv4_only);
-        assert!(restored.policy.ipv6_link().is_none());
     }
 
     #[test]
@@ -835,30 +824,5 @@ pub(crate) mod tests {
                 .unwrap();
             assert_eq!(restored.config, slash_30, "{arguments:?}");
         }
-
-        // A template whose network predates IPv6 keeps no IPv6 identity.
-        let ipv4_only = network.without_ipv6();
-        let contract = template_contract_for(&ipv4_only);
-        let ipv4_rules = restore_options(&[
-            "--restore-network-policy",
-            "--network-egress",
-            "deny",
-            "--network-egress-allow",
-            "192.0.2.0/24:tcp:443",
-        ]);
-        let restored = effective_microvm_network(&ipv4_rules, Some(&contract))
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored.config, ipv4_only);
-        assert!(restored.policy.ipv6_link().is_none());
-        let ipv6_rules = restore_options(&[
-            "--restore-network-policy",
-            "--network-egress",
-            "deny",
-            "--network-egress-allow",
-            "2001:db8::/32:tcp:443",
-        ]);
-        let error = effective_microvm_network(&ipv6_rules, Some(&contract)).unwrap_err();
-        assert!(error.to_string().contains("no IPv6 identity"), "{error:#}");
     }
 }
