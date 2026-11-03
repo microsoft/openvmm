@@ -21,17 +21,11 @@ use net_backend_resources::mac_address::MacAddress;
 use std::fmt::Write as _;
 use vmotherboard::options::BaseChipsetManifest;
 
-/// The persisted microVM ABI version.
-///
-/// Version 3 offers no device `VIRTIO_F_ACCESS_PLATFORM`, since the microVM
-/// has no IOMMU, and no console `VIRTIO_CONSOLE_F_SIZE`, both of which
-/// version 2 offered. It also routes the IOAPIC's inputs past the 16 ISA IRQs
-/// in the MP table and gives each virtio-mmio slot one of them, the same on
-/// every backend, where version 2 put each slot on an ISA IRQ and the NIC on
-/// another one on WHP. A snapshot of version 2 records those feature masks
-/// and interrupts, so restore refuses it by its version, before it compares
-/// the devices.
-pub const MICROVM_ABI_VERSION_3: u32 = 3;
+/// The persisted microVM ABI version: the version of the machine, its fixed
+/// devices, their exact feature masks, MMIO windows, and interrupts, which a
+/// microVM snapshot records. Restore refuses a snapshot of any other version
+/// before it compares the devices.
+pub const MICROVM_ABI_VERSION: u32 = 1;
 /// Linux memory-block granularity used for microVM restore-time expansion.
 pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 = 128 * 1024 * 1024;
 
