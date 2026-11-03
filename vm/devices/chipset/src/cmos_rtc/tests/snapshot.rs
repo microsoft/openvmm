@@ -38,7 +38,6 @@ fn restore_rejects_inconsistent_status_c_before_mutating_state() {
         assert_eq!(after.addr, before.addr);
         assert_eq!(after.cmos, before.cmos);
         assert_eq!(after.clock_time_millis, before.clock_time_millis);
-        assert_eq!(after.transaction_read_mask, before.transaction_read_mask);
         assert_eq!(after.time_valid, before.time_valid);
     }
 }
@@ -66,24 +65,16 @@ fn restore_preserves_guest_epoch_and_advances_downtime() {
 }
 
 #[test]
-fn rtc_rejects_retired_coherent_transaction_state() {
-    let (_, _, _, mut rtc) = new_test_rtc();
-    let mut saved = rtc.save().unwrap();
-    saved.transaction_read_mask = Some(1 << 15);
+fn restore_restores_the_calendar_validity() {
+    for time_valid in [false, true] {
+        let (_, _, _, mut rtc) = new_test_rtc();
+        let mut saved = rtc.save().unwrap();
+        saved.time_valid = time_valid;
 
-    assert!(matches!(
-        rtc.restore(saved),
-        Err(vmcore::save_restore::RestoreError::InvalidSavedState(_))
-    ));
-}
-
-#[test]
-fn rtc_restores_legacy_valid_time_semantics() {
-    let (_, _, _, mut rtc) = new_test_rtc();
-    let mut saved = rtc.save().unwrap();
-    saved.time_valid = None;
-    saved.transaction_read_mask = None;
-
-    rtc.restore(saved).unwrap();
-    assert_eq!(get_cmos_data(&mut rtc, CmosReg::STATUS_D), 0x80);
+        rtc.restore(saved).unwrap();
+        assert_eq!(
+            get_cmos_data(&mut rtc, CmosReg::STATUS_D),
+            if time_valid { 0x80 } else { 0 }
+        );
+    }
 }
