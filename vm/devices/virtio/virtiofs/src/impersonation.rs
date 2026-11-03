@@ -7,14 +7,11 @@
 #![expect(unsafe_code)]
 
 use std::io;
-use std::marker::PhantomData;
-use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::FromRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::os::windows::io::RawHandle;
 use std::ptr;
 use windows_sys::Win32::Security;
-use windows_sys::Win32::System::Threading::SetThreadToken;
 
 /// Creates an impersonation token, owned by this process, from a token handle
 /// value duplicated into this process by the RPC caller.
@@ -44,37 +41,6 @@ fn duplicate_impersonation_token(token: RawHandle) -> io::Result<OwnedHandle> {
     }
 }
 
-/// Impersonates a token on the current thread until dropped.
-pub(crate) struct ImpersonationGuard {
-    _not_send: PhantomData<*const ()>,
-}
-
-impl ImpersonationGuard {
-    pub fn new(token: &OwnedHandle) -> io::Result<Self> {
-        // SAFETY: A null thread selects the current thread, and `token` is a
-        // valid handle for the duration of the call.
-        if unsafe { SetThreadToken(ptr::null(), token.as_raw_handle()) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(Self {
-            _not_send: PhantomData,
-        })
-    }
-}
-
-impl Drop for ImpersonationGuard {
-    fn drop(&mut self) {
-        // SAFETY: Calling Win32 API as documented.
-        if unsafe { Security::RevertToSelf() } == 0 {
-            panic!(
-                "failed to revert virtio-fs impersonation: {}",
-                io::Error::last_os_error()
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +50,8 @@ mod tests {
     use fuse::Request;
     use fuse::SessionInfo;
     use fuse::protocol::*;
+    use pal::windows::security::RevertToSelfGuard;
+    use std::os::windows::io::AsRawHandle;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
@@ -148,7 +116,7 @@ mod tests {
         let token_handle = process_token.as_raw_handle() as usize as u64;
         let token = duplicate_user_token(token_handle).unwrap();
         {
-            let _guard = ImpersonationGuard::new(&token).unwrap();
+            let _guard = RevertToSelfGuard::impersonate(&token).unwrap();
             thread_token().unwrap();
         }
 

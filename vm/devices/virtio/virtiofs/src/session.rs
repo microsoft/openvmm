@@ -39,7 +39,7 @@ impl VirtioFsSession {
         let _impersonation = match self
             .user_token
             .as_ref()
-            .map(crate::impersonation::ImpersonationGuard::new)
+            .map(pal::windows::security::RevertToSelfGuard::impersonate)
             .transpose()
         {
             Ok(guard) => guard,

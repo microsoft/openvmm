@@ -60,15 +60,7 @@ impl ParsedVirtioFs {
                 mount_options,
                 windows_options,
             } => {
-                anyhow::ensure!(
-                    !root_path.is_empty(),
-                    "virtio-fs root path must not be empty"
-                );
-                anyhow::ensure!(
-                    !root_path.contains('\0'),
-                    "virtio-fs root path must not contain NUL bytes"
-                );
-
+                validate_root_path(&root_path)?;
                 let platform = ParsedHostFsPlatform::parse(windows_options)?;
                 ParsedVirtioFsBackend::HostFs {
                     root_path,
@@ -78,6 +70,7 @@ impl ParsedVirtioFs {
             }
             #[cfg(windows)]
             VirtioFsBackend::SectionFs { root_path } => {
+                validate_root_path(&root_path)?;
                 ParsedVirtioFsBackend::SectionFs { root_path }
             }
             #[cfg(not(windows))]
@@ -91,6 +84,18 @@ impl ParsedVirtioFs {
 
         Ok(Self { tag, backend })
     }
+}
+
+fn validate_root_path(root_path: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !root_path.is_empty(),
+        "virtio-fs root path must not be empty"
+    );
+    anyhow::ensure!(
+        !root_path.contains('\0'),
+        "virtio-fs root path must not contain NUL bytes"
+    );
+    Ok(())
 }
 
 /// Resolver for virtiofs devices.
@@ -157,7 +162,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
 cfg_if! {
     if #[cfg(windows)] {
         use crate::impersonation::duplicate_user_token;
-        use crate::impersonation::ImpersonationGuard;
+        use pal::windows::security::RevertToSelfGuard;
         use std::os::windows::io::OwnedHandle;
 
         struct ParsedHostFsPlatform {
@@ -185,7 +190,7 @@ cfg_if! {
                 let _impersonation = self
                     .user_token
                     .as_ref()
-                    .map(ImpersonationGuard::new)
+                    .map(RevertToSelfGuard::impersonate)
                     .transpose()
                     .context("failed to impersonate virtio-fs user token")?;
                 Ok(VirtioFs::new(root_path, Some(mount_options))?)
