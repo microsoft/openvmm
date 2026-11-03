@@ -20,6 +20,7 @@ use x86_64 as arch;
 // irqfd is arch-independent (MSI routing + MSHV_IRQFD), wired up on both
 // x86_64 and aarch64.
 pub mod irqfd;
+pub mod processor_qos;
 
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
