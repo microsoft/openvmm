@@ -201,7 +201,6 @@ struct RtcState {
     addr: u8,
     cmos: CmosData,
     time_valid: bool,
-    transaction_read_mask: Option<u16>,
 }
 
 impl RtcState {
@@ -229,7 +228,6 @@ impl RtcState {
             addr: 0x80,
             cmos,
             time_valid: true,
-            transaction_read_mask: None,
         }
     }
 }
@@ -939,12 +937,9 @@ mod save_restore {
             /// Guest-visible RTC time at the stopped snapshot boundary.
             #[mesh(3)]
             pub clock_time_millis: i64,
-            /// Calendar registers already read from an active coherent sample.
-            #[mesh(4)]
-            pub transaction_read_mask: Option<u16>,
             /// Whether the latched calendar sample is valid.
-            #[mesh(5)]
-            pub time_valid: Option<bool>,
+            #[mesh(4)]
+            pub time_valid: bool,
         }
     }
 
@@ -958,8 +953,7 @@ mod save_restore {
                 addr,
                 cmos: cmos.0,
                 clock_time_millis: self.saved_clock_time()?,
-                transaction_read_mask: self.state.transaction_read_mask,
-                time_valid: Some(self.state.time_valid),
+                time_valid: self.state.time_valid,
             };
 
             Ok(saved_state)
@@ -973,7 +967,6 @@ mod save_restore {
                 addr,
                 cmos: CmosData(cmos),
                 time_valid: fields.time_valid,
-                transaction_read_mask: fields.transaction_read_mask,
             };
             self.restore_clock(fields.clock_time_millis);
 
