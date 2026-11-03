@@ -25,7 +25,7 @@ use std::path::Path;
 /// Capability version for the always-present dormant microVM virtio-fs slot.
 pub const MICROVM_FILESYSTEM_SLOT_VERSION: u32 = 1;
 /// Linux-direct MP-table boot layout with shared interrupt status.
-pub const MICROVM_BOOT_LAYOUT_VERSION: u32 = 2;
+pub const MICROVM_BOOT_LAYOUT_VERSION: u32 = 1;
 /// Contract version for one-shot restore-time microVM memory expansion.
 pub const MICROVM_MEMORY_EXPANSION_VERSION: u32 = 1;
 /// Linux memory-block granularity used by the x86-64 microVM guest.
@@ -1525,7 +1525,7 @@ pub fn microvm_machine_contract(
 
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
-        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
+        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION,
         source_hypervisor: source_hypervisor.to_owned(),
         effective_command_line: String::new(),
         effective_command_line_sha256: Vec::new(),
@@ -1564,7 +1564,7 @@ pub fn requires_post_restore_gate(manifest: &SnapshotManifest) -> bool {
     manifest.machine_contract.as_ref().is_some_and(|contract| {
         matches!(
             contract.microvm_abi_version,
-            openvmm_defs::microvm::MICROVM_ABI_VERSION_3
+            openvmm_defs::microvm::MICROVM_ABI_VERSION
         )
     }) && !manifest.snapshot_tier.is_empty()
 }
@@ -1585,10 +1585,10 @@ pub fn validate_supported_microvm_contract(
     contract: &SnapshotMachineContract,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        contract.microvm_abi_version == openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
+        contract.microvm_abi_version == openvmm_defs::microvm::MICROVM_ABI_VERSION,
         "snapshot microVM ABI version {} is unsupported; this OpenVMM supports version {}",
         contract.microvm_abi_version,
-        openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
+        openvmm_defs::microvm::MICROVM_ABI_VERSION,
     );
     anyhow::ensure!(
         contract.boot_layout_version == MICROVM_BOOT_LAYOUT_VERSION,
@@ -2486,7 +2486,7 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
 pub(super) fn test_machine_contract() -> SnapshotMachineContract {
     let mut contract = SnapshotMachineContract {
         machine_profile: "microvm".to_owned(),
-        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION_3,
+        microvm_abi_version: openvmm_defs::microvm::MICROVM_ABI_VERSION,
         source_hypervisor: "whp".to_owned(),
         effective_command_line: String::new(),
         effective_command_line_sha256: Vec::new(),
@@ -4036,36 +4036,10 @@ mod tests {
         let mut manifest = test_manifest();
         let expected = test_machine_contract();
         let mut contract = expected.clone();
-        contract.microvm_abi_version = 1;
+        contract.microvm_abi_version = openvmm_defs::microvm::MICROVM_ABI_VERSION + 1;
         manifest.machine_contract = Some(contract);
         let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert!(err.to_string().contains("ABI version 1 is unsupported"));
-    }
-
-    #[test]
-    fn abi_v2_contracts_are_refused_by_their_version() {
-        // Version 2 offered access-platform on every device but the NIC, and
-        // the console size, and put the console on IRQ 7, so a console of
-        // version 2 records other feature banks and another interrupt than one
-        // of version 3. Restore refuses such a contract by its version, before
-        // it compares the devices.
-        const REFUSAL: &str =
-            "snapshot microVM ABI version 2 is unsupported; this OpenVMM supports version 3";
-        let mut contract = generated_console_contract();
-        contract.microvm_abi_version = 2;
-        let console = contract.devices.last_mut().unwrap();
-        console.feature_banks = vec![0x3000_0001, 0x0000_0003];
-        console.irq = Some(7);
-        let err = validate_supported_microvm_contract(&contract).unwrap_err();
-        assert_eq!(err.to_string(), REFUSAL);
-
-        let mut manifest = test_manifest();
-        let expected = test_machine_contract();
-        let mut contract = expected.clone();
-        contract.microvm_abi_version = 2;
-        manifest.machine_contract = Some(contract);
-        let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
-        assert_eq!(err.to_string(), REFUSAL);
+        assert!(err.to_string().contains("ABI version 2 is unsupported"));
     }
 
     #[test]
@@ -4131,12 +4105,12 @@ mod tests {
         let mut manifest = test_manifest();
         let expected = test_machine_contract();
         let mut contract = expected.clone();
-        contract.boot_layout_version = 1;
+        contract.boot_layout_version = MICROVM_BOOT_LAYOUT_VERSION + 1;
         manifest.machine_contract = Some(contract);
         let err = validate_microvm_machine_contract(&manifest, &expected).unwrap_err();
         assert!(
             err.to_string()
-                .contains("boot layout version 1 is unsupported")
+                .contains("boot layout version 2 is unsupported")
         );
     }
 
@@ -4149,7 +4123,7 @@ mod tests {
             assert_eq!(topology.cores_per_die, processor_count);
             assert_eq!(topology.threads_per_core, 1);
             assert_eq!(topology.apic_ids, (0..processor_count).collect::<Vec<_>>());
-            assert_eq!(MICROVM_BOOT_LAYOUT_VERSION, 2);
+            assert_eq!(MICROVM_BOOT_LAYOUT_VERSION, 1);
         }
 
         for processor_count in [0, 3, 5, 16] {

@@ -101,16 +101,8 @@ describes the source definitions.
   `--restore-snapshot`. Any other `nvx_overlay_upper` token, including a bare
   or repeated one, is rejected.
 
-  ```admonish warning title="microVM migration"
-  The canonical `microvm` spelling now selects the contract formerly exposed
-  as `microvm-v2`; the `microvm-v2` selector and the former ABI-v1 behavior are
-  removed. Snapshots record microVM ABI value 3 and boot layout value 2. ABI
-  value 3 offers no device `VIRTIO_F_ACCESS_PLATFORM` and no console
-  `VIRTIO_CONSOLE_F_SIZE`, which value 2 offered, and gives each virtio-mmio
-  slot its own IOAPIC input past the ISA IRQs on every backend, where value 2
-  used ISA IRQs and put the NIC on another one on WHP, so restore refuses a
-  snapshot of value 2, which must be recaptured.
-  ```
+  Snapshots record microVM ABI value 1 and boot layout value 1, and restore
+  refuses a snapshot of any other value.
 * `--net <IPv4/PREFIX>`: With `--machine microvm`, attach one virtio-net NIC
   at MMIO `0xd0000000`, IRQ 16, on every backend. Prefixes
   `/1` through `/30` are accepted. The first usable subnet address becomes
