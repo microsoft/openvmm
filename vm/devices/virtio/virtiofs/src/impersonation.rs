@@ -193,10 +193,8 @@ mod tests {
             let token = thread_token().unwrap();
             assert_eq!(token_id(&token), self.token_id);
             // SAFETY: The handle refers to a valid token.
-            assert_ne!(
-                unsafe { Security::IsTokenRestricted(token.as_raw_handle()) },
-                0
-            );
+            let restricted = unsafe { Security::IsTokenRestricted(token.as_raw_handle()) };
+            assert_ne!(restricted, 0);
             self.calls.fetch_add(1, Ordering::Relaxed);
         }
     }
