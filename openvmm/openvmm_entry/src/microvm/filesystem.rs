@@ -929,26 +929,24 @@ pub(crate) fn microvm_filesystem_from_snapshot(
     openvmm_helpers::snapshot::microvm::snapshot_microvm_filesystem_config(saved)
 }
 
-pub(crate) fn microvm_filesystem_slot_from_snapshot(
+/// Validates that a snapshot reserves the microVM's virtio-fs slot.
+pub(crate) fn validate_microvm_filesystem_slot(
     contract: &openvmm_helpers::snapshot::microvm::SnapshotMachineContract,
-) -> anyhow::Result<bool> {
-    let has_device = contract
-        .devices
-        .iter()
-        .any(|device| device.stable_id == MICROVM_FILESYSTEM_STABLE_ID);
-    match contract.microvm_filesystem_slot_version {
-        0 => Ok(has_device),
-        openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION => {
-            anyhow::ensure!(
-                has_device,
-                "snapshot advertises a restore-attachable microVM filesystem slot but omits its fixed device"
-            );
-            Ok(true)
-        }
-        version => anyhow::bail!(
-            "snapshot microVM filesystem slot capability version {version} is unsupported"
-        ),
-    }
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        contract.microvm_filesystem_slot_version
+            == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
+        "snapshot microVM filesystem slot capability version {} is unsupported",
+        contract.microvm_filesystem_slot_version
+    );
+    anyhow::ensure!(
+        contract
+            .devices
+            .iter()
+            .any(|device| device.stable_id == MICROVM_FILESYSTEM_STABLE_ID),
+        "snapshot advertises a restore-attachable microVM filesystem slot but omits its fixed device"
+    );
+    Ok(())
 }
 
 /// Returns the effective filesystem that `request` attaches. A restore must
@@ -968,27 +966,19 @@ pub(super) fn effective_microvm_filesystem(
             .transpose();
     };
 
-    let has_device = microvm_filesystem_slot_from_snapshot(restore)?;
+    validate_microvm_filesystem_slot(restore)?;
     let saved_attachment = restore
         .attachments
         .iter()
         .find(|attachment| attachment.stable_id == MICROVM_FILESYSTEM_STABLE_ID);
     anyhow::ensure!(
-        saved_attachment.is_some() == restore.microvm_filesystem.is_some()
-            && (restore.microvm_filesystem_slot_version
-                == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION
-                || has_device == restore.microvm_filesystem.is_some()),
+        saved_attachment.is_some() == restore.microvm_filesystem.is_some(),
         "snapshot microVM filesystem slot, policy, and attachment inventories disagree"
     );
     let Some(saved) = &restore.microvm_filesystem else {
         let Some(request) = request else {
             return Ok(None);
         };
-        anyhow::ensure!(
-            restore.microvm_filesystem_slot_version
-                == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
-            "snapshot does not support restore-time microVM filesystem attachment"
-        );
         // The snapshot's machine has only the dormant slot, whose device and
         // command line stay as captured whatever the restore binds to it, so
         // the restore builds the filesystem as a cold boot does.
@@ -1044,7 +1034,7 @@ pub(super) fn effective_microvm_filesystem(
     } else {
         anyhow::ensure!(
             !saved.canonical_host_path.is_empty(),
-            "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+            "snapshot filesystem canonical host path is missing"
         );
         anyhow::ensure!(
             effective.root_path == saved.canonical_host_path,
@@ -1150,7 +1140,6 @@ mod tests {
         openvmm_defs::microvm::append_microvm_virtio_discovery(
             &mut command_line,
             None,
-            true,
             &filesystem
                 .iter()
                 .map(|filesystem| filesystem.config.clone())
@@ -1179,7 +1168,6 @@ mod tests {
             openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
             command_line,
             None,
-            true,
             filesystem.map(|filesystem| {
                 openvmm_helpers::snapshot::microvm::MicrovmFilesystemSource {
                     config: &filesystem.config,
@@ -1367,9 +1355,10 @@ mod tests {
     }
 
     #[test]
-    fn filesystem_restore_rejects_mount_for_legacy_snapshot_without_slot() {
+    fn filesystem_restore_rejects_an_unsupported_slot_version() {
         let root = tempfile::tempdir().unwrap();
-        let contract = network_contract();
+        let mut contract = dormant_filesystem_contract();
+        contract.microvm_filesystem_slot_version += 1;
         let options = restore_mount_options(root.path(), "ro");
         let error = match single_filesystem(
             options.microvm.microvm_mount.as_ref(),
@@ -1378,12 +1367,13 @@ mod tests {
             Some(&contract),
         ) {
             Err(error) => error,
-            Ok(_) => panic!("legacy snapshot unexpectedly accepted a restore-time mount"),
+            Ok(_) => panic!("an unsupported slot version accepted a restore-time mount"),
         };
         assert!(
             error
                 .to_string()
-                .contains("does not support restore-time microVM filesystem attachment")
+                .contains("slot capability version 2 is unsupported"),
+            "{error:#}"
         );
     }
 
@@ -1510,8 +1500,7 @@ mod tests {
         };
         assert!(error.to_string().contains("--mount-owner vmm"));
 
-        // Snapshots record VMM ownership as an empty mode, like those that
-        // predate the field.
+        // Snapshots record VMM ownership as an empty mode.
         let contract = filesystem_contract(root.path());
         assert_eq!(contract.microvm_filesystem.as_ref().unwrap().owner_mode, "");
         assert!(single_filesystem(requested, &[], caller, Some(&contract)).is_err());
@@ -2017,14 +2006,9 @@ mod tests {
             options_filesystem(&options, Some(&dormant_filesystem_contract())).unwrap();
         assert!(filesystem.config.is_aggregate());
 
-        // A snapshot that predates the dormant slot binds no filesystem.
-        let error = options_filesystem(&options, Some(&network_contract())).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("does not support restore-time microVM filesystem attachment"),
-            "{error:#}"
-        );
+        // Every snapshot has the dormant slot, a snapshot with a NIC too.
+        let filesystem = options_filesystem(&options, Some(&network_contract())).unwrap();
+        assert!(filesystem.config.is_aggregate());
 
         // A snapshot of a single directory requires that directory.
         let error =
