@@ -93,7 +93,6 @@ pub(super) struct CreateVm {
     portb: Option<Resource<SerialBackendHandle>>,
     portb_has_output: bool,
     resources: crate::microvm::MicrovmResources,
-    filesystem_slot: bool,
     filesystems: Vec<openvmm_defs::microvm::MicrovmFilesystemConfig>,
     effective_command_line: Option<String>,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
@@ -349,7 +348,6 @@ impl CreateVm {
                 portb: None,
                 portb_has_output: false,
                 resources: Default::default(),
-                filesystem_slot: active,
                 filesystems: Vec::new(),
                 effective_command_line: None,
                 snapshot_memory_file: None,
@@ -372,8 +370,7 @@ impl CreateVm {
                 restore.machine_contract.source_hypervisor,
                 self.source_hypervisor
             );
-            self.filesystem_slot =
-                crate::microvm::microvm_filesystem_slot_from_snapshot(&restore.machine_contract)?;
+            crate::microvm::validate_microvm_filesystem_slot(&restore.machine_contract)?;
         }
 
         self.restored_filesystem = if let Some(restore) = &self.authoritative_restore {
@@ -394,10 +391,7 @@ impl CreateVm {
                 .iter()
                 .find(|attachment| attachment.stable_id == first_slot.stable_id);
             anyhow::ensure!(
-                saved_policy.is_some() == saved_attachment.is_some()
-                    && (restore.machine_contract.microvm_filesystem_slot_version
-                        == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION
-                        || self.filesystem_slot == saved_policy.is_some()),
+                saved_policy.is_some() == saved_attachment.is_some(),
                 "snapshot microVM filesystem slot, policy, and attachment inventories disagree"
             );
             match (saved_policy, saved_attachment) {
@@ -419,7 +413,7 @@ impl CreateVm {
                     )?;
                     anyhow::ensure!(
                         !saved_policy.canonical_host_path.is_empty(),
-                        "snapshot filesystem canonical host path is missing; this snapshot predates path-bound filesystem restore"
+                        "snapshot filesystem canonical host path is missing"
                     );
                     anyhow::ensure!(
                         root_path == saved_policy.canonical_host_path,
@@ -437,11 +431,6 @@ impl CreateVm {
                 }
                 (None, None) => {
                     if let Some(requested) = self.restore_filesystem_config.as_ref() {
-                        anyhow::ensure!(
-                            restore.machine_contract.microvm_filesystem_slot_version
-                                == openvmm_helpers::snapshot::microvm::MICROVM_FILESYSTEM_SLOT_VERSION,
-                            "snapshot does not support restore-time microVM filesystem attachment"
-                        );
                         anyhow::ensure!(
                             requested.tag == "microvm" && !requested.root_path.is_empty(),
                             "restore-time virtiofs_config does not match the fixed microVM slot"
@@ -1158,7 +1147,7 @@ impl CreateVm {
     /// Finalizes the fixed virtio-mmio device inventory and discovery command
     /// line.
     pub(super) fn finish_devices(&self, config: &mut Config) -> anyhow::Result<()> {
-        if self.filesystem_slot
+        if self.active
             && !config
                 .virtio_devices
                 .iter()
@@ -1193,7 +1182,6 @@ impl CreateVm {
             openvmm_defs::microvm::append_microvm_virtio_discovery(
                 cmdline,
                 None,
-                self.filesystem_slot,
                 &config.microvm.filesystems,
                 has_console,
                 config.virtio_devices.iter().any(|(_, device)| {
@@ -1356,7 +1344,6 @@ impl CreateVm {
                 effective_command_line: self.effective_command_line,
                 resources: self.resources,
                 network: None,
-                filesystem_slot: self.filesystem_slot,
                 filesystems: self.filesystems,
                 snapshot_memory_file: self.snapshot_memory_file,
                 _private_scratch_dir: None,
