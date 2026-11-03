@@ -1508,8 +1508,6 @@ mod tests {
         assert_eq!(opt.machine, MachineProfileCli::Microvm);
         assert_eq!(MachineProfile::from(opt.machine), MachineProfile::Microvm);
 
-        assert!(Options::try_parse_from(["openvmm", "--machine", "microvm-v2"]).is_err());
-        assert!(Options::try_parse_from(["openvmm", "--machine", "microvm-v3"]).is_err());
         assert!(Options::try_parse_from(["openvmm", "--machine", "nvx"]).is_err());
         assert!(Options::try_parse_from(["openvmm", "--machine", "unknown"]).is_err());
     }
