@@ -53,7 +53,7 @@ fn get_vp_count(
         TestVPCount::SmallVPCount => 2,
         TestVPCount::LargeVPCount => match (isolation_type, machine_arch) {
             // These tests run on VMs that only have 32 VPs
-            (None | Some(IsolationType::Vbs), MachineArch::X86_64) => 32,
+            (None | Some(IsolationType::Vbs), MachineArch::X86_64) => 64,
             // SNP, TDX, and ARM runners have at least 64 VPs
             (Some(IsolationType::Snp | IsolationType::Tdx), MachineArch::X86_64)
             | (None, MachineArch::Aarch64) => 64,
