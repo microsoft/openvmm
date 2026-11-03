@@ -499,6 +499,22 @@ describes the source definitions.
   copy-on-write mapping of `memory.bin`; selected expansion ranges use fresh
   zeroed private backing. Expansion implies the post-restore repair gate.
 
+  Every microVM restore makes the restore packet available on the private
+  portb restore channel. The packet carries 64 bytes of fresh entropy, the
+  online-VP target, the memory-expansion ranges, the downtime, the TSC rate
+  deviation, and, at a restore that replaces the network policy of a
+  snapshot without a tier, the network settings of the restore's policy; the
+  guest must consume it and explicitly reseed its RNG.
+  [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
+  the portb status bits, and the time sample.
+  Every microVM portb device also reports generation-ID support in status bit
+  5. Writing `0xa6` to the status port and reading 16 bytes from the data port
+  returns an opaque ID that is stable for that VM process and may be selected
+  repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
+  On restore, it is the first 16 bytes of the restore packet's fresh entropy,
+  allowing the guest repair path to update clone identity without additional
+  port I/O.
+
   ```bash
   openvmm --machine microvm --hypervisor kvm \
     --restore-snapshot snapshot
@@ -515,22 +531,6 @@ describes the source definitions.
   and stops the VM. The peer must accept and read the event while startup is
   in progress; Windows flush completion waits for the named-pipe peer to
   consume the complete frame.
-* `--restore-entropy`: Accepted for compatibility; it has no effect. Every
-  microVM restore makes the restore packet available on the private portb
-  restore channel. The packet carries 64 bytes of fresh entropy, the
-  online-VP target, the memory-expansion ranges, the downtime, the TSC rate
-  deviation, and, at a restore that replaces the network policy of a
-  snapshot without a tier, the network settings of the restore's policy; the
-  guest must consume it and explicitly reseed its RNG.
-  [Snapshots](../../../user_guide/openvmm/snapshots.md) documents its format,
-  the portb status bits, and the time sample.
-  Every microVM portb device also reports generation-ID support in status bit
-  5. Writing `0xa6` to the status port and reading 16 bytes from the data port
-  returns an opaque ID that is stable for that VM process and may be selected
-  repeatedly. OpenVMM creates it before vCPU entry and does not serialize it.
-  On restore, it is the first 16 bytes of the restore packet's fresh entropy,
-  allowing the guest repair path to update clone identity without additional
-  port I/O.
 * `--restore-processors <COUNT>`: For an opt-in microVM snapshot, bring the
   contiguous VP prefix `0..COUNT-1` online before restore readiness. The
   snapshot's manifest VP count remains immutable capacity and must still match
