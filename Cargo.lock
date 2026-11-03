@@ -3643,6 +3643,7 @@ dependencies = [
  "bitvec",
  "hvdef",
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -4125,6 +4126,7 @@ name = "inspect_counters"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -4864,6 +4866,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -10316,6 +10319,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "parking_lot",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vm_topology",
@@ -11487,6 +11491,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

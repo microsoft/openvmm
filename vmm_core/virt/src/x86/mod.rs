@@ -198,8 +198,7 @@ impl X86PartitionCapabilities {
             this.xsave.supervisor_features = result[2] as u64 | ((result[3] as u64) << 32);
 
             let mut n = (this.xsave.features | this.xsave.supervisor_features) & !3;
-            while n != 0 {
-                let i = n.trailing_zeros();
+            while let Some(i) = n.lowest_one() {
                 n -= 1 << i;
                 let result = f(CpuidFunction::ExtendedStateEnumeration.0, i);
                 let feature = XsaveFeature {

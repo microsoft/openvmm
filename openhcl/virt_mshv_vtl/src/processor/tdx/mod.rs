@@ -2281,7 +2281,8 @@ impl UhProcessor<'_, TdxBacked> {
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
                     // four breakpoints triggered.
-                    breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
+                    breakpoint_debug_exception =
+                        debug_regs.dr6.lowest_one().is_some_and(|bit| bit < 4);
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hw_interrupt
             }
@@ -4289,9 +4290,7 @@ fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
-        .find_map(|(i, r)| {
-            (r.value != 0).then(|| (i as u32 * 32 + (31 - r.value.leading_zeros())) as u8)
-        })
+        .find_map(|(i, r)| r.value.highest_one().map(|bit| (i as u32 * 32 + bit) as u8))
         .unwrap_or(0)
 }
 

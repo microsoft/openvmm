@@ -138,14 +138,13 @@ mod gicd {
             }
             let mut state = self.state.lock();
             let state = &mut *state;
-            if let Some((i, (p, a))) = state
+            if let Some((i, p, a, v)) = state
                 .pending
                 .iter_mut()
                 .zip(&mut state.active)
                 .enumerate()
-                .find(|(_, (p, a))| **p & !**a != 0)
+                .find_map(|(i, (p, a))| (*p & !*a).highest_one().map(|v| (i, p, a, v)))
             {
-                let v = 31 - (*p & !*a).leading_zeros();
                 *p &= !(1 << v);
                 *a |= 1 << v;
                 let intid = i as u32 * 32 + v;
@@ -795,7 +794,7 @@ mod gicr {
                 None
             } else {
                 let mut state = self.shared.mutable.lock();
-                let intid = 31 - (pending & !state.active).leading_zeros();
+                let intid = (pending & !state.active).highest_one()?;
                 tracing::trace!(intid, "ack");
                 self.shared
                     .pending
@@ -809,6 +808,53 @@ mod gicr {
             assert!(intid < 32);
             tracing::trace!(intid, "eoi");
             self.shared.mutable.lock().active &= !(1 << intid);
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use test_with_tracing::test;
+
+        #[test]
+        fn distributor_ack_skips_active_and_empty_bits() {
+            let mut distributor = crate::Distributor::new(
+                0,
+                memory_range::MemoryRange::new(
+                    0x100000..0x100000 + aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                ),
+                64,
+            );
+            let mut gicr = distributor.add_redistributor(0, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+
+            distributor.set_pending(32, true);
+            distributor.set_pending(63, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 63);
+            assert_eq!(distributor.ack(&mut gicr, true), 32);
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+
+            distributor.set_pending(63, true);
+            assert_eq!(distributor.ack(&mut gicr, true), 1023);
+        }
+
+        #[test]
+        fn ack_selects_highest_pending_inactive_bit() {
+            let (mut gicr, _) = Redistributor::new(0, 0, true);
+            assert_eq!(gicr.ack(true), None);
+
+            for intid in [0, 7, 31] {
+                gicr.raise(intid);
+            }
+            assert_eq!(gicr.ack(true), Some(31));
+            assert_eq!(gicr.ack(true), Some(7));
+            assert_eq!(gicr.ack(true), Some(0));
+            assert_eq!(gicr.ack(true), None);
+
+            gicr.raise(31);
+            assert_eq!(gicr.ack(true), None);
+            gicr.eoi(true, 31);
+            assert_eq!(gicr.ack(true), Some(31));
         }
     }
 }

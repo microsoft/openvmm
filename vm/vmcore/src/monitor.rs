@@ -172,8 +172,7 @@ impl MonitorPage {
         page.as_mut_bytes()[offset..offset + bytes.len()].copy_from_slice(bytes);
         for (group_index, group) in page.trigger_group.iter().enumerate() {
             let mut value = group.pending;
-            while value != 0 {
-                let index = value.trailing_zeros();
+            while let Some(index) = value.lowest_one() {
                 value &= !(1 << index);
                 let monitor_id = group_index * 32 + (index as usize);
                 if let Some(connection_id) = &self.monitors.get(MonitorId(monitor_id as u8)) {
