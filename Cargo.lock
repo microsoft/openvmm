@@ -11342,7 +11342,6 @@ dependencies = [
  "petri_artifacts_vmm_test",
  "pipette_client",
  "scsidisk_resources",
- "serde",
  "serde_json",
  "static_assertions",
  "storvsp_resources",

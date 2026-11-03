@@ -76,7 +76,6 @@ mesh_rpc.workspace = true
 tempfile.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
-serde = { workspace = true, features = ["std"] }
 
 [target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
 guestmem.workspace = true
