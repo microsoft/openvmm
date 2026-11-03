@@ -248,55 +248,6 @@ pub fn read_snapshot_with_memory(
     Ok((manifest, state_bytes, memory))
 }
 
-/// Opens snapshot artifacts against an already validated manifest.
-///
-/// This compatibility helper reopens the directory. Production restore should
-/// keep an [`OpenedSnapshot`] alive through worker construction instead.
-pub fn read_snapshot_artifacts_with_memory(
-    dir: &Path,
-    manifest: &SnapshotManifest,
-    expected_memory_size: u64,
-) -> anyhow::Result<(Vec<u8>, std::fs::File)> {
-    let directory = OpenedSnapshotDirectory::open(dir)?;
-    validate_manifest_header(manifest)?;
-    validate_manifest_contents(manifest)?;
-    if let Some(contract) = &manifest.machine_contract {
-        microvm::validate_machine_contract_shape(
-            contract,
-            manifest.memory_size_bytes,
-            manifest.vp_count,
-        )?;
-    }
-    validate_snapshot_directory(&directory, manifest)?;
-    anyhow::ensure!(
-        manifest.state_size_bytes <= MAX_SAVED_STATE_SIZE_BYTES,
-        "state.bin length in the manifest exceeds the maximum size of \
-         {MAX_SAVED_STATE_SIZE_BYTES} bytes",
-    );
-
-    let state_file = directory.open_regular_file(STATE_FILE_NAME, "saved state")?;
-    let state_bytes =
-        read_bounded_open_file(&state_file, MAX_SAVED_STATE_SIZE_BYTES, "saved state")?;
-    anyhow::ensure!(
-        state_bytes.len() as u64 == manifest.state_size_bytes,
-        "state.bin size ({} bytes) doesn't match manifest ({} bytes)",
-        state_bytes.len(),
-        manifest.state_size_bytes,
-    );
-    anyhow::ensure!(
-        manifest.memory_size_bytes == expected_memory_size,
-        "memory.bin size in the manifest ({} bytes) doesn't match expected ({expected_memory_size} bytes)",
-        manifest.memory_size_bytes,
-    );
-    let memory_file = directory.open_file_with_length(
-        MEMORY_FILE_NAME,
-        expected_memory_size,
-        MEMORY_FILE_NAME,
-    )?;
-
-    Ok((state_bytes, memory_file))
-}
-
 /// Opens and verifies the scratch image paired to a snapshot, if present.
 pub fn open_paired_scratch_file(
     dir: &Path,
@@ -649,25 +600,6 @@ mod tests {
         let mut bytes = Vec::new();
         memory.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, vec![1_u8; 1024]);
-    }
-
-    #[test]
-    fn supplied_manifest_remains_authoritative_during_artifact_open() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-        let manifest = read_snapshot_manifest(&snap_dir).unwrap();
-
-        std::fs::write(snap_dir.join(MANIFEST_FILE_NAME), b"replacement").unwrap();
-        let (state, mut memory) =
-            read_snapshot_artifacts_with_memory(&snap_dir, &manifest, 1024).unwrap();
-        let mut bytes = Vec::new();
-        memory.read_to_end(&mut bytes).unwrap();
-
-        assert_eq!(state, b"state");
-        assert_eq!(bytes, vec![0_u8; 1024]);
     }
 
     #[test]
