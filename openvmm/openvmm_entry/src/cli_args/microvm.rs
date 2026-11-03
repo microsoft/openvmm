@@ -3131,8 +3131,8 @@ mod tests {
             )
         );
         assert_eq!(
-            policy.encoding_version(),
-            net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION
+            policy.canonical_bytes()[0],
+            net_backend_resources::egress::EGRESS_POLICY_ENCODING_VERSION as u8
         );
 
         for rule in [
