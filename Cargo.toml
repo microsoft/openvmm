@@ -393,7 +393,7 @@ tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 tpm_vmgs = { path = "vm/devices/tpm/tpm_vmgs" }
 pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
-usb_config_resources = { path = "vm/devices/usb_config_resources" }
+usb_config_resources = { path = "vm/devices/usb/usb_config_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
