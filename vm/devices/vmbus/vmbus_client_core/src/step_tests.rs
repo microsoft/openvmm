@@ -239,10 +239,10 @@ fn successful_version_response_transitions_to_connected() {
 }
 
 #[test]
-fn feature_flags_are_intersected_with_config() {
-    // Config only supports modify_connection; host offers every
-    // Copper flag. Result must be exactly modify_connection.
-    let mut core = ClientCore::new(make_multi_version_config());
+fn copper_preserves_host_features_not_advertised_in_config() {
+    let mut config = make_multi_version_config();
+    config.supported_feature_flags = FeatureFlags::from(47);
+    let mut core = ClientCore::new(config);
     let mut sink = Recording::default();
     core.step(
         Event::Connect {
@@ -259,16 +259,21 @@ fn feature_flags_are_intersected_with_config() {
             padding: 0,
             selected_version_or_connection_id: 1,
         },
-        supported_features: 0xffff_ffff,
+        supported_features: 16,
     };
     let wire = make_host_message(&response);
     core.step(Event::HostMessage(&wire), &mut sink);
     let ClientPhase::Connected { version } = *core.phase() else {
         panic!();
     };
-    assert!(version.feature_flags.modify_connection());
-    // Anything not in the config must be cleared.
-    assert!(!version.feature_flags.guest_specified_signal_parameters());
+    assert_eq!(version.feature_flags, FeatureFlags::from(16));
+    assert!(matches!(
+        sink.actions.as_slice(),
+        [Action::Complete {
+            request_id: RequestId(1),
+            result: CompletionResult::Connect(Ok(ConnectionSuccess { version: completed })),
+        }] if *completed == version
+    ));
 }
 
 #[test]
@@ -2259,6 +2264,94 @@ fn unload_complete_returns_to_disconnected() {
 }
 
 #[test]
+fn unload_complete_disconnects_every_phase_and_retires_phase_request() {
+    for phase in 0..5 {
+        let mut core = ClientCore::new(make_redirect_config());
+        let mut sink = Recording::default();
+        if phase == 1 {
+            core.step(
+                Event::Connect {
+                    request_id: RequestId(99),
+                    params: connect_params(),
+                },
+                &mut sink,
+            );
+        } else if phase >= 2 {
+            connect_with_flags(
+                &mut core,
+                &mut sink,
+                make_redirect_config().supported_feature_flags,
+            );
+            if phase == 3 {
+                core.step(
+                    Event::RequestOffers {
+                        request_id: RequestId(99),
+                    },
+                    &mut sink,
+                );
+            } else if phase == 4 {
+                core.step(
+                    Event::Unload {
+                        request_id: RequestId(99),
+                    },
+                    &mut sink,
+                );
+            }
+        }
+        sink.actions.clear();
+        let wire = make_host_message(&vmbus_core::protocol::UnloadComplete {});
+        if phase < 2 {
+            // These phases do not admit UnloadComplete on the wire. Exercise
+            // the handler's RPC ownership without changing parser admission.
+            let old_phase = core.phase().clone();
+            core.step(Event::HostMessage(&wire), &mut sink);
+            assert_eq!(core.phase(), &old_phase);
+            assert!(sink.actions.is_empty());
+            core.handle_unload_complete(&mut sink);
+        } else {
+            core.step(Event::HostMessage(&wire), &mut sink);
+        }
+        assert!(matches!(core.phase(), ClientPhase::Disconnected));
+        assert_eq!(core.pending_request_count(), 0);
+        match phase {
+            1 => assert!(matches!(
+                sink.actions.as_slice(),
+                [Action::Complete {
+                    request_id: RequestId(99),
+                    result: CompletionResult::Connect(Err(ConnectError::InvalidState)),
+                }]
+            )),
+            3 => assert!(matches!(
+                sink.actions.as_slice(),
+                [Action::Complete {
+                    request_id: RequestId(99),
+                    result: CompletionResult::RequestOffers(Err(ConnectError::InvalidState)),
+                }]
+            )),
+            4 => assert!(matches!(
+                sink.actions.as_slice(),
+                [Action::Complete {
+                    request_id: RequestId(99),
+                    result: CompletionResult::Unload,
+                }]
+            )),
+            _ => assert!(sink.actions.is_empty()),
+        }
+        sink.actions.clear();
+        core.step(Event::HostMessage(&wire), &mut sink);
+        assert!(sink.actions.is_empty());
+        core.step(
+            Event::Connect {
+                request_id: RequestId(99),
+                params: connect_params(),
+            },
+            &mut sink,
+        );
+        assert!(matches!(sink.actions.as_slice(), [Action::PostMessage(_)]));
+    }
+}
+
+#[test]
 fn modify_connection_without_feature_flag_fails() {
     // make_config() does not enable modify_connection.
     let mut core = ClientCore::new(make_config());
@@ -2763,6 +2856,83 @@ fn duplicate_hvsock_connects_complete_one_at_a_time() {
 }
 
 #[test]
+fn hvsock_completion_preserves_global_swap_remove_order() {
+    for offers in [false, true] {
+        for mixed_keys in [false, true] {
+            let mut core = ClientCore::new(make_redirect_config());
+            let mut sink = Recording::default();
+            connect_with_flags(
+                &mut core,
+                &mut sink,
+                make_redirect_config().supported_feature_flags,
+            );
+            let request = HvsockConnectRequest {
+                service_id: Guid::ZERO,
+                endpoint_id: Guid::ZERO,
+                silo_id: Guid::ZERO,
+                hosted_silo_unaware: false,
+            };
+            let other = HvsockConnectRequest {
+                service_id: Guid {
+                    data1: 1,
+                    ..Guid::ZERO
+                },
+                ..request
+            };
+            for id in 1..=if mixed_keys { 4 } else { 3 } {
+                core.step(
+                    Event::HvsockConnect {
+                        request_id: RequestId(id),
+                        request: if mixed_keys && id == 2 {
+                            other
+                        } else {
+                            request
+                        },
+                    },
+                    &mut sink,
+                );
+            }
+            let expected: &[u64] = if mixed_keys {
+                &[2, 1, 3, 4]
+            } else {
+                &[1, 3, 2]
+            };
+            for &id in expected {
+                let matched = if mixed_keys && id == 2 {
+                    other
+                } else {
+                    request
+                };
+                sink.actions.clear();
+                if offers {
+                    let mut offer = make_offer(100 + id as u32);
+                    offer.interface_id = matched.service_id;
+                    offer.instance_id = matched.endpoint_id;
+                    offer.flags = vmbus_core::protocol::OfferFlags::new().with_tlnpi_provider(true);
+                    core.step(Event::HostMessage(&make_host_message(&offer)), &mut sink);
+                } else {
+                    let result = vmbus_core::protocol::TlConnectResult {
+                        service_id: matched.service_id,
+                        endpoint_id: matched.endpoint_id,
+                        status: -1,
+                    };
+                    core.step(Event::HostMessage(&make_host_message(&result)), &mut sink);
+                }
+                assert!(matches!(
+                    sink.actions.as_slice(),
+                    [Action::Complete {
+                        request_id,
+                        result: CompletionResult::HvsockConnect(result),
+                    }] if *request_id == RequestId(id) && result.is_some() == offers
+                ));
+            }
+            assert_eq!(core.pending_request_count(), 0);
+            assert_eq!(core.pending_hvsock_request_count(), 0);
+        }
+    }
+}
+
+#[test]
 fn disconnected_restore_discards_saved_channels() {
     let mut core = ClientCore::new(make_redirect_config());
     core.restore(SavedState {
@@ -2819,7 +2989,7 @@ fn post_restore_replays_deferred_channel_releases() {
 }
 
 #[test]
-fn cancelled_hvsock_responses_keep_fifo_across_restore() {
+fn cancelled_hvsock_responses_remain_correlated_across_restore() {
     for late_success in [false, true] {
         let config = make_redirect_config();
         let mut core = ClientCore::new(config.clone());
