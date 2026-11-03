@@ -469,6 +469,8 @@ impl Fuse for VirtioFs {
     }
 
     fn fsync_dir(&self, request: &Request, fh: u64, flags: u32) -> lx::Result<()> {
+        // Windows rejects a data-only flush on a directory, so always do a
+        // full sync.
         self.fsync(request, fh, flags & !FUSE_FSYNC_FDATASYNC)
     }
 
