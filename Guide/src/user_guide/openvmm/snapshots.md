@@ -225,44 +225,42 @@ the ID from the first 16 bytes of the restore packet's fresh entropy, so the
 guest can reject an unchanged clone identity, reseed Linux, refresh runtime
 identifiers, and acknowledge the input gate without another PMIO transfer.
 
-Every microVM restore exposes a restore packet: version 5, or version 6 at a
-restore whose `--restore-network-policy` replaces the network policy of a
-snapshot without a tier. Status bit 1 advertises it, and writing `0xa5` to the
-status port selects it for reading from the data port. Its 24-byte
-little-endian header holds:
+Every microVM restore exposes a restore packet, version 1. Status bit 1
+advertises it, and writing `0xa5` to the status port selects it for reading
+from the data port. Its 24-byte little-endian header holds:
 
 - the magic `OVR` and the version;
 - flags: bit 0, the downtime came from host UTC; bit 1, a memory target;
   bit 2, the guest must acknowledge the restore through port `0x605`; bit 3,
-  a test hook is active;
-- the online-VP target (0 for none), the memory-range count, and a byte that
-  is reserved and zero in version 5 and is the network byte in version 6;
+  a test hook is active; bit 4, the packet carries network settings;
+- the online-VP target (0 for none), the memory-range count, and the network
+  byte;
 - the generation counter (`u32`), which is 0 at cold boot and one more than
   the snapshot's at each restore;
 - the TSC rate deviation (`i32`, ppm scaled by 2^16); and
 - the downtime in nanoseconds (`u64`).
 
-The `(u64 GPA start, u64 length)` memory ranges and 64 bytes of fresh entropy
-follow the header. Status bits 2, 3, and 4 report an online-VP target, a
-memory target, and one or more memory ranges, so a zero-range target can skip
-post-restore repair. The packet carries no host UTC: the guest sets its clock
-from a time sample.
+The `(u64 GPA start, u64 length)` memory ranges, 64 bytes of fresh entropy, and
+a 16-byte DNS server follow the header. Status bits 2, 3, and 4 report an
+online-VP target, a memory target, and one or more memory ranges, so a
+zero-range target can skip post-restore repair. The packet carries no host UTC:
+the guest sets its clock from a time sample.
 
-Version 6 carries the network settings of the restore's policy, which a cold
-boot names on the command line that the restore keeps, and which a NIC
-template's guest never learned: its network byte's bits 0 and 1 give the
-family of the guest's DNS server, 0 for none, 1 for IPv4, or 2 for IPv6, and
-bit 2 asks the guest to announce its listeners, as `virtnet_dns=` and
-`virtnet_ingress=` do at a cold boot; the other bits are zero. A 16-byte DNS
-server follows the entropy: an IPv6 address, or an IPv4 address and 12 zero
-bytes, or zeros without a server. Such a restore requires the guest's
-acknowledgement, which the guest gives once it has applied the settings. A
-guest that reads version 5 alone fails such a restore rather than ignore its
-settings, and every other restore, a platform clone's included, keeps
-version 5.
+A restore whose `--restore-network-policy` replaces the network policy of a
+snapshot without a tier sets flag bit 4: the packet carries the network
+settings of the restore's policy, which a cold boot names on the command line
+that the restore keeps, and which a NIC template's guest never learned. The
+network byte's bits 0 and 1 give the family of the guest's DNS server, 0 for
+none, 1 for IPv4, or 2 for IPv6, and bit 2 asks the guest to announce its
+listeners, as `virtnet_dns=` and `virtnet_ingress=` do at a cold boot; the
+other bits are zero. The DNS server is an IPv6 address, or an IPv4 address and
+12 zero bytes, or zeros without a server. Such a restore requires the guest's
+acknowledgement, which the guest gives once it has applied the settings. Every
+other restore, a platform clone's included, leaves flag bit 4 clear and the
+network byte and DNS server zero.
 
 Status bit 6 advertises the time sample. Writing `0xa7` to the status port
-latches a 48-byte little-endian sample, version 2:
+latches a 48-byte little-endian sample, version 1:
 
 - the version, flags (bit 3: a test hook is active), the status of host UTC
   (0 unknown, 1 synchronized, 2 free-running, 3 unreliable), and a reserved
@@ -337,7 +335,7 @@ validation error and refuse to start.
 
 ## Time and CPU compatibility
 
-Every microVM uses the NVX time ABI 2. The guest sees a minimal Hyper-V
+Every microVM uses the NVX time ABI 1. The guest sees a minimal Hyper-V
 identity: CPUID leaves `0x40000000` through `0x40000005`, explicit zero leaves
 `0x40000006` through `0x4000000f` and `0x40000080` through `0x40000082`, and
 identity MSRs that return the declared TSC rate (`0x40000022`) and LAPIC rate
@@ -426,8 +424,7 @@ others.
 
 Restore also requires:
 
-- a snapshot of the same time ABI version, so a snapshot of time ABI 1 must
-  be recaptured (`E_MANIFEST_TIME`);
+- a snapshot of the same time ABI version (`E_MANIFEST_TIME`);
 - the backend that captured the snapshot;
 - a native TSC rate within 250 ppm of the snapshot's
   (`E_TSC_RATE_TOLERANCE`), and the identical LAPIC rate
