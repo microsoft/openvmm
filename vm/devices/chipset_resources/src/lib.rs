@@ -422,6 +422,8 @@ pub mod acpi_power_button {
 
     /// Power-button status register, in the architectural MMIO reservation on
     /// both x86_64 and AArch64. Bit 0 is pending and write-one-to-clear.
+    // TODO: This should be made dynamic, as there is no hyper-v equivalent that
+    // it has to match.
     pub const ACPI_POWER_BUTTON_MMIO_BASE: u32 = 0xfed8_0000;
 
     /// Host requests to inject an ACPI power-button event.
