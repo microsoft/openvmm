@@ -2723,10 +2723,13 @@ async fn rx_mergeable_invalid_buffer_cannot_split_a_packet(driver: DefaultDriver
         make_available(&mem, RX_AVAIL_ADDR, QUEUE_SIZE, id, &mut avail);
     }
     let (mut backend, handle) = new_mock_queue();
-    assert!(matches!(
-        worker.process_virtio_rx(&mut backend),
-        Err(crate::WorkerError::InvalidRxBuffer)
-    ));
+    task_control::StopTask::run_unstoppable(async |stop| {
+        assert!(matches!(
+            worker.process_virtio_rx(&mut backend, &stop.check_handle().unwrap()),
+            Err(crate::WorkerError::InvalidRxBuffer)
+        ));
+    })
+    .await;
     assert!(handle.rx_pending.lock().is_empty());
     assert_eq!(mem.read_plain::<u16>(RX_USED_ADDR + 2).unwrap(), 0);
 }
