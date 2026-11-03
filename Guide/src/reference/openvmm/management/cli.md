@@ -1023,7 +1023,8 @@ Serial devices can be configured to appear as different devices inside the guest
     restore command must explicitly resupply the matching client attachment.
   * `console`: require the restore caller to supply the same inherited terminal
     attachment. Portb recovery output moves to stderr while the terminal is
-    attached to `hvc1`.
+    attached to `hvc1`. A guest-requested exit writes the boot console output
+    that the device accepted before OpenVMM exits.
   * `none`: keep the device present and explicitly discard guest TX while
     disconnected.
 
@@ -1144,13 +1145,17 @@ a supervisor can tell the exit reasons apart.
 For microVMs, a process-status shutdown through port `0x604`, or a power event
 configured to exit, drains previously accepted portb console output before the
 process exits. This includes the host stdout/stderr relay, not just the device's
-transmit buffer. Draining is bounded to five seconds; an output error or timeout
+transmit buffer. When `--virtio-console console` attaches the boot console to
+the terminal, the drain also writes the boot console output that the device
+accepted before the shutdown, which the host relay has yet to write to stdout.
+Draining is bounded to five seconds; an output error or timeout
 is reported as a failure rather than a successful exit with truncated output.
 In RPC-server mode, a drain failure also fails pending `WaitVm` requests and
 terminates the server with an error instead of leaving it uninitialized.
 A guest-requested snapshot capture instead flushes accepted portb output to its
-endpoint before quiescing, without closing it because the capture can still roll
-back; see `--snapshot-destination`.
+endpoint, and the boot console's terminal output, before quiescing, without
+closing them because the capture can still roll back; see
+`--snapshot-destination`.
 
 * `--crash-dump-path <PATH>`: when the guest triple-faults, write a
   WinDbg-compatible `.vmrs` dump of the VM's processor state and guest memory to
