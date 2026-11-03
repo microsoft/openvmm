@@ -74,7 +74,7 @@ enum RestorePacketState {
     Encoded,
 }
 
-/// NVX time ABI 2 state of the portb device.
+/// NVX time ABI state of the portb device.
 struct PortbTimeAbi {
     generation: u32,
     sample_delay: std::time::Duration,
@@ -146,7 +146,7 @@ pub struct MicrovmPortb {
 
 impl MicrovmPortb {
     /// Creates a portb console using `io` as its host endpoint, with the NVX
-    /// time ABI 2 configuration `time_abi`: the restore packet and the
+    /// time ABI configuration `time_abi`: the restore packet and the
     /// time-sample window at port `0xeb`, which stays empty until
     /// [`Self::with_time_sample_source`] provides the host fields of its
     /// samples.
@@ -1472,8 +1472,9 @@ mod tests {
         assert_eq!(bytes.len(), 104);
         assert_eq!(
             bytes[3],
-            chipset_resources::microvm_time::RESTORE_PACKET_NETWORK_VERSION
+            chipset_resources::microvm_time::RESTORE_PACKET_VERSION
         );
+        assert_ne!(bytes[4] & chipset_resources::microvm_time::FLAG_NETWORK, 0);
         assert_eq!(RestorePacket::decode(&bytes).unwrap().base, base);
         assert_eq!(
             read_status(&mut portb),
