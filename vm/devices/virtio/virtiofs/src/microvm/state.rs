@@ -10,12 +10,8 @@ use super::profile::MICROVM_FUSE_MAX_WRITE;
 use super::profile::MICROVM_FUSE_MIN_MINOR;
 use super::profile::MICROVM_REQUEST_QUEUES;
 use super::profile::MicroVmAccessMode;
-use super::profile::MicroVmAggregateChild;
 use super::profile::MicroVmOwnerMode;
 use super::profile::MicroVmVirtioFsProfile;
-use super::saved_state::AGGREGATE_SCHEMA_VERSION;
-use super::saved_state::CALLER_IDENTITY_SCHEMA_VERSION;
-use super::saved_state::FILE_CHILD_SCHEMA_VERSION;
 use super::saved_state::MAX_ALIAS_BYTES;
 use super::saved_state::MAX_ALIASES;
 use super::saved_state::MAX_ALIASES_PER_INODE;
@@ -25,11 +21,9 @@ use super::saved_state::MAX_DIRECTORY_ENTRIES_PER_HANDLE;
 use super::saved_state::MAX_HANDLES;
 use super::saved_state::MAX_INODES;
 use super::saved_state::MAX_PATH_BYTES;
-use super::saved_state::PREVIOUS_SCHEMA_VERSION;
 use super::saved_state::SAVED_DIRECTORY_CHILD;
 use super::saved_state::SAVED_FILE_CHILD;
 use super::saved_state::SCHEMA_VERSION;
-use super::saved_state::SUBTREE_POLICY_SCHEMA_VERSION;
 use super::saved_state::SavedAggregateChild;
 use super::saved_state::SavedNegotiation;
 use super::saved_state::SavedObjectIdentity;
@@ -150,26 +144,6 @@ pub(crate) fn saved_policy_paths(paths: &[PathBuf]) -> Vec<String> {
                 .join("/")
         })
         .collect()
-}
-
-/// Returns the oldest schema version that can record the state of `profile`'s
-/// attachment, so that releases that cannot enforce its policy reject it.
-pub(crate) fn schema_version(profile: &MicroVmVirtioFsProfile) -> u32 {
-    if profile
-        .children()
-        .iter()
-        .any(MicroVmAggregateChild::is_file)
-    {
-        FILE_CHILD_SCHEMA_VERSION
-    } else if profile.is_aggregate() {
-        AGGREGATE_SCHEMA_VERSION
-    } else if profile.subtree_policy().restricts_writes() {
-        SUBTREE_POLICY_SCHEMA_VERSION
-    } else if profile.owner_mode() == MicroVmOwnerMode::Caller {
-        CALLER_IDENTITY_SCHEMA_VERSION
-    } else {
-        SCHEMA_VERSION
-    }
 }
 
 pub(crate) fn validate_identity(
@@ -358,43 +332,14 @@ pub(crate) fn validate_microvm_state(
     profile: &MicroVmVirtioFsProfile,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        matches!(
-            state.schema_version,
-            PREVIOUS_SCHEMA_VERSION
-                | SCHEMA_VERSION
-                | CALLER_IDENTITY_SCHEMA_VERSION
-                | SUBTREE_POLICY_SCHEMA_VERSION
-                | AGGREGATE_SCHEMA_VERSION
-                | FILE_CHILD_SCHEMA_VERSION
-        ) && !state.dormant,
+        state.schema_version == SCHEMA_VERSION && !state.dormant,
         "unsupported virtio-fs state schema version {}",
         state.schema_version
     );
-    let aggregate_state = matches!(
-        state.schema_version,
-        AGGREGATE_SCHEMA_VERSION | FILE_CHILD_SCHEMA_VERSION
-    );
+    let aggregate_state = !state.aggregate_children.is_empty();
     anyhow::ensure!(
         aggregate_state == profile.is_aggregate(),
         "saved aggregate layout does not match the restore profile"
-    );
-    anyhow::ensure!(
-        (state.schema_version == FILE_CHILD_SCHEMA_VERSION)
-            == profile
-                .children()
-                .iter()
-                .any(MicroVmAggregateChild::is_file),
-        "saved aggregate file children do not match the restore profile"
-    );
-    anyhow::ensure!(
-        match state.schema_version {
-            CALLER_IDENTITY_SCHEMA_VERSION => state.caller_identity,
-            SUBTREE_POLICY_SCHEMA_VERSION
-            | AGGREGATE_SCHEMA_VERSION
-            | FILE_CHILD_SCHEMA_VERSION => true,
-            _ => !state.caller_identity,
-        },
-        "saved ownership mode does not match the virtio-fs state schema version"
     );
     anyhow::ensure!(
         state.attachment_id == profile.attachment_id(),
@@ -426,28 +371,15 @@ pub(crate) fn validate_microvm_state(
                 && state.aggregate_children == saved_aggregate_children(profile),
             "saved aggregate children do not match the restore profile"
         );
-    } else if state.schema_version == SUBTREE_POLICY_SCHEMA_VERSION {
+    } else {
         let policy = profile.subtree_policy();
         anyhow::ensure!(
-            policy.restricts_writes()
-                && saved_policy
-                    == (
-                        &saved_policy_paths(policy.denied_paths()),
-                        &saved_policy_paths(policy.allowed_paths()),
-                        &saved_policy_paths(policy.writable_paths()),
-                    )
-                && state.aggregate_children.is_empty(),
-            "saved access policy does not match the restore profile"
-        );
-    } else {
-        // Earlier states record no access policy, and their attachments had
-        // neither allowed nor writable paths.
-        anyhow::ensure!(
-            !profile.subtree_policy().restricts_writes()
-                && state.denied_paths.is_empty()
-                && state.allowed_paths.is_empty()
-                && state.writable_paths.is_empty()
-                && state.aggregate_children.is_empty(),
+            saved_policy
+                == (
+                    &saved_policy_paths(policy.denied_paths()),
+                    &saved_policy_paths(policy.allowed_paths()),
+                    &saved_policy_paths(policy.writable_paths()),
+                ),
             "saved access policy does not match the restore profile"
         );
     }
