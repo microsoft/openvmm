@@ -675,15 +675,15 @@ mod tests {
     }
 
     #[test]
-    fn read_snapshot_rejects_an_earlier_manifest_version() {
+    fn read_snapshot_rejects_another_manifest_version() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let mem_path = dir.path().join("memory.bin");
         std::fs::write(&mem_path, vec![0_u8; 1024]).unwrap();
         write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
         let mut manifest = read_snapshot_manifest(&snap_dir).unwrap();
-        manifest.version = 5;
-        manifest.format_magic = b"OPENVMM_SNAPSHOT_V5\0".to_vec();
+        manifest.version = 1;
+        manifest.format_magic = b"OPENVMM_SNAPSHOT_V1\0".to_vec();
         std::fs::write(
             snap_dir.join(MANIFEST_FILE_NAME),
             mesh::payload::encode(manifest),

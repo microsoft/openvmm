@@ -28,8 +28,7 @@ LAPIC rates, the capture anchor (VP 0's TSC paired with host UTC and host
 monotonic time), the interval from the saved VM-time cut to that anchor, the
 capture host's identity, and the CPU profile with the effective CPUID that the
 guest observes. Every snapshot, microVM or standard machine, is manifest
-version 6, and restore accepts only version 6
-(`E_SNAPSHOT_VERSION`); recapture snapshots taken by earlier versions. See
+version 2, and restore accepts only version 2 (`E_SNAPSHOT_VERSION`). See
 [Time and CPU compatibility](#time-and-cpu-compatibility).
 
 ## Prerequisites
@@ -626,5 +625,5 @@ immediately with a clear error if any active device does not support it.
   A host profile's snapshot, including one of a cold boot whose `auto` fell
   back to a host profile, restores only on a host of the capture host's CPU
   model and stepping whose backend supports the profile.
-  Snapshots from manifest versions before 6, or from a build that computes a
-  different effective CPUID, must be recaptured.
+  Snapshots from a build that computes a different effective CPUID must be
+  recaptured.

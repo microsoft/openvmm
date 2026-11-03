@@ -637,7 +637,7 @@ impl TimeAbiRestore {
 /// Validates the authoritative machine contract of a microVM snapshot against
 /// the restore-time configuration.
 ///
-/// The manifest, version 6 like every readable one, must carry the time ABI
+/// The manifest must carry the time ABI
 /// records: the time ABI preflight checks them, the backend, the CPU profile,
 /// and the downtime against this host before the rest of the contract is
 /// compared.

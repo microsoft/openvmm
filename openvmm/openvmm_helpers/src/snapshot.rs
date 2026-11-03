@@ -16,9 +16,11 @@ pub mod time;
 pub use publish::check_snapshot_destination;
 pub use publish::write_snapshot;
 
-/// The manifest format version, the only one this OpenVMM reads or writes.
-/// Bump when making incompatible changes.
-pub const MANIFEST_VERSION: u32 = 6;
+/// The manifest format version, the only one this OpenVMM reads or writes:
+/// version 1 is upstream's manifest, which this format extends with its
+/// magic, saved-state schema, and machine contract. Bump when making
+/// incompatible changes.
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
