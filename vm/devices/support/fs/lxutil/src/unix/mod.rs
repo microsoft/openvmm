@@ -480,6 +480,10 @@ impl LxFile {
 
         Ok(())
     }
+
+    pub fn fsync_dir(&self, data_only: bool) -> lx::Result<()> {
+        self.fsync(data_only)
+    }
 }
 
 #[cfg(test)]

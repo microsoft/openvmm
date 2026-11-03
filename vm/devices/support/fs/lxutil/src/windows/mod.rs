@@ -1450,14 +1450,6 @@ impl LxFile {
             _reopened.as_ref().unwrap()
         };
 
-        // Windows rejects a data-only flush on a directory, so always do a
-        // full sync.
-        let data_only = data_only && {
-            let info: FileSystem::FILE_BASIC_INFORMATION =
-                util::query_information_file(&self.handle)?;
-            info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 == 0
-        };
-
         let flags = if data_only {
             W32Ss::FLUSH_FLAGS_FILE_DATA_ONLY
         } else {
@@ -1476,6 +1468,12 @@ impl LxFile {
         }
 
         Ok(())
+    }
+
+    pub fn fsync_dir(&self, _data_only: bool) -> lx::Result<()> {
+        // Windows rejects a data-only flush on a directory, so always do a
+        // full sync.
+        self.fsync(false)
     }
 
     // Helper to emit the . and .. entries.

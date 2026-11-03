@@ -163,4 +163,8 @@ impl VirtioFsFile {
     pub fn fsync(&self, data_only: bool) -> lx::Result<()> {
         self.file.read().fsync(data_only)
     }
+
+    pub fn fsync_dir(&self, data_only: bool) -> lx::Result<()> {
+        self.file.read().fsync_dir(data_only)
+    }
 }

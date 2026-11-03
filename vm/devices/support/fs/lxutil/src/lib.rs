@@ -737,6 +737,14 @@ impl LxFile {
     pub fn fsync(&self, data_only: bool) -> lx::Result<()> {
         self.inner.fsync(data_only)
     }
+
+    /// Synchronizes a directory's buffer.
+    ///
+    /// The `data_only` request may be upgraded to a full sync on platforms that do not support
+    /// data-only synchronization of directories.
+    pub fn fsync_dir(&self, data_only: bool) -> lx::Result<()> {
+        self.inner.fsync_dir(data_only)
+    }
 }
 
 /// Sets options used by an LxVolume. These control whether metadata is enabled, and set defaults
@@ -2286,8 +2294,8 @@ mod tests {
             .volume
             .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
             .unwrap();
-        dir.fsync(false).unwrap();
-        dir.fsync(true).unwrap();
+        dir.fsync_dir(false).unwrap();
+        dir.fsync_dir(true).unwrap();
     }
 
     #[test]
