@@ -1265,24 +1265,10 @@ fn validate_microvm_sandbox_blocks(
     Ok(())
 }
 
-/// Returns the number of virtio-fs slots present when the slot is reserved as
-/// `first_slot` and `attached` filesystems occupy it.
-pub fn microvm_filesystem_slot_count(first_slot: bool, attached: usize) -> anyhow::Result<usize> {
-    anyhow::ensure!(
-        attached == 0 || first_slot,
-        "microVM filesystem policy requires the fixed virtio-fs slot"
-    );
-    anyhow::ensure!(
-        attached <= MICROVM_FILESYSTEM_SLOTS.len(),
-        InvalidMicrovmFilesystemConfig::TooManyFilesystems
-    );
-    Ok(if first_slot { attached.max(1) } else { 0 })
-}
-
 /// Appends sandbox virtio devices in fixed-address order.
 ///
-/// `filesystem_slot` reserves the virtio-fs slot, and `filesystems`, at most
-/// one, occupies it. `network` carries the NIC's identity, the gateway
+/// The virtio-fs slot is always present, and `filesystems`, at most one,
+/// occupies it. `network` carries the NIC's identity, the gateway
 /// address, if any, that the guest names as its DNS server, and the ingress,
 /// if any, for which the guest announces its listeners.
 pub fn append_microvm_virtio_discovery(
@@ -1292,7 +1278,6 @@ pub fn append_microvm_virtio_discovery(
         Option<std::net::IpAddr>,
         Option<MicrovmIngress>,
     )>,
-    filesystem_slot: bool,
     filesystems: &[MicrovmFilesystemConfig],
     has_console: bool,
     has_control_console: bool,
@@ -1309,7 +1294,6 @@ pub fn append_microvm_virtio_discovery(
         }),
         "microVM command line already contains virtio-mmio discovery"
     );
-    let filesystem_slots = microvm_filesystem_slot_count(filesystem_slot, filesystems.len())?;
     validate_microvm_filesystems(filesystems)?;
 
     use std::fmt::Write as _;
@@ -1319,13 +1303,11 @@ pub fn append_microvm_virtio_discovery(
             " virtio_mmio.device={MICROVM_VIRTIO_MMIO_LEN:#x}@{MICROVM_VIRTIO_NET_MMIO_BASE:#x}:{MICROVM_VIRTIO_NET_IRQ}"
         )?;
     }
-    if filesystem_slots > 0 {
-        write!(
-            cmdline,
-            " {}",
-            MICROVM_FILESYSTEM_SLOTS[0].discovery_token()
-        )?;
-    }
+    write!(
+        cmdline,
+        " {}",
+        MICROVM_FILESYSTEM_SLOTS[0].discovery_token()
+    )?;
     if has_console {
         write!(
             cmdline,
@@ -2267,7 +2249,7 @@ mod tests {
         validate_microvm_control_console_command_line(&tokens, false).unwrap();
 
         let mut cmdline = cmdline;
-        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, false, &[]).unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, &[], true, false, &[]).unwrap();
 
         assert!(build_microvm_control_command_line(&user_args, true).is_err());
     }
@@ -2287,10 +2269,7 @@ mod tests {
 
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
         cmdline.push_str(" virtio-mmio.device=0x1000@0xc0000000:1");
-        assert!(
-            append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, true, &[])
-                .is_err()
-        );
+        assert!(append_microvm_virtio_discovery(&mut cmdline, None, &[], true, true, &[]).is_err());
     }
 
     #[test]
@@ -2396,7 +2375,6 @@ mod tests {
             append_microvm_virtio_discovery(
                 cmdline,
                 Some((&network, None, None)),
-                false,
                 &[],
                 false,
                 false,
@@ -2562,7 +2540,6 @@ mod tests {
             append_microvm_virtio_discovery(
                 &mut cmdline,
                 Some((&network, dns, Some(ingress))),
-                false,
                 &[],
                 false,
                 false,
@@ -2625,12 +2602,12 @@ mod tests {
         );
 
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &blocks)
-            .unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, &[], false, false, &blocks).unwrap();
         assert_eq!(
             cmdline,
             format!(
                 "{MICROVM_BASE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0001000:17 \
                  virtio_mmio.device=0x1000@0xd0003000:19 \
                  virtio_mmio.device=0x1000@0xd0006000:22"
             )
@@ -2640,11 +2617,12 @@ mod tests {
     #[test]
     fn microvm_control_console_slot_is_stable() {
         let mut cmdline = MICROVM_CONSOLE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], true, true, &[]).unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, &[], true, true, &[]).unwrap();
         assert_eq!(
             cmdline,
             format!(
                 "{MICROVM_CONSOLE_COMMAND_LINE} \
+                 virtio_mmio.device=0x1000@0xd0001000:17 \
                  virtio_mmio.device=0x1000@0xd0002000:18 \
                  virtio_mmio.device=0x1000@0xd0007000:23 \
                  {MICROVM_CONTROL_TTY_COMMAND_LINE}"
@@ -2874,15 +2852,6 @@ mod tests {
 
     fn child(name: &str, access: MicrovmFilesystemAccess) -> MicrovmFilesystemChildConfig {
         MicrovmFilesystemChildConfig::new(name.to_owned(), access).unwrap()
-    }
-
-    #[test]
-    fn microvm_filesystem_slot_count_follows_attachments() {
-        assert_eq!(microvm_filesystem_slot_count(false, 0).unwrap(), 0);
-        assert_eq!(microvm_filesystem_slot_count(true, 0).unwrap(), 1);
-        assert_eq!(microvm_filesystem_slot_count(true, 1).unwrap(), 1);
-        assert!(microvm_filesystem_slot_count(false, 1).is_err());
-        assert!(microvm_filesystem_slot_count(true, 2).is_err());
     }
 
     #[test]
@@ -3312,7 +3281,6 @@ mod tests {
         append_microvm_virtio_discovery(
             &mut cmdline,
             Some((&network, None, None)),
-            true,
             std::slice::from_ref(&aggregate),
             true,
             true,
@@ -3340,16 +3308,8 @@ mod tests {
             filesystem("/opt/hostedtoolcache", MicrovmFilesystemAccess::ReadOnly),
         ];
         let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
-        append_microvm_virtio_discovery(
-            &mut cmdline,
-            None,
-            true,
-            &filesystems[..1],
-            false,
-            false,
-            &[],
-        )
-        .unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, &filesystems[..1], false, false, &[])
+            .unwrap();
         assert_eq!(
             cmdline,
             format!(
@@ -3358,21 +3318,11 @@ mod tests {
             )
         );
 
-        for filesystem_slot in [false, true] {
-            let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
-            assert!(
-                append_microvm_virtio_discovery(
-                    &mut cmdline,
-                    None,
-                    filesystem_slot,
-                    &filesystems,
-                    false,
-                    false,
-                    &[]
-                )
+        let mut cmdline = MICROVM_BASE_COMMAND_LINE.to_owned();
+        assert!(
+            append_microvm_virtio_discovery(&mut cmdline, None, &filesystems, false, false, &[])
                 .is_err()
-            );
-        }
+        );
         assert!(build_microvm_command_line(&["virtfs_aggregate=1".to_owned()], false).is_err());
     }
 
@@ -3437,8 +3387,7 @@ mod tests {
         assert!(validate_microvm_sandbox_blocks(&[distro, scratch], true).is_err());
 
         let mut cmdline = format!("{MICROVM_BASE_COMMAND_LINE} nvx_overlay_upper=ramfs");
-        append_microvm_virtio_discovery(&mut cmdline, None, false, &[], false, false, &[distro])
-            .unwrap();
+        append_microvm_virtio_discovery(&mut cmdline, None, &[], false, false, &[distro]).unwrap();
         assert!(cmdline.contains("virtio_mmio.device=0x1000@0xd0003000:19"));
         assert!(!cmdline.contains("virtio_mmio.device=0x1000@0xd0006000:22"));
 
@@ -3447,7 +3396,6 @@ mod tests {
             append_microvm_virtio_discovery(
                 &mut cmdline,
                 None,
-                false,
                 &[],
                 false,
                 false,

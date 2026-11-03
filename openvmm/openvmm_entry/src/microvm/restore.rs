@@ -6,7 +6,7 @@
 use super::console::MICROVM_CONSOLE_STABLE_ID;
 use super::console::MICROVM_CONTROL_CONSOLE_STABLE_ID;
 use super::console::microvm_console_listener_replacement_matches;
-use super::filesystem::microvm_filesystem_slot_from_snapshot;
+use super::filesystem::validate_microvm_filesystem_slot;
 use crate::Options;
 use crate::cli_args;
 use crate::cli_args::DiskCliKind;
@@ -647,7 +647,7 @@ pub(crate) fn validate_restore_contract(
         unreachable!("the time ABI preflight requires both records");
     };
     let network = network.map(|(config, policy, attachment)| (config, policy, attachment.clone()));
-    let filesystem_slot = microvm_filesystem_slot_from_snapshot(saved_contract)?;
+    validate_microvm_filesystem_slot(saved_contract)?;
     // A dormant-slot snapshot captured no filesystem, so a filesystem that the
     // restore attaches to the slot is not part of the snapshot's contract.
     let filesystem = filesystem.filter(|_| saved_contract.microvm_filesystem.is_some());
@@ -656,7 +656,6 @@ pub(crate) fn validate_restore_contract(
         openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
         effective_command_line.to_owned(),
         network,
-        filesystem_slot,
         filesystem,
         console_attachment.cloned(),
         control_console_attachment.cloned(),

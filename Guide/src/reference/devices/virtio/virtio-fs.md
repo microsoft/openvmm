@@ -338,11 +338,9 @@ canonical host paths, and modes, with the same policy paths and
 as it does a single directory's. The aggregate's root lists the children in
 the same order, so its directory handles and cookies stay valid.
 
-The device state of an attachment with allowed or writable paths records its
-complete access policy, and a restore must supply the same one. OpenVMM
-releases that predate these paths reject that state rather than restore the
-share without them. The device state of an aggregate records its children
-and their policies, and releases that predate aggregates reject it.
+The device state of an attachment records its complete access policy, and a
+restore must supply the same one. The device state of an aggregate records
+its children and their policies.
 
 `--mount-owner caller` applies only to guest requests. Capture and restore
 still revalidate saved names and reopen saved handles as the OpenVMM process.
@@ -350,8 +348,8 @@ Unless OpenVMM may bypass file permissions, as root may, capture therefore
 fails while the guest holds a name inside a directory that OpenVMM cannot
 search. Restore fails when OpenVMM cannot reopen a saved handle with its saved
 access, such as a handle open for writing on a file that a guest caller owns.
-OpenVMM releases that predate `--mount-owner` reject the device state of a
-`caller` attachment rather than restore it as `vmm`.
+The device state records the `--mount-owner` mode, and a restore must supply
+the same one.
 
 A snapshot captured without `--mount` or `--mount-aggregate` records the slot
 as dormant. It may restore without an attachment, or bind one new `--mount`
@@ -376,11 +374,6 @@ A tiered restore starts the device behind the post-restore input gate that
 the guest sends before it acknowledges the restore stay on their virtqueues,
 and OpenVMM serves them once it releases device input, so post-restore repair
 must not wait for a virtio-fs reply.
-
-Snapshots created before the dormant-slot capability cannot add a restore-time
-attachment and fail with a compatibility error. Snapshots that an earlier
-OpenVMM captured with a second virtio-fs slot, `fs:microvm1`, cannot be
-restored.
 
 ```admonish warning
 An ordinary host directory is live external state. Host changes after capture
