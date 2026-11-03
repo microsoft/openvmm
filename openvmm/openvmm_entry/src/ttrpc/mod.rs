@@ -151,6 +151,70 @@ fn processor_qos(limit: u32, weight: u32, reserve: Option<u32>) -> anyhow::Resul
     Ok(qos)
 }
 
+/// Returns which processor controls the chosen hypervisor backend enforces.
+fn host_processor_qos_support() -> vmservice::capabilities_vm_response::ProcessorQosSupport {
+    let (limit, weight, reservation) = match openvmm_helpers::hypervisor::chosen_hypervisor_name() {
+        #[cfg(windows)]
+        Some("whp") => {
+            let s = virt_whp::processor_qos_support();
+            (s.limit, s.weight, s.reserve)
+        }
+        #[cfg(target_os = "linux")]
+        Some("mshv") => {
+            let s = virt_mshv::processor_qos::processor_qos_support();
+            (s.limit, s.weight, s.reserve)
+        }
+        _ => (false, false, false),
+    };
+    vmservice::capabilities_vm_response::ProcessorQosSupport {
+        limit,
+        weight,
+        reservation,
+    }
+}
+
+fn capabilities_response(
+    processor_qos: vmservice::capabilities_vm_response::ProcessorQosSupport,
+) -> vmservice::CapabilitiesVmResponse {
+    use vmservice::capabilities_vm_response::Resource;
+    use vmservice::capabilities_vm_response::SupportedGuestOs;
+    use vmservice::capabilities_vm_response::SupportedResource;
+
+    let mut supported_resources = vec![
+        SupportedResource {
+            resource: Resource::Scsi as i32,
+            add: true,
+            remove: true,
+            update: false,
+        },
+        SupportedResource {
+            resource: Resource::Vpci as i32,
+            add: true,
+            remove: true,
+            update: false,
+        },
+        SupportedResource {
+            resource: Resource::VmNic as i32,
+            add: true,
+            remove: true,
+            update: true,
+        },
+    ];
+    if processor_qos.limit || processor_qos.weight || processor_qos.reservation {
+        supported_resources.push(SupportedResource {
+            resource: Resource::Processor as i32,
+            add: false,
+            remove: false,
+            update: true,
+        });
+    }
+    vmservice::CapabilitiesVmResponse {
+        supported_resources,
+        supported_guest_os: vec![SupportedGuestOs::Linux as i32],
+        processor_qos: Some(processor_qos),
+    }
+}
+
 #[cfg(test)]
 mod processor_qos_tests {
     use super::*;
@@ -170,6 +234,35 @@ mod processor_qos_tests {
         assert_eq!(processor_qos(0, 0, Some(0)).unwrap().reserve, Some(0));
         assert!(processor_qos(100001, 0, None).is_err());
         assert!(processor_qos(1000, 0, Some(2000)).is_err());
+    }
+
+    #[test]
+    fn capabilities_report_processor_qos() {
+        use vmservice::capabilities_vm_response::ProcessorQosSupport;
+        use vmservice::capabilities_vm_response::Resource;
+
+        let all = ProcessorQosSupport {
+            limit: true,
+            weight: true,
+            reservation: true,
+        };
+        let r = capabilities_response(all.clone());
+        assert_eq!(r.processor_qos, Some(all));
+        let p = r
+            .supported_resources
+            .iter()
+            .find(|s| s.resource == Resource::Processor as i32)
+            .unwrap();
+        assert!(p.update && !p.add && !p.remove);
+
+        let none = capabilities_response(ProcessorQosSupport::default());
+        assert_eq!(none.processor_qos, Some(ProcessorQosSupport::default()));
+        assert!(
+            !none
+                .supported_resources
+                .iter()
+                .any(|s| s.resource == Resource::Processor as i32)
+        );
     }
 }
 
@@ -1453,33 +1546,7 @@ impl VmService {
     }
 
     fn build_capabilities(&self) -> vmservice::CapabilitiesVmResponse {
-        use vmservice::capabilities_vm_response::Resource;
-        use vmservice::capabilities_vm_response::SupportedGuestOs;
-        use vmservice::capabilities_vm_response::SupportedResource;
-
-        vmservice::CapabilitiesVmResponse {
-            supported_resources: vec![
-                SupportedResource {
-                    resource: Resource::Scsi as i32,
-                    add: true,
-                    remove: true,
-                    update: false,
-                },
-                SupportedResource {
-                    resource: Resource::Vpci as i32,
-                    add: true,
-                    remove: true,
-                    update: false,
-                },
-                SupportedResource {
-                    resource: Resource::VmNic as i32,
-                    add: true,
-                    remove: true,
-                    update: true,
-                },
-            ],
-            supported_guest_os: vec![SupportedGuestOs::Linux as i32],
-        }
+        capabilities_response(host_processor_qos_support())
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {

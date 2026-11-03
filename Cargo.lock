@@ -6265,6 +6265,7 @@ dependencies = [
  "unix_socket",
  "vfio_assigned_device_resources",
  "video_core",
+ "virt_mshv",
  "virt_whp",
  "virtio_resources",
  "vm_manifest_builder",

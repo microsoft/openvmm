@@ -894,8 +894,18 @@ message CapabilitiesVMResponse {
         Windows = 0;
         Linux = 1;
     }
+
+    // Processor limit/weight/reservation the host can enforce. Unsupported
+    // controls are rejected by CreateVM and ModifyResource.
+    message ProcessorQosSupport {
+        bool limit = 1;
+        bool weight = 2;
+        bool reservation = 3;
+    }
+
     repeated SupportedResource supported_resources = 1;
     repeated SupportedGuestOS supported_guest_os = 2;
+    ProcessorQosSupport processor_qos = 3;
 }
 
 //

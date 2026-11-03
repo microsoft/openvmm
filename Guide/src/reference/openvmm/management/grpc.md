@@ -42,6 +42,10 @@ before their implementation is connected end to end.
 * RemoveVpciDevice
 * Quit
 
+`CapabilitiesVM` reports, in `processor_qos`, which processor controls
+(limit, weight, reservation) the host can enforce. CreateVM and
+ModifyResource reject a control the host can't enforce.
+
 ## Virtio-console file output
 
 `VmService` can write a virtio-console stream directly to a host file. Set the
