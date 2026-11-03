@@ -6356,8 +6356,21 @@ impl VirtioDevice for PendingStartDevice {
     }
 }
 
+struct StopTransportOps;
+
+impl crate::transport::core::TransportOps for StopTransportOps {
+    fn create_queue_interrupt(&mut self, _: usize, _: u16) -> Interrupt {
+        Interrupt::from_fn(|| {})
+    }
+    fn signal_config_change(&mut self) {}
+    fn reset_interrupts(&mut self) {}
+    fn doorbell_region(&mut self) -> Option<(u64, u32)> {
+        None
+    }
+}
+
 #[async_test]
-async fn teardown_finishes_pending_device_operation(driver: DefaultDriver) {
+async fn stop_finishes_pending_device_operation_before_teardown(driver: DefaultDriver) {
     let (entered, mut entered_recv) = mesh::channel();
     let (release, release_recv) = mesh::channel();
     let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -6389,12 +6402,14 @@ async fn teardown_finishes_pending_device_operation(driver: DefaultDriver) {
         VirtioDeviceFeatures::new(),
     );
     entered_recv.recv().await.unwrap();
-    let mut teardown = Box::pin(core.teardown());
-    assert!(futures::poll!(teardown.as_mut()).is_pending());
+    let mut ops = StopTransportOps;
+    let mut stopping = Box::pin(core.stop(&mut ops));
+    assert!(futures::poll!(stopping.as_mut()).is_pending());
     assert!(!dropped.load(Ordering::SeqCst));
     assert!(!started.load(Ordering::SeqCst));
     release.send(());
-    teardown.await;
+    stopping.await;
+    core.teardown().await;
     assert!(started.load(Ordering::SeqCst));
     assert!(dropped.load(Ordering::SeqCst));
 }

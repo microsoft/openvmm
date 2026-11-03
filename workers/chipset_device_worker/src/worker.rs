@@ -67,6 +67,7 @@ pub(crate) struct RemoteChipsetDeviceHandleParams {
 /// This worker wraps any device implementing ChipsetDevice and handles
 /// device operations sent via mesh channels.
 pub struct RemoteChipsetDeviceWorker<T> {
+    running: bool,
     device: ErasedChipsetDevice,
     pool: Option<DefaultPool>,
     req_recv: mesh::Receiver<DeviceRequest>,
@@ -172,6 +173,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
         });
 
         Ok(Self {
+            running: false,
             device,
             pool: Some(pool),
             req_recv,
@@ -195,7 +197,9 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                 }
 
                 let event = std::future::poll_fn(|cx| {
-                    if let Some(poll_device) = self.device.supports_poll_device() {
+                    if self.running
+                        && let Some(poll_device) = self.device.supports_poll_device()
+                    {
                         poll_device.poll_device(cx);
                     }
 
@@ -245,6 +249,11 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             deferred.inspect(&mut self.device);
                         }
                         WorkerRpc::Stop => {
+                            if self.running {
+                                self.device.stop().await;
+                                self.running = false;
+                            }
+                            self.device.teardown().await;
                             return Ok(());
                         }
                         WorkerRpc::Restart(rpc) => {
@@ -252,9 +261,24 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                         }
                     },
                     WorkerEvent::DeviceRequest(req) => match req {
-                        DeviceRequest::Start => self.device.start(),
+                        DeviceRequest::Start => {
+                            self.device.start();
+                            self.running = true;
+                        }
+                        DeviceRequest::Teardown(rpc) => {
+                            assert!(
+                                !self.running,
+                                "remote device must be stopped before teardown"
+                            );
+                            self.device.teardown().await;
+                            drop(self);
+                            rpc.complete(());
+                            return Ok(());
+                        }
                         DeviceRequest::Stop(rpc) => {
-                            rpc.handle(async |()| self.device.stop().await).await
+                            self.device.stop().await;
+                            self.running = false;
+                            rpc.complete(());
                         }
                         DeviceRequest::Reset(rpc) => {
                             self.deferred_reads.clear();

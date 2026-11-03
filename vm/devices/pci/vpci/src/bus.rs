@@ -316,6 +316,10 @@ impl PendingVpciBusOffer {
 }
 
 impl ChangeDeviceState for VpciBus {
+    async fn teardown(&mut self) {
+        self.revoke().await;
+    }
+
     fn start(&mut self) {
         if let VpciBusChannelState::Offered { channel } = &self.channel {
             channel.start();

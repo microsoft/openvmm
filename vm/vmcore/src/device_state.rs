@@ -29,9 +29,14 @@ pub trait ChangeDeviceState {
 
     /// Stops a device's asynchronous work.
     ///
-    /// After this returns, the device must not process any additional work. It
+    /// After this returns, the device must not process additional guest requests
+    /// in software. It
     /// should be in a stable state where it can be saved without losing data
     /// (if it implements the appropriate trait).
+    ///
+    /// Assigned hardware that cannot be paused losslessly may remain active
+    /// until teardown. Such a device must not claim save/restore support without
+    /// a way to quiesce hardware and capture its state.
     ///
     /// Callers must ensure that the device is in a started state before calling
     /// this method.
@@ -51,12 +56,16 @@ pub trait ChangeDeviceState {
     /// resources are closed by the time removal completes, rather than at
     /// some later point when the background tasks are reaped.
     ///
-    /// The device will not be used again after this returns.
-    /// Callers must revoke guest access before calling this method. The device
-    /// may still be running, so implementations must stop accepting new work and
-    /// finish issued I/O before releasing its resources. Dropping issued I/O
-    /// futures is not generally safe and can abort the process.
-    fn teardown(&mut self) -> impl Send + Future<Output = ()> {
-        async {}
-    }
+    /// Callers must ensure that the device is stopped and guest access is revoked
+    /// before calling this method. The device must not subsequently be started,
+    /// reset, or restored.
+    ///
+    /// Implementations must finish issued I/O and release resources held by
+    /// background tasks before returning. Assigned hardware that cannot be
+    /// quiesced without losing state during stop must be quiesced here.
+    /// Dropping issued I/O futures is not generally safe and can abort the process.
+    ///
+    /// Synchronous resources may be released by the device's destructor, which
+    /// the caller must run before acknowledging removal.
+    fn teardown(&mut self) -> impl Send + Future<Output = ()>;
 }

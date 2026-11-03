@@ -70,6 +70,16 @@ guest access is permanently revoked so late accesses cannot reach the
 removed device. Issued disk I/O is drained, not discarded by dropping its
 future.
 
+`ChangeDeviceState::teardown` is a required terminal operation on a stopped
+device. Removal stops a running unit first; paused and never-started units
+are already stopped. After async teardown, removal destroys the device
+payload even if stale references still hold its inaccessible wrapper.
+Synchronous devices explicitly implement a no-op teardown and release
+their resources through that destructor.
+
+Assigned hardware that cannot pause without losing state may quiesce
+during teardown instead. Ordinary stop must not destructively reset it.
+
 A slow backend can keep the removal RPC pending. Inspection, memory
 accesses, and NMI requests remain available; state transitions and further
 hotplug operations wait for removal to finish. Worker shutdown also waits

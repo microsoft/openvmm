@@ -35,8 +35,22 @@ use std::sync::Arc;
 /// A closed mutex can be accessed freely by the owner, but while closed it
 /// cannot be locked by anyone else.
 pub struct CloseableMutex<T: ?Sized> {
-    mutex: Mutex<bool>,
-    value: UnsafeCell<T>,
+    mutex: Mutex<MutexState>,
+    value: UnsafeCell<ManuallyDrop<T>>,
+}
+
+struct MutexState {
+    closed: bool,
+    destroyed: bool,
+}
+
+impl<T: ?Sized> Drop for CloseableMutex<T> {
+    fn drop(&mut self) {
+        if !self.mutex.get_mut().destroyed {
+            // SAFETY: the last reference is gone and the value has not been destroyed.
+            unsafe { ManuallyDrop::drop(self.value.get_mut()) };
+        }
+    }
 }
 
 // SAFETY: `mutex` ensures that there is only a single concurrent access to
@@ -47,8 +61,11 @@ impl<T> CloseableMutex<T> {
     /// Returns a new instance wrapping the given value.
     pub fn new(value: T) -> Self {
         Self {
-            mutex: Mutex::new(false),
-            value: value.into(),
+            mutex: Mutex::new(MutexState {
+                closed: false,
+                destroyed: false,
+            }),
+            value: UnsafeCell::new(ManuallyDrop::new(value)),
         }
     }
 }
@@ -64,8 +81,8 @@ impl<T: ?Sized> CloseableMutex<T> {
     pub fn close(self: Arc<Self>) -> ClosedGuard<T> {
         {
             let mut closed = self.mutex.lock();
-            assert!(!*closed, "object is already closed");
-            *closed = true;
+            assert!(!closed.closed, "object is already closed");
+            closed.closed = true;
         }
         ClosedGuard {
             mutex: ManuallyDrop::new(self),
@@ -89,7 +106,7 @@ impl<T: ?Sized> CloseableMutex<T> {
     /// If the lock is closed, returns `None`.
     pub fn lock_if_open(&self) -> Option<OpenGuard<'_, T>> {
         let closed = self.mutex.lock();
-        if *closed {
+        if closed.closed {
             return None;
         }
         MutexGuard::leak(closed);
@@ -159,6 +176,22 @@ impl<T: ?Sized> Drop for ClosedGuard<T> {
 }
 
 impl<T: ?Sized> ClosedGuard<T> {
+    /// Destroys the value while leaving all remaining references permanently closed.
+    ///
+    /// # Panics
+    /// Panics unless the mutex was closed permanently.
+    pub fn destroy(self) {
+        assert!(!self.reopen, "mutex is not permanently closed");
+        {
+            let mut state = self.mutex.mutex.lock();
+            assert!(!state.destroyed);
+            state.destroyed = true;
+        }
+        // SAFETY: this guard has exclusive access, cannot reopen the mutex, and
+        // records destruction before dropping the value to prevent a double drop.
+        unsafe { ManuallyDrop::drop(&mut *self.mutex.value.get()) };
+    }
+
     /// Opens the mutex, returning the inner instance.
     ///
     /// # Panics
@@ -178,9 +211,9 @@ impl<T: ?Sized> ClosedGuard<T> {
     unsafe fn release_ownership(&mut self) -> Arc<CloseableMutex<T>> {
         {
             let mut closed = self.mutex.mutex.lock();
-            assert!(*closed);
+            assert!(closed.closed);
             if self.reopen {
-                *closed = false;
+                closed.closed = false;
             }
         }
         // SAFETY: this is called exactly once.
@@ -251,5 +284,42 @@ mod tests {
     fn permanently_closed_mutex_cannot_reopen() {
         let x = Arc::new(CloseableMutex::new(0));
         x.close_permanently().open();
+    }
+
+    #[test]
+    fn destroy_releases_value_once_despite_retained_references() {
+        struct CountDrop(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for CountDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let value = Arc::new(CloseableMutex::new(CountDrop(count.clone())));
+        value.clone().close_permanently().destroy();
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(value.lock_if_open().is_none());
+        drop(value);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn panicking_destructor_is_not_called_twice() {
+        struct PanicDrop(Arc<std::sync::atomic::AtomicUsize>);
+        impl Drop for PanicDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("destructor failed");
+            }
+        }
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let value = Arc::new(CloseableMutex::new(PanicDrop(count.clone())));
+        let closed = value.clone().close_permanently();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| closed.destroy())).is_err()
+        );
+        assert!(value.lock_if_open().is_none());
+        drop(value);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

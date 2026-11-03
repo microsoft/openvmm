@@ -83,6 +83,8 @@ pub trait ProxyVgaPciCfgAccess: Send + Sync {
 }
 
 impl ChangeDeviceState for VgaProxyDevice {
+    async fn teardown(&mut self) {}
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

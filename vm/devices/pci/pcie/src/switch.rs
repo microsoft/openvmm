@@ -389,6 +389,8 @@ impl GenericPcieSwitch {
 }
 
 impl ChangeDeviceState for GenericPcieSwitch {
+    async fn teardown(&mut self) {}
+
     /// No-op start hook: switch state is fully modeled in config-space state.
     fn start(&mut self) {}
 

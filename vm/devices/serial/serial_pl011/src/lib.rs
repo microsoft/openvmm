@@ -545,6 +545,15 @@ impl SerialPl011 {
 }
 
 impl ChangeDeviceState for SerialPl011 {
+    async fn teardown(&mut self) {
+        if let Err(error) = futures::io::AsyncWriteExt::close(&mut self.io).await {
+            tracing::warn!(
+                error = &error as &dyn std::error::Error,
+                "serial backend close failed"
+            );
+        }
+    }
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

@@ -63,12 +63,15 @@ const PUMP_POLL_BUDGET: u32 = 256;
 /// bytes reached the real backend. `poll_connect`/`poll_disconnect` assume a
 /// single consumer (the serial emulator, which waits on only one of them at a
 /// time).
+/// Closing waits for the pump and backend to be released, but may discard
+/// buffered bytes.
 pub struct DebuggerRelay {
     inner: Arc<Mutex<Inner>>,
-    _pump: Task<()>,
+    _pump: Option<Task<()>>,
 }
 
 struct Inner {
+    closing: bool,
     rx: RingBuf,
     tx: RingBuf,
     connected: bool,
@@ -94,6 +97,7 @@ impl DebuggerRelay {
     pub fn new(driver: impl Spawn + Driver, name: &str, inner: Box<dyn SerialIo>) -> Self {
         let connected = inner.is_connected();
         let shared = Arc::new(Mutex::new(Inner {
+            closing: false,
             rx: RingBuf::new(RX_RING_CAP),
             tx: RingBuf::new(TX_RING_CAP),
             connected,
@@ -114,7 +118,7 @@ impl DebuggerRelay {
 
         Self {
             inner: shared,
-            _pump: pump,
+            _pump: Some(pump),
         }
     }
 }
@@ -255,6 +259,20 @@ async fn run_pump(
     let mut rx_next_drain: Option<Instant> = None;
 
     poll_fn(move |cx| {
+        if shared.lock().closing {
+            return match Pin::new(&mut *inner).poll_close(cx) {
+                Poll::Ready(result) => {
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            error = &error as &dyn std::error::Error,
+                            "serial debugger backend close failed"
+                        );
+                    }
+                    Poll::Ready(())
+                }
+                Poll::Pending => Poll::Pending,
+            };
+        }
         let mut budget = PUMP_POLL_BUDGET;
         loop {
             let mut made_progress = false;
@@ -487,7 +505,19 @@ impl AsyncWrite for DebuggerRelay {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let mut wakes = WakeList::default();
+        {
+            let mut state = self.inner.lock();
+            state.closing = true;
+            state.disconnect(&mut wakes);
+            state.wake_pump(&mut wakes);
+        }
+        wakes.wake();
+        if let Some(pump) = &mut self._pump {
+            std::task::ready!(Pin::new(pump).poll(cx));
+            self._pump.take();
+        }
         Poll::Ready(Ok(()))
     }
 }
@@ -848,6 +878,7 @@ mod tests {
 
     fn new_shared(connected: bool) -> Arc<Mutex<Inner>> {
         Arc::new(Mutex::new(Inner {
+            closing: false,
             rx: RingBuf::new(RX_RING_CAP),
             tx: RingBuf::new(TX_RING_CAP),
             connected,
@@ -1174,6 +1205,15 @@ mod tests {
 
         drop(relay);
         handle.wait_until(|state| state.dropped).await;
+    }
+
+    #[async_test]
+    async fn closing_relay_waits_for_backend_release(driver: DefaultDriver) {
+        let (io, handle) = MockSerialIo::new();
+        let mut relay = DebuggerRelay::new(driver, "teardown", Box::new(io));
+        futures::io::AsyncWriteExt::close(&mut relay).await.unwrap();
+        assert!(handle.state.lock().dropped);
+        futures::io::AsyncWriteExt::close(&mut relay).await.unwrap();
     }
 
     /// TX must keep being forwarded to the backend even while the RX side is a

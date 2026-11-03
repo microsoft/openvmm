@@ -44,6 +44,7 @@ zerocopy = { workspace = true, features = ["alloc"] }
 disk_prwrap.workspace = true
 disklayer_ram.workspace = true
 user_driver.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

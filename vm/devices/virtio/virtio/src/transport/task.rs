@@ -41,7 +41,7 @@ pub enum DeviceCommand {
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
-    /// ChangeDeviceState::teardown() — stop queues, drop the device, and exit
+    /// ChangeDeviceState::teardown() — drop the stopped device and exit
     /// the task. Completes only after the device has been dropped.
     Teardown(Rpc<(), ()>),
     /// Config register read at byte offset with byte length.
@@ -288,7 +288,6 @@ pub async fn run_device_task(
                 rpc.handle(async |()| task.reset().await).await;
             }
             DeviceCommand::Teardown(rpc) => {
-                task.stop_all_queues().await;
                 // Drop the device before completing so that its backing
                 // resources are released by the time the caller resumes.
                 drop(task);

@@ -607,6 +607,15 @@ impl HardDrive {
         }
     }
 
+    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.poll_device(cx);
+        if self.io.is_none() {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+
     pub fn poll_device(&mut self, cx: &mut Context<'_>) {
         if let Some(io) = self.io.as_mut() {
             if let Poll::Ready(result) = io.0.as_mut().poll(cx) {

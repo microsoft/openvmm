@@ -38,7 +38,8 @@ pub struct DynamicDeviceUnit {
 impl DynamicDeviceUnit {
     /// Removes the dynamically managed device and releases its backing resources.
     ///
-    /// Waits for the state-unit task to exit before invoking device teardown.
+    /// Waits for the state-unit task to exit, stops a running device, and then
+    /// invokes teardown with guest access permanently revoked.
     /// Resources owned by device-specific background tasks must be released
     /// before this returns, even if other references to the device remain.
     ///
@@ -47,10 +48,14 @@ impl DynamicDeviceUnit {
         let (send, recv) = mesh::oneshot();
         self.driver
             .spawn("remove-chipset-device", async move {
-                let unit = self.unit.remove().await;
+                let mut unit = self.unit.remove().await;
                 let mut device = unit.device.close_permanently();
+                if unit.running {
+                    device.stop().await;
+                    unit.running = false;
+                }
                 device.teardown().await;
-                drop(device);
+                device.destroy();
                 send.send(());
             })
             .detach();
@@ -375,11 +380,19 @@ mod tests {
     #[derive(InspectMut)]
     #[inspect(skip)]
     struct RemovingDevice {
+        stopped: bool,
+        stop_count: Arc<AtomicUsize>,
         accesses: Arc<AtomicUsize>,
         entered: mesh::Sender<()>,
         release: mesh::Receiver<()>,
         finished: mesh::Sender<()>,
         io: Option<DropMarker>,
+    }
+
+    impl Drop for RemovingDevice {
+        fn drop(&mut self) {
+            self.finished.send(());
+        }
     }
 
     struct TestDebugEventHandler;
@@ -436,107 +449,128 @@ mod tests {
     }
 
     impl ChangeDeviceState for RemovingDevice {
-        fn start(&mut self) {}
+        fn start(&mut self) {
+            self.stopped = false;
+        }
 
-        async fn stop(&mut self) {}
+        async fn stop(&mut self) {
+            assert!(!self.stopped, "device stopped twice");
+            self.stopped = true;
+            self.stop_count.fetch_add(1, Ordering::SeqCst);
+        }
 
         async fn reset(&mut self) {}
 
         async fn teardown(&mut self) {
+            assert!(self.stopped, "teardown before stop");
             let io = self.io.take();
             self.entered.send(());
             self.release.recv().await.unwrap();
             drop(io);
-            self.finished.send(());
         }
     }
 
     #[pal_async::async_test]
     async fn removal_revokes_io_without_cancelling_cleanup(driver: DefaultDriver) {
-        for abandon_waiter in [false, true] {
-            let (entered, mut entered_recv) = mesh::channel();
-            let (release, release_recv) = mesh::channel();
-            let (finished, mut finished_recv) = mesh::channel();
-            let io_dropped = Arc::new(AtomicBool::new(false));
-            let accesses = Arc::new(AtomicUsize::new(0));
-            let device = Arc::new(CloseableMutex::new(RemovingDevice {
-                accesses: accesses.clone(),
-                entered,
-                release: release_recv,
-                finished,
-                io: Some(DropMarker(io_dropped.clone())),
-            }));
-            let erased: Arc<CloseableMutex<dyn ChipsetDevice>> = device.clone();
-            let mmio_ranges = IoRanges::<u64>::new(false, None);
-            mmio_ranges
-                .register(
-                    0x1000,
-                    0x1fff,
-                    "bar".into(),
-                    Arc::downgrade(&erased),
-                    "test".into(),
-                )
-                .unwrap();
-            let pio_ranges = IoRanges::<u16>::new(false, None);
-            pio_ranges
-                .register(
-                    0x100,
-                    0x103,
-                    "pio".into(),
-                    Arc::downgrade(&erased),
-                    "test".into(),
-                )
-                .unwrap();
-            let stale_lookup = mmio_ranges.lookup(0x1000, true);
-            let chipset = Chipset {
-                mmio_ranges,
-                pio_ranges,
-                pic: None,
-                eoi_handler: None,
-                debug_event_handler: Arc::new(TestDebugEventHandler),
-            };
-            let mut data = [0; 4];
-            chipset.mmio_read(0, 0x1000, &mut data).await;
-            assert_eq!(data, [0x5a; 4]);
-            let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-            let task_driver = source.simple();
-            let units = StateUnits::new();
-            let unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
-            let unit = units
-                .add("test")
-                .spawn(task_driver.clone(), |recv| unit.run(recv))
-                .unwrap();
-            let mut removal = Some(
-                DynamicDeviceUnit {
-                    unit,
-                    driver: task_driver,
+        for state in ["never-started", "running", "paused"] {
+            for abandon_waiter in [false, true] {
+                let (entered, mut entered_recv) = mesh::channel();
+                let (release, release_recv) = mesh::channel();
+                let (finished, mut finished_recv) = mesh::channel();
+                let io_dropped = Arc::new(AtomicBool::new(false));
+                let accesses = Arc::new(AtomicUsize::new(0));
+                let stop_count = Arc::new(AtomicUsize::new(0));
+                let device = Arc::new(CloseableMutex::new(RemovingDevice {
+                    stopped: true,
+                    stop_count: stop_count.clone(),
+                    accesses: accesses.clone(),
+                    entered,
+                    release: release_recv,
+                    finished,
+                    io: Some(DropMarker(io_dropped.clone())),
+                }));
+                let erased: Arc<CloseableMutex<dyn ChipsetDevice>> = device.clone();
+                let mmio_ranges = IoRanges::<u64>::new(false, None);
+                mmio_ranges
+                    .register(
+                        0x1000,
+                        0x1fff,
+                        "bar".into(),
+                        Arc::downgrade(&erased),
+                        "test".into(),
+                    )
+                    .unwrap();
+                let pio_ranges = IoRanges::<u16>::new(false, None);
+                pio_ranges
+                    .register(
+                        0x100,
+                        0x103,
+                        "pio".into(),
+                        Arc::downgrade(&erased),
+                        "test".into(),
+                    )
+                    .unwrap();
+                let stale_lookup = mmio_ranges.lookup(0x1000, true);
+                let chipset = Chipset {
+                    mmio_ranges,
+                    pio_ranges,
+                    pic: None,
+                    eoi_handler: None,
+                    debug_event_handler: Arc::new(TestDebugEventHandler),
+                };
+                let mut data = [0; 4];
+                chipset.mmio_read(0, 0x1000, &mut data).await;
+                assert_eq!(data, [0x5a; 4]);
+                let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+                let task_driver = source.simple();
+                let units = StateUnits::new();
+                let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+                if state != "never-started" {
+                    unit.start().await;
+                    if state == "paused" {
+                        unit.stop().await;
+                    }
                 }
-                .remove(),
-            );
-            entered_recv.recv().await.unwrap();
-            if abandon_waiter {
-                drop(removal.take());
-            }
+                let unit = units
+                    .add("test")
+                    .spawn(task_driver.clone(), |recv| unit.run(recv))
+                    .unwrap();
+                let mut removal = Some(
+                    DynamicDeviceUnit {
+                        unit,
+                        driver: task_driver,
+                    }
+                    .remove(),
+                );
+                entered_recv.recv().await.unwrap();
+                if abandon_waiter {
+                    drop(removal.take());
+                }
 
-            assert!(stale_lookup.dev.lock_if_open().is_none());
-            chipset.mmio_read(0, 0x1000, &mut data).await;
-            assert_eq!(data, [0xff; 4]);
-            chipset.mmio_write(0, 0x1000, &[1; 4]).await;
-            chipset.io_read(0, 0x100, &mut data).await;
-            assert_eq!(data, [0xff; 4]);
-            chipset.io_write(0, 0x100, &[1; 4]).await;
-            assert_eq!(accesses.load(Ordering::SeqCst), 1);
-            assert!(!io_dropped.load(Ordering::SeqCst));
+                assert!(stale_lookup.dev.lock_if_open().is_none());
+                chipset.mmio_read(0, 0x1000, &mut data).await;
+                assert_eq!(data, [0xff; 4]);
+                chipset.mmio_write(0, 0x1000, &[1; 4]).await;
+                chipset.io_read(0, 0x100, &mut data).await;
+                assert_eq!(data, [0xff; 4]);
+                chipset.io_write(0, 0x100, &[1; 4]).await;
+                assert_eq!(accesses.load(Ordering::SeqCst), 1);
+                assert!(!io_dropped.load(Ordering::SeqCst));
 
-            release.send(());
-            finished_recv.recv().await.unwrap();
-            if let Some(removal) = removal {
-                removal.await;
+                release.send(());
+                finished_recv.recv().await.unwrap();
+                if let Some(removal) = removal {
+                    removal.await;
+                }
+                assert!(io_dropped.load(Ordering::SeqCst));
+                assert_eq!(
+                    stop_count.load(Ordering::SeqCst),
+                    usize::from(state != "never-started")
+                );
+                assert!(device.lock_if_open().is_none());
+                chipset.mmio_read(0, 0x1000, &mut data).await;
+                assert_eq!(data, [0xff; 4]);
             }
-            assert!(io_dropped.load(Ordering::SeqCst));
-            assert!(device.lock_if_open().is_none());
-            chipset.mmio_read(0, 0x1000, &mut data).await;
-            assert_eq!(data, [0xff; 4]);
         }
     }
 }

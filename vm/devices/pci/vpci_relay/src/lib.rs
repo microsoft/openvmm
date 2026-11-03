@@ -765,6 +765,10 @@ impl PciConfigSpace for RelayedVpciDevice {
 }
 
 impl ChangeDeviceState for RelayedVpciDevice {
+    async fn teardown(&mut self) {
+        assert!(self.pending.is_none() && self.queued.is_empty());
+    }
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {

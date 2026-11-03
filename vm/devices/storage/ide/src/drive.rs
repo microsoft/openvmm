@@ -146,6 +146,13 @@ impl DiskDrive {
             DiskDrive::OpticalDevice(device) => device.poll_device(cx),
         }
     }
+
+    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> std::task::Poll<()> {
+        match self {
+            DiskDrive::HardDevice(device) => device.poll_stop(cx),
+            DiskDrive::OpticalDevice(device) => device.poll_stop(cx),
+        }
+    }
 }
 
 pub mod save_restore {

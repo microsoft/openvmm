@@ -14,6 +14,7 @@ use anyhow::Context as _;
 use inspect::{Inspect, InspectMut};
 use membacking::DmaMapperClient;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend as _;
 use pal_async::task::Spawn as _;
 use parking_lot::Mutex;
@@ -72,6 +73,7 @@ impl membacking::DmaTarget for VfioType1DmaTarget {
 
 /// RPC messages for the container manager task.
 enum VfioManagerRpc {
+    Synchronize(Rpc<(), ()>),
     /// Prepare a container and group for a device, creating or reusing
     /// containers as needed. Returns a [`VfioDeviceBinding`] directly.
     ///
@@ -209,6 +211,7 @@ impl VfioContainerManager {
     pub async fn run(mut self) {
         while let Ok(rpc) = self.recv.recv().await {
             match rpc {
+                VfioManagerRpc::Synchronize(rpc) => rpc.complete(()),
                 VfioManagerRpc::PrepareDevice(rpc) => {
                     rpc.handle_failable(async |(pci_id, group_file)| {
                         self.prepare_device(pci_id, group_file).await
@@ -655,6 +658,7 @@ impl membacking::DmaTarget for IommufdDmaTarget {
 
 /// RPC messages for a per-iommu [`IoasManager`] task.
 pub(crate) enum IoasManagerRpc {
+    Synchronize(Rpc<(), ()>),
     /// Bind and attach a cdev device to this manager's IOAS.
     PrepareDevice {
         pci_id: String,
@@ -823,6 +827,7 @@ impl IoasManager {
                 IoasManagerRpc::RemoveDevice(device_id) => {
                     self.remove_device(device_id);
                 }
+                IoasManagerRpc::Synchronize(rpc) => rpc.complete(()),
                 IoasManagerRpc::Inspect(deferred) => deferred.inspect(&self),
             }
         }
@@ -1368,6 +1373,27 @@ pub(crate) enum VfioBinding {
 }
 
 impl VfioBinding {
+    pub(crate) async fn remove(self) {
+        match self {
+            Self::Group(binding) => {
+                let sender = binding.sender.clone();
+                drop(binding);
+                sender
+                    .call(VfioManagerRpc::Synchronize, ())
+                    .await
+                    .expect("VFIO manager is gone");
+            }
+            Self::Cdev(binding) => {
+                let sender = binding._removal.manager_send.clone();
+                drop(binding);
+                sender
+                    .call(IoasManagerRpc::Synchronize, ())
+                    .await
+                    .expect("VFIO IOAS manager is gone");
+            }
+        }
+    }
+
     /// Returns the per-IOAS dmabuf registry for a cdev/iommufd binding, or
     /// `None` for the legacy group/type1 path (which has no registry — dmabuf
     /// P2P is iommufd-only).

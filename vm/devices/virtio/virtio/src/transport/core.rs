@@ -426,12 +426,13 @@ impl VirtioTransportCore {
 
     /// `ChangeDeviceState::teardown()` implementation.
     pub async fn teardown(&mut self) {
+        assert!(
+            !self.state.is_busy(),
+            "device must be stopped before teardown"
+        );
         self.doorbells.clear();
         drop(self.pending_status_deferred.take());
         self.stalled_io.clear();
-        // The command queue finishes prior operations before teardown. Dropping
-        // their RPC replies does not cancel the underlying device operations.
-        self.state = TransportState::Ready;
         // Wait for the device task to drop the device so that backing
         // resources (e.g. disk files) are closed before device removal
         // completes. Simply dropping `_device_task` would cancel the task

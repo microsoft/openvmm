@@ -37,6 +37,7 @@ pub struct Device {
     vtl: Vtl,
     device_id: u64,
     interrupts: Mutex<Vec<Option<MsiAddressData>>>,
+    deleted: std::sync::atomic::AtomicBool,
 }
 
 impl Device {
@@ -57,6 +58,7 @@ impl Device {
             vtl,
             device_id,
             interrupts: Default::default(),
+            deleted: Default::default(),
         })
     }
 
@@ -77,6 +79,7 @@ impl Device {
             vtl,
             device_id,
             interrupts: Default::default(),
+            deleted: Default::default(),
         })
     }
 
@@ -95,15 +98,21 @@ impl Device {
     fn device(&self) -> whp::Device<'_> {
         self.partition.vtlp(self.vtl).whp.device(self.device_id)
     }
+
+    fn delete(&self) {
+        if !self.deleted.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            self.partition
+                .vtlp(self.vtl)
+                .whp
+                .delete_device(self.device_id)
+                .expect("device failed to delete");
+        }
+    }
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
-        self.partition
-            .vtlp(self.vtl)
-            .whp
-            .delete_device(self.device_id)
-            .expect("device failed to delete");
+        self.delete();
     }
 }
 
@@ -449,6 +458,11 @@ impl AssignedPciDevice {
 }
 
 impl ChangeDeviceState for AssignedPciDevice {
+    async fn teardown(&mut self) {
+        self.disable_mmio();
+        self.device.delete();
+    }
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

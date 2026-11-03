@@ -589,9 +589,23 @@ impl CommandBufferAccess {
 struct Io(Pin<Box<dyn Send + Future<Output = Result<(), disk_backend::DiskError>>>>);
 
 impl ChangeDeviceState for FloppyDiskController {
+    async fn teardown(&mut self) {
+        assert!(self.io.is_none(), "floppy must be stopped before teardown");
+    }
+
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        std::future::poll_fn(|cx| {
+            self.poll_device(cx);
+            if self.io.is_none() {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+    }
 
     async fn reset(&mut self) {
         self.reset(false);

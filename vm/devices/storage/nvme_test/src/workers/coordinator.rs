@@ -35,7 +35,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[derive(InspectMut)]
 pub struct NvmeWorkers {
     #[inspect(skip)]
-    _task: Task<()>,
+    _task: Option<Task<()>>,
     #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
     #[inspect(skip)]
@@ -89,11 +89,33 @@ impl NvmeWorkers {
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
         Self {
-            _task: task,
+            _task: Some(task),
             send,
             doorbells,
             state: EnableState::Disabled,
         }
+    }
+
+    pub fn start(&mut self) {
+        self.send.send(CoordinatorRequest::Start);
+    }
+
+    pub async fn stop(&mut self) {
+        self.send
+            .call(CoordinatorRequest::Stop, ())
+            .await
+            .expect("NVMe coordinator is gone");
+    }
+
+    pub async fn teardown(&mut self) {
+        self.send
+            .call(CoordinatorRequest::Teardown, ())
+            .await
+            .expect("NVMe coordinator is gone");
+        self._task
+            .take()
+            .expect("NVMe coordinator already removed")
+            .await;
     }
 
     pub fn client(&self) -> NvmeFaultControllerClient {
@@ -222,6 +244,9 @@ struct Coordinator {
 }
 
 enum CoordinatorRequest {
+    Start,
+    Stop(Rpc<(), ()>),
+    Teardown(Rpc<(), ()>),
     EnableAdmin(Rpc<EnableAdminParams, ()>),
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
@@ -265,6 +290,37 @@ impl Coordinator {
 
             match event {
                 Event::Request(Some(req)) => match req {
+                    CoordinatorRequest::Start => {
+                        if let Some(state) = self.admin.state_mut() {
+                            state.start();
+                        }
+                        self.admin.start();
+                    }
+                    CoordinatorRequest::Stop(rpc) => {
+                        self.admin.stop().await;
+                        if let Some(reset) = self.reset.take() {
+                            if let Some(state) = self.admin.state_mut() {
+                                state.drain().await;
+                                self.admin.remove();
+                            }
+                            reset.complete(());
+                        } else if let Some(state) = self.admin.state_mut() {
+                            state.stop().await;
+                        }
+                        rpc.complete(());
+                    }
+                    CoordinatorRequest::Teardown(rpc) => {
+                        assert!(
+                            !self.admin.is_running(),
+                            "NVMe must be stopped before teardown"
+                        );
+                        if let Some(state) = self.admin.state_mut() {
+                            state.teardown().await;
+                        }
+                        drop(self);
+                        rpc.complete(());
+                        return;
+                    }
                     CoordinatorRequest::EnableAdmin(rpc) => rpc.handle_sync(
                         |EnableAdminParams {
                              asq,

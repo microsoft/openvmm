@@ -107,6 +107,8 @@ impl DmaController {
 }
 
 impl ChangeDeviceState for DmaController {
+    async fn teardown(&mut self) {}
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

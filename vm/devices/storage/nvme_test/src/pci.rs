@@ -499,9 +499,18 @@ impl NvmeFaultController {
 }
 
 impl ChangeDeviceState for NvmeFaultController {
-    fn start(&mut self) {}
+    async fn teardown(&mut self) {
+        self.workers.teardown().await;
+        self.cfg_space.reset();
+    }
 
-    async fn stop(&mut self) {}
+    fn start(&mut self) {
+        self.workers.start();
+    }
+
+    async fn stop(&mut self) {
+        self.workers.stop().await;
+    }
 
     async fn reset(&mut self) {
         let Self {

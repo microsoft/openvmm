@@ -814,6 +814,8 @@ fn handle_int15_e820_query(mem_layout: &MemoryLayout, e820_entry: u8, read_count
 }
 
 impl ChangeDeviceState for PcatBiosDevice {
+    async fn teardown(&mut self) {}
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

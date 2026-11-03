@@ -366,6 +366,8 @@ impl HandleEoi for IoApicDevice {
 }
 
 impl ChangeDeviceState for IoApicDevice {
+    async fn teardown(&mut self) {}
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

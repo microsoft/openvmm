@@ -60,6 +60,10 @@ pub struct IoState {
     namespaces: BTreeMap<u32, Arc<Namespace>>,
     #[inspect(skip)]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = (IoResult, Command)> + Send>>>,
+    #[inspect(skip)]
+    ready_ios: std::collections::VecDeque<(IoResult, Command)>,
+    #[inspect(skip)]
+    delayed_completion: Option<(spec::Completion, std::time::Instant)>,
     io_count: usize,
     queue_state: IoQueueState,
     #[inspect(skip)]
@@ -99,6 +103,8 @@ impl IoState {
             ),
             namespaces,
             ios: FuturesUnordered::new(),
+            ready_ios: Default::default(),
+            delayed_completion: None,
             io_count: 0,
             queue_state: IoQueueState::Active,
             fault_configuration,
@@ -117,8 +123,17 @@ impl IoState {
     ///
     /// This future may be dropped and reissued.
     pub async fn drain(&mut self) {
+        self.io_count -= self.ready_ios.len();
+        self.ready_ios.clear();
+        self.delayed_completion = None;
         while self.ios.next().await.is_some() {
             self.io_count -= 1;
+        }
+    }
+
+    pub async fn stop(&mut self) {
+        while let Some(result) = self.ios.next().await {
+            self.ready_ios.push_back(result);
         }
     }
 }
@@ -196,6 +211,21 @@ impl IoHandler {
     ) -> Result<(), HandlerError> {
         loop {
             check.check()?;
+            if let Some((_, deadline)) = &state.delayed_completion {
+                self.timer
+                    .sleep(deadline.saturating_duration_since(std::time::Instant::now()))
+                    .await;
+                if matches!(state.queue_state, IoQueueState::Active) {
+                    poll_fn(|cx| state.cq.poll_ready(cx)).await?;
+                }
+                let (completion, _) = state.delayed_completion.take().unwrap();
+                if !state.cq.write(completion)? {
+                    tracelimit::warn_ratelimited!(
+                        "dropped delayed completion during queue deletion"
+                    );
+                }
+                continue;
+            }
             let deleting = match state.queue_state {
                 IoQueueState::Active => {
                     // Wait for a completion to be ready. This will be necessary either
@@ -206,7 +236,7 @@ impl IoHandler {
                     false
                 }
                 IoQueueState::Deleting => {
-                    if state.ios.is_empty() {
+                    if state.ios.is_empty() && state.ready_ios.is_empty() {
                         self.admin_response.send(self.sqid);
                         state.queue_state = IoQueueState::Deleted;
                         break;
@@ -230,7 +260,9 @@ impl IoHandler {
             };
 
             let next_io_completion = async {
-                if state.ios.is_empty() {
+                if let Some(result) = state.ready_ios.pop_front() {
+                    Event::Io(result)
+                } else if state.ios.is_empty() {
                     pending().await
                 } else {
                     Event::Io(state.ios.next().await.unwrap())
@@ -361,7 +393,9 @@ impl IoHandler {
                             &command,
                             &completion
                         );
-                        self.timer.sleep(duration).await;
+                        state.delayed_completion =
+                            Some((completion, std::time::Instant::now() + duration));
+                        continue;
                     }
                 }
             }
@@ -383,5 +417,62 @@ impl IoHandler {
             .iter()
             .find(|(pattern, _)| match_command_pattern(pattern, command))
             .map(|(_, behavior)| behavior.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+    use zerocopy::IntoBytes;
+
+    #[async_test]
+    async fn delayed_completion_survives_stopping_and_resuming(driver: DefaultDriver) {
+        let memory = GuestMemory::allocate(0x4000);
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let (send, _recv) = mesh::channel();
+        let mut handler = IoHandler::new(source.simple(), memory.clone(), 1, send);
+        let mut fault_active = mesh::CellUpdater::new(false);
+        let mut state = IoState::new(
+            &memory,
+            Arc::new(RwLock::new(DoorbellMemory::new(4))),
+            0,
+            8,
+            1,
+            0x1000,
+            8,
+            1,
+            None,
+            BTreeMap::new(),
+            Arc::new(IoQueueFaultConfig::new(fault_active.cell())),
+        );
+        let mut completion = spec::Completion::new_zeroed();
+        completion.cid = 42;
+        state.delayed_completion = Some((
+            completion,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        ));
+        assert!(handler.process(&mut state).now_or_never().is_none());
+        assert!(state.delayed_completion.is_some());
+        state.delayed_completion.as_mut().unwrap().1 = std::time::Instant::now();
+        let mut resumed = Box::pin(handler.process(&mut state));
+        poll_fn(|cx| {
+            assert!(resumed.as_mut().poll(cx).is_pending());
+            let mut completion = spec::Completion::new_zeroed();
+            memory.read_at(0x1000, completion.as_mut_bytes()).unwrap();
+            if completion.cid == 42 {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        drop(resumed);
+        assert!(state.delayed_completion.is_none());
     }
 }

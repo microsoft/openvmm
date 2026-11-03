@@ -135,6 +135,8 @@ impl LineInterruptTarget for DualPic {
 }
 
 impl ChangeDeviceState for DualPic {
+    async fn teardown(&mut self) {}
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

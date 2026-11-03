@@ -109,9 +109,23 @@ impl<FDC: MaybeStubFloppyDiskController> Winbond83977FloppySioDevice<FDC> {
 }
 
 impl<FDC: MaybeStubFloppyDiskController> ChangeDeviceState for Winbond83977FloppySioDevice<FDC> {
-    fn start(&mut self) {}
+    async fn teardown(&mut self) {
+        self.sio.teardown().await;
+        self.primary_fdc.teardown().await;
+        self.secondary_fdc.teardown().await;
+    }
 
-    async fn stop(&mut self) {}
+    fn start(&mut self) {
+        self.sio.start();
+        self.primary_fdc.start();
+        self.secondary_fdc.start();
+    }
+
+    async fn stop(&mut self) {
+        self.primary_fdc.stop().await;
+        self.secondary_fdc.stop().await;
+        self.sio.stop().await;
+    }
 
     async fn reset(&mut self) {
         self.sio.reset().await;

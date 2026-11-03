@@ -137,6 +137,12 @@ impl IoState {
             self.sqs[io_result.sq_idx].io_count -= 1;
         }
     }
+
+    pub async fn stop(&mut self) {
+        while let Some(result) = self.ios.next().await {
+            self.completions.push_back(result);
+        }
+    }
 }
 
 struct IoResult {
@@ -306,5 +312,53 @@ impl IoHandler {
 
             sq.io_count -= 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use pal_async::async_test;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    struct IssuedIo(Arc<AtomicBool>);
+
+    impl Drop for IssuedIo {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_test]
+    async fn stop_retains_issued_io_and_completed_results() {
+        let memory = GuestMemory::allocate(0x4000);
+        let doorbells = Arc::new(RwLock::new(DoorbellMemory::new(4)));
+        let mut state = IoState::new(&memory, doorbells, 0x1000, 8, 1, None, BTreeMap::new());
+        let sq_idx = state.create_sq(1, 0, 8);
+        state.sqs[sq_idx].io_count = 1;
+        let (release, wait) = mesh::oneshot();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let issued = IssuedIo(dropped.clone());
+        state.ios.push(Box::pin(async move {
+            let _issued = issued;
+            wait.await.unwrap();
+            IoResult {
+                sq_idx,
+                cid: 17,
+                result: CommandResult::default(),
+            }
+        }));
+        assert!(state.stop().now_or_never().is_none());
+        assert!(!dropped.load(Ordering::SeqCst));
+        release.send(());
+        state.stop().await;
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(state.ios.is_empty());
+        assert_eq!(state.completions.len(), 1);
+        assert_eq!(state.completions[0].cid, 17);
+        assert_eq!(state.sqs[sq_idx].io_count, 1);
     }
 }

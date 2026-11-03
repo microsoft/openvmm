@@ -5458,6 +5458,7 @@ dependencies = [
  "scsi_buffers",
  "slab",
  "task_control",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5569,6 +5570,7 @@ dependencies = [
  "task_control",
  "tdisp",
  "tdisp_proto",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -7986,6 +7988,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "test_with_tracing",
+ "tracing",
  "vm_resource",
 ]
 

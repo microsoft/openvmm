@@ -315,7 +315,7 @@ pub(crate) struct VfioAssignedPciDevice {
 
     /// VFIO binding. Keeps the container/group (legacy) or iommufd/IOAS
     /// (cdev) fds alive and cleans up on drop.
-    binding: manager::VfioBinding,
+    binding: Option<manager::VfioBinding>,
 }
 
 #[derive(Inspect)]
@@ -325,7 +325,7 @@ struct VfioPciDevice {
     /// Held behind an `Arc` so the same fd can be shared with the iommufd
     /// stream backend (nested path) without duplicating it.
     #[inspect(skip)]
-    device: Arc<vfio_sys::Device>,
+    device: OwnedVfioDevice,
 
     /// Offset into the VFIO device fd where the PCI config region starts.
     #[inspect(hex)]
@@ -334,6 +334,16 @@ struct VfioPciDevice {
     /// Size of the config space region.
     #[inspect(hex)]
     config_size: u64,
+}
+
+struct OwnedVfioDevice(Option<Arc<vfio_sys::Device>>);
+
+impl std::ops::Deref for OwnedVfioDevice {
+    type Target = Arc<vfio_sys::Device>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("VFIO device has been torn down")
+    }
 }
 
 impl ConfigSpaceRead for VfioPciDevice {
@@ -458,7 +468,7 @@ impl VfioAssignedPciDevice {
             .context("failed to get VFIO config region info")?;
 
         let vfio_device = VfioPciDevice {
-            device: vfio_device,
+            device: OwnedVfioDevice(Some(vfio_device)),
             config_offset: config_info.offset,
             config_size: config_info.size,
         };
@@ -606,7 +616,7 @@ impl VfioAssignedPciDevice {
                 mapped_region
                     .map(
                         0,
-                        &*vfio_device.device,
+                        vfio_device.device.as_ref(),
                         region.vfio_offset + area.start(),
                         area.len() as usize,
                         true,
@@ -699,7 +709,7 @@ impl VfioAssignedPciDevice {
             config_patches,
             synthetic_pasid,
             accel_stream,
-            binding,
+            binding: Some(binding),
         })
     }
 
@@ -1509,6 +1519,22 @@ fn write_msix_emulator(emulator: &mut MsixEmulator, offset: u64, data: &[u8]) {
 }
 
 impl ChangeDeviceState for VfioAssignedPciDevice {
+    async fn teardown(&mut self) {
+        if self.msix.as_ref().is_some_and(|m| m.enabled) {
+            self.msix_disable();
+        }
+        self.mmio_enabled = false;
+        self.update_bar_mappings();
+        self.bar_direct_maps.clear();
+        self.accel_stream.take();
+        // Closing the device lets VFIO quiesce hardware while the DMA binding
+        // is still alive. Wait for the manager to release that binding afterward.
+        self.vfio_device.device.0.take();
+        if let Some(binding) = self.binding.take() {
+            binding.remove().await;
+        }
+    }
+
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}
