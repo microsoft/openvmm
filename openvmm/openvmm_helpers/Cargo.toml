@@ -28,7 +28,6 @@ libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 disk_vhdmp.workspace = true
-pal.workspace = true
 sparse_mmap.workspace = true
 
 [dev-dependencies]

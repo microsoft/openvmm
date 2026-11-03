@@ -465,9 +465,9 @@ impl VmController {
             .as_ref()
             .context("save-snapshot requires --memory-backing-file")?;
 
-        // Reject a destination that would overwrite or delete existing data
-        // before touching the VM, so a rejected save leaves the VM running.
-        openvmm_helpers::snapshot::check_snapshot_destination(dir, memory_file_path)?;
+        // Reject an existing destination before touching the VM, so a rejected
+        // save leaves the VM running.
+        openvmm_helpers::snapshot::check_snapshot_destination(dir)?;
 
         // Pause the VM.
         self.vm_rpc

@@ -41,10 +41,12 @@ pub struct SnapshotManifest {
     /// Architecture string ("x86_64" or "aarch64").
     #[mesh(7)]
     pub architecture: String,
-    /// Unique snapshot identifier generated at save time. Zero for snapshots
-    /// created before snapshot IDs were introduced.
-    #[mesh(8)]
+    /// Unique snapshot identifier generated at save time. Zero if the manifest
+    /// has no snapshot ID.
+    #[mesh(18, encoding = "mesh::payload::encoding::ZeroCopyEncoding")]
     pub snapshot_id: guid::Guid,
+    // Field 19 is reserved for `compatibility_bundle_digest` and field 20 for
+    // `memory_artifacts`.
 }
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
@@ -175,6 +177,33 @@ mod tests {
     }
 
     #[test]
+    fn decode_manifest_without_snapshot_id() {
+        // Older manifests have no snapshot ID, and NVX v6 manifests use field 8
+        // for an integer. Both decode with a zero ID, so the version check can
+        // reject unsupported formats with a clear error.
+        #[derive(Protobuf)]
+        #[mesh(package = "openvmm.snapshot")]
+        struct OldManifest {
+            #[mesh(1)]
+            version: u32,
+            #[mesh(8)]
+            state_size_bytes: u64,
+        }
+
+        let bytes = mesh::payload::encode(OldManifest {
+            version: 6,
+            state_size_bytes: 4096,
+        });
+        let manifest: SnapshotManifest = mesh::payload::decode(&bytes).unwrap();
+        assert!(manifest.snapshot_id.is_zero());
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
+        assert!(
+            err.to_string().contains("version 6 is not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn write_snapshot_creates_dir() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("a").join("b").join("c");
@@ -190,21 +219,24 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_same_memory_path() {
-        // When the memory backing file IS <snap_dir>/memory.bin, the function
-        // should detect the collision and skip the hard-link.
+    fn write_snapshot_rejects_existing_directory() {
+        // An existing destination is rejected even if it is empty or holds the
+        // VM's own memory backing file, and nothing is written into it.
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         std::fs::create_dir_all(&snap_dir).unwrap();
 
         let mem_path = snap_dir.join("memory.bin");
-        std::fs::write(&mem_path, b"SAMEFILE").unwrap();
+        std::fs::write(&mem_path, b"MEM").unwrap();
 
-        // Should succeed without error.
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-
-        // The file content should be unchanged.
-        assert_eq!(std::fs::read(&mem_path).unwrap(), b"SAMEFILE");
+        let err = write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(std::fs::read(&mem_path).unwrap(), b"MEM");
+        assert!(!snap_dir.join("state.bin").exists());
+        assert!(!snap_dir.join("manifest.bin").exists());
     }
 
     #[test]
@@ -221,7 +253,7 @@ mod tests {
         let second = test_manifest();
         let err = write_snapshot(&snap_dir, &second, b"second", &mem_path).unwrap_err();
         assert!(
-            err.to_string().contains("already contains a snapshot"),
+            err.to_string().contains("already exists"),
             "unexpected error: {err}"
         );
 
@@ -230,64 +262,6 @@ mod tests {
         assert_eq!(manifest.snapshot_id, OTHER_ID);
         assert_eq!(state, b"first");
         assert!(snap_dir.join("memory.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_rejects_foreign_memory_bin() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("memory.bin"), b"OTHER").unwrap();
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        let err = write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
-        assert!(
-            err.to_string().contains("not the VM's memory backing file"),
-            "unexpected error: {err}"
-        );
-
-        // The unrelated memory.bin is neither deleted nor replaced, and nothing
-        // else is left behind.
-        assert_eq!(
-            std::fs::read(snap_dir.join("memory.bin")).unwrap(),
-            b"OTHER"
-        );
-        assert!(!snap_dir.join("state.bin").exists());
-        assert!(!snap_dir.join("manifest.bin").exists());
-    }
-
-    #[test]
-    fn write_snapshot_accepts_hard_linked_memory_bin() {
-        // A memory.bin that is a hard link to the backing file has a different
-        // path but is the same file, so it must be accepted.
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-
-        let mem_path = dir.path().join("backing.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-        std::fs::hard_link(&mem_path, snap_dir.join("memory.bin")).unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
-        assert!(snap_dir.join("manifest.bin").exists());
-        assert_eq!(std::fs::read(snap_dir.join("memory.bin")).unwrap(), b"MEM");
-    }
-
-    #[test]
-    fn write_snapshot_overwrites_leftover_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("state.bin"), b"stale").unwrap();
-
-        let mem_path = dir.path().join("memory.bin");
-        std::fs::write(&mem_path, b"MEM").unwrap();
-
-        write_snapshot(&snap_dir, &test_manifest(), b"fresh", &mem_path).unwrap();
-        let (_, state) = read_snapshot(&snap_dir).unwrap();
-        assert_eq!(state, b"fresh");
     }
 
     #[test]
@@ -305,31 +279,13 @@ mod tests {
     }
 
     #[test]
-    fn write_snapshot_cleanup_keeps_existing_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let snap_dir = dir.path().join("snap");
-        std::fs::create_dir_all(&snap_dir).unwrap();
-        std::fs::write(snap_dir.join("unrelated.txt"), b"keep").unwrap();
-        let mem_path = dir.path().join("missing.bin");
-
-        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap_err();
-
-        assert!(!snap_dir.join("state.bin").exists());
-        assert!(!snap_dir.join("manifest.bin").exists());
-        assert_eq!(
-            std::fs::read(snap_dir.join("unrelated.txt")).unwrap(),
-            b"keep"
-        );
-    }
-
-    #[test]
     fn check_snapshot_destination_rejects_file() {
         let dir = tempfile::tempdir().unwrap();
         let not_a_dir = dir.path().join("file");
         std::fs::write(&not_a_dir, b"x").unwrap();
-        let err = check_snapshot_destination(&not_a_dir, &dir.path().join("mem")).unwrap_err();
+        let err = check_snapshot_destination(&not_a_dir).unwrap_err();
         assert!(
-            err.to_string().contains("not a directory"),
+            err.to_string().contains("already exists"),
             "unexpected error: {err}"
         );
     }

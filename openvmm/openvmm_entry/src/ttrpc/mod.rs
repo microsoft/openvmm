@@ -1093,7 +1093,8 @@ impl VmService {
                 "missing snapshot source directory",
             ));
         }
-        // An empty expected ID means "not provided".
+        // An empty expected ID is treated as not provided, so the snapshot ID
+        // check is skipped.
         let expected_snapshot_id = request
             .expected_snapshot_id
             .filter(|id| !id.is_empty())
@@ -1861,23 +1862,29 @@ impl VmService {
                 "SaveVM requires a running or paused VM",
             ));
         }
+        // The snapshot shares the VM's memory backing file, so only one
+        // snapshot per VM is allowed.
+        if self.snapshot_saved {
+            return Err(code_error(
+                Code::FailedPrecondition,
+                "VM already saved; tear down the VM or restore the snapshot",
+            ));
+        }
         let controller = self
             .vm_controller
             .clone()
             .context("VM not created yet")
             .with_code(Code::FailedPrecondition)?;
-        let memory_backing_file = self
-            .memory_backing_file
-            .clone()
-            .context("SaveVM requires MemoryConfig.backing_file_path")
-            .with_code(Code::FailedPrecondition)?;
+        if self.memory_backing_file.is_none() {
+            return Err(code_error(
+                Code::FailedPrecondition,
+                "SaveVM requires MemoryConfig.backing_file_path",
+            ));
+        }
         // Check the destination before the controller pauses the VM, so a
         // rejected destination leaves the VM untouched.
-        openvmm_helpers::snapshot::check_snapshot_destination(
-            Path::new(&request.destination_dir),
-            &memory_backing_file,
-        )
-        .with_code(Code::FailedPrecondition)?;
+        openvmm_helpers::snapshot::check_snapshot_destination(Path::new(&request.destination_dir))
+            .with_code(Code::FailedPrecondition)?;
 
         // The controller pauses the VM and then writes the snapshot, which
         // hard-links the guest memory backing file. Record that before

@@ -53,10 +53,9 @@ save-snapshot path/to/snapshot-dir
 ```
 
 OpenVMM writes `state.bin`, a hard link to `memory.bin`, and finally
-`manifest.bin` into the specified directory. The save is refused if the
-directory already contains a snapshot (`manifest.bin`) or a `memory.bin` that
-is not the VM's memory backing file, so an existing snapshot is never
-overwritten. If the save fails, the files it created are removed.
+`manifest.bin` into the specified directory. The directory must not already
+exist, so existing data is never overwritten. If the save fails, the files it
+created are removed.
 
 ```admonish warning
 After saving, the VM remains **paused** and resume is blocked. Resuming

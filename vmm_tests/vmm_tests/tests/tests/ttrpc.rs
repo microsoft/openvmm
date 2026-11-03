@@ -1503,10 +1503,8 @@ async fn test_ttrpc_interface(
                     "after ResumeVm, expected RUNNING"
                 );
 
-                // A destination that already holds a snapshot is rejected
-                // before the VM is paused.
+                // An existing destination is rejected before the VM is paused.
                 std::fs::create_dir_all(&snapshot_path).unwrap();
-                std::fs::write(snapshot_path.join("manifest.bin"), b"existing").unwrap();
                 let err = client
                     .call()
                     .start(
@@ -1520,13 +1518,12 @@ async fn test_ttrpc_interface(
                 assert_eq!(
                     err.code,
                     mesh_rpc::service::Code::FailedPrecondition as i32,
-                    "SaveVm into an existing snapshot: {}",
+                    "SaveVm into an existing directory: {}",
                     err.message
                 );
-                assert_eq!(
-                    std::fs::read(snapshot_path.join("manifest.bin")).unwrap(),
-                    b"existing",
-                    "SaveVm must not overwrite an existing snapshot"
+                assert!(
+                    std::fs::read_dir(&snapshot_path).unwrap().next().is_none(),
+                    "a rejected SaveVm must not write into the existing directory"
                 );
                 let props = query_props().await.unwrap();
                 assert_eq!(
@@ -1534,7 +1531,7 @@ async fn test_ttrpc_interface(
                     vmservice::VmState::Running as i32,
                     "a rejected SaveVm should leave the VM running"
                 );
-                std::fs::remove_dir_all(&snapshot_path).unwrap();
+                std::fs::remove_dir(&snapshot_path).unwrap();
 
                 let save_result = client
                     .call()
@@ -1572,14 +1569,15 @@ async fn test_ttrpc_interface(
                     .await
                     .unwrap_err();
 
-                // Saving again into the same directory must not overwrite the
-                // snapshot.
+                // A second save is rejected, even to a new directory, because
+                // both snapshots would share the VM's memory backing file.
+                let second_snapshot_path = tempdir.path().join(format!("snapshot-second-{i}"));
                 let err = client
                     .call()
                     .start(
                         vmservice::Vm::SaveVm,
                         vmservice::SaveVmRequest {
-                            destination_dir: snapshot_path.to_string_lossy().into_owned(),
+                            destination_dir: second_snapshot_path.to_string_lossy().into_owned(),
                         },
                     )
                     .await
@@ -1587,9 +1585,18 @@ async fn test_ttrpc_interface(
                 assert_eq!(
                     err.code,
                     mesh_rpc::service::Code::FailedPrecondition as i32,
-                    "second SaveVm into the same directory: {}",
+                    "second SaveVm: {}",
                     err.message
                 );
+                assert!(
+                    !second_snapshot_path.exists(),
+                    "a rejected second SaveVm must not create its destination"
+                );
+                client
+                    .call()
+                    .start(vmservice::Vm::ResumeVm, ())
+                    .await
+                    .unwrap_err();
 
                 client
                     .call()

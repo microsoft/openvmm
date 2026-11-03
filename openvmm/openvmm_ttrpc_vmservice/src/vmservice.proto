@@ -28,10 +28,11 @@ service VM {
     rpc ResumeVM(google.protobuf.Empty) returns (google.protobuf.Empty);
 
     // SaveVM captures the VM's memory, device state, and processor state into
-    // a snapshot directory and returns a unique snapshot ID, which is also
-    // stored in the snapshot manifest. The VM is paused by this call and
-    // remains paused after it completes. Cancelling the call only stops the
-    // caller from waiting; the save may still complete.
+    // a new snapshot directory and returns a unique snapshot ID, which is also
+    // stored in the snapshot manifest. The current implementation hard-links
+    // the guest memory backing file into the snapshot, so after a successful
+    // save the VM can't be resumed and should be torn down. Cancelling the
+    // call only stops the caller from waiting; the save may still complete.
     rpc SaveVM(SaveVMRequest) returns (SaveVmResult);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device
@@ -896,7 +897,8 @@ message RestoreVMRequest {
     // Device and boot configuration must be compatible with the snapshot.
     VMConfig config = 2;
     // If set, restore fails unless it matches the snapshot ID in the
-    // snapshot manifest.
+    // snapshot manifest. An empty value is treated as not set, so the ID
+    // isn't checked.
     optional string expected_snapshot_id = 3;
     // Resume the restored VM immediately. Otherwise it remains paused.
     bool resume = 4;
