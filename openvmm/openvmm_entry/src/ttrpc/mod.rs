@@ -2132,6 +2132,7 @@ fn parse_nic_config(
                 max_queues: None,
                 mac_address,
                 endpoint,
+                enable_rx_gso: false,
             }
             .into_resource(),
         },
@@ -2987,7 +2988,7 @@ mod tests {
                 worker_rpc,
                 shutdown_rpc,
                 scsi_rpc: None,
-                consomme_rpc: None,
+                consomme_rpc: Default::default(),
                 iommufds: Arc::new(IommufdContexts::default()),
             })),
             vm_controller: None,
