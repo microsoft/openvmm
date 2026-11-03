@@ -77,6 +77,10 @@ payload even if stale references still hold its inaccessible wrapper.
 Synchronous devices explicitly implement a no-op teardown and release
 their resources through that destructor.
 
+Chipset MMIO and PIO mapping controls unregister their active ranges when
+dropped. Devices own remappable controls; the device state unit retains
+fixed-region controls and releases them before acknowledging removal.
+
 Assigned hardware that cannot pause without losing state may quiesce
 during teardown instead. Ordinary stop must not destructively reset it.
 

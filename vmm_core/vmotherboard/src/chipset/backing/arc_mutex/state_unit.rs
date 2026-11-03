@@ -3,6 +3,8 @@
 
 use crate::VmmChipsetDevice;
 use async_trait::async_trait;
+use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::pio::ControlPortIoIntercept;
 use closeable_mutex::CloseableMutex;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -27,6 +29,8 @@ pub struct ArcMutexChipsetDeviceUnit {
     poll_event: Arc<PollEvent>,
     running: bool,
     omit_saved_state: bool,
+    _static_mmio: Vec<Box<dyn ControlMmioIntercept>>,
+    _static_pio: Vec<Box<dyn ControlPortIoIntercept>>,
 }
 
 /// A unit handle for a dynamically managed device.
@@ -49,13 +53,14 @@ impl DynamicDeviceUnit {
         self.driver
             .spawn("remove-chipset-device", async move {
                 let mut unit = self.unit.remove().await;
-                let mut device = unit.device.close_permanently();
+                let mut device = unit.device.clone().close_permanently();
                 if unit.running {
                     device.stop().await;
                     unit.running = false;
                 }
                 device.teardown().await;
                 device.destroy();
+                drop(unit);
                 send.send(());
             })
             .detach();
@@ -134,7 +139,19 @@ impl ArcMutexChipsetDeviceUnit {
             poll_event: Arc::new(PollEvent(SlimEvent::new())),
             running: false,
             omit_saved_state,
+            _static_mmio: Vec::new(),
+            _static_pio: Vec::new(),
         }
+    }
+
+    pub(super) fn with_static_regions(
+        mut self,
+        mmio: Vec<Box<dyn ControlMmioIntercept>>,
+        pio: Vec<Box<dyn ControlPortIoIntercept>>,
+    ) -> Self {
+        self._static_mmio = mmio;
+        self._static_pio = pio;
+        self
     }
 
     pub async fn run(mut self, mut state_change: mesh::Receiver<StateRequest>) -> Self {
@@ -414,6 +431,10 @@ mod tests {
     }
 
     impl MmioIntercept for RemovingDevice {
+        fn get_static_regions(&mut self) -> &[(&str, std::ops::RangeInclusive<u64>)] {
+            &[("mmio", 0x1000..=0x1fff)]
+        }
+
         fn mmio_read(&mut self, _: u64, data: &mut [u8]) -> IoResult {
             self.accesses.fetch_add(1, Ordering::SeqCst);
             data.fill(0x5a);
@@ -427,6 +448,10 @@ mod tests {
     }
 
     impl PortIoIntercept for RemovingDevice {
+        fn get_static_regions(&mut self) -> &[(&str, std::ops::RangeInclusive<u16>)] {
+            &[("pio", 0x100..=0x103)]
+        }
+
         fn io_read(&mut self, _: u16, data: &mut [u8]) -> IoResult {
             self.mmio_read(0, data)
         }
@@ -468,6 +493,65 @@ mod tests {
             self.release.recv().await.unwrap();
             drop(io);
         }
+    }
+
+    #[pal_async::async_test]
+    async fn static_regions_live_until_unit_removal(driver: DefaultDriver) {
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+        let units = StateUnits::new();
+        let (time_send, _time_recv) = mesh::channel();
+        let time_unit = units.add("vmtime").build(time_send).unwrap();
+        let keeper =
+            vmcore::vmtime::VmTimeKeeper::new(&driver, vmcore::vmtime::VmTime::from_100ns(0));
+        let time = keeper.builder().build(&driver).await.unwrap();
+        let builder = crate::ChipsetBuilder::new(
+            &source,
+            &units,
+            Arc::new(TestDebugEventHandler),
+            &time,
+            &time_unit,
+            false,
+            false,
+            None,
+        );
+        let (entered, _entered_recv) = mesh::channel();
+        let (release, release_recv) = mesh::channel();
+        let (finished, _finished_recv) = mesh::channel();
+        let device = builder
+            .arc_mutex_device("test")
+            .add(|_| RemovingDevice {
+                stopped: true,
+                stop_count: Arc::new(AtomicUsize::new(0)),
+                accesses: Arc::new(AtomicUsize::new(0)),
+                entered,
+                release: release_recv,
+                finished,
+                io: None,
+            })
+            .unwrap();
+        let (unit, mmio_ranges, pio_ranges) = {
+            let mut inner = builder.inner.lock();
+            (
+                inner.arc_mutex_device_units.pop().unwrap(),
+                inner.vm_chipset.mmio_ranges.clone(),
+                inner.vm_chipset.pio_ranges.clone(),
+            )
+        };
+        drop(builder);
+        assert!(mmio_ranges.is_occupied(0x1000));
+        assert!(pio_ranges.is_occupied(0x100));
+
+        release.send(());
+        DynamicDeviceUnit {
+            unit,
+            driver: source.simple(),
+        }
+        .remove()
+        .await;
+
+        assert!(!mmio_ranges.is_occupied(0x1000));
+        assert!(!pio_ranges.is_occupied(0x100));
+        assert!(device.lock_if_open().is_none());
     }
 
     #[pal_async::async_test]
