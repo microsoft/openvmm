@@ -497,12 +497,14 @@ mod guest {
         if memory.is_null() {
             return code(EfiStatus::INVALID_PARAMETER);
         }
-        // SAFETY: The caller passes a valid pointer to an address.
-        let address = unsafe { memory.read() };
+        // For `AllocateAnyPages`, `*memory` is only an output and can be
+        // uninitialized, so read it only for the other types.
+        // SAFETY: The caller passes a valid pointer.
+        let input = || unsafe { memory.read() };
         let allocate_type = match allocate_type {
             0 => AllocateType::Any,
-            1 => AllocateType::Max(address),
-            2 => AllocateType::Address(address),
+            1 => AllocateType::Max(input()),
+            2 => AllocateType::Address(input()),
             _ => return code(EfiStatus::INVALID_PARAMETER),
         };
         match with_state(|state| {

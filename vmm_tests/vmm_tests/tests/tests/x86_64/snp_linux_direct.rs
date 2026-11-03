@@ -31,7 +31,8 @@ async fn boot_with_vps(
             ..Default::default()
         })
         .with_memory(MemoryConfig {
-            startup_bytes: 160 * petri::SIZE_1_MB,
+            // Enough RAM that Linux still has unaccepted memory after boot.
+            startup_bytes: 2 * petri::SIZE_1_GB,
             ..Default::default()
         })
         // The ECAM stays at its default placement above 4 GiB. Linux accepts
@@ -67,9 +68,15 @@ async fn boot_with_vps(
     );
     // The image leaves most RAM unaccepted, and Linux accepts it lazily.
     let meminfo = cmd!(shell, "cat /proc/meminfo").read().await?;
+    let unaccepted_kb = meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("Unaccepted:"))
+        .and_then(|value| value.trim().strip_suffix("kB"))
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .ok_or_else(|| anyhow::anyhow!("guest does not report unaccepted memory"))?;
     anyhow::ensure!(
-        meminfo.contains("Unaccepted:"),
-        "guest does not report unaccepted memory"
+        unaccepted_kb > 0,
+        "guest has no unaccepted memory, so acceptance was not lazy"
     );
 
     let output = cmd!(shell, "echo petri-snp-ok").read().await?;
