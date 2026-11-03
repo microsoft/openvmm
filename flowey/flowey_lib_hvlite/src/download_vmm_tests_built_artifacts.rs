@@ -29,6 +29,7 @@ impl SimpleFlowNode for Node {
                     flowey_hvlite_windows_x64,
                     flowey_hvlite_windows_aarch64,
                     flowey_hvlite_linux_x64,
+                    flowey_hvlite_linux_musl_x64,
                     nextest_vmm_tests_archive_windows_x64,
                     nextest_vmm_tests_archive_windows_aarch64,
                     nextest_vmm_tests_archive_linux_x64,
@@ -102,6 +103,7 @@ impl SimpleFlowNode for Node {
         if flowey_hvlite_windows_x64.is_some()
             || flowey_hvlite_windows_aarch64.is_some()
             || flowey_hvlite_linux_x64.is_some()
+            || flowey_hvlite_linux_musl_x64.is_some()
         {
             anyhow::bail!("downloading flowey_hvlite is not supported");
         }

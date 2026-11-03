@@ -147,6 +147,7 @@
   - [Graphics and Input]()
   - [Storage](./reference/backends/storage.md)
     - [VHDX Parser](./reference/backends/vhdx.md)
+    - [VMDK Support](./reference/backends/vmdk.md)
   - [Networking](./reference/backends/networking.md)
     - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)

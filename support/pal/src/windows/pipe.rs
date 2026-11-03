@@ -4,6 +4,7 @@
 use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
+use super::security::SecurityDescriptor;
 use super::status_to_error;
 // TODO: Revert this ntapi fallback once windows/windows-sys expose
 // NtCreateNamedPipeFile directly.
@@ -42,6 +43,9 @@ use windows_sys::Win32::Foundation::GENERIC_WRITE;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
 use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Foundation::STATUS_PENDING;
+use windows_sys::Win32::Foundation::STATUS_PIPE_DISCONNECTED;
+use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
@@ -53,8 +57,10 @@ use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
 use windows_sys::Win32::System::Ioctl::METHOD_BUFFERED;
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+use windows_sys::Win32::System::Pipes::GetNamedPipeClientProcessId;
 use windows_sys::Win32::System::Pipes::GetNamedPipeHandleStateW;
 use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
 use windows_sys::Win32::System::Pipes::PIPE_SERVER_END;
 use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
 
@@ -151,6 +157,29 @@ pub fn new_named_pipe(
         },
         true,
         mode == PipeMode::Message,
+        None,
+    )
+}
+
+/// Creates a new named-pipe path with an explicit security descriptor.
+///
+/// Windows only applies a named pipe's security descriptor when its path is
+/// first created, so this does not support opening another instance of an
+/// existing pipe.
+pub fn new_named_pipe_with_security(
+    path: impl AsRef<Path>,
+    access: u32,
+    mode: PipeMode,
+    security_descriptor: &SecurityDescriptor,
+) -> io::Result<File> {
+    create_named_pipe(
+        null_mut(),
+        path.as_ref(),
+        access,
+        FILE_CREATE,
+        true,
+        mode == PipeMode::Message,
+        Some(security_descriptor),
     )
 }
 
@@ -161,6 +190,7 @@ fn create_named_pipe(
     disposition: u32,
     overlapped: bool,
     message_mode: bool,
+    security_descriptor: Option<&SecurityDescriptor>,
 ) -> Result<File, io::Error> {
     unsafe {
         let mut pathu = if root.is_null() {
@@ -174,7 +204,12 @@ fn create_named_pipe(
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
             Attributes: OBJ_CASE_INSENSITIVE,
-            SecurityDescriptor: null_mut(),
+            SecurityDescriptor: security_descriptor.map_or(null_mut(), |descriptor| {
+                descriptor
+                    .as_ptr()
+                    .cast::<SECURITY_DESCRIPTOR>()
+                    .cast_const()
+            }),
             SecurityQualityOfService: null_mut(),
         };
 
@@ -222,6 +257,7 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
             FILE_CREATE,
             false,
             message_mode,
+            None,
         )?;
 
         let mut empty_name = zeroed();
@@ -252,10 +288,96 @@ pub trait PipeExt {
     fn get_pipe_state(&self) -> io::Result<u32>;
     fn get_pipe_buffer_sizes(&self) -> io::Result<(u32, u32)>;
     fn set_pipe_mode(&self, mode: u32) -> io::Result<()>;
-    fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()>;
-    fn get_pipe_select_events(&self) -> io::Result<u32>;
+    fn set_pipe_select_event(
+        &self,
+        event: &Event,
+        event_types: u32,
+        control: &mut PipeEventControl,
+    ) -> io::Result<()>;
+    fn get_pipe_select_events(&self, control: &mut PipeEventControl) -> io::Result<u32>;
     fn is_pipe_connected(&self) -> io::Result<bool>;
+    /// Returns whether the pipe's peer is gone, that is, whether the pipe is in
+    /// the disconnected or closing state.
+    ///
+    /// On a server end, this is true once the client closes its handle or the
+    /// pipe is disconnected. On a client end, this is true once the server
+    /// closes its handle or disconnects the pipe.
+    fn is_pipe_peer_closed(&self) -> io::Result<bool>;
+    /// Returns the ID of the process at the other end of the pipe.
+    ///
+    /// On a server end, this is the client process that
+    /// `GetNamedPipeClientProcessId` reports. On a client end, where that
+    /// function reports the client's own process, this is the server process
+    /// that `GetNamedPipeServerProcessId` reports instead. Either way, it is the
+    /// process that created or opened the peer end, which may no longer hold it.
+    ///
+    /// Fails if this is not a pipe or no peer has connected. After the peer
+    /// closes its handle, this can still report the peer's process ID, which
+    /// Windows can reuse once that process exits.
+    fn get_pipe_peer_process_id(&self) -> io::Result<u32>;
     fn disconnect_pipe(&self) -> io::Result<()>;
+}
+
+/// Reusable completion state for named-pipe event controls.
+///
+/// Mutable access serializes controls using this context. Its completion
+/// event is private and separate from the selected readiness event.
+#[derive(Debug)]
+pub struct PipeEventControl {
+    completion: Event,
+}
+
+impl Default for PipeEventControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PipeEventControl {
+    /// Creates a completion context.
+    pub fn new() -> Self {
+        Self {
+            completion: Event::new(),
+        }
+    }
+
+    /// Issues a pipe control and waits for pending I/O before returning.
+    ///
+    /// # Safety
+    ///
+    /// The input and output buffers must be valid for their respective lengths.
+    unsafe fn fs_control(
+        &mut self,
+        file: &File,
+        code: u32,
+        input: *const c_void,
+        input_len: u32,
+        output: *mut c_void,
+        output_len: u32,
+    ) -> i32 {
+        let mut iosb = unsafe { zeroed() };
+        // A null APC context keeps this internally waited request off any IOCP.
+        let status = unsafe {
+            NtFsControlFile(
+                file.as_raw_handle(),
+                self.completion.as_handle().as_raw_handle(),
+                None,
+                null_mut(),
+                &mut iosb,
+                code,
+                input,
+                input_len,
+                output,
+                output_len,
+            )
+        };
+        if status == STATUS_PENDING {
+            self.completion.wait();
+            unsafe { iosb.Anonymous.Status }
+        } else {
+            status
+        }
+    }
 }
 
 impl PipeExt for File {
@@ -310,25 +432,25 @@ impl PipeExt for File {
         Ok(())
     }
 
-    fn set_pipe_select_event(&self, event: &Event, event_types: u32) -> io::Result<()> {
+    fn set_pipe_select_event(
+        &self,
+        event: &Event,
+        event_types: u32,
+        control: &mut PipeEventControl,
+    ) -> io::Result<()> {
         let mut input = FILE_PIPE_EVENT_SELECT_BUFFER {
             event_types,
             event_handle: event.as_handle().as_raw_handle() as usize as u64,
         };
         unsafe {
-            let mut iosb = zeroed();
             let mut status = !0;
             // Newer versions of Windows support FSCTL_PIPE_EVENT_SELECT, which
             // works on unidirectional pipes. Older versions require
             // FSCTL_PIPE_EVENT_SELECT_OLD, which only works on bidirectional
             // pipes.
             for fsctl in [FSCTL_PIPE_EVENT_SELECT, FSCTL_PIPE_EVENT_SELECT_OLD] {
-                status = NtFsControlFile(
-                    self.as_raw_handle().cast::<c_void>(),
-                    null_mut(),
-                    None,
-                    null_mut(),
-                    &mut iosb,
+                status = control.fs_control(
+                    self,
                     fsctl,
                     std::ptr::from_mut(&mut input).cast(),
                     size_of_val(&input) as u32,
@@ -344,17 +466,12 @@ impl PipeExt for File {
         Ok(())
     }
 
-    fn get_pipe_select_events(&self) -> io::Result<u32> {
+    fn get_pipe_select_events(&self, control: &mut PipeEventControl) -> io::Result<u32> {
         unsafe {
             let mut handle_to_reset: u64 = 0;
             let mut events: u32 = 0;
-            let mut iosb = zeroed();
-            chk_status(NtFsControlFile(
-                self.as_raw_handle().cast::<c_void>(),
-                null_mut(),
-                None,
-                null_mut(),
-                &mut iosb,
+            chk_status(control.fs_control(
+                self,
                 FSCTL_PIPE_EVENT_ENUM,
                 std::ptr::from_mut(&mut handle_to_reset).cast(),
                 size_of_val(&handle_to_reset) as u32,
@@ -387,6 +504,61 @@ impl PipeExt for File {
             _ => false,
         };
         Ok(connected)
+    }
+
+    fn is_pipe_peer_closed(&self) -> io::Result<bool> {
+        // SAFETY: calling with an appropriately sized output buffer.
+        let (status, info) = unsafe {
+            let mut iosb = zeroed();
+            let mut info: FILE_PIPE_LOCAL_INFORMATION = zeroed();
+            let status = NtQueryInformationFile(
+                self.as_raw_handle().cast::<c_void>(),
+                &mut iosb,
+                std::ptr::from_mut(&mut info).cast(),
+                size_of_val(&info) as u32,
+                FilePipeLocalInformation,
+            );
+            (status, info)
+        };
+        // Once the server disconnects the pipe, a client end can no longer be
+        // queried, but its peer is gone.
+        if status == STATUS_PIPE_DISCONNECTED {
+            return Ok(true);
+        }
+        chk_status(status)?;
+        Ok(matches!(
+            info.NamedPipeState,
+            FILE_PIPE_DISCONNECTED_STATE | FILE_PIPE_CLOSING_STATE
+        ))
+    }
+
+    fn get_pipe_peer_process_id(&self) -> io::Result<u32> {
+        let mut flags = 0;
+        let mut process_id = 0;
+        // SAFETY: the handle is valid for the lifetime of `self` and the output
+        // pointers are valid. Windows fails these calls for handles that are
+        // not pipes.
+        unsafe {
+            if GetNamedPipeInfo(
+                self.as_raw_handle(),
+                &mut flags,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let succeeded = if flags & PIPE_SERVER_END != 0 {
+                GetNamedPipeClientProcessId(self.as_raw_handle(), &mut process_id)
+            } else {
+                GetNamedPipeServerProcessId(self.as_raw_handle(), &mut process_id)
+            };
+            if succeeded == 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(process_id)
     }
 
     fn disconnect_pipe(&self) -> io::Result<()> {
@@ -429,4 +601,339 @@ const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
 struct FILE_PIPE_EVENT_SELECT_BUFFER {
     event_types: u32,
     event_handle: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::windows::IoCompletionPort;
+    use crate::windows::security::LocalSecurityDescriptor;
+    use std::fs::OpenOptions;
+    use std::io::Read;
+    use std::io::Write;
+    use std::process::Child;
+    use std::process::Command;
+    use std::process::Stdio;
+    use std::time::Duration;
+    use std::time::Instant;
+    use test_with_tracing::test;
+    use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_NOT_CONNECTED;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
+    use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::Security::GetKernelObjectSecurity;
+    use windows_sys::Win32::System::Pipes::PIPE_NOWAIT;
+
+    fn dacl_sddl(file: &File) -> io::Result<String> {
+        // SAFETY: both API calls use buffers of the reported size, and the
+        // returned SDDL string is owned by LocalFree.
+        unsafe {
+            let mut descriptor_size = 0;
+            GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                0,
+                &mut descriptor_size,
+            );
+            if descriptor_size == 0 {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut descriptor = vec![0u8; descriptor_size as usize];
+            if GetKernelObjectSecurity(
+                file.as_raw_handle(),
+                DACL_SECURITY_INFORMATION,
+                descriptor.as_mut_ptr().cast(),
+                descriptor_size,
+                &mut descriptor_size,
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+
+            let mut sddl = null_mut();
+            if ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.as_mut_ptr().cast(),
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let sddl_string = U16CStr::from_ptr_str(sddl).to_string_lossy();
+            LocalFree(sddl.cast());
+            Ok(sddl_string)
+        }
+    }
+
+    /// Tells a child running `pipe_peer_child` which end of which pipe to hold.
+    const PEER_CHILD_ENV: &str = "PAL_PIPE_PEER_CHILD";
+
+    fn random_pipe_path() -> String {
+        let mut name = [0; 16];
+        getrandom::fill(&mut name).unwrap();
+        format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(name))
+    }
+
+    /// Opens the client end of `path`, waiting for its server to create it.
+    fn open_client(path: &str) -> File {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match OpenOptions::new().read(true).write(true).open(path) {
+                Ok(file) => return file,
+                Err(err)
+                    if Instant::now() < deadline
+                        && matches!(
+                            err.raw_os_error().map(|code| code as u32),
+                            Some(ERROR_FILE_NOT_FOUND | ERROR_PIPE_BUSY)
+                        ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("failed to open {path}: {err}"),
+            }
+        }
+    }
+
+    /// Runs this test binary as a child process that holds the `role` end of
+    /// `path` in `pipe_peer_child`.
+    fn spawn_peer_child(role: &str, path: &str) -> Child {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows::pipe::tests::pipe_peer_child"])
+            .env(PEER_CHILD_ENV, format!("{role}|{path}"))
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn nonblocking_pipe_pair(overlapped: bool) -> (File, File) {
+        let path = random_pipe_path();
+        let server = create_named_pipe(
+            null_mut(),
+            Path::new(&path),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_CREATE,
+            overlapped,
+            false,
+            None,
+        )
+        .unwrap();
+        let client = open_client(&path);
+        server.set_pipe_mode(PIPE_NOWAIT).unwrap();
+        (server, client)
+    }
+
+    #[test]
+    fn pipe_events_follow_pipe_state() {
+        let mut control = PipeEventControl::new();
+        for overlapped in [false, true] {
+            let (mut server, mut client) = nonblocking_pipe_pair(overlapped);
+            let event = Event::new();
+            server
+                .set_pipe_select_event(
+                    &event,
+                    FILE_PIPE_READ_READY | FILE_PIPE_WRITE_READY | FILE_PIPE_DISCONNECTED,
+                    &mut control,
+                )
+                .unwrap();
+            assert_eq!(
+                server.get_pipe_select_events(&mut control).unwrap(),
+                FILE_PIPE_WRITE_READY
+            );
+
+            for _ in 0..16 {
+                client.write_all(b"x").unwrap();
+                assert_ne!(
+                    server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_READ_READY,
+                    0
+                );
+                server.read_exact(&mut [0]).unwrap();
+                assert_eq!(
+                    server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_READ_READY,
+                    0
+                );
+            }
+
+            drop(client);
+            assert_ne!(
+                server.get_pipe_select_events(&mut control).unwrap() & FILE_PIPE_DISCONNECTED,
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_events_report_completed_errors() {
+        let mut control = PipeEventControl::new();
+        for overlapped in [false, true] {
+            let (server, client) = nonblocking_pipe_pair(overlapped);
+            drop(client);
+            assert_eq!(
+                server
+                    .set_pipe_select_event(&Event::new(), FILE_PIPE_DISCONNECTED, &mut control)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(ERROR_PIPE_NOT_CONNECTED as i32)
+            );
+            assert_eq!(
+                server
+                    .get_pipe_select_events(&mut control)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(ERROR_INVALID_PARAMETER as i32)
+            );
+
+            let (server, _client) = nonblocking_pipe_pair(overlapped);
+            server
+                .set_pipe_select_event(&Event::new(), FILE_PIPE_WRITE_READY, &mut control)
+                .unwrap();
+            assert_eq!(
+                server.get_pipe_select_events(&mut control).unwrap(),
+                FILE_PIPE_WRITE_READY
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_events_do_not_queue_iocp_completions() {
+        let (server, _client) = nonblocking_pipe_pair(true);
+        let port = IoCompletionPort::new();
+        // SAFETY: the live server handle is opened for overlapped I/O.
+        unsafe { port.associate(server.as_raw_handle(), 0).unwrap() };
+        let event = Event::new();
+        let mut control = PipeEventControl::new();
+        server
+            .set_pipe_select_event(&event, FILE_PIPE_DISCONNECTED, &mut control)
+            .unwrap();
+        assert_eq!(server.get_pipe_select_events(&mut control).unwrap(), 0);
+        let mut entries = [unsafe { zeroed() }; 1];
+        assert_eq!(port.get(&mut entries, Some(Duration::ZERO)), 0);
+    }
+
+    #[test]
+    fn protected_named_pipe_reports_peer_information() {
+        let descriptor: LocalSecurityDescriptor = "D:P(A;;GA;;;OW)".parse().unwrap();
+        let path = random_pipe_path();
+
+        let server = new_named_pipe_with_security(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            PipeMode::Byte,
+            &descriptor,
+        )
+        .unwrap();
+        assert_eq!(dacl_sddl(&server).unwrap(), "D:P(A;;FA;;;OW)");
+        assert!(!server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
+
+        let client = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        assert_eq!(
+            server.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
+        assert_eq!(
+            client.get_pipe_peer_process_id().unwrap(),
+            std::process::id()
+        );
+        assert!(!server.is_pipe_peer_closed().unwrap());
+
+        drop(client);
+        assert!(server.is_pipe_peer_closed().unwrap());
+        server.disconnect_pipe().unwrap();
+        assert!(server.is_pipe_peer_closed().unwrap());
+        assert!(server.get_pipe_peer_process_id().is_err());
+    }
+
+    #[test]
+    fn client_end_reports_peer_closed_after_server_disconnects() {
+        let path = random_pipe_path();
+        let server = new_named_pipe(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            Disposition::Create,
+            PipeMode::Byte,
+        )
+        .unwrap();
+        let client = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        assert!(!client.is_pipe_peer_closed().unwrap());
+        server.disconnect_pipe().unwrap();
+        assert!(client.is_pipe_peer_closed().unwrap());
+    }
+
+    /// Holds one end of a pipe when `pipe_ends_report_peer_process_id` runs
+    /// this binary as its child, and does nothing otherwise.
+    #[test]
+    fn pipe_peer_child() {
+        let Ok(arg) = std::env::var(PEER_CHILD_ENV) else {
+            return;
+        };
+        let (role, path) = arg.split_once('|').unwrap();
+        match role {
+            // Connect, then exit, which closes the client end.
+            "client" => drop(open_client(path)),
+            // Serve until the client closes its end.
+            "server" => {
+                let server = new_named_pipe(
+                    path,
+                    GENERIC_READ | GENERIC_WRITE,
+                    Disposition::Create,
+                    PipeMode::Byte,
+                )
+                .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !server.is_pipe_peer_closed().unwrap() {
+                    assert!(Instant::now() < deadline, "no client closed {path}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            _ => panic!("unknown pipe role {role}"),
+        }
+    }
+
+    #[test]
+    fn pipe_ends_report_peer_process_id() {
+        // A server end reports the client process, even after it exits.
+        let path = random_pipe_path();
+        let server = new_named_pipe(
+            &path,
+            GENERIC_READ | GENERIC_WRITE,
+            Disposition::Create,
+            PipeMode::Byte,
+        )
+        .unwrap();
+        let mut child = spawn_peer_child("client", &path);
+        assert!(child.wait().unwrap().success());
+        assert_eq!(server.get_pipe_peer_process_id().unwrap(), child.id());
+
+        // A client end reports the server process.
+        let path = random_pipe_path();
+        let mut child = spawn_peer_child("server", &path);
+        let client = open_client(&path);
+        assert_eq!(client.get_pipe_peer_process_id().unwrap(), child.id());
+        drop(client);
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn peer_helpers_reject_non_pipes() {
+        let file = File::open(std::env::current_exe().unwrap()).unwrap();
+        assert!(file.get_pipe_peer_process_id().is_err());
+        assert!(file.is_pipe_peer_closed().is_err());
+    }
 }

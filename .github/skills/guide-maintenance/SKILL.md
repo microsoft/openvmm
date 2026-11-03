@@ -2,17 +2,20 @@
 name: guide-maintenance
 description: >
   Maintain the OpenVMM Guide. Load when: (1) adding, removing, or moving Guide
-  pages, (2) adding new device crates or CLI args that need doc coverage, or
-  (3) auditing Guide freshness against code changes.
+  pages, (2) adding new device crates or adding or changing CLI interfaces
+  that need doc coverage, or (3) auditing Guide freshness against code changes.
 ---
 
 # Guide Maintenance Skill
 
 Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the codebase.
 
-`.github/instructions/doc-code-sync.instructions.md` contains the instructions
-and heuristics that are automatically loaded during Copilot code review on
-`*.rs` and `Cargo.toml` files.
+`.github/instructions/doc-code-sync.instructions.md` contains the documentation
+relevance rules and heuristics for changes to `*.rs` and `Cargo.toml` files.
+
+Apply that file's relevance and scope rules before editing the Guide. A code
+change does not automatically require a Guide update. Prefer an existing page
+over a new page when it adequately covers the reader's need.
 
 ---
 
@@ -61,42 +64,47 @@ content get a path; placeholder topics for future work get an empty link `()`.
 
 When a new crate is added under `vm/devices/`:
 
-1. **Does it need a Guide page?** If it's a user-visible device or backend,
-   yes. Internal plumbing crates (e.g., `*_resources`, `*_protocol`) usually
-   don't need their own page but should be mentioned in the parent device page.
+1. **Do readers need new documentation?** For a user-visible device or backend,
+   document the capability and how to use it. Internal plumbing crates (e.g.,
+   `*_resources`, `*_protocol`) do not need a page or a mention in the parent
+   page unless they explain a reader-relevant constraint or architectural
+   choice.
 
-2. **Create the page** following the "Adding a New Guide Page" procedure above.
-
-3. **Update the "What to Flag" list** if the new crate introduces a new
-   category of reviewable change.
+2. **Update an existing page** if it adequately covers the topic. Otherwise,
+   follow the "Adding a New Guide Page" procedure above.
 
 ---
 
 ## Adding or Changing CLI Arguments
 
-When `openvmm/openvmm_entry/src/cli_args.rs` changes:
+When the documented CLI interface changes (for example, flag syntax,
+defaults, behavior, or interactions in
+`openvmm/openvmm_entry/src/cli_args.rs`):
 
 1. Update `Guide/src/reference/openvmm/management/cli.md`
-2. The CLI page has a disclaimer that it may be out of date — keep it honest,
-   but still update the page when making changes
-3. New arguments should include: flag syntax, description, default value,
-   and any interactions with other flags
+2. Verify flag syntax, description, default value, and relevant interactions
+   against the parser and generated help. Include what readers need to use
+   the interface correctly.
+
+Refactors that leave the documented interface unchanged need no CLI page edit.
 
 ---
 
 ## Auditing Guide Freshness
 
-To check whether the Guide is in sync with the code:
+Use this procedure for an explicitly requested freshness audit. Limit scans
+and placeholder checks to the requested scope; do not expand a routine code
+or paragraph edit into an audit.
 
-1. **Scan the Guide pages** in `Guide/src/`
+1. **Scan the relevant Guide pages** in `Guide/src/`
 2. Check whether the Guide page content still matches the code:
    - Crate names still correct?
    - Struct/enum names still exist?
    - Behavioral descriptions still accurate?
    - Links to rustdoc still resolve?
-3. Check `Guide/src/SUMMARY.md` for placeholder links `()` — these are
-   topics that need content. Prioritize ones whose code areas have been
-   actively developed.
+3. Check `Guide/src/SUMMARY.md` for placeholder links `()` related to the audit.
+   Report relevant gaps; fill them only when the requested scope includes
+   writing the missing content.
 
 ### Quick audit commands
 

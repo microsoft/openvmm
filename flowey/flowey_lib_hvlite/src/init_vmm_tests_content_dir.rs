@@ -260,8 +260,12 @@ define_vmm_tests_built_artifacts!(
             host_tools::FLOWEY_HVLITE_WINDOWS_AARCH64
         ),
         linux_x64(
-            (FloweyHvliteOutput::LinuxBin { bin, dbg}, bin, dbg),
+            (FloweyHvliteOutput::LinuxBin { bin, dbg }, bin, dbg),
             host_tools::FLOWEY_HVLITE_LINUX_X64
+        ),
+        linux_musl_x64(
+            (FloweyHvliteOutput::LinuxBin { bin, dbg }, bin, dbg),
+            host_tools::FLOWEY_HVLITE_LINUX_X64_MUSL
         ),
     ) => FloweyHvliteOutput,
     nextest_vmm_tests_archive(

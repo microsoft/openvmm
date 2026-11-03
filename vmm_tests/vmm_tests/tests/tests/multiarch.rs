@@ -53,6 +53,9 @@ mod numa;
 mod openhcl_servicing;
 /// PCIe emulation tests.
 mod pcie;
+/// Filesystem operations through the virtio-9p Linux client.
+#[cfg(target_os = "linux")]
+mod plan9;
 /// Tests involving UEFI Secure Boot functionality.
 mod secureboot;
 /// Tests involving TPM functionality
@@ -63,6 +66,8 @@ mod tpm138;
 mod vlan;
 /// Tests of vmbus relay functionality.
 mod vmbus_relay;
+/// Tests for VMDK disk functionality.
+mod vmdk;
 /// Tests involving VMGS functionality
 mod vmgs;
 

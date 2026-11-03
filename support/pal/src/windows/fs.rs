@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub mod relative;
+pub mod sparse;
+
 use super::chk_status;
 use super::dos_to_nt_path;
 use std::ffi::c_void;

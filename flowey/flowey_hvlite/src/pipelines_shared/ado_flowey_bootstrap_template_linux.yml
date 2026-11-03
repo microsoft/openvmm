@@ -5,7 +5,7 @@
 - bash: |
     set -x
     i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
     curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain={{RUSTUP_TOOLCHAIN}} -y
     . "$HOME/.cargo/env"
     echo '##vso[task.prependpath]$(HOME)/.cargo/bin'

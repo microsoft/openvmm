@@ -62,7 +62,7 @@ let
     else [ x64CrossGcc ];
 
   # Rust configuration — update this version manually when upgrading rustc
-  rustVersion = "1.95.0";
+  rustVersion = "1.97.1";
 
   rust = pkgs.rust-bin.stable.${rustVersion}.default.override {
     extensions = [

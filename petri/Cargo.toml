@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mshv_host_boot.workspace = true
 pipette_client.workspace = true
 
 openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "virt_whp", "virt_hvf"] }

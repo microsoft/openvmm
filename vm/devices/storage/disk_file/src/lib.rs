@@ -66,6 +66,13 @@ pub struct Metadata {
     pub read_only: bool,
 }
 
+#[cfg(windows)]
+impl std::os::windows::io::AsHandle for FileDisk {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        self.file.as_handle()
+    }
+}
+
 impl FileDisk {
     pub fn open(file: fs::File, read_only: bool) -> Result<Self, std::io::Error> {
         let metadata = Metadata {

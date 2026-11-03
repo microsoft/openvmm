@@ -6,6 +6,7 @@
 #![expect(unsafe_code)]
 
 pub mod affinity;
+pub mod fs;
 pub mod pipe;
 pub mod process;
 pub mod pthread;

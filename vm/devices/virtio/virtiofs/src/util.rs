@@ -6,6 +6,36 @@
 use fuse::protocol::*;
 use std::time::Duration;
 
+/// Validates FUSE OPEN/OPENDIR flags and consumes guest-only Linux flags.
+pub fn open_flags(flags: u32) -> lx::Result<i32> {
+    if flags & (lx::O_CREAT | lx::O_EXCL) as u32 != 0 {
+        return Err(lx::Error::EINVAL);
+    }
+    create_flags(flags)
+}
+
+/// Validates FUSE CREATE flags and consumes guest-only Linux flags.
+pub fn create_flags(flags: u32) -> lx::Result<i32> {
+    let guest_only = lx::__FMODE_EXEC | lx::O_LARGEFILE | lx::O_NOFOLLOW;
+    let supported = (lx::O_ACCESS_MASK
+        | lx::O_CREAT
+        | lx::O_EXCL
+        | lx::O_TRUNC
+        | lx::O_APPEND
+        | lx::O_NONBLOCK
+        | lx::O_DSYNC
+        | lx::O_DIRECT
+        | lx::O_DIRECTORY
+        | lx::O_NOATIME
+        | lx::O_SYNC
+        | guest_only) as u32;
+    if flags & !supported != 0 {
+        return Err(lx::Error::EINVAL);
+    }
+    // Guest-only intent and flags do not select host-open policy.
+    Ok(flags as i32 & !guest_only)
+}
+
 /// Convert a Linux stat struct to FUSE attributes.
 pub fn stat_to_fuse_attr(stat: &lx::Stat) -> fuse_attr {
     fuse_attr {
@@ -109,4 +139,52 @@ pub fn fuse_set_attr_to_lxutil(
     }
 
     attr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn fuse_flags_only_consume_guest_flags() {
+        let guest_flags = lx::__FMODE_EXEC | lx::O_LARGEFILE | lx::O_NOFOLLOW;
+        for flags in [
+            lx::O_RDWR | lx::O_APPEND | lx::O_TRUNC | lx::O_DIRECT,
+            lx::O_DIRECTORY | lx::O_SYNC,
+            lx::O_NOACCESS | lx::O_DSYNC | lx::O_NOATIME | lx::O_NONBLOCK,
+            lx::O_SYNC & !lx::O_DSYNC,
+        ] {
+            assert_eq!(open_flags((flags | guest_flags) as u32).unwrap(), flags);
+        }
+    }
+
+    #[test]
+    fn fuse_flags_reject_unsupported_bits() {
+        let guest_flags = (lx::__FMODE_EXEC | lx::O_LARGEFILE | lx::O_NOFOLLOW) as u32;
+        for unsupported in [
+            lx::O_NOCTTY as u32,
+            lx::O_CLOEXEC as u32,
+            lx::O_PATH as u32,
+            0x2000,
+            0x400000,
+            1 << 31,
+        ] {
+            let flags = unsupported | guest_flags | (lx::O_WRONLY | lx::O_TRUNC) as u32;
+            assert_eq!(open_flags(flags).unwrap_err(), lx::Error::EINVAL);
+            assert_eq!(create_flags(flags).unwrap_err(), lx::Error::EINVAL);
+        }
+    }
+
+    #[test]
+    fn fuse_creation_flags_require_create_request() {
+        for flags in [lx::O_CREAT, lx::O_EXCL, lx::O_CREAT | lx::O_EXCL] {
+            let flags = flags | lx::O_RDWR | lx::O_TRUNC;
+            assert_eq!(open_flags(flags as u32).unwrap_err(), lx::Error::EINVAL);
+            assert_eq!(
+                create_flags((flags | lx::__FMODE_EXEC | lx::O_LARGEFILE) as u32).unwrap(),
+                flags
+            );
+        }
+    }
 }

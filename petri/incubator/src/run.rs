@@ -90,9 +90,12 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
         IncubatorBoot::Mshv(boot) => Firmware::Uefi {
             uefi_firmware: ResolvedArtifact::from_local_path(boot.firmware.clone()),
             guest: petri::UefiGuest::Mshv(petri::mshv_boot::MshvBoot {
+                host_boot: ResolvedArtifact::from_local_path(boot.host_boot.clone()),
                 kernel: ResolvedArtifact::from_local_path(config.kernel.clone()),
                 initrd: initrd.clone(),
                 boot_artifacts: ResolvedArtifact::from_local_path(boot.boot_artifacts.clone()),
+                kernel_cmdline: boot.kernel_cmdline.clone(),
+                hypervisor_cmdline: boot.hypervisor_cmdline.clone(),
             }),
             uefi_config: petri::UefiConfig {
                 default_boot_always_attempt: true,
@@ -119,6 +122,7 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                 })
                 .with_processor_topology(petri::ProcessorTopology {
                     vp_count: profile.processors,
+                    enable_smt: profile.enable_smt,
                     ..Default::default()
                 })
                 .with_external_pipette()
@@ -131,12 +135,13 @@ pub fn run_in_incubator(config: IncubatorConfig) -> anyhow::Result<IncubatorOutp
                 IncubatorBoot::LinuxDirect => builder
                     .with_prebuilt_initrd(initrd)
                     .with_no_vmbus()
-                    .with_virtio_vsock(false)
+                    .with_virtio_vsock(true)
+                    .with_virtio_console()
                     .with_serial_output()
                     .modify_backend(|backend| {
                         backend
                             .with_pcie_root_topology_at(0, 1, 1, 1)
-                            .with_tcp_pipette_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
+                            .with_virtio_nic("s0rc0rp0", petri::openvmm::NIC_MAC_ADDRESS)
                     }),
             };
             execute(builder, &driver, &config, &signals, bound_command).await

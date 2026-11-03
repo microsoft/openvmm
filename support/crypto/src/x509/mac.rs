@@ -13,11 +13,13 @@
 
 use super::X509Error;
 use super::X509PublicKey;
+use super::X509VerifyError;
 use crate::mac::*;
 use der::Decode;
 use der::Encode;
 use std::ptr;
 use x509_cert::Certificate;
+use x509_cert::ext::pkix::AuthorityKeyIdentifier;
 
 type SecCertificateRef = CFTypeRef;
 
@@ -52,10 +54,6 @@ fn der_err(e: der::Error, op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Der(e, op))
 }
 
-fn rsa_der_err(e: der::Error, op: &'static str) -> crate::rsa::RsaError {
-    crate::rsa::RsaError(crate::BackendError::Der(e, op))
-}
-
 fn null_err(op: &'static str) -> X509Error {
     X509Error(crate::BackendError::Null(op))
 }
@@ -70,6 +68,11 @@ pub struct X509CertificateInner {
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
+        use der::Reader;
+
+        let data = der::SliceReader::new(data)
+            .and_then(|mut reader| reader.tlv_bytes())
+            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
         let parsed =
             Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
         let cf = cf_data(data, "creating a CFData for the certificate").map_err(err)?;
@@ -113,21 +116,19 @@ impl X509CertificateInner {
         Ok(X509PublicKey::Rsa(rsa))
     }
 
-    pub fn verify(
-        &self,
-        issuer_public_key: &crate::rsa::RsaPublicKey,
-    ) -> Result<bool, crate::rsa::RsaError> {
+    pub fn verify(&self, issuer_public_key: &X509PublicKey) -> Result<bool, X509VerifyError> {
+        let X509PublicKey::Rsa(issuer_public_key) = issuer_public_key;
         let oid = self.parsed.signature_algorithm().oid;
-        let hash = crate::HashAlgorithm::try_from(oid)
-            .map_err(|e| rsa_der_err(e, "reading the certificate signature algorithm"))?;
+        let hash = crate::HashAlgorithm::from_rsa_signature_oid(oid)
+            .map_err(|e| der_err(e, "reading the certificate signature algorithm"))?;
 
         let tbs_der = self
             .parsed
             .tbs_certificate()
             .to_der()
-            .map_err(|e| rsa_der_err(e, "encoding the TBS certificate"))?;
+            .map_err(|e| der_err(e, "encoding the TBS certificate"))?;
         let signature = self.parsed.signature().raw_bytes();
-        issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)
+        Ok(issuer_public_key.pkcs1_verify(&tbs_der, signature, hash)?)
     }
 
     pub fn issued(&self, subject: &X509CertificateInner) -> Result<bool, X509Error> {
@@ -205,6 +206,41 @@ impl X509CertificateInner {
         Ok(self.parsed.tbs_certificate().issuer().to_string())
     }
 
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .parsed
+            .tbs_certificate()
+            .issuer()
+            .common_name()
+            .map_err(|e| der_err(e, "reading the issuer common name"))?
+            .map(|name| name.value().into_owned()))
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        let tbs = self.parsed.tbs_certificate();
+        let validity = tbs.validity();
+        let time = |time: x509_cert::time::Time| {
+            jiff::tz::Offset::UTC
+                .to_datetime(jiff::Timestamp::UNIX_EPOCH)
+                .checked_add(time.to_unix_duration())
+        };
+        Ok((time(validity.not_before)?, time(validity.not_after)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        let Some((_, aki)) = self
+            .parsed
+            .tbs_certificate()
+            .get_extension::<AuthorityKeyIdentifier>()
+            .map_err(|e| der_err(e, "reading authority key identifier"))?
+        else {
+            return Ok(None);
+        };
+        Ok(aki.key_identifier.map(|id| id.as_bytes().to_vec()))
+    }
+
     pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {
         Ok(self
             .parsed
@@ -233,25 +269,17 @@ impl X509CertificateInner {
 
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
-        key: &crate::rsa::RsaKeyPair,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+        key: super::X509KeyPair<'_>,
+        options: &super::X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
-        use super::builder::rsa_keypair_signer::RsaKeyPairSigner;
+        use super::builder::keypair_signer::KeyPairSigner;
         use x509_cert::builder::Builder;
 
-        let (builder, pkcs1_der) = super::builder::self_signed_builder(
+        let (builder, public_key_der) = super::builder::self_signed_builder(key, options)?;
+        let cert = builder.build(&KeyPairSigner {
             key,
-            country,
-            state,
-            locality,
-            organization,
-            common_name,
-        )?;
-        let cert = builder.build(&RsaKeyPairSigner { key, pkcs1_der })?;
+            public_key_der,
+        })?;
         Ok(Self::from_der(&cert.to_der()?)?)
     }
 }

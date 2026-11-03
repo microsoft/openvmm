@@ -41,6 +41,9 @@ bootcmd:
   # Disable snapd, which takes a long time to start and is not needed.
   - systemctl disable snapd.service snapd.apparmor snapd.seeded.service || true
   - systemctl mask snapd.service || true
+  # Automatic APT servicing is unnecessary in disposable guests and can delay shutdown.
+  - systemctl disable --now apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer unattended-upgrades.service || true
+  - systemctl mask apt-daily.service apt-daily.timer apt-daily-upgrade.service apt-daily-upgrade.timer unattended-upgrades.service || true
 
 runcmd:
   # Add the service to systemd (most distros) or openrc (Alpine).

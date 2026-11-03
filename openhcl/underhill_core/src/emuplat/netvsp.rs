@@ -369,15 +369,58 @@ struct HclNetworkVFManagerWorker {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BindingReportState {
+    Done,
+    WaitingForEnumeration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceEnumerationState {
+    Ignored,
+    WaitForDevice,
+    ReportBinding,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Vtl2DeviceState {
     /// The VTL2 VF has been enumerated on vPCI and is waiting for uevent add.
     DeviceEnumerated,
     /// The VTL2 VF is bound and VTL0 updates may be applied immediately.
-    Present,
+    Present { binding_report: BindingReportState },
     /// The VTL2 VF is gone; VTL0 changes are recorded locally until it returns.
     Missing,
     /// The VTL2 VF was shut down for recovery and a restart retry is pending.
     Reconfiguring,
+}
+
+impl Vtl2DeviceState {
+    fn device_enumerated(&mut self, shutdown_active: bool) -> DeviceEnumerationState {
+        if shutdown_active {
+            return DeviceEnumerationState::Ignored;
+        }
+        match self {
+            Self::Missing => {
+                *self = Self::DeviceEnumerated;
+                DeviceEnumerationState::WaitForDevice
+            }
+            Self::Present { binding_report }
+                if *binding_report == BindingReportState::WaitingForEnumeration =>
+            {
+                *binding_report = BindingReportState::Done;
+                DeviceEnumerationState::ReportBinding
+            }
+            _ => DeviceEnumerationState::Ignored,
+        }
+    }
+
+    fn mark_started(&mut self) {
+        let binding_report = if matches!(self, Self::Missing) {
+            BindingReportState::WaitingForEnumeration
+        } else {
+            BindingReportState::Done
+        };
+        *self = Self::Present { binding_report };
+    }
 }
 
 enum WorkerControlFlow {
@@ -1400,7 +1443,9 @@ impl HclNetworkVFManagerWorker {
             ExitWorker,
         }
 
-        let mut vtl2_device_state = Vtl2DeviceState::Present;
+        let mut vtl2_device_state = Vtl2DeviceState::Present {
+            binding_report: BindingReportState::Done,
+        };
         let mut vf_reconfig_backoff: Option<VfReconfigBackoff> = None;
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
         loop {
@@ -1414,7 +1459,7 @@ impl HclNetworkVFManagerWorker {
                 // VPCI bus events determine when the MANA device has been Removed.
                 let device_change = self.vtl2_bus_control.notifier().map(|device| match device {
                     VpciBusEvent::DeviceEnumerated => {
-                        tracing::info!(vtl2_vfid, "MANA device enumerated, waiting for uevent.");
+                        tracing::info!(vtl2_vfid, "MANA device enumerated");
                         NextWorkItem::ManaDeviceEnumerated
                     }
                     VpciBusEvent::PrepareForRemoval => {
@@ -1437,7 +1482,7 @@ impl HclNetworkVFManagerWorker {
                     } = notification;
                     let exists = Path::new(&device_path).exists();
                     match (vtl2_device_state, action, exists) {
-                        (Vtl2DeviceState::Present, UeventAction::Remove, _) => {
+                        (Vtl2DeviceState::Present { .. }, UeventAction::Remove, _) => {
                             NextWorkItem::ManaDeviceRemoved {
                                 surprise_remove: true,
                             }
@@ -1505,21 +1550,30 @@ impl HclNetworkVFManagerWorker {
             match next_work_item {
                 NextWorkItem::Continue => continue,
                 NextWorkItem::ManaDeviceEnumerated => {
-                    if !self.is_shutdown_active
-                        && matches!(vtl2_device_state, Vtl2DeviceState::Missing)
-                    {
-                        vtl2_device_state = Vtl2DeviceState::DeviceEnumerated;
-                    } else {
-                        tracing::warn!(
-                            vtl2_vfid,
-                            vtl2_device_state = ?vtl2_device_state,
-                            shutdown_active = self.is_shutdown_active,
-                            "ignoring VPCI DeviceEnumerated notification, invalid device state"
-                        );
+                    match vtl2_device_state.device_enumerated(self.is_shutdown_active) {
+                        DeviceEnumerationState::Ignored => {
+                            tracing::warn!(
+                                vtl2_vfid,
+                                vtl2_device_state = ?vtl2_device_state,
+                                shutdown_active = self.is_shutdown_active,
+                                "ignoring VPCI DeviceEnumerated notification, invalid device state"
+                            );
+                        }
+                        DeviceEnumerationState::WaitForDevice => {}
+                        DeviceEnumerationState::ReportBinding => {
+                            if let Err(err) = self.update_vtl2_device_bind_state(true).await {
+                                tracing::error!(
+                                    vtl2_vfid,
+                                    err = err.as_ref() as &dyn std::error::Error,
+                                    "Failed to report new binding state to host"
+                                );
+                            }
+                        }
                     }
                 }
                 NextWorkItem::ManagerMessage(message) => {
-                    let vtl2_device_present = matches!(vtl2_device_state, Vtl2DeviceState::Present);
+                    let vtl2_device_present =
+                        matches!(vtl2_device_state, Vtl2DeviceState::Present { .. });
                     let control_flow = self
                         .process_vf_manager_message(message, vtl2_device_present)
                         .await;
@@ -1529,7 +1583,7 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::VfReconfig(revoke_vtl0_vf) => {
                     if self.is_shutdown_active
-                        || !matches!(vtl2_device_state, Vtl2DeviceState::Present)
+                        || !matches!(vtl2_device_state, Vtl2DeviceState::Present { .. })
                     {
                         tracing::debug!(
                             vtl2_vfid,
@@ -1573,7 +1627,7 @@ impl HclNetworkVFManagerWorker {
                         VfReconfigResult::Retry(backoff) => vf_reconfig_backoff = Some(backoff),
                         VfReconfigResult::Success => {
                             vf_reconfig_backoff = None;
-                            vtl2_device_state = Vtl2DeviceState::Present;
+                            vtl2_device_state.mark_started();
                         }
                         VfReconfigResult::Exhausted => {
                             vf_reconfig_backoff = None;
@@ -1595,7 +1649,7 @@ impl HclNetworkVFManagerWorker {
                         .instrument(tracing::info_span!("VTL2 VF arrived", vtl2_vfid))
                         .await
                     {
-                        vtl2_device_state = Vtl2DeviceState::Present;
+                        vtl2_device_state.mark_started();
                     }
                 }
                 NextWorkItem::ManaDeviceRemoved { surprise_remove } => {
@@ -1604,7 +1658,7 @@ impl HclNetworkVFManagerWorker {
                         continue;
                     }
                     self.mana_device_removed(
-                        matches!(vtl2_device_state, Vtl2DeviceState::Present),
+                        matches!(vtl2_device_state, Vtl2DeviceState::Present { .. }),
                         surprise_remove,
                     )
                     .instrument(tracing::info_span!("VTL2 VF removal", vtl2_vfid))

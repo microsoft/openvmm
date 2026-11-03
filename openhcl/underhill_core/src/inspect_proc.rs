@@ -10,25 +10,55 @@ use pal_async::timer::PolledTimer;
 use std::time::Duration;
 use vmcore::vm_task::VmTaskDriver;
 
-/// Writes inspection results based on the contents of /proc/meminfo
+/// Writes inspection results based on the contents of /proc/meminfo and /proc/zoneinfo
 fn inspect_meminfo(req: Request<'_>) {
     const FIELDS: &[&str] = &[
         "MemTotal",
         "MemFree",
         "MemAvailable",
-        "Mapped",
-        "Slab",
-        "AnonPages",
+        "Buffers",
+        "Cached",
+        "SwapCached",
+        "Active",
+        "Inactive",
         "Active(anon)",
         "Inactive(anon)",
+        "Active(file)",
+        "Inactive(file)",
+        "Unevictable",
+        "Mlocked",
+        "SwapTotal",
+        "SwapFree",
+        "Dirty",
+        "Writeback",
+        "AnonPages",
+        "Mapped",
+        "Shmem",
+        "KReclaimable",
+        "Slab",
         "SReclaimable",
         "SUnreclaim",
-        "Mlocked",
         "KernelStack",
         "PageTables",
-        "Shmem",
-        "Percpu",
+        "SecPageTables",
+        "NFS_Unstable",
+        "Bounce",
+        "WritebackTmp",
+        "CommitLimit",
         "Committed_AS",
+        "VmallocTotal",
+        "VmallocUsed",
+        "VmallocChunk",
+        "Percpu",
+        "AnonHugePages",
+        "ShmemHugePages",
+        "ShmemPmdMapped",
+        "FileHugePages",
+        "FilePmdMapped",
+        "Balloon",
+        "DirectMap4k",
+        "DirectMap2M",
+        "DirectMap1G",
     ];
 
     let mut resp = req.respond();
@@ -46,6 +76,42 @@ fn inspect_meminfo(req: Request<'_>) {
                 resp.sensitivity_field(name, SensitivityLevel::Safe, value);
             }
         }
+
+        let contents = fs_err::read_to_string("/proc/zoneinfo")?;
+        let mut zoneinfo_nr_free_pages: u64 = 0;
+        let mut zoneinfo_per_cpu_page_count: u64 = 0;
+        for line in contents.lines() {
+            let mut split_line = line.split_ascii_whitespace();
+            let Some(field) = split_line.next() else {
+                continue;
+            };
+
+            if matches!(field, "count:") {
+                // Per-CPU free page counts are not counted in nr_free_pages or MemFree. In memory validation this is added to the memory from nr_free_pages to have a more accurate
+                // measurement of usage when comparing versions. These values are kept separate in the actual inspect counters to have a better breakdown of the distribution of memory usage.
+                zoneinfo_per_cpu_page_count += split_line
+                    .next()
+                    .context("line had no value")?
+                    .parse::<u64>()
+                    .context("value failed to parse")?;
+            } else if matches!(field, "nr_free_pages") {
+                zoneinfo_nr_free_pages += split_line
+                    .next()
+                    .context("line had no value")?
+                    .parse::<u64>()
+                    .context("value failed to parse")?
+            }
+        }
+        resp.sensitivity_field(
+            "ZoneInfoFreeMem",
+            SensitivityLevel::Safe,
+            zoneinfo_nr_free_pages * 4,
+        );
+        resp.sensitivity_field(
+            "ZoneInfoPerCPUMem",
+            SensitivityLevel::Safe,
+            zoneinfo_per_cpu_page_count * 4,
+        );
 
         Ok(())
     }

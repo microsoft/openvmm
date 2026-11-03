@@ -486,7 +486,10 @@ impl Vmgs {
         Self::format_new_inner(storage, VMGS_VERSION_3_0, reason, logger).await
     }
 
-    /// Format and open a new VMGS file.
+    /// Request formatting unless the VMGS reprovisioned marker is already set.
+    ///
+    /// Formatting sets the marker, so repeated requests preserve guest state.
+    /// Opening without a format request clears the marker.
     pub async fn request_format(
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
@@ -2255,6 +2258,50 @@ mod tests {
         let disk = new_test_file();
         let result = Vmgs::format_new(disk, None).await;
         assert!(result.is_ok());
+    }
+
+    #[async_test]
+    async fn repeated_format_requests_preserve_guest_state() {
+        let disk = new_test_file();
+        let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
+        vmgs.write_file(FileId::BIOS_NVRAM, b"old guest state")
+            .await
+            .unwrap();
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk.clone(), None).await.unwrap();
+        assert!(matches!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await,
+            Err(Error::FileInfoNotAllocated(id)) if id == FileId::BIOS_NVRAM
+        ));
+        let guest_state = b"reprovisioned guest state";
+        vmgs.write_file(FileId::BIOS_NVRAM, guest_state)
+            .await
+            .unwrap();
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk.clone(), None).await.unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+            guest_state
+        );
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::open(disk.clone(), None).await.unwrap();
+        assert_eq!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap(),
+            guest_state
+        );
+        vmgs.flush().await.unwrap();
+        drop(vmgs);
+
+        let mut vmgs = Vmgs::request_format(disk, None).await.unwrap();
+        assert!(matches!(
+            vmgs.read_file(FileId::BIOS_NVRAM).await,
+            Err(Error::FileInfoNotAllocated(id)) if id == FileId::BIOS_NVRAM
+        ));
     }
 
     #[async_test]

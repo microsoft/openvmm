@@ -258,6 +258,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    /// Whether this root complex owns legacy PCI configuration I/O ports.
+    pub legacy_pci_config_io: bool,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PciePortConfig>,

@@ -76,6 +76,7 @@ vm_resource::register_static_resolvers! {
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
+    disk_vmdk::FlatVmdkResolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]

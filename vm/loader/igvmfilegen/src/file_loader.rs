@@ -691,15 +691,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
                     combined.update(data_to_hash);
 
-                    // Per-page hash: a fresh Sha384 fed the same zero-
-                    // extended page bytes.
-                    let mut per = Sha384::new();
-                    per.update(data_to_hash);
-                    let hash: [u8; 48] = per
-                        .finish()
-                        .as_bytes()
-                        .try_into()
-                        .expect("sha384 output should be 48 bytes");
+                    let hash = crypto::sha_384::sha_384(data_to_hash);
                     per_page.push(loader_defs::paravisor::ExpectedPageHash { sha384_hash: hash });
                 }
             }
@@ -1531,6 +1523,35 @@ mod tests {
     use loader::importer::BootPageAcceptance;
     use loader::importer::ImageLoad;
     use loader_defs::paravisor::ImportedRegionDescriptor;
+    use test_with_tracing::test;
+
+    #[test]
+    fn shared_page_hashes_are_padded_sorted_and_combined() {
+        let mut loader = IgvmLoader::<X86Register>::new(true, LoaderIsolationType::None);
+        for (page, data, acceptance) in [
+            (3, vec![0x55; 4096], BootPageAcceptance::Shared),
+            (1, vec![0xab, 0xcd], BootPageAcceptance::Shared),
+            (2, vec![0xff; 4096], BootPageAcceptance::Exclusive),
+        ] {
+            loader
+                .import_pages(page, 1, "test", acceptance, &data)
+                .unwrap();
+        }
+        let (combined, per_page) = loader.generate_cryptographic_hashes_of_shared_pages();
+        // Independently calculated SHA-384 vectors over two padded 4 KiB pages.
+        let expected = [
+            "b398b181d7903022e085aa325d43b411cf522c3088c17dd9dc2cf54c707bd40cd9505b0b881ad58a816f92e9608f0273",
+            "3c8693ac96bd0500be3bc66c36bd6699f0fb2e7919af54ff0ad34f4850e4121456e80cca102b5e4ead02508828a8a4b6",
+        ];
+        assert_eq!(per_page.len(), expected.len());
+        for (hash, expected) in per_page.iter().zip(expected) {
+            assert_eq!(hex::encode(hash.sha384_hash), expected);
+        }
+        assert_eq!(
+            hex::encode(combined),
+            "f87ec8f3cf0a1e32a0fe919b376901c05d54a9a7913fe6aa9e5ee5e8ea18849f247b20612ef02455a48deb3da637bafb"
+        );
+    }
 
     #[test]
     fn reported_ranges_appear_in_map_output() {
