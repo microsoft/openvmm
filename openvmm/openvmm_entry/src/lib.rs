@@ -2369,7 +2369,9 @@ fn parse_endpoint(
             };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
+                params: Default::default(),
                 ports,
+                internal_dns: true,
                 recv,
             }
             .into_resource()
