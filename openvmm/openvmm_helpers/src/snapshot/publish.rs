@@ -615,6 +615,111 @@ mod tests {
         assert!(error.to_string().contains("incomplete"));
     }
 
+    /// Snapshot fixtures below a directory beyond the legacy Win32 limits of
+    /// directory and file paths.
+    struct LongPathPublication {
+        _dir: tempfile::TempDir,
+        parent: PathBuf,
+        memory_path: PathBuf,
+        scratch_path: PathBuf,
+        manifest: SnapshotManifest,
+    }
+
+    impl LongPathPublication {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let mut long = dir.path().to_owned();
+            while long.as_os_str().len() <= 320 {
+                long.push("long-snapshot-path-component");
+            }
+            let fixtures = long.join("fixtures");
+            let parent = long.join("snapshots");
+            std::fs::create_dir_all(&fixtures).unwrap();
+            std::fs::create_dir(&parent).unwrap();
+            let memory_path = fixtures.join("memory.bin");
+            let scratch_path = fixtures.join("scratch.img");
+            let scratch = vec![0x5a_u8; 1024];
+            std::fs::write(&memory_path, vec![0xa5_u8; 1024]).unwrap();
+            std::fs::write(&scratch_path, &scratch).unwrap();
+            Self {
+                _dir: dir,
+                parent,
+                memory_path,
+                scratch_path,
+                manifest: paired_scratch_manifest(&scratch),
+            }
+        }
+
+        /// Checks that the parent holds only `snap_dir`, a published snapshot
+        /// whose manifest, state, memory, and paired scratch read back intact.
+        fn check_published(&self, snap_dir: &Path) {
+            let read_manifest = read_snapshot_manifest(snap_dir).unwrap();
+            let verified = open_paired_scratch_file(snap_dir, &read_manifest)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                file_sha256(&verified, 1024, SCRATCH_FILE_NAME).unwrap(),
+                self.manifest
+                    .machine_contract
+                    .as_ref()
+                    .unwrap()
+                    .microvm_sandbox_blocks[1]
+                    .identity
+            );
+            assert_eq!(
+                std::fs::read(snap_dir.join(MEMORY_FILE_NAME)).unwrap(),
+                vec![0xa5_u8; 1024]
+            );
+            assert_eq!(
+                std::fs::read(snap_dir.join(STATE_FILE_NAME)).unwrap(),
+                b"state"
+            );
+            let entries: Vec<_> = std::fs::read_dir(&self.parent)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(entries, vec![snap_dir.file_name().unwrap().to_owned()]);
+        }
+    }
+
+    #[test]
+    fn snapshots_are_published_under_long_paths() {
+        let publication = LongPathPublication::new();
+        let snap_dir = publication.parent.join("snap");
+        write_snapshot_from_memory_and_scratch_files(
+            &snap_dir,
+            &publication.manifest,
+            b"state",
+            &std::fs::File::open(&publication.memory_path).unwrap(),
+            Some(&std::fs::File::open(&publication.scratch_path).unwrap()),
+        )
+        .unwrap();
+        publication.check_published(&snap_dir);
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn owned_memory_snapshots_are_published_under_long_paths() {
+        let publication = LongPathPublication::new();
+        let snap_dir = publication.parent.join("snap");
+        let memory_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&publication.memory_path)
+            .unwrap();
+        write_snapshot_from_owned_memory_and_scratch_files(
+            &snap_dir,
+            &publication.manifest,
+            b"state",
+            &memory_file,
+            Some(&std::fs::File::open(&publication.scratch_path).unwrap()),
+        )
+        .unwrap();
+        let published = std::fs::File::open(snap_dir.join(MEMORY_FILE_NAME)).unwrap();
+        verify_hard_link_identity(&memory_file, &published, 1024).unwrap();
+        publication.check_published(&snap_dir);
+    }
+
     #[test]
     fn generation_identity_uses_structure_without_rehashing_scratch() {
         let dir = tempfile::tempdir().unwrap();
