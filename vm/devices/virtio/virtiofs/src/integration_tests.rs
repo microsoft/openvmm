@@ -535,6 +535,154 @@ async fn init_negotiates_direct_io_allow_mmap(driver: DefaultDriver) {
     );
 }
 
+/// The limits advertised during INIT must not allow requests that the device
+/// rejects, whatever the guest page size.
+#[async_test]
+async fn init_advertises_enforced_buffer_limits(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+
+    let init_args = fuse_init_in {
+        major: FUSE_KERNEL_VERSION,
+        minor: FUSE_KERNEL_MINOR_VERSION,
+        max_readahead: 131072,
+        flags: FUSE_MAX_PAGES,
+        flags2: 0,
+        unused: [0; 11],
+    };
+    let resp_size = OUT_HEADER_SIZE + size_of::<fuse_init_out>() as u32;
+    let (unique, resp_gpa) =
+        harness.post_fuse_request(0, FUSE_INIT, 0, init_args.as_bytes(), resp_size);
+    harness.wait_for_used().await;
+
+    let out_header = harness.read_out_header(resp_gpa);
+    assert_eq!(out_header.unique, unique);
+    assert_eq!(out_header.error, 0, "FUSE_INIT failed");
+
+    let init_out: fuse_init_out = harness.read_response(resp_gpa);
+    assert_ne!(init_out.flags & FUSE_MAX_PAGES, 0);
+    assert_eq!(init_out.max_write as usize, crate::MAX_GUEST_BUFFER_SIZE);
+    assert!(init_out.max_pages as usize * crate::MAX_GUEST_PAGE_SIZE <= crate::MAX_READ_SIZE);
+}
+
+/// Reads up to the advertised page limit with the largest guest page size
+/// succeed, even though they exceed `max_write`.
+#[async_test]
+async fn read_size_is_bounded_by_page_limit(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    std::fs::write(harness.tmpdir_path().join("hello.txt"), "test data").unwrap();
+    harness.enable().await;
+    harness.fuse_init(0).await;
+
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_LOOKUP,
+        FUSE_ROOT_ID,
+        b"hello.txt\0",
+        OUT_HEADER_SIZE + size_of::<fuse_entry_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let entry: fuse_entry_out = harness.read_response(response);
+
+    let open_args = fuse_open_in {
+        flags: lx::O_RDONLY as u32,
+        unused: 0,
+    };
+    let (_, response) = harness.post_fuse_request(
+        4,
+        FUSE_OPEN,
+        entry.nodeid,
+        open_args.as_bytes(),
+        OUT_HEADER_SIZE + size_of::<fuse_open_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let open_out: fuse_open_out = harness.read_response(response);
+
+    for (head_desc, size, error) in [
+        (6, crate::MAX_READ_SIZE, 0),
+        (8, crate::MAX_READ_SIZE + 1, -lx::E2BIG),
+    ] {
+        let read_args = fuse_read_in {
+            fh: open_out.fh,
+            offset: 0,
+            size: size as u32,
+            read_flags: 0,
+            lock_owner: 0,
+            flags: 0,
+            padding: 0,
+        };
+        let (unique, response) = harness.post_fuse_request(
+            head_desc,
+            FUSE_READ,
+            entry.nodeid,
+            read_args.as_bytes(),
+            OUT_HEADER_SIZE + 64,
+        );
+        harness.wait_for_used().await;
+        let header = harness.read_out_header(response);
+        assert_eq!(header.unique, unique);
+        assert_eq!(header.error, error);
+        if error == 0 {
+            let mut data = [0; 9];
+            harness
+                .mem
+                .read_at(response + OUT_HEADER_SIZE as u64, &mut data)
+                .unwrap();
+            assert_eq!(&data, b"test data");
+        }
+    }
+}
+
+/// Directory reads larger than the buffer limit are truncated rather than
+/// rejected.
+#[async_test]
+async fn oversized_readdir_is_truncated(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable().await;
+    harness.fuse_init(0).await;
+
+    let open_args = fuse_open_in {
+        flags: (lx::O_RDONLY | lx::O_DIRECTORY) as u32,
+        unused: 0,
+    };
+    let (_, response) = harness.post_fuse_request(
+        2,
+        FUSE_OPENDIR,
+        FUSE_ROOT_ID,
+        open_args.as_bytes(),
+        OUT_HEADER_SIZE + size_of::<fuse_open_out>() as u32,
+    );
+    harness.wait_for_used().await;
+    assert_eq!(harness.read_out_header(response).error, 0);
+    let open_out: fuse_open_out = harness.read_response(response);
+
+    for (head_desc, opcode) in [(4, FUSE_READDIR), (6, FUSE_READDIRPLUS)] {
+        let read_args = fuse_read_in {
+            fh: open_out.fh,
+            offset: 0,
+            size: u32::MAX,
+            read_flags: 0,
+            lock_owner: 0,
+            flags: 0,
+            padding: 0,
+        };
+        let (unique, response) = harness.post_fuse_request(
+            head_desc,
+            opcode,
+            FUSE_ROOT_ID,
+            read_args.as_bytes(),
+            OUT_HEADER_SIZE + 1024,
+        );
+        harness.wait_for_used().await;
+        let header = harness.read_out_header(response);
+        assert_eq!(header.unique, unique);
+        assert_eq!(header.error, 0);
+        assert!(header.len > OUT_HEADER_SIZE);
+    }
+}
+
 #[test]
 fn child_operations_require_directory_parents() {
     for aggregate in [false, true] {

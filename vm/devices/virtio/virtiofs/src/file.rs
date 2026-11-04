@@ -91,6 +91,7 @@ impl VirtioFsFile {
         plus: bool,
         mut lookup: impl FnMut(&lx::LxStr) -> lx::Result<fuse_entry_out>,
     ) -> lx::Result<Vec<u8>> {
+        let mut buffer = crate::dir_buffer(size)?;
         let mut file = self.file.write();
         let check_sandbox = !plus && self.inode.volume.is_sandbox();
         let check_children = check_sandbox && !self.inode.volume.supports_stable_file_id();
@@ -99,7 +100,6 @@ impl VirtioFsFile {
             // Child filtering uses the host enumeration's metadata snapshot.
             self.inode.check_directory_handle(&file)?;
         }
-        let mut buffer = Vec::with_capacity(size as usize);
         let mut entry_count: u32 = 0;
         // Report the directory's guest-visible inode number so `.`/`..` agree
         // with the number reported by lookup/getattr.
