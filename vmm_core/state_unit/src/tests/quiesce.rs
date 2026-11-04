@@ -3,6 +3,8 @@
 
 //! Tests for gating host input around the snapshot boundary.
 
+use super::slow::Log;
+use crate::SLOW_STATE_CHANGE_INTERVAL;
 use crate::SpawnedUnit;
 use crate::StateUnit;
 use crate::StateUnits;
@@ -109,6 +111,38 @@ async fn input_quiesce_and_resume_reach_the_units(driver: DefaultDriver) {
     units.resume_input_after_save().await.unwrap();
     assert!(!quiesced.load(Ordering::Relaxed));
     assert!(units.is_running());
+}
+
+#[async_test]
+async fn a_slow_input_quiesce_is_awaited_and_names_its_unit(driver: DefaultDriver) {
+    let log = Log::default();
+    let _subscriber = tracing::subscriber::set_default(log.subscriber());
+    let mut units = StateUnits::new();
+    let (_fast, fast) = add_input_unit(&units, &driver, "fast", Duration::ZERO, false);
+    let (_slow, slow) = add_input_unit(
+        &units,
+        &driver,
+        "slow",
+        3 * SLOW_STATE_CHANGE_INTERVAL,
+        false,
+    );
+    units.start().await.unwrap();
+
+    // The gate has no deadline: it waits for the slow unit, whose input
+    // quiesce takes three logging intervals, and the log names that unit.
+    units.quiesce_input_for_save().await.unwrap();
+
+    assert!(fast.load(Ordering::Relaxed));
+    assert!(slow.load(Ordering::Relaxed));
+    let unanswered = log.unanswered();
+    assert!(
+        !unanswered.is_empty(),
+        "the slow input quiesce was not logged"
+    );
+    for line in unanswered {
+        assert!(line.contains(r#"unit="slow""#), "{line}");
+        assert!(!line.contains("fast"), "{line}");
+    }
 }
 
 #[async_test]
