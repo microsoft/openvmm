@@ -187,7 +187,7 @@ pub(crate) mod tests {
             Box::pin(async move {
                 if self
                     .interruptions
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
                         count.checked_sub(1)
                     })
                     .is_ok()
