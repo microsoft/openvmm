@@ -3926,16 +3926,12 @@ impl LoadedVm {
                                 resource,
                             )
                             .await?;
-                            self.inner.vmbus_devices.push(device);
                             if let Err(error) = self.state_units.start_stopped_units().await {
-                                let device = self
-                                    .inner
-                                    .vmbus_devices
-                                    .pop()
-                                    .expect("device was just pushed");
+                                // Dropping the channel unit revokes the channel.
                                 drop(device.remove().await);
                                 return Err(error);
                             }
+                            self.inner.vmbus_devices.push(device);
                             anyhow::Ok(())
                         })
                         .await
