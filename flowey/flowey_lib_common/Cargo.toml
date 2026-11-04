@@ -25,6 +25,9 @@ xshell.workspace = true
 [target.'cfg(unix)'.dependencies]
 rlimit.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows_disk_io.workspace = true
+
 [dev-dependencies]
 test_with_tracing.workspace = true
 

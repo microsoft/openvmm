@@ -145,7 +145,10 @@ def analyze(directory: Path) -> dict:
         warnings.append("Resource samples cover less than 99% of the JUnit run.")
     if cpu_seconds / duration < 0.99:
         warnings.append("Valid CPU samples cover less than 99% of the JUnit run.")
-    if any(row["disks"] is None for row in samples):
+    disk_errors = sorted({row["disk_io_error"] for row in samples if row.get("disk_io_error")})
+    if disk_errors:
+        warnings.extend(f"Disk I/O collection: {error}" for error in disk_errors)
+    elif any(row["disks"] is None for row in samples):
         warnings.append(metadata.get("disk_io_unavailable_reason")
                         or "Disk I/O counters are unavailable for some resource samples.")
     if any(trial.start < start - 0.01 or trial.end > end + 0.01 for trial in trials):
@@ -243,12 +246,15 @@ def render_html(report: dict) -> str:
         after = {(disk["name"], disk["mount_point"]): disk for disk in row["disks"] or []}
         for key in before.keys() | after.keys():
             for counter in ["read_bytes", "written_bytes"]:
+                old_value = before.get(key, {}).get(counter)
+                new_value = after.get(key, {}).get(counter)
                 delta = (
-                    after[key][counter] - before[key][counter]
-                    if key in before and key in after else None
+                    new_value - old_value
+                    if old_value is not None and new_value is not None else None
                 )
                 rate = delta / elapsed / 1024**2 if delta is not None and delta >= 0 else None
-                rates = disk_rates[f"{key[0]} ({key[1]}) {counter} MiB/s"]
+                label = f"{key[0]} ({key[1]})" if key[1] else key[0]
+                rates = disk_rates[f"{label} {counter} MiB/s"]
                 if not rates:
                     rates.append((previous["elapsed_seconds"], None))
                 rates.append((row["elapsed_seconds"], rate))
@@ -283,7 +289,8 @@ def render_html(report: dict) -> str:
         f"0 at left to {duration:.1f} at right. Hover a test bar for its duration.</p>"
         "<p>CPU and memory are host-wide, not per-test attribution. Hypervisor guest "
         "work may not be visible in OS CPU counters. Low CPU alone does not establish "
-        "scheduler inefficiency. Disk counters can alias across mount points; do not sum them.</p>"
+        "scheduler inefficiency. Disk counters can alias across mount points or storage layers; "
+        "do not sum them.</p>"
         f"<h2>Summary</h2><pre>{summary}</pre>{charts}"
         f"<h2>Test attempts, in start order</h2><table>{''.join(bars)}</table>"
         f"<details><summary>Run metadata</summary><pre>{metadata}</pre></details></html>"

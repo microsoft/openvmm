@@ -12,19 +12,63 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
-use sysinfo::DiskRefreshKind;
-use sysinfo::Disks;
 use sysinfo::System;
 
+#[cfg(windows)]
+mod windows;
+#[cfg(not(windows))]
+use sysinfo::DiskRefreshKind;
+#[cfg(not(windows))]
+use sysinfo::Disks;
+#[cfg(windows)]
+use windows::DiskSampler;
+
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-const DISK_IO_UNAVAILABLE_REASON: Option<&str> = if cfg!(windows) {
-    Some(
-        "Windows disk I/O collection is disabled: volume performance queries can fail \
-         on native VHD boot without sysinfo exposing whether the counters are valid.",
-    )
+const DISK_IO_PROVIDER: &str = if cfg!(windows) {
+    "pdh-physical-disk"
 } else {
-    None
+    "sysinfo"
 };
+
+#[derive(Serialize)]
+struct DiskSample {
+    name: String,
+    mount_point: String,
+    read_bytes: Option<u64>,
+    written_bytes: Option<u64>,
+    error: Option<String>,
+}
+
+#[cfg(not(windows))]
+struct DiskSampler(Disks);
+
+#[cfg(not(windows))]
+impl DiskSampler {
+    fn new() -> anyhow::Result<Self> {
+        Ok(Self(Disks::new_with_refreshed_list_specifics(
+            DiskRefreshKind::nothing().with_io_usage(),
+        )))
+    }
+
+    fn sample(&mut self) -> anyhow::Result<Vec<DiskSample>> {
+        self.0
+            .refresh_specifics(false, DiskRefreshKind::nothing().with_io_usage());
+        Ok(self
+            .0
+            .iter()
+            .map(|disk| {
+                let usage = disk.usage();
+                DiskSample {
+                    name: disk.name().to_string_lossy().into_owned(),
+                    mount_point: disk.mount_point().to_string_lossy().into_owned(),
+                    read_bytes: Some(usage.total_read_bytes),
+                    written_bytes: Some(usage.total_written_bytes),
+                    error: None,
+                }
+            })
+            .collect())
+    }
+}
 
 pub(super) struct ResourceMonitor {
     dir: PathBuf,
@@ -51,14 +95,6 @@ impl ResourceMonitor {
         let mut system = System::new();
         system.refresh_cpu_usage();
         system.refresh_memory();
-        let disks = if let Some(reason) = DISK_IO_UNAVAILABLE_REASON {
-            log::warn!("{reason}");
-            None
-        } else {
-            Some(Disks::new_with_refreshed_list_specifics(
-                DiskRefreshKind::nothing().with_io_usage(),
-            ))
-        };
         let started = Instant::now();
         let started_unix_seconds = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -91,7 +127,7 @@ impl ResourceMonitor {
                     .collect::<Vec<_>>()
             }).collect::<Vec<_>>(),
             "scheduler_env": scheduler_env,
-            "disk_io_unavailable_reason": DISK_IO_UNAVAILABLE_REASON,
+            "disk_io_provider": DISK_IO_PROVIDER,
         });
         fs_err::write(
             dir.join("metadata.json"),
@@ -101,7 +137,11 @@ impl ResourceMonitor {
         let (stop, receiver) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("nextest-resources".into())
-            .spawn(move || sample(system, disks, output, started, receiver))?;
+            .spawn(move || {
+                // PDH queries stay on their owning thread.
+                let disks = DiskSampler::new();
+                sample(system, disks, output, started, receiver)
+            })?;
 
         Ok(Self {
             dir: tempdir.keep(),
@@ -152,13 +192,14 @@ impl Drop for ResourceMonitor {
 
 fn sample(
     mut system: System,
-    mut disks: Option<Disks>,
+    mut disks: anyhow::Result<DiskSampler>,
     output: fs_err::File,
     started: Instant,
     stop: mpsc::Receiver<()>,
 ) -> anyhow::Result<()> {
     let mut output = std::io::BufWriter::new(output);
     let mut last_cpu_refresh = started;
+    let mut previous_disk_error = None;
     let mut initial = true;
     loop {
         let stopping = if initial {
@@ -180,23 +221,32 @@ fn sample(
             None
         };
         system.refresh_memory();
-        let disk_usage = disks.as_mut().map(|disks| {
-            if !initial {
-                disks.refresh_specifics(false, DiskRefreshKind::nothing().with_io_usage());
+        let disk_result = match &mut disks {
+            Ok(disks) => disks.sample(),
+            Err(err) => Err(anyhow::anyhow!("{err:#}")),
+        };
+        let (disk_usage, disk_error) = match disk_result {
+            Ok(samples) => {
+                let errors = samples
+                    .iter()
+                    .filter_map(|disk| disk.error.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                (Some(samples), (!errors.is_empty()).then_some(errors))
             }
-            disks
-                .iter()
-                .map(|disk| {
-                    let usage = disk.usage();
-                    serde_json::json!({
-                        "name": disk.name().to_string_lossy(),
-                        "mount_point": disk.mount_point().to_string_lossy(),
-                        "read_bytes": usage.total_read_bytes,
-                        "written_bytes": usage.total_written_bytes,
-                    })
-                })
-                .collect::<Vec<_>>()
-        });
+            Err(err) => (None, Some(format!("{err:#}"))),
+        };
+        if initial {
+            log::info!("disk I/O provider: {DISK_IO_PROVIDER}");
+        }
+        if disk_error != previous_disk_error {
+            if let Some(err) = &disk_error {
+                log::warn!("disk I/O samples unavailable or incomplete: {err}");
+            } else {
+                log::info!("disk I/O collection recovered");
+            }
+            previous_disk_error = disk_error.clone();
+        }
         let row = serde_json::json!({
             "elapsed_seconds": started.elapsed().as_secs_f64(),
             "cpu_percent": cpu_percent,
@@ -204,6 +254,7 @@ fn sample(
             "available_memory_bytes": system.available_memory(),
             "used_swap_bytes": system.used_swap(),
             "disks": disk_usage,
+            "disk_io_error": disk_error,
         });
         serde_json::to_writer(&mut output, &row)?;
         writeln!(output)?;
@@ -230,7 +281,7 @@ mod tests {
         stop.send(())?;
         sample(
             System::new(),
-            None,
+            Err(anyhow::anyhow!("disk provider unavailable")),
             fs_err::File::create(&path)?,
             Instant::now(),
             receiver,
@@ -241,6 +292,10 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|row| row["disks"].is_null()));
+        assert!(
+            rows.iter()
+                .all(|row| row["disk_io_error"] == "disk provider unavailable")
+        );
         Ok(())
     }
 
@@ -271,13 +326,11 @@ mod tests {
         assert!(rows[0]["cpu_percent"].is_null());
         assert!(rows[1]["elapsed_seconds"].as_f64() > rows[0]["elapsed_seconds"].as_f64());
         assert!(rows[1]["cpu_percent"].as_f64().is_some());
-        if cfg!(windows) {
-            assert!(metadata["disk_io_unavailable_reason"].is_string());
-            assert!(rows.iter().all(|row| row["disks"].is_null()));
-        } else {
-            assert!(metadata["disk_io_unavailable_reason"].is_null());
-            assert!(rows.iter().all(|row| row["disks"].is_array()));
-        }
+        assert_eq!(metadata["disk_io_provider"], DISK_IO_PROVIDER);
+        assert!(
+            rows.iter()
+                .all(|row| row["disks"].is_array() || row["disk_io_error"].is_string())
+        );
         let outcome: serde_json::Value =
             serde_json::from_slice(&fs_err::read(dir.join("outcome.json"))?)?;
         assert_eq!(outcome["collection_complete"], true);

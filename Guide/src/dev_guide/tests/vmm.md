@@ -137,11 +137,13 @@ headroom, and the drain time after the last test attempt starts. Retries
 count as separate attempts. Resource averages cover the JUnit run window,
 not archive extraction or compilation; command duration is reported
 separately. Missing CPU samples are unknown, not zero utilization.
-Windows disk I/O collection is disabled because volume counters can be
-unavailable on native VHD boot without a detectable error from the collection
-library. Samples record `disks: null` and the report explains the limitation
-rather than showing zero throughput. CPU, memory, and test timing are still
-collected.
+Windows disk I/O uses PDH `PhysicalDisk` instances instead of mounted-volume
+queries, which can fail on native VHD boot. Metadata identifies the provider;
+each disk is labeled by its PDH instance rather than a separate mount point.
+The aggregate `_Total` instance is excluded. Disk-query failures record
+`disk_io_error` and `disks: null`; individual invalid counters are null rather
+than zero. The report includes these diagnostics while still showing valid
+CPU, memory, timing, and disk measurements.
 
 Compare runs with the same test selection, machine type, and profile.
 Collect a baseline before changing `threads-required` or test thread
@@ -157,8 +159,9 @@ measurement of nextest's reserved scheduling slots. Other processes and VM
 workers contribute. OS CPU counters can omit hypervisor guest execution,
 especially with Hyper-V; low CPU alone does not establish spare capacity.
 Used memory includes OS caches, and swap occupancy alone does not measure
-paging activity. Disk counters can alias across mount points and must not
-be summed blindly; throughput alone does not measure I/O saturation.
+paging activity. Disk counters can alias across mount points or storage
+layers (for example, a VHD and its backing disk) and must not be summed
+blindly; throughput alone does not measure I/O saturation.
 ```
 
 Collection errors produce warnings without changing test results. Sampling

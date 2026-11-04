@@ -156,6 +156,38 @@ class AnalysisTests(unittest.TestCase):
         self.assertNotIn("200.00,", disk_chart)
         self.assertIn('<polyline points="500.00,0.00 1000.00,0.00"', disk_chart)
 
+    def test_pdh_invalid_read_preserves_valid_writes_and_reports_the_error(self):
+        error = "PhysicalDisk 0 C: read: invalid counter data, PDH status 0xc0000bc6"
+        for row in self.samples:
+            row["disk_io_error"] = error
+            row["disks"] = [{
+                "name": "PhysicalDisk 0 C:",
+                "mount_point": "",
+                "read_bytes": None,
+                "written_bytes": row["elapsed_seconds"] * 1048576,
+                "error": error,
+            }]
+        self.write_samples()
+        report = resources.analyze(self.directory)
+        self.assertEqual(report["summary"]["warnings"], [f"Disk I/O collection: {error}"])
+        html = resources.render_html(report)
+        self.assertIn("PhysicalDisk 0 C: written_bytes MiB/s", html)
+        self.assertNotIn("read_bytes MiB/s", html)
+        self.assertNotIn("PhysicalDisk 0 C: ()", html)
+
+    def test_pdh_sample_failure_is_reported_without_hiding_other_measurements(self):
+        for row in self.samples:
+            row["disks"] = None
+            row["disk_io_error"] = "PdhCollectQueryData failed with PDH status 0x800007d5"
+        self.write_samples()
+        report = resources.analyze(self.directory)
+        self.assertEqual(len(report["summary"]["warnings"]), 1)
+        self.assertIn("PdhCollectQueryData", report["summary"]["warnings"][0])
+        html = resources.render_html(report)
+        self.assertNotIn("MiB/s", html)
+        self.assertIn("Host CPU, percent", html)
+        self.assertEqual(report["summary"]["test_attempts"], 2)
+
     def test_out_of_order_samples_rejected(self):
         self.samples[2]["elapsed_seconds"] = 1
         self.write_samples()
