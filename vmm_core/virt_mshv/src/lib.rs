@@ -372,6 +372,9 @@ struct MshvPartitionInner {
     /// Whether the current partition reset scrubbed hypervisor-managed state.
     /// Published before per-VP reset requests are dispatched.
     reset_with_scrub: AtomicBool,
+    /// Original cgroup processor settings, restored when the partition drops.
+    #[inspect(skip)]
+    cgroup_restore: Mutex<Option<processor_qos::CgroupRestore>>,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
     /// assertions via a v2m frame.
     #[cfg(guest_arch = "aarch64")]
@@ -482,6 +485,7 @@ impl virt::ResetPartition for MshvPartition {
             isolation: _,
             time_frozen,
             reset_with_scrub,
+            cgroup_restore: _,
             #[cfg(guest_arch = "aarch64")]
                 gic_msi: _,
         } = inner.as_ref();

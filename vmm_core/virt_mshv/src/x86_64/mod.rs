@@ -633,6 +633,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             isolation,
             time_frozen: Mutex::new(true),
             reset_with_scrub: false.into(),
+            cgroup_restore: Mutex::new(None),
         });
         inner.add_snp_vmsa_mapping()?;
 
@@ -679,7 +680,12 @@ impl virt::Partition for MshvPartition {
     }
 
     fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
-        crate::processor_qos::apply(&self.inner.vmfd, self.inner.vps.len() as u32, qos)
+        crate::processor_qos::apply(
+            &self.inner.vmfd,
+            self.inner.vps.len() as u32,
+            qos,
+            &self.inner.cgroup_restore,
+        )
     }
 
     fn doorbell_registration(

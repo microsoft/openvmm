@@ -93,8 +93,14 @@ fn write_hv(vmfd: &VmFd, from: virt::HvCpuProps, to: virt::HvCpuProps) -> anyhow
 }
 
 /// Applies `qos` to the partition, through the mechanism the host scheduler
-/// enforces.
-pub(crate) fn apply(vmfd: &VmFd, vp_count: u32, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+/// enforces. `restore` holds the cgroup's original values on the root
+/// scheduler; the partition drops it when it goes away.
+pub(crate) fn apply(
+    vmfd: &VmFd,
+    vp_count: u32,
+    qos: &virt::ProcessorQos,
+    restore: &parking_lot::Mutex<Option<CgroupRestore>>,
+) -> anyhow::Result<()> {
     qos.validate()?;
     match host_scheduler()? {
         MshvScheduler::Hypervisor => {
@@ -123,7 +129,9 @@ pub(crate) fn apply(vmfd: &VmFd, vp_count: u32, qos: &virt::ProcessorQos) -> any
                 .ok()
                 .and_then(|s| own_cgroup_dir(&s));
             match dir {
-                Some(dir) if cgroup_writable(&dir) => apply_cgroup(&dir, vp_count, qos),
+                Some(dir) if cgroup_writable(&dir) => {
+                    apply_cgroup(&dir, vp_count, qos, &mut restore.lock())
+                }
                 dir => anyhow::bail!(
                     "processor controls need a delegated cgroup v2 at {}",
                     dir.map_or("<unknown>".into(), |d| d.display().to_string())
@@ -167,18 +175,59 @@ pub(crate) fn cgroup_writable(dir: &Path) -> bool {
     })
 }
 
+/// The original `cpu.max` and `cpu.weight` of a cgroup, written back on drop
+/// so a VM's settings don't outlive it.
+#[derive(Debug)]
+pub struct CgroupRestore {
+    dir: PathBuf,
+    max: String,
+    weight: String,
+}
+
+impl CgroupRestore {
+    fn capture(dir: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            dir: dir.to_owned(),
+            max: fs_err::read_to_string(dir.join("cpu.max"))?
+                .trim()
+                .to_owned(),
+            weight: fs_err::read_to_string(dir.join("cpu.weight"))?
+                .trim()
+                .to_owned(),
+        })
+    }
+}
+
+impl Drop for CgroupRestore {
+    fn drop(&mut self) {
+        for (file, value) in [("cpu.max", &self.max), ("cpu.weight", &self.weight)] {
+            if let Err(err) = fs_err::write(self.dir.join(file), value) {
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to restore cgroup processor settings"
+                );
+            }
+        }
+    }
+}
+
 /// Applies limit and weight to the cgroup at `dir`. These cover the whole
-/// cgroup, device threads included.
+/// cgroup, device threads included. The first call saves the original values
+/// in `restore`.
 pub(crate) fn apply_cgroup(
     dir: &Path,
     vp_count: u32,
     qos: &virt::ProcessorQos,
+    restore: &mut Option<CgroupRestore>,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         qos.reserve.unwrap_or(0) == 0,
         "processor reserve has no equivalent under the root scheduler"
     );
     let max = qos.limit.map(|l| cpu_max_line(l, vp_count)).transpose()?;
+    if restore.is_none() && (max.is_some() || qos.weight.is_some()) {
+        *restore = Some(CgroupRestore::capture(dir)?);
+    }
     let weight_path = dir.join("cpu.weight");
     let old_weight = match qos.weight {
         Some(w) => {
@@ -273,14 +322,18 @@ mod tests {
     fn cgroup_apply_restores_weight_on_failure() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("cpu.weight"), "100").unwrap();
-        // A directory in place of cpu.max makes that write fail.
-        std::fs::create_dir(dir.path().join("cpu.max")).unwrap();
+        // A read-only cpu.max makes that write fail.
+        let max = dir.path().join("cpu.max");
+        std::fs::write(&max, "max 100000").unwrap();
+        let mut perm = std::fs::metadata(&max).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&max, perm).unwrap();
         let qos = virt::ProcessorQos {
             limit: Some(50000),
             weight: Some(300),
             reserve: None,
         };
-        assert!(super::apply_cgroup(dir.path(), 4, &qos).is_err());
+        assert!(super::apply_cgroup(dir.path(), 4, &qos, &mut None).is_err());
         assert_eq!(
             std::fs::read_to_string(dir.path().join("cpu.weight")).unwrap(),
             "100"
@@ -294,10 +347,42 @@ mod tests {
             reserve: Some(1000),
             ..Default::default()
         };
-        let err = super::apply_cgroup(dir.path(), 4, &qos).unwrap_err();
+        let err = super::apply_cgroup(dir.path(), 4, &qos, &mut None).unwrap_err();
         assert!(
             format!("{err:#}").contains("no equivalent under the root scheduler"),
             "{err:#}"
         );
+    }
+
+    #[test]
+    fn cgroup_restore_puts_back_original_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let read = |f: &str| {
+            std::fs::read_to_string(dir.path().join(f))
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        std::fs::write(dir.path().join("cpu.max"), "300000 100000\n").unwrap();
+        std::fs::write(dir.path().join("cpu.weight"), "50\n").unwrap();
+        let mut restore = None;
+        let qos = virt::ProcessorQos {
+            limit: Some(50000),
+            weight: Some(200),
+            reserve: None,
+        };
+        super::apply_cgroup(dir.path(), 4, &qos, &mut restore).unwrap();
+        assert_eq!(read("cpu.max"), "200000 100000");
+        assert_eq!(read("cpu.weight"), "200");
+        // A later update must not replace the values saved first.
+        let qos = virt::ProcessorQos {
+            limit: Some(100000),
+            ..Default::default()
+        };
+        super::apply_cgroup(dir.path(), 4, &qos, &mut restore).unwrap();
+        assert_eq!(read("cpu.max"), "max 100000");
+        drop(restore);
+        assert_eq!(read("cpu.max"), "300000 100000");
+        assert_eq!(read("cpu.weight"), "50");
     }
 }
