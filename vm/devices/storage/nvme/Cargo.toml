@@ -34,6 +34,7 @@ async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
+sha2.workspace = true
 slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
