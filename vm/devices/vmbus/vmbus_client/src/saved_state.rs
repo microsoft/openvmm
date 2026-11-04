@@ -189,34 +189,41 @@ impl super::ClientTask {
                 })
                 .collect(),
         };
+        let pending_messages = pending_messages
+            .into_iter()
+            .map(|message| {
+                OutgoingMessage::from_message(&message.data)
+                    .map_err(RestoreError::InvalidPendingMessage)
+            })
+            .collect::<Result<_, _>>()?;
+        // Validate the snapshot before releasing any current runtime owners.
+        let mut restored_core = vmbus_client_core::ClientCore::new(self.core.config().clone());
+        restored_core
+            .restore(core_state.clone())
+            .map_err(map_core_restore_error)?;
+        // Retain all event owners and reservations until every unmap succeeds.
+        for flag in self.inner.synic.events.keys().copied().collect::<Vec<_>>() {
+            self.inner
+                .synic
+                .event_client
+                .unmap_event(flag)
+                .map_err(RestoreError::EventUnmapFailed)?;
+        }
         self.core
             .restore(core_state.clone())
-            .map_err(|error| match error {
-                vmbus_client_core::RestoreError::UnsupportedVersion(version) => {
-                    RestoreError::UnsupportedVersion(version)
-                }
-                vmbus_client_core::RestoreError::UnsupportedFeatureFlags(flags) => {
-                    RestoreError::UnsupportedFeatureFlags(flags)
-                }
-                vmbus_client_core::RestoreError::DuplicateChannelId(channel_id) => {
-                    RestoreError::DuplicateChannelId(channel_id)
-                }
-                vmbus_client_core::RestoreError::DuplicateGpadlId(gpadl_id) => {
-                    RestoreError::DuplicateGpadlId(gpadl_id)
-                }
-                vmbus_client_core::RestoreError::QueuedGpadlWithoutOwner(gpadl_id) => {
-                    RestoreError::QueuedGpadlWithoutOwner(gpadl_id)
-                }
-            })?;
-        self.runtime_channels.clear();
-        self.offer_send = None;
-
-        for message in pending_messages {
-            self.inner.messages.queued.push_back(
-                OutgoingMessage::from_message(&message.data)
-                    .map_err(RestoreError::InvalidPendingMessage)?,
-            );
+            .map_err(map_core_restore_error)?;
+        self.inner.synic.events.clear();
+        self.dispatched_requests.clear();
+        for (_, channel) in self.runtime_channels.drain() {
+            channel
+                .connection_id
+                .store(0, std::sync::atomic::Ordering::Release);
         }
+        self.inner.channel_requests = futures::stream::SelectAll::new();
+        self.offer_send = None;
+        self.inner.messages.queued = pending_messages;
+        self.inner.messages.state = super::OutgoingMessageState::Paused;
+        self.paused_via_message = false;
 
         let Some(version) = version else {
             return Ok(None);
@@ -235,6 +242,26 @@ impl super::ClientTask {
             let key = offer_key(&offer_info.offer);
             tracing::info!(%key, %state, "channel restored");
             restored_channels.push(offer_info);
+        }
+
+        fn map_core_restore_error(error: vmbus_client_core::RestoreError) -> RestoreError {
+            match error {
+                vmbus_client_core::RestoreError::UnsupportedVersion(version) => {
+                    RestoreError::UnsupportedVersion(version)
+                }
+                vmbus_client_core::RestoreError::UnsupportedFeatureFlags(flags) => {
+                    RestoreError::UnsupportedFeatureFlags(flags)
+                }
+                vmbus_client_core::RestoreError::DuplicateChannelId(channel_id) => {
+                    RestoreError::DuplicateChannelId(channel_id)
+                }
+                vmbus_client_core::RestoreError::DuplicateGpadlId(gpadl_id) => {
+                    RestoreError::DuplicateGpadlId(gpadl_id)
+                }
+                vmbus_client_core::RestoreError::QueuedGpadlWithoutOwner(gpadl_id) => {
+                    RestoreError::QueuedGpadlWithoutOwner(gpadl_id)
+                }
+            }
         }
 
         Ok(Some(ConnectResult {

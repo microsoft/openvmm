@@ -264,6 +264,12 @@ impl VmbusClient {
             .expect("Failed to send save request")
     }
 
+    /// Replace a stopped client's protocol state and runtime owners.
+    ///
+    /// Invalid snapshots leave the current state unchanged. If unmapping an old
+    /// event fails, restore returns an error before replacing protocol state,
+    /// retaining all old event owners and flag reservations. Any events already
+    /// successfully unmapped remain unmapped, so this failure is not transactional.
     pub async fn restore(
         &mut self,
         state: SavedState,
@@ -385,6 +391,9 @@ pub enum RestoreError {
 
     #[error("invalid pending message")]
     InvalidPendingMessage(#[source] vmbus_core::MessageTooLarge),
+
+    #[error("failed to unmap event before restore")]
+    EventUnmapFailed(#[source] std::io::Error),
 
     #[error("failed to offer restored channel")]
     OfferFailed(#[source] anyhow::Error),
@@ -1823,6 +1832,30 @@ mod tests {
         map_count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
+    struct FailAfterOneUnmapSynicEvents {
+        unmaps: std::sync::atomic::AtomicUsize,
+    }
+
+    impl SynicEventClient for FailAfterOneUnmapSynicEvents {
+        fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn unmap_event(&self, _event_flag: u16) -> std::io::Result<()> {
+            if self.unmaps.fetch_add(1, Ordering::Relaxed) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(
+                    "test unmap failure after one success",
+                ))
+            }
+        }
+
+        fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl SynicEventClient for CountingSynicEvents {
         fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
             self.map_count.fetch_add(1, Ordering::Relaxed);
@@ -1854,6 +1887,194 @@ mod tests {
     struct TestMessageSource {
         msg_recv: mesh::Receiver<Vec<u8>>,
         paused: bool,
+    }
+
+    fn stopped_test_task(event_client: impl SynicEventClient + 'static) -> ClientTask {
+        let (_, msg_recv) = mesh::channel();
+        let (_, task_recv) = mesh::channel();
+        let (_, client_request_recv) = mesh::channel();
+        ClientTask {
+            inner: ClientTaskInner {
+                messages: OutgoingMessages {
+                    poster: Box::new(PendingPoster),
+                    queued: VecDeque::new(),
+                    state: OutgoingMessageState::Paused,
+                },
+                channel_requests: SelectAll::new(),
+                synic: SynicState {
+                    event_client: Arc::new(event_client),
+                    events: HashMap::new(),
+                },
+            },
+            core: vmbus_client_core::ClientCore::new(vmbus_client_core::Config {
+                sint: SINT,
+                vtl: VTL,
+                supported_versions: SUPPORTED_VERSIONS,
+                supported_feature_flags: SUPPORTED_FEATURE_FLAGS,
+            }),
+            runtime_channels: HashMap::new(),
+            dispatched_requests: HashMap::new(),
+            offer_send: None,
+            next_request_id: 0,
+            running: false,
+            paused_via_message: false,
+            msg_source: Box::new(TestMessageSource {
+                msg_recv,
+                paused: true,
+            }),
+            task_recv,
+            client_request_recv,
+        }
+    }
+
+    fn restore_test_snapshot() -> SavedState {
+        let mut offer = protocol::OfferChannel::new_zeroed();
+        offer.channel_id = ChannelId(7);
+        SavedState {
+            client_state: saved_state::ClientState::Connected {
+                version: Version::Copper as u32,
+                feature_flags: SUPPORTED_FEATURE_FLAGS.into(),
+            },
+            channels: vec![saved_state::Channel {
+                id: 7,
+                state: saved_state::ChannelState::Offered,
+                offer: offer.into(),
+            }],
+            gpadls: Vec::new(),
+            pending_messages: vec![
+                saved_state::PendingMessage {
+                    data: OutgoingMessage::new(&protocol::Resume).data().to_vec(),
+                },
+                saved_state::PendingMessage {
+                    data: OutgoingMessage::new(&protocol::RelIdReleased {
+                        channel_id: ChannelId(8),
+                    })
+                    .data()
+                    .to_vec(),
+                },
+            ],
+            modify_connection_pending: false,
+            hvsock_requests: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn restore_replaces_runtime_owners_and_queued_messages() {
+        let mut task = stopped_test_task(NoopSynicEvents);
+        let saved = restore_test_snapshot();
+        let old = task.handle_restore(saved.clone()).unwrap().unwrap();
+        let old_connection = task.runtime_channels[&ChannelId(7)].connection_id.clone();
+        old_connection.store(42, Ordering::Release);
+        let (request_send, mut request_recv) = mesh::channel();
+        let pending_rpc =
+            request_send.call(|rpc| rpc, ModifyConnectionRequest { monitor_page: None });
+        task.dispatched_requests.insert(
+            vmbus_client_core::RequestId(1),
+            DispatchedRequest::ModifyConnection(
+                request_recv.next().now_or_never().unwrap().unwrap(),
+            ),
+        );
+        let flag = task.allocate_event_flag(&Event::new()).unwrap();
+        task.paused_via_message = true;
+        task.inner
+            .messages
+            .queued
+            .push_back(OutgoingMessage::new(&protocol::RelIdReleased {
+                channel_id: ChannelId(99),
+            }));
+
+        let _restored = task.handle_restore(saved.clone()).unwrap().unwrap();
+
+        assert_eq!(task.handle_save().pending_messages, saved.pending_messages);
+        assert!(task.dispatched_requests.is_empty());
+        assert!(pending_rpc.now_or_never().unwrap().is_err());
+        assert_eq!(task.inner.channel_requests.len(), 1);
+        assert_eq!(old_connection.load(Ordering::Acquire), 0);
+        assert!(!task.inner.synic.events.contains_key(&flag));
+        assert_eq!(task.core.event_flag_count(), 0);
+        task.restore_event_flag(flag, &Event::new()).unwrap();
+        let old_request = old.offers[0].request_send.call(
+            ChannelRequest::Modify,
+            ModifyRequest::TargetVp { target_vp: 1 },
+        );
+        assert!(old_request.now_or_never().unwrap().is_err());
+
+        let mut disconnected = saved;
+        disconnected.client_state = saved_state::ClientState::Disconnected;
+        assert!(task.handle_restore(disconnected).unwrap().is_none());
+        assert!(task.inner.messages.queued.is_empty());
+        assert!(task.inner.channel_requests.is_empty());
+        assert!(task.handle_save().pending_messages.is_empty());
+    }
+
+    #[test]
+    fn invalid_restore_preserves_current_protocol_and_runtime_state() {
+        let mut task = stopped_test_task(NoopSynicEvents);
+        let saved = restore_test_snapshot();
+        let _connection = task.handle_restore(saved.clone()).unwrap().unwrap();
+        task.dispatched_requests.insert(
+            vmbus_client_core::RequestId(1),
+            DispatchedRequest::ModifyConnection(Rpc::detached(ModifyConnectionRequest {
+                monitor_page: None,
+            })),
+        );
+        let flag = task.allocate_event_flag(&Event::new()).unwrap();
+        let mut invalid = saved.clone();
+        invalid.pending_messages.push(saved_state::PendingMessage {
+            data: vec![0; protocol::MAX_MESSAGE_SIZE + 1],
+        });
+
+        assert!(matches!(
+            task.handle_restore(invalid),
+            Err(RestoreError::InvalidPendingMessage(_))
+        ));
+        assert_eq!(task.handle_save(), saved);
+        assert_eq!(task.dispatched_requests.len(), 1);
+        assert_eq!(task.inner.channel_requests.len(), 1);
+        assert!(task.inner.synic.events.contains_key(&flag));
+        assert_eq!(task.core.event_flag_count(), 1);
+
+        let mut duplicate = saved.clone();
+        duplicate.channels.push(duplicate.channels[0]);
+        assert!(matches!(
+            task.handle_restore(duplicate),
+            Err(RestoreError::DuplicateChannelId(7))
+        ));
+        assert_eq!(task.handle_save(), saved);
+        assert_eq!(task.dispatched_requests.len(), 1);
+        assert_eq!(task.inner.channel_requests.len(), 1);
+        assert!(task.inner.synic.events.contains_key(&flag));
+        assert_eq!(task.core.event_flag_count(), 1);
+    }
+
+    #[test]
+    fn restore_unmap_failure_retains_old_protocol_and_runtime_owners() {
+        let mut task = stopped_test_task(FailAfterOneUnmapSynicEvents {
+            unmaps: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let saved = restore_test_snapshot();
+        let _connection = task.handle_restore(saved.clone()).unwrap().unwrap();
+        let flag = task.allocate_event_flag(&Event::new()).unwrap();
+        let second_flag = task.allocate_event_flag(&Event::new()).unwrap();
+        task.dispatched_requests.insert(
+            vmbus_client_core::RequestId(1),
+            DispatchedRequest::ModifyConnection(Rpc::detached(ModifyConnectionRequest {
+                monitor_page: None,
+            })),
+        );
+        let mut disconnected = saved.clone();
+        disconnected.client_state = saved_state::ClientState::Disconnected;
+
+        assert!(matches!(
+            task.handle_restore(disconnected),
+            Err(RestoreError::EventUnmapFailed(_))
+        ));
+        assert_eq!(task.handle_save(), saved);
+        assert_eq!(task.dispatched_requests.len(), 1);
+        assert_eq!(task.inner.channel_requests.len(), 1);
+        assert!(task.inner.synic.events.contains_key(&flag));
+        assert!(task.inner.synic.events.contains_key(&second_flag));
+        assert_eq!(task.core.event_flag_count(), 2);
     }
 
     impl AsyncRecv for TestMessageSource {

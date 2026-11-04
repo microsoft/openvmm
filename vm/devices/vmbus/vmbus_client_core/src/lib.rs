@@ -494,11 +494,12 @@ pub enum Event<'a> {
     },
 
     // --- Task-level lifecycle hooks ---
-    /// Enable request processing (drives the core out of the initial
-    /// paused state).
+    /// Record that the wrapper has enabled caller request polling.
+    /// This does not gate events passed directly to [`ClientCore::step`].
     Start,
-    /// Pause new request processing while still draining outstanding
-    /// completions.
+    /// Record that the wrapper has paused caller request polling.
+    /// The wrapper may continue feeding host messages to drain completions.
+    /// This does not gate events passed directly to [`ClientCore::step`].
     Stop,
     /// Complete requests that cannot be represented in saved state.
     /// Cancelled requests retain their wire-response slots until the host
@@ -510,9 +511,10 @@ pub enum Event<'a> {
     Resume,
     /// Reset all internal state (used only on shutdown paths).
     Reset,
-    /// Backpressure hint from the wrapper: `true` means the outgoing
-    /// PostMessage retry loop is running and the core should stop
-    /// processing caller-initiated requests until it drains.
+    /// Record outgoing-message backpressure observed by the wrapper.
+    /// The wrapper must stop polling caller requests while busy, but continue
+    /// feeding host messages to avoid deadlock. The core neither rejects nor
+    /// queues caller events passed directly to [`ClientCore::step`].
     HostBusy { busy: bool },
 }
 
@@ -912,9 +914,8 @@ impl ClientCore {
         self.host_busy
     }
 
-    /// Whether request processing is enabled (i.e.
-    /// [`Event::Start`] has been observed and [`Event::Stop`] has
-    /// not).
+    /// Whether the wrapper has signalled that caller request polling is enabled
+    /// ([`Event::Start`] has been observed and [`Event::Stop`] has not).
     pub fn running(&self) -> bool {
         self.running
     }
@@ -1271,6 +1272,8 @@ impl ClientCore {
     ///
     /// Deterministic and single-threaded. The wrapper is responsible
     /// for serialising events (typically via its `select!` loop).
+    /// It must also gate caller request polling on [`Self::running`] and
+    /// [`Self::host_busy`]; these flags do not gate events supplied here.
     ///
     /// # Phase 4b-i coverage
     ///
