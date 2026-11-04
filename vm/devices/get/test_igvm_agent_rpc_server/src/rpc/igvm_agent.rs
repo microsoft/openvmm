@@ -125,7 +125,7 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
-            "windows_datacenter_core_2022_x64_ak_cert_retry",
+            "windows_datacenter_core_2025_x64_ak_cert_retry",
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
@@ -157,7 +157,7 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
         ),
         (
-            "windows_datacenter_core_2022_x64_ak_cert_cache",
+            "windows_datacenter_core_2025_x64_ak_cert_cache",
             IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
         ),
         (
@@ -264,7 +264,7 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
-            "windows_datacenter_core_2022_x64_ak_retry",
+            "windows_datacenter_core_2025_x64_ak_retry",
             IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
@@ -296,7 +296,7 @@ fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
         ),
         (
-            "windows_datacenter_core_2022_x64_ak_cache",
+            "windows_datacenter_core_2025_x64_ak_cache",
             IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended,
         ),
         (

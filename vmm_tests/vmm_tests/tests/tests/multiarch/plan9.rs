@@ -13,7 +13,7 @@ use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 
 #[openvmm_test(
-    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(ubuntu_2504_server_x64)),
     uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn plan9_file_operations(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {

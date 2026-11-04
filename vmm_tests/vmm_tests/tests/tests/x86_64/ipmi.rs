@@ -34,7 +34,7 @@ Write-Output "ADDSEL_CC=0"
 
 #[openvmm_test(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+    openhcl_uefi_x64(vhd(windows_datacenter_core_2025_x64))
 )]
 async fn ipmi_kcs_add_sel(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();

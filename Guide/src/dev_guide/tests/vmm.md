@@ -407,7 +407,7 @@ cargo build --target x86_64-pc-windows-gnu -p pipette
 
 ```bash
 # Run a test
-cargo nextest run -p vmm_tests multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot
+cargo nextest run -p vmm_tests multiarch::openvmm_uefi_x64_windows_datacenter_core_2025_x64_boot
 ```
 
 ### Printing logs for VMM Tests

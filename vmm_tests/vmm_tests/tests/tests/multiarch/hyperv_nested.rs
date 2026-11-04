@@ -19,7 +19,7 @@ use vmm_test_macros::openvmm_test;
 /// Enable the Hyper-V role in a Windows guest, reboot into the hypervisor, and
 /// start nested L2 VMs — a plain Gen2 VM and one with a Discrete Device
 /// Assignment (DDA) NVMe controller — to confirm nested virtualization works.
-#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2022_x64_no_vmbus_prepped)))]
+#[openvmm_test(uefi_x64(vhd(windows_datacenter_core_2025_x64_no_vmbus_prepped)))]
 async fn boot_hyperv_role(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (mut vm, agent) = config
         .with_no_vmbus()
