@@ -60,7 +60,7 @@ The `loader` crate also provides
 [`load_x86_mptable`](https://openvmm.dev/rustdoc/linux/loader/linux/mptable_boot/fn.load_x86_mptable.html)
 for kernels built without ACPI. It describes the processors and interrupt
 routing with Intel MP 1.4 tables instead of ACPI and SMBIOS, and it accepts
-only uncompressed ELF kernels. OpenVMM itself does not use it.
+only uncompressed ELF kernels. OpenVMM does not use this boot mode today.
 
 ## AArch64 Boot Flow
 
