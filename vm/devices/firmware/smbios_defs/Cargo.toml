@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "smbios_defs"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guid = { workspace = true, features = ["mesh"] }
+mesh.workspace = true
+
+[lints]
+workspace = true

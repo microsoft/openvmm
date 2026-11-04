@@ -7,13 +7,12 @@
 use crate::_jobs::consume_and_test_nextest_vmm_tests_archive::TestContentConfig;
 use crate::_jobs::local_build_and_run_nextest_vmm_tests::build_test_label;
 use crate::_jobs::local_build_and_run_nextest_vmm_tests::init_artifacts_dir;
-use crate::build_incubator::IncubatorProfileNameOrPath;
 use crate::common::CommonTriple;
 use crate::init_vmm_tests_env::PetriParams;
 use crate::install_vmm_tests_external_deps::VmmTestsExternalDeps;
 use flowey::node::prelude::*;
+use petri_artifacts_vmm_test::ErasedVmmTestImage;
 use std::num::NonZeroU64;
-use vmm_test_images::KnownTestArtifacts;
 
 flowey_request! {
     pub struct Params {
@@ -24,7 +23,7 @@ flowey_request! {
 
         // Subset of `VmmTestSelections`
         pub filter: String,
-        pub downloaded_artifacts: Vec<KnownTestArtifacts>,
+        pub downloaded_artifacts: Vec<ErasedVmmTestImage>,
         pub external_deps: VmmTestsExternalDeps,
         pub prep_steps_variants: Vec<String>,
         pub needs_test_igvm_agent_rpc_server: bool,
@@ -37,10 +36,6 @@ flowey_request! {
         pub petri_params: PetriParams,
 
         pub repetitions: NonZeroU64,
-
-        /// Optional: incubator profile path. When set, tests run inside
-        /// an emulated VM instead of on the host.
-        pub incubator_profile: Option<IncubatorProfileNameOrPath>,
 
         pub done: WriteVar<SideEffect>,
     }
@@ -69,7 +64,6 @@ impl SimpleFlowNode for Node {
             nextest_profile,
             petri_params,
             repetitions,
-            incubator_profile,
             done,
         } = request;
 
@@ -93,7 +87,7 @@ impl SimpleFlowNode for Node {
                 downloaded_artifacts,
                 prep_steps_variants,
                 external_deps,
-                incubator_profile,
+                upload_logs_on_success: true,
                 fail_job_on_test_fail: true,
                 repetitions,
                 petri_params,

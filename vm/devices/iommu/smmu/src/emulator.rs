@@ -246,12 +246,13 @@ impl SmmuDevice {
             // in the nested path).
             .with_st_level(0b00); // Linear stream table only
 
+        // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the accel
+        // path must validate the host SMMU's SSIDSIZE >= the advertised value
+        // in resolve_host_caps.
+        let ssid_bits = 0;
         let idr1 = registers::Idr1::new()
             .with_sidsize(config.sidsize)
-            // TODO: support substreams (SSID/PASID). When SSIDSIZE > 0, the
-            // accel path must validate the host SMMU's SSIDSIZE >= the
-            // advertised value in resolve_host_caps.
-            .with_ssidsize(0)
+            .with_ssidsize(ssid_bits)
             .with_cmdqs(8) // 256 entries max
             .with_eventqs(8) // 256 entries max
             // ATTR_TYPES_OVR / ATTR_PERMS_OVR are left 0: this SMMU does not
@@ -299,6 +300,7 @@ impl SmmuDevice {
         let shared_state = SmmuSharedState::new(
             guest_memory.clone(),
             oas_bits,
+            ssid_bits,
             config.oas_policy,
             config.accel,
             evtq_irq,
@@ -1486,6 +1488,8 @@ mod tests {
         // IDR1: SIDSIZE=16, CMDQS=8, EVTQS=8, ATTR_TYPES_OVR=0
         let idr1 = Idr1::from(read32(&mut dev, IDR1));
         assert_eq!(idr1.sidsize(), 16);
+        assert_eq!(idr1.ssidsize(), 0);
+        assert_eq!(dev.shared_state.ssid_bits(), idr1.ssidsize());
         assert_eq!(idr1.cmdqs(), 8);
         assert_eq!(idr1.eventqs(), 8);
         assert!(!idr1.attr_types_ovr());
@@ -3481,6 +3485,43 @@ mod tests {
         write32(&mut dev, IRQ_CTRL, irq_ctrl.into());
 
         dev
+    }
+
+    #[pal_async::async_test]
+    async fn reset_deasserts_wired_interrupts() {
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+
+        let target = TestLineInterruptTarget::new_arc();
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::allocate(0x4_0000),
+            &test_config(),
+            Some(LineInterrupt::new_with_target("EVTQ", target.clone(), 0)),
+            Some(LineInterrupt::new_with_target("GERROR", target.clone(), 1)),
+        );
+        write64(
+            &mut dev,
+            EVENTQ_BASE,
+            QueueBase::new()
+                .with_log2size(TEST_EVTQ_LOG2SIZE)
+                .with_addr_bits(TEST_EVTQ_GPA >> 5)
+                .into(),
+        );
+        write32(&mut dev, CR0, Cr0::new().with_eventqen(true).into());
+        write32(
+            &mut dev,
+            IRQ_CTRL,
+            IrqCtrl::new()
+                .with_eventq_irqen(true)
+                .with_gerror_irqen(true)
+                .into(),
+        );
+        dev.shared_state
+            .write_event(EvtEntry::translation_fault(1, 0x2000, false));
+        dev.shared_state.toggle_cmdq_err();
+        assert!(target.is_high(0) && target.is_high(1));
+        dev.reset().await;
+        assert!(!target.is_high(0) && !target.is_high(1));
     }
 
     #[test]

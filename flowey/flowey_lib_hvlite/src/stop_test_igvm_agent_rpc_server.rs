@@ -7,8 +7,7 @@
 //! using taskkill. It should be run after VMM tests complete to clean up
 //! the background server process started by run_test_igvm_agent_rpc_server.
 //!
-//! **Note:** This node only supports Windows. Callers should check the platform
-//! before requesting this node.
+//! This node supports Windows and running Windows binaries through WSL2.
 
 use flowey::node::prelude::*;
 
@@ -31,31 +30,27 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request { after_tests, done } = request;
 
-        // This node only supports Windows - fail at flow-graph construction time
-        // if someone mistakenly tries to use it on another platform.
-        if !matches!(ctx.platform(), FlowPlatform::Windows) {
-            anyhow::bail!(
-                "stop_test_igvm_agent_rpc_server only supports Windows. \
-                Callers should check the platform before requesting this node."
-            );
-        }
-
         ctx.emit_rust_step("stopping test_igvm_agent_rpc_server", |ctx| {
             after_tests.claim(ctx);
             done.claim(ctx);
-            move |_rt| stop_rpc_server()
+            move |rt| stop_rpc_server(rt)
         });
 
         Ok(())
     }
 }
 
-#[cfg(windows)]
-fn stop_rpc_server() -> anyhow::Result<()> {
+fn stop_rpc_server(rt: &mut RustRuntimeServices<'_>) -> anyhow::Result<()> {
+    if !matches!(rt.platform(), FlowPlatform::Windows)
+        && !flowey_lib_common::_util::running_in_wsl(rt)
+    {
+        anyhow::bail!("stop_test_igvm_agent_rpc_server only supports Windows or WSL2");
+    }
+
     log::info!("stopping test_igvm_agent_rpc_server processes");
 
     // Use taskkill to terminate any running instances
-    let output = std::process::Command::new("taskkill")
+    let output = std::process::Command::new("taskkill.exe")
         .args(["/F", "/IM", "test_igvm_agent_rpc_server.exe"])
         .output();
 
@@ -83,11 +78,4 @@ fn stop_rpc_server() -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(not(windows))]
-fn stop_rpc_server() -> anyhow::Result<()> {
-    // This should never be called - the node rejects non-Windows at construction time.
-    // But we need this for compilation on non-Windows hosts.
-    anyhow::bail!("stop_test_igvm_agent_rpc_server is only supported on Windows")
 }

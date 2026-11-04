@@ -13,7 +13,6 @@
 #![forbid(unsafe_code)]
 
 pub mod ak_cert;
-pub mod logger;
 mod recover;
 pub mod resolver;
 use tpm_lib::AllocateNvIndicesParams;
@@ -31,6 +30,9 @@ use base64::Engine;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
@@ -40,10 +42,10 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use logger::TpmLogEvent;
-use logger::TpmLogger;
+use ms_tcg_tpm_sys::MsTpm185Platform;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -57,7 +59,12 @@ use tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+use tpm_resources::AkCertResponse;
+use tpm_resources::TpmLogEvent;
+use tpm_resources::TpmLogger;
 use tpm_resources::TpmRegisterLayout;
+use tpm_resources::TpmVersion;
+use tpm_resources::default_vtpm_size;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -100,10 +107,14 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 const LEGACY_VTPM_SIZE: usize = 16 * 1024;
 const STANDARD_VTPM_SIZE: usize = 32 * 1024;
 
-// Default vTPM NVRAM size provisioned for a new VMGS.
-pub const DEFAULT_VTPM_SIZE: usize = ms_tpm_20_ref::NV_MEMORY_SIZE;
-
-static_assertions::const_assert_eq!(DEFAULT_VTPM_SIZE, STANDARD_VTPM_SIZE);
+static_assertions::const_assert_eq!(
+    ms_tpm_20_ref::NV_MEMORY_SIZE,
+    default_vtpm_size(TpmVersion::V138)
+);
+static_assertions::const_assert_eq!(
+    ms_tcg_tpm_sys::NV_MEMORY_SIZE,
+    default_vtpm_size(TpmVersion::V185)
+);
 
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
@@ -205,9 +216,100 @@ impl ControlArea {
 #[derive(Inspect)]
 #[inspect(skip)]
 struct TpmRuntime {
-    ppi_store: Box<dyn NonVolatileStore>,
-    nvram_store: Box<dyn NonVolatileStore>,
+    stores: StoreState,
     mem: GuestMemory,
+}
+
+struct TpmStores {
+    ppi: Box<dyn NonVolatileStore>,
+    nvram: Box<dyn NonVolatileStore>,
+}
+
+/// The non-volatile stores, or the write that is currently using them.
+///
+/// Writes are driven from [`PollDevice::poll_device`] with the I/O deferred,
+/// because blocking on the store in the I/O handler holds the device lock and
+/// deadlocks against an inspect on the thread that services the store.
+enum StoreState {
+    Idle(TpmStores),
+    Writing(RunningStoreWrite),
+    /// Only seen while moving between the two states above.
+    Invalid,
+}
+
+type StoreWriteFuture = Pin<Box<dyn Future<Output = TpmStores> + Send>>;
+
+/// A store write in progress, which owns the stores until it completes.
+struct RunningStoreWrite {
+    write: StoreWriteFuture,
+    done: DeferredWrite,
+    /// Writes issued by other VPs while this one runs, in arrival order. A VP
+    /// waits for its own I/O, so this holds at most one entry per VP.
+    queued: VecDeque<QueuedStoreWrite>,
+}
+
+/// A store write waiting for the running one to finish.
+struct QueuedStoreWrite {
+    write: StoreWrite,
+    done: DeferredWrite,
+}
+
+/// What a deferred store write persists.
+enum StoreWrite {
+    /// The serialized PPI state.
+    Ppi(Vec<u8>),
+    /// The NVRAM state the TPM engine has committed and not yet persisted.
+    Nvram,
+}
+
+async fn persist_pending_nvram(
+    store: &mut dyn NonVolatileStore,
+    pending_nvram: &Mutex<Vec<u8>>,
+) -> Result<(), NonVolatileStoreError> {
+    let data = {
+        let mut pending_nvram = pending_nvram.lock();
+        if pending_nvram.is_empty() {
+            return Ok(());
+        }
+        std::mem::take(&mut *pending_nvram)
+    };
+
+    store.persist(data).await
+}
+
+fn run_store_write(
+    mut stores: TpmStores,
+    write: StoreWrite,
+    pending_nvram: Arc<Mutex<Vec<u8>>>,
+) -> StoreWriteFuture {
+    Box::pin(async move {
+        match write {
+            StoreWrite::Ppi(data) => {
+                if let Err(e) = stores.ppi.persist(data).await {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        error = &e as &dyn std::error::Error,
+                        "could not persist ppi state to non-volatile store"
+                    );
+                }
+            }
+            StoreWrite::Nvram => {
+                if let Err(e) = persist_pending_nvram(&mut *stores.nvram, &pending_nvram).await {
+                    tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        error = &e as &dyn std::error::Error,
+                        "could not commit nvram to non-volatile store"
+                    );
+                }
+            }
+        }
+        stores
+    })
 }
 
 #[derive(Copy, Clone, Inspect)]
@@ -219,40 +321,126 @@ pub struct TpmKeys {
 }
 
 type AkCertRequestFuture = Box<
-    dyn Send + Future<Output = Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>>>,
+    dyn Send
+        + Future<Output = Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>>>,
 >;
 
 struct AkCertRequest {
     is_renew: bool,
     start_time: std::time::SystemTime,
+    has_cert: bool,
     fut: Pin<AkCertRequestFuture>,
 }
 
-/// Implementation of [`ms_tpm_20_ref::PlatformCallbacks::monotonic_timer`]
+/// Callback used to implement the monotonic timer for a TPM library.
 pub type MonotonicTimer = Box<dyn Send + FnMut() -> std::time::Duration>;
 
-/// Wrapper around [`MsTpm20RefPlatform`] that implements [`TpmEngine`].
-struct MsTpm20RefEngine(MsTpm20RefPlatform);
+#[derive(Debug, Error)]
+pub enum TpmLibraryError {
+    #[error(transparent)]
+    V138(#[from] ms_tpm_20_ref::Error),
+    #[error(transparent)]
+    V185(#[from] ms_tcg_tpm_sys::Error),
+}
 
-impl MsTpm20RefEngine {
-    fn new(inner: MsTpm20RefPlatform) -> Self {
-        Self(inner)
-    }
-
-    fn inner_mut(&mut self) -> &mut MsTpm20RefPlatform {
-        &mut self.0
+impl TpmLibraryError {
+    fn is_mismatched_blob_size(&self) -> bool {
+        matches!(
+            self,
+            Self::V138(ms_tpm_20_ref::Error::NvMem(
+                ms_tpm_20_ref::NvError::MismatchedBlobSize
+            )) | Self::V185(ms_tcg_tpm_sys::Error::NvMem(
+                ms_tcg_tpm_sys::NvError::MismatchedBlobSize { .. }
+            ))
+        )
     }
 }
 
-impl TpmEngine for MsTpm20RefEngine {
+/// Wrapper around TPM libraries that implements [`TpmEngine`].
+enum TpmRefLib {
+    V138(MsTpm20RefPlatform),
+    V185(MsTpm185Platform),
+}
+
+impl TpmRefLib {
+    fn new(
+        version: TpmVersion,
+        callbacks: TpmPlatformCallbacks,
+        nvram_size: usize,
+    ) -> Result<Self, TpmLibraryError> {
+        match version {
+            TpmVersion::V138 => MsTpm20RefPlatform::initialize(
+                Box::new(callbacks),
+                ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
+            )
+            .map(Self::V138)
+            .map_err(Into::into),
+            TpmVersion::V185 => MsTpm185Platform::initialize(
+                Box::new(callbacks),
+                ms_tcg_tpm_sys::InitKind::ColdInitWithSize(nvram_size),
+            )
+            .map(Self::V185)
+            .map_err(Into::into),
+        }
+    }
+
+    fn reset(&mut self, nvram: Option<&[u8]>) -> Result<(), TpmLibraryError> {
+        match self {
+            Self::V138(inner) => inner.reset(nvram).map_err(Into::into),
+            Self::V185(inner) => inner.reset(nvram).map_err(Into::into),
+        }
+    }
+
+    fn save_state(&self) -> Vec<u8> {
+        match self {
+            Self::V138(inner) => inner.save_state(),
+            Self::V185(inner) => inner.save_state(),
+        }
+    }
+
+    fn restore_state(&mut self, state: Vec<u8>) -> Result<(), TpmLibraryError> {
+        match self {
+            Self::V138(inner) => inner.restore_state(state).map_err(Into::into),
+            Self::V185(inner) => inner.restore_state(state).map_err(Into::into),
+        }
+    }
+
+    fn set_cancel_flag(&mut self, enabled: bool) {
+        match self {
+            Self::V138(inner) => inner.set_cancel_flag(enabled),
+            Self::V185(inner) => inner.set_cancel_flag(enabled),
+        }
+    }
+
+    fn version(&self) -> TpmVersion {
+        match self {
+            Self::V138(_) => TpmVersion::V138,
+            Self::V185(_) => TpmVersion::V185,
+        }
+    }
+}
+
+impl TpmEngine for TpmRefLib {
     fn execute_command(
         &mut self,
         command: &mut [u8],
         response: &mut [u8],
     ) -> Result<(), TpmEngineError> {
-        MsTpm20RefPlatform::execute_command(self.inner_mut(), command, response)
-            .map(|_| ())
-            .map_err(TpmEngineError::from_error)
+        match self {
+            TpmRefLib::V138(inner) => MsTpm20RefPlatform::execute_command(inner, command, response)
+                .map(|_| ())
+                .map_err(TpmEngineError::from_error),
+            TpmRefLib::V185(inner) => MsTpm185Platform::execute_command(inner, command, response)
+                .map(|_| ())
+                .map_err(TpmEngineError::from_error),
+        }
+    }
+
+    fn max_nv_index_size(&self) -> u16 {
+        match self {
+            TpmRefLib::V138(_) => tpm_lib::TPM_V138_MAX_NV_INDEX_SIZE,
+            TpmRefLib::V185(_) => tpm_lib::TPM_V185_MAX_NV_INDEX_SIZE,
+        }
     }
 }
 
@@ -282,7 +470,7 @@ pub struct Tpm {
 
     // Sub-emulators
     #[inspect(skip)]
-    tpm_engine_helper: TpmEngineHelper<MsTpm20RefEngine>,
+    tpm_engine_helper: TpmEngineHelper<TpmRefLib>,
 
     // Runtime book-keeping
     command_buffer: [u8; TPM_PAGE_SIZE],
@@ -325,11 +513,11 @@ pub enum TpmErrorKind {
     #[error("failed to deserialized Ppi state")]
     InvalidPpiState,
     #[error("failed to instantiate TPM")]
-    InstantiateTpm(#[source] ms_tpm_20_ref::Error),
+    InstantiateTpm(#[source] TpmLibraryError),
     #[error("failed to reset TPM without Nvram state")]
-    ResetTpmWithoutState(#[source] ms_tpm_20_ref::Error),
+    ResetTpmWithoutState(#[source] TpmLibraryError),
     #[error("failed to reset TPM with Nvram state")]
-    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
+    ResetTpmWithState(#[source] TpmLibraryError),
     #[error("failed to initialize TPM engine")]
     InitializeTpmEngine(#[source] tpm_lib::Error),
     #[error("failed to clear TPM platform context")]
@@ -366,7 +554,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::fill(buf).expect("rng failure");
+        getrandom::fill(buf)?;
         Ok(buf.len())
     }
 
@@ -379,8 +567,29 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 }
 
+impl ms_tcg_tpm_sys::PlatformCallbacks for TpmPlatformCallbacks {
+    fn commit_nv_state(&mut self, state: &[u8]) -> ms_tcg_tpm_sys::DynResult<()> {
+        *self.pending_nvram.lock() = state.to_vec();
+        Ok(())
+    }
+
+    fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tcg_tpm_sys::DynResult<usize> {
+        getrandom::fill(buf)?;
+        Ok(buf.len())
+    }
+
+    fn monotonic_timer(&mut self) -> std::time::Duration {
+        (self.monotonic_timer)()
+    }
+
+    fn get_unique_value(&self) -> &'static [u8] {
+        b"openvmm vtpm"
+    }
+}
+
 impl Tpm {
     pub async fn new(
+        version: TpmVersion,
         register_layout: TpmRegisterLayout,
         mem: GuestMemory,
         ppi_store: Box<dyn NonVolatileStore>,
@@ -399,18 +608,19 @@ impl Tpm {
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
-        let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
+        let nvram_size = nvram_size.unwrap_or(default_vtpm_size(version));
 
-        let tpm_engine = MsTpm20RefPlatform::initialize(
-            Box::new(TpmPlatformCallbacks {
+        let tpm_engine = TpmRefLib::new(
+            version,
+            TpmPlatformCallbacks {
                 pending_nvram: pending_nvram.clone(),
                 monotonic_timer,
-            }),
-            ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
+            },
+            nvram_size,
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 
-        let tpm_engine_helper = TpmEngineHelper::new(MsTpm20RefEngine::new(tpm_engine));
+        let tpm_engine_helper = TpmEngineHelper::new(tpm_engine);
 
         let io_region = if register_layout == TpmRegisterLayout::IoPort {
             Some((
@@ -453,9 +663,11 @@ impl Tpm {
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
             rt: TpmRuntime {
+                stores: StoreState::Idle(TpmStores {
+                    ppi: ppi_store,
+                    nvram: nvram_store,
+                }),
                 mem,
-                ppi_store,
-                nvram_store,
             },
             ak_cert_type,
             logger,
@@ -487,17 +699,83 @@ impl Tpm {
     }
 
     async fn flush_pending_nvram(&mut self) -> Result<(), NonVolatileStoreError> {
-        let data = {
-            let mut pending_nvram = self.pending_nvram.lock();
-            if pending_nvram.is_empty() {
-                return Ok(());
-            }
-            std::mem::take(&mut *pending_nvram)
+        let StoreState::Idle(stores) = &mut self.rt.stores else {
+            unreachable!("store writes are finished before the stores are used directly")
         };
+        persist_pending_nvram(&mut *stores.nvram, &self.pending_nvram).await
+    }
 
-        (self.rt.nvram_store).persist(data).await?;
+    fn idle_stores(&mut self) -> &mut TpmStores {
+        match &mut self.rt.stores {
+            StoreState::Idle(stores) => stores,
+            StoreState::Writing(_) | StoreState::Invalid => {
+                unreachable!("store writes are finished before the stores are used directly")
+            }
+        }
+    }
 
-        Ok(())
+    /// Starts a deferred store write, or queues it behind the one already
+    /// running.
+    fn start_store_write(&mut self, write: StoreWrite) -> DeferredToken {
+        let (done, token) = defer_write();
+        self.rt.stores = match std::mem::replace(&mut self.rt.stores, StoreState::Invalid) {
+            StoreState::Idle(stores) => {
+                // Ensure poll gets called again.
+                if let Some(waker) = self.waker.take() {
+                    waker.wake();
+                }
+                StoreState::Writing(RunningStoreWrite {
+                    write: run_store_write(stores, write, self.pending_nvram.clone()),
+                    done,
+                    queued: VecDeque::new(),
+                })
+            }
+            StoreState::Writing(mut running) => {
+                running.queued.push_back(QueuedStoreWrite { write, done });
+                StoreState::Writing(running)
+            }
+            StoreState::Invalid => unreachable!(),
+        };
+        token
+    }
+
+    /// Drives the running store write, completing its I/O and starting the
+    /// next queued one when it finishes.
+    fn poll_store_writes(&mut self, cx: &mut std::task::Context<'_>) {
+        while let StoreState::Writing(running) = &mut self.rt.stores {
+            let Poll::Ready(stores) = running.write.as_mut().poll(cx) else {
+                return;
+            };
+            let StoreState::Writing(RunningStoreWrite {
+                write: _,
+                done,
+                mut queued,
+            }) = std::mem::replace(&mut self.rt.stores, StoreState::Invalid)
+            else {
+                unreachable!()
+            };
+            done.complete();
+            self.rt.stores = match queued.pop_front() {
+                Some(QueuedStoreWrite { write, done }) => StoreState::Writing(RunningStoreWrite {
+                    write: run_store_write(stores, write, self.pending_nvram.clone()),
+                    done,
+                    queued,
+                }),
+                None => StoreState::Idle(stores),
+            };
+        }
+    }
+
+    /// Runs every started store write to completion.
+    async fn finish_store_writes(&mut self) {
+        std::future::poll_fn(|cx| {
+            self.poll_store_writes(cx);
+            match self.rt.stores {
+                StoreState::Writing(_) => Poll::Pending,
+                StoreState::Idle(_) | StoreState::Invalid => Poll::Ready(()),
+            }
+        })
+        .await
     }
 
     async fn on_first_boot(
@@ -505,7 +783,6 @@ impl Tpm {
         guest_secret_key: Option<Vec<u8>>,
         is_confidential_vm: bool,
     ) -> Result<(), TpmError> {
-        use ms_tpm_20_ref::NvError;
         struct TpmQuirks {
             force_ak_regen: bool,
             large_vtpm_blob: bool,
@@ -515,25 +792,26 @@ impl Tpm {
         let quirks = {
             // Check whether or not we need to pave-over the blank TPM with our
             // existing nvmem state.
-            let existing_nvmem_blob = (self.rt.nvram_store)
+            let existing_nvmem_blob = (self.idle_stores().nvram)
                 .restore()
                 .await
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
             if let Some(mut blob) = existing_nvmem_blob {
-                // Previous versions before this code had a bug where sizes
-                // smaller than 32K would be reported as 32K. Fixup the blob so
-                // that the TPM nvram is consistent - this code can be removed
-                // once the fix for reporting the NVRAM size correctly is
-                // everywhere.
-                recover::recover_blob(&mut blob);
-                if let Err(e) = self
-                    .tpm_engine_helper
-                    .tpm_engine
-                    .inner_mut()
-                    .reset(Some(&blob))
-                {
-                    if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
+                if matches!(
+                    self.tpm_engine_helper.tpm_engine.version(),
+                    TpmVersion::V138
+                ) {
+                    // Previous versions before this code had a bug where sizes
+                    // smaller than 32K would be reported as 32K. Fixup the blob so
+                    // that the TPM nvram is consistent - this code can be removed
+                    // once the fix for reporting the NVRAM size correctly is
+                    // everywhere.
+                    recover::recover_blob(&mut blob);
+                }
+
+                if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
+                    if e.is_mismatched_blob_size() {
                         self.logger
                             .log_event_and_flush(TpmLogEvent::InvalidState)
                             .await;
@@ -594,7 +872,7 @@ impl Tpm {
 
         // Execute any pending PPI requests set prior to reboot
         {
-            let raw_ppi_state = (self.rt.ppi_store)
+            let raw_ppi_state = (self.idle_stores().ppi)
                 .restore()
                 .await
                 .map_err(TpmErrorKind::ReadPpiState)?;
@@ -615,8 +893,9 @@ impl Tpm {
                 if self.ppi_state.pending_ppi_operation != PpiOperation::NO_OP {
                     self.execute_pending_ppi()?;
 
-                    (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state))
+                    let ppi_state = persist_restore::serialize_ppi_state(self.ppi_state);
+                    (self.idle_stores().ppi)
+                        .persist(ppi_state)
                         .await
                         .map_err(TpmErrorKind::PersistPpiState)?;
                 }
@@ -859,6 +1138,7 @@ impl Tpm {
             return IoResult::Err(IoError::InvalidAccessSize);
         };
 
+        let mut persist_ppi = None;
         if control_port {
             self.current_io_command = Some(TpmIoCommand(val));
         } else {
@@ -906,21 +1186,7 @@ impl Tpm {
             };
 
             if update_ppi {
-                let res = pal_async::local::block_on(
-                    (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state)),
-                );
-                if let Err(e) = res {
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        "could not persist ppi state to non-volatile store"
-                    );
-                    tracing::warn!(
-                        CVM_CONFIDENTIAL,
-                        error = &e as &dyn std::error::Error,
-                        "could not persist ppi state to non-volatile store"
-                    );
-                }
+                persist_ppi = Some(persist_restore::serialize_ppi_state(self.ppi_state));
             }
         };
 
@@ -930,7 +1196,10 @@ impl Tpm {
             ?self.current_io_command,
             "TPM IO write",
         );
-        IoResult::Ok
+        match persist_ppi {
+            Some(data) => IoResult::Defer(self.start_store_write(StoreWrite::Ppi(data))),
+            None => IoResult::Ok,
+        }
     }
 
     fn execute_pending_ppi(&mut self) -> Result<(), TpmError> {
@@ -1000,7 +1269,6 @@ impl Tpm {
         if response_code == tpm20proto::ResponseCode::Success as u32 {
             self.tpm_engine_helper
                 .tpm_engine
-                .inner_mut()
                 .reset(None)
                 .map_err(TpmErrorKind::ResetTpmWithoutState)?;
             self.tpm_engine_helper
@@ -1018,7 +1286,7 @@ impl Tpm {
     fn create_ak_cert_request_or_attestation_report(
         &mut self,
         is_attestation_report: bool,
-    ) -> Result<Vec<u8>, TpmError> {
+    ) -> Result<tpm_resources::AkCertRequest, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
 
         // Read the guest attestation input from `TPM_NV_INDEX_GUEST_ATTESTATION_INPUT` nv index
@@ -1034,6 +1302,20 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadFromNvIndex)?;
         }
 
+        let existing_cert = if !is_attestation_report {
+            match self.read_ak_cert() {
+                Ok(cert) => cert,
+                Err(error) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &error as &dyn std::error::Error,
+                        "Failed to read existing AK certificate; requesting a replacement"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let keys = self.keys.as_ref().expect("Tpm keys uninitialized");
         let request_ak_cert_helper = self
             .ak_cert_type
@@ -1052,6 +1334,7 @@ impl Tpm {
                 &keys.ek_pub.exponent,
                 &guest_attestation_input,
                 is_attestation_report,
+                existing_cert.as_deref(),
             )
             .map_err(|error| TpmErrorKind::CreateAkCertRequest {
                 is_attestation_report,
@@ -1059,6 +1342,23 @@ impl Tpm {
             })?;
 
         Ok(ak_cert_request)
+    }
+
+    fn read_ak_cert(&mut self) -> Result<Option<Vec<u8>>, tpm_lib::Error> {
+        let Some(index) = self
+            .tpm_engine_helper
+            .find_nv_index(TPM_NV_INDEX_AIK_CERT)?
+        else {
+            return Ok(None);
+        };
+        let mut cert = vec![0; usize::from(index.nv_public.nv_public.data_size.get())];
+        match self
+            .tpm_engine_helper
+            .read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut cert)?
+        {
+            tpm_lib::NvIndexState::Available => Ok(Some(cert)),
+            tpm_lib::NvIndexState::Unallocated | tpm_lib::NvIndexState::Uninitialized => Ok(None),
+        }
     }
 
     /// Renew the nv index `TPM_NV_INDEX_ATTESTATION_REPORT`.
@@ -1072,7 +1372,7 @@ impl Tpm {
             .write_to_nv_index(
                 auth_value,
                 TPM_NV_INDEX_ATTESTATION_REPORT,
-                &attestation_report,
+                &attestation_report.data,
             )
             .map_err(TpmErrorKind::WriteToNvIndex)?;
 
@@ -1108,6 +1408,7 @@ impl Tpm {
         );
 
         let ak_cert_request = self.create_ak_cert_request_or_attestation_report(false)?;
+        let has_cert = ak_cert_request.has_cert;
         let request_ak_cert_helper = self
             .ak_cert_type
             .get_ak_cert_helper()
@@ -1116,7 +1417,7 @@ impl Tpm {
             let request_ak_cert_helper = request_ak_cert_helper.clone();
             async move {
                 request_ak_cert_helper
-                    .request_ak_cert(ak_cert_request)
+                    .request_ak_cert(ak_cert_request.data)
                     .await
             }
         };
@@ -1124,6 +1425,7 @@ impl Tpm {
         self.async_ak_cert_request = Some(Box::pin(AkCertRequest {
             is_renew,
             start_time: std::time::SystemTime::now(),
+            has_cert,
             fut: Box::pin(fut),
         }));
 
@@ -1137,11 +1439,20 @@ impl Tpm {
 
     /// Poll the AK cert request made by `get_ak_cert`. This function is called by [`PollDevice::poll_device`].
     fn poll_ak_cert_request(&mut self, cx: &mut std::task::Context<'_>) {
+        // get_ak_cert takes this waker to schedule the next request. Refresh it
+        // before polling so even an immediately ready result and early return
+        // leave a waker available for the following renewal.
+        if let Some(waker) = &mut self.waker {
+            waker.clone_from(cx.waker());
+        } else {
+            self.waker = Some(cx.waker().clone());
+        }
         if let Some(async_ak_cert_request) = self.async_ak_cert_request.as_mut() {
             let is_renew = async_ak_cert_request.is_renew;
+            let has_cert = async_ak_cert_request.has_cert;
 
             if let Poll::Ready(result) = async_ak_cert_request.fut.as_mut().poll(cx) {
-                // Once the received the response, update the renew time using `SystemTime::now`.
+                // Capture the response time for successful renewal and retry backoff.
                 // DEVNOTE: The system time may not reflect the real time when suspension and resumption occur.
                 // See more details in `refresh_device_attestation_data_on_nv_read`.
                 let now = std::time::SystemTime::now();
@@ -1152,15 +1463,26 @@ impl Tpm {
 
                 // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => {
-                        // Set the renew time if successfully receiving the data.
-                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                    Ok(AkCertResponse::NoRenewal) => {
+                        if !has_cert {
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                "Host declined AK certificate renewal without existing certificate metadata"
+                            );
+                            self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
+                            return;
+                        }
                         self.ak_cert_renew_time = Some(now);
-
-                        data
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            op_type = ?LogOpType::AkCertProvision,
+                            is_renew,
+                            "Host indicated that the existing AK certificate does not need renewal"
+                        );
+                        return;
                     }
-                    Ok(_data) => {
+                    Ok(AkCertResponse::Certificate(data)) if !data.is_empty() => data,
+                    Ok(AkCertResponse::Certificate(_data)) => {
                         tracelimit::warn_ratelimited!(
                             CVM_ALLOWED,
                             op_type = ?LogOpType::AkCertProvision,
@@ -1213,9 +1535,11 @@ impl Tpm {
                         error = &e as &dyn std::error::Error,
                         "Failed write new TPM AK cert to NV index"
                     );
+                    self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
                     return;
                 }
 
+                self.ak_cert_renew_time = Some(now);
                 let duration = now.duration_since(std::time::UNIX_EPOCH);
 
                 tracing::info!(
@@ -1232,7 +1556,6 @@ impl Tpm {
                 );
             }
         }
-        self.waker = Some(cx.waker().clone());
     }
 
     /// Renew device attestation data (i.e., attestation report and AK cert) on NV_Read if needed
@@ -1324,22 +1647,25 @@ impl Tpm {
 impl ChangeDeviceState for Tpm {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.finish_store_writes().await;
+    }
 
     async fn reset(&mut self) {
+        self.finish_store_writes().await;
         self.control_area = ControlArea::new();
         self.current_io_command = None;
         self.requested_locality = false;
 
         self.tpm_engine_helper
             .tpm_engine
-            .inner_mut()
             .reset(None)
             .expect("failed to reset TPM");
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .expect("failed to send TPM startup commands");
-        pal_async::local::block_on(self.flush_pending_nvram())
+        self.flush_pending_nvram()
+            .await
             .expect("failed to flush nvram on reset");
     }
 }
@@ -1360,6 +1686,7 @@ impl ChipsetDevice for Tpm {
 
 impl PollDevice for Tpm {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_store_writes(cx);
         self.poll_ak_cert_request(cx)
     }
 }
@@ -1493,7 +1820,6 @@ impl MmioIntercept for Tpm {
                 self.control_area.cancel = if val == 0 { 0 } else { 1 };
                 self.tpm_engine_helper
                     .tpm_engine
-                    .inner_mut()
                     .set_cancel_flag(self.control_area.cancel == 1);
             }
             ControlArea::OFFSET_OF_START => {
@@ -1571,17 +1897,10 @@ impl MmioIntercept for Tpm {
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
 
-        let res = pal_async::local::block_on(self.flush_pending_nvram());
-        if let Err(e) = res {
-            tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
-            tracing::warn!(
-                CVM_CONFIDENTIAL,
-                error = &e as &dyn std::error::Error,
-                "could not commit nvram to non-volatile store"
-            );
-        };
-
-        IoResult::Ok
+        if self.pending_nvram.lock().is_empty() {
+            return IoResult::Ok;
+        }
+        IoResult::Defer(self.start_store_write(StoreWrite::Nvram))
     }
 
     fn get_static_regions(&mut self) -> &[(&str, RangeInclusive<u64>)] {
@@ -1749,6 +2068,24 @@ mod save_restore {
         const RSA_2K_MODULUS_SIZE: usize = 256;
         const RSA_2K_EXPONENT_SIZE: usize = 3;
 
+        #[derive(Protobuf, Debug, PartialEq, Eq, Clone, Copy)]
+        #[mesh(package = "tpm")]
+        pub enum SavedTpmVersion {
+            #[mesh(1)]
+            V138,
+            #[mesh(2)]
+            V185,
+        }
+
+        impl From<tpm_resources::TpmVersion> for SavedTpmVersion {
+            fn from(version: tpm_resources::TpmVersion) -> Self {
+                match version {
+                    tpm_resources::TpmVersion::V138 => SavedTpmVersion::V138,
+                    tpm_resources::TpmVersion::V185 => SavedTpmVersion::V185,
+                }
+            }
+        }
+
         #[derive(Protobuf)]
         #[mesh(package = "tpm")]
         pub struct SavedControlArea {
@@ -1815,6 +2152,8 @@ mod save_restore {
             pub ppi_state: SavedPpiState,
             #[mesh(5)]
             pub tpm_state_blob: Vec<u8>,
+            #[mesh(6)]
+            pub version: Option<SavedTpmVersion>,
             // Experimental fields to avoid breaking changes
             // TODO CVM: Remove the explicit numbering once live servicing design is finialized
             #[mesh(60)]
@@ -1829,7 +2168,12 @@ mod save_restore {
     #[derive(Error, Debug)]
     pub enum TpmRestoreError {
         #[error("failed to restore tpm library runtime state")]
-        TpmRuntimeLib(#[source] ms_tpm_20_ref::Error),
+        TpmRuntimeLib(#[source] TpmLibraryError),
+        #[error("saved TPM version {saved:?} does not match configured TPM version {configured:?}")]
+        VersionMismatch {
+            saved: state::SavedTpmVersion,
+            configured: TpmVersion,
+        },
     }
 
     #[derive(Error, Debug)]
@@ -1917,10 +2261,11 @@ mod save_restore {
                 current_io_command: self.current_io_command.map(|x| x.0),
                 requested_locality: self.requested_locality,
                 ppi_state,
-                tpm_state_blob: self.tpm_engine_helper.tpm_engine.inner_mut().save_state(),
+                tpm_state_blob: self.tpm_engine_helper.tpm_engine.save_state(),
                 auth_value: self.auth_value,
                 keys,
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
+                version: Some(self.tpm_engine_helper.tpm_engine.version().into()),
             };
 
             Ok(saved_state)
@@ -1936,7 +2281,27 @@ mod save_restore {
                 auth_value,
                 keys,
                 allow_ak_cert_renewal,
+                version,
             } = state;
+
+            // Default to 138 for back compat
+            let saved_version = version.unwrap_or(state::SavedTpmVersion::V138);
+            let configured_version = self.tpm_engine_helper.tpm_engine.version();
+            if saved_version != state::SavedTpmVersion::from(configured_version) {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    saved_version = ?saved_version,
+                    configured_version = ?configured_version,
+                    "Saved TPM version does not match configured TPM version"
+                );
+                return Err(RestoreError::Other(
+                    TpmRestoreError::VersionMismatch {
+                        saved: saved_version,
+                        configured: configured_version,
+                    }
+                    .into(),
+                ));
+            }
 
             self.control_area = {
                 let state::SavedControlArea {
@@ -1986,7 +2351,6 @@ mod save_restore {
             self.requested_locality = requested_locality;
             self.tpm_engine_helper
                 .tpm_engine
-                .inner_mut()
                 .restore_state(tpm_state_blob)
                 .map_err(TpmRestoreError::TpmRuntimeLib)
                 .map_err(|e| RestoreError::Other(e.into()))?;
@@ -2023,16 +2387,32 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ak_cert::RequestAkCert;
     use crate::ak_cert::TpmAkCertType;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Wake;
     use tpm_protocol::TPM_NV_INDEX_MITIGATED;
+    use tpm_protocol::tpm20proto::AlgIdEnum;
+    use tpm_protocol::tpm20proto::SessionTagEnum;
+    use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
+    use tpm_protocol::tpm20proto::TPM20_RS_PW;
     use tpm_protocol::tpm20proto::TpmaNvBits;
+    use tpm_protocol::tpm20proto::protocol::NvDefineSpaceCmd;
+    use tpm_protocol::tpm20proto::protocol::TpmsNvPublic;
+    use tpm_protocol::tpm20proto::protocol::common::CmdAuth;
+    use tpm_protocol::tpm20proto::protocol::common::ReplyHeader;
+    use tpm_resources::RequestAkCert;
     use tpm_resources::TpmRegisterLayout;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-    struct TestRequestAkCertHelper;
+    #[derive(Default)]
+    struct TestRequestAkCertHelper {
+        expected_input: Option<(bool, Option<Vec<u8>>)>,
+    }
 
     #[async_trait::async_trait]
     impl RequestAkCert for TestRequestAkCertHelper {
@@ -2044,15 +2424,42 @@ mod tests {
             _ek_pub_exponent: &[u8],
             _guest_input: &[u8],
             _is_attestation_report: bool,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Vec::new())
+            _existing_cert: Option<&[u8]>,
+        ) -> Result<tpm_resources::AkCertRequest, Box<dyn std::error::Error + Send + Sync>>
+        {
+            if let Some((is_report, cert)) = &self.expected_input {
+                assert_eq!(_is_attestation_report, *is_report);
+                assert_eq!(_existing_cert, cert.as_deref());
+            }
+            Ok(tpm_resources::AkCertRequest {
+                data: Vec::new(),
+                has_cert: _existing_cert.is_some(),
+            })
         }
 
         async fn request_ak_cert(
             &self,
             _request: Vec<u8>,
-        ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync + 'static>> {
-            Ok(Vec::new())
+        ) -> Result<AkCertResponse, Box<dyn std::error::Error + Send + Sync + 'static>> {
+            Ok(AkCertResponse::Certificate(Vec::new()))
+        }
+    }
+
+    #[derive(Default)]
+    struct TestTpmLogger {
+        ak_cert_renewal_failures: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl TpmLogger for TestTpmLogger {
+        async fn log_event_and_flush(&self, event: TpmLogEvent) {
+            self.log_event(event);
+        }
+
+        fn log_event(&self, event: TpmLogEvent) {
+            assert!(matches!(event, TpmLogEvent::AkCertRenewalFailed));
+            self.ak_cert_renewal_failures
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -2068,6 +2475,7 @@ mod tests {
         let monotonic_timer = Box::new(|| std::time::Duration::new(0, 0));
 
         let mut tpm = Tpm::new(
+            TpmVersion::V138,
             TpmRegisterLayout::IoPort,
             gm,
             ppi_store,
@@ -2076,7 +2484,7 @@ mod tests {
             monotonic_timer,
             false,
             false,
-            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper), Some(true)),
+            TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), Some(true)),
             None,
             None,
             false,
@@ -2099,5 +2507,735 @@ mod tests {
             .find_nv_index(TPM_NV_INDEX_MITIGATED)
             .expect("find_nv_index should succeed")
             .expect("mitigation marker NV index present");
+    }
+
+    fn complete_ak_cert_request(tpm: &mut Tpm, has_cert: bool, response: AkCertResponse) {
+        // Model get_ak_cert consuming the previously registered waker.
+        tpm.waker = None;
+        tpm.async_ak_cert_request = Some(Box::pin(AkCertRequest {
+            is_renew: true,
+            start_time: std::time::SystemTime::now(),
+            has_cert,
+            fut: Box::pin(std::future::ready(Ok(response))),
+        }));
+        tpm.poll_ak_cert_request(&mut Context::from_waker(Waker::noop()));
+        assert!(tpm.async_ak_cert_request.is_none());
+        assert!(tpm.waker.is_some());
+    }
+
+    #[async_test]
+    async fn test_ready_ak_cert_response_wakes_next_request() {
+        #[derive(Default)]
+        struct WakeCounter(AtomicUsize);
+
+        impl Wake for WakeCounter {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            tpm.ak_cert_type =
+                TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), Some(true));
+            tpm.allow_ak_cert_renewal = true;
+
+            for (has_cert, result) in [
+                (true, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::NoRenewal)),
+                (false, Ok(AkCertResponse::Certificate(Vec::new()))),
+                (
+                    false,
+                    Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                        std::io::Error::other("test request failure"),
+                    )),
+                ),
+            ] {
+                // Starting a request consumes the stored waker. A different
+                // poll waker must replace it, including on all early returns.
+                let previous = Arc::new(WakeCounter::default());
+                tpm.waker = Some(Waker::from(previous.clone()));
+                tpm.get_ak_cert(true).unwrap();
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                assert!(tpm.waker.is_none());
+                let request = tpm.async_ak_cert_request.as_mut().unwrap();
+                request.has_cert = has_cert;
+                request.fut = Box::pin(std::future::ready(result));
+
+                let next = Arc::new(WakeCounter::default());
+                let waker = Waker::from(next.clone());
+                tpm.poll_ak_cert_request(&mut Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+                assert!(tpm.waker.as_ref().unwrap().will_wake(&waker));
+
+                tpm.get_ak_cert(true).unwrap();
+                assert!(tpm.async_ak_cert_request.is_some());
+                assert_eq!(next.0.load(Ordering::Relaxed), 1);
+                assert_eq!(previous.0.load(Ordering::Relaxed), 1);
+                tpm.poll_ak_cert_request(&mut Context::from_waker(&waker));
+                assert!(tpm.async_ak_cert_request.is_none());
+            }
+        }
+    }
+
+    #[async_test]
+    async fn test_ak_cert_renewal_lifecycle() {
+        use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
+
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+
+            let old_time = std::time::UNIX_EPOCH;
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::NoRenewal);
+            assert_eq!(tpm.ak_cert_renew_time, Some(old_time));
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+
+            // Exercise a v1.85 index larger than the legacy 4KiB buffer.
+            let size = match version {
+                TpmVersion::V138 => 1024,
+                TpmVersion::V185 => 8192,
+            };
+            tpm.tpm_engine_helper
+                .nv_define_space(TPM20_RH_PLATFORM, 0, TPM_NV_INDEX_AIK_CERT, size)
+                .unwrap();
+            assert!(tpm.read_ak_cert().unwrap().is_none());
+            let original = vec![0xa5; usize::from(size)];
+            tpm.tpm_engine_helper
+                .write_to_nv_index(0, TPM_NV_INDEX_AIK_CERT, &original)
+                .unwrap();
+            assert_eq!(
+                tpm.read_ak_cert().unwrap().as_deref(),
+                Some(original.as_slice())
+            );
+
+            // No-renewal must not require NV write authorization or alter its bytes.
+            assert!(tpm.auth_value.is_none());
+            complete_ak_cert_request(&mut tpm, true, AkCertResponse::NoRenewal);
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+            // Merely having bytes in NV is insufficient if metadata could not be parsed.
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::NoRenewal);
+            assert_eq!(tpm.ak_cert_renew_time, Some(old_time));
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+            tpm.auth_value = Some(0);
+            let replacement = b"replacement certificate";
+            complete_ak_cert_request(
+                &mut tpm,
+                true,
+                AkCertResponse::Certificate(replacement.to_vec()),
+            );
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            let current = tpm.read_ak_cert().unwrap().unwrap();
+            assert!(current.starts_with(replacement));
+
+            // Each new request reads the current NV data; guest reports omit it.
+            let key = TpmRsa2kPublic {
+                modulus: [0; 256],
+                exponent: [0; 3],
+            };
+            tpm.keys = Some(TpmKeys {
+                ak_pub: key,
+                ek_pub: key,
+            });
+            for is_report in [false, true] {
+                tpm.ak_cert_type = TpmAkCertType::Trusted(
+                    Arc::new(TestRequestAkCertHelper {
+                        expected_input: Some((is_report, (!is_report).then(|| current.clone()))),
+                    }),
+                    Some(true),
+                );
+                let request = tpm
+                    .create_ak_cert_request_or_attestation_report(is_report)
+                    .unwrap();
+                assert_eq!(request.has_cert, !is_report);
+            }
+
+            tpm.ak_cert_renew_time = Some(old_time);
+            complete_ak_cert_request(&mut tpm, false, AkCertResponse::Certificate(Vec::new()));
+            assert!(tpm.ak_cert_renew_time.unwrap() > old_time);
+            assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), current);
+        }
+    }
+
+    #[async_test]
+    async fn test_ak_cert_write_failure_preserves_renewal_time() {
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let logger = Arc::new(TestTpmLogger::default());
+            tpm.logger = Some(logger.clone());
+            tpm.tpm_engine_helper
+                .nv_define_space(TPM20_RH_PLATFORM, 0, TPM_NV_INDEX_AIK_CERT, 1024)
+                .unwrap();
+            let original = vec![0xa5; 1024];
+            let replacement = b"replacement certificate";
+            let oversized = vec![0x5a; 1025];
+            let mut failures = 0;
+
+            for old_time in [None, Some(std::time::UNIX_EPOCH)] {
+                for (auth_value, data) in [(0, oversized.as_slice()), (1, replacement.as_slice())] {
+                    tpm.tpm_engine_helper
+                        .write_to_nv_index(0, TPM_NV_INDEX_AIK_CERT, &original)
+                        .unwrap();
+                    tpm.auth_value = Some(auth_value);
+                    tpm.ak_cert_renew_time = old_time;
+                    complete_ak_cert_request(
+                        &mut tpm,
+                        true,
+                        AkCertResponse::Certificate(data.to_vec()),
+                    );
+                    failures += 1;
+                    assert_eq!(tpm.ak_cert_renew_time, old_time);
+                    assert_eq!(
+                        logger.ak_cert_renewal_failures.load(Ordering::Relaxed),
+                        failures
+                    );
+                    assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), original);
+
+                    tpm.auth_value = Some(0);
+                    complete_ak_cert_request(
+                        &mut tpm,
+                        true,
+                        AkCertResponse::Certificate(replacement.to_vec()),
+                    );
+                    assert!(tpm.ak_cert_renew_time > old_time);
+                    assert_eq!(
+                        logger.ak_cert_renewal_failures.load(Ordering::Relaxed),
+                        failures
+                    );
+                    let mut expected = replacement.to_vec();
+                    expected.resize(original.len(), 0);
+                    assert_eq!(tpm.read_ak_cert().unwrap().unwrap(), expected);
+                }
+            }
+        }
+    }
+
+    /// Each library validates NVRAM against its compiled-in size.
+    #[async_test]
+    async fn test_legacy_nvram_size_rejected_for_v185() {
+        let Err(err) = new_test_tpm(TpmVersion::V185, Some(LEGACY_VTPM_SIZE), None).await else {
+            panic!("legacy nvram size must be rejected");
+        };
+
+        match err.0 {
+            TpmErrorKind::InstantiateTpm(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// A 16kB blob can be present even when the reported NVRAM size is correct,
+    /// due to a previous size-reporting bug. The library must reject it on reset.
+    #[async_test]
+    async fn test_legacy_nvram_blob_rejected_for_v185() {
+        let Err(err) = new_test_tpm(
+            TpmVersion::V185,
+            Some(default_vtpm_size(TpmVersion::V185)),
+            Some(vec![0; LEGACY_VTPM_SIZE]),
+        )
+        .await
+        else {
+            panic!("legacy nvram blob must be rejected");
+        };
+
+        match err.0 {
+            TpmErrorKind::ResetTpmWithState(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    /// The 1.38 implementation must keep accepting legacy state.
+    #[async_test]
+    async fn test_legacy_nvram_size_allowed_for_v138() {
+        assert!(
+            new_test_tpm(TpmVersion::V138, Some(LEGACY_VTPM_SIZE), None)
+                .await
+                .is_ok(),
+            "legacy nvram size is supported by 1.38"
+        );
+    }
+
+    /// Each library is compiled for a fixed NVRAM size and cannot be handed a
+    /// different one, so the per-version default must match the library in use.
+    #[async_test]
+    async fn test_default_nvram_size_initializes_both_versions() {
+        for version in [TpmVersion::V138, TpmVersion::V185] {
+            assert!(
+                new_test_tpm(version, None, None).await.is_ok(),
+                "default nvram size must initialize {version:?}"
+            );
+        }
+    }
+
+    /// The 1.85 library is compiled for a 128kB region. A 32kB one does not fail
+    /// cleanly inside the library, so it must be rejected rather than used.
+    #[async_test]
+    async fn test_standard_nvram_size_rejected_for_v185() {
+        let Err(err) = new_test_tpm(TpmVersion::V185, Some(STANDARD_VTPM_SIZE), None).await else {
+            panic!("32kB nvram size must be rejected for 1.85");
+        };
+
+        match err.0 {
+            TpmErrorKind::InstantiateTpm(ref e) if e.is_mismatched_blob_size() => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    async fn new_test_tpm(
+        version: TpmVersion,
+        nvram_size: Option<usize>,
+        nvram_blob: Option<Vec<u8>>,
+    ) -> Result<Tpm, TpmError> {
+        let mut nvram_store = EphemeralNonVolatileStore::new_boxed();
+        if let Some(blob) = nvram_blob {
+            nvram_store.persist(blob).await.unwrap();
+        }
+
+        Tpm::new(
+            version,
+            TpmRegisterLayout::IoPort,
+            GuestMemory::allocate(0x10000),
+            EphemeralNonVolatileStore::new_boxed(),
+            nvram_store,
+            nvram_size,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            TpmAkCertType::None,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
+    }
+
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    enum StoreKind {
+        Ppi,
+        Nvram,
+    }
+
+    type RecordedWrites = Arc<Mutex<Vec<(StoreKind, Vec<u8>)>>>;
+
+    /// Once armed, writes wait for permission and record successful persistence.
+    struct GatedStore {
+        inner: Box<dyn NonVolatileStore>,
+        armed: Arc<AtomicBool>,
+        permits: mesh::Receiver<()>,
+        kind: StoreKind,
+        writes: RecordedWrites,
+    }
+
+    #[async_trait::async_trait]
+    impl NonVolatileStore for GatedStore {
+        async fn persist(&mut self, data: Vec<u8>) -> Result<(), NonVolatileStoreError> {
+            if self.armed.load(Ordering::SeqCst) {
+                self.permits.recv().await.unwrap();
+            }
+            self.inner.persist(data.clone()).await?;
+            if self.armed.load(Ordering::SeqCst) {
+                self.writes.lock().push((self.kind, data));
+            }
+            Ok(())
+        }
+
+        async fn restore(&mut self) -> Result<Option<Vec<u8>>, NonVolatileStoreError> {
+            self.inner.restore().await
+        }
+    }
+
+    struct GatedTpm {
+        tpm: Tpm,
+        armed: Arc<AtomicBool>,
+        ppi_permits: mesh::Sender<()>,
+        nvram_permits: mesh::Sender<()>,
+        gm: GuestMemory,
+        writes: RecordedWrites,
+    }
+
+    async fn new_gated_tpm() -> GatedTpm {
+        new_gated_tpm_with_ak_cert(TpmAkCertType::None).await
+    }
+
+    async fn new_gated_tpm_with_ak_cert(ak_cert_type: TpmAkCertType) -> GatedTpm {
+        let armed = Arc::new(AtomicBool::new(false));
+        let (ppi_permits, ppi_recv) = mesh::channel();
+        let (nvram_permits, nvram_recv) = mesh::channel();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let gated = |kind, permits| -> Box<dyn NonVolatileStore> {
+            Box::new(GatedStore {
+                inner: EphemeralNonVolatileStore::new_boxed(),
+                armed: armed.clone(),
+                permits,
+                kind,
+                writes: writes.clone(),
+            })
+        };
+        let gm = GuestMemory::allocate(0x10000);
+
+        let tpm = Tpm::new(
+            TpmVersion::V138,
+            TpmRegisterLayout::IoPort,
+            gm.clone(),
+            gated(StoreKind::Ppi, ppi_recv),
+            gated(StoreKind::Nvram, nvram_recv),
+            None,
+            Box::new(|| std::time::Duration::new(0, 0)),
+            false,
+            false,
+            ak_cert_type,
+            None,
+            None,
+            false,
+            guid::guid!("00000000-0000-0000-0000-000000000000"),
+        )
+        .await
+        .unwrap();
+
+        // Creating the TPM writes to the stores; gate only what comes after.
+        armed.store(true, Ordering::SeqCst);
+        GatedTpm {
+            tpm,
+            armed,
+            ppi_permits,
+            nvram_permits,
+            gm,
+            writes,
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn issue_ppi_write(tpm: &mut Tpm, operation: u32) -> DeferredToken {
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+            &TpmIoCommand::PPI_SET_OPERATION.0.to_le_bytes(),
+        )
+        .unwrap();
+        match tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+            &operation.to_le_bytes(),
+        ) {
+            IoResult::Defer(token) => token,
+            _ => panic!("a PPI write must defer its I/O"),
+        }
+    }
+
+    fn define_nv_index(tpm: &mut Tpm, gm: &GuestMemory) -> DeferredToken {
+        let public = TpmsNvPublic::new(
+            0x01500100,
+            AlgIdEnum::SHA256.into(),
+            TpmaNvBits::new()
+                .with_nv_ownerread(true)
+                .with_nv_ownerwrite(true),
+            &[],
+            8,
+        )
+        .unwrap();
+        let command = NvDefineSpaceCmd::new(
+            SessionTagEnum::Sessions.into(),
+            TPM20_RH_OWNER,
+            CmdAuth::new(TPM20_RS_PW, 0, 0, 0),
+            0,
+            public,
+        )
+        .unwrap();
+        const COMMAND_ADDRESS: u32 = 0x1000;
+        gm.write_at(COMMAND_ADDRESS.into(), &command.serialize())
+            .unwrap();
+        let port = TPM_DEVICE_IO_PORT_RANGE_BEGIN;
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_CONTROL_OFFSET,
+            &TpmIoCommand::MAP_SHARED_MEMORY.0.to_le_bytes(),
+        )
+        .unwrap();
+        tpm.io_write(
+            port + TPM_DEVICE_IO_PORT_DATA_OFFSET,
+            &COMMAND_ADDRESS.to_le_bytes(),
+        )
+        .unwrap();
+        let result = tpm.mmio_write(
+            TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_START as u64,
+            &1u32.to_le_bytes(),
+        );
+        let reply: ReplyHeader = gm
+            .read_plain(u64::from(COMMAND_ADDRESS) + TPM_PAGE_SIZE as u64)
+            .unwrap();
+        assert!(
+            reply
+                .base_validation(
+                    SessionTagEnum::Sessions.into(),
+                    size_of::<ReplyHeader>() as u32,
+                )
+                .unwrap(),
+            "NV_DefineSpace failed: {reply:?}"
+        );
+        match result {
+            IoResult::Defer(token) => token,
+            _ => panic!("a successful NV_DefineSpace must defer until persisted"),
+        }
+    }
+
+    /// Drives the TPM until `token` completes.
+    async fn complete(tpm: &mut Tpm, token: &mut DeferredToken) {
+        std::future::poll_fn(|cx| {
+            tpm.poll_device(cx);
+            token.poll_write(cx)
+        })
+        .await
+        .unwrap();
+    }
+
+    /// A PPI write must not wait for the store inside the I/O handler: the
+    /// store can depend on a thread that is itself waiting for this device's
+    /// lock.
+    #[async_test]
+    async fn ppi_write_defers_instead_of_blocking() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits: _nvram_permits,
+            writes,
+            ..
+        } = new_gated_tpm().await;
+        let waker = Arc::new(CountingWaker::default());
+        tpm.poll_device(&mut Context::from_waker(&waker.clone().into()));
+        let woken_before = waker.0.load(Ordering::SeqCst);
+
+        let mut token = issue_ppi_write(&mut tpm, 5);
+        assert!(
+            waker.0.load(Ordering::SeqCst) > woken_before,
+            "the write must be polled"
+        );
+
+        tpm.poll_device(&mut Context::from_waker(&waker.clone().into()));
+        assert!(
+            token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+
+        assert!(writes.lock().is_empty());
+        ppi_permits.send(());
+        complete(&mut tpm, &mut token).await;
+        let writes = writes.lock();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, StoreKind::Ppi);
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(writes[0].1.clone())
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(5)
+        );
+    }
+
+    #[async_test]
+    async fn ppi_write_after_empty_ak_certificate_wakes_device() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits: _nvram_permits,
+            ..
+        } = new_gated_tpm_with_ak_cert(TpmAkCertType::Trusted(
+            Arc::new(TestRequestAkCertHelper::default()),
+            Some(true),
+        ))
+        .await;
+        let waker = Arc::new(CountingWaker::default());
+        let task_waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
+
+        // The certificate provider returns an empty response on the initial poll.
+        tpm.poll_device(&mut cx);
+        let before = waker.0.load(Ordering::SeqCst);
+        let mut token = issue_ppi_write(&mut tpm, 5);
+        assert!(
+            waker.0.load(Ordering::SeqCst) > before,
+            "a deferred write must schedule polling after an empty certificate response"
+        );
+
+        tpm.poll_device(&mut cx);
+        assert!(token.poll_write(&mut cx).is_pending());
+        let before = waker.0.load(Ordering::SeqCst);
+        ppi_permits.send(());
+        assert!(
+            waker.0.load(Ordering::SeqCst) > before,
+            "the store must wake the device when it can finish"
+        );
+        complete(&mut tpm, &mut token).await;
+    }
+
+    /// Committing NVRAM after a register write defers the I/O until the store
+    /// has it, and a write with nothing to commit completes at once.
+    #[async_test]
+    async fn nvram_commit_defers_instead_of_blocking() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits: _ppi_permits,
+            nvram_permits,
+            gm,
+            writes,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let cancel = TPM_DEVICE_MMIO_REGION_BASE_ADDRESS + ControlArea::OFFSET_OF_CANCEL as u64;
+
+        assert!(matches!(
+            tpm.mmio_write(cancel, &0u32.to_le_bytes()),
+            IoResult::Ok
+        ));
+
+        let mut token = define_nv_index(&mut tpm, &gm);
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            token
+                .poll_write(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+
+        assert!(writes.lock().is_empty());
+        nvram_permits.send(());
+        complete(&mut tpm, &mut token).await;
+        let writes = writes.lock();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, StoreKind::Nvram);
+        assert!(!writes[0].1.is_empty());
+    }
+
+    /// Writes issued while one is running wait for it and then run in arrival
+    /// order, whichever store each one targets.
+    #[async_test]
+    async fn queued_store_writes_run_in_arrival_order() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits,
+            gm,
+            writes,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let pending =
+            |token: &mut DeferredToken| token.poll_write(&mut Context::from_waker(Waker::noop()));
+
+        let mut first = issue_ppi_write(&mut tpm, 7);
+        let mut second = define_nv_index(&mut tpm, &gm);
+        let mut third = issue_ppi_write(&mut tpm, 9);
+
+        // The NVRAM store is free to go, but its write must wait behind the
+        // running PPI write.
+        nvram_permits.send(());
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(pending(&mut first).is_pending());
+        assert!(pending(&mut second).is_pending());
+        assert!(pending(&mut third).is_pending());
+        assert!(writes.lock().is_empty());
+
+        // Finishing the PPI write runs the NVRAM write next, which completes
+        // with the permit it already has, and only then the second PPI write.
+        ppi_permits.send(());
+        complete(&mut tpm, &mut first).await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        assert!(
+            matches!(pending(&mut second), Poll::Ready(Ok(()))),
+            "the NVRAM write runs second"
+        );
+        assert!(pending(&mut third).is_pending());
+        assert!(matches!(
+            writes.lock().as_slice(),
+            [(StoreKind::Ppi, _), (StoreKind::Nvram, _)]
+        ));
+
+        ppi_permits.send(());
+        complete(&mut tpm, &mut third).await;
+        let writes = writes.lock();
+        assert!(matches!(
+            writes.as_slice(),
+            [
+                (StoreKind::Ppi, _),
+                (StoreKind::Nvram, _),
+                (StoreKind::Ppi, _)
+            ]
+        ));
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(writes[0].1.clone())
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(7)
+        );
+        assert!(!writes[1].1.is_empty());
+        assert_eq!(
+            persist_restore::deserialize_ppi_state(writes[2].1.clone())
+                .unwrap()
+                .pending_ppi_operation,
+            PpiOperation(9)
+        );
+    }
+
+    /// Stop waits for both the running write and writes queued behind it.
+    #[async_test]
+    async fn stop_finishes_a_running_store_write() {
+        let GatedTpm {
+            mut tpm,
+            armed: _armed,
+            ppi_permits,
+            nvram_permits,
+            gm,
+            writes,
+        } = new_gated_tpm().await;
+        tpm.poll_device(&mut Context::from_waker(Waker::noop()));
+        let mut first = define_nv_index(&mut tpm, &gm);
+        let mut second = issue_ppi_write(&mut tpm, 9);
+        let waker = Arc::new(CountingWaker::default());
+        let task_waker = waker.clone().into();
+        let mut cx = Context::from_waker(&task_waker);
+        let mut stop = Box::pin(tpm.stop());
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(first.poll_write(&mut cx).is_pending());
+        assert!(second.poll_write(&mut cx).is_pending());
+        assert!(writes.lock().is_empty());
+
+        let before = waker.0.load(Ordering::SeqCst);
+        nvram_permits.send(());
+        assert!(waker.0.load(Ordering::SeqCst) > before);
+        assert!(stop.as_mut().poll(&mut cx).is_pending());
+        assert!(matches!(first.poll_write(&mut cx), Poll::Ready(Ok(()))));
+        assert!(second.poll_write(&mut cx).is_pending());
+        assert!(matches!(writes.lock().as_slice(), [(StoreKind::Nvram, _)]));
+
+        ppi_permits.send(());
+        stop.await;
+        second.write_future().await.unwrap();
+        assert!(matches!(
+            writes.lock().as_slice(),
+            [(StoreKind::Nvram, _), (StoreKind::Ppi, _)]
+        ));
     }
 }

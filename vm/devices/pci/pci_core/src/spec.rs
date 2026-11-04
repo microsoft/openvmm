@@ -136,6 +136,7 @@ pub mod hwid {
             BRIDGE_OTHER = 0x80,
 
             // Base System Peripheral (Class code: 0x08)
+            BASE_SYSTEM_PERIPHERAL_RTC = 0x03,
             // Other values: 0x00 - 0x06
             BASE_SYSTEM_PERIPHERAL_OTHER = 0x80,
         }
@@ -461,6 +462,7 @@ pub mod caps {
             ARI   = 0x0E,
             SRIOV = 0x10,
             REBAR = 0x15,
+            PASID = 0x1B,
             DVSEC = 0x23,
             SIOV  = 0x38,
         }

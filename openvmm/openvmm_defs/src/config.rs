@@ -3,6 +3,11 @@
 
 //! Configuration for the VM worker.
 
+pub use serial_uart_resources::UartId;
+pub use smbios_defs::SmbiosBiosOverrides;
+pub use smbios_defs::SmbiosConfig;
+pub use smbios_defs::SmbiosSystemOverrides;
+
 use guid::Guid;
 use input_core::InputData;
 use memory_range::MemoryRange;
@@ -11,6 +16,7 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
+use tpm_resources::TpmVersion;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -104,6 +110,14 @@ pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
 /// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
 pub const DEFAULT_VMBUS_PPI: u32 = 18;
 
+/// Default IOAPIC interrupt for the ACPI power button on x86_64.
+pub const DEFAULT_ACPI_POWER_BUTTON_IRQ_X64: u32 = 10;
+/// Default GIC SPI index (INTID 39) for the ACPI power button on AArch64.
+///
+/// Firmware reserves INTIDs 35-38 for generation ID, battery, PMEM, and
+/// processor-idle events.
+pub const DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64: u32 = 7;
+
 /// How firmware tables are presented to the guest in Linux direct boot.
 ///
 /// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
@@ -118,6 +132,18 @@ pub enum LinuxDirectBootMode {
     Acpi,
 }
 
+/// Isolation-specific settings for Linux direct boot.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxIsolationConfig {
+    /// No isolation-specific loader configuration.
+    None,
+    /// AMD SEV-SNP loader configuration.
+    Snp {
+        /// Enables restricted interrupt injection in the SNP VMSA.
+        restricted_injection: bool,
+    },
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -125,100 +151,62 @@ pub enum LoadMode {
         initrd: Option<File>,
         cmdline: String,
         enable_serial: bool,
+        isolation: LinuxIsolationConfig,
         boot_mode: LinuxDirectBootMode,
+        // Boxed to keep the `Linux` variant from dominating `LoadMode`'s size.
+        smbios: Box<SmbiosConfig>,
     },
     Uefi {
         firmware: File,
         enable_debugging: bool,
         enable_memory_protections: bool,
         disable_frontpage: bool,
-        enable_tpm: bool,
+        tpm_version: Option<TpmVersion>,
         enable_battery: bool,
         enable_serial: bool,
         enable_vpci_boot: bool,
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
-        bios_guid: Guid,
+        // Boxed to keep the `Uefi` variant from dominating `LoadMode`'s size.
+        // The VM's BIOS GUID is sourced from `smbios.system.uuid`, so UEFI and
+        // Linux direct boot share a single UUID origin.
+        smbios: Box<SmbiosConfig>,
         enable_vmbus: bool,
         force_dma_bounce: bool,
         enable_hv: bool,
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
+        force_firmware_version: bool,
     },
     Pcat {
         firmware: RomFileLocation,
         boot_order: [PcatBootDevice; 4],
+        /// Whether the guest firmware should enable hibernation (S4) support.
+        hibernation_enabled: bool,
+        // Boxed to keep the `Pcat` variant from dominating `LoadMode`'s size.
+        // Only the system UUID and serial number are honored; the PCAT BIOS ROM
+        // self-describes everything else, so other overrides are rejected.
+        smbios: Box<SmbiosConfig>,
     },
     Igvm {
         file: File,
         cmdline: String,
         vtl2_base_address: Vtl2BaseAddressType,
-        com_serial: Option<SerialInformation>,
+        com_serial: Option<UartId>,
+        personality: IgvmPersonality,
     },
-    /// Restore saved memory and device state using the complete original boot recipe.
-    Restore { boot: Box<LoadMode> },
+    None,
 }
 
-impl LoadMode {
-    /// Returns the concrete boot recipe used to construct and operate the VM.
-    pub fn boot_recipe(&self) -> &LoadMode {
-        match self {
-            Self::Restore { boot } => boot,
-            mode => mode,
-        }
-    }
-
-    /// Returns mutable access to the concrete boot recipe.
-    pub fn boot_recipe_mut(&mut self) -> &mut LoadMode {
-        match self {
-            Self::Restore { boot } => boot,
-            mode => mode,
-        }
-    }
-
-    /// Returns whether this worker must initialize from saved state.
-    pub fn is_restore(&self) -> bool {
-        matches!(self, Self::Restore { .. })
-    }
-
-    /// Wraps a concrete boot recipe for snapshot restore.
-    pub fn into_restore(self) -> LoadMode {
-        match self {
-            Self::Restore { .. } => self,
-            boot => Self::Restore {
-                boot: Box::new(boot),
-            },
-        }
-    }
-
-    /// Returns whether a restore wrapper contains another restore wrapper.
-    pub fn has_nested_restore(&self) -> bool {
-        matches!(self, Self::Restore { boot } if boot.is_restore())
-    }
-
-    /// Returns whether this mode constructs a Linux direct-boot platform.
-    pub fn is_linux_direct_platform(&self) -> bool {
-        matches!(self.boot_recipe(), Self::Linux { .. })
-    }
-
-    /// Returns whether this mode constructs a UEFI platform.
-    pub fn is_uefi_platform(&self) -> bool {
-        matches!(self.boot_recipe(), Self::Uefi { .. })
-    }
-
-    /// Returns whether this mode constructs a PCAT platform.
-    pub fn is_pcat_platform(&self) -> bool {
-        matches!(self.boot_recipe(), Self::Pcat { .. })
-    }
-
-    /// Returns whether this mode constructs an IGVM platform.
-    pub fn is_igvm_platform(&self) -> bool {
-        matches!(self.boot_recipe(), Self::Igvm { .. })
-    }
-}
-
-#[derive(Debug, Clone, Copy, MeshPayload)]
-pub struct SerialInformation {
-    pub io_port: u16,
-    pub irq: u32,
+/// The firmware that an IGVM file contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, MeshPayload)]
+pub enum IgvmPersonality {
+    /// The OpenHCL paravisor, hosted in VTL2.
+    Openhcl,
+    /// UEFI firmware.
+    Uefi,
+    /// A Linux kernel.
+    LinuxDirect,
 }
 
 /// Different types to specify the base address for the VTL2 region of the IGVM
@@ -278,6 +266,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    /// Whether this root complex owns legacy PCI configuration I/O ports.
+    pub legacy_pci_config_io: bool,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PciePortConfig>,
@@ -651,7 +641,10 @@ pub struct Vtl2Config {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, MeshPayload)]
 pub enum IsolationType {
     Vbs,
-    Snp,
+    Snp {
+        /// Optional host-provided data included in SNP launch finish.
+        host_data: Option<[u8; 32]>,
+    },
     Cca,
 }
 
@@ -659,7 +652,7 @@ impl From<IsolationType> for virt::IsolationType {
     fn from(value: IsolationType) -> Self {
         match value {
             IsolationType::Vbs => Self::Vbs,
-            IsolationType::Snp => Self::Snp,
+            IsolationType::Snp { .. } => Self::Snp,
             IsolationType::Cca => Self::Cca,
         }
     }
@@ -679,109 +672,4 @@ pub enum UefiConsoleMode {
     Com1,
     Com2,
     None,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use test_with_tracing::test;
-
-    fn open_test_file() -> File {
-        File::open(std::env::current_exe().unwrap()).unwrap()
-    }
-
-    fn linux_mode() -> LoadMode {
-        LoadMode::Linux {
-            kernel: open_test_file(),
-            initrd: None,
-            cmdline: String::new(),
-            enable_serial: false,
-            boot_mode: LinuxDirectBootMode::Acpi,
-        }
-    }
-
-    #[test]
-    fn restore_preserves_complete_platform_recipe() {
-        let cases = [
-            (linux_mode(), [true, false, false, false]),
-            (
-                LoadMode::Uefi {
-                    firmware: open_test_file(),
-                    enable_debugging: false,
-                    enable_memory_protections: false,
-                    disable_frontpage: false,
-                    enable_tpm: false,
-                    enable_battery: false,
-                    enable_serial: false,
-                    enable_vpci_boot: false,
-                    uefi_console_mode: None,
-                    default_boot_always_attempt: false,
-                    bios_guid: Guid::ZERO,
-                    enable_vmbus: false,
-                    force_dma_bounce: false,
-                    enable_hv: false,
-                },
-                [false, true, false, false],
-            ),
-            (
-                LoadMode::Pcat {
-                    firmware: RomFileLocation {
-                        file: open_test_file(),
-                        start: 0,
-                        len: 0,
-                    },
-                    boot_order: DEFAULT_PCAT_BOOT_ORDER,
-                },
-                [false, false, true, false],
-            ),
-            (
-                LoadMode::Igvm {
-                    file: open_test_file(),
-                    cmdline: String::new(),
-                    vtl2_base_address: Vtl2BaseAddressType::File,
-                    com_serial: None,
-                },
-                [false, false, false, true],
-            ),
-        ];
-
-        for (recipe, expected) in cases {
-            let mode = recipe.into_restore();
-            assert!(mode.is_restore());
-            assert_eq!(
-                [
-                    mode.is_linux_direct_platform(),
-                    mode.is_uefi_platform(),
-                    mode.is_pcat_platform(),
-                    mode.is_igvm_platform(),
-                ],
-                expected
-            );
-            assert!(!mode.has_nested_restore());
-        }
-    }
-
-    #[test]
-    fn restore_recipe_mutation_and_wrapping_are_idempotent() {
-        let mut mode = linux_mode().into_restore().into_restore();
-        assert!(!mode.has_nested_restore());
-
-        let LoadMode::Linux { cmdline, .. } = mode.boot_recipe_mut() else {
-            panic!("expected Linux recipe");
-        };
-        *cmdline = "updated".into();
-
-        let LoadMode::Linux { cmdline, .. } = mode.boot_recipe() else {
-            panic!("expected Linux recipe");
-        };
-        assert_eq!(cmdline, "updated");
-    }
-
-    #[test]
-    fn nested_restore_is_detected() {
-        let mode = LoadMode::Restore {
-            boot: Box::new(linux_mode().into_restore()),
-        };
-        assert!(mode.has_nested_restore());
-    }
 }

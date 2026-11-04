@@ -111,6 +111,7 @@ impl VcpuFdExt for VcpuFd {
 #[derive(Debug)]
 pub struct LinuxMshv {
     mshv: Mshv,
+    snp_disable_cpuid_offload: bool,
 }
 
 impl LinuxMshv {
@@ -118,6 +119,12 @@ impl LinuxMshv {
     pub fn new() -> io::Result<Self> {
         let file = fs_err::File::open("/dev/mshv")?;
         Ok(Self::from(std::fs::File::from(file)))
+    }
+
+    /// Configures whether MSHV SNP CPUID offloads are disabled.
+    pub fn with_snp_cpuid_offload_disabled(mut self, disabled: bool) -> Self {
+        self.snp_disable_cpuid_offload = disabled;
+        self
     }
 }
 
@@ -127,6 +134,7 @@ impl From<std::fs::File> for LinuxMshv {
             // SAFETY: We take ownership of the file descriptor and pass it to Mshv.
             // TODO: fix mshv_bindings to not need this unsafe code.
             mshv: unsafe { Mshv::new_with_fd_number(file.into_raw_fd()) },
+            snp_disable_cpuid_offload: false,
         }
     }
 }
@@ -157,29 +165,47 @@ impl<'a> MshvProtoPartition<'a> {
             .create_vcpu(0)
             .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
 
-        // Install intercepts required by both architectures.
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+        // Nested partitions leave HV#1 handling to L0. OpenVMM's intercepts
+        // service its VMBus server, which is unavailable in this mode.
+        if !config.nested_virt {
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeHypercall,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection,
+                    e.into(),
+                )
+            })?;
 
-        vmfd.install_intercept(mshv_install_intercept {
-            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-            intercept_type:
-                hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
-            intercept_parameter: Default::default(),
-        })
-        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
+            vmfd.install_intercept(mshv_install_intercept {
+                access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                intercept_type:
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
+                intercept_parameter: Default::default(),
+            })
+            .map_err(|e| {
+                ErrorInner::InstallIntercept(
+                    hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId,
+                    e.into(),
+                )
+            })?;
+        }
 
         // Set up a signal for forcing vcpufd.run() to exit with EINTR.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -202,6 +228,8 @@ impl<'a> MshvProtoPartition<'a> {
 
         Ok(MshvProtoPartition {
             config,
+            #[cfg(guest_arch = "x86_64")]
+            isolation: arch::MshvProtoPartitionIsolation::None,
             vmfd,
             vps,
             bsp,
@@ -218,9 +246,40 @@ pub fn is_available() -> Result<bool, Error> {
     }
 }
 
+/// Returns whether MSHV can create SEV-SNP partitions on this machine.
+/// This function currently probes SNP availability by attempting to create
+/// a temporary SNP partition.
+///
+/// The probe does not initialize the partition. The mshv_root driver cannot
+/// tear down an initialized SNP partition that never imported its memory, so
+/// that partition would permanently use one of the host's SNP partition slots.
+///
+/// TODO: Replace this probe with a proper usermode query once the MSHV
+/// driver exposes SNP status.
+#[cfg(guest_arch = "x86_64")]
+pub fn is_snp_available() -> bool {
+    let probe = || -> Result<(), MshvError> {
+        let mshv = Mshv::new()?;
+        mshv.create_vm_with_type(mshv_ioctls::VmType::Snp)?;
+        Ok(())
+    };
+    match probe() {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::debug!(
+                error = &err as &dyn std::error::Error,
+                "SNP partition probe failed"
+            );
+            false
+        }
+    }
+}
+
 /// Prototype partition.
 pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
+    #[cfg(guest_arch = "x86_64")]
+    isolation: arch::MshvProtoPartitionIsolation,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
     bsp: VcpuFd,
@@ -233,6 +292,55 @@ pub struct MshvPartition {
     inner: Arc<MshvPartitionInner>,
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
+}
+
+enum MshvIsolationState {
+    None,
+    #[cfg(guest_arch = "x86_64")]
+    Snp(arch::SnpPartitionState),
+}
+
+impl MshvIsolationState {
+    #[cfg(guest_arch = "x86_64")]
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        match self {
+            Self::None => virt::InitialVpStateSource::Registers,
+            Self::Snp(_) => virt::InitialVpStateSource::ImportedContext,
+        }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn snp(&self) -> Option<&arch::SnpPartitionState> {
+        match self {
+            Self::None => None,
+            Self::Snp(snp) => Some(snp),
+        }
+    }
+
+    fn map_user_memory(&self, vmfd: &VmFd, region: mshv_user_mem_region) -> anyhow::Result<bool> {
+        match self {
+            Self::None => {
+                vmfd.map_user_memory(region)?;
+                Ok(true)
+            }
+            #[cfg(guest_arch = "x86_64")]
+            Self::Snp(snp) => match *snp.launch_state.lock() {
+                // Record pre-launch mappings without exposing them to MSHV.
+                // SNP launch flushes them after loader writes are complete.
+                arch::SnpLaunchState::NotStarted => Ok(false),
+                arch::SnpLaunchState::Started => {
+                    anyhow::bail!("cannot add a memory mapping while SNP launch is in progress")
+                }
+                arch::SnpLaunchState::Finished => {
+                    vmfd.map_user_memory(region)?;
+                    Ok(true)
+                }
+                arch::SnpLaunchState::Failed => {
+                    anyhow::bail!("cannot add a memory mapping after SNP launch failed")
+                }
+            },
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -256,12 +364,13 @@ struct MshvPartitionInner {
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
     #[cfg(guest_arch = "x86_64")]
-    cpuid: virt::CpuidLeafSet,
-    #[cfg(guest_arch = "x86_64")]
     software_devices: virt::x86::apic_software_device::ApicSoftwareDevices,
-    /// Set to `true` when partition time is frozen (e.g. during reset).
-    /// The first VP to enter `run_vp` after a freeze will thaw time.
+    #[inspect(skip)]
+    isolation: MshvIsolationState,
     time_frozen: Mutex<bool>,
+    /// Whether the current partition reset scrubbed hypervisor-managed state.
+    /// Published before per-VP reset requests are dispatched.
+    reset_with_scrub: AtomicBool,
     /// aarch64 GIC MSI controller config, used to decode PCIe MSIs into SPI
     /// assertions via a v2m frame.
     #[cfg(guest_arch = "aarch64")]
@@ -280,6 +389,22 @@ struct MshvVpInner {
     /// Waker for the VP run loop task. Set by the VP thread, used by device
     /// threads to re-poll the run loop when new messages are enqueued.
     waker: RwLock<Option<Waker>>,
+}
+
+impl MshvVpInner {
+    fn reset(&self) {
+        let Self {
+            vp_info: _,
+            thread: _,
+            needs_yield: _,
+            message_queues,
+            message_queues_pending,
+            waker: _,
+        } = self;
+
+        message_queues.clear();
+        message_queues_pending.store(false, Ordering::Relaxed);
+    }
 }
 
 struct MshvVpInnerCleaner<'a> {
@@ -307,35 +432,107 @@ impl GetReferenceTime for MshvPartitionInner {
     }
 }
 
-impl MshvPartitionInner {
-    fn vp(&self, vp_index: VpIndex) -> &MshvVpInner {
-        &self.vps[vp_index.index() as usize]
+impl virt::PartitionTimeControl for MshvPartition {
+    fn freeze_time(&self) {
+        let mut frozen = self.inner.time_frozen.lock();
+        if !*frozen {
+            self.inner
+                .vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+                .expect("failed to freeze partition time");
+            *frozen = true;
+        }
     }
 
-    /// Freezes partition time. Time will remain frozen until [`thaw_time`] is
-    /// called (typically on the first VP run after reset).
-    fn freeze_time(&self) -> Result<(), Error> {
-        let mut frozen = self.time_frozen.lock();
-        if !*frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+    fn thaw_time(&self) {
+        let mut frozen = self.inner.time_frozen.lock();
+        if *frozen {
+            self.inner
+                .vmfd
+                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
+                .expect("failed to thaw partition time");
+            *frozen = false;
+        }
+    }
+}
+
+impl virt::ResetPartition for MshvPartition {
+    type Error = Error;
+
+    fn reset(&self) -> Result<(), Error> {
+        let Self {
+            inner,
+            synic_ports: _,
+        } = self;
+        let MshvPartitionInner {
+            vmfd,
+            bsp_vcpufd: _,
+            memory: _,
+            gm: _,
+            mem_layout: _,
+            vps: _,
+            #[cfg(guest_arch = "x86_64")]
+            irq_routes,
+            gsi_states: _,
+            caps: _,
+            synic_ports: _,
+            #[cfg(guest_arch = "x86_64")]
+                software_devices: _,
+            isolation: _,
+            time_frozen,
+            reset_with_scrub,
+            #[cfg(guest_arch = "aarch64")]
+                gic_msi: _,
+        } = inner.as_ref();
+
+        reset_with_scrub.store(false, Ordering::Release);
+        let scrubbed = scrub_partition(vmfd).map_err(ErrorInner::ScrubPartition)?;
+
+        #[cfg(guest_arch = "x86_64")]
+        if inner.caps.nested_virt && !scrubbed {
+            return Err(ErrorInner::NestedResetRequiresScrub.into());
+        }
+
+        #[cfg(guest_arch = "x86_64")]
+        for irq in 0..virt::irqcon::IRQ_LINES as u8 {
+            irq_routes.set_irq_route(irq, None);
+        }
+
+        if scrubbed {
+            // Re-establish the frozen-time invariant even if the cached value
+            // was already true before scrub.
+            let mut frozen = time_frozen.lock();
+            vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
                 .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             *frozen = true;
         }
+
+        self.reset_arch_state(scrubbed)?;
+        reset_with_scrub.store(scrubbed, Ordering::Release);
+        tracing::debug!(scrubbed, "reset mshv partition");
         Ok(())
     }
+}
 
-    /// Thaws partition time if it is currently frozen. This is a no-op if
-    /// time is already running.
-    fn thaw_time(&self) -> Result<(), Error> {
-        let mut frozen = self.time_frozen.lock();
-        if *frozen {
-            self.vmfd
-                .set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 0)
-                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
-            *frozen = false;
+/// Returns false only when the kernel does not implement partition scrub.
+fn scrub_partition(vmfd: &VmFd) -> io::Result<bool> {
+    // TODO: Use mshv-ioctls once it exposes MSHV_SCRUB_PARTITION.
+    // SAFETY: The partition fd is valid, the ioctl takes no arguments, and
+    // ResetPartition's caller has stopped all VPs and quiesced device work.
+    let ret = unsafe { libc::ioctl(vmfd.as_raw_fd(), libc::_IO(0xb8, 0x0b) as _) };
+    if ret < 0 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ENOTTY) {
+            return Ok(false);
         }
-        Ok(())
+        return Err(err);
+    }
+    Ok(true)
+}
+
+impl MshvPartitionInner {
+    fn vp(&self, vp_index: VpIndex) -> &MshvVpInner {
+        &self.vps[vp_index.index() as usize]
     }
 
     fn post_message(&self, vp_index: VpIndex, sint: u8, message: &HvMessage) {
@@ -414,6 +611,8 @@ pub struct MshvProcessorBinder {
     partition: Arc<MshvPartitionInner>,
     vcpufd: Option<VcpuFd>,
     vpindex: VpIndex,
+    #[cfg(guest_arch = "x86_64")]
+    snp: Option<arch::SnpVpState>,
 }
 
 /// Wraps a VcpuFd for running a VP. On x86_64, also provides access to the
@@ -421,7 +620,9 @@ pub struct MshvProcessorBinder {
 struct MshvVpRunner<'a> {
     vcpufd: &'a VcpuFd,
     #[cfg(guest_arch = "x86_64")]
-    reg_page: *mut hvdef::HvX64RegisterPage,
+    reg_page: Option<*mut hvdef::HvX64RegisterPage>,
+    #[cfg(guest_arch = "x86_64")]
+    ghcb_page: Option<*mut x86defs::snp::GhcbPage>,
 }
 
 impl MshvVpRunner<'_> {
@@ -436,10 +637,20 @@ impl MshvVpRunner<'_> {
 
     #[cfg(guest_arch = "x86_64")]
     fn reg_page(&mut self) -> &mut hvdef::HvX64RegisterPage {
+        let page = self
+            .reg_page
+            .expect("register page is unavailable for isolated VPs");
         // SAFETY: VP is stopped (returned from run()), so we have exclusive
-        // access. The raw pointer was obtained from the kernel's mmap of
-        // the register page and remains valid for the VP's lifetime.
-        unsafe { &mut *self.reg_page }
+        // access. The pointer is the kernel's VP register-page mapping and
+        // remains valid for the processor borrow.
+        unsafe { &mut *page }
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    fn ghcb_page(&mut self) -> Option<&mut x86defs::snp::GhcbPage> {
+        // SAFETY: The mapped page is owned by the mutably borrowed processor
+        // binder and remains valid for this processor borrow.
+        self.ghcb_page.map(|page| unsafe { &mut *page })
     }
 }
 
@@ -512,13 +723,24 @@ impl MshvProcessor<'_> {
         self.flush_messages(deliverable_sints);
     }
 
-    /// Resets the VP's message queue and deliverability notification state.
-    fn reset_synic_state(&mut self) {
-        self.inner.message_queues.clear();
-        self.inner
-            .message_queues_pending
-            .store(false, Ordering::Relaxed);
-        self.deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
+    fn reset_local_state(&mut self) {
+        let Self {
+            partition: _,
+            inner,
+            vpindex: _,
+            runner:
+                MshvVpRunner {
+                    vcpufd: _,
+                    #[cfg(guest_arch = "x86_64")]
+                        reg_page: _,
+                    #[cfg(guest_arch = "x86_64")]
+                        ghcb_page: _,
+                },
+            deliverability_notifications,
+        } = self;
+
+        inner.reset();
+        *deliverability_notifications = HvDeliverabilityNotificationsRegister::new();
     }
 }
 
@@ -545,10 +767,6 @@ impl virt::Processor for MshvProcessor<'_> {
         let _cleaner = MshvVpInnerCleaner { vpinner };
 
         assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
-
-        self.partition
-            .thaw_time()
-            .expect("failed to thaw partition time");
 
         // Ensure any messages present from a state restore are flushed on
         // the first loop iteration.
@@ -611,11 +829,20 @@ impl virt::Processor for MshvProcessor<'_> {
         use virt::vp::AccessVpState;
 
         let vp_info = self.inner.vp_info;
-        self.access_state(Vtl::Vtl0)
-            .reset_all(&vp_info)
-            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        let scrubbed = self.partition.reset_with_scrub.load(Ordering::Acquire);
+        if scrubbed {
+            self.finish_reset()?;
+        } else {
+            self.access_state(Vtl::Vtl0)
+                .reset_all(&vp_info)
+                .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
+        }
 
-        self.reset_synic_state();
+        self.reset_local_state();
+
+        if scrubbed && cfg!(debug_assertions) {
+            self.access_state(Vtl::Vtl0).check_reset_all(&vp_info);
+        }
 
         Ok::<(), Error>(())
     }
@@ -654,18 +881,58 @@ enum ErrorInner {
     #[error("operation not supported")]
     NotSupported,
     #[error("create_vm failed")]
-    CreateVMFailed,
+    CreateVMFailed(#[source] KernelError),
     #[error("failed to initialize VM")]
     CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
     CreateVcpu(#[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("VP register page is unavailable")]
+    MissingRegisterPage,
+    #[cfg(guest_arch = "x86_64")]
+    #[error(transparent)]
+    Snp(#[from] arch::SnpError),
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
     IsolationNotSupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("invalid MSHV configuration: {0}")]
+    InvalidConfiguration(&'static str),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM requests unsupported highest VTL {0}")]
+    UnsupportedSnpVtl(u8),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM requests unsupported shared GPA boundary {0:#x}")]
+    UnsupportedSnpSharedGpaBoundary(u64),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("MSHV does not support SNP IGVM relocation")]
+    SnpIgvmRelocationUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM must contain exactly one BSP VP context")]
+    InvalidSnpIgvmTopology,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to parse the SNP IGVM VMSA")]
+    InvalidSnpIgvmVmsa,
+    #[cfg(guest_arch = "x86_64")]
+    #[error(
+        "unsupported SNP IGVM VMSA state: SEV features {sev_features:#x}, virtual TOM {virtual_tom:#x}"
+    )]
+    UnsupportedSnpIgvmVmsa { sev_features: u64, virtual_tom: u64 },
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA backing memory is not contiguous")]
+    InvalidSnpVmsaBacking,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA GPA {0:#x} is invalid")]
+    InvalidSnpVmsaGpa(u64),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP IGVM VMSA overlaps configured guest RAM")]
+    SnpVmsaOverlapsRam,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("SNP VMSA import does not match the configured IGVM VP context")]
+    InvalidSnpVmsaImport,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
-    #[cfg(guest_arch = "x86_64")]
     #[error("failed to get partition property")]
     GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
@@ -688,14 +955,22 @@ enum ErrorInner {
     },
     #[error("failed to reset state")]
     ResetState(#[source] Box<virt::state::StateError<Error>>),
-    #[error("install intercept failed")]
-    InstallIntercept(#[source] KernelError),
+    #[error("failed to scrub partition")]
+    ScrubPartition(#[source] io::Error),
+    #[error("failed to install {0:?} intercept")]
+    InstallIntercept(hvdef::hypercall::HvInterceptType, #[source] KernelError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("nested virtualization reset requires partition scrub support")]
+    NestedResetRequiresScrub,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("saving nested virtualization state is not supported by MSHV")]
+    NestedStateSaveUnsupported,
+    #[cfg(guest_arch = "x86_64")]
+    #[error("restoring nested virtualization state is not supported by MSHV")]
+    NestedStateRestoreUnsupported,
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] KernelError),
-    #[cfg(guest_arch = "x86_64")]
-    #[error("host does not support required cpu capabilities")]
-    Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[error("too many virtual processors: {0}")]
     TooManyVps(u32),
     #[cfg(guest_arch = "x86_64")]
@@ -750,7 +1025,7 @@ fn create_vm_with_retry(
                 if e.errno() == libc::EINTR {
                     continue;
                 } else {
-                    return Err(ErrorInner::CreateVMFailed.into());
+                    return Err(ErrorInner::CreateVMFailed(e.into()).into());
                 }
             }
         }
@@ -771,6 +1046,13 @@ fn common_synthetic_features() -> hvdef::HvPartitionSyntheticProcessorFeatures {
         .with_access_intr_ctrl_regs(true)
         .with_access_hypercall_regs(true)
         .with_access_vp_index(true)
+        // access_vp_regs enables HvCallGetVpRegisters / HvCallSetVpRegisters
+        // for the guest. cloud-hypervisor sets this unconditionally in
+        // `make_default_synthetic_features_mask`, and it is required for
+        // nested-virt L1 guests to be recognized as parent partitions by
+        // the mshv Linux driver (which gates /dev/mshv on the
+        // create_partitions privilege that L0 mshv derives from this bit).
+        .with_access_vp_regs(true)
         .with_fast_hypercall_output(true)
         .with_direct_synthetic_timers(true)
         .with_extended_processor_masks(true)
@@ -793,7 +1075,13 @@ impl PartitionAccessState for MshvPartition {
 
 #[derive(Debug, Default)]
 struct MshvMemoryRangeState {
-    ranges: Vec<Option<mshv_user_mem_region>>,
+    ranges: Vec<Option<MshvMemoryRange>>,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct MshvMemoryRange {
+    region: mshv_user_mem_region,
+    mapped: bool,
 }
 
 impl virt::PartitionMemoryMapper for MshvPartition {
@@ -801,9 +1089,34 @@ impl virt::PartitionMemoryMapper for MshvPartition {
         assert_eq!(vtl, Vtl::Vtl0);
         self.inner.clone()
     }
+
+    fn host_access(&self) -> Option<Arc<dyn virt::PartitionHostAccess>> {
+        #[cfg(guest_arch = "x86_64")]
+        if self.inner.isolation.snp().is_some() {
+            return Some(self.inner.clone());
+        }
+        None
+    }
 }
 
 // TODO: figure out a better abstraction that also works for KVM and WHP.
+impl virt::PartitionHostAccess for MshvPartitionInner {
+    fn acquire_host_access(&self, _addr: u64, _size: u64, _write: bool) -> anyhow::Result<()> {
+        // TODO: The current prototype only provides the acquisition half of
+        // the host-visibility lifecycle. This is sufficient for single-threaded
+        // bring-up with no concurrent page-state changes, but the GPA attribute
+        // intercept revocation path must share serialized state with
+        // acquire_snp_host_access before concurrent use is safe.
+        // TODO: Investigate whether MSHV supports read-only host-access
+        // requests and use `_write` to avoid granting write access for reads.
+        #[cfg(guest_arch = "x86_64")]
+        if self.isolation.snp().is_some() {
+            return arch::acquire_snp_host_access(self, _addr, _size);
+        }
+        anyhow::bail!("acquiring host access is not supported")
+    }
+}
+
 impl virt::PartitionMemoryMap for MshvPartitionInner {
     unsafe fn map_range(
         &self,
@@ -820,7 +1133,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         let mut slot_to_use = None;
         for (slot, range) in state.ranges.iter_mut().enumerate() {
             match range {
-                Some(range) if range.userspace_addr == data as u64 => {
+                Some(range) if range.region.userspace_addr == data as u64 => {
                     slot_to_use = Some(slot);
                     break;
                 }
@@ -857,21 +1170,43 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             exec,
         )
         .entered();
-        self.vmfd.map_user_memory(mem_region)?;
-        state.ranges[slot_to_use] = Some(mem_region);
+        let mapped = self.isolation.map_user_memory(&self.vmfd, mem_region)?;
+        state.ranges[slot_to_use] = Some(MshvMemoryRange {
+            region: mem_region,
+            mapped,
+        });
         Ok(())
     }
 
     fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
         let unmap_start = addr >> HV_PAGE_SHIFT;
-        let unmap_end = (addr + size) >> HV_PAGE_SHIFT;
+        let unmap_end = addr
+            .checked_add(size)
+            .ok_or_else(|| anyhow::anyhow!("unmap range overflows the guest address space"))?
+            >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
+        for range in state.ranges.iter().flatten() {
+            let region_start = range.region.guest_pfn;
+            let region_end = region_start
+                .checked_add(range.region.size >> HV_PAGE_SHIFT)
+                .ok_or_else(|| anyhow::anyhow!("tracked memory region overflows GPA space"))?;
+            anyhow::ensure!(
+                (unmap_start <= region_start && region_end <= unmap_end)
+                    || region_end <= unmap_start
+                    || unmap_end <= region_start,
+                "unmap range partially overlaps a tracked memory region"
+            );
+        }
+
         for entry in &mut state.ranges {
-            let Some(region) = entry.as_ref() else {
+            let Some(range) = entry.as_ref() else {
                 continue;
             };
+            let region = &range.region;
             let region_start = region.guest_pfn;
-            let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
+            let region_end = region_start
+                .checked_add(region.size >> HV_PAGE_SHIFT)
+                .ok_or_else(|| anyhow::anyhow!("tracked memory region overflows GPA space"))?;
             if unmap_start <= region_start && region_end <= unmap_end {
                 // Region is fully contained in the unmap range.
                 let _span = tracing::info_span!(
@@ -880,13 +1215,10 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
                     size = region.size,
                 )
                 .entered();
-                self.vmfd.unmap_user_memory(*region)?;
+                if range.mapped {
+                    self.vmfd.unmap_user_memory(*region)?;
+                }
                 *entry = None;
-            } else {
-                assert!(
-                    region_end <= unmap_start || unmap_end <= region_start,
-                    "unmap range partially overlaps a mapped region"
-                );
             }
         }
         Ok(())
@@ -1058,14 +1390,35 @@ impl GuestEventPort for MshvGuestEventPort {
         Interrupt::from_fn(move || {
             let MshvEventPortParams { vp, sint, flag } = *params.lock();
             if let Some(partition) = partition.upgrade() {
-                partition
+                match partition
                     .signal_event_direct(vp.index(), sint, flag)
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Failed signal synic sint {} on vp {:?} with flag {}",
-                            sint, vp, flag
-                        )
-                    });
+                    .map_err(KernelError::from)
+                {
+                    Ok(()) => {}
+                    Err(
+                        err @ KernelError::Hypercall {
+                            error: HvError::InvalidSynicState,
+                            ..
+                        },
+                    ) => {
+                        tracing::debug!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = &err as &dyn std::error::Error,
+                            "failed to signal synic (expected)"
+                        );
+                    }
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = &err as &dyn std::error::Error,
+                            "failed to signal synic"
+                        );
+                    }
+                }
             }
         })
     }

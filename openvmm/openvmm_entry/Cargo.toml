@@ -10,12 +10,14 @@ rust-version.workspace = true
 default = ["ttrpc", "grpc"]
 
 grpc = ["mesh_rpc/grpc"]
+otel = ["dep:otel_tracing"]
 ttrpc = []
 
 [dependencies]
 chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
 crypto.workspace = true
+cxl.workspace = true
 cxl_spec.workspace = true
 debug_worker_defs.workspace = true
 vmotherboard.workspace = true
@@ -24,6 +26,7 @@ memory_range.workspace = true
 openvmm_build_info.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
+otel_tracing = { workspace = true, optional = true }
 vmm_core_defs.workspace = true
 vnc_worker_defs.workspace = true
 openvmm_pcat_locator.workspace = true
@@ -48,6 +51,7 @@ serial_16550_resources.workspace = true
 serial_socket.workspace = true
 storvsp_resources.workspace = true
 tpm_resources.workspace = true
+tpm_vmgs.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
@@ -64,7 +68,7 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 inspect_proto.workspace = true
 mesh.workspace = true

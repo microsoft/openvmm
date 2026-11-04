@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 net_backend.workspace = true
 net_backend_resources.workspace = true
+netvsp_protocol.workspace = true
 netvsp_resources.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
@@ -18,18 +19,16 @@ vm_resource.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 inspect_counters.workspace = true
 mesh.workspace = true
-open_enum.workspace = true
 pal_async.workspace = true
 safeatomic.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitfield-struct.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 static_assertions.workspace = true

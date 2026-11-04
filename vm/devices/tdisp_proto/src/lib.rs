@@ -21,6 +21,8 @@ pub use errorcode::*;
 
 use crate::guest_to_host_command::Command;
 use crate::guest_to_host_response::Response;
+use inspect::Inspect;
+use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/tdisp.rs"));
 
@@ -37,6 +39,7 @@ impl GuestToHostCommandExt for GuestToHostCommand {
             Some(Command::StartTdi(_)) => Some("StartTdi"),
             Some(Command::Unbind(_)) => Some("Unbind"),
             Some(Command::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Command::ModifyMmioRange(_)) => Some("ModifyMmioRange"),
             None => None,
         }
     }
@@ -93,6 +96,15 @@ impl GuestToHostResponseVariant for TdispCommandResponseUnbind {
     }
 }
 
+impl GuestToHostResponseVariant for TdispCommandResponseModifyMmioRange {
+    fn from_response_variant(response: Response) -> Option<Self> {
+        match response {
+            Response::ModifyMmioRange(r) => Some(r),
+            _ => None,
+        }
+    }
+}
+
 /// Provides helper methods for common operations on [`GuestToHostResponse`].
 pub trait GuestToHostResponseExt {
     /// Returns the error code of the response, if any.
@@ -110,6 +122,12 @@ pub trait GuestToHostResponseExt {
     /// let bind = resp.response::<TdispCommandResponseBind>()?;
     /// ```
     fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError>;
+
+    /// Returns the TDI state of the device before the command was processed, if available.
+    fn tdi_state_before_enum(&self) -> Option<TdispTdiState>;
+
+    /// Returns the TDI state of the device after the command was processed, if available.
+    fn tdi_state_after_enum(&self) -> Option<TdispTdiState>;
 }
 
 impl GuestToHostResponseExt for GuestToHostResponse {
@@ -124,8 +142,37 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(Response::StartTdi(_)) => Some("StartTdi"),
             Some(Response::Unbind(_)) => Some("Unbind"),
             Some(Response::GetTdiReport(_)) => Some("GetTdiReport"),
+            Some(Response::ModifyMmioRange(_)) => Some("ModifyMmioRange"),
             None => None,
         }
+    }
+
+    fn tdi_state_before_enum(&self) -> Option<TdispTdiState> {
+        let old_state = TdispTdiState::from_i32(self.tdi_state_before);
+
+        // These are the only valid states the host can advertise.
+        if old_state != Some(TdispTdiState::Unlocked)
+            && old_state != Some(TdispTdiState::Locked)
+            && old_state != Some(TdispTdiState::Run)
+        {
+            return None;
+        }
+
+        old_state
+    }
+
+    fn tdi_state_after_enum(&self) -> Option<TdispTdiState> {
+        let new_state = TdispTdiState::from_i32(self.tdi_state_after);
+
+        // These are the only valid states the host can advertise.
+        if new_state != Some(TdispTdiState::Unlocked)
+            && new_state != Some(TdispTdiState::Locked)
+            && new_state != Some(TdispTdiState::Run)
+        {
+            return None;
+        }
+
+        new_state
     }
 
     fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError> {
@@ -139,5 +186,23 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(err) => Err(err.into()),
             None => Err(TdispGuestOperationErrorCode::Unknown.into()),
         }
+    }
+}
+
+impl Display for TdispTdiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state_str = match self {
+            TdispTdiState::Uninitialized => "Uninitialized",
+            TdispTdiState::Unlocked => "Unlocked",
+            TdispTdiState::Locked => "Locked",
+            TdispTdiState::Run => "Run",
+        };
+        write!(f, "{}", state_str)
+    }
+}
+
+impl Inspect for TdispTdiState {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.value(format!("{}", self));
     }
 }

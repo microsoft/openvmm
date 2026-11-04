@@ -5,10 +5,22 @@ pub use flowey::util::copy_dir_all;
 
 use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
+use std::collections::BTreeMap;
 
+pub mod cargo_install;
 pub mod cargo_output;
 pub mod extract;
 pub mod wslpath;
+
+/// Group values by key, ordering groups deterministically and retaining all
+/// values within each group in input order.
+pub fn group_by<K: Ord, V>(items: impl IntoIterator<Item = (K, V)>) -> BTreeMap<K, Vec<V>> {
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for (key, value) in items {
+        groups.entry(key).or_default().push(value);
+    }
+    groups
+}
 
 // include a "dummy" _rt argument to enforce that this helper should only be
 // used in runtime contexts, and not during flow compile-time.

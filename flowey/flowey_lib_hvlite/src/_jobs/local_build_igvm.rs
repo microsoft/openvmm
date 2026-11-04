@@ -259,6 +259,7 @@ impl SimpleFlowNode for Node {
             custom_target: None,
             extra_features: BTreeSet::new(),
             disable_secure_avic,
+            uefi_firmware_flavor: None,
             confidential_debug,
             openhcl_igvm: write_openhcl_igvm,
             openhcl_igvm_extras: write_openhcl_igvm_extras,

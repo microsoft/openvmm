@@ -95,7 +95,6 @@ pub struct VmbusDeviceTreeInfo {
     p_compatible: StringId,
     p_ranges: StringId,
     p_vtl: StringId,
-    p_vmbus_connection_id: StringId,
     p_dma_coherent: StringId,
     p_interrupt_parent: StringId,
     p_interrupts: StringId,
@@ -116,7 +115,6 @@ fn write_vmbus<'a, T>(
         p_compatible,
         p_ranges,
         p_vtl,
-        p_vmbus_connection_id,
         p_dma_coherent,
         p_interrupt_parent,
         p_interrupts,
@@ -129,8 +127,7 @@ fn write_vmbus<'a, T>(
         .add_u32(p_size_cells, 2)?
         .add_null(p_dma_coherent)?
         .add_str(p_compatible, "microsoft,vmbus")?
-        .add_u32(p_vtl, u8::from(vtl).into())?
-        .add_u32(p_vmbus_connection_id, vmbus.connection_id)?;
+        .add_u32(p_vtl, u8::from(vtl).into())?;
 
     let mut mmio_ranges = ArrayVec::<u64, 6>::new();
     for entry in vmbus.mmio.iter() {
@@ -210,7 +207,6 @@ pub fn write_dt(
     let p_reftime_sidecar_start = builder.add_string("reftime_sidecar_start")?;
     let p_reftime_sidecar_end = builder.add_string("reftime_sidecar_end")?;
     let p_vtl = builder.add_string(igvm_defs::dt::IGVM_DT_VTL_PROPERTY)?;
-    let p_vmbus_connection_id = builder.add_string("microsoft,message-connection-id")?;
     let p_dma_coherent = builder.add_string("dma-coherent")?;
     let p_igvm_type = builder.add_string(IGVM_DT_IGVM_TYPE_PROPERTY)?;
     let p_openhcl_memory = builder.add_string("openhcl,memory-type")?;
@@ -254,17 +250,23 @@ pub fn write_dt(
 
     #[cfg(target_arch = "x86_64")]
     if isolation_type == IsolationType::Tdx {
+        // Linux ignores the whole `/reserved-memory` subtree unless its cell
+        // counts match the root node's, so these must stay in sync with the
+        // root node above.
         let mut mailbox_builder = root_builder
             .start_node("reserved-memory")?
             .add_u32(p_address_cells, 2)?
-            .add_u32(p_size_cells, 1)?
+            .add_u32(p_size_cells, 2)?
             .add_null(p_ranges)?;
 
         let name = format_fixed!(32, "wakeup_table@{:x}", RESET_VECTOR_PAGE);
         let mailbox_addr_builder = mailbox_builder
             .start_node(name.as_ref())?
             .add_str(p_compatible, "intel,wakeup-mailbox")?
-            .add_u32_array(p_reg, &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x1000])?;
+            .add_u32_array(
+                p_reg,
+                &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x0, 0x1000],
+            )?;
 
         mailbox_builder = mailbox_addr_builder.end_node()?;
 
@@ -474,7 +476,6 @@ pub fn write_dt(
         p_compatible,
         p_ranges,
         p_vtl,
-        p_vmbus_connection_id,
         p_dma_coherent,
         p_interrupt_parent,
         p_interrupts,

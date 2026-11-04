@@ -7,6 +7,7 @@
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
 use crate::registrar::MemoryRegistrar;
+use crate::registrar::RegisterAllError;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
@@ -392,8 +393,8 @@ pub enum VtlPermissionsError {
 pub(crate) enum RegisterMemoryError {
     #[error("memory mapping is not configured for kernel registration")]
     NotConfigured,
-    #[error("failed to register memory starting at {address:#x}")]
-    RegistrationFailed { address: u64 },
+    #[error(transparent)]
+    Registration(#[from] RegisterAllError),
 }
 
 #[derive(Debug)]
@@ -540,7 +541,7 @@ pub struct GuestMemoryMappingBuilder {
     valid_memory: Option<Arc<GuestValidMemory>>,
     permissions_bitmap_state: Option<bool>,
     shared: bool,
-    for_kernel_access: bool,
+    kernel_registration_granularity: Option<u64>,
     dma_base_address: Option<u64>,
     ignore_registration_failure: bool,
 }
@@ -570,12 +571,12 @@ impl GuestMemoryMappingBuilder {
         self
     }
 
-    /// Set whether this mapping's memory can be locked to pass to the kernel.
+    /// Allow this mapping's memory to be locked and passed to the kernel.
     ///
-    /// If so, then the memory will be registered with the kernel as part of
+    /// Memory is registered in chunks of `registration_granularity` as part of
     /// `expose_va`, which is called when memory is locked.
-    pub fn for_kernel_access(&mut self, for_kernel_access: bool) -> &mut Self {
-        self.for_kernel_access = for_kernel_access;
+    pub fn for_kernel_access(&mut self, registration_granularity: u64) -> &mut Self {
+        self.kernel_registration_granularity = Some(registration_granularity);
         self
     }
 
@@ -710,12 +711,14 @@ impl GuestMemoryMappingBuilder {
             tracing::trace!(?entry, "mapped memory map entry");
         }
 
-        let registrar = if self.for_kernel_access {
+        let registrar = if let Some(registration_granularity) = self.kernel_registration_granularity
+        {
             let mshv = Mshv::new().map_err(MappingError::OpenDevice)?;
             let mshv_vtl = mshv.create_vtl().map_err(MappingError::OpenDevice)?;
             Some(MemoryRegistrar::new(
                 memory_layout,
                 self.physical_address_base,
+                registration_granularity,
                 MshvVtlWithPolicy {
                     mshv_vtl,
                     ignore_registration_failure: self.ignore_registration_failure,
@@ -748,19 +751,26 @@ impl GuestMemoryMapping {
             valid_memory: None,
             permissions_bitmap_state: None,
             shared: false,
-            for_kernel_access: false,
+            kernel_registration_granularity: None,
             dma_base_address: None,
             ignore_registration_failure: false,
         }
     }
 
-    /// Register all mapped RAM before it is accessed.
-    pub(crate) fn register_all_memory(&self) -> Result<(), RegisterMemoryError> {
+    /// Register all complete `alignment`-aligned RAM subranges before they are accessed.
+    ///
+    /// If `ignore_unaligned_ranges` is false, fail if any RAM remains outside
+    /// the aligned subranges.
+    pub(crate) fn register_all_aligned_memory(
+        &self,
+        alignment: u64,
+        ignore_unaligned_ranges: bool,
+    ) -> Result<(), RegisterMemoryError> {
         self.registrar
             .as_ref()
             .ok_or(RegisterMemoryError::NotConfigured)?
-            .register_all()
-            .map_err(|address| RegisterMemoryError::RegistrationFailed { address })
+            .register_all_aligned(alignment, ignore_unaligned_ranges)
+            .map_err(RegisterMemoryError::from)
     }
 
     /// Update the permission bitmaps to reflect the given flags.

@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispMmioRangeAction;
 use tdisp_proto::TdispReportType;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -21,6 +22,12 @@ pub enum LastCall {
     StartDevice,
     UnbindDevice,
     GetDeviceReport(TdispReportType),
+    ModifyMmioRange {
+        action: TdispMmioRangeAction,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    },
 }
 
 pub struct TrackingHostInterface {
@@ -44,16 +51,33 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
         Ok(())
     }
 
+    fn tdisp_modify_mmio_range(
+        &mut self,
+        action: TdispMmioRangeAction,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()> {
+        *self.last_call.lock() = Some(LastCall::ModifyMmioRange {
+            action,
+            range_id,
+            gpa_base,
+            range_len_bytes,
+        });
+        Ok(())
+    }
+
     /// Returns a mock report buffer that is configurable.
     fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
-        if report_type == TdispReportType::InterfaceReport {
-            *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
-            Ok(self.report_buffer.lock().clone())
-        } else {
-            *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
-            Err(anyhow::anyhow!(
-                "mock test checks only that InterfaceReport is requested"
-            ))
+        *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
+        match report_type {
+            TdispReportType::InterfaceReport => Ok(self.report_buffer.lock().clone()),
+            // The guest device ID is served in any TDI state, so the mock has
+            // to answer it too. The wire format is a little-endian u64.
+            TdispReportType::GuestDeviceId => Ok(TDISP_MOCK_DEVICE_ID.to_le_bytes().to_vec()),
+            _ => Err(anyhow::anyhow!(
+                "mock test checks only InterfaceReport and GuestDeviceId requests"
+            )),
         }
     }
 

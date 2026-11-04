@@ -4,9 +4,12 @@
 //! Second-level page table entry types for the Intel VT-d IOMMU.
 //!
 //! Based on Intel VT-d Specification Rev 4.1, §9.8. The second-level page
-//! table format is EPT-like: 64-bit entries, 9 bits per level, with R/W/X
-//! permission bits in bits 2:0 and a PS (page size) bit at bit 7 for large
+//! table format is EPT-like: 64-bit entries, 9 bits per level, with R/W
+//! permission bits in bits 1:0 (bit 2 is ignored) and a PS bit at bit 7 for large
 //! pages at levels 2 (2MB) and 3 (1GB).
+//! Accessed (bit 8) and leaf dirty (bit 9) flags are ignored unless Second Stage
+//! Access/Dirty bit Enable (SSADE) is set in the referencing scalable-mode
+//! PASID-table entry (§3.7.2).
 //!
 //! Page table level parameters:
 //! - Level 4: VA\[47:39\], 9 bits → 512GB region
@@ -33,14 +36,21 @@ pub struct SlPte {
     pub r: bool,
     /// Write permission — 1 = DMA writes allowed through this entry.
     pub w: bool,
-    /// Execute permission (ignored for DMA, relevant for first-level only).
+    /// EPT execute bit; ignored in VT-d second-stage entries.
     pub x: bool,
     #[bits(4)]
     _ignored1: u64,
     /// Page Size — 1 = this is a leaf entry for a large page.
     /// Valid at level 3 (1GB) and level 2 (2MB). Must be 0 at level 4.
     pub ps: bool,
-    #[bits(3)]
+    /// Accessed (bit 8): hardware sets this when using the entry for translation.
+    /// Enabled by Second Stage Access/Dirty bit Enable (SSADE) in the
+    /// referencing scalable-mode PASID-table entry; otherwise ignored.
+    pub a: bool,
+    /// Dirty (bit 9): hardware sets this on the leaf entry for a DMA write.
+    /// Ignored in non-leaf entries or when the PASID-table SSADE field is clear.
+    pub d: bool,
+    #[bits(1)]
     _ignored2: u64,
     /// Snoop behavior (bit 11, ignored by emulator).
     pub snp: bool,
@@ -119,6 +129,47 @@ impl SlPte {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_accessed_dirty_literal_layout() {
+        assert_eq!(size_of::<SlPte>(), 8);
+        assert_eq!(align_of::<SlPte>(), 8);
+        for (raw, accessed, dirty) in [
+            (0x100, true, false),
+            (0x200, false, true),
+            (0x400, false, false),
+        ] {
+            let pte = SlPte::from(raw);
+            assert_eq!(pte.a(), accessed);
+            assert_eq!(pte.d(), dirty);
+            assert!(!pte.is_present());
+        }
+        assert_eq!(SlPte::new().with_a(true).into_bits(), 1 << 8);
+        assert_eq!(SlPte::new().with_d(true).into_bits(), 1 << 9);
+        assert_eq!(
+            SlPte::new().with_a(true).with_d(true).as_bytes(),
+            &[0, 3, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn test_accessed_dirty_preserve_other_bits() {
+        // Include every unrelated bit, including ignored and reserved bits.
+        for bit in 0..64 {
+            for raw in [1u64 << bit, !(1u64 << bit)] {
+                for accessed in [false, true] {
+                    for dirty in [false, true] {
+                        let pte = SlPte::from(raw).with_a(accessed).with_d(dirty);
+                        assert_eq!(
+                            pte.into_bits(),
+                            (raw & !0x300) | ((accessed as u64) << 8) | ((dirty as u64) << 9)
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_pte_present_requires_r_or_w() {

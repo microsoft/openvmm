@@ -15,7 +15,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 memory_range = { workspace = true, features = ["mesh", "inspect"] }
 
-inspect.workspace = true
+inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
 sparse_mmap.workspace = true
 

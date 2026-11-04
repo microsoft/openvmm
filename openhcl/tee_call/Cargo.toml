@@ -7,7 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-dev_snp_ohcl_tio_support = ["sev_guest_device/dev_snp_ohcl_tio_support"]
+# Forwarded to sev_guest_device. See that crate for what it changes.
+dev_snp_tio_guest_ioctl_abi = ["sev_guest_device/dev_snp_tio_guest_ioctl_abi"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true

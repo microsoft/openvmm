@@ -18,6 +18,7 @@ use crate::vm_controller::ServiceVtl2Params;
 use crate::vm_controller::VmControllerEvent;
 use crate::vm_controller::VmControllerRpc;
 use anyhow::Context;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
@@ -28,6 +29,7 @@ use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::executor::block_on;
+use futures::future::Either;
 use futures_concurrency::stream::Merge;
 use inspect::InspectionBuilder;
 use mesh::CancelContext;
@@ -53,7 +55,6 @@ use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use std::future::pending;
 use std::io;
-#[cfg(unix)]
 use std::io::IsTerminal;
 use std::io::Read;
 use std::path::PathBuf;
@@ -260,6 +261,9 @@ enum InteractiveCommand {
         /// Tell the guest to force the power state transition.
         #[clap(long, short = 'f')]
         force: bool,
+        /// Inject an ACPI power-button event instead of using Hyper-V shutdown IC.
+        #[clap(long, short = 'a', conflicts_with_all = ["reboot", "hibernate", "force"])]
+        acpi: bool,
     },
 
     /// Clears the current halt condition, resuming the VPs if the VM is
@@ -435,9 +439,42 @@ pub(crate) struct ReplResources {
     pub nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     pub consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     pub shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    pub acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     pub has_vtl2: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleInputEnd {
+    InputMode,
+    Eof,
+}
+
+fn forward_console_input<R, W>(stdin: &mut R, output: &mut W) -> io::Result<ConsoleInputEnd>
+where
+    R: Read + ?Sized,
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    let mut buf = [0; 32];
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            return Ok(ConsoleInputEnd::Eof);
+        }
+
+        let mut bytes = &buf[..n];
+        let end = if let Some(ctrlq) = bytes.iter().position(|x| *x == 0x11) {
+            bytes = &bytes[..ctrlq];
+            Some(ConsoleInputEnd::InputMode)
+        } else {
+            None
+        };
+        block_on(output.write_all(bytes))?;
+        if let Some(end) = end {
+            return Ok(end);
+        }
+    }
 }
 
 /// Run the interactive REPL.
@@ -453,6 +490,7 @@ pub(crate) async fn run_repl(
         mut nvme_vtl2_rpc,
         consomme_rpc,
         shutdown_ic,
+        acpi_power_button,
         kvp_ic,
         console_in,
         has_vtl2,
@@ -526,35 +564,33 @@ pub(crate) async fn run_repl(
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                crossterm::terminal::enable_raw_mode().expect("failed to enable raw console mode");
-
-                if let Some(input) = console_in.as_mut() {
-                    let mut buf = [0; 32];
-                    loop {
-                        let n = stdin.read(&mut buf).unwrap();
-                        let mut b = &buf[..n];
-                        let stop = if let Some(ctrlq) = b.iter().position(|x| *x == 0x11) {
-                            b = &b[..ctrlq];
-                            true
-                        } else {
-                            false
-                        };
-                        block_on(input.as_mut().write_all(b)).expect("BUGBUG");
-                        if stop {
-                            break;
-                        }
-                    }
+                let terminal = stdin.is_terminal();
+                // Read a non-terminal stdin, such as a pipe from a driving
+                // process, without switching the console to raw mode.
+                if terminal {
+                    crossterm::terminal::enable_raw_mode()
+                        .expect("failed to enable raw console mode");
                 }
 
-                crossterm::terminal::disable_raw_mode()
-                    .expect("failed to disable raw console mode");
+                let input_end = console_in.as_mut().map(|input| {
+                    forward_console_input(&mut stdin, input.as_mut())
+                        .expect("failed to forward console input")
+                });
+
+                if terminal {
+                    crossterm::terminal::disable_raw_mode()
+                        .expect("failed to disable raw console mode");
+                }
+                if input_end == Some(ConsoleInputEnd::Eof) {
+                    return;
+                }
 
                 loop {
-                    let line = rl.readline("openvmm> ");
-                    if line.is_err() {
-                        break;
-                    }
-                    let line = line.unwrap();
+                    let line = match rl.readline("openvmm> ") {
+                        Ok(line) => line,
+                        Err(rustyline::error::ReadlineError::Eof) if !terminal => return,
+                        Err(_) => break,
+                    };
                     let trimmed = line.trim();
                     if trimmed.is_empty() {
                         continue;
@@ -619,6 +655,7 @@ pub(crate) async fn run_repl(
         PulseSaveRestore,
         StateChange(Result<StateChange, RpcError>),
         ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
+        AcpiShutdownResult(Result<(), RpcError>),
         Controller(VmControllerEvent),
     }
 
@@ -649,7 +686,10 @@ pub(crate) async fn run_repl(
                 .map(Event::StateChange);
             let shutdown = pin!(async {
                 if let Some(s) = &mut pending_shutdown {
-                    Event::ShutdownResult(s.await)
+                    match s {
+                        Either::Left(s) => Event::ShutdownResult(s.await),
+                        Either::Right(s) => Event::AcpiShutdownResult(s.await),
+                    }
                 } else {
                     pending().await
                 }
@@ -772,6 +812,17 @@ pub(crate) async fn run_repl(
                             "communication failure during shutdown"
                         );
                     }
+                }
+                pending_shutdown = None;
+                continue;
+            }
+            Event::AcpiShutdownResult(r) => {
+                match r {
+                    Ok(()) => tracing::info!("ACPI power-button event injected"),
+                    Err(err) => tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "communication failure during ACPI shutdown"
+                    ),
                 }
                 pending_shutdown = None;
                 continue;
@@ -927,9 +978,17 @@ pub(crate) async fn run_repl(
                 reboot,
                 hibernate,
                 force,
+                acpi,
             } => {
                 if pending_shutdown.is_some() {
                     println!("shutdown already in progress");
+                } else if acpi {
+                    if let Some(button) = &acpi_power_button {
+                        pending_shutdown =
+                            Some(Either::Right(button.call(PowerButtonRpc::Press, ())));
+                    } else {
+                        eprintln!("error: ACPI shutdown requires direct ACPI, UEFI, or PCAT boot");
+                    }
                 } else if let Some(ic) = &shutdown_ic {
                     let params = hyperv_ic_resources::shutdown::ShutdownParams {
                         shutdown_type: if hibernate {
@@ -941,8 +1000,9 @@ pub(crate) async fn run_repl(
                         },
                         force,
                     };
-                    pending_shutdown =
-                        Some(ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params));
+                    pending_shutdown = Some(Either::Left(
+                        ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params),
+                    ));
                 } else {
                     println!("no shutdown ic configured");
                 }
@@ -1718,5 +1778,36 @@ impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
             }
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use test_with_tracing::test;
+
+    #[test]
+    fn console_input_stops_at_eof() {
+        let mut stdin = Cursor::new(b"guest input");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::Eof
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
+    }
+
+    #[test]
+    fn console_input_stops_at_ctrl_q() {
+        let mut stdin = Cursor::new(b"guest input\x11ignored");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::InputMode
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
     }
 }

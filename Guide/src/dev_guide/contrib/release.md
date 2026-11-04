@@ -1,21 +1,48 @@
 # Release Management
 
-Occasionally, the OpenVMM project will declare upcoming release milestones. We
-stabilize the code base in a `release/<MAJOR>.<MINOR>.<YYMM>` branch, typically
-named for the YYMM when the branch was forked. Future references to the release
-number will be shortened to `<RELEASE>` in this doc. We expect a high quality
-bar for all code that goes into the OpenVMM main branch, and we ask developers
-to hold these release branches to the highest quality standards. The OpenVMM
-maintainers will gradually slow the rate of churn into these branches as we get
-closer to a close date.
+The OpenVMM repository periodically creates releases from `main`, typically
+about once a month. Releases are named for the year and month in which they
+were forked, using `YYMM`. For example, a release forked in September 2026 is
+release `2609`.
+
+Each monthly release is represented by a branch named `release/<YYMM>`, such
+as `release/2609`. The branch remains available as the release baseline and
+receives backported fixes if that release needs stabilization or servicing.
+
+The repository produces both the OpenVMM VMM and the OpenHCL paravisor.
+OpenVMM and OpenHCL retain their own product versions; the `YYMM` release
+identifies their repository baseline. OpenHCL currently ships about twice a
+year and selects one of the repository releases as the baseline for each
+product release.
+
+Before publishing an OpenVMM source release from `main` or a release branch,
+ensure that the workspace version is the intended SemVer and has not previously
+been published. If the current version has already been published, update it in
+a normal pull request. A new feature release from `main` typically increments
+the minor version, such as `1.1.0` to `1.2.0`. A servicing release from a
+release branch increments the patch version, such as `1.1.0` to `1.1.1`. An
+already committed, unpublished version can be selected without changing
+`Cargo.toml`. The same workspace version may exist in multiple branches during
+development, but it can be published as an `openvmm-v<VERSION>` release only
+once. Continuing development or creating a release branch does not by itself
+require a version bump. See
+[Cutting an OpenVMM source release](openvmm_source_release.md) for the
+publication process.
+
+We expect a high quality bar for all code that goes into the OpenVMM main
+branch, and we ask developers to hold release branches to the highest quality
+standards. The OpenVMM maintainers will gradually slow the rate of churn into
+these branches as we get closer to a shipping date.
 
 ```admonish note title="See also"
 [Security Releases](security_releases.md) describes private reporting and
 coordinated disclosure for fixes that cannot be developed publicly.
 ```
 
-> **Note:** Some older release branches use the format `release/<YYMM>` without
-> the major and minor version numbers (e.g., `release/2411`, `release/2505`).
+```admonish note
+Some existing release branches use the older
+`release/<MAJOR>.<MINOR>.<YYMM>` format, such as `release/1.8.2607`.
+```
 
 This process should not impact your typical workflow; all new work should go
 into the `main` branch. But, to ease the cherry-picks, we may ask that you hold
@@ -39,7 +66,50 @@ Releases naturally fall into several phases:
 | Servicing          | Only essential fixes are made to support the release (a.k.a. maintenance mode).                                                |
 | Out of service     | A previous release which is no longer receiving updates.                                                                       |
 
+By default, a monthly release branch receives short-term servicing until the
+next monthly release supersedes it. Branches selected for an OpenHCL product
+release receive extended servicing.
+
+For OpenHCL, the plan of record is to service the current product release and
+the two preceding product releases. Because OpenHCL currently releases about
+twice a year, this is approximately 18 months of servicing. The release-count
+policy is authoritative if the release cadence changes. When a new OpenHCL
+release ships, the release that is now three product releases behind moves out
+of service.
+
+This servicing policy applies prospectively to releases created under the new
+model. Existing release branches retain the lifecycle states listed below.
+
+### Backport acceptance bar
+
+Release branches accept security fixes and critical bug fixes only. A critical
+bug fix addresses one of the following:
+
+- A crash, data corruption, or data loss.
+- A severe reliability or availability regression.
+- A critical compatibility or servicing failure.
+- An issue that prevents a supported scenario from functioning.
+
+New features, routine performance improvements, cleanup, and refactoring are
+not accepted. A narrowly scoped prerequisite for an approved fix may be
+considered with the same level of scrutiny. Changes must land in `main` first
+and are selectively backported after assessing their risk to the serviced
+release.
+
 ### Release branch process
+
+In the label and tooling examples below, `<RELEASE>` is the suffix of the
+release branch. For `release/2609`, `<RELEASE>` is `2609`.
+
+When creating a monthly release branch:
+
+1. Create the `release_<RELEASE>`, `backport_<RELEASE>`, and
+   `backported_<RELEASE>` labels in GitHub.
+2. Add the `release_<RELEASE>` base-branch rule to `.github/labeler.yml` so pull
+   requests targeting the branch are labeled consistently.
+3. Add the branch to both `run_filters` and `test_filters` in
+   `petri/logview/src/branch_quick_filters.tsx` so it appears in the Runs,
+   Tests, and TestDetails quick filters.
 
 We track the state of candidates for a given release by tagging the PRs with the following labels:
 

@@ -1,7 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Standalone executable that hosts the IGVM agent Windows RPC façade.
+//! Windows test server that emulates the host IGVM agent RPC facade.
+//!
+//! The service exposes the RPC endpoints used by OpenHCL guest attestation and
+//! can install predefined plans for AK-certificate retries, key-release
+//! failures, persisted certificates, and TPM state refresh. It exists to make
+//! those host/guest protocol paths deterministic in integration tests.
+//!
+//! Flowey normally starts and stops this executable around the relevant VMM
+//! tests and captures its logs. Direct invocation is mainly useful for
+//! debugging a scenario selected with `--test-config`; non-Windows builds
+//! return an unsupported-platform failure.
 
 #[cfg(target_os = "windows")]
 mod rpc;

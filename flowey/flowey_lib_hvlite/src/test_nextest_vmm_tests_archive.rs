@@ -28,7 +28,7 @@ flowey_request! {
         /// Optionally provide the nextest bin to use
         pub nextest_bin: Option<ReadVar<PathBuf>>,
         /// Target for the tests to run on
-        pub target: Option<ReadVar<target_lexicon::Triple>>,
+        pub target: Option<target_lexicon::Triple>,
         /// Additional env vars set when executing the tests.
         pub extra_env: ReadVar<BTreeMap<String, String>>,
         /// Wait for specified side-effects to resolve before building / running

@@ -15,7 +15,8 @@ name = "tmks"
 harness = false
 
 [[test]]
-name = "cca"
+name = "virt_backend_tests"
+path = "tests/virt_backend_tests/main.rs"
 harness = false
 
 [dev-dependencies]
@@ -28,12 +29,15 @@ tmk_tests.workspace = true
 petri_artifacts_common.workspace = true
 petri.workspace = true
 inspect.workspace = true
+inspect_proto.workspace = true
 initrd_cpio.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true
+disk_backend.workspace = true
+disk_vmdk.workspace = true
 hyperv_ic_resources.workspace = true
 memory_range.workspace = true
 net_backend_resources.workspace = true
@@ -47,7 +51,7 @@ virtio_resources.workspace = true
 vm_resource.workspace = true
 disk_vhd1.workspace = true
 
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 hvs_file.workspace = true
 kmsg.workspace = true
 mesh.workspace = true
@@ -55,6 +59,8 @@ pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
 vmgs_resources.workspace = true
+vmgs.workspace = true
+vmgs_format.workspace = true
 
 anyhow.workspace = true
 fs-err.workspace = true
@@ -72,6 +78,26 @@ tempfile.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 pipette_client.workspace = true
 serde = { workspace = true, features = ["std"] }
+
+[target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
+guestmem.workspace = true
+hvdef.workspace = true
+virt.workspace = true
+vm_topology.workspace = true
+vmcore.workspace = true
+x86defs.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+virt_kvm.workspace = true
+virt_mshv.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+der.workspace = true
+virt_whp.workspace = true
+x509-cert.workspace = true
+
+[build-dependencies]
+build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true

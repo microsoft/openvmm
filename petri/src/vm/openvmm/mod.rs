@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+mod mshv;
 mod runtime;
 mod start;
 
@@ -38,15 +39,17 @@ use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-use crate::vm::PetriVmBuilder;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
+use disk_backend_resources::layer::SqliteDiskLayerFormatParams;
+use disk_backend_resources::layer::SqliteDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
@@ -72,6 +75,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 
@@ -87,15 +91,44 @@ pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Add a single-port Linux virtio console, captured in `hvc0.log`.
+    ///
+    /// Linux-direct boot selects `console=hvc0` and requires initrd-owned agent
+    /// startup. UEFI guests select their console through their boot configuration.
+    /// The firmware UART is unchanged.
+    pub fn with_virtio_console(mut self) -> Self {
+        assert!(
+            matches!(
+                self.config.firmware,
+                Firmware::LinuxDirect { .. } | Firmware::Uefi { .. }
+            ) && self.config.firmware.os_flavor() == petri_artifacts_common::tags::OsFlavor::Linux
+                && self.config.firmware.isolation().is_none(),
+            "virtio-console requires Linux-direct or non-isolated Linux UEFI"
+        );
+        self.use_virtio_console = true;
+        self
+    }
+}
+
+impl OpenVmmPetriBackend {
+    /// Launch a separately supplied, protocol-compatible native executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            openvmm_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
+    const SUPPORTS_VMBUS: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
-        arch == MachineArch::host()
-            && !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
-            && !(firmware.is_pcat() && arch == MachineArch::Aarch64)
+        !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
     }
 
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -126,7 +159,13 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         Ok(None) // TODO #2403
     }
 
-    fn new(resolver: &ArtifactResolver<'_>) -> Self {
+    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
+        None
+    }
+
+    fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
+        // OpenVMM guests must have the same arch as the host
+        assert_eq!(arch, MachineArch::host());
         OpenVmmPetriBackend {
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
@@ -139,7 +178,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         config: PetriVmConfig,
         modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-        properties: PetriVmProperties,
+        properties: &PetriVmProperties,
     ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
         let mut config =
             PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
@@ -155,32 +194,53 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 /// Reusable OpenVMM configuration for tests that launch the same VM recipe in
 /// multiple worker processes.
 pub struct OpenVmmRelaunchConfig {
-    builder: PetriVmBuilder<OpenVmmPetriBackend>,
-    _prepared_initrd_guard: Option<TempPath>,
+    builder: crate::PetriVmBuilder<OpenVmmPetriBackend>,
+    /// Holds the disk write files shared by all launched workers.
+    _diff_dir: tempfile::TempDir,
 }
 
-impl PetriVmBuilder<OpenVmmPetriBackend> {
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
     /// Prepare this configuration for launching multiple OpenVMM workers with
     /// the same VM recipe.
+    ///
+    /// Differencing disks store their writes in files shared by all launched
+    /// workers, so a restored guest sees the disk writes made before the save.
     pub fn prepare_openvmm_relaunch(self) -> anyhow::Result<OpenVmmRelaunchConfig> {
         anyhow::ensure!(
             self.modify_vmm_config.is_none(),
             "OpenVMM relaunch configurations do not support modify_backend"
         );
 
-        let mut builder = self.add_boot_disk().add_agent_disks();
-        let prepared_initrd_guard =
-            if builder.uses_pipette_as_init() && builder.prebuilt_initrd.is_none() {
-                let initrd = builder.prepare_initrd()?;
-                builder.prebuilt_initrd = Some(initrd.to_path_buf());
-                Some(initrd)
-            } else {
-                None
-            };
+        let mut builder = self.add_boot_disk()?.add_agent_disks()?;
+        if builder.uses_pipette_as_init() && builder.resources.prebuilt_initrd.is_none() {
+            builder.resources.prebuilt_initrd = Some(builder.prepare_initrd()?);
+        }
+
+        let diff_dir = tempfile::tempdir().context("failed to create disk write directory")?;
+        let config = &mut builder.config;
+        let drives = config
+            .vmbus_storage_controllers
+            .values_mut()
+            .flat_map(|controller| controller.drives.values_mut())
+            .chain(config.pcie_nvme_drives.iter_mut().map(|d| &mut d.drive))
+            .chain(
+                config
+                    .pcie_virtio_blk_drives
+                    .iter_mut()
+                    .map(|d| &mut d.drive),
+            );
+        for (i, drive) in drives.enumerate() {
+            if let Some(Disk::Differencing(base)) = &drive.disk {
+                drive.disk = Some(Disk::FileDifferencing {
+                    base: base.clone(),
+                    diff: diff_dir.path().join(format!("disk{i}.dbhd")),
+                });
+            }
+        }
 
         Ok(OpenVmmRelaunchConfig {
             builder,
-            _prepared_initrd_guard: prepared_initrd_guard,
+            _diff_dir: diff_dir,
         })
     }
 }
@@ -194,7 +254,7 @@ impl OpenVmmRelaunchConfig {
             &self.builder.backend.openvmm_path,
             self.builder.config.clone(),
             &self.builder.resources,
-            self.builder.properties(),
+            &self.builder.properties(),
         )
         .await?
         .with_memory_backing_file(memory_backing_file))
@@ -227,11 +287,14 @@ impl OpenVmmRelaunchConfig {
 
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
+    guest_shares: std::collections::HashMap<String, crate::GuestShare>,
+    private_virtio_devices: Vec<(&'static str, Resource<VirtioDeviceHandle>)>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
+    skip_save_restore: bool,
 
     // Mesh host
     mesh: mesh_process::Mesh,
@@ -264,7 +327,9 @@ pub struct PetriVmConfigOpenVmm {
 struct PetriVmResourcesOpenVmm {
     log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
     firmware_event_recv: Receiver<FirmwareEvent>,
+    ipmi_sel_event_recv: Receiver<get_resources::ged::IpmiSelEvent>,
     shutdown_ic_send: Option<Sender<ShutdownRpc>>,
+    acpi_power_button_send: Option<Sender<PowerButtonRpc>>,
     kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
@@ -345,7 +410,32 @@ pub fn find_switch() -> Option<Guid> {
     None
 }
 
-async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
+/// Returns the writable top layer of a differencing disk: in memory, or in the
+/// SQLite file `diff`, which is created if it doesn't exist yet.
+fn diff_layer(diff: Option<&Path>) -> DiskLayerDescription {
+    match diff {
+        None => RamDiskLayerHandle {
+            len: None,
+            sector_size: None,
+        }
+        .into_resource()
+        .into(),
+        Some(diff) => SqliteDiskLayerHandle {
+            dbhd_path: diff.display().to_string(),
+            format_dbhd: (!diff.exists()).then_some(SqliteDiskLayerFormatParams {
+                logically_read_only: false,
+                len: None,
+            }),
+        }
+        .into_resource()
+        .into(),
+    }
+}
+
+async fn memdiff_disk(
+    path: &Path,
+    diff: Option<&Path>,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
     let disk = open_disk_type(
         path,
         OpenDiskOptions {
@@ -357,19 +447,14 @@ async fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
         layers: vec![
-            RamDiskLayerHandle {
-                len: None,
-                sector_size: None,
-            }
-            .into_resource()
-            .into(),
+            diff_layer(diff),
             DiskLayerHandle(disk).into_resource().into(),
         ],
     }
     .into_resource())
 }
 
-fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+fn memdiff_remote_disk(url: &str, diff: Option<&Path>) -> anyhow::Result<Resource<DiskHandleKind>> {
     // Strip query parameters and fragments before checking the file extension.
     let url_path = url.split(['?', '#']).next().unwrap_or(url);
     let format = if url_path.ends_with(".vhd") || url_path.ends_with(".vmgs") {
@@ -394,12 +479,7 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
 
     Ok(LayeredDiskHandle {
         layers: vec![
-            RamDiskLayerHandle {
-                len: None,
-                sector_size: None,
-            }
-            .into_resource()
-            .into(),
+            diff_layer(diff),
             DiskLayerDescription {
                 read_cache: true,
                 write_through: false,
@@ -436,8 +516,8 @@ async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> 
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
             VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => {
-            VmgsResource::Reprovision(convert_disk(disk).await?)
+        PetriVmgsResource::ReprovisionSingle(disk) => {
+            VmgsResource::ReprovisionSingle(convert_disk(disk).await?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
     })
@@ -450,8 +530,16 @@ async fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandl
             sector_size: None,
         })
         .into_resource(),
-        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path).await?,
-        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
+        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path, None).await?,
+        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url, None)?,
+        Disk::FileDifferencing {
+            base: DiskPath::Local(path),
+            diff,
+        } => memdiff_disk(path, Some(diff)).await?,
+        Disk::FileDifferencing {
+            base: DiskPath::Remote { url },
+            diff,
+        } => memdiff_remote_disk(url, Some(diff))?,
         Disk::Persistent(path) => {
             open_disk_type(
                 path.as_ref(),

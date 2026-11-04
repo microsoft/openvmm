@@ -71,7 +71,14 @@ impl Cmd for CargoToml {
             }
 
             if patch {
-                cargo_toml.patch = base_cargo_toml.patch.clone();
+                for (source, base_patches) in &base_cargo_toml.patch {
+                    let patches = cargo_toml.patch.entry(source.clone()).or_default();
+                    for (name, dependency) in base_patches {
+                        patches
+                            .entry(name.clone())
+                            .or_insert_with(|| dependency.clone());
+                    }
+                }
             }
 
             if package {

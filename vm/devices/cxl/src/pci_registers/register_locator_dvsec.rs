@@ -5,23 +5,38 @@
 
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
+use inspect::Inspect;
 use pci_core::capabilities::extended::PciExtendedCapability;
 use pci_core::spec::caps::ExtendedCapabilityId;
 use pci_core::spec::caps::dvsec::DvsecExtendedCapabilityHeader;
 use pci_core::spec::caps::dvsec::DvsecHeader1;
 use pci_core::spec::caps::dvsec::DvsecHeader2;
 
-use super::spec::CXL_DVSEC_VENDOR_ID;
-use super::spec::register_locator_dvsec::CXL_REGISTER_LOCATOR_DVSEC_ID;
-use super::spec::register_locator_dvsec::CXL_REGISTER_LOCATOR_DVSEC_REVISION;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorDvsecExtendedCapability;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorDvsecRegisterBlockEntry;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorDvsecRegisterOffset;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorDvsecRegisterOffsetLow;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
-use super::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
-use crate::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::pci_registers::CXL_DVSEC_VENDOR_ID;
+use cxl_spec::pci_registers::register_locator_dvsec::CXL_REGISTER_LOCATOR_DVSEC_ID;
+use cxl_spec::pci_registers::register_locator_dvsec::CXL_REGISTER_LOCATOR_DVSEC_REVISION;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorDvsecRegisterOffset;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorDvsecRegisterOffsetLow;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
 use thiserror::Error;
+
+/// One Register Locator register-block entry.
+#[derive(Clone, Inspect)]
+struct CxlRegisterLocatorDvsecRegisterBlockEntry {
+    offset_low: CxlRegisterLocatorDvsecRegisterOffsetLow,
+    offset_high: u32,
+}
+
+/// CXL Register Locator PCIe Designated Vendor-Specific Extended Capability (DVSEC).
+#[derive(Clone, Default, Inspect)]
+pub struct CxlRegisterLocatorDvsecExtendedCapability {
+    #[inspect(skip)]
+    register_blocks: Vec<CxlRegisterLocatorDvsecRegisterBlockEntry>,
+    #[inspect(skip)]
+    reset_baseline_register_blocks: Vec<CxlRegisterLocatorDvsecRegisterBlockEntry>,
+}
 
 /// Register block offset encoding shift: DVSEC stores A[63:16], not byte address A[63:0].
 const REGISTER_BLOCK_OFFSET_ENCODING_SHIFT: u32 = 16;
@@ -250,7 +265,7 @@ mod tests {
     use super::CxlRegisterLocatorRegisterBir;
     use super::CxlRegisterLocatorRegisterBlockIdentifier;
     use super::RegisterLocatorConfigError;
-    use crate::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+    use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 
     #[test]
     fn header_registers_match_required_constants() {

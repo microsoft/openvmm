@@ -390,7 +390,7 @@ impl LoadStoreRegister {
         };
         let size = self.data_size()?;
         let register_index = self.rt();
-        tracing::info!(
+        tracing::trace!(
             ?op_group,
             op,
             start_address,

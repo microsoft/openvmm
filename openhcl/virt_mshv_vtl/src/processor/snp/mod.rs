@@ -1891,7 +1891,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // current/last vtl
                 UhHypercallHandler::TRUSTED_DISPATCHER.dispatch(
                     guest_memory,
-                    hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+                    hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
                 );
                 &mut self.backing.exit_stats[entered_from_vtl].vmmcall
             }
@@ -2927,6 +2927,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
+    fn set_tsc_deadline(&mut self, _value: &vp::TscDeadline) -> Result<(), Self::Error> {
+        Err(vp_state::Error::Unimplemented("tsc_deadline"))
+    }
+
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
         let vmsa = self.vp.runner.vmsa(self.vtl);
         Ok(vp::TscAux {
@@ -3219,7 +3227,7 @@ impl UhProcessor<'_, SnpBacked> {
 impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, SnpBacked> {
     fn advance_ip(&mut self) {
         let is_64bit = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, is_64bit);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, is_64bit, true);
         io.advance_ip();
     }
 

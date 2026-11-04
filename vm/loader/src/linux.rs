@@ -30,7 +30,7 @@ use page_table::x64::IdentityMapBuilder;
 use page_table::x64::PAGE_TABLE_MAX_BYTES;
 use page_table::x64::PAGE_TABLE_MAX_COUNT;
 use page_table::x64::PageTable;
-use page_table::x64::align_up_to_large_page_size;
+use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
 use std::io::Read;
@@ -39,6 +39,7 @@ use std::io::SeekFrom;
 use std::mem::size_of;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
+use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -112,7 +113,7 @@ fn build_zero_page(
     //
     // The RSDP lives at the fixed 0xe0000 and the tables it points to live in
     // reclaimable ACPI memory below; the kernel discovers the RSDP via its
-    // legacy scan, so no `acpi_rsdp_addr` (Linux 5.0+) is required. The SMBIOS
+    // legacy scan, so no `acpi_rsdp_addr` (Linux 4.20+) is required. The SMBIOS
     // structure table sits just above the ACPI tables in its own reserved
     // region so it can grow well past the 64 KiB F-segment.
     const ONE_MB: u64 = 0x100000;
@@ -206,6 +207,8 @@ pub enum Error {
     Importer(#[source] anyhow::Error),
     #[error("failed to import initrd")]
     ImportInitrd(#[source] ImportFileRegionError),
+    #[error("initrd address after kernel {0:#x} cannot be aligned to 2 MiB")]
+    InitrdAddressTooHigh(u64),
     #[error("failed to import bzImage payload")]
     ImportBzImage(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
@@ -247,7 +250,7 @@ pub struct AcpiTables {
 //   [RSDP_BASE, 0x100000)          RESERVED  RSDP (0xe0000) + _SM3_ anchor (0xf0000)
 //   [0x100000, end)                RAM       kernel and beyond
 const GDT_BASE: u64 = 0x1000;
-const ZERO_PAGE_BASE: u64 = 0x2000;
+pub const ZERO_PAGE_BASE: u64 = 0x2000;
 const CMDLINE_BASE: u64 = 0x3000;
 const CR3_BASE: u64 = 0x4000;
 /// The identity-map page tables occupy `[CR3_BASE, CR3_BASE + PAGE_TABLE_MAX_BYTES)`;
@@ -258,8 +261,8 @@ const LOW_METADATA_END: u64 = CR3_BASE + PAGE_TABLE_MAX_BYTES as u64;
 const ACPI_TABLES_BASE: u64 = LOW_METADATA_END + 0x1000;
 /// The RSDP is pinned at the fixed 0xe0000 so the kernel's legacy RSDP scan of
 /// `[0xe0000, 0x100000)` finds it, with no dependency on
-/// `boot_params.acpi_rsdp_addr` (Linux 5.0+).
-const RSDP_BASE: u64 = 0xe0000;
+/// `boot_params.acpi_rsdp_addr` (Linux 4.20+).
+pub const RSDP_BASE: u64 = 0xe0000;
 /// The x86 kernel brute-force scans the F-segment `[0xf0000, 0x100000)` for the
 /// SMBIOS `_SM3_` DMI anchor, so the 24-byte entry point is pinned there. Its
 /// 64-bit structure-table pointer lets the (potentially large) structure table
@@ -365,13 +368,29 @@ fn import_snp_boot_pages(
             &[],
         )
         .map_err(Error::Importer)?;
+    let mut cpuid_page = crate::cpuid::HV_PSP_CPUID_PAGE::default();
+    // TODO: Decide whether the paravisor leaf list is correct for enlightened
+    // direct-boot Linux SNP guests. It currently provides the extended-state
+    // subleaves Linux needs.
+    for (index, leaf) in crate::cpuid::SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR
+        .iter()
+        .enumerate()
+    {
+        let entry = &mut cpuid_page.cpuid_leaf_info[index];
+        entry.eax_in = leaf.eax;
+        entry.ecx_in = leaf.ecx;
+        if leaf.eax == CpuidFunction::ExtendedStateEnumeration.0 && leaf.ecx <= 1 {
+            entry.xfem_in = 1;
+        }
+    }
+    cpuid_page.count = crate::cpuid::SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR.len() as u32;
     importer
         .import_pages(
             cpuid_address / HV_PAGE_SIZE,
             1,
             "linux-snp-cpuid",
             BootPageAcceptance::CpuidPage,
-            &[],
+            cpuid_page.as_bytes(),
         )
         .map_err(Error::Importer)?;
 
@@ -433,6 +452,12 @@ fn check_address_alignment(address: u64) -> Result<(), Error> {
     }
 }
 
+fn align_initrd_after_kernel(next_addr: u64) -> Result<u64, Error> {
+    next_addr
+        .checked_next_multiple_of(X64_LARGE_PAGE_SIZE)
+        .ok_or(Error::InitrdAddressTooHigh(next_addr))
+}
+
 /// Import initrd
 fn import_initrd<R: GuestArch>(
     initrd: Option<InitrdConfig<'_>>,
@@ -442,7 +467,7 @@ fn import_initrd<R: GuestArch>(
     let initrd_info = match initrd {
         Some(cfg) => {
             let initrd_address = match cfg.initrd_address {
-                InitrdAddressType::AfterKernel => align_up_to_large_page_size(next_addr),
+                InitrdAddressType::AfterKernel => align_initrd_after_kernel(next_addr)?,
                 InitrdAddressType::Address(addr) => addr,
             };
 
@@ -1127,6 +1152,7 @@ mod tests {
     use crate::importer::IsolationConfig;
     use crate::importer::ParameterAreaIndex;
     use crate::importer::StartupMemoryType;
+    use std::io::Cursor;
     use test_with_tracing::test;
     use zerocopy::FromBytes;
 
@@ -1617,6 +1643,25 @@ mod tests {
             importer.imports[1].acceptance,
             BootPageAcceptance::CpuidPage
         );
+        let cpuid_page =
+            crate::cpuid::HV_PSP_CPUID_PAGE::read_from_bytes(&importer.imports[1].data).unwrap();
+        assert_eq!(
+            cpuid_page.count as usize,
+            crate::cpuid::SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR.len()
+        );
+        for (entry, leaf) in cpuid_page
+            .cpuid_leaf_info
+            .iter()
+            .zip(crate::cpuid::SNP_REQUIRED_CPUID_LEAF_LIST_PARAVISOR)
+        {
+            assert_eq!(entry.eax_in, leaf.eax);
+            assert_eq!(entry.ecx_in, leaf.ecx);
+            assert_eq!(
+                entry.xfem_in,
+                u64::from(leaf.eax == CpuidFunction::ExtendedStateEnumeration.0 && leaf.ecx <= 1)
+            );
+            assert_eq!(entry.xss_in, 0);
+        }
 
         let cc_blob = defs::cc_blob_sev_info::read_from_bytes(&importer.imports[2].data).unwrap();
         assert_eq!(cc_blob.magic, defs::CC_BLOB_SEV_INFO_MAGIC);
@@ -1672,5 +1717,126 @@ mod tests {
             ),
             Err(Error::LowTablesTooLarge(..))
         ));
+    }
+
+    /// Builds a minimal little-endian x86-64 ELF executable with one `PT_LOAD`
+    /// program header, and no file contents, for each `(paddr, memsz)` in
+    /// `load_segments`.
+    fn test_elf(entrypoint: u64, load_segments: &[(u64, u64)]) -> Cursor<Vec<u8>> {
+        use object::LittleEndian;
+        use object::U16;
+        use object::U32;
+        use object::U64;
+        use object::elf;
+
+        let header_size = size_of::<elf::FileHeader64<LittleEndian>>();
+        let header = elf::FileHeader64::<LittleEndian> {
+            e_ident: elf::Ident {
+                magic: elf::ELFMAG,
+                class: elf::ELFCLASS64,
+                data: elf::ELFDATA2LSB,
+                version: elf::EV_CURRENT,
+                os_abi: elf::ELFOSABI_NONE,
+                abi_version: 0,
+                padding: [0; 7],
+            },
+            e_type: U16::new(LittleEndian, elf::ET_EXEC),
+            e_machine: U16::new(LittleEndian, elf::EM_X86_64),
+            e_version: U32::new(LittleEndian, elf::EV_CURRENT.into()),
+            e_entry: U64::new(LittleEndian, entrypoint),
+            e_phoff: U64::new(LittleEndian, header_size as u64),
+            e_shoff: U64::new(LittleEndian, 0),
+            e_flags: U32::new(LittleEndian, 0),
+            e_ehsize: U16::new(LittleEndian, header_size as u16),
+            e_phentsize: U16::new(
+                LittleEndian,
+                size_of::<elf::ProgramHeader64<LittleEndian>>() as u16,
+            ),
+            e_phnum: U16::new(LittleEndian, load_segments.len().try_into().unwrap()),
+            e_shentsize: U16::new(
+                LittleEndian,
+                size_of::<elf::SectionHeader64<LittleEndian>>() as u16,
+            ),
+            e_shnum: U16::new(LittleEndian, 0),
+            e_shstrndx: U16::new(LittleEndian, 0),
+        };
+        let mut image = object::pod::bytes_of(&header).to_vec();
+        for &(paddr, memsz) in load_segments {
+            let program_header = elf::ProgramHeader64::<LittleEndian> {
+                p_type: U32::new(LittleEndian, elf::PT_LOAD),
+                p_flags: U32::new(LittleEndian, elf::PF_R | elf::PF_X),
+                p_offset: U64::new(LittleEndian, 0),
+                p_vaddr: U64::new(LittleEndian, paddr),
+                p_paddr: U64::new(LittleEndian, paddr),
+                p_filesz: U64::new(LittleEndian, 0),
+                p_memsz: U64::new(LittleEndian, memsz),
+                p_align: U64::new(LittleEndian, HV_PAGE_SIZE),
+            };
+            image.extend_from_slice(object::pod::bytes_of(&program_header));
+        }
+        Cursor::new(image)
+    }
+
+    #[test]
+    fn elf_without_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE, &[]);
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_with_only_empty_load_segment_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(KERNEL_BASE + 1, &[(KERNEL_BASE + 1, 0)]);
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::NoLoadableSegments)
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn elf_entrypoint_outside_load_segments_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut kernel_image = test_elf(
+            KERNEL_BASE + HV_PAGE_SIZE,
+            &[
+                (KERNEL_BASE, HV_PAGE_SIZE),
+                (KERNEL_BASE + 2 * HV_PAGE_SIZE, HV_PAGE_SIZE),
+            ],
+        );
+        let error = load_kernel_and_initrd_x64(&mut importer, &mut kernel_image, KERNEL_BASE, None)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ElfLoader(crate::elf::Error::EntryPointNotInLoadableSegment { .. })
+        ));
+        assert!(importer.imports.is_empty());
+    }
+
+    #[test]
+    fn initrd_after_kernel_alignment_overflow_is_rejected() {
+        let mut importer = RecordingImporter::default();
+        let mut initrd = Cursor::new([0]);
+        let error = import_initrd(
+            Some(InitrdConfig {
+                initrd_address: InitrdAddressType::AfterKernel,
+                initrd: &mut initrd,
+                size: 1,
+            }),
+            u64::MAX - HV_PAGE_SIZE + 1,
+            &mut importer,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InitrdAddressTooHigh(_)));
+        assert!(importer.imports.is_empty());
     }
 }

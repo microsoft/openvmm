@@ -848,7 +848,7 @@ mod x86 {
 
             WhpHypercallExit::DISPATCHER.dispatch(
                 &vpref.partition.gm,
-                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit),
+                hv1_hypercall::X64RegisterIo::new(&mut this, is_64bit, true),
             );
             this.flush()
         }
@@ -1037,7 +1037,7 @@ mod x86 {
             let exit_context = self.registers.exit_context;
             let is_64bit =
                 exit_context.ExecutionState.Cr0Pe() && exit_context.ExecutionState.EferLma();
-            hv1_hypercall::X64RegisterIo::new(self, is_64bit).advance_ip();
+            hv1_hypercall::X64RegisterIo::new(self, is_64bit, true).advance_ip();
         }
 
         fn inject_invalid_opcode_fault(&mut self) {
@@ -1616,10 +1616,7 @@ mod x86 {
                             return Err(HvError::InvalidParameter);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        unsafe {
-                            std::mem::transmute::<WHV_REGISTER_VALUE, HvRegisterValue>(whp_value[0])
-                        }
+                        HvRegisterValue::from(u128::from(whp_value[0].0))
                     } else {
                         tracing::error!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1658,6 +1655,39 @@ mod x86 {
                     let vsm_config = hvdef::HvRegisterVsmPartitionConfig::from(value);
 
                     tracing::trace!(?vsm_config, "set VsmPartitionConfig");
+                }
+                HvX64RegisterName::GuestVsmPartitionConfig => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid guest vsm partition config set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // Since guest VSM is unsupported, the only configuration
+                    // that can be applied is the one `get_vp_register` already
+                    // reports. VTL2 writes this to revoke guest VSM, which is
+                    // already the case, so accept that and reject anything that
+                    // would grant the guest a VTL, or do anything else.
+                    if value.as_u64() != 0 {
+                        return Err(HvError::InvalidParameter);
+                    }
+                }
+                HvX64RegisterName::PmTimerAssist => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid pm timer assist set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the assist is not implemented.
+                    return Err(HvError::InvalidParameter);
+                }
+                HvX64RegisterName::RegisterPage => {
+                    if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl2 {
+                        tracelimit::error_ratelimited!(active_vtl = ?self.state.active_vtl, "invalid register page set register");
+                        return Err(HvError::AccessDenied);
+                    }
+
+                    // TODO: the VTL2 register page is not implemented.
+                    return Err(HvError::InvalidParameter);
                 }
                 HvX64RegisterName::DeliverabilityNotifications => {
                     if self.state.active_vtl != Vtl::Vtl2 || vtl != Vtl::Vtl0 {
@@ -1703,10 +1733,7 @@ mod x86 {
                             return Err(HvError::AccessDenied);
                         }
 
-                        // SAFETY: HvRegisterValue and WHV_REGISTER_VALUE are the same.
-                        let whp_value = unsafe {
-                            std::mem::transmute::<HvRegisterValue, WHV_REGISTER_VALUE>(*value)
-                        };
+                        let whp_value = WHV_REGISTER_VALUE(value.as_u128().into());
                         if let Err(err) =
                             self.vp.whp(Vtl::Vtl0).set_registers(&[name], &[whp_value])
                         {
@@ -1898,11 +1925,7 @@ mod aarch64 {
                                 err.hv_result()
                                     .map_or(HvError::InvalidParameter, HvError::from)
                             })?;
-                        unsafe {
-                            std::mem::transmute::<whp::abi::WHV_REGISTER_VALUE, HvRegisterValue>(
-                                value[0],
-                            )
-                        }
+                        HvRegisterValue::from(u128::from(value[0].0))
                     } else {
                         tracelimit::warn_ratelimited!(name = ?reg, "unknown register name for get_vp_registers");
                         return Err(HvError::InvalidParameter);
@@ -1919,9 +1942,7 @@ mod aarch64 {
             value: &HvRegisterValue,
         ) -> HvResult<()> {
             if let Some(reg) = Self::hypervisor_owned_reg(name.into()) {
-                let value = unsafe {
-                    std::mem::transmute::<HvRegisterValue, whp::abi::WHV_REGISTER_VALUE>(*value)
-                };
+                let value = whp::abi::WHV_REGISTER_VALUE(value.as_u128().into());
                 self.current_whp()
                     .set_registers(&[reg], &[value])
                     .map_err(|err| {

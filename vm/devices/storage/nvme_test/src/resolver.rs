@@ -12,7 +12,6 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
-use tdisp::test_helpers::new_null_tdisp_interface;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
@@ -55,15 +54,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
         resource: NvmeFaultControllerHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // If TDISP tests are enabled, create a mock TDISP interface to expose
-        // for the device from OpenVMM.
-        let tdisp_interface: Option<Box<dyn tdisp::TdispHostDeviceTarget>> =
-            if resource.enable_tdisp_tests {
-                Some(Box::new(new_null_tdisp_interface("fault-controller-test")))
-            } else {
-                None
-            };
-
         let controller = NvmeFaultController::new(
             input.driver_source,
             input.dma_target.guest_memory().clone(),
@@ -75,7 +65,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 subsystem_id: resource.subsystem_id,
             },
             resource.fault_config,
-            tdisp_interface,
+            resource.enable_tdisp_tests,
         );
         for NamespaceDefinition {
             nsid,

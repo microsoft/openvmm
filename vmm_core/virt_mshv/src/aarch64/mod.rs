@@ -6,6 +6,7 @@
 use crate::Error;
 use crate::ErrorInner;
 use crate::LinuxMshv;
+use crate::MshvIsolationState;
 use crate::MshvPartition;
 use crate::MshvPartitionInner;
 use crate::MshvProcessor;
@@ -67,15 +68,24 @@ impl virt::Hypervisor for LinuxMshv {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
+        if self.snp_disable_cpuid_offload {
+            return Err(ErrorInner::IsolationNotSupported.into());
+        }
         if config.isolation.is_isolated() {
             return Err(ErrorInner::IsolationNotSupported.into());
         }
 
-        let create_args = mshv_bindings::mshv_create_partition_v2 {
-            pt_flags: 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
-            pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
-            ..Default::default()
-        };
+        let mut processor_features = [0; 2];
+        for (features, property) in processor_features.iter_mut().zip([
+            HvPartitionPropertyCode::ProcessorFeatures0,
+            HvPartitionPropertyCode::ProcessorFeatures1,
+        ]) {
+            *features = self
+                .mshv
+                .get_host_partition_property(property.0)
+                .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
+        }
+        let create_args = partition_create_args(processor_features);
 
         let vmfd = create_vm_with_retry(&self.mshv, &create_args)?;
 
@@ -146,7 +156,24 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
+        vmfd.set_partition_property(HvPartitionPropertyCode::TimeFreeze.0, 1)
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+
         MshvProtoPartition::new(config, vmfd)
+    }
+}
+
+fn partition_create_args(processor_features: [u64; 2]) -> mshv_bindings::mshv_create_partition_v2 {
+    mshv_bindings::mshv_create_partition_v2 {
+        pt_flags: (1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES)
+            | (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
+        pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+        pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
+        // The ioctl takes disabled features, while the host reports enabled ones.
+        // TODO: Limit enabled features to those with known save/restore support
+        // so new host features do not implicitly affect live migration.
+        pt_cpu_fbanks: processor_features.map(|features| !features),
+        ..Default::default()
     }
 }
 
@@ -180,7 +207,9 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             vps: self.vps,
             caps,
             synic_ports: Default::default(),
-            time_frozen: false.into(),
+            isolation: MshvIsolationState::None,
+            time_frozen: true.into(),
+            reset_with_scrub: false.into(),
             gic_msi: self.config.processor_topology.gic_msi(),
             gsi_states: parking_lot::Mutex::new(Box::new(
                 [crate::irqfd::GsiState::Unallocated; crate::irqfd::NUM_GSIS],
@@ -212,6 +241,14 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 // ---------------------------------------------------------------------------
 
 impl virt::Partition for MshvPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
+    fn supports_time_control(&self) -> Option<&dyn virt::PartitionTimeControl> {
+        Some(self)
+    }
+
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
         Some(self)
     }
@@ -261,11 +298,8 @@ impl virt::Partition for MshvPartition {
     }
 }
 
-impl virt::ResetPartition for MshvPartition {
-    type Error = Error;
-
-    fn reset(&self) -> Result<(), Error> {
-        self.inner.freeze_time()?;
+impl MshvPartition {
+    pub(super) fn reset_arch_state(&self, _scrubbed: bool) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -378,9 +412,35 @@ impl virt::BindProcessor for MshvProcessorBinder {
             self.vcpufd.as_ref().unwrap()
         };
 
+        let runner = MshvVpRunner { vcpufd };
+
+        let this = MshvProcessor {
+            partition: &self.partition,
+            inner,
+            vpindex: self.vpindex,
+            runner,
+            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
+        };
+        this.finish_reset()?;
+        Ok(this)
+    }
+}
+
+impl MshvProcessor<'_> {
+    pub(super) fn finish_reset(&self) -> Result<(), Error> {
+        // The hypervisor's default MPIDR need not match firmware's topology.
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvArm64RegisterName::MpidrEl1,
+                u64::from(self.inner.vp_info.mpidr),
+            ))])
+            .map_err(ErrorInner::Register)?;
+
         // Set the GIC redistributor base for this VP (GICv3 only).
-        if let Some(gicr) = inner.vp_info.gicr {
-            vcpufd
+        if let Some(gicr) = self.inner.vp_info.gicr {
+            self.runner
+                .vcpufd
                 .set_hvdef_regs(&[HvRegisterAssoc::from((
                     HvArm64RegisterName::GicrBaseGpa,
                     gicr,
@@ -388,19 +448,9 @@ impl virt::BindProcessor for MshvProcessorBinder {
                 .map_err(ErrorInner::Register)?;
         }
 
-        let runner = MshvVpRunner { vcpufd };
-
-        Ok(MshvProcessor {
-            partition: &self.partition,
-            inner,
-            vpindex: self.vpindex,
-            runner,
-            deliverability_notifications: HvDeliverabilityNotificationsRegister::new(),
-        })
+        Ok(())
     }
-}
 
-impl MshvProcessor<'_> {
     async fn handle_memory_intercept(
         &mut self,
         message: &HvMessage,
@@ -605,6 +655,9 @@ impl MshvProcessor<'_> {
                     hvdef::HvArm64ResetType::REBOOT => {
                         return Err(VpHaltReason::Reset);
                     }
+                    hvdef::HvArm64ResetType::HIBERNATE => {
+                        return Err(VpHaltReason::Hibernate);
+                    }
                     _ => {
                         tracelimit::warn_ratelimited!(
                             reset_type = ?info.reset_type,
@@ -692,5 +745,26 @@ impl hv1_hypercall::Arm64RegisterState for MshvHypercallHandler<'_> {
     fn set_x(&mut self, n: u8, v: u64) {
         self.x[n as usize] = v;
         self.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn partition_creation_uses_explicit_host_features() {
+        let host_features = [0x1234_5678_9abc_def0, 0xfedc_ba98_7654_3210];
+        let args = partition_create_args(host_features);
+        let num_banks = args.pt_num_cpu_fbanks;
+        let disabled_features = args.pt_cpu_fbanks;
+
+        assert_ne!(
+            args.pt_flags & (1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES),
+            0
+        );
+        assert_eq!(num_banks, 2);
+        assert_eq!(disabled_features, host_features.map(|features| !features));
     }
 }

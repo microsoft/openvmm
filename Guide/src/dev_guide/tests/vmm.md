@@ -8,6 +8,16 @@ The OpenVMM PR and CI pipelines will run the full test suite on all supported
 platforms; you'd typically run only the tests relevant to the changes you're
 working on.
 
+## Scheduled Pipelines
+
+The **OpenVMM Burn In** workflow repeatedly runs Windows x64 VMM tests using
+artifacts from a successful CI run on `main` to measure failure frequency.
+
+The **OpenVMM Patina Nightly** workflow runs the release check-in gates using
+the configured `mu_msvm` RELEASE ClangPDB Patina firmware for standalone
+OpenVMM UEFI tests and newly built OpenHCL images. You can also start it
+manually using GitHub Actions' **Run workflow**.
+
 ## Writing VMM Tests
 
 To streamline the process of booting and interacting with VMs during VMM tests, the
@@ -23,6 +33,59 @@ the same test body to be run in a variety of scenarios, with different guest
 operating systems, firmwares, and VMMs (including Hyper-V, which is useful
 for testing certain OpenHCL features that aren't supported when using
 OpenVMM as the host VMM).
+
+### Backend contract tests (no guest)
+
+The `virt_backend_tests` executable in the `vmm_tests` package tests the public
+`virt` interfaces directly on native x86_64 KVM, MSHV, and WHP backends. These
+are hardware-dependent integration tests, not ordinary unit tests. They use
+Petri for registration, host eligibility, logs, and results, but do not use its
+VM builders, launch OpenVMM, load guest artifacts, or execute a VP.
+
+Each backend has independently reported cases for initially frozen clocks,
+freeze/thaw transitions, reset values, and serialized restoration of clocks,
+countdown timers, and TSC deadlines. Reference time is checked when the backend
+advertises access to it. Initial clock values need not be zero; zero is expected
+only after an explicit reset.
+Countdown readback while paused describes the captured snapshot, not whether
+the native timer is still running.
+
+The contract functions operate on the public `virt` interfaces. Each function
+has an adjacent `backend_test!` declaration that registers it with Petri for
+each native backend and lists the capabilities it requires. For example:
+
+```rust,ignore
+backend_test!(clock_restore, requires: [time_control, reset]);
+backend_test!(synic_timers_restore, hv1: true, requires: [time_control, hv1]);
+```
+
+Add the function and its declaration in the relevant test module; there is no
+central case enum or registration table to update. Shared helpers construct
+the partition and bind its single VP before invoking the function. Cases have
+names such as `time::kvm::initial_frozen` and `time::whp::clock_restore`.
+Fixtures default to unenlightened; `hv1: true` enables Hv1, using native
+enlightenment offload on WHP.
+The clock contracts also have separately named Hv1-enabled cases:
+`initial_frozen_hv1`, `freeze_thaw_hv1`, `reset_clocks_hv1`, and
+`clock_restore_hv1`. These reuse the unenlightened contracts to check reference
+time as well as TSC, and require Hv1 in addition to each contract's other
+capabilities.
+Host requirements select the matching backend. Execution-host discovery probes
+the selected fixture's capabilities so unsupported time control, reset, Hv1,
+or TSC-deadline cases are reported as ignored, not passed. Probe errors fail the
+selected tests rather than hiding them. Artifact-only discovery does not create
+partitions.
+
+CI packages this executable in the existing `vmm_tests` nextest archive and runs
+it on the eligible hypervisor hosts, rather than in the ordinary unit-test jobs.
+
+Use the existing VMM-test runner to select the executable:
+
+```bash
+cargo xflowey vmm-tests-run --filter 'binary(virt_backend_tests)'
+```
+
+Add `--build-only` to build without running the tests.
 
 ### "heavy" tests
 
@@ -121,6 +184,49 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 }
 ```
 
+### Nested Tests
+
+On Linux hosts, OpenVMM and QEMU automatically share nested test artifacts and
+results with Linux guests over 9p. OpenVMM also supports directory sharing with
+Linux guests on Windows, but cross-OS nesting there remains disabled until CI
+provisions the nested artifacts. Other supported nesting configurations
+continue staging artifacts on the agent disk and
+copying results back through Pipette. Tests do not need to allocate PCIe ports
+for the shares. OpenVMM skips its automatic startup save/restore verification
+when shares are attached because 9p does not support saving device state.
+
+Petri supports writing nested tests by defining a function to create the L1 VM host using Petri and annotating the L2 test definition as follows:
+
+```rust,ignore
+#[vmm_test(
+    nested(
+        (my_vm_host, l1_config),
+        (NEXTEST_ARCHIVE_WITH_NESTED_TEST, "test_binary", "test::module::path", l2_config),
+    ),
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+
+async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_nested_virt()
+        // other l1 configuration
+        .run().await?;
+
+    // use the pipette agent to configure the l1 if necessary
+
+    // run the nested test, optionally with custom environment variables.
+    vm.run_nested_test(&agent, Default::default()).await?;
+
+    // power off and clean up
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+```
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It
@@ -144,6 +250,7 @@ build for a different platform. The supported targets are:
 | `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
 | `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
 | `linux-x64` | Linux x86_64 |
+| `linux-musl-x64` | Linux x86_64 with statically linked musl binaries |
 
 **Cross-compiling for Windows from WSL2** is fully supported, you can build
 and run Windows VMM tests directly from your WSL2 shell. This requires the

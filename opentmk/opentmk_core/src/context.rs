@@ -35,7 +35,7 @@ pub trait InterruptPlatformTrait {
     /// Associates an interrupt vector with a handler inside the
     /// non-secure world.
     ///
-    /// * `interrupt_idx` – IDT/GIC index to program  
+    /// * `interrupt_idx` – IDT/GIC index to program
     /// * `handler` – Function that will be executed when the interrupt
     ///   fires.
     fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(Self)) -> TmkResult<()>;
@@ -58,6 +58,28 @@ pub trait MsrPlatformTrait {
     /// # Safety
     /// Caller must ensure that writing to the specified MSR is a safe operation.
     unsafe fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()>;
+}
+
+/// Trait for platforms that support invoking a hypercall like interface.
+pub trait HypercallPlatformTrait {
+    /// Platform-specific configurations per-hypercall
+    type Config;
+
+    /// Performs a hypercall. When the input buffer exceeds what can be passed
+    /// the excess data is silently truncated. Likewise if the actual output
+    /// data exceeds what can be written into the output buffer, that output
+    /// is likewise truncated. It is up to the caller to determine that they
+    /// have allocated a sufficiently large buffer to accept the output data.
+    ///
+    /// The inputs and outputs may be passed via memory or registers
+    /// depending on the platform's conventions.
+    fn hypercall(
+        &mut self,
+        code: u64,
+        input: &[u8],
+        output: &mut [u8],
+        cfg: Self::Config,
+    ) -> TmkResult<()>;
 }
 
 /// Trait for platforms that support Virtual Processors (VPs) and VTL management.

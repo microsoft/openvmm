@@ -43,9 +43,11 @@ impl SimpleFlowNode for Node {
                             fs_err::hard_link(&bin, &bin_name)?;
                             files.push((bin_name.absolute()?, None));
 
-                            let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
-                            fs_err::hard_link(&dbg, &dbg_name)?;
-                            files.push((dbg_name.absolute()?, None));
+                            if let Some(dbg) = dbg {
+                                let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
+                                fs_err::hard_link(&dbg, &dbg_name)?;
+                                files.push((dbg_name.absolute()?, None));
+                            }
                         }
                         VmgstoolOutput::WindowsBin { exe, pdb } => {
                             let exe_name = PathBuf::from(format!("vmgstool-{target}.exe"));
@@ -88,8 +90,8 @@ impl SimpleFlowNode for Node {
 
         ctx.req(flowey_lib_common::publish_gh_release::Request(
             flowey_lib_common::publish_gh_release::GhReleaseParams {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm".into(),
+                repo_owner: crate::common::OPENVMM_GITHUB_OWNER.into(),
+                repo_name: crate::common::OPENVMM_GITHUB_REPO.into(),
                 target,
                 tag,
                 title,

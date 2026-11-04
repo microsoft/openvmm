@@ -11,14 +11,14 @@ use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
-use cxl_spec::CxlComponentRegisters;
-use cxl_spec::CxlFlexBusPortDvsecExtendedCapability;
-use cxl_spec::CxlPortDvsecExtendedCapability;
-use cxl_spec::CxlRegisterLocatorDvsecExtendedCapability;
-use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
-use cxl_spec::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
-use cxl_spec::pci_registers::spec::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
-use cxl_spec::spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl::CxlComponentRegisters;
+use cxl::CxlFlexBusPortDvsecExtendedCapability;
+use cxl::CxlPortDvsecExtendedCapability;
+use cxl::CxlRegisterLocatorDvsecExtendedCapability;
+use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
+use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBir;
+use cxl_spec::pci_registers::register_locator_dvsec::CxlRegisterLocatorRegisterBlockIdentifier;
 use inspect::Inspect;
 use pci_bus::GenericPciBusDevice;
 use pci_core::bus_range::AssignedBusRange;
@@ -849,6 +849,17 @@ impl PcieDownstreamPort {
         bail!("port name does not match")
     }
 
+    /// Disconnect the device previously attached with [`Self::add_pcie_device`].
+    pub fn remove_pcie_device(&mut self) -> anyhow::Result<()> {
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+
+        self.link = None;
+        self.cfg_space.set_presence_detect_state(false);
+        Ok(())
+    }
+
     /// Hot-add a device to this port at runtime.
     ///
     /// Unlike `add_pcie_device`, this method verifies the port is hotplug-capable
@@ -916,9 +927,10 @@ impl PcieDownstreamPort {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::TestPciDevice;
     use crate::test_helpers::TestPcieMmioRegistration;
     use chipset_device::io::IoResult;
-    use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+    use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
     use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::hwid::HardwareIds;
@@ -966,27 +978,6 @@ mod tests {
                 }],
             }),
         )
-    }
-
-    // Mock device for testing
-    struct MockDevice;
-
-    impl GenericPciBusDevice for MockDevice {
-        fn pci_cfg_read(
-            &mut self,
-            _offset: u16,
-            _value: ByteEnabledDwordRead<'_>,
-        ) -> Option<IoResult> {
-            None
-        }
-
-        fn pci_cfg_write(
-            &mut self,
-            _offset: u16,
-            _value: ByteEnabledDwordWrite,
-        ) -> Option<IoResult> {
-            None
-        }
     }
 
     #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -1053,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_pcie_device_sets_presence_detect_state() {
+    fn test_add_remove_pcie_device_updates_presence_detect_state() {
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
 
         // Create a port with hotplug support
@@ -1090,7 +1081,7 @@ mod tests {
         );
 
         // Add a device to the port
-        let mock_device = Box::new(MockDevice);
+        let mock_device = Box::new(TestPciDevice);
         let result = port.add_pcie_device("test-port", "mock-device", mock_device);
         assert!(result.is_ok(), "Adding device should succeed");
 
@@ -1101,6 +1092,16 @@ mod tests {
             present_presence_detect, 1,
             "Presence detect state should be 1 after adding device"
         );
+
+        port.remove_pcie_device()
+            .expect("removing the connected device should succeed");
+        assert!(port.link.is_none());
+        assert_eq!((port.cfg_space.read_u32(0x58) >> 22) & 0x1, 0);
+
+        let error = port
+            .remove_pcie_device()
+            .expect_err("removing from an empty port should fail");
+        assert_eq!(error.to_string(), "port 'test-port' is empty");
     }
 
     #[test]
@@ -1133,7 +1134,7 @@ mod tests {
         );
 
         // Add a device to the port (should not panic even without hotplug support)
-        let mock_device = Box::new(MockDevice);
+        let mock_device = Box::new(TestPciDevice);
         let result = port.add_pcie_device("test-port", "mock-device", mock_device);
         assert!(
             result.is_ok(),
@@ -1529,7 +1530,7 @@ mod tests {
 
     #[test]
     fn test_invalid_cxl_component_register_locator_disables_cxl_exposure() {
-        use cxl_spec::pci_registers::spec::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
+        use cxl_spec::pci_registers::flex_bus_port_dvsec::CxlFlexBusPortDvsecCapability;
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
 
         let hardware_ids = HardwareIds {

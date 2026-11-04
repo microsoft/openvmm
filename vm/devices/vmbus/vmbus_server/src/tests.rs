@@ -33,6 +33,7 @@ use zerocopy::KnownLayout;
 struct MockSynicInner {
     message_port: Option<Arc<dyn MessagePort>>,
     monitor_page: Option<MonitorPageGpas>,
+    fail_message_port_target: Option<(u32, u8)>,
 }
 
 struct MockSynic {
@@ -52,6 +53,7 @@ impl MockSynic {
             inner: Mutex::new(MockSynicInner {
                 message_port: None,
                 monitor_page: None,
+                fail_message_port_target: None,
             }),
             message_send,
             spawner,
@@ -81,6 +83,10 @@ impl MockSynic {
                 ),
             Poll::Ready(())
         );
+    }
+
+    fn fail_next_guest_message_port(&self, vp: u32, sint: u8) {
+        self.inner.lock().fail_message_port_target = Some((vp, sint));
     }
 }
 
@@ -167,9 +173,18 @@ impl SynicPortAccess for MockSynic {
     fn new_guest_message_port(
         &self,
         _vtl: Vtl,
-        _vp: u32,
-        _sint: u8,
+        vp: u32,
+        sint: u8,
     ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError> {
+        let mut inner = self.inner.lock();
+        if inner.fail_message_port_target == Some((vp, sint)) {
+            inner.fail_message_port_target = None;
+            return Err(vmcore::synic::HypervisorError(Box::new(
+                std::io::Error::other("injected message port failure"),
+            )));
+        }
+        drop(inner);
+
         Ok(Box::new(MockGuestMessagePort {
             send: self.message_send.clone(),
             spawner: self.spawner.clone(),
@@ -551,6 +566,30 @@ async fn test_pause_resume(spawner: DefaultDriver) {
 
     // Ensure no other requests are pending.
     assert!(matches!(poll!(channel.request_recv.next()), Poll::Pending));
+}
+
+#[async_test]
+async fn test_failed_reserved_message_port_drops_open_result(spawner: DefaultDriver) {
+    let mut env = TestEnv::new(spawner.clone());
+    let mut channel = env.offer(1, false).await;
+    env.vmbus.start();
+    env.connect(1, protocol::FeatureFlags::new(), false).await;
+
+    env.synic.fail_next_guest_message_port(1, 3);
+    env.synic.send_message(protocol::OpenReservedChannel {
+        channel_id: ChannelId(1),
+        target_vp: 1,
+        target_sint: 3,
+        ring_buffer_gpadl: GpadlId(1),
+        downstream_page_offset: 0,
+    });
+
+    let mut timer = PolledTimer::new(&spawner);
+    timer.sleep(Duration::from_millis(20)).await;
+
+    assert_eq!(env.synic.inner.lock().fail_message_port_target, None);
+    assert!(matches!(poll!(channel.request_recv.next()), Poll::Pending));
+    assert!(matches!(poll!(env.message_recv.next()), Poll::Pending));
 }
 
 #[async_test]

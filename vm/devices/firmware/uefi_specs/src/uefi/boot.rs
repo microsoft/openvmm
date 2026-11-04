@@ -245,6 +245,27 @@ pub const EFI_RT_PROPERTIES_TABLE_GUID: Guid = guid::guid!("eb66918a-7eef-402a-8
 /// entries (SMBIOS spec / UEFI spec).
 pub const SMBIOS3_TABLE_GUID: Guid = guid::guid!("f2fd1544-9794-4a2c-992e-e5bbcf20e394");
 
+/// Linux EFI persistent memory reservation table GUID.
+pub const LINUX_EFI_MEMRESERVE_TABLE_GUID: Guid =
+    guid::guid!("888eb0c6-8ede-4ff5-a8f0-9aee5cb977c2");
+
+/// Empty root of Linux's EFI persistent memory reservation list.
+///
+/// The EFI stub installs this header before entering the kernel. Linux appends
+/// page-sized entries as drivers reserve memory that must survive kexec.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable, KnownLayout)]
+pub struct LinuxEfiMemreserve {
+    /// Number of reservation slots in this list node.
+    pub size: i32,
+    /// Number of populated reservation slots.
+    pub count: i32,
+    /// Guest physical address of the next list node, or zero.
+    pub next: u64,
+}
+
+const_assert_eq!(size_of::<LinuxEfiMemreserve>(), 16);
+
 /// From UEFI spec 4.6 — EFI_RT_PROPERTIES_TABLE
 ///
 /// Installed in the EFI Configuration Table to tell the OS which runtime

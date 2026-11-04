@@ -707,7 +707,7 @@ impl DiskIo for LayeredDisk {
                     // Restrict the range to the visible sector count of the
                     // layer; sectors beyond this are logically zero.
                     let end = range.end_sector().min(layer.visible_sector_count);
-                    if range.start_sector() == end {
+                    if range.start_sector() >= end {
                         break 'done;
                     }
                     end
@@ -1113,6 +1113,41 @@ mod tests {
                 entry.insert(data);
             }
             Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn test_read_beyond_parent_size() {
+        let parent = Arc::new(TestLayer::new(100));
+        parent
+            .sectors
+            .lock()
+            .insert(99, Data(vec![0x5a; 512].into()));
+        let child = Arc::new(TestLayer::new(200));
+        child
+            .sectors
+            .lock()
+            .insert(151, Data(vec![0xa5; 512].into()));
+        let layers = [child, parent]
+            .into_iter()
+            .map(|layer| LayerConfiguration {
+                layer: DiskLayer::new(layer),
+                read_cache: false,
+                write_through: false,
+            })
+            .collect();
+        let disk = LayeredDisk::new(false, layers).await.unwrap();
+        let mut mem = GuestMemory::allocate(1024);
+        let buffers = OwnedRequestBuffers::linear(0, 1024, true);
+
+        for (sector, expected) in [(99, [0x5a, 0]), (100, [0, 0]), (150, [0, 0xa5])] {
+            mem.inner_buf_mut().unwrap().fill(0xff);
+            disk.read_vectored(&buffers.buffer(&mem), sector)
+                .await
+                .unwrap();
+            let data = mem.inner_buf_mut().unwrap();
+            assert_eq!(&data[..512], &[expected[0]; 512]);
+            assert_eq!(&data[512..1024], &[expected[1]; 512]);
         }
     }
 

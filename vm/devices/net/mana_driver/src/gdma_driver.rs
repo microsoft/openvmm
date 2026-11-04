@@ -793,7 +793,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub fn get_link_toggle_list(&mut self) -> Vec<(u32, bool)> {
-        self.link_toggle.drain(..).collect()
+        self.link_toggle.split_off(0)
     }
 
     pub fn get_reset_request_pending(&self) -> Option<bool> {

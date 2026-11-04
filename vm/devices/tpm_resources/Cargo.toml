@@ -12,5 +12,7 @@ inspect.workspace = true
 mesh.workspace = true
 guid = { workspace = true, features = ["mesh"] }
 
+async-trait.workspace = true
+
 [lints]
 workspace = true

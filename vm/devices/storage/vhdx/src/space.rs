@@ -144,10 +144,7 @@ impl SpaceBitmap {
         let mut pos = 0;
         while pos + count <= window.len() {
             // Skip clear bits — find next set bit.
-            let run_start = match window[pos..].first_one() {
-                Some(i) => pos + i,
-                None => return None,
-            };
+            let run_start = window[pos..].first_one()? + pos;
             if run_start + count > window.len() {
                 return None;
             }

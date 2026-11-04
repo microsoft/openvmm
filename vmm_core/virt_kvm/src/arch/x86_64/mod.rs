@@ -5,6 +5,7 @@
 
 #![cfg(all(target_os = "linux", guest_arch = "x86_64"))]
 
+mod extint;
 mod regs;
 pub(crate) mod snp;
 mod vm_state;
@@ -134,6 +135,16 @@ fn gb_pages_supported() -> bool {
         && safe_intrinsics::cpuid(GB_PAGE_LEAF, 0).edx & GB_PAGE_FLAG != 0
 }
 
+/// Checks KVM's Hyper-V CPUID leaves for the `use_apic_msrs` recommendation.
+///
+/// Missing or unrelated leaves are treated as no recommendation.
+fn kvm_recommends_hyperv_apic_msrs(cpuid: &[kvm::kvm_cpuid_entry2]) -> bool {
+    cpuid.iter().any(|leaf| {
+        leaf.function == hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION
+            && hvdef::HvEnlightenmentInformation::from(u128::from(leaf.eax)).use_apic_msrs()
+    })
+}
+
 impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
@@ -149,7 +160,7 @@ impl virt::Hypervisor for Kvm {
 
     fn new_partition<'a>(
         &mut self,
-        mut config: ProtoPartitionConfig<'a>,
+        config: ProtoPartitionConfig<'a>,
     ) -> Result<Self::ProtoPartition<'a>, Self::Error> {
         match config.isolation.isolation_type() {
             virt::IsolationType::None => {}
@@ -277,6 +288,7 @@ impl virt::Hypervisor for Kvm {
             use hvdef::*;
             let privileges = HvPartitionPrivilege::new()
                 .with_access_partition_reference_counter(true)
+                .with_access_partition_reference_tsc(true)
                 .with_access_hypercall_msrs(true)
                 .with_access_vp_index(true)
                 .with_access_frequency_msrs(true)
@@ -330,6 +342,8 @@ impl virt::Hypervisor for Kvm {
                     HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
                     split_u128(
                         HvEnlightenmentInformation::new()
+                            // Advertise enlightened APIC access only when KVM recommends it.
+                            .with_use_apic_msrs(kvm_recommends_hyperv_apic_msrs(&kvm_hv_cpuid))
                             .with_deprecate_auto_eoi(true)
                             .with_long_spin_wait_count(0xffffffff) // no spin wait notifications
                             .into(),
@@ -371,17 +385,26 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let snp_config = match &mut config.isolation {
+        let snp_config = match &config.isolation {
             virt::ProtoPartitionIsolation::None => None,
-            virt::ProtoPartitionIsolation::Snp(snp_config) => {
-                if let Some(snp_config) = snp_config.take() {
-                    Some(crate::snp::prepare_snp_config(
-                        *snp_config,
-                        self.kvm.supported_sev_vmsa_features()?,
-                    )?)
-                } else {
-                    None
-                }
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::Igvm(snp_config)) => {
+                Some(crate::snp::prepare_snp_config(
+                    snp_config.as_ref().clone(),
+                    self.kvm.supported_sev_vmsa_features()?,
+                )?)
+            }
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: false,
+            }) => None,
+            virt::ProtoPartitionIsolation::Snp(virt::SnpPartitionConfig::DirectBoot {
+                restricted_injection: true,
+            }) => {
+                return Err(SnpError::UnsupportedVmsaFeatures(
+                    x86defs::snp::SevFeatures::new()
+                        .with_restrict_injection(true)
+                        .into_bits(),
+                )
+                .into());
             }
             virt::ProtoPartitionIsolation::Vbs
             | virt::ProtoPartitionIsolation::Tdx
@@ -755,8 +778,14 @@ impl ResetPartition for KvmPartition {
 }
 
 impl Partition for KvmPartition {
+    fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
+        virt::InitialVpStateSource::Registers
+    }
+
     fn supports_reset(&self) -> Option<&dyn ResetPartition<Error = Self::Error>> {
-        Some(self)
+        // TODO: Support resetting SNP launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.sev.is_none().then_some(self)
     }
 
     fn supports_initial_page_acceptance(
@@ -1008,6 +1037,7 @@ impl virt::BindProcessor for KvmProcessorBinder {
             simp_overlay: OverlayPage::default(),
             siefp_overlay: OverlayPage::default(),
             vmtime: &mut self.vmtime,
+            interrupt_window_stale: true,
         };
 
         // 1. Reset the APIC state to clear the directed EOI bit, which is
@@ -1072,6 +1102,9 @@ pub struct KvmProcessor<'a> {
     simp_overlay: OverlayPage,
     /// Overlay backing the synic event flags page (SIEFP).
     siefp_overlay: OverlayPage,
+    /// Whether the VP state may have changed since KVM last reported the
+    /// interrupt window in `kvm_run`.
+    interrupt_window_stale: bool,
 }
 
 impl KvmProcessor<'_> {
@@ -1080,10 +1113,31 @@ impl KvmProcessor<'_> {
     /// The VP must be known to be stopped and must have an open interrupt
     /// window.
     fn deliver_pic_interrupt(&mut self, dev: &impl CpuIo) -> Result<(), KvmRunVpError> {
-        if let Some(vector) = dev.acknowledge_pic_interrupt() {
-            self.runner
-                .inject_extint_interrupt(vector)
-                .map_err(KvmRunVpError::ExtintInterrupt)?;
+        if self.partition.caps.nested_virt {
+            // Let KVM decide whether the interrupt must first exit a nested
+            // guest. A queued interrupt is missing from the saved state, but
+            // KVM partitions cannot save nested state either.
+            if let Some(vector) = dev.acknowledge_pic_interrupt() {
+                self.runner
+                    .queue_extint_interrupt(vector)
+                    .map_err(KvmRunVpError::ExtintInterrupt)?;
+            }
+        } else {
+            // Keep the interrupt in the saved VP state until the guest takes
+            // it. KVM delivers it without checking whether the guest can take
+            // it, so KVM must have reported the open window for the current VP
+            // state.
+            assert!(
+                !self.interrupt_window_stale,
+                "extint injected without a current interrupt window"
+            );
+            // Acknowledge the PIC only once the VP is known to be able to take
+            // the interrupt.
+            if extint::inject(&self.kvm, || dev.acknowledge_pic_interrupt())? {
+                // The VP state changed, so the window that KVM reported no
+                // longer applies.
+                self.interrupt_window_stale = true;
+            }
         }
         Ok(())
     }
@@ -1566,6 +1620,20 @@ impl<'p> Processor for KvmProcessor<'p> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
+        // The VP state may have changed while the VP was stopped (e.g., by a
+        // restore or a debugger), so the interrupt window that KVM last
+        // reported is stale.
+        self.interrupt_window_stale = true;
+        // KVM does not wake a halted VP just to report an open interrupt
+        // window, so if a PIC interrupt was still waiting for the window when
+        // the VP stopped, check the window again: the new VP state may have
+        // opened it.
+        if self.runner.interrupt_window_requested() {
+            self.inner
+                .request_interrupt_window
+                .store(true, Ordering::Relaxed);
+        }
+
         loop {
             self.inner.needs_yield.maybe_yield().await;
             stop.check()?;
@@ -1580,12 +1648,15 @@ impl<'p> Processor for KvmProcessor<'p> {
                 }
             }
 
-            // Check for pending PIC interrupts.
+            // Check for pending PIC interrupts, once KVM has reported the
+            // interrupt window for the current VP state (see below).
             //
             // Check and clear this with a relaxed ordering since `evaluate_vp`
             // (called when this is set) will force the VP to exit, causing us
             // to re-check.
-            if self.inner.request_interrupt_window.load(Ordering::Relaxed) {
+            if !self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed)
+            {
                 self.inner
                     .request_interrupt_window
                     .store(false, Ordering::Relaxed);
@@ -1606,11 +1677,23 @@ impl<'p> Processor for KvmProcessor<'p> {
             //
             // Don't break out of the loop while there is a pending exit so that
             // the register state is up-to-date for save.
+            //
+            // If a PIC interrupt is waiting but the interrupt window that KVM
+            // last reported may be stale, don't run the VP: just complete any
+            // pending exit, which makes KVM report the window for the current
+            // VP state, and then loop around to check it.
+            let refresh_interrupt_window = self.interrupt_window_stale
+                && self.inner.request_interrupt_window.load(Ordering::Relaxed);
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
-                    // Break out of the loop as soon as there is no pending exit.
-                    if !pending_exit {
+                let exit = if refresh_interrupt_window
+                    || self.inner.eval.load(Ordering::Relaxed)
+                    || stop.check().is_err()
+                {
+                    // Break out of the loop as soon as there is no pending exit
+                    // and no pending refresh of the interrupt window.
+                    let refresh_pending = refresh_interrupt_window && self.interrupt_window_stale;
+                    if !pending_exit && !refresh_pending {
                         self.inner.eval.store(false, Ordering::Relaxed);
                         break;
                     }
@@ -1620,6 +1703,11 @@ impl<'p> Processor for KvmProcessor<'p> {
                     // Run the VP.
                     self.runner.run()
                 };
+                // KVM reports the interrupt window for the current VP state
+                // when KVM_RUN returns, unless it fails early (e.g., because
+                // the VM is dead or the thread is being killed), which leaves
+                // the VP unusable anyway.
+                self.interrupt_window_stale = false;
 
                 let exit = exit.map_err(|err| dev.fatal_error(KvmRunVpError::Run(err).into()))?;
                 pending_exit = true;
@@ -1974,5 +2062,68 @@ impl GuestEventPort for KvmGuestEventPort {
 impl SignalMsi for KvmPartitionInner {
     fn signal_msi(&self, _devid: Option<u32>, address: u64, data: u32) {
         self.request_msi(MsiRequest { address, data });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kvm_recommends_hyperv_apic_msrs;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION;
+    use hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES;
+    use hvdef::HvEnlightenmentInformation;
+    use test_with_tracing::test;
+
+    #[test]
+    fn only_recommends_apic_msrs_when_kvm_does() {
+        let recommendation =
+            u128::from(HvEnlightenmentInformation::new().with_use_apic_msrs(true)) as u32;
+        let other_enlightenment =
+            u128::from(HvEnlightenmentInformation::new().with_deprecate_auto_eoi(true)) as u32;
+
+        // A missing enlightenment-information leaf is not a recommendation.
+        assert!(!kvm_recommends_hyperv_apic_msrs(&[]));
+
+        // test various combinations of CPUID entries
+        for (function, eax, expected) in [
+            // The correct leaf without the recommendation bit must be rejected.
+            (HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0, false),
+            // Other enlightenment bits must not be mistaken for this recommendation.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                other_enlightenment,
+                false,
+            ),
+            // The recommendation bit is meaningful only in the correct leaf.
+            (HV_CPUID_FUNCTION_MS_HV_FEATURES, recommendation, false),
+            // The correct leaf with the recommendation bit must be accepted.
+            (
+                HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                recommendation,
+                true,
+            ),
+        ] {
+            assert_eq!(
+                kvm_recommends_hyperv_apic_msrs(&[kvm::kvm_cpuid_entry2 {
+                    function,
+                    eax,
+                    ..Default::default()
+                }]),
+                expected
+            );
+        }
+
+        // The search must continue when the relevant leaf is not first.
+        assert!(kvm_recommends_hyperv_apic_msrs(&[
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_FEATURES,
+                eax: recommendation,
+                ..Default::default()
+            },
+            kvm::kvm_cpuid_entry2 {
+                function: HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION,
+                eax: recommendation,
+                ..Default::default()
+            },
+        ]));
     }
 }

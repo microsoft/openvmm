@@ -493,13 +493,9 @@ async fn emulate_core<T: EmulatorSupport>(
                     error = &err as &dyn std::error::Error,
                     ?instruction_bytes,
                     physical_address = cpu.support.physical_address(),
-                    "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
+                    "given an instruction that we shouldn't have been asked to emulate"
                 );
-
-                return Err(EmulationError::Emulator {
-                    bytes: instruction_bytes.to_vec(),
-                    error: err,
-                });
+                cpu.support.inject_pending_event(gpf_event());
             }
             x86emu::Error::InstructionException(exception, error_code, cause) => {
                 tracing::trace!(

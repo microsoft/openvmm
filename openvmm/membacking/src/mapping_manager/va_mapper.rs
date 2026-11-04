@@ -76,6 +76,7 @@ use range_map_vec::RangeMap;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::JoinHandle;
@@ -248,6 +249,17 @@ struct MapperInner {
     /// this is set.
     supports_memory_fault_resolution: bool,
     req_send: mesh::Sender<MappingRequest>,
+    /// Maintains a weak reference to avoid a reference cycle with the partition.
+    host_access: OnceLock<HostAccess>,
+}
+
+#[derive(Clone)]
+struct HostAccess(std::sync::Weak<dyn virt::PartitionHostAccess>);
+
+impl std::fmt::Debug for HostAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HostAccess")
+    }
 }
 
 /// A pending lazy mapping request.
@@ -758,6 +770,7 @@ impl VaMapper {
             primary,
             supports_memory_fault_resolution,
             req_send,
+            host_access: OnceLock::new(),
         });
 
         // Spawn the mapper thread *before* the AddMapper RPC. The manager
@@ -809,6 +822,18 @@ impl VaMapper {
     /// Returns the base pointer of the VA reservation.
     pub fn as_ptr(&self) -> *mut u8 {
         self.inner.mapping.as_ptr().cast()
+    }
+
+    /// Installs the callback used to recover eager-mapper faults caused by
+    /// missing host permission.
+    pub(crate) fn install_host_access(&self, host_access: Arc<dyn virt::PartitionHostAccess>) {
+        assert!(
+            self.inner
+                .host_access
+                .set(HostAccess(Arc::downgrade(&host_access)))
+                .is_ok(),
+            "host access is already installed"
+        );
     }
 
     /// Returns the length of the VA reservation in bytes.
@@ -882,6 +907,37 @@ unsafe impl GuestMemoryAccess for VaMapper {
         }
 
         if self.inner.eager.load(Ordering::Relaxed) {
+            // The guest-memory VA is already mapped for an eager mapper. For
+            // isolated guests, a fault can instead mean that the hypervisor has
+            // not granted userspace access to a shared page.
+            if let Some(host_access) = self
+                .inner
+                .host_access
+                .get()
+                .and_then(|host_access| host_access.0.upgrade())
+            {
+                let start = address & !(hvdef::HV_PAGE_SIZE - 1);
+                let end = address
+                    .checked_add(len as u64)
+                    .and_then(|end| end.checked_add(hvdef::HV_PAGE_SIZE - 1))
+                    .map(|end| end & !(hvdef::HV_PAGE_SIZE - 1));
+                let Some(end) = end else {
+                    return PageFaultAction::Fail(PageFaultError::new(
+                        GuestMemoryErrorKind::OutOfRange,
+                        std::io::Error::other("host-access range overflow"),
+                    ));
+                };
+                match host_access.acquire_host_access(start, end - start, write) {
+                    Ok(()) => return PageFaultAction::Retry,
+                    Err(err) => {
+                        return PageFaultAction::Fail(PageFaultError::new(
+                            GuestMemoryErrorKind::Other,
+                            std::io::Error::other(err),
+                        ));
+                    }
+                }
+            }
+
             // Eager mapper: file-backed mappings are established proactively.
             // If we get a page fault, the mapping was never set up or was
             // torn down.

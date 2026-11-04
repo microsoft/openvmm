@@ -15,8 +15,13 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+#[doc(hidden)]
+pub use target_lexicon;
+
+use anyhow::Context;
 use std::cell::RefCell;
 use std::ffi::OsStr;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -41,6 +46,61 @@ pub enum RemoteAccess {
     LocalOnly,
 }
 
+/// Target compatible with this artifact, if target specific.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ArtifactTarget {
+    /// Artifact is an image
+    Image,
+    /// Artifact can be used on any target system
+    Any,
+    /// Artifact can be loaded on systems with this architecture
+    Architecture(target_lexicon::Architecture),
+    /// Artifact can be loaded on systems with this operating system
+    OperatingSystem(target_lexicon::OperatingSystem),
+    /// Artifact can be loaded on systems with this target triple
+    Triple(target_lexicon::Triple),
+}
+
+impl ArtifactTarget {
+    /// Get the target triple
+    pub fn target_triple(&self) -> Option<target_lexicon::Triple> {
+        match self {
+            ArtifactTarget::Triple(triple) => Some(triple.clone()),
+            _ => None,
+        }
+    }
+}
+
+impl ArtifactTarget {
+    fn dir(&self) -> Option<String> {
+        match self {
+            ArtifactTarget::Image => None,
+            _ => Some(self.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for ArtifactTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArtifactTarget::Image => write!(f, "image"),
+            ArtifactTarget::Any => write!(f, "any"),
+            ArtifactTarget::Architecture(architecture) => architecture.fmt(f),
+            ArtifactTarget::OperatingSystem(operating_system) => operating_system.fmt(f),
+            ArtifactTarget::Triple(triple) => triple.fmt(f),
+        }
+    }
+}
+
+/// Information needed (along with the filename) to determine the URL for an
+/// artifact backed by blob storage.
+pub struct ArtifactBlobStorage {
+    /// The storage account the artifact is stored in.
+    pub storage_account: &'static str,
+    /// The container the artifact is stored in.
+    pub container: &'static str,
+}
+
 /// A trait that marks a type as being the type-safe ID for a petri artifact.
 ///
 /// This trait should never be implemented manually! It will be automatically
@@ -48,12 +108,38 @@ pub enum RemoteAccess {
 /// [`declare_artifacts!`](crate::declare_artifacts).
 pub trait ArtifactId: 'static {
     /// A globally unique ID corresponding to this artifact.
-    #[doc(hidden)]
     const GLOBAL_UNIQUE_ID: &'static str;
 
-    /// Whether this artifact can be backed by blob disk
-    #[doc(hidden)]
-    const SUPPORTS_BLOB_DISK: bool;
+    /// Storage account and container if this artifact is backed by blob disk
+    const BLOB_STORAGE: Option<ArtifactBlobStorage>;
+
+    /// Filename to use when this artifact is being written to or resolved
+    /// from the test content dir.
+    const FILENAME: &'static str;
+
+    /// Target compatible with this artifact, if target specific.
+    const TARGET: &'static ArtifactTarget;
+
+    /// Get the relative path to the artifact
+    fn relative_path() -> PathBuf {
+        if let Some(target) = Self::TARGET.dir() {
+            PathBuf::from(target).join(Self::FILENAME)
+        } else {
+            PathBuf::from(Self::FILENAME)
+        }
+    }
+
+    /// Get the url of the artifact if backed by blob disk
+    fn url() -> Option<String> {
+        Self::BLOB_STORAGE.map(|s| {
+            format!(
+                "https://{}.blob.core.windows.net/{}/{}",
+                s.storage_account,
+                s.container,
+                Self::FILENAME
+            )
+        })
+    }
 
     /// ...in case you decide to flaunt the trait-level docs regarding manually
     /// implementing this trait.
@@ -74,6 +160,15 @@ impl<A: ArtifactId + std::fmt::Debug> std::fmt::Debug for ArtifactHandle<A> {
 
 /// A resolved artifact path for artifact `A`.
 pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
+
+impl ResolvedArtifact {
+    /// Use an explicit local path outside the test artifact resolver.
+    ///
+    /// This does not assign a typed artifact identity or check compatibility.
+    pub fn from_local_path(path: PathBuf) -> Self {
+        Self(Some(path), PhantomData)
+    }
+}
 
 impl<A> Clone for ResolvedArtifact<A> {
     fn clone(&self) -> Self {
@@ -199,7 +294,7 @@ impl<'a> ArtifactResolver<'a> {
     pub fn set_remote_policy(&mut self, test_policy: RemoteAccess) {
         self.remote_policy = if matches!(test_policy, RemoteAccess::LocalOnly)
             || matches!(
-                std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref(),
+                std::env::var(env::PETRI_REMOTE_ARTIFACTS).as_deref(),
                 Ok("0") | Ok("false")
             ) {
             RemoteAccess::LocalOnly
@@ -228,7 +323,7 @@ impl<'a> ArtifactResolver<'a> {
     /// Returns the effective remote access for a given per-call policy,
     /// respecting the resolver-wide policy.
     fn effective_remote<A: ArtifactId>(&self, per_call: RemoteAccess) -> RemoteAccess {
-        if matches!(self.remote_policy, RemoteAccess::LocalOnly) || !A::SUPPORTS_BLOB_DISK {
+        if matches!(self.remote_policy, RemoteAccess::LocalOnly) || A::BLOB_STORAGE.is_none() {
             RemoteAccess::LocalOnly
         } else {
             per_call
@@ -257,9 +352,12 @@ impl<'a> ArtifactResolver<'a> {
     ) -> ResolvedOptionalArtifact<A> {
         match &self.inner {
             ArtifactResolverInner::Collecting(requirements) => {
-                requirements
-                    .borrow_mut()
-                    .require(handle.erase(), RemoteAccess::LocalOnly, true);
+                requirements.borrow_mut().require(
+                    handle.erase(),
+                    RemoteAccess::LocalOnly,
+                    true,
+                    None,
+                );
                 ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => ResolvedOptionalArtifact(
@@ -289,11 +387,37 @@ impl<'a> ArtifactResolver<'a> {
             ArtifactResolverInner::Collecting(requirements) => {
                 requirements
                     .borrow_mut()
-                    .require(handle.erase(), effective, false);
+                    .require(handle.erase(), effective, false, None);
                 ResolvedArtifactSource(None, PhantomData)
             }
             ArtifactResolverInner::Resolving(artifacts) => {
                 ResolvedArtifactSource(Some(artifacts.get_source(handle).clone()), PhantomData)
+            }
+        }
+    }
+
+    /// Resolve a required nextest archive artifact, specifying an associated
+    /// nested test. The artifact must be available locally.
+    pub fn require_nested<A: tags::IsNextestArchive>(
+        &self,
+        handle: ArtifactHandle<A>,
+        test: &'static str,
+    ) -> ResolvedArtifact<A> {
+        match &self.inner {
+            ArtifactResolverInner::Collecting(requirements) => {
+                requirements.borrow_mut().require(
+                    handle,
+                    RemoteAccess::LocalOnly,
+                    false,
+                    Some(test),
+                );
+                ResolvedArtifact(None, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => {
+                let ArtifactSource::Local(source) = artifacts.get_source(handle).clone() else {
+                    panic!("artifact must be available locally");
+                };
+                ResolvedArtifact(Some(source), PhantomData)
             }
         }
     }
@@ -306,15 +430,70 @@ enum ArtifactResolverInner<'a> {
 
 /// A type-erased handle to a particular Artifact, with no information as to
 /// what exactly the artifact is.
-#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone)]
 pub struct ErasedArtifactHandle {
     artifact_id_str: &'static str,
+    filename: &'static str,
+    target: &'static ArtifactTarget,
+    relative_path_fn: fn() -> PathBuf,
+    url_fn: fn() -> Option<String>,
+}
+
+impl std::hash::Hash for ErasedArtifactHandle {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.artifact_id_str.hash(state);
+    }
+}
+
+impl PartialEq<ErasedArtifactHandle> for ErasedArtifactHandle {
+    fn eq(&self, other: &ErasedArtifactHandle) -> bool {
+        self.artifact_id_str == other.artifact_id_str
+    }
+}
+
+impl Eq for ErasedArtifactHandle {}
+
+impl PartialOrd for ErasedArtifactHandle {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ErasedArtifactHandle {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.artifact_id_str.cmp(other.artifact_id_str)
+    }
 }
 
 impl ErasedArtifactHandle {
     /// used to serialize the artifact handle when querying petri for test requirements
-    pub fn global_unique_id(&self) -> String {
-        self.artifact_id_str.to_string()
+    pub fn global_unique_id(&self) -> &'static str {
+        self.artifact_id_str
+    }
+
+    /// get the filename of the artifact
+    pub fn filename(&self) -> &'static str {
+        self.filename
+    }
+
+    /// get the target of the artifact
+    pub fn target_triple(&self) -> Option<target_lexicon::Triple> {
+        self.target.target_triple()
+    }
+
+    /// get the relative path to the artifact
+    pub fn relative_path(&self) -> PathBuf {
+        (self.relative_path_fn)()
+    }
+
+    /// get the url to the artifact
+    pub fn url(&self) -> Option<String> {
+        (self.url_fn)()
+    }
+
+    /// whether this artifact is an image
+    pub fn is_image(&self) -> bool {
+        matches!(self.target, ArtifactTarget::Image)
     }
 }
 
@@ -352,6 +531,17 @@ impl<A: ArtifactId> ArtifactHandle<A> {
     pub const fn new() -> Self {
         Self(PhantomData)
     }
+
+    /// Create an `ErasedArtifactHandle` from this `ArtifactHandle`
+    pub const fn erase(&self) -> ErasedArtifactHandle {
+        ErasedArtifactHandle {
+            artifact_id_str: A::GLOBAL_UNIQUE_ID,
+            filename: A::FILENAME,
+            target: A::TARGET,
+            relative_path_fn: A::relative_path,
+            url_fn: A::url,
+        }
+    }
 }
 
 /// Helper trait to allow uniform handling of both typed and untyped artifact
@@ -369,47 +559,30 @@ impl AsArtifactHandle for ErasedArtifactHandle {
 
 impl<A: ArtifactId> AsArtifactHandle for ArtifactHandle<A> {
     fn erase(&self) -> ErasedArtifactHandle {
-        ErasedArtifactHandle {
-            artifact_id_str: A::GLOBAL_UNIQUE_ID,
-        }
+        self.erase()
     }
 }
 
-/// Declare one or more type-safe artifacts that do not support blob disk.
+/// Declare one or more type-safe artifacts.
+///
+/// This macro assumes that the artifacts to not support blob disk and that
+/// they have an associated filename and target. It does not implement any
+/// additional trait. For more granular control and automatic trait
+/// implementation, create a new wrapper around [`declare_artifacts_inner`]
+/// for your kind of artifact.
 #[macro_export]
 macro_rules! declare_artifacts {
     (
         $(
             $(#[$doc:meta])*
-            $name:ident
+            $name:ident($filename:literal, $target:ident)
         ),*
         $(,)?
     ) => {
-        $crate::declare_artifacts_inner!(
-            $(
-                $(#[$doc])*
-                $name(false),
-            )*
-        );
-    };
-}
-
-/// Declare one or more type-safe artifacts that support blob disk.
-#[macro_export]
-macro_rules! declare_blob_artifacts {
-    (
-        $(
-            $(#[$doc:meta])*
-            $name:ident
-        ),*
-        $(,)?
-    ) => {
-        $crate::declare_artifacts_inner!(
-            $(
-                $(#[$doc])*
-                $name(true),
-            )*
-        );
+        $crate::declare_artifacts_inner!($(
+            $(#[$doc])*
+            $name($crate::DOES_NOT_SUPPORT_BLOB_DISK, $filename, $target),
+        )*);
     };
 }
 
@@ -420,32 +593,60 @@ macro_rules! declare_artifacts_inner {
     (
         $(
             $(#[$doc:meta])*
-            $name:ident($supports_blob_disk:literal)
+            $name:ident($blob_storage:path, $filename:literal, $target:ident)
         ),*
         $(,)?
     ) => {
-        $(
-            $crate::paste::paste! {
-                $(#[$doc])*
-                #[expect(non_camel_case_types)]
-                pub const $name: $crate::ArtifactHandle<$name> = $crate::ArtifactHandle::new();
+        $($crate::paste::paste! {
+            $(#[$doc])*
+            #[expect(non_camel_case_types)]
+            pub const $name: $crate::ArtifactHandle<$name> = $crate::ArtifactHandle::new();
 
-                #[doc = concat!("Type-tag for [`",  stringify!($name), "`]")]
-                #[expect(non_camel_case_types)]
-                #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-                pub enum $name {}
+            #[doc = concat!("Type-tag for [`",  stringify!($name), "`]")]
+            #[expect(non_camel_case_types)]
+            #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+            pub enum $name {}
 
-                #[expect(non_snake_case)]
-                mod [< $name __ty >] {
-                    impl $crate::ArtifactId for super::$name {
-                        const GLOBAL_UNIQUE_ID: &'static str = module_path!();
-                        const SUPPORTS_BLOB_DISK: bool = $supports_blob_disk;
-                        fn i_know_what_im_doing_with_this_manual_impl_instead_of_using_the_declare_artifacts_macro() {}
-                    }
+            #[expect(non_snake_case)]
+            mod [< $name __ty >] {
+                impl $crate::ArtifactId for super::$name {
+                    const GLOBAL_UNIQUE_ID: &'static str = module_path!();
+                    const BLOB_STORAGE: Option<$crate::ArtifactBlobStorage> = $blob_storage;
+                    const FILENAME: &'static str = $filename;
+                    const TARGET: &'static $crate::ArtifactTarget = &$crate::targets::$target;
+                    fn i_know_what_im_doing_with_this_manual_impl_instead_of_using_the_declare_artifacts_macro() {}
                 }
             }
-        )*
+
+            const _: () = {
+                use $crate::artifacts_macro_support::linkme;
+                use $crate::ArtifactId;
+
+                // UNSAFETY: Needed for linkme.
+                #[expect(unsafe_code)]
+                #[linkme::distributed_slice($crate::artifacts_macro_support::ARTIFACTS)]
+                #[linkme(crate = linkme)]
+                static ARTIFACT: $crate::ErasedArtifactHandle = $name.erase();
+            };
+        })*
     };
+}
+
+/// Get the vmm test image associated with the id (if any).
+pub fn artifact_from_id(id: &str) -> Option<ErasedArtifactHandle> {
+    artifacts_macro_support::ARTIFACTS
+        .iter()
+        .find(|&x| x.artifact_id_str == id)
+        .copied()
+}
+
+#[doc(hidden)]
+pub mod artifacts_macro_support {
+    use crate::ErasedArtifactHandle;
+    pub use linkme;
+
+    #[linkme::distributed_slice]
+    pub static ARTIFACTS: [ErasedArtifactHandle];
 }
 
 /// A trait to resolve artifacts to paths.
@@ -486,6 +687,10 @@ impl<T: ResolveTestArtifact + ?Sized> ResolveTestArtifact for &T {
 struct ArtifactRequirement {
     optional: bool,
     remote: RemoteAccess,
+    /// Indicates that this artifact is a nextest archive and that when
+    /// enumerating, it will be necessary to get artifacts for the target
+    /// associated with this artifact for this test.
+    nested_test: Option<&'static str>,
 }
 
 /// A set of dependencies required to run a test.
@@ -508,9 +713,16 @@ impl TestArtifactRequirements {
         dependency: impl AsArtifactHandle,
         remote: RemoteAccess,
         optional: bool,
+        nested_test: Option<&'static str>,
     ) -> &mut Self {
-        self.artifacts
-            .push((dependency.erase(), ArtifactRequirement { optional, remote }));
+        self.artifacts.push((
+            dependency.erase(),
+            ArtifactRequirement {
+                optional,
+                remote,
+                nested_test,
+            },
+        ));
         self
     }
 
@@ -526,6 +738,15 @@ impl TestArtifactRequirements {
         self.artifacts
             .iter()
             .filter_map(|&(a, req)| req.optional.then_some(a))
+    }
+
+    /// Returns the current list of nested tests with dependencies.
+    pub fn nested_artifacts(
+        &self,
+    ) -> impl Iterator<Item = (ErasedArtifactHandle, &'static str)> + '_ {
+        self.artifacts
+            .iter()
+            .filter_map(|&(a, req)| req.nested_test.map(|t| (a, t)))
     }
 
     /// Resolve the set of dependencies.
@@ -639,4 +860,169 @@ pub struct ArtifactListOutput {
     pub required: Vec<String>,
     /// List of unique optional artifact IDs across all matching tests.
     pub optional: Vec<String>,
+    /// Nested test artifacts that need to be discovered recursively
+    pub nested: Vec<(String, Vec<String>)>,
+}
+
+impl ArtifactListOutput {
+    /// Convert the struct into a list of all artifacts
+    pub fn into_artifacts_list(self) -> Vec<String> {
+        let ArtifactListOutput {
+            mut required,
+            mut optional,
+            nested: _,
+        } = self;
+
+        let mut artifacts = Vec::new();
+        artifacts.append(&mut required);
+        artifacts.append(&mut optional);
+        artifacts
+    }
+}
+
+/// Targets for the artifacts
+pub mod targets {
+    use crate::ArtifactTarget;
+
+    /// Artifact is an image
+    pub const IMAGE: ArtifactTarget = ArtifactTarget::Image;
+    /// Artifact can be used on any target system
+    pub const ANY: ArtifactTarget = ArtifactTarget::Any;
+    /// x86_64
+    pub const X64: ArtifactTarget =
+        ArtifactTarget::Architecture(target_lexicon::Architecture::X86_64);
+    /// aarch64
+    pub const AARCH64: ArtifactTarget = ArtifactTarget::Architecture(
+        target_lexicon::Architecture::Aarch64(target_lexicon::Aarch64Architecture::Aarch64),
+    );
+    /// Windows
+    pub const WINDOWS: ArtifactTarget =
+        ArtifactTarget::OperatingSystem(target_lexicon::OperatingSystem::Windows);
+    /// x86_64-pc-windows-msvc
+    pub const WINDOWS_X64: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::X86_64,
+        vendor: target_lexicon::Vendor::Pc,
+        operating_system: target_lexicon::OperatingSystem::Windows,
+        environment: target_lexicon::Environment::Msvc,
+        binary_format: target_lexicon::BinaryFormat::Coff,
+    });
+    /// x86_64-unknown-linux-gnu
+    pub const LINUX_X64: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::X86_64,
+        vendor: target_lexicon::Vendor::Unknown,
+        operating_system: target_lexicon::OperatingSystem::Linux,
+        environment: target_lexicon::Environment::Gnu,
+        binary_format: target_lexicon::BinaryFormat::Elf,
+    });
+    /// x86_64-unknown-linux-musl
+    pub const LINUX_X64_MUSL: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::X86_64,
+        vendor: target_lexicon::Vendor::Unknown,
+        operating_system: target_lexicon::OperatingSystem::Linux,
+        environment: target_lexicon::Environment::Musl,
+        binary_format: target_lexicon::BinaryFormat::Elf,
+    });
+    /// aarch64-pc-windows-msvc
+    pub const WINDOWS_AARCH64: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::Aarch64(
+            target_lexicon::Aarch64Architecture::Aarch64,
+        ),
+        vendor: target_lexicon::Vendor::Pc,
+        operating_system: target_lexicon::OperatingSystem::Windows,
+        environment: target_lexicon::Environment::Msvc,
+        binary_format: target_lexicon::BinaryFormat::Coff,
+    });
+    /// aarch64-unknown-linux-gnu
+    pub const LINUX_AARCH64: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::Aarch64(
+            target_lexicon::Aarch64Architecture::Aarch64,
+        ),
+        vendor: target_lexicon::Vendor::Unknown,
+        operating_system: target_lexicon::OperatingSystem::Linux,
+        environment: target_lexicon::Environment::Gnu,
+        binary_format: target_lexicon::BinaryFormat::Elf,
+    });
+    /// aarch64-unknown-linux-musl
+    pub const LINUX_AARCH64_MUSL: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::Aarch64(
+            target_lexicon::Aarch64Architecture::Aarch64,
+        ),
+        vendor: target_lexicon::Vendor::Unknown,
+        operating_system: target_lexicon::OperatingSystem::Linux,
+        environment: target_lexicon::Environment::Musl,
+        binary_format: target_lexicon::BinaryFormat::Elf,
+    });
+    /// aarch64-apple-darwin
+    pub const MACOS_AARCH64: ArtifactTarget = ArtifactTarget::Triple(target_lexicon::Triple {
+        architecture: target_lexicon::Architecture::Aarch64(
+            target_lexicon::Aarch64Architecture::Aarch64,
+        ),
+        vendor: target_lexicon::Vendor::Apple,
+        operating_system: target_lexicon::OperatingSystem::Darwin(None),
+        environment: target_lexicon::Environment::Unknown,
+        binary_format: target_lexicon::BinaryFormat::Macho,
+    });
+}
+
+/// The artifact does not support being backed by blob disk
+pub const DOES_NOT_SUPPORT_BLOB_DISK: Option<ArtifactBlobStorage> = None;
+
+/// Petri VMM tests environment variables
+pub mod env {
+    /// Whether to enable using remote artifacts backed by blob store
+    pub const PETRI_REMOTE_ARTIFACTS: &str = "PETRI_REMOTE_ARTIFACTS";
+    /// Whether petri should return success if an unstable test fails
+    pub const PETRI_IGNORE_UNSTABLE_FAILURES: &str = "PETRI_IGNORE_UNSTABLE_FAILURES";
+}
+/// Artifact tag trait declarations
+pub mod tags {
+    use crate::ArtifactId;
+
+    /// Artifact is a Nextest archive
+    pub trait IsNextestArchive: ArtifactId {}
+}
+
+/// Runs the test binary with `--list-required-artifacts --tests-from-stdin`
+/// and returns all the required and optional artifacts for all test defined
+/// in the RustSuite.
+pub fn query_test_binary_artifacts(
+    test_binary: &Path,
+    tests: &[impl AsRef<str>],
+) -> anyhow::Result<ArtifactListOutput> {
+    let mut command = std::process::Command::new(test_binary);
+    command
+        .arg("--list-required-artifacts")
+        .arg("--tests-from-stdin")
+        .stdin(std::process::Stdio::piped());
+
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn test binary")?;
+
+    let stdin_data = tests
+        .iter()
+        .map(|n| format!("{}\n", n.as_ref()))
+        .collect::<String>();
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(stdin_data.as_bytes())
+        .context("failed to write test names to stdin")?;
+
+    let artifact_output = child
+        .wait_with_output()
+        .context("failed to wait for test binary")?;
+    anyhow::ensure!(
+        artifact_output.status.success(),
+        "test binary failed: {}",
+        String::from_utf8_lossy(&artifact_output.stderr)
+    );
+    let artifact_stdout = String::from_utf8(artifact_output.stdout)
+        .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
+
+    serde_json::from_str(&artifact_stdout)
+        .map_err(|e| anyhow::anyhow!("failed to parse test output JSON: {}", e))
 }

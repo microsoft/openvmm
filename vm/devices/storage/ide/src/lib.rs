@@ -1227,6 +1227,13 @@ impl Channel {
             .unwrap()
     }
 
+    fn interrupt_pending(&self) -> bool {
+        self.drives
+            .iter()
+            .flatten()
+            .any(|drive| drive.interrupt_pending())
+    }
+
     fn post_drive_access(&mut self, bus_master_state: &BusMasterState) {
         // DMA first, since this may affect the other operations.
         self.perform_dma_memory_phase();
@@ -1258,11 +1265,7 @@ impl Channel {
         }
 
         // Update interrupt state.
-        let interrupt = self
-            .drives
-            .iter()
-            .flatten()
-            .any(|drive| drive.interrupt_pending());
+        let interrupt = self.interrupt_pending();
         if interrupt {
             tracing::trace!(channel = self.channel, interrupt, "post_drive_access");
             self.bus_master_state.status_reg.set_interrupt(true);
@@ -1793,6 +1796,7 @@ mod save_restore {
                 }
             }
 
+            self.interrupt.set_level(self.interrupt_pending());
             Ok(())
         }
     }
@@ -1820,6 +1824,71 @@ mod tests {
     use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
+
+    #[async_test]
+    async fn restore_updates_interrupt_without_processing_drive_work() {
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+
+        fn controller(file: &NamedTempFile, drive: u8, interrupt: LineInterrupt) -> IdeDevice {
+            let disk = Disk::new(FileDisk::open(file.reopen().unwrap(), false).unwrap()).unwrap();
+            let mut drives = [None, None];
+            drives[usize::from(drive)] = Some(DriveMedia::hard_disk(disk));
+            IdeDevice::new(
+                GuestMemory::allocate(16 * 1024),
+                &mut ExternallyManagedPortIoIntercepts,
+                drives,
+                [None, None],
+                interrupt,
+                LineInterrupt::detached(),
+            )
+            .unwrap()
+        }
+
+        for drive in [0, 1] {
+            for pending in [false, true] {
+                let file = NamedTempFile::new().unwrap();
+                file.as_file().set_len(1024 * 1024).unwrap();
+                let mut source = controller(&file, drive, LineInterrupt::detached());
+                if pending {
+                    source
+                        .io_write(
+                            IdeIoPort::PRI_DEVICE_HEAD.0,
+                            &[DeviceHeadReg::new().with_dev(drive != 0).into_bits()],
+                        )
+                        .unwrap();
+                    execute_command(
+                        &mut source,
+                        &IdePath { channel: 0, drive },
+                        IdeCommand::IDENTIFY_DEVICE.0,
+                    );
+                }
+                // The bus-master interrupt bit can be acknowledged separately
+                // from the drive interrupt. Restore must not relatch it.
+                source.channels[0]
+                    .bus_master_state
+                    .status_reg
+                    .set_interrupt(false);
+                let saved = SavedStateBlob::new(source.save().unwrap());
+                let target = TestLineInterruptTarget::new_arc();
+                let mut destination = controller(
+                    &file,
+                    drive,
+                    LineInterrupt::new_with_target("IDE", target.clone(), 0),
+                );
+                destination.channels[0].interrupt.set_level(!pending);
+                destination.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(target.is_high(0), pending);
+                assert!(
+                    !destination.channels[0]
+                        .bus_master_state
+                        .status_reg
+                        .interrupt()
+                );
+            }
+        }
+    }
 
     #[derive(Debug, Inspect)]
     struct MediaGeometry {
@@ -2771,6 +2840,199 @@ mod tests {
             !dma_state,
             "Expected DMA state cleared - byte_count=0 implies 64KB which exceeds guest memory"
         );
+    }
+
+    /// Build the 12-byte ATAPI CDB for PREVENT ALLOW MEDIUM REMOVAL.
+    fn medium_removal_cdb(prevent: bool) -> [u8; 12] {
+        let cdb = scsi::CdbMediaRemoval {
+            operation_code: ScsiOp::MEDIUM_REMOVAL,
+            lun: 0,
+            reserved: [0; 2],
+            flags: scsi::MediaRemovalFlags::new()
+                .with_prevent(prevent)
+                .with_persistent(prevent),
+        };
+        let mut command = [0; 12];
+        command[..cdb.as_bytes().len()].copy_from_slice(cdb.as_bytes());
+        command
+    }
+
+    /// Build a 12-byte ATAPI CDB the device does not implement, which is refused
+    /// with ILLEGAL_COMMAND sense whatever else is going on.
+    fn unsupported_cdb() -> [u8; 12] {
+        let mut command = [0; 12];
+        command[0] = ScsiOp::WRITE.0;
+        command
+    }
+
+    /// Build the 12-byte ATAPI CDB for START STOP UNIT with LOEJ set.
+    fn eject_cdb() -> [u8; 12] {
+        let cdb = scsi::StartStop {
+            operation_code: ScsiOp::START_STOP_UNIT,
+            immediate: 0,
+            reserved2: [0; 2],
+            flag: scsi::StartStopFlags::new()
+                .with_start(false)
+                .with_load_eject(true),
+            control: 0,
+        };
+        let mut command = [0; 12];
+        command[..cdb.as_bytes().len()].copy_from_slice(cdb.as_bytes());
+        command
+    }
+
+    /// Run one ATAPI packet command through the register interface, returning the
+    /// status the drive settles on.
+    async fn atapi_packet_command(
+        ide_device: &mut IdeDevice,
+        dev_path: &IdePath,
+        cdb: &[u8; 12],
+    ) -> Status {
+        execute_command(ide_device, dev_path, IdeCommand::PACKET_COMMAND.0);
+        let status = check_command_ready(ide_device, dev_path).await;
+        assert!(status.drq(), "the drive should be waiting for the CDB");
+        for chunk in cdb.chunks(2) {
+            ide_device.io_write(IdeIoPort::PRI_DATA.0, chunk).unwrap();
+        }
+        check_command_ready(ide_device, dev_path).await
+    }
+
+    /// A drive reset ends the nexus for an ATAPI drive too.
+    ///
+    /// The tray lock is scoped to the initiator that set it, so a reset has to drop
+    /// it along with the sense slot and any queued medium event. Without that, the
+    /// next initiator's first eject is refused with MEDIUM_REMOVAL_PREVENTED by a
+    /// decision it never made.
+    ///
+    /// The first eject is the control: without it a pass would only show that
+    /// ejecting works, not that the reset is what made it work.
+    #[async_test]
+    async fn atapi_reset_ends_the_nexus() {
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(None, DriveType::Optical);
+
+        device_select(&mut ide_device, &dev_path).await;
+
+        let status =
+            atapi_packet_command(&mut ide_device, &dev_path, &medium_removal_cdb(true)).await;
+        assert!(!status.err(), "locking the tray should succeed");
+
+        // Locked, so this one must be refused.
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(status.err(), "a locked tray must refuse the eject");
+
+        ide_device.reset().await;
+        device_select(&mut ide_device, &dev_path).await;
+
+        // Same command, same drive, same media: it succeeds now only because the
+        // lock did not survive the reset.
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(!status.err(), "the tray lock outlived the drive reset");
+    }
+
+    /// A reset must not leave an ATAPI command in flight.
+    ///
+    /// The nexus state is cleared on the drive, but the sense slot is written by
+    /// `AtapiScsiDisk::execute_scsi` when its future COMPLETES, which is after the
+    /// inner command is awaited. An I/O the reset leaves behind therefore finishes
+    /// afterwards and writes the previous initiator's result into the slot the
+    /// reset just emptied. `HardDrive::reset` already drops its I/O for the same
+    /// reason.
+    ///
+    /// Writing the CDB spawns the I/O synchronously and nothing polls it until
+    /// `poll_device` runs, which is what lets the test hold one across the reset.
+    #[async_test]
+    async fn atapi_reset_drops_the_command_left_in_flight() {
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(None, DriveType::Optical);
+
+        device_select(&mut ide_device, &dev_path).await;
+
+        // Control: this command is refused whatever the nexus state holds, so the
+        // assertion at the end cannot pass merely because the reset made it
+        // succeed - which is what an eject would have done once the tray unlocked.
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &unsupported_cdb()).await;
+        assert!(status.err(), "an unsupported command must be refused");
+
+        // Start the same command again and stop before it completes.
+        execute_command(&mut ide_device, &dev_path, IdeCommand::PACKET_COMMAND.0);
+        let status = check_command_ready(&mut ide_device, &dev_path).await;
+        assert!(status.drq(), "the drive should be waiting for the CDB");
+        for chunk in unsupported_cdb().chunks(2) {
+            ide_device.io_write(IdeIoPort::PRI_DATA.0, chunk).unwrap();
+        }
+
+        ide_device.reset().await;
+
+        // Give anything the reset left behind a chance to finish.
+        poll_fn(|cx| {
+            ide_device.poll_device(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        let status = get_status(&mut ide_device, &dev_path);
+        assert!(
+            !status.err(),
+            "a command left in flight by the reset completed afterwards"
+        );
+    }
+
+    /// The ATA DEVICE RESET command ends the nexus as well.
+    ///
+    /// It takes its own path (`handle_soft_reset`) and never reaches the drive
+    /// reset above, so covering only that one would leave the command a guest
+    /// actually issues after an error still carrying the previous lock.
+    #[async_test]
+    async fn atapi_device_reset_command_ends_the_nexus() {
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(None, DriveType::Optical);
+
+        device_select(&mut ide_device, &dev_path).await;
+
+        let status =
+            atapi_packet_command(&mut ide_device, &dev_path, &medium_removal_cdb(true)).await;
+        assert!(!status.err(), "locking the tray should succeed");
+
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(status.err(), "a locked tray must refuse the eject");
+
+        // DEVICE RESET leaves the status register at zero (ATA8-ACS3 "Normal
+        // Outputs"), so there is no ready state to wait for here; the PACKET
+        // command below sets DRDY again on its own.
+        execute_command(&mut ide_device, &dev_path, IdeCommand::DEVICE_RESET.0);
+
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(
+            !status.err(),
+            "the tray lock outlived the DEVICE RESET command"
+        );
+    }
+
+    /// A software reset (SRST through the device control register) is the path a
+    /// guest driver takes, so it is pinned separately from the two above.
+    #[async_test]
+    async fn atapi_software_reset_ends_the_nexus() {
+        let dev_path = IdePath::default();
+        let (mut ide_device, _disk, _file_contents, _geometry) =
+            ide_test_setup(None, DriveType::Optical);
+
+        device_select(&mut ide_device, &dev_path).await;
+
+        let status =
+            atapi_packet_command(&mut ide_device, &dev_path, &medium_removal_cdb(true)).await;
+        assert!(!status.err(), "locking the tray should succeed");
+
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(status.err(), "a locked tray must refuse the eject");
+
+        execute_soft_reset_command(&mut ide_device, &dev_path, IdeCommand::SOFT_RESET.0);
+
+        let status = atapi_packet_command(&mut ide_device, &dev_path, &eject_cdb()).await;
+        assert!(!status.err(), "the tray lock outlived the software reset");
     }
 
     #[async_test]

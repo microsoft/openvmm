@@ -1,8 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! A "move fast, break things" tool, that provides no long-term CLI stability
-//! guarantees.
+//! Host-side development CLI for a running OpenHCL diagnostics server.
+//!
+//! The tool connects to an OpenHCL/Underhill instance and provides process
+//! execution, interactive shells, inspect queries and updates, kernel logs,
+//! core dumps, debugger relays, saved-state dumps, packet capture, and other
+//! diagnostics. The available transport identifies the target VM or local
+//! diagnostic endpoint.
+//!
+//! `ohcldiag-dev` is intended for interactive investigation on development
+//! builds. It deliberately provides no long-term guarantees for its command
+//! syntax, output, or inspect-tree paths and must not be treated as a stable
+//! automation API.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]

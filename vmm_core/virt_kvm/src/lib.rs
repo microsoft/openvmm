@@ -75,6 +75,13 @@ pub enum KvmError {
     NoGic,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "aarch64")]
+    #[error("failed to set MPIDR_EL1 for VP {vp_index}")]
+    SetMpidr {
+        vp_index: u32,
+        #[source]
+        err: kvm::Error,
+    },
     #[cfg(guest_arch = "x86_64")]
     #[error("nested virtualization was requested but the host does not support it")]
     NestedVirtUnsupported,
@@ -182,6 +189,9 @@ enum KvmRunVpError {
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("cannot inject an extint: the VP is not ready for interrupt injection")]
+    ExtintNotInjectable,
 }
 
 pub struct KvmProcessorBinder {

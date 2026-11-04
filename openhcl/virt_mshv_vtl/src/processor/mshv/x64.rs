@@ -670,7 +670,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         };
         UhHypercallHandler::MSHV_DISPATCHER.dispatch(
             guest_memory,
-            hv1_hypercall::X64RegisterIo::new(handler, is_64bit),
+            hv1_hypercall::X64RegisterIo::new(handler, is_64bit, true),
         );
     }
 
@@ -1631,6 +1631,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
     }
 
     fn set_tsc(&mut self, value: &vp::Tsc) -> Result<(), Self::Error> {
+        self.set_register_state(value)
+    }
+
+    fn tsc_deadline(&mut self) -> Result<vp::TscDeadline, Self::Error> {
+        self.get_register_state()
+    }
+
+    fn set_tsc_deadline(&mut self, value: &vp::TscDeadline) -> Result<(), Self::Error> {
         self.set_register_state(value)
     }
 

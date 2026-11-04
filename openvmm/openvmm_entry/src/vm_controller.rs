@@ -481,9 +481,7 @@ impl VmController {
         // Serialize the ProtobufMessage to bytes for writing to disk.
         let saved_state_bytes = mesh::payload::encode(saved_state_msg);
 
-        // Fsync the memory backing file. Open it for write: on Windows
-        // `FlushFileBuffers` (which backs `sync_all`) requires a handle with
-        // write access, so a read-only handle fails with "Access is denied".
+        // Open for write: Windows FlushFileBuffers requires write access.
         let memory_file = fs_err::OpenOptions::new()
             .write(true)
             .open(memory_file_path)?;

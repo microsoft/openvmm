@@ -45,6 +45,8 @@ pub enum SnpError {
     TooManyCpuidEntries(usize),
     #[error("SNP launch is already in progress")]
     LaunchInProgress,
+    #[error("SNP launch is already complete")]
+    LaunchAlreadyFinished,
     #[error("SNP launch previously failed")]
     LaunchFailed,
     #[error("invalid SNP BSP state: {0}")]
@@ -169,7 +171,7 @@ impl KvmPartitionInner {
             match *state {
                 SnpLaunchState::NotStarted => *state = SnpLaunchState::Started,
                 SnpLaunchState::Started => return Err(SnpError::LaunchInProgress),
-                SnpLaunchState::Finished => return Ok(()),
+                SnpLaunchState::Finished => return Err(SnpError::LaunchAlreadyFinished),
                 SnpLaunchState::Failed => return Err(SnpError::LaunchFailed),
             }
         }
@@ -273,8 +275,15 @@ impl KvmPartitionInner {
         }
         self.prepare_snp_vmsa_register_state()?;
         tracing::debug!("KVM_SEV_SNP_LAUNCH_FINISH");
-        self.kvm
-            .sev_snp_launch_finish(sev.as_fd(), &mut Default::default())?;
+        let mut finish = kvm::kvm_sev_snp_launch_finish {
+            host_data: self
+                .snp_config
+                .as_ref()
+                .and_then(|config| config.generic.host_data)
+                .unwrap_or_default(),
+            ..Default::default()
+        };
+        self.kvm.sev_snp_launch_finish(sev.as_fd(), &mut finish)?;
         Ok(())
     }
 
@@ -812,6 +821,7 @@ mod tests {
 
     fn snp_config_with_contexts(vp_contexts: Vec<virt::SnpVpContext>) -> virt::SnpConfig {
         virt::SnpConfig {
+            host_data: None,
             policy: 0x30000,
             highest_vtl: 0,
             shared_gpa_boundary: 0,

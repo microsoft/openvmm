@@ -23,9 +23,11 @@ members = [
   "tmk/simple_tmk",
   # VMM tests
   "vmm_tests/prep_steps",
+  "vmm_tests/cca_tests",
   "vmm_tests/vmm_tests",
   # Performance tests
   "petri/burette",
+  "vmm_tests/vmm_perf",
   # hyper-v tooling
   "hyperv/tools/hypestv",
   # fuzzing
@@ -52,14 +54,20 @@ members = [
   "petri/make_imc_hive",
   "petri/petri-tool",
   "vm/devices/get/test_igvm_agent_rpc_server",
+  "vm/devices/storage/openvmm-img",
   "vm/devices/tpm/tpm_guest_tests",
   "vm/loader/igvmfilegen",
+  "vm/loader/snp_bootshim",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  "opentmk/opentmk_executor",
   # support crates consumed by closed-source only
   "support/debug_output_tracing",
+  # TDISP
+  # Temporary: remove once a workspace member depends on this crate.
+  "vm/devices/tdisp_lstoraccel",
 ]
 exclude = [
   "xsync",
@@ -67,11 +75,11 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.95"
+rust-version = "1.97"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
-version = "0.1.0"
+version = "0.4.0"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -80,6 +88,10 @@ xtask_fuzz = { path = "xtask/xtask_fuzz" }
 opentmk_protocol = { path = "opentmk/opentmk_protocol" }
 opentmk_core = { path = "opentmk/opentmk_core" }
 opentmk_disk = { path = "opentmk/opentmk_disk" }
+
+# opentmk executor
+opentmk_exec_packet = { path = "opentmk/opentmk_exec_packet" }
+opentmk_decoder = { path = "opentmk/opentmk_decoder" }
 
 flowey = { path = "flowey/flowey" }
 flowey_cli = { path = "flowey/flowey_cli" }
@@ -106,11 +118,11 @@ vhost_user_protocol = { path = "vm/devices/virtio/vhost_user_protocol" }
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_igvm_agent = { path = "vmm_tests/vmm_test_igvm_agent" }
-vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
 
 petri = { path = "petri" }
 initrd_cpio = { path = "petri/initrd_cpio" }
+mshv_host_boot = { path = "petri/mshv_host_boot" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
 petri_artifacts_core = { path = "petri/petri_artifacts_core" }
 
@@ -130,7 +142,6 @@ console_relay = { path = "support/console_relay" }
 crypto = { path = "support/crypto" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_memcpy = { path = "support/fast_memcpy" }
-fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
@@ -160,6 +171,7 @@ mesh_tracing = { path = "support/mesh_tracing" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 minircu = { path = "support/minircu" }
 nostd_spin_channel = { path = "support/nostd_spin_channel"}
+otel_tracing = { path = "support/otel_tracing" }
 open_enum = { path = "support/open_enum" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
 openssl_kdf = { path = "support/openssl_kdf" }
@@ -245,6 +257,8 @@ cvm_tracing = { path = "vm/cvm_tracing" }
 chipset = { path = "vm/devices/chipset" }
 chipset_legacy = { path = "vm/devices/chipset_legacy" }
 chipset_resources = { path = "vm/devices/chipset_resources" }
+ipmi_kcs = { path = "vm/devices/chipset/ipmi_kcs" }
+ipmi_protocol = { path = "vm/devices/chipset/ipmi_protocol" }
 firmware_pcat = { path = "vm/devices/firmware/firmware_pcat" }
 firmware_uefi = { path = "vm/devices/firmware/firmware_uefi" }
 firmware_uefi_custom_vars = { path = "vm/devices/firmware/firmware_uefi_custom_vars" }
@@ -254,6 +268,7 @@ uefi_specs = { path = "vm/devices/firmware/uefi_specs" }
 uefi_nvram_specvars = { path = "vm/devices/firmware/uefi_nvram_specvars" }
 hyperv_secure_boot_templates = { path = "vm/devices/firmware/hyperv_secure_boot_templates" }
 hyperv_uefi_custom_vars_json = { path = "vm/devices/firmware/hyperv_uefi_custom_vars_json" }
+smbios_defs = { path = "vm/devices/firmware/smbios_defs" }
 framebuffer = { path = "vm/devices/framebuffer" }
 hcl_compat_uefi_nvram_resources = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_resources" }
 hcl_compat_uefi_nvram_storage = { path = "vm/devices/firmware/hcl_compat_uefi_nvram_storage" }
@@ -273,7 +288,9 @@ hyperv_ic_protocol = { path = "vm/devices/hyperv_ic_protocol" }
 hyperv_ic_resources = { path = "vm/devices/hyperv_ic_resources" }
 hyperv_ic_guest = { path = "vm/devices/hyperv_ic_guest" }
 input_core = { path = "vm/devices/input_core" }
-cxl_spec = { path = "vm/devices/cxl" }
+hyperv_keyboard_protocol = { path = "vm/devices/input/hyperv_keyboard_protocol" }
+cxl = { path = "vm/devices/cxl" }
+cxl_spec = { path = "vm/devices/cxl/cxl_spec" }
 underhill_config = { path = "vm/devices/get/underhill_config" }
 missing_dev = { path = "vm/devices/missing_dev" }
 missing_dev_resources = { path = "vm/devices/missing_dev_resources" }
@@ -284,6 +301,7 @@ linux_net_bindings = { path = "vm/devices/net/linux_net_bindings" }
 mana_driver = { path = "vm/devices/net/mana_driver" }
 vfio_sys = { path = "vm/devices/user_driver/vfio_sys" }
 net_backend = { path = "vm/devices/net/net_backend" }
+net_backend_core = { path = "vm/devices/net/net_backend_core" }
 net_backend_resources = { path = "vm/devices/net/net_backend_resources" }
 net_consomme = { path = "vm/devices/net/net_consomme" }
 consomme = { path = "vm/devices/net/net_consomme/consomme" }
@@ -292,6 +310,7 @@ net_mana = { path = "vm/devices/net/net_mana" }
 net_tap = { path = "vm/devices/net/net_tap" }
 net_packet_capture = { path = "vm/devices/net/net_packet_capture" }
 netvsp = { path = "vm/devices/net/netvsp" }
+netvsp_protocol = { path = "vm/devices/net/netvsp_protocol" }
 netvsp_resources = { path = "vm/devices/net/netvsp_resources" }
 nvme = { path = "vm/devices/storage/nvme" }
 nvme_common = { path = "vm/devices/storage/nvme_common" }
@@ -329,7 +348,9 @@ disk_nvme = { path = "vm/devices/storage/disk_nvme" }
 disk_delay = { path = "vm/devices/storage/disk_delay" }
 disk_prwrap = { path = "vm/devices/storage/disk_prwrap" }
 disk_striped = { path = "vm/devices/storage/disk_striped" }
+disk_hook = { path = "vm/devices/storage/disk_hook" }
 disk_vhd1 = { path = "vm/devices/storage/disk_vhd1" }
+disk_vmdk = { path = "vm/devices/storage/disk_vmdk" }
 disklayer_vhdx = { path = "vm/devices/storage/disklayer_vhdx" }
 disk_vhdmp = { path = "vm/devices/storage/disk_vhdmp" }
 disklayer_ram = { path = "vm/devices/storage/disklayer_ram" }
@@ -363,11 +384,13 @@ serial_debugcon_resources = { path = "vm/devices/serial/serial_debugcon_resource
 serial_core = { path = "vm/devices/serial/serial_core" }
 serial_pl011 = { path = "vm/devices/serial/serial_pl011" }
 serial_pl011_resources = { path = "vm/devices/serial/serial_pl011_resources" }
+serial_uart_resources = { path = "vm/devices/serial/serial_uart_resources" }
 serial_socket = { path = "vm/devices/serial/serial_socket" }
 tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
+tpm_vmgs = { path = "vm/devices/tpm/tpm_vmgs" }
 pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
@@ -384,6 +407,7 @@ virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
+virtio_rtc = { path = "vm/devices/virtio/virtio_rtc" }
 virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
@@ -428,6 +452,7 @@ x86emu = { path = "vm/x86/x86emu" }
 # vmcore
 build_rs_guest_arch = { path = "vm/vmcore/build_rs_guest_arch" }
 guestmem = { path = "vm/vmcore/guestmem" }
+guestmem_core = { path = "vm/vmcore/guestmem_core" }
 memory_range = { path = "vm/vmcore/memory_range" }
 save_restore_derive = { path = "vm/vmcore/save_restore_derive" }
 vm_resource = { path = "vm/vmcore/vm_resource" }
@@ -473,7 +498,14 @@ thiserror = { version = "2", default-features = false }
 # --- Logging / tracing ---
 env_logger = "0.11.7"
 log = "0.4"
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-etw-traces = { version = "0.1.1", default-features = false }
+# The released 0.5.0 processor nests an executor when spans end. Pin the
+# upstream direct processor until it is included in a release.
+opentelemetry-user-events-trace = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib", rev = "07c16a0b1e0aa7b6fcd4dc3031b68b78d3892d9e", default-features = false }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
 tracing = "0.1"
+tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = "0.3.20"
 
 # --- Async / futures ---
@@ -500,7 +532,7 @@ mimalloc = { version = "0.1.39", default-features = false }
 paste = "1.0"
 proc-macro2 = "1.0"
 quote = "1.0"
-syn = "2"
+syn = "3"
 
 # --- Build-time utilities ---
 cc = "1.2.34"
@@ -520,6 +552,7 @@ hex = "0.4"
 pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
+postcard = { version = "1.1.3", default-features = false }
 prost = "0.11"
 prost-build = "0.11"
 prost-types = "0.11"
@@ -542,9 +575,9 @@ flate2 = "1.1"
 # --- Cryptography & secure computing ---
 constant_time_eq = "0.5"
 cms = { version = "0.3.0-pre.2", default-features = false }
+const-oid = { version = "0.10", features = ["db"] }
 der = "0.8"
 getrandom = "0.4"
-ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 openssl = "0.10.79"
 openssl-sys = "0.9"
 pkcs1 = "0.8.0-rc.4"
@@ -553,14 +586,20 @@ rsa = { version = "0.10.0-rc.18", default-features = false }
 sha1 = { version = "0.11.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
 signature = { version = "3.0.0", default-features = false }
-symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", branch = "release/0.6.0" }
+symcrypt = { version = "0.6.0", git = "https://github.com/microsoft/rust-symcrypt.git", rev = "2d83888206139cb8cc522ea3617a1870674ac8a0" }
 x509-cert = { version = "0.3.0-rc.4", default-features = false }
+
+# --- TPMs ---
+# TPM 1.38
+ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
+# TPM 1.85
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "517ae1a64aeb990019d809b963ac2c2726080e24", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }
 bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
-heapless = { version = "0.8", default-features = false }
+heapless = { version = "0.9", default-features = false }
 petgraph = "0.8.0"
 range_map_vec = "0.2.0"
 rustc-hash = "2.1.1"
@@ -605,7 +644,7 @@ hyper-tls = "0.6"
 hyper-util = "0.1"
 pcap-file = "2.0.0"
 resolv-conf = "0.7"
-smoltcp = { version = "0.12.0", default-features = false }
+smoltcp = { version = "0.14.0", default-features = false }
 socket2 = "0.6"
 
 # --- Time ---
@@ -629,12 +668,13 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_xop",
   "no_d3now",
 ] }
-igvm = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73" }
-igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "7184dce1086956342c1bf561f82ff268d06d2c73", default-features = false }
+igvm = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de" }
+igvm_defs = { git = "https://github.com/microsoft/igvm", rev = "b7e717d40653f8c2382342eb7097dcd3ec0568de", default-features = false }
 kvm-bindings = "0.14.0"
-mshv-bindings = "0.6.8"
-mshv-ioctls = "0.6.8"
-uefi = "0.35.0"
+mshv-bindings = "0.7.1"
+mshv-ioctls = "0.7.1"
+uart_16550 = "0.9.0"
+uefi = "0.41.0"
 vfio-bindings = "0.4.0"
 x86_64 = { version = "0.15.2", default-features = false }
 

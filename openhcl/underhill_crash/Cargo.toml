@@ -16,7 +16,7 @@ vmbus_user_channel.workspace = true
 anyhow.workspace = true
 fs-err.workspace = true
 futures.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 libc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

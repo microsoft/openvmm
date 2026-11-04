@@ -45,6 +45,8 @@ pub mod test_helpers;
 
 use anyhow::Context;
 use parking_lot::Mutex;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 pub use tdisp_proto::GuestToHostCommand;
 pub use tdisp_proto::GuestToHostCommandExt;
@@ -53,6 +55,7 @@ pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
+pub use tdisp_proto::TdispCommandResponseModifyMmioRange;
 pub use tdisp_proto::TdispCommandResponseStartTdi;
 pub use tdisp_proto::TdispCommandResponseUnbind;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
@@ -60,6 +63,7 @@ pub use tdisp_proto::TdispGuestOperationError;
 pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
+pub use tdisp_proto::TdispMmioRangeAction;
 pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
 pub use tdisp_proto::guest_to_host_command::Command;
@@ -94,15 +98,86 @@ pub trait TdispHostDeviceInterface: Send + Sync {
     /// Get a device interface report for the device.
     fn tdisp_get_device_report(&mut self, _report_type: TdispReportType)
     -> anyhow::Result<Vec<u8>>;
+
+    /// Block or unblock an MMIO range in the guest's private context.
+    ///
+    /// The TDI is guaranteed to be Locked or Run; every other state is
+    /// rejected before this is reached.
+    ///
+    /// * `action` - Whether the range is being blocked or unblocked. Never
+    ///   [`TdispMmioRangeAction::Invalid`].
+    /// * `range_id` - Identifies which MMIO range is being modified (the PCI
+    ///   BAR index).
+    /// * `gpa_base` - The guest physical base address of the range.
+    /// * `range_len_bytes` - The length of the range, in bytes.
+    fn tdisp_modify_mmio_range(
+        &mut self,
+        action: TdispMmioRangeAction,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> anyhow::Result<()>;
 }
 
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
 pub trait TdispHostDeviceTarget: Send + Sync {
-    /// Dispatch a TDISP command from a guest.
+    /// Dispatch a TDISP command received from a guest.
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,
     ) -> anyhow::Result<GuestToHostResponse>;
+}
+
+/// Isolation classification for a single VPCI resource (a BAR or DMA).
+///
+/// This mirrors the `VPCI_RESOURCE_ISOLATION` values used on the wire by
+/// `VpciMsgQueryIsolatedResources`, but is defined here so that
+/// `chipset_device` and `tdisp` can expose an isolation-reporter trait
+/// without taking a dependency on `vpci_protocol`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TdispResourceIsolation {
+    /// Host-visible and modifiable by the host.
+    Shared,
+    /// Host-inaccessible after TDI validation and private to the guest.
+    Private,
+    /// There is no resource here to classify. Either the BAR is invalid or part
+    /// of a 64-bit BAR.
+    Invalid,
+}
+
+/// Classification of a device's BAR and DMA isolation for the VPCI
+/// `QueryIsolatedResources` message, reported by the guest-facing VPCI
+/// server.
+#[derive(Debug, Clone, Copy)]
+pub enum TdispIsolationReport {
+    /// The chipset device wraps a non-TDISP device.
+    NotTdispCapable,
+    /// The TDI is not in a state that it can respond to the isolation report
+    /// request.
+    NotReady,
+    /// The TDI has attested and parsed its report successfully. The inner
+    /// arrays give the six per-BAR classifications and the DMA classification.
+    /// Guaranteed to contain only `Shared` / `Private`.
+    Ready {
+        /// Per-BAR isolation. Index `i` corresponds to BAR `i`.
+        bars: [TdispResourceIsolation; 6],
+        /// DMA path isolation.
+        dma: TdispResourceIsolation,
+    },
+    /// An internal paravisor error prevented reading the isolation state. The
+    /// paravisor should answer with an error status and log the event.
+    Error,
+}
+
+/// Trait added to chipset devices that want to relay TDISP on behalf of the
+/// guest-facing virtual bus.
+pub trait TdispRelayedDeviceTarget: Send + Sync {
+    /// Return a snapshot of the current isolation state containing what
+    /// resources were isolated or shared by the TDISP relay and attestation
+    /// flow.
+    fn tdisp_isolation_report(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>>;
 }
 
 /// An emulator which runs the TDISP state machine for a synthetic device.
@@ -224,6 +299,43 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                     }
                     None => {
                         error = TdispGuestOperationError::InvalidGuestAttestationReportType;
+                    }
+                }
+            }
+            Some(Command::ModifyMmioRange(cmd)) => {
+                let action = TdispMmioRangeAction::from_i32(cmd.action);
+
+                // `range_id` is a BAR index here, but not necessarily for all devices.
+                // Future platforms might support sub-BAR ranges by the TDISP spec.
+                match (action, u16::try_from(cmd.range_id)) {
+                    (Some(action), Ok(range_id)) => {
+                        let modify_res = self.machine.request_modify_mmio_range(
+                            action,
+                            range_id,
+                            cmd.gpa_base,
+                            cmd.range_len_bytes,
+                        );
+                        if let Err(err) = modify_res {
+                            error = err;
+                        } else {
+                            response = Some(Response::ModifyMmioRange(
+                                TdispCommandResponseModifyMmioRange {},
+                            ));
+                        }
+                    }
+                    (None, _) => {
+                        tracing::error!(
+                            action = cmd.action,
+                            "ModifyMmioRange action is not a valid TdispMmioRangeAction"
+                        );
+                        error = TdispGuestOperationError::InvalidGuestCommandId;
+                    }
+                    (_, Err(_)) => {
+                        tracing::error!(
+                            range_id = cmd.range_id,
+                            "ModifyMmioRange range_id does not fit in a u16"
+                        );
+                        error = TdispGuestOperationError::InvalidGuestCommandId;
                     }
                 }
             }
@@ -491,6 +603,20 @@ pub trait TdispGuestRequestInterface {
     /// `Locked` state will cause an error and unbind the device.
     fn request_start_tdi(&mut self) -> Result<(), TdispGuestOperationError>;
 
+    /// Block or unblock an MMIO range in the guest's private context. The
+    /// device must be in the `Locked` or `Run` state.
+    ///
+    /// Unlike the transitions above, requesting this in the wrong state returns
+    /// an error *without* unbinding the device: the guest may legitimately
+    /// retry as BARs are reprogrammed. This does not transition the device.
+    fn request_modify_mmio_range(
+        &mut self,
+        action: TdispMmioRangeAction,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> Result<(), TdispGuestOperationError>;
+
     /// Retrieves the attestation report for the device when the device is in the `Locked` or
     /// `Run` state. The device resources will not be functional until the
     /// resources have been accepted into the guest while the device is in the
@@ -498,6 +624,10 @@ pub trait TdispGuestRequestInterface {
     ///
     /// Attempting to retrieve the attestation report while the device is not in
     /// the `Locked` or `Run` state will cause an error and unbind the device.
+    ///
+    /// [`TdispReportType::GuestDeviceId`] is exempt from that state
+    /// requirement and can be requested in any state, since it identifies the
+    /// device rather than describing attestation state.
     fn request_attestation_report(
         &mut self,
         report_type: TdispReportType,
@@ -524,7 +654,9 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         requested_guest_protocol: TdispGuestProtocolType,
     ) -> Result<TdispDeviceInterfaceInfo, TdispGuestOperationError> {
-        if self.guest_protocol_type != TdispGuestProtocolType::Invalid {
+        if self.guest_protocol_type != TdispGuestProtocolType::Invalid
+            && self.guest_protocol_type != requested_guest_protocol
+        {
             tracing::error!(
                 "Guest tried to negotiate a protocol with the host while a protocol was already negotiated!"
             );
@@ -661,6 +793,60 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         Ok(())
     }
 
+    /// Block or unblock an MMIO range in the guest's private context.
+    ///
+    /// Unlike the other state-gated commands, a request in the wrong state is
+    /// treated as recoverable: it returns an error without unbinding, since the
+    /// guest may legitimately retry as BARs are reprogrammed. Does not
+    /// transition the TDI.
+    #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
+    fn request_modify_mmio_range(
+        &mut self,
+        action: TdispMmioRangeAction,
+        range_id: u16,
+        gpa_base: u64,
+        range_len_bytes: u64,
+    ) -> Result<(), TdispGuestOperationError> {
+        // Ensure the guest protocol is negotiated.
+        self.ensure_negotiated_protocol()
+            .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
+
+        if action == TdispMmioRangeAction::Invalid {
+            tracing::error!("ModifyMmioRange requested with an invalid action.");
+            return Err(TdispGuestOperationError::InvalidGuestCommandId);
+        }
+
+        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
+            tracing::error!(
+                current_state = %self.current_state,
+                "ModifyMmioRange called while device was not in the Locked or Run state."
+            );
+
+            return Err(TdispGuestOperationError::InvalidDeviceState);
+        }
+
+        tracing::info!(
+            ?action,
+            range_id,
+            gpa_base,
+            range_len_bytes,
+            "Modifying MMIO range in the guest context"
+        );
+
+        let res = self
+            .host_interface
+            .lock()
+            .tdisp_modify_mmio_range(action, range_id, gpa_base, range_len_bytes)
+            .context("failed to call to modify MMIO range");
+
+        if let Err(e) = res {
+            tracing::error!("Failed to modify MMIO range: {e:?}");
+            return Err(TdispGuestOperationError::HostFailedToProcessCommand);
+        }
+
+        Ok(())
+    }
+
     #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
     fn request_attestation_report(
         &mut self,
@@ -670,7 +856,14 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         self.ensure_negotiated_protocol()
             .map_err(|_| TdispGuestOperationError::InvalidDeviceState)?;
 
-        if self.current_state != TdispTdiState::Locked && self.current_state != TdispTdiState::Run {
+        // The guest device ID identifies the TDI to the host and is retrieved
+        // as a "report", though it does not need to be Locked or Run to retrieve the device id.
+        //
+        // All other report types require the TDI to be in the Locked or Run state.
+        if report_type != TdispReportType::GuestDeviceId
+            && self.current_state != TdispTdiState::Locked
+            && self.current_state != TdispTdiState::Run
+        {
             tracing::error!(
                 "Request to retrieve attestation report called while device was not in Locked or Run state."
             );
@@ -716,7 +909,11 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         // if the guest says it is unbinding due to a host-related error), the reason is discarded and InvalidGuestUnbindReason
         // is recorded in the unbind history.
         let reason = match reason {
-            TdispGuestUnbindReason::Graceful => TdispUnbindReason::GuestInitiated(reason),
+            TdispGuestUnbindReason::Graceful
+            | TdispGuestUnbindReason::DeviceTeardown
+            | TdispGuestUnbindReason::ResourceSetupFailure
+            | TdispGuestUnbindReason::AttestationFailure
+            | TdispGuestUnbindReason::StartupFailure => TdispUnbindReason::GuestInitiated(reason),
             _ => {
                 tracing::error!(
                     "Invalid guest unbind reason {} requested",

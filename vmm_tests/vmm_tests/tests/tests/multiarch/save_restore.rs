@@ -68,8 +68,8 @@ async fn verify_openvmm_cross_process_restore(
     let client = vm2.wait_for_agent(false).await?;
     client.ping().await?;
 
-    // A guest reboot executes the retained recipe rather than turning into
-    // the old Restore/None no-op.
+    // A guest reboot runs the configured boot loader again, which requires the
+    // restore to have kept the original load mode.
     client.reboot().await?;
     drop(client);
     let halt_reason = vm2.wait_for_halt(true).await?;
@@ -82,7 +82,6 @@ async fn verify_openvmm_cross_process_restore(
     drop(client);
 
     // Save the restored worker and restore that state on another fresh worker.
-    // The recipe must remain wrapped exactly once.
     vm2.pause().await?;
     let saved_state = vm2.save_state().await?;
     vm2.teardown().await?;

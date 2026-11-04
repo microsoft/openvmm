@@ -17,7 +17,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 
 hybrid_vsock.workspace = true
-guid.workspace = true
+guid = { workspace = true, features = ["getrandom"] }
 inspect.workspace = true
 mesh.workspace = true
 unix_socket.workspace = true

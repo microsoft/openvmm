@@ -3,9 +3,13 @@
 
 //! Perform preparation steps for our VMM tests.
 //!
-//! Currently this means booting a Windows VM to perform one task:
-//! 1. Mount the VHD that will be used for Windows-based CVM tests and install
-//!    pipette into it.
+//! This host-side helper uses Petri and OpenVMM to boot a Windows VM, mount the
+//! VHD used by Windows-based CVM tests, and install the Pipette guest agent.
+//!
+//! It is normally built and invoked by `cargo xflowey vmm-tests-run` while
+//! resolving test artifacts. Direct invocation is primarily useful when
+//! debugging image preparation and requires the same external artifacts as the
+//! VMM test pipeline.
 //!
 //! This tool is intentionally as minimal as possible, to keep tests easily
 //! reproducible. Anything that can be done through pipette during the test
@@ -89,7 +93,8 @@ fn build(
     })?;
 
     let output_dir = output_dir.get();
-    let logger = petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)?;
+    let logger =
+        petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG, None)?;
     Ok((logger, artifacts, source_disk.erase()))
 }
 
@@ -176,13 +181,14 @@ fn build_no_vmbus(
             let output_dir =
                 resolver.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
             let virtio_win = resolver
-                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WIN_DRIVERS);
+                .require(petri_artifacts_vmm_test::artifacts::virtio_win::VIRTIO_WINDOWS_DRIVERS);
             (artifacts, source_disk, output_dir, virtio_win)
         },
     )?;
 
     let output_dir = output_dir.get();
-    let logger = petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)?;
+    let logger =
+        petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG, None)?;
     Ok((logger, artifacts, source_disk.erase(), virtio_win.erase()))
 }
 
@@ -221,7 +227,7 @@ async fn run_no_vmbus(
         .iter()
         .map(|name| {
             let path = driver_dir.join(name);
-            let data = std::fs::read(&path).with_context(|| {
+            let data = fs_err::read(&path).with_context(|| {
                 format!("failed to read NetKVM driver file: {}", path.display())
             })?;
             Ok((*name, data))
@@ -331,7 +337,7 @@ async fn boot_vm_with_target_disk(
     PetriVmBuilder::new(
         PetriTestParams {
             test_name: name,
-            logger,
+            log_source: logger,
             // FUTURE: To properly support post_test_hooks we'd need to catch panics
             // and early failure returns. Not worth it for this simple prep step tool.
             post_test_hooks: &mut vec![],
@@ -450,20 +456,25 @@ fn prepare_result_disk(
             .replace(".vhd", suffix),
     );
     if result_disk.exists() {
-        if std::env::var("PETRI_REUSE_PREPPED_VHDS")
+        if std::env::var(petri_artifacts_vmm_test::env::PETRI_REUSE_PREPPED_VHDS)
             .ok()
             .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
         {
             tracing::info!("Result disk already exists, skipping...");
             return Ok(None);
         } else {
-            tracing::warn!("Result disk already exists, recreating it.");
+            // Delete rather than letting the copy overwrite in place, so the
+            // new disk cannot inherit anything from the old file.
+            // This also guarantees that the result disk is not still alive in
+            // a stuck VM.
+            tracing::warn!("Result disk already exists, deleting it.");
+            fs_err::remove_file(&result_disk)?;
         }
     } else {
         tracing::info!("Copying source disk to result disk.");
     }
     let drop_guard = DeleteFileOnDrop(result_disk.clone());
-    std::fs::copy(source_disk, &result_disk)?;
+    fs_err::copy(source_disk, &result_disk)?;
     tracing::info!("Copied source disk successfully.");
     Ok(Some((result_disk, drop_guard)))
 }
@@ -472,7 +483,7 @@ struct DeleteFileOnDrop(std::path::PathBuf);
 
 impl Drop for DeleteFileOnDrop {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.0) {
+        if let Err(e) = fs_err::remove_file(&self.0) {
             tracing::error!("Failed to delete file {}: {}", self.0.display(), e);
         } else {
             tracing::info!("Deleted file {}", self.0.display());
@@ -487,7 +498,7 @@ fn change_gpt_disk_guid(path: &std::path::Path) -> anyhow::Result<()> {
     use std::io::Seek;
 
     let sector_size = 512u64;
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = fs_err::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)?;

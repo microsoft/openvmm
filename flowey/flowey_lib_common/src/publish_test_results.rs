@@ -10,12 +10,13 @@
 //!   attachments to the provided artifact directory.
 
 use crate::_util::copy_dir_all;
+use crate::run_cargo_nextest_run::TestResults;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
-        /// Path to a junit.xml file
+        /// Contains whether all passed and the path to a junit.xml file
         ///
         /// HACK: this is an optional since `flowey` doesn't (yet?) have any way
         /// to perform conditional-requests, and there are instances where nodes
@@ -23,7 +24,7 @@ flowey_request! {
         ///
         /// To keep making forward progress, I've tweaked this node to accept an
         /// optional... but this ain't great.
-        pub junit_xml: ReadVar<Option<PathBuf>>,
+        pub test_results: ReadVar<TestResults>,
         /// Brief string used when publishing the test.
         /// Must be unique to the pipeline.
         pub test_label: String,
@@ -37,6 +38,8 @@ flowey_request! {
         /// Copy the xml file and attachments to the provided directory.
         /// Only supported on local backend.
         pub output_dir: Option<ReadVar<PathBuf>>,
+        /// Upload logs on success (logs are always uploaded on failure)
+        pub upload_logs_on_success: bool,
         /// Side-effect confirming that the publish has succeeded
         pub done: WriteVar<SideEffect>,
     }
@@ -56,10 +59,11 @@ impl FlowNode for Node {
         let mut resolve_side_effects = Vec::new();
 
         for Request {
-            junit_xml,
+            test_results,
             test_label: label,
             attachments,
             output_dir,
+            upload_logs_on_success,
             done,
         } in requests
         {
@@ -74,10 +78,13 @@ impl FlowNode for Node {
             let step_name = format!("publish test results: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
 
+            let should_publish_junit_xml = test_results.map(ctx, move |r| {
+                r.junit_xml.is_some() && (upload_logs_on_success || !r.all_tests_passed)
+            });
+
             match ctx.backend() {
                 FlowBackend::Ado => {
-                    let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
-                    let results_file = junit_xml.map(ctx, |p| p.unwrap_or_default());
+                    let results_file = test_results.map(ctx, |p| p.junit_xml.unwrap_or_default());
                     use_side_effects.push(ctx.reqv(|v| {
                         crate::ado_task_publish_test_results::Request {
                             step_name,
@@ -85,15 +92,15 @@ impl FlowNode for Node {
                                 crate::ado_task_publish_test_results::AdoTestResultsFormat::JUnit,
                             results_file,
                             test_title: label.clone(),
-                            condition: Some(has_junit_xml),
+                            condition: Some(should_publish_junit_xml),
                             done: v,
                         }
                     }));
                 }
                 FlowBackend::Github => {
-                    let has_junit_xml = junit_xml.map(ctx, |p| p.is_some());
-                    let junit_xml = junit_xml.map(ctx, |p| {
-                        p.map(|p| p.absolute().expect("invalid path").display().to_string())
+                    let junit_xml = test_results.map(ctx, |p| {
+                        p.junit_xml
+                            .map(|p| p.absolute().expect("invalid path").display().to_string())
                             .unwrap_or_default()
                     });
 
@@ -107,7 +114,7 @@ impl FlowNode for Node {
                             step_name,
                             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
                         )
-                        .condition(has_junit_xml)
+                        .condition(should_publish_junit_xml)
                         .with("name", artifact_name)
                         .with("path", junit_xml)
                         .finish(ctx),
@@ -117,13 +124,17 @@ impl FlowNode for Node {
                     if let Some(output_dir) = output_dir.clone() {
                         use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                             let output_dir = output_dir.claim(ctx);
-                            let junit_xml = junit_xml.claim(ctx);
+                            let test_results = test_results.clone().claim(ctx);
+                            let should_publish_junit_xml = should_publish_junit_xml.claim(ctx);
 
                             move |rt| {
                                 let output_dir = rt.read(output_dir);
-                                let junit_xml = rt.read(junit_xml);
+                                let test_results = rt.read(test_results);
+                                let should_publish_junit_xml = rt.read(should_publish_junit_xml);
 
-                                if let Some(junit_xml) = junit_xml {
+                                if let Some(junit_xml) = test_results.junit_xml
+                                    && should_publish_junit_xml
+                                {
                                     fs_err::copy(
                                         junit_xml,
                                         output_dir.join(format!("{artifact_name}.xml")),
@@ -134,7 +145,7 @@ impl FlowNode for Node {
                             }
                         }));
                     } else {
-                        use_side_effects.push(junit_xml.into_side_effect());
+                        use_side_effects.push(should_publish_junit_xml.into_side_effect());
                     }
                 }
             }
@@ -142,15 +153,18 @@ impl FlowNode for Node {
             for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
                 let step_name = format!("publish test results: {label} ({attachment_label})");
                 let artifact_name = format!("{label}-{attachment_label}");
-
-                let attachment_exists = attachment_path.map(ctx, |p| {
-                    p.exists()
-                        && (p.is_file()
-                            || p.read_dir()
-                                .expect("failed to read attachment dir")
-                                .next()
-                                .is_some())
-                });
+                let should_publish =
+                    attachment_path
+                        .zip(ctx, test_results.clone())
+                        .map(ctx, move |(p, r)| {
+                            (upload_logs_on_success || !r.all_tests_passed)
+                                && p.exists()
+                                && (p.is_file()
+                                    || p.read_dir()
+                                        .expect("failed to read attachment dir")
+                                        .next()
+                                        .is_some())
+                        });
                 let attachment_path_string = attachment_path.map(ctx, |p| {
                     p.absolute().expect("invalid path").display().to_string()
                 });
@@ -167,7 +181,7 @@ impl FlowNode for Node {
                             // uploaded even if the pipeline fails.
                             ctx.emit_ado_step_with_condition(
                                 step_name.clone(),
-                                attachment_exists,
+                                should_publish,
                                 |ctx| {
                                     published_write.claim(ctx);
                                     let attachment_path_string = attachment_path_string.claim(ctx);
@@ -188,7 +202,7 @@ impl FlowNode for Node {
                                 },
                             );
                         } else {
-                            use_side_effects.push(attachment_exists.into_side_effect());
+                            use_side_effects.push(should_publish.into_side_effect());
                             use_side_effects.push(attachment_path_string.into_side_effect());
                         }
                     }
@@ -200,7 +214,7 @@ impl FlowNode for Node {
                                 step_name.clone(),
                                 "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
                             )
-                            .condition(attachment_exists)
+                            .condition(should_publish)
                             .with("name", artifact_name)
                             .with("path", attachment_path_string)
                             .finish(ctx),
@@ -210,15 +224,15 @@ impl FlowNode for Node {
                         if let Some(output_dir) = output_dir.clone() {
                             use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                                 let output_dir = output_dir.claim(ctx);
-                                let attachment_exists = attachment_exists.claim(ctx);
+                                let should_publish = should_publish.claim(ctx);
                                 let attachment_path = attachment_path.claim(ctx);
 
                                 move |rt| {
                                     let output_dir = rt.read(output_dir);
-                                    let attachment_exists = rt.read(attachment_exists);
+                                    let should_publish = rt.read(should_publish);
                                     let attachment_path = rt.read(attachment_path);
 
-                                    if attachment_exists {
+                                    if should_publish {
                                         copy_dir_all(
                                             attachment_path,
                                             output_dir.join(artifact_name),
@@ -229,7 +243,7 @@ impl FlowNode for Node {
                                 }
                             }));
                         } else {
-                            use_side_effects.push(attachment_exists.into_side_effect());
+                            use_side_effects.push(should_publish.into_side_effect());
                         }
                         use_side_effects.push(attachment_path_string.into_side_effect());
                     }

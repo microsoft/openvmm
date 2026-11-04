@@ -78,7 +78,7 @@ impl SimpleFlowNode for Node {
                     return Ok(());
                 }
 
-                flowey::shell_cmd!(rt, "cargo test -p vmm_tests --test cca")
+                flowey::shell_cmd!(rt, "cargo test -p cca_tests --test cca")
                 .env(ENV_CCA_TEST_ROOT, &test_root)
                 .env(ENV_CCA_TMK_VMM, &tmk_vmm_bin)
                 .env(ENV_CCA_SIMPLE_TMK, &simple_tmk_bin)

@@ -14,7 +14,7 @@ use vm_resource::CanResolveTo;
 use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
-use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::AsyncProtobufSaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTimeSource;
 
@@ -90,14 +90,14 @@ pub trait ConfigureChipsetDevice: Send {
 }
 
 #[async_trait]
-trait DynChipsetDevice: ChipsetDevice + ProtobufSaveRestore + InspectMut {
+trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
     async fn stop(&mut self);
     async fn reset(&mut self);
 }
 
 #[async_trait]
-impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> DynChipsetDevice
+impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMut> DynChipsetDevice
     for T
 {
     fn start(&mut self) {
@@ -119,7 +119,7 @@ pub struct ResolvedChipsetDevice(pub ErasedChipsetDevice);
 #[inspect(transparent(mut))]
 pub struct ErasedChipsetDevice(Box<dyn DynChipsetDevice>);
 
-impl<T: ChangeDeviceState + ChipsetDevice + ProtobufSaveRestore + InspectMut> From<T>
+impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMut> From<T>
     for ResolvedChipsetDevice
 {
     fn from(value: T) -> Self {
@@ -174,22 +174,27 @@ impl ChipsetDevice for ErasedChipsetDevice {
         self.0.supports_acknowledge_pic_interrupt()
     }
 
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
-        self.0.supports_tdisp()
+    fn supports_tdisp_host(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        self.0.supports_tdisp_host()
+    }
+
+    fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
+        self.0.supports_tdisp_relay()
     }
 }
 
-impl ProtobufSaveRestore for ErasedChipsetDevice {
-    fn save(
+#[async_trait]
+impl AsyncProtobufSaveRestore for ErasedChipsetDevice {
+    async fn save(
         &mut self,
     ) -> Result<vmcore::save_restore::SavedStateBlob, vmcore::save_restore::SaveError> {
-        self.0.save()
+        self.0.save().await
     }
 
-    fn restore(
+    async fn restore(
         &mut self,
         state: vmcore::save_restore::SavedStateBlob,
     ) -> Result<(), vmcore::save_restore::RestoreError> {
-        self.0.restore(state)
+        self.0.restore(state).await
     }
 }

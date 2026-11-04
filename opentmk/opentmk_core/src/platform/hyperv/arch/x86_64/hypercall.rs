@@ -14,7 +14,6 @@ use crate::platform::hyperv::arch::hypercall::HvCall;
 
 // avoiding inline for debuggability in release builds.
 #[inline(never)]
-#[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch cpu-intrinsic
 /// Invokes a hypercall specifically for switching to a VTL context.
 ///
 ///  # Safety

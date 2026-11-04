@@ -7,6 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ipmi_protocol.workspace = true
+smbios_defs.workspace = true
+
 vm_resource.workspace = true
 vmgs_resources.workspace = true
 mesh.workspace = true

@@ -55,12 +55,12 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
-            junit_xml,
+            test_results: results.clone(),
             test_label: junit_test_label,
             attachments: BTreeMap::new(),
             output_dir: artifact_dir,
+            upload_logs_on_success: true,
             done: v,
         });
 

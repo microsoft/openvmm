@@ -347,6 +347,11 @@ pub(crate) mod msg {
         // Host Notifications (don't require a response)
         /// Report an event to the host.
         EventLog(Protocol<get_protocol::EventLogId>),
+        /// Forward a completed IPMI System Event Log record to the host.
+        IpmiSel {
+            record_id: u16,
+            record: [u8; get_protocol::IPMI_SEL_RECORD_SIZE],
+        },
         /// Report a power state change to the host.
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
@@ -544,6 +549,9 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     set_debug_interrupt: Option<Box<dyn Fn(u8) + Send + Sync>>,
     #[inspect(skip)]
     post_live_migration: Option<Box<dyn Fn() + Send + Sync>>,
+    // GET accepts notifications before the callback registration is processed.
+    // Coalesce early events without allocating an unbounded host-driven queue.
+    post_live_migration_pending: bool,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -753,6 +761,7 @@ impl<T: RingMem> ProcessLoop<T> {
             gpa_allocator: None,
             set_debug_interrupt: None,
             post_live_migration: None,
+            post_live_migration_pending: false,
         }
     }
 
@@ -1086,6 +1095,11 @@ impl<T: RingMem> ProcessLoop<T> {
                 self.set_debug_interrupt = Some(callback.0);
             }
             Msg::SetPostLiveMigrationCallback(callback) => {
+                // Both handlers run synchronously on this loop. Either the
+                // notification sees the callback, or registration drains it.
+                if std::mem::take(&mut self.post_live_migration_pending) {
+                    callback.0();
+                }
                 self.post_live_migration = Some(callback.0);
             }
 
@@ -1292,6 +1306,13 @@ impl<T: RingMem> ProcessLoop<T> {
                 // any pending requests.
                 self.send_message(
                     get_protocol::EventLogNotification::new(event_log_id.0)
+                        .as_bytes()
+                        .to_vec(),
+                );
+            }
+            Msg::IpmiSel { record_id, record } => {
+                self.send_message(
+                    get_protocol::IpmiSelNotification::new(record_id, record)
                         .as_bytes()
                         .to_vec(),
                 );
@@ -1601,6 +1622,8 @@ impl<T: RingMem> ProcessLoop<T> {
         tracing::info!(CVM_ALLOWED, "notify_post_live_migration");
         if let Some(callback) = self.post_live_migration.as_ref() {
             callback()
+        } else {
+            self.post_live_migration_pending = true;
         }
     }
 

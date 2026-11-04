@@ -253,7 +253,7 @@ impl fuse::Fuse for SectionFs {
             state: InodeState::Open(section),
         };
         let attr = inode.attr(0, &self.attr);
-        let node_id = self.inodes.lock().insert(inode);
+        let node_id = self.inodes.lock().insert(inode).ok_or(lx::Error::ENOSPC)?;
         tracing::trace!(node_id, name = name.to_str().unwrap(), "node_id");
         Ok(fuse::protocol::fuse_entry_out::new(
             node_id,
@@ -348,7 +348,7 @@ impl fuse::Fuse for SectionFs {
             SECTION_QUERY | SECTION_MAP_READ | SECTION_MAP_WRITE,
         ) {
             Ok(section) => {
-                if (arg.flags as i32) & lx::O_EXCL != 0 {
+                if arg.flags & lx::O_EXCL as u32 != 0 {
                     return Err(lx::Error::EEXIST);
                 }
                 let size = section.query_size()?;
@@ -359,7 +359,7 @@ impl fuse::Fuse for SectionFs {
         };
         let inode = Inode { size, state };
         let mut attr = inode.attr(0, &self.attr);
-        let node_id = self.inodes.lock().insert(inode);
+        let node_id = self.inodes.lock().insert(inode).ok_or(lx::Error::ENOSPC)?;
         attr.ino = node_id;
         tracing::trace!(node_id, name = name.to_str().unwrap(), "node_id");
         Ok(fuse::CreateOut {

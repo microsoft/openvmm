@@ -49,9 +49,7 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
    table, which lives in its own reserved region in low memory just above the
    ACPI tables (so it can grow well past the 64 KiB F-segment). Both regions
    are reserved in the e820 map so they are not overwritten before the scan.
-   Guests can then read `/sys/class/dmi/id/*`. There is no configuration
-   surface yet, so every direct-boot VM reports a fixed default OpenVMM
-   identity.
+   Guests can then read `/sys/class/dmi/id/*`.
 6. A GDT and initial page tables are set up.
 7. The BSP register state is configured and execution begins.
 
@@ -104,6 +102,62 @@ from the DT; no EFI structures or ACPI tables are involved.
 Device tree mode is not supported on x86_64. Passing `--device-tree` on x86
 will result in an error.
 ```
+
+## SEV-SNP IGVM Boot
+
+OpenVMM can also boot an SEV-SNP Linux guest from an IGVM image that
+`igvmfilegen` builds from the `snp-linux-direct*.json` manifests in
+`vm/loader/manifests/`. Select the image with `--isolation snp` and
+`--igvm firmware=<FILE>,personality=linux-direct`. The image contains the
+kernel, the initrd, the boot metadata, and a small measured bootshim,
+`snp_bootshim`.
+
+The image does not contain ACPI tables. At launch, OpenVMM writes its
+[device tree](../../architecture/openvmm/device-tree.md) into an unmeasured
+IGVM parameter area. The bootshim reads the CPUs, RAM, PCIe host bridges, and
+COM ports from that tree, accepts the guest RAM, and then builds the DSDT,
+FADT, MADT, SRAT, XSDT, and RSDP. It adds an MCFG and a PCIe SSDT when the
+device tree describes host bridges.
+
+### Launch Requirements
+
+One image boots with any supported CPU count, RAM size, and NUMA layout:
+
+- Give the guest at least the RAM that the image measures, which is
+  `memory_page_count` pages in the manifest. The shim trusts and accepts any
+  RAM that the device tree describes above that.
+- Use up to 255 processors and 64 RAM ranges, with all RAM below 512 GiB.
+  The bootshim stops the guest when the configuration is larger.
+
+### PCIe
+
+The image does not fix the ECAM or BAR-window addresses. Use the usual
+`--pcie-root-complex`, `--pcie-root-port`, and PCIe virtio device options.
+Some direct-boot kernels reject an ECAM above 4 GiB unless SMBIOS reports a
+recent BIOS date. For these kernels, also use `--pcie-ecam-below-4gb`.
+
+The bootshim supports up to eight generic ECAM host bridges in distinct
+segments. It puts every bridge on NUMA node 0, with identity MMIO windows and
+native x86 MSI/MSI-X. The guest does not see an IOMMU or CXL.
+
+See `vm/loader/manifests/README.md` for the build and launch recipe.
+
+## SMBIOS / DMI Identity
+
+On both architectures the synthesized SMBIOS tables expose a default identity,
+so `/sys/class/dmi/id/*` reads consistently regardless of boot path:
+
+| sysfs file | Default value |
+|------------|---------------|
+| `sys_vendor` | `OpenVMM` |
+| `product_name` | `OpenVMM Virtual Machine` |
+| `product_uuid` | Not exposed unless the VM's BIOS GUID is set |
+
+The `product_uuid` is sourced from the same VM BIOS GUID used by the UEFI boot
+path, so a guest reports the same UUID whether booted via UEFI or direct boot.
+The SMBIOS UUID defaults to the all-zero GUID, which Linux treats as not
+present and therefore does not expose as `product_uuid`. Pass
+`--smbios type=1,uuid=<GUID>` (or `uuid=random`) to set it.
 
 ## CLI Usage
 

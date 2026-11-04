@@ -39,8 +39,8 @@ trait DynDevice: InspectMut + Send {
     async fn stop(&mut self);
     async fn reset(&mut self);
     fn poll_device(&mut self, cx: &mut Context<'_>);
-    fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
-    fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
+    async fn save(&mut self) -> Result<SavedStateBlob, SaveError>;
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError>;
 }
 
 #[async_trait]
@@ -63,12 +63,12 @@ impl<T: VmmChipsetDevice> DynDevice for T {
         }
     }
 
-    fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
-        self.save()
+    async fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
+        self.save().await
     }
 
-    fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-        self.restore(state)
+    async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
+        self.restore(state).await
     }
 }
 
@@ -172,13 +172,133 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
             return Ok(None);
         }
 
-        // TODO: make async
-        let state = self.device.clone().close().save()?;
+        let state = self.device.clone().close().save().await?;
         Ok(Some(state))
     }
 
     async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-        // TODO: make async
-        self.device.clone().close().restore(state)
+        self.device.clone().close().restore(state).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ArcMutexChipsetDeviceUnit;
+    use chipset_device::ChipsetDevice;
+    use closeable_mutex::CloseableMutex;
+    use futures::poll;
+    use inspect::InspectMut;
+    use pal_async::async_test;
+    use state_unit::StateUnit;
+    use std::sync::Arc;
+    use std::task::Poll;
+    use test_with_tracing::test;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::AsyncSaveRestore;
+    use vmcore::save_restore::NoSavedState;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SavedStateBlob;
+
+    #[derive(InspectMut)]
+    struct Device {
+        #[inspect(skip)]
+        gate: Option<mesh::OneshotReceiver<()>>,
+        restored: bool,
+    }
+
+    impl ChipsetDevice for Device {}
+
+    impl ChangeDeviceState for Device {
+        fn start(&mut self) {}
+        async fn stop(&mut self) {}
+        async fn reset(&mut self) {}
+    }
+
+    impl AsyncSaveRestore for Device {
+        type SavedState = NoSavedState;
+
+        async fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            if let Some(gate) = self.gate.take() {
+                gate.await.map_err(|e| SaveError::Other(e.into()))?;
+            }
+            Ok(NoSavedState)
+        }
+
+        async fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            if let Some(gate) = self.gate.take() {
+                gate.await.map_err(|e| RestoreError::Other(e.into()))?;
+            }
+            self.restored = true;
+            Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn save_restore_waits_with_exclusive_device_access() {
+        let (send, recv) = mesh::oneshot();
+        let device = Arc::new(CloseableMutex::new(Device {
+            gate: Some(recv),
+            restored: false,
+        }));
+        let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        let state = {
+            let mut save = std::pin::pin!(unit.save());
+            assert!(poll!(&mut save).is_pending());
+            assert!(device.lock_if_open().is_none());
+            send.send(());
+            save.await.unwrap().unwrap()
+        };
+        assert!(device.lock_if_open().is_some());
+
+        let (send, recv) = mesh::oneshot();
+        device.lock().gate = Some(recv);
+        {
+            let mut restore = std::pin::pin!(unit.restore(state));
+            assert!(poll!(&mut restore).is_pending());
+            assert!(device.lock_if_open().is_none());
+            send.send(());
+            restore.await.unwrap();
+        }
+        assert!(device.lock().restored);
+    }
+
+    #[async_test]
+    async fn omitted_saved_state_does_not_save_device() {
+        let (_send, recv) = mesh::oneshot();
+        let device = Arc::new(CloseableMutex::new(Device {
+            gate: Some(recv),
+            restored: false,
+        }));
+        let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), true);
+        assert!(matches!(
+            poll!(std::pin::pin!(unit.save())),
+            Poll::Ready(Ok(None))
+        ));
+        assert!(device.lock().gate.is_some());
+    }
+
+    #[async_test]
+    async fn device_errors_fail_the_state_transition() {
+        let device = Arc::new(CloseableMutex::new(Device {
+            gate: None,
+            restored: false,
+        }));
+        let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        let (send, recv) = mesh::oneshot();
+        drop(send);
+        device.lock().gate = Some(recv);
+        assert!(unit.save().await.is_err());
+        assert!(device.lock_if_open().is_some());
+
+        let (send, recv) = mesh::oneshot();
+        drop(send);
+        device.lock().gate = Some(recv);
+        assert!(
+            unit.restore(SavedStateBlob::new(NoSavedState))
+                .await
+                .is_err()
+        );
+        assert!(!device.lock().restored);
     }
 }

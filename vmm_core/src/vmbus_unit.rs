@@ -23,6 +23,7 @@ use vmbus_channel::channel::VmbusDevice;
 use vmbus_channel::channel::offer_channel;
 use vmbus_channel::channel::offer_generic_channel;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
+use vmbus_channel::simple::InitialDeviceState;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_channel::simple::offer_simple_device;
@@ -168,9 +169,19 @@ pub async fn offer_simple_device_unit<T: SimpleVmbusDevice>(
     vmbus: &VmbusServerHandle,
     device: T,
 ) -> anyhow::Result<SpawnedUnit<SimpleChannelUnit<T>>> {
+    anyhow::ensure!(
+        !state_units.is_running(),
+        "cannot offer a simple VMBus device while state units are running"
+    );
     let offer = device.offer();
     let name = format!("{}:{}", offer.interface_name, offer.instance_id);
-    let handle = offer_simple_device(driver_source, vmbus.control.as_ref(), device).await?;
+    let handle = offer_simple_device(
+        driver_source,
+        vmbus.control.as_ref(),
+        device,
+        InitialDeviceState::Stopped,
+    )
+    .await?;
     let unit = state_units
         .add(name)
         .depends_on(vmbus.unit.handle())

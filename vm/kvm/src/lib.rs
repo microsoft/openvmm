@@ -2045,12 +2045,13 @@ impl<'a> VpRunner<'a> {
 
     /// Request an exit when the interrupt window opens.
     ///
-    /// Returns true if the window is already open (in which case the request is
-    /// not registered).
+    /// Returns true if the window is already open, in which case no request is
+    /// registered, and any earlier request is withdrawn.
     #[must_use]
     pub fn check_or_request_interrupt_window(&mut self) -> bool {
         let rdata = self.run_data();
         if rdata.ready_for_interrupt_injection != 0 {
+            rdata.request_interrupt_window = 0;
             true
         } else {
             rdata.request_interrupt_window = 1;
@@ -2058,12 +2059,26 @@ impl<'a> VpRunner<'a> {
         }
     }
 
-    /// Injects an extint interrupt.
+    /// Returns whether an exit is requested for when the interrupt window
+    /// opens (see [`Self::check_or_request_interrupt_window`]).
+    ///
+    /// The request stays registered until [`Self::run`] returns
+    /// [`Exit::InterruptWindow`], or until
+    /// [`Self::check_or_request_interrupt_window`] finds the window open.
+    pub fn interrupt_window_requested(&mut self) -> bool {
+        self.run_data().request_interrupt_window != 0
+    }
+
+    /// Queues an extint interrupt with `KVM_INTERRUPT`.
+    ///
+    /// KVM delivers the interrupt once the guest can take it, exiting from a
+    /// nested guest first if needed. But KVM has no way to report or withdraw
+    /// a queued extint; `KVM_GET_VCPU_EVENTS` never exposes the queued vector.
     ///
     /// Caller must ensure that either it has received a
     /// [`Exit::InterruptWindow`] exit, or that
     /// [`Self::check_or_request_interrupt_window`] has returned `true`.
-    pub fn inject_extint_interrupt(&mut self, vector: u8) -> Result<()> {
+    pub fn queue_extint_interrupt(&mut self, vector: u8) -> Result<()> {
         self.partition.vp(self.idx).interrupt(vector.into())?;
         // Remember that there is a pending extint interrupt. KVM will update
         // this field again after the VP runs.

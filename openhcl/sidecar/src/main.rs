@@ -7,6 +7,12 @@
 //! along side the OpenHCL Linux kernel, operating on a subset of the virtual
 //! machine's CPUs.
 //!
+//! Sidecar is an x86_64 bare-metal payload packaged into an OpenHCL IGVM, not a
+//! host command-line program. The OpenHCL boot loader initializes it before
+//! Linux starts; non-`minimal_rt` builds contain only a stub that rejects
+//! execution. Developers normally build and consume it through `cargo xflowey
+//! build-igvm`.
+//!
 //! This is done to avoid needing to boot all CPUs into Linux, since this is
 //! very expensive for large VMs. Instead, most of the CPUs are run in the
 //! sidecar kernel, where they run a minimal dispatch loop. If a sidecar CPU

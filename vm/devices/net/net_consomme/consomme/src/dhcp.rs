@@ -43,13 +43,8 @@ impl<T: Client> Access<'_, T> {
             return Ok(());
         }
 
-        let your_ip;
-        let message_type;
-        match dhcp_req.message_type {
-            DhcpMessageType::Discover => {
-                your_ip = Some(client_ip);
-                message_type = DhcpMessageType::Offer;
-            }
+        let (your_ip, message_type) = match dhcp_req.message_type {
+            DhcpMessageType::Discover => (Some(client_ip), DhcpMessageType::Offer),
             DhcpMessageType::Request => {
                 // A SELECTING request identifies the chosen server. Other
                 // servers must treat it as declining their offers.
@@ -63,15 +58,17 @@ impl<T: Client> Access<'_, T> {
                 let requested_ip = dhcp_req.requested_ip.or_else(|| {
                     (dhcp_req.client_ip != Ipv4Address::UNSPECIFIED).then_some(dhcp_req.client_ip)
                 });
-                your_ip = match requested_ip {
-                    Some(addr) if addr == client_ip => Some(addr),
-                    None => return Ok(()),
-                    Some(_) => None,
-                };
-                message_type = DhcpMessageType::Ack;
+                (
+                    match requested_ip {
+                        Some(addr) if addr == client_ip => Some(addr),
+                        None => return Ok(()),
+                        Some(_) => None,
+                    },
+                    DhcpMessageType::Ack,
+                )
             }
             ty => return Err(DropReason::UnsupportedDhcp(ty)),
-        }
+        };
         let response_client_ip =
             if message_type == DhcpMessageType::Ack && dhcp_req.requested_ip.is_none() {
                 dhcp_req.client_ip

@@ -22,7 +22,7 @@ flowey_request! {
         /// Optionally provide the nextest bin to use
         pub nextest_bin: Option<ReadVar<PathBuf>>,
         /// Target for the tests to run on
-        pub target: Option<ReadVar<target_lexicon::Triple>>,
+        pub target: Option<target_lexicon::Triple>,
         /// Results of running the tests
         pub results: WriteVar<TestResults>,
     }

@@ -19,6 +19,8 @@ const RTC_YEAR: u8 = 0x09;
 const RTC_STATUS_A: u8 = 0x0A;
 const RTC_STATUS_B: u8 = 0x0B;
 
+const NMI_DISABLE_FLAG: u8 = 0x80;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 /// Represents date and time read from the RTC.
@@ -91,8 +93,17 @@ impl DateTime {
 
 // Read from CMOS/RTC register
 fn read_cmos(reg: u8) -> u8 {
-    outb(CMOS_ADDRESS, reg);
-    inb(CMOS_DATA)
+    unsafe {
+        // SAFETY: this sets the CMOS address register, which is safe to be
+        // written and read from without touching the NMI flag and then reads
+        // from the CMOS data register, which is also safe to read from.
+        //
+        // We are also only setting the CMOS address register to valid values
+        // only
+        let nmi_flag = inb(CMOS_ADDRESS) & NMI_DISABLE_FLAG;
+        outb(CMOS_ADDRESS, (reg & !NMI_DISABLE_FLAG) | nmi_flag);
+        inb(CMOS_DATA)
+    }
 }
 
 // Check if RTC update is in progress

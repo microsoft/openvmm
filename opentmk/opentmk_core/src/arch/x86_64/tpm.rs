@@ -43,8 +43,11 @@ impl<'a> Tpm<'a> {
     fn get_control_port(command: u32) -> u32 {
         let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
         let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
-        super::io::outl(control_port, command);
-        super::io::inl(data_port)
+        unsafe {
+            // SAFETY: TPM ports can not cause any UB
+            super::io::outl(control_port, command);
+            super::io::inl(data_port)
+        }
     }
 }
 
@@ -64,16 +67,22 @@ impl<'a> TpmDevice<'a> for Tpm<'a> {
     fn get_mapped_shared_memory() -> u32 {
         let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
         Tpm::get_control_port(0x2);
-        super::io::inl(data_port)
+        unsafe {
+            // SAFETY: these ports are safe to interact with
+            super::io::inl(data_port)
+        }
     }
 
     fn map_shared_memory(gpa: u32) -> u32 {
         let control_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_CONTROL_OFFSET;
         let data_port = TPM_DEVICE_IO_PORT_RANGE_BEGIN + TPM_DEVICE_IO_PORT_DATA_OFFSET;
-        super::io::outl(control_port, 0x1);
-        super::io::outl(data_port, gpa);
-        super::io::outl(control_port, 0x2);
-        super::io::inl(data_port)
+        unsafe {
+            // SAFETY: these ports are safe to interact with
+            super::io::outl(control_port, 0x1);
+            super::io::outl(data_port, gpa);
+            super::io::outl(control_port, 0x2);
+            super::io::inl(data_port)
+        }
     }
 
     fn submit_command(&mut self, buffer: &[u8]) -> [u8; 4096] {

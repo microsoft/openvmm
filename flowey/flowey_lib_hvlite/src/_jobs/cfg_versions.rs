@@ -18,19 +18,21 @@ use std::collections::BTreeMap;
 // a `Version(ReadVar<String>)`, but that shouldn't be a serious blocker.
 pub const AZCOPY: &str = "10.27.1";
 pub const AZURE_CLI: &str = "2.56.0";
+pub const CARGO_HACK: &str = "0.6.45";
+pub const CARGO_LLVM_COV: &str = "0.8.5";
 pub const DOTNET: &str = "8.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "26.0.22";
+pub const MU_MSVM: &str = "26.0.43";
 pub const NEXTEST: &str = "0.9.133";
 pub const NODEJS: &str = "24.x";
 // None disables hcl-dev builds and tests; Some(version) enables them.
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.4";
-pub const OPENVMM_DEPS: &str = "0.3.0-116";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.6";
+pub const OPENVMM_DEPS: &str = "0.3.0-175";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {
@@ -75,6 +77,8 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::download_mdbook::Node>();
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
+        ctx.import::<flowey_lib_common::install_cargo_hack::Node>();
+        ctx.import::<flowey_lib_common::install_cargo_llvm_cov::Node>();
         ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
     }
@@ -238,6 +242,12 @@ impl FlowNode for Node {
         });
         ctx.config(flowey_lib_common::download_cargo_fuzz::Config {
             version: Some(FUZZ.into()),
+        });
+        ctx.config(flowey_lib_common::install_cargo_hack::Config {
+            version: Some(CARGO_HACK.into()),
+        });
+        ctx.config(flowey_lib_common::install_cargo_llvm_cov::Config {
+            version: Some(CARGO_LLVM_COV.into()),
         });
         ctx.config(flowey_lib_common::download_cargo_nextest::Config {
             version: Some(NEXTEST.into()),

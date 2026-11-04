@@ -128,6 +128,10 @@ function New-CustomVM
 
         [bool] $VMBusMessageRedirection = $false,
 
+        [bool] $EnableHibernation = $false,
+
+        [bool] $EnableOpenHCL = $false,
+
         [string] $FirmwareFile = $null,
 
         [string] $FirmwareParameters = $null,
@@ -233,6 +237,7 @@ function New-CustomVM
         GuestStateIsolationMode    = $GuestStateIsolationMode
         VMBusMessageRedirection    = $VMBusMessageRedirection
         SecureBootEnabled          = $SecureBootEnabled
+        EnableHibernation          = $EnableHibernation
         VirtualNumaEnabled         = $false
         UserSnapshotType           = 2 #disable
     }
@@ -258,10 +263,11 @@ function New-CustomVM
         $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
     }
 
-    if ($FirmwareFile) {
-        # Enable OpenHCL by feature
+    if ($EnableOpenHCL -or $FirmwareFile) {
         $vssdProperties["GuestFeatureSet"] = 0x00000201
-        # Set the OpenHCL image file path
+    }
+
+    if ($FirmwareFile) {
         $vssdProperties["FirmwareFile"] = $FirmwareFile
     }
 
@@ -1062,6 +1068,14 @@ function Get-VmScreenshot
     $videoHead = @($vmcs | Get-CimAssociatedInstance -ResultClassName "Msvm_VideoHead")[0]
     $x = $videoHead.CurrentHorizontalResolution
     $y = $videoHead.CurrentVerticalResolution
+
+    # A VM with no active video head has nothing to capture. Report zero
+    # dimensions rather than calling into WMI, which would just throw.
+    if (($null -eq $x) -or ($null -eq $y) -or ($x -eq 0) -or ($y -eq 0))
+    {
+        [IO.File]::WriteAllBytes($Path, @())
+        return "0,0"
+    }
 
     # Get screenshot
     $image = $vmms | Invoke-CimMethod -MethodName "GetVirtualSystemThumbnailImage" -Arguments @{

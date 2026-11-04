@@ -80,9 +80,10 @@ cargo run -- \
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
 
-Supply the original boot recipe and artifacts on restore. OpenVMM retains them
-for later operations such as reset, but applies saved state instead of running
-the boot loader during initial restore.
+Pass the same boot flags and files that were used at save time (for example
+`--uefi` and `--uefi-firmware`, or `--kernel` and `--initrd`). Restore does
+not run the firmware or kernel loader, but they are used if the restored VM is
+later reset.
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
@@ -92,9 +93,10 @@ validation error and refuse to start.
 
 ## Device configuration on restore
 
-The snapshot stores device *state*, not VM *configuration* or host paths.
-Specify the same boot and device flags on restore; they are not read from
-`manifest.bin`.
+The snapshot only stores device *state*, not device *configuration*. All
+device flags (e.g. `--disk`, `--nic`, `--serial`, `--virtio-blk`, etc.)
+must be specified on the restore command line exactly as they were when
+the snapshot was saved — they are not read from the snapshot.
 
 The snapshot manifest validates that `--memory`, `--processors`,
 architecture, and page size match the values recorded at save time. However,
@@ -160,6 +162,7 @@ OpenVMM snapshots:
 | virtio-net | Virtio (PCI/MMIO) | Yes |
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
+| virtio-rtc | Virtio (PCI/MMIO) | Yes |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |
