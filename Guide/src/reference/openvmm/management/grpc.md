@@ -108,6 +108,36 @@ Unlike `AddPcieDevice`, VPCI does not require a root complex or a predeclared
 hotplug-capable PCIe port. `AddPcieDevice` remains available when standard PCIe
 hotplug semantics or a non-VPCI host backend is required.
 
+## Hvsocket relay listeners
+
+Use `ModifyResource` with `hvsocket_listener` to relay a host Unix socket to a
+guest hvsocket service on VTL0. VMBus and hvsocket support must be available.
+Specify either a `service_id` GUID or a `vsock_port`; both identify the same
+service when the GUID is the vsock port's hvsocket mapping.
+
+For example, this protobuf text-format `ModifyResourceRequest` adds a listener:
+
+```text
+type: ADD
+hvsocket_listener {
+    path: "path/to/service.sock"
+    vsock_port: 50001
+}
+```
+
+Clients send application data immediately. These listeners do not require a
+hybrid-vsock `CONNECT` request and do not send an `OK` response.
+
+Only one listener per service is supported. `ADD` fails if the path already
+exists, including a stale socket file; it does not replace or remove that path.
+The caller owns socket-file cleanup, including after a failed `ADD` that
+successfully bound the path before failing to register the listener.
+
+To remove a listener, send `REMOVE` with the same service selector; `path` is
+ignored. Removal waits for the listening socket to close, but established relay
+connections remain active. Removing an unknown service returns an error.
+Remove the socket file yourself before reusing its path.
+
 ## Consomme NIC modifications
 
 Use `ModifyResource` with `type: UPDATE` and `nic_config.nic_id` to modify

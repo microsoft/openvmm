@@ -1838,12 +1838,53 @@ impl VmService {
                     anyhow::bail!("unsupported NIC modify type {}", request.r#type);
                 }
             }
+            Resource::HvsocketListener(listener) => {
+                let service_id = parse_hvsocket_service(listener.service)?;
+                if request.r#type == vmservice::ModifyType::Add as i32 {
+                    let socket = UnixListener::bind(&listener.path).with_context(|| {
+                        format!("failed to bind hvsocket listener path: {}", listener.path)
+                    })?;
+                    let recv = vm.worker_rpc.call_failable(
+                        VmRpc::AddHvsockListener,
+                        (DeviceVtl::Vtl0, service_id, socket),
+                    );
+                    Ok(async move {
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
+                    }
+                    .boxed())
+                } else if request.r#type == vmservice::ModifyType::Remove as i32 {
+                    let recv = vm
+                        .worker_rpc
+                        .call_failable(VmRpc::RemoveHvsockListener, (DeviceVtl::Vtl0, service_id));
+                    Ok(async move {
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
+                    }
+                    .boxed())
+                } else {
+                    anyhow::bail!(
+                        "unsupported hvsocket listener modify type {}",
+                        request.r#type
+                    );
+                }
+            }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
             Resource::WindowsDevice(_) => anyhow::bail!("device assignment not supported"),
             Resource::Processor(_) | Resource::ProcessorConfig(_) | Resource::Memory(_) => {
                 anyhow::bail!("processor and memory resources not supported")
             }
         }
+    }
+}
+
+fn parse_hvsocket_service(
+    service: Option<vmservice::hv_socket_listener::Service>,
+) -> anyhow::Result<Guid> {
+    use vmservice::hv_socket_listener::Service;
+    match service.context("missing hvsocket service")? {
+        Service::ServiceId(id) => id.parse().context("invalid hvsocket service ID"),
+        Service::VsockPort(port) => Ok(crate::new_hvsock_service_id(port)),
     }
 }
 
@@ -3063,6 +3104,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hvsocket_modify_resource_responses() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let (send, mut recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .worker_rpc = send;
+            let dir = tempfile::tempdir().unwrap();
+            let service_id = guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3");
+            for modify_type in [vmservice::ModifyType::Add, vmservice::ModifyType::Remove] {
+                let response = service
+                    .modify_resource(vmservice::ModifyResourceRequest {
+                        r#type: modify_type as i32,
+                        resource: Some(
+                            vmservice::modify_resource_request::Resource::HvsocketListener(
+                                vmservice::HvSocketListener {
+                                    path: dir.path().join("service").to_str().unwrap().into(),
+                                    service: Some(
+                                        vmservice::hv_socket_listener::Service::VsockPort(50001),
+                                    ),
+                                },
+                            ),
+                        ),
+                    })
+                    .unwrap();
+                let worker = async {
+                    match (modify_type, recv.next().await.unwrap()) {
+                        (vmservice::ModifyType::Add, VmRpc::AddHvsockListener(rpc)) => {
+                            let ((vtl, id, _listener), response) = rpc.split();
+                            assert_eq!(vtl, DeviceVtl::Vtl0);
+                            assert_eq!(id, service_id);
+                            response.complete(Ok(()));
+                        }
+                        (vmservice::ModifyType::Remove, VmRpc::RemoveHvsockListener(rpc)) => {
+                            let ((vtl, id), response) = rpc.split();
+                            assert_eq!(vtl, DeviceVtl::Vtl0);
+                            assert_eq!(id, service_id);
+                            response.complete(Ok(()));
+                        }
+                        _ => panic!("unexpected worker RPC"),
+                    }
+                };
+                let (response, ()) = futures::join!(response, worker);
+                assert!(response.unwrap().result.is_none());
+            }
+        });
+    }
+
     fn acpi_shutdown_request() -> vmservice::ShutdownVmRequest {
         vmservice::ShutdownVmRequest {
             mechanism: vmservice::shutdown_vm_request::Mechanism::Acpi as i32,
@@ -4032,6 +4122,48 @@ mod tests {
                     .contains("failed to read custom UEFI JSON file")
             );
             assert!(format!("{error:#}").contains(path.to_str().unwrap()));
+        }
+    }
+
+    #[test]
+    fn hvsocket_service_selection() {
+        use vmservice::hv_socket_listener::Service;
+
+        for (port, id) in [
+            (0, guid::guid!("00000000-facb-11e6-bd58-64006a7986d3")),
+            (50001, guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3")),
+            (
+                u32::MAX,
+                guid::guid!("ffffffff-facb-11e6-bd58-64006a7986d3"),
+            ),
+        ] {
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::VsockPort(port))).unwrap(),
+                id
+            );
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+                id
+            );
+        }
+        let id = Guid::new_random();
+        assert_eq!(
+            parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+            id
+        );
+        assert!(
+            parse_hvsocket_service(None)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        for id in ["", "not-a-guid"] {
+            assert!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.into())))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid hvsocket service ID")
+            );
         }
     }
 
