@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 mod amd_iommu_wiring;
+mod device_removal;
 mod dump;
 mod ecam_config_access;
 mod intel_vtd_wiring;
@@ -10,6 +11,11 @@ mod pcie_topology;
 mod pcie_wiring;
 mod smmu_wiring;
 
+use self::device_removal::DeviceRemovalState;
+use self::device_removal::VPCI_EJECT_GRACE_PERIOD;
+use self::device_removal::VpciEjectResult;
+use self::device_removal::can_run_during_device_removal;
+use self::device_removal::wait_for_vpci_eject;
 use crate::emuplat;
 use crate::partition::BindHvliteVp;
 use crate::partition::HvlitePartition;
@@ -94,7 +100,6 @@ use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::timer::PolledTimer;
 use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::switch::GenericPcieSwitch;
@@ -106,11 +111,9 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::collections::VecDeque;
 use std::fs::File;
-use std::future::Future;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::Duration;
 use tpm_resources::TpmVersion;
 use virt::ProtoPartition;
 use virt::VpIndex;
@@ -182,68 +185,6 @@ use watchdog_core::resources::StaticWatchdogPlatformResolver;
 const PM_BASE: u16 = 0x400;
 #[cfg(guest_arch = "x86_64")]
 const SYSTEM_IRQ_ACPI: u32 = 9;
-const VPCI_EJECT_GRACE_PERIOD: Duration = Duration::from_secs(5);
-
-#[derive(Default)]
-struct PendingDeviceRemovals {
-    pending: Option<mesh::OneshotReceiver<()>>,
-}
-
-impl PendingDeviceRemovals {
-    fn start(&mut self, driver: &impl Spawn, removal: impl Future<Output = ()> + Send + 'static) {
-        assert!(self.is_empty(), "a device removal is already pending");
-        let (send, recv) = mesh::oneshot();
-        driver
-            .spawn("remove-device", async move {
-                removal.await;
-                send.send(());
-            })
-            .detach();
-        self.pending = Some(recv);
-    }
-
-    fn is_empty(&self) -> bool {
-        self.pending.is_none()
-    }
-
-    async fn wait(&mut self) {
-        if let Some(completion) = &mut self.pending {
-            completion.await.expect("device removal task failed");
-            self.pending = None;
-        } else {
-            std::future::pending().await
-        }
-    }
-
-    async fn drain(&mut self) {
-        if !self.is_empty() {
-            self.wait().await;
-        }
-    }
-}
-
-fn can_run_during_device_removal(rpc: &VmRpc) -> bool {
-    matches!(
-        rpc,
-        VmRpc::ReadMemory(_) | VmRpc::WriteMemory(_) | VmRpc::Nmi(_) | VmRpc::ConnectHvsock(_)
-    )
-}
-
-enum VpciEjectResult {
-    Complete(anyhow::Result<()>),
-    TimedOut,
-}
-
-async fn wait_for_vpci_eject(
-    driver: &(impl pal_async::driver::Driver + ?Sized),
-    eject: impl Future<Output = anyhow::Result<()>>,
-    grace_period: Duration,
-) -> VpciEjectResult {
-    let eject = eject.map(VpciEjectResult::Complete);
-    let mut timer = PolledTimer::new(driver);
-    let timeout = timer.sleep(grace_period).map(|_| VpciEjectResult::TimedOut);
-    (eject, timeout).race().await
-}
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -829,47 +770,6 @@ fn resolve_proto_partition_isolation(
 mod tests {
     use super::*;
     use test_with_tracing::test;
-
-    #[pal_async::async_test]
-    async fn pending_removal_keeps_running_when_wait_is_cancelled(driver: DefaultDriver) {
-        let (entered, mut entered_recv) = mesh::channel();
-        let (release, wait) = mesh::oneshot();
-        let mut removals = PendingDeviceRemovals::default();
-        removals.start(&driver, async move {
-            entered.send(());
-            wait.await.unwrap();
-        });
-        entered_recv.recv().await.unwrap();
-        assert!(removals.wait().now_or_never().is_none());
-        assert!(can_run_during_device_removal(&VmRpc::ReadMemory(
-            mesh::rpc::Rpc::detached((0, 4))
-        )));
-        assert!(!can_run_during_device_removal(&VmRpc::Reset(
-            mesh::rpc::Rpc::detached(())
-        )));
-        assert!(!can_run_during_device_removal(&VmRpc::RemovePcieDevice(
-            mesh::rpc::Rpc::detached("test".into())
-        )));
-        assert_eq!(driver.spawn("control-request", async { 42 }).await, 42);
-        assert!(!removals.is_empty());
-        release.send(());
-        removals.drain().await;
-        assert!(removals.is_empty());
-    }
-
-    #[pal_async::async_test]
-    async fn dropping_removal_tracker_does_not_cancel_cleanup(driver: DefaultDriver) {
-        let (release, wait) = mesh::oneshot();
-        let (finished, completed) = mesh::oneshot();
-        let mut removals = PendingDeviceRemovals::default();
-        removals.start(&driver, async move {
-            wait.await.unwrap();
-            finished.send(());
-        });
-        drop(removals);
-        release.send(());
-        completed.await.unwrap();
-    }
 
     fn linux_load_mode(isolation: openvmm_defs::config::LinuxIsolationConfig) -> LoadMode {
         LoadMode::Linux {
@@ -3873,11 +3773,11 @@ impl LoadedVm {
             }
         });
         let mut worker_rpc = worker_rpc_recv;
-        let mut removals = PendingDeviceRemovals::default();
+        let mut device_removal = DeviceRemovalState::default();
         let mut deferred = VecDeque::new();
 
         loop {
-            let queued = if removals.is_empty() {
+            let queued = if !device_removal.is_pending() {
                 deferred.pop_front()
             } else {
                 None
@@ -3888,7 +3788,7 @@ impl LoadedVm {
                 let a = rpc_recv.recv().map(Event::VmRpc);
                 let b = worker_rpc.recv().map(Event::WorkerRpc);
                 let c = self.inner.halt_recv.recv().map(Event::Halt);
-                let d = removals.wait().map(|()| Event::DeviceRemoved);
+                let d = device_removal.wait().map(|()| Event::DeviceRemoved);
                 (a, b, c, d).race().await
             };
 
@@ -3897,7 +3797,7 @@ impl LoadedVm {
                 Event::VmRpc(Ok(rpc)) => !can_run_during_device_removal(rpc),
                 _ => false,
             };
-            if !removals.is_empty() && wait_for_removal {
+            if device_removal.is_pending() && wait_for_removal {
                 deferred.push_back(event);
                 continue;
             }
@@ -3940,7 +3840,7 @@ impl LoadedVm {
                         }
                     }
                     WorkerRpc::Inspect(deferred) => deferred.respond(|resp| {
-                        resp.field("device_removal_pending", !removals.is_empty())
+                        resp.field("device_removal_pending", device_removal.is_pending())
                             .field("memory", &self.inner.memory_manager)
                             .field("memory_layout", &self.inner.mem_layout)
                             .field("resolver", &self.inner.resolver)
@@ -4183,7 +4083,7 @@ impl LoadedVm {
                             ) {
                                 // Clean up the device unit on failure
                                 let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
-                                removals.start(driver, unit.remove());
+                                device_removal.start(driver, unit.remove());
                                 return Err(e);
                             }
                             anyhow::Ok(())
@@ -4218,7 +4118,7 @@ impl LoadedVm {
                             anyhow::Ok((unit, device))
                         })();
                         match device {
-                            Ok((unit, device)) => removals.start(driver, async move {
+                            Ok((unit, device)) => device_removal.start(driver, async move {
                                 unit.remove().await;
                                 drop(device);
                                 response.complete(Ok(()));
@@ -4303,7 +4203,7 @@ impl LoadedVm {
                         let entry = self.inner.dynamic_vpci_devices.remove(index);
                         let running = self.running;
                         let device_driver = self.inner.driver_source.simple();
-                        removals.start(driver, async move {
+                        device_removal.start(driver, async move {
                             if running {
                                 let eject_result = wait_for_vpci_eject(
                                     &device_driver,
@@ -4343,7 +4243,7 @@ impl LoadedVm {
             }
         }
 
-        removals.drain().await;
+        device_removal.drain().await;
         self.pause().await;
         self.teardown_chipset_devices().await;
         self.inner.partition_unit.teardown().await;
