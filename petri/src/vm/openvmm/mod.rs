@@ -218,7 +218,7 @@ impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
 
         let diff_dir = tempfile::tempdir().context("failed to create disk write directory")?;
         let config = &mut builder.config;
-        let drives = config
+        let drive_disks = config
             .vmbus_storage_controllers
             .values_mut()
             .flat_map(|controller| controller.drives.values_mut())
@@ -228,13 +228,29 @@ impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
                     .pcie_virtio_blk_drives
                     .iter_mut()
                     .map(|d| &mut d.drive),
-            );
-        for (i, drive) in drives.enumerate() {
-            if let Some(Disk::Differencing(base)) = &drive.disk {
-                drive.disk = Some(Disk::FileDifferencing {
+            )
+            .chain(
+                config
+                    .firmware
+                    .ide_controllers_mut()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .flatten(),
+            )
+            .filter_map(|drive| drive.disk.as_mut());
+        let vmgs_disk = match &mut config.vmgs {
+            PetriVmgsResource::Disk(vmgs)
+            | PetriVmgsResource::ReprovisionOnFailure(vmgs)
+            | PetriVmgsResource::ReprovisionSingle(vmgs) => Some(&mut vmgs.disk),
+            PetriVmgsResource::Ephemeral => None,
+        };
+        for (i, disk) in drive_disks.chain(vmgs_disk).enumerate() {
+            if let Disk::Differencing(base) = disk {
+                *disk = Disk::FileDifferencing {
                     base: base.clone(),
                     diff: diff_dir.path().join(format!("disk{i}.dbhd")),
-                });
+                };
             }
         }
 

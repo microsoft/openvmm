@@ -40,9 +40,11 @@ Start a VM with file-backed memory:
 ```bash
 cargo run -- \
   --uefi \
+  --uefi-firmware path/to/MSVM.fd \
   --vmbus-scsi id=scsi0 \
   --disk memdiff:file:path/to/disk.vhdx,on=scsi0 \
-  --memory size=4096M,file=path/to/memory.bin
+  --memory size=4096M,file=path/to/memory.bin \
+  --processors 4
 ```
 
 Once the VM is running, open the interactive console and issue a save command,
