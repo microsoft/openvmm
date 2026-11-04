@@ -3,7 +3,7 @@
         "vtl2_total": 524288,
         "2vp": {
             "usage": {
-                "debug": 91066,
+                "debug": 91084,
                 "release": 69795
             },
             "reservation": {
@@ -11,29 +11,29 @@
                 "release": 37156
             },
             "active_anon": {
-                "debug": 5363,
+                "debug": 5636,
                 "release": 2841
             },
             "inactive_anon": {
-                "debug": 43932,
+                "debug": 43919,
                 "release": 17920
             },
             "underhill-init_rss": {
-                "debug": 2392,
+                "debug": 2391,
                 "release": 2844
             },
             "openvmm_hcl_rss": {
-                "debug": 21406,
+                "debug": 21303,
                 "release": 8080
             },
             "underhill-vm_rss": {
-                "debug": 29702,
+                "debug": 29662,
                 "release": 11068
             }
         },
         "64vp": {
             "usage": {
-                "debug": 177932,
+                "debug": 177914,
                 "release": 177432
             },
             "reservation": {
@@ -45,7 +45,7 @@
                 "release": 2754
             },
             "inactive_anon": {
-                "debug": 51852,
+                "debug": 52254,
                 "release": 21736
             },
             "underhill-init_rss": {
@@ -53,11 +53,11 @@
                 "release": 2844
             },
             "openvmm_hcl_rss": {
-                "debug": 21444,
+                "debug": 21343,
                 "release": 8137
             },
             "underhill-vm_rss": {
-                "debug": 43530,
+                "debug": 43535,
                 "release": 22164
             }
         }
@@ -66,7 +66,7 @@
         "vtl2_total": 524288,
         "2vp": {
             "usage": {
-                "debug": 249312,
+                "debug": 249263,
                 "release": 76676
             },
             "reservation": {
@@ -74,29 +74,29 @@
                 "release": 34616
             },
             "active_anon": {
-                "debug": 23106,
+                "debug": 23107,
                 "release": 4334
             },
             "inactive_anon": {
-                "debug": 182916,
+                "debug": 182860,
                 "release": 24752
             },
             "underhill-init_rss": {
-                "debug": 6520,
+                "debug": 6455,
                 "release": 4460
             },
             "openvmm_hcl_rss": {
-                "debug": 27624,
+                "debug": 27044,
                 "release": 9485
             },
             "underhill-vm_rss": {
-                "debug": 39874,
+                "debug": 29759,
                 "release": 14858
             }
         },
         "64vp": {
             "usage": {
-                "debug": 304848,
+                "debug": 304924,
                 "release": 132308
             },
             "reservation": {
@@ -108,7 +108,7 @@
                 "release": 4297
             },
             "inactive_anon": {
-                "debug": 187688,
+                "debug": 188096,
                 "release": 28220
             },
             "underhill-init_rss": {
@@ -129,7 +129,7 @@
         "vtl2_total": 655360,
         "2vp": {
             "usage": {
-                "debug": 252018,
+                "debug": 252180,
                 "release": 263499
             },
             "reservation": {
@@ -137,29 +137,29 @@
                 "release": 29944
             },
             "active_anon": {
-                "debug": 23106,
+                "debug": 23108,
                 "release": 27000
             },
             "inactive_anon": {
-                "debug": 185570,
+                "debug": 185760,
                 "release": 182389
             },
             "underhill-init_rss": {
-                "debug": 6514,
+                "debug": 6520,
                 "release": 6453
             },
             "openvmm_hcl_rss": {
-                "debug": 27106,
+                "debug": 27372,
                 "release": 26806
             },
             "underhill-vm_rss": {
-                "debug": 42144,
+                "debug": 42416,
                 "release": 41908
             }
         },
         "64vp": {
             "usage": {
-                "debug": 336478,
+                "debug": 336884,
                 "release": 370376
             },
             "reservation": {
@@ -167,23 +167,23 @@
                 "release": 41680
             },
             "active_anon": {
-                "debug": 23106,
+                "debug": 23108,
                 "release": 26988
             },
             "inactive_anon": {
-                "debug": 206802,
+                "debug": 207024,
                 "release": 203688
             },
             "underhill-init_rss": {
-                "debug": 6562,
+                "debug": 6588,
                 "release": 6438
             },
             "openvmm_hcl_rss": {
-                "debug": 26992,
+                "debug": 27032,
                 "release": 27032
             },
             "underhill-vm_rss": {
-                "debug": 67608,
+                "debug": 68088,
                 "release": 67305
             }
         }
@@ -192,7 +192,7 @@
         "vtl2_total": 1048576,
         "2vp": {
             "usage": {
-                "debug": 259462,
+                "debug": 259520,
                 "release": 268984
             },
             "reservation": {
@@ -200,29 +200,29 @@
                 "release": 36008
             },
             "active_anon": {
-                "debug": 23104,
+                "debug": 23108,
                 "release": 26958
             },
             "inactive_anon": {
-                "debug": 185396,
+                "debug": 185444,
                 "release": 182370
             },
             "underhill-init_rss": {
-                "debug": 6484,
+                "debug": 6536,
                 "release": 6372
             },
             "openvmm_hcl_rss": {
-                "debug": 26758,
+                "debug": 26800,
                 "release": 27009
             },
             "underhill-vm_rss": {
-                "debug": 42094,
+                "debug": 42392,
                 "release": 41722
             }
         },
         "64vp": {
             "usage": {
-                "debug": 345462,
+                "debug": 345848,
                 "release": 413851
             },
             "reservation": {
@@ -230,23 +230,23 @@
                 "release": 48488
             },
             "active_anon": {
-                "debug": 23106,
+                "debug": 23108,
                 "release": 26893
             },
             "inactive_anon": {
-                "debug": 204934,
+                "debug": 205004,
                 "release": 201957
             },
             "underhill-init_rss": {
-                "debug": 6488,
+                "debug": 6540,
                 "release": 6356
             },
             "openvmm_hcl_rss": {
-                "debug": 27330,
+                "debug": 27432,
                 "release": 26889
             },
             "underhill-vm_rss": {
-                "debug": 66376,
+                "debug": 66656,
                 "release": 65917
             }
         }
