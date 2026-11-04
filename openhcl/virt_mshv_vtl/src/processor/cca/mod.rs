@@ -597,6 +597,10 @@ impl BackingPrivate for CcaBacked {
                             if iss.wnr() {
                                 // Handle MMIO write
                                 if let Some(value) = cca_exit.gpr_or_zero_register(srt) {
+                                    // Reconcile the returned LR cache before a GIC
+                                    // MMIO write changes pending or active state.
+                                    this.reconcile_gic_lrs(vtl);
+
                                     dev.write_mmio(
                                         this.vp_index(),
                                         address,
