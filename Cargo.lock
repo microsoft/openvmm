@@ -2391,6 +2391,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
+ "test_with_tracing",
  "toml_edit",
  "xshell",
 ]
@@ -2417,6 +2419,7 @@ dependencies = [
  "clap",
  "flowey",
  "flowey_cli",
+ "flowey_core",
  "flowey_lib_common",
  "flowey_lib_hvlite",
  "log",

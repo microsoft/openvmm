@@ -44,6 +44,7 @@ pub mod user_facing {
     pub use super::AdoScheduleTriggers;
     pub use super::GhCiTriggers;
     pub use super::GhConcurrencyGroup;
+    pub use super::GhMergeGroupTriggers;
     pub use super::GhPrTriggers;
     pub use super::GhRunner;
     pub use super::GhRunnerOsLabel;
@@ -281,6 +282,13 @@ pub struct GhPrTriggers {
     pub paths_ignore: Vec<String>,
 }
 
+/// Trigger GitHub Actions pipelines for merge queue validation.
+#[derive(Debug)]
+pub struct GhMergeGroupTriggers {
+    /// Merge group activity types that trigger the pipeline.
+    pub types: Vec<String>,
+}
+
 /// Trigger Github Actions pipelines per PR
 #[derive(Debug, Default)]
 pub struct GhCiTriggers {
@@ -453,6 +461,7 @@ pub struct Pipeline {
     gh_schedule_triggers: Vec<GhScheduleTriggers>,
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
+    gh_merge_group_triggers: Option<GhMergeGroupTriggers>,
     gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
 }
 
@@ -646,6 +655,12 @@ impl Pipeline {
     /// overwrite any previously set triggers.
     pub fn gh_set_pr_triggers(&mut self, triggers: GhPrTriggers) -> &mut Self {
         self.gh_pr_triggers = Some(triggers);
+        self
+    }
+
+    /// (GitHub Actions only) Set a merge group trigger, replacing any previous one.
+    pub fn gh_set_merge_group_triggers(&mut self, triggers: GhMergeGroupTriggers) -> &mut Self {
+        self.gh_merge_group_triggers = Some(triggers);
         self
     }
 
@@ -1627,6 +1642,7 @@ pub mod internal {
         pub gh_schedule_triggers: Vec<GhScheduleTriggers>,
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
+        pub gh_merge_group_triggers: Option<GhMergeGroupTriggers>,
         pub gh_bootstrap_template: Option<Box<GhBootstrapTemplate>>,
     }
 
@@ -1659,6 +1675,7 @@ pub mod internal {
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
+                gh_merge_group_triggers,
                 gh_bootstrap_template,
                 // not relevant to consumer code
                 dummy_done_idx: _,
@@ -1692,6 +1709,7 @@ pub mod internal {
                 gh_schedule_triggers,
                 gh_ci_triggers,
                 gh_pr_triggers,
+                gh_merge_group_triggers,
                 gh_bootstrap_template,
             }
         }

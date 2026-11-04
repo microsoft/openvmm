@@ -57,6 +57,7 @@ pub fn github_yaml(
         gh_schedule_triggers,
         gh_ci_triggers,
         gh_pr_triggers,
+        gh_merge_group_triggers,
         gh_bootstrap_template,
         parameters,
         ado_name: _,
@@ -655,7 +656,13 @@ EOF
                 },
                 r#if: gh_override_if
                     .clone()
-                    .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
+                    .or_else(|| {
+                        Some(if gh_merge_group_triggers.is_some() {
+                            "github.event_name != 'pull_request' || github.event.pull_request.draft == false".to_string()
+                        } else {
+                            "github.event.pull_request.draft == false".to_string()
+                        })
+                    }),
                 env: gh_global_env.clone(),
                 defaults,
                 steps: gh_steps,
@@ -736,6 +743,9 @@ EOF
             }
             None => None,
         },
+        merge_group: gh_merge_group_triggers.map(|triggers| github_yaml_defs::MergeGroupTrigger {
+            types: triggers.types,
+        }),
         push: match gh_ci_triggers {
             Some(gh_ci_triggers) => {
                 if let Some(group) = gh_ci_triggers.concurrency_group {
@@ -1004,4 +1014,40 @@ fn hoist_bash_shell(steps: &mut [serde_yaml::Value]) -> Option<github_yaml_defs:
             shell: "bash".into(),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline_resolver::generic::resolve_pipeline;
+    use flowey_core::pipeline::GhMergeGroupTriggers;
+    use flowey_core::pipeline::GhPrTriggers;
+    use flowey_core::pipeline::Pipeline;
+    use test_with_tracing::test;
+
+    #[test]
+    fn merge_group_trigger_preserves_pr_triggers() {
+        let mut pipeline = Pipeline::new();
+        pipeline
+            .gh_set_pr_triggers(GhPrTriggers::new_draftable())
+            .gh_set_merge_group_triggers(GhMergeGroupTriggers {
+                types: vec!["checks_requested".into()],
+            });
+        let dir = tempfile::tempdir().unwrap();
+        github_yaml(
+            resolve_pipeline(pipeline).unwrap(),
+            false,
+            dir.path(),
+            Path::new("queue.yaml"),
+            "test_flowey",
+            CheckMode::None,
+        )
+        .unwrap();
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str(&fs_err::read_to_string(dir.path().join("queue.yaml")).unwrap())
+                .unwrap();
+        assert_eq!(yaml["on"]["merge_group"]["types"][0], "checks_requested");
+        assert_eq!(yaml["on"]["pull_request"]["types"][0], "opened");
+        assert_eq!(yaml["concurrency"]["cancel-in-progress"], true);
+    }
 }
