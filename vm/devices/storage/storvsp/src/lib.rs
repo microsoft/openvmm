@@ -729,11 +729,10 @@ impl ScsiCommandQueue {
                     }
                 }
             }
-            _ if controller_disk.is_some() => {
+            _ if let Some(controller_disk) = controller_disk => {
                 let mut cdb = [0; 16];
                 cdb.copy_from_slice(&request.payload[0..storvsp_protocol::CDB16GENERIC_LENGTH]);
                 controller_disk
-                    .unwrap()
                     .disk
                     .execute_scsi(
                         &external_data,

@@ -69,11 +69,11 @@ service VM {
 
 // Note: VTL assignment is not modeled yet; all devices are assumed to be VTL0.
 
-// Request cooperative guest power-off through Hyper-V shutdown IC. Requires a
-// running VM with Hyper-V and VMBus enabled and guest shutdown IC support.
-// ACPI power-button shutdown is unsupported.
+// Request cooperative guest power-off in a running VM through the selected
+// mechanism. No fallback to another mechanism or hard power-off is performed.
 //
-// Success means acknowledgement, not halt. With the default shutdown HALT
+// Success means IC acknowledgement or ACPI event injection, not halt.
+// With the default shutdown HALT
 // policy, use WaitVM to await halt, PropertiesVM to check for PowerOff, then
 // TeardownVM to release resources. TeardownVM and Quit do not request shutdown.
 message ShutdownVMRequest {
@@ -81,14 +81,18 @@ message ShutdownVMRequest {
         // Invalid; a mechanism must be explicitly specified.
         MECHANISM_UNSPECIFIED = 0;
         // Explicitly request the Hyper-V shutdown integration component.
-        // It must be available for this VM; no other facility is selected.
+        // Requires Hyper-V enlightenments, VMBus and guest shutdown IC support.
         MECHANISM_HYPERV_IC = 1;
+        // Inject an ACPI power-button event. Not supported for IGVM boot.
+        // Requires guest ACPI power-button support and a guest power policy
+        // that shuts down on a button press.
+        MECHANISM_ACPI = 2;
     }
 
     // Required. Unspecified (including omitted) and unknown values return
     // INVALID_ARGUMENT without issuing a shutdown request.
     Mechanism mechanism = 1;
-    // Set the force bit in the shutdown protocol. Interpretation is guest-specific.
+    // Set the Hyper-V IC force bit. Interpretation is guest-specific.
     // This is not a host-side hard power-off. Omitted means false.
     bool force = 2;
 }

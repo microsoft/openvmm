@@ -1195,44 +1195,30 @@ impl SharedState {
                 false
             }
             DeliveryMode::NMI => {
-                let old = self
-                    .work
-                    .fetch_update(Ordering::Release, Ordering::Relaxed, |w| {
-                        Some(WorkFlags::from(w).with_nmi(true).into())
-                    })
-                    .unwrap();
+                let old = self.work.update(Ordering::Release, Ordering::Relaxed, |w| {
+                    WorkFlags::from(w).with_nmi(true).into()
+                });
                 old == 0
             }
             DeliveryMode::INIT => {
-                let old = self
-                    .work
-                    .fetch_update(Ordering::Release, Ordering::Relaxed, |w| {
-                        Some(WorkFlags::from(w).with_init(true).into())
-                    })
-                    .unwrap();
+                let old = self.work.update(Ordering::Release, Ordering::Relaxed, |w| {
+                    WorkFlags::from(w).with_init(true).into()
+                });
                 old == 0
             }
             DeliveryMode::SIPI => {
-                let old = self
-                    .work
-                    .fetch_update(Ordering::Release, Ordering::Relaxed, |w| {
-                        Some(
-                            WorkFlags::from(w)
-                                .with_sipi(true)
-                                .with_sipi_vector(vector)
-                                .into(),
-                        )
-                    })
-                    .unwrap();
+                let old = self.work.update(Ordering::Release, Ordering::Relaxed, |w| {
+                    WorkFlags::from(w)
+                        .with_sipi(true)
+                        .with_sipi_vector(vector)
+                        .into()
+                });
                 old == 0
             }
             DeliveryMode::EXTINT => {
-                let old = self
-                    .work
-                    .fetch_update(Ordering::Release, Ordering::Relaxed, |w| {
-                        Some(WorkFlags::from(w).with_extint(true).into())
-                    })
-                    .unwrap();
+                let old = self.work.update(Ordering::Release, Ordering::Relaxed, |w| {
+                    WorkFlags::from(w).with_extint(true).into()
+                });
                 old == 0
             }
             _ => false,
@@ -2175,6 +2161,41 @@ mod tests {
         apic.irr[0] = 0;
         apic.recompute_next_irr();
         assert_eq!(apic.next_irr, None);
+    }
+
+    #[test]
+    fn work_interrupts_preserve_pending_work_and_wake_only_when_idle() {
+        let (_set, apic) = new_apic();
+        for (delivery_mode, flags) in [
+            (DeliveryMode::NMI, WorkFlags::new().with_nmi(true)),
+            (DeliveryMode::INIT, WorkFlags::new().with_init(true)),
+            (
+                DeliveryMode::SIPI,
+                WorkFlags::new()
+                    .with_sipi(true)
+                    .with_sipi_vector(TEST_VECTOR),
+            ),
+            (DeliveryMode::EXTINT, WorkFlags::new().with_extint(true)),
+        ] {
+            for pending in [0, 1 << 31] {
+                apic.shared.work.store(pending, Ordering::Relaxed);
+                assert_eq!(
+                    apic.shared
+                        .request_interrupt(false, delivery_mode, TEST_VECTOR, false, false),
+                    pending == 0,
+                );
+                let expected = pending | u32::from(flags);
+                assert_eq!(apic.shared.work.load(Ordering::Relaxed), expected);
+                assert!(!apic.shared.request_interrupt(
+                    false,
+                    delivery_mode,
+                    TEST_VECTOR,
+                    false,
+                    false,
+                ));
+                assert_eq!(apic.shared.work.load(Ordering::Relaxed), expected);
+            }
+        }
     }
 
     /// A FIXED interrupt that is requested before the guest transiently disables

@@ -2916,16 +2916,13 @@ impl FromStr for SerialConfigCli {
                 SerialConfigCli::NewConsole(first_value.map(|p| p.into()), window_name)
             }
             "listen" => match first_value {
-                Some(path) => {
-                    if let Some(tcp) = path.strip_prefix("tcp:") {
-                        let addr = tcp
-                            .parse()
-                            .map_err(|err| format!("invalid tcp address: {err}"))?;
-                        SerialConfigCli::Tcp(addr)
-                    } else {
-                        SerialConfigCli::Pipe(path.into())
-                    }
+                Some(path) if let Some(tcp) = path.strip_prefix("tcp:") => {
+                    let addr = tcp
+                        .parse()
+                        .map_err(|err| format!("invalid tcp address: {err}"))?;
+                    SerialConfigCli::Tcp(addr)
                 }
+                Some(path) => SerialConfigCli::Pipe(path.into()),
                 None => Err(
                     "invalid serial configuration: listen requires a value of tcp:addr or pipe",
                 )?,
@@ -4415,6 +4412,8 @@ mod tests {
         assert!(SerialConfigCli::from_str("unknown").is_err());
         assert!(SerialConfigCli::from_str("file").is_err());
         assert!(SerialConfigCli::from_str("listen").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:invalid").is_err());
     }
 
     #[test]
