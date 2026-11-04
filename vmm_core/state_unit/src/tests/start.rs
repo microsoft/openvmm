@@ -141,7 +141,52 @@ async fn an_unanswered_start_rolls_back_and_blocks_dependents(driver: DefaultDri
     assert!(independent_started.load(Ordering::Relaxed));
     assert!(independent_stopped.load(Ordering::Relaxed));
     assert!(!dependent_started.load(Ordering::Relaxed));
+    // The unanswered unit may be running.
+    assert!(units.is_running());
+    let retry_error = units.start().await.unwrap_err();
+    assert!(retry_error.to_string().contains("terminal state"));
+}
+
+#[async_test]
+async fn test_uncertain_start_keeps_units_running_until_stopped(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let independent_started = Arc::new(AtomicBool::new(false));
+    let independent_stopped = Arc::new(AtomicBool::new(false));
+    let _independent = units
+        .add("independent")
+        .spawn(&driver, |recv| {
+            run_unit(
+                recording_unit(&independent_started, &independent_stopped),
+                recv,
+            )
+        })
+        .unwrap();
+    let unanswered_started = Arc::new(AtomicBool::new(false));
+    let unanswered_stopped = Arc::new(AtomicBool::new(false));
+    let _unanswered = units
+        .add("unanswered")
+        .spawn(&driver, |recv| {
+            run_unanswering_start(
+                recording_unit(&unanswered_started, &unanswered_stopped),
+                recv,
+            )
+        })
+        .unwrap();
+
+    let error = units.start().await.unwrap_err().to_string();
+    assert!(error.contains("unanswered"), "{error}");
+    assert!(independent_started.load(Ordering::Relaxed));
+    assert!(independent_stopped.load(Ordering::Relaxed));
+    assert!(unanswered_started.load(Ordering::Relaxed));
+    assert!(!unanswered_stopped.load(Ordering::Relaxed));
+    // The unanswered unit is running, so a stop must still be able to stop it.
+    assert!(units.is_running());
+    assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
+
+    units.stop().await;
+    assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
+    assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
     let retry_error = units.start().await.unwrap_err();
     assert!(retry_error.to_string().contains("terminal state"));
 }
