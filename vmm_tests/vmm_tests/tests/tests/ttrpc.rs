@@ -329,6 +329,69 @@ async fn test_ttrpc_interface(
         "a failed CreateVm must leave state UNINITIALIZED"
     );
 
+    // CreateVm with a processor weight must succeed exactly when the host
+    // reports it can enforce one, and fail with a clear error otherwise.
+    let qos = caps
+        .processor_qos
+        .clone()
+        .expect("processor_qos must be reported");
+    let qos_result = client
+        .call()
+        .start(
+            vmservice::Vm::CreateVm,
+            vmservice::CreateVmRequest {
+                config: Some(vmservice::VmConfig {
+                    memory_config: Some(vmservice::MemoryConfig {
+                        memory_mb: 256,
+                        ..Default::default()
+                    }),
+                    processor_config: Some(vmservice::ProcessorConfig {
+                        processor_count: 1,
+                        processor_weight: 200,
+                        ..Default::default()
+                    }),
+                    boot_config: Some(vmservice::vm_config::BootConfig::DirectBoot(
+                        vmservice::DirectBoot {
+                            kernel_path: kernel_path.get().to_string_lossy().to_string(),
+                            initrd_path: initrd_path.get().to_string_lossy().to_string(),
+                            kernel_cmdline: format!(
+                                "console={console} rdinit=/bin/busybox panic=-1 -- poweroff -f"
+                            ),
+                        },
+                    )),
+                    ..Default::default()
+                }),
+                log_id: String::new(),
+            },
+        )
+        .await;
+    if qos.weight {
+        qos_result.expect("CreateVm with a supported processor weight");
+        client
+            .call()
+            .start(vmservice::Vm::TeardownVm, ())
+            .await
+            .unwrap();
+    } else {
+        let err = format!("{:?}", qos_result.unwrap_err());
+        assert!(
+            [
+                "requires the hypervisor core scheduler",
+                "delegated cgroup v2",
+                "not supported by this hypervisor",
+            ]
+            .iter()
+            .any(|s| err.contains(s)),
+            "unexpected error for an unsupported processor weight: {err}"
+        );
+    }
+    let props = query_props().await.unwrap();
+    assert_eq!(
+        props.state,
+        vmservice::VmState::Uninitialized as i32,
+        "after the processor weight check, expected UNINITIALIZED"
+    );
+
     // Backing files for the PCIe storage devices created on iteration 0
     // (virtio-blk and an NVMe namespace) and for the vmbus SCSI disk. They
     // are plain raw disks.
