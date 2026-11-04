@@ -1,9 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! QEMU backend for Petri. Currently only supports Aarch64 CPU emulation on
-//! Linux x64 hosts, but could be modified to support more qemu-system-arch
-//! configurations in the future.
+//! QEMU backend for Petri: Linux direct boot with Aarch64 CPU emulation or
+//! native KVM acceleration.
 
 pub mod devices;
 
@@ -29,6 +28,7 @@ use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
 use devices::DeviceConfig;
+use devices::VirtioBlkFileConfig;
 use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
@@ -68,6 +68,8 @@ pub struct QemuPetriConfig {
     smp: Option<String>,
     memory: Option<String>,
     command_line: String,
+    kvm: bool,
+    virtio_blk_files: Vec<VirtioBlkFileConfig>,
 }
 
 impl QemuPetriBackend {
@@ -86,6 +88,8 @@ pub struct QemuPetriRuntime {
     host_pipette_port: u16,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     output_dir: PathBuf,
+    pid: i32,
+    command: Vec<String>,
 }
 
 #[async_trait]
@@ -96,9 +100,11 @@ impl PetriVmmBackend for QemuPetriBackend {
     const SUPPORTS_CPU_EMULATION: bool = true;
     const SUPPORTS_FILE_SHARING: bool = true;
 
-    fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
-        // Our QEMU bachend only supports linux X64 at this time
-        MachineArch::X86_64 == MachineArch::host() && cfg!(target_os = "linux")
+    fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        cfg!(target_os = "linux")
+            && matches!(firmware, Firmware::LinuxDirect { .. })
+            && (arch == MachineArch::host()
+                || MachineArch::X86_64 == MachineArch::host() && arch == MachineArch::Aarch64)
     }
 
     fn quirks(_firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -141,9 +147,15 @@ impl PetriVmmBackend for QemuPetriBackend {
     }
 
     fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
-        // QEMU bachend only supports linux X64 with an aarch64 guest
-        // TODO: we should have QEMU_SYSTEM_<GUEST_ARCH>_NATIVE symbols
-        // and match here based on guest arch.
+        if arch == MachineArch::host() {
+            return Self::from_binary(
+                match arch {
+                    MachineArch::X86_64 => "qemu-system-x86_64",
+                    MachineArch::Aarch64 => "qemu-system-aarch64",
+                }
+                .into(),
+            );
+        }
         assert_eq!(arch, MachineArch::Aarch64);
         QemuPetriBackend {
             qemu_path: resolver
@@ -186,7 +198,19 @@ impl PetriVmmBackend for QemuPetriBackend {
         cmd.stderr(std::process::Stdio::piped());
 
         tracing::info!(?cmd, "launching qemu");
+        let command = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .map(|arg| {
+                arg.to_str()
+                    .map(str::to_owned)
+                    .context("QEMU command is not UTF-8")
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         let mut qemu_process = cmd.spawn().context("failed to launch QEMU")?;
+        let pid = qemu_process
+            .id()
+            .try_into()
+            .context("QEMU PID out of range")?;
         let qemu_stdout = qemu_process.stdout.take().expect("stdout should be piped");
         let qemu_stderr = qemu_process.stderr.take().expect("stderr should be piped");
 
@@ -223,6 +247,8 @@ impl PetriVmmBackend for QemuPetriBackend {
                 host_pipette_port,
                 log_tasks,
                 output_dir: log_source.output_dir().to_owned(),
+                pid,
+                command,
             },
             config
                 .firmware
@@ -232,6 +258,25 @@ impl PetriVmmBackend for QemuPetriBackend {
 }
 
 impl QemuPetriConfig {
+    /// Require native KVM acceleration. Failure to use KVM is a launch error.
+    pub fn with_kvm(mut self) -> Self {
+        self.kvm = true;
+        self
+    }
+
+    /// Set additional kernel command-line arguments.
+    pub fn with_kernel_command_line(mut self, command_line: String) -> Self {
+        self.command_line = command_line;
+        self
+    }
+
+    /// Attach a raw file with caller-selected virtio-blk device settings.
+    /// File I/O uses io_uring.
+    pub fn with_virtio_blk_file(mut self, disk: VirtioBlkFileConfig) -> Self {
+        self.virtio_blk_files.push(disk);
+        self
+    }
+
     /// Override the emulated machine, CPU, topology, and kernel command line.
     pub fn with_platform(
         mut self,
@@ -389,6 +434,16 @@ impl PetriVmRuntime for QemuPetriRuntime {
 }
 
 impl QemuPetriRuntime {
+    /// Get the PID of the QEMU child process.
+    pub fn pid(&self) -> i32 {
+        self.pid
+    }
+
+    /// The executable and arguments used to launch this VM.
+    pub fn command(&self) -> &[String] {
+        &self.command
+    }
+
     /// Poll `f` until it produces a value, failing if the QEMU process exits
     /// first and giving up once `timeout` has elapsed.
     async fn poll_until_exit_or_timeout<T>(
@@ -462,7 +517,7 @@ pub const EXTRA_DEVICE_ADDR_BASE: usize = 16;
 /// Mount tag for the host 9P share
 pub const SHARE_9P_MOUNT_TAG: &str = "hostshare";
 
-/// Build the QEMU command line for a TCG launch.
+/// Build the QEMU command line.
 pub fn build_qemu_command(
     binary: &Path,
     config: &PetriVmConfig,
@@ -510,10 +565,15 @@ pub fn build_qemu_command(
         smp,
         memory,
         command_line,
+        kvm,
+        virtio_blk_files,
     } = qemu_config;
 
+    anyhow::ensure!(
+        !kvm || cfg!(target_os = "linux") && *arch == MachineArch::host(),
+        "QEMU KVM requires a native guest architecture on Linux"
+    );
     // make sure we aren't silently ignoring any configurations
-    assert!(matches!(arch, MachineArch::Aarch64));
     assert!(matches!(
         host_log_levels,
         None | Some(crate::OpenvmmLogConfig::TestDefault)
@@ -534,13 +594,20 @@ pub fn build_qemu_command(
     assert!(physical_nvme_devices.is_empty());
 
     let mut cmd = Command::new(binary);
+    cmd.arg("-name").arg("debug-threads=on");
 
-    cmd.arg("-machine").arg(
-        machine
-            .as_deref()
-            .unwrap_or("virt,virtualization=on,iommu=smmuv3,gic-version=3"),
-    );
-    cmd.arg("-cpu").arg(cpu.as_deref().unwrap_or("max"));
+    let default_machine = match arch {
+        MachineArch::X86_64 => "q35",
+        MachineArch::Aarch64 if *kvm => "virt,gic-version=host",
+        MachineArch::Aarch64 => "virt,virtualization=on,iommu=smmuv3,gic-version=3",
+    };
+    if *kvm {
+        cmd.arg("-accel").arg("kvm");
+    }
+    cmd.arg("-machine")
+        .arg(machine.as_deref().unwrap_or(default_machine));
+    cmd.arg("-cpu")
+        .arg(cpu.as_deref().unwrap_or(if *kvm { "host" } else { "max" }));
     // TODO: more complex memory topologies
     cmd.arg("-m").arg(
         memory
@@ -585,7 +652,7 @@ pub fn build_qemu_command(
 
     // User-mode networking with port forwarding for pipette TCP
     cmd.arg("-netdev").arg(format!(
-        "user,id=net0,hostfwd=tcp::{host_pipette_port}-:{guest_port}",
+        "user,id=net0,hostfwd=tcp:127.0.0.1:{host_pipette_port}-:{guest_port}",
         guest_port = pipette_client::PIPETTE_PORT,
     ));
     cmd.arg("-device")
@@ -643,6 +710,37 @@ pub fn build_qemu_command(
         }
     }
 
+    for (i, disk) in virtio_blk_files.iter().enumerate() {
+        let filename = disk.path.to_str().context("QEMU disk path is not UTF-8")?;
+        let index = devices.len() + i;
+        let addr = EXTRA_DEVICE_ADDR_BASE + index;
+        let slot = index + 1;
+        let rp_id = format!("storage_rp{i}");
+        let node_name = format!("petri_file_disk{i}");
+        cmd.arg("-device").arg(format!(
+            "pcie-root-port,id={rp_id},addr={addr:#x},slot={slot}"
+        ));
+        cmd.arg("-blockdev")
+            .arg(serde_json::to_string(&serde_json::json!({
+                "driver": "raw",
+                "node-name": node_name,
+                "read-only": disk.read_only,
+                "file": {
+                    "driver": "file",
+                    "filename": filename,
+                    "aio": "io_uring",
+                    "cache": { "direct": disk.direct, "no-flush": false }
+                }
+            }))?);
+        let packed = if disk.packed { "on" } else { "off" };
+        let merging = if disk.request_merging { "on" } else { "off" };
+        let legacy = if disk.disable_legacy { "on" } else { "off" };
+        cmd.arg("-device").arg(format!(
+            "virtio-blk-pci,drive={node_name},bus={rp_id},packed={packed},queue-size={},num-queues={},request-merging={merging},disable-legacy={legacy},logical_block_size={},physical_block_size={}",
+            disk.queue_size, disk.num_queues, disk.logical_block_size, disk.physical_block_size,
+        ));
+    }
+
     Ok(cmd)
 }
 
@@ -651,11 +749,10 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
-    #[test]
-    fn preserves_standalone_platform_options() -> anyhow::Result<()> {
-        let config = PetriVmConfig {
+    fn linux_direct_config(arch: MachineArch) -> PetriVmConfig {
+        PetriVmConfig {
             name: "test".into(),
-            arch: MachineArch::Aarch64,
+            arch,
             host_log_levels: None,
             firmware: Firmware::LinuxDirect {
                 kernel: ResolvedArtifact::from_local_path("kernel with spaces".into()),
@@ -673,7 +770,34 @@ mod tests {
             pcie_virtio_blk_drives: Vec::new(),
             physical_nvme_devices: Default::default(),
             guest_shares: Default::default(),
-        };
+        }
+    }
+
+    fn initrd() -> PetriInitrd {
+        PetriInitrd {
+            path: crate::TempOrPersistentPath::Persistent("patched initrd".into()),
+            rdinit_param: "/tcg-init.sh".into(),
+        }
+    }
+
+    fn raw_disk(path: &str, read_only: bool, direct: bool) -> VirtioBlkFileConfig {
+        VirtioBlkFileConfig {
+            path: path.into(),
+            read_only,
+            direct,
+            packed: false,
+            queue_size: 128,
+            num_queues: 2,
+            request_merging: true,
+            disable_legacy: false,
+            logical_block_size: 1024,
+            physical_block_size: 2048,
+        }
+    }
+
+    #[test]
+    fn preserves_standalone_platform_options() -> anyhow::Result<()> {
+        let config = linux_direct_config(MachineArch::Aarch64);
         let platform = QemuPetriConfig::default().with_platform(
             "virt,gic-version=3".into(),
             "max,sve=off".into(),
@@ -681,16 +805,14 @@ mod tests {
             "4096".into(),
             "console=ttyAMA0 debug".into(),
         );
-        let initrd = PetriInitrd {
-            path: crate::TempOrPersistentPath::Persistent("patched initrd".into()),
-            rdinit_param: "/tcg-init.sh".into(),
-        };
+        let initrd = initrd();
         let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, &initrd)?;
         let args = cmd
             .get_args()
             .map(|s| s.to_str().unwrap())
             .collect::<Vec<_>>();
         for pair in [
+            ["-name", "debug-threads=on"],
             ["-machine", "virt,gic-version=3"],
             ["-cpu", "max,sve=off"],
             ["-m", "4096"],
@@ -712,6 +834,102 @@ mod tests {
             &initrd,
         )?;
         assert!(default_cmd.get_args().any(|a| a == "rdinit=/tcg-init.sh"));
+        assert!(!default_cmd.get_args().any(|a| a == "-accel"));
         Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_kvm_raw_disks_preserve_paths_and_cache_modes() -> anyhow::Result<()> {
+        let config = linux_direct_config(MachineArch::host());
+        for direct in [false, true] {
+            let platform = QemuPetriConfig::default()
+                .with_kvm()
+                .with_virtio_blk_file(raw_disk("tools image.erofs", true, false))
+                .with_virtio_blk_file(raw_disk("data,with=options.raw", false, direct));
+            let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, &initrd())?;
+            let args = cmd
+                .get_args()
+                .map(|s| s.to_str().unwrap())
+                .collect::<Vec<_>>();
+            assert!(args.windows(2).any(|p| p == ["-accel", "kvm"]));
+            assert!(args.windows(2).any(|p| p == ["-cpu", "host"]));
+            assert!(
+                args.windows(2).any(|p| {
+                    p[0] == "-netdev" && p[1].contains("hostfwd=tcp:127.0.0.1:12345-:")
+                })
+            );
+            let disks = args
+                .windows(2)
+                .filter(|p| p[0] == "-blockdev")
+                .map(|p| serde_json::from_str::<serde_json::Value>(p[1]))
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(disks.len(), 2);
+            assert_eq!(disks[0]["read-only"], true);
+            assert_eq!(disks[0]["file"]["filename"], "tools image.erofs");
+            assert_eq!(disks[1]["driver"], "raw");
+            assert_eq!(disks[1]["read-only"], false);
+            assert_eq!(disks[1]["file"]["filename"], "data,with=options.raw");
+            assert_eq!(disks[1]["file"]["aio"], "io_uring");
+            assert_eq!(disks[1]["file"]["cache"]["direct"], direct);
+            assert_eq!(disks[1]["file"]["cache"]["no-flush"], false);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn raw_disk_device_settings_are_caller_selected() -> anyhow::Result<()> {
+        for (disk, expected) in [
+            (
+                raw_disk("data.raw", false, false),
+                "virtio-blk-pci,drive=petri_file_disk0,bus=storage_rp0,packed=off,queue-size=128,num-queues=2,request-merging=on,disable-legacy=off,logical_block_size=1024,physical_block_size=2048",
+            ),
+            (
+                VirtioBlkFileConfig {
+                    packed: true,
+                    queue_size: 512,
+                    num_queues: 4,
+                    request_merging: false,
+                    disable_legacy: true,
+                    logical_block_size: 4096,
+                    physical_block_size: 4096,
+                    ..raw_disk("data.raw", false, false)
+                },
+                "virtio-blk-pci,drive=petri_file_disk0,bus=storage_rp0,packed=on,queue-size=512,num-queues=4,request-merging=off,disable-legacy=on,logical_block_size=4096,physical_block_size=4096",
+            ),
+        ] {
+            let cmd = build_qemu_command(
+                Path::new("qemu"),
+                &linux_direct_config(MachineArch::Aarch64),
+                &QemuPetriConfig::default().with_virtio_blk_file(disk),
+                12345,
+                &initrd(),
+            )?;
+            let args = cmd.get_args().collect::<Vec<_>>();
+            assert!(
+                args.windows(2)
+                    .any(|p| p[0] == "-device" && p[1] == expected)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kvm_rejects_cross_architecture_guests() {
+        let arch = match MachineArch::host() {
+            MachineArch::X86_64 => MachineArch::Aarch64,
+            MachineArch::Aarch64 => MachineArch::X86_64,
+        };
+        assert!(
+            build_qemu_command(
+                Path::new("qemu"),
+                &linux_direct_config(arch),
+                &QemuPetriConfig::default().with_kvm(),
+                12345,
+                &initrd(),
+            )
+            .is_err()
+        );
     }
 }

@@ -4,6 +4,33 @@
 //! QEMU device configurations.
 // TODO: should some/all of these be backend agnostic?
 
+use std::path::PathBuf;
+
+/// A raw file and its virtio-blk PCI device settings.
+#[derive(Debug, Clone)]
+pub struct VirtioBlkFileConfig {
+    /// Host path to the raw disk image.
+    pub path: PathBuf,
+    /// Whether the disk is read-only.
+    pub read_only: bool,
+    /// Bypass the host page cache.
+    pub direct: bool,
+    /// Advertise packed virtqueues.
+    pub packed: bool,
+    /// Number of descriptors in each virtqueue.
+    pub queue_size: u16,
+    /// Number of request virtqueues.
+    pub num_queues: u16,
+    /// Allow QEMU to merge adjacent requests.
+    pub request_merging: bool,
+    /// Disable the legacy virtio PCI interface.
+    pub disable_legacy: bool,
+    /// Logical sector size in bytes.
+    pub logical_block_size: u32,
+    /// Physical sector size in bytes.
+    pub physical_block_size: u32,
+}
+
 /// A device to add to the platform.
 #[derive(Debug, Clone)]
 pub enum DeviceConfig {

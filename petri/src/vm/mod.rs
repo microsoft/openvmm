@@ -112,6 +112,38 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         with_vtl0_pipette: bool,
         nested_test: Option<NestedTestDeps>,
     ) -> Option<Self> {
+        Self::new_inner(
+            resolver,
+            firmware,
+            arch,
+            with_vtl0_pipette,
+            nested_test,
+            || T::new(resolver, arch),
+        )
+    }
+
+    /// Resolve guest artifacts using a caller-supplied backend, without resolving
+    /// the backend's default executable artifact.
+    pub fn new_with_backend(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+        with_vtl0_pipette: bool,
+        backend: T,
+    ) -> Option<Self> {
+        Self::new_inner(resolver, firmware, arch, with_vtl0_pipette, None, || {
+            backend
+        })
+    }
+
+    fn new_inner(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+        with_vtl0_pipette: bool,
+        nested_test: Option<NestedTestDeps>,
+        backend: impl FnOnce() -> T,
+    ) -> Option<Self> {
         // Cross-OS nesting needs shared artifacts because the host cannot query
         // the nested binary. Windows CI does not yet provision those artifacts.
         // TODO: enable cross-OS nesting on Windows once provisioning is available.
@@ -141,7 +173,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         };
 
         Some(Self {
-            backend: T::new(resolver, arch),
+            backend: backend(),
             arch,
             agent_image: (!firmware.is_isolated_without_paravisor()).then(|| {
                 if with_vtl0_pipette {
