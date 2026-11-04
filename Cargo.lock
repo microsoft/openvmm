@@ -6922,6 +6922,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "sha2",
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
