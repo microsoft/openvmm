@@ -362,6 +362,7 @@ mod tests {
     #[case::first_invalid_wq(0x0100_0000, 0, 0, Err(QueueIdOutOfRange { cq_id: 0, wq_id: 0x0100_0000 }))]
     #[case::last_valid_handle(0, 0, u64::MAX - 1, Ok(()))]
     #[case::invalid_handle_rejected(0, 0, u64::MAX, Err(InvalidWqObjectHandle))]
+    #[test_with_tracing::test]
     fn test_create_wq_response(
         #[case] wq_id: u32,
         #[case] cq_id: u32,
