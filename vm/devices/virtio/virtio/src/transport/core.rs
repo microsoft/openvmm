@@ -44,6 +44,12 @@ pub(crate) struct QueueData {
     pub saved_state: Option<QueueState>,
 }
 
+pub(crate) struct QueueDoorbell {
+    pub address: u64,
+    pub value: Option<u64>,
+    pub length: Option<u32>,
+}
+
 /// Transport-specific operations that the core delegates to PCI or MMIO.
 pub(crate) trait TransportOps: Send {
     /// Create an interrupt for queue `idx`.
@@ -57,9 +63,9 @@ pub(crate) trait TransportOps: Send {
     /// Reset transport-specific interrupt state (clear status, deassert lines).
     fn reset_interrupts(&mut self);
 
-    /// Return the (base_address, entry_size) for doorbell registration,
+    /// Return the notification match for a queue's doorbell registration,
     /// or `None` if the address is not yet known.
-    fn doorbell_region(&mut self) -> Option<(u64, u32)>;
+    fn queue_doorbell(&mut self, index: u16) -> Option<QueueDoorbell>;
 }
 
 /// State shared by both the PCI and MMIO virtio transports.
@@ -168,10 +174,10 @@ impl VirtioTransportCore {
     /// Register doorbells for all queues using the transport's
     /// notification address.
     pub fn install_doorbells(&mut self, ops: &mut dyn TransportOps) {
-        if let Some((base, entry_size)) = ops.doorbell_region() {
-            for (i, qd) in self.queues.iter().enumerate() {
+        for (i, qd) in self.queues.iter().enumerate() {
+            if let Some(doorbell) = ops.queue_doorbell(i as u16) {
                 self.doorbells
-                    .add(base, Some(i as u64), Some(entry_size), &qd.event);
+                    .add(doorbell.address, doorbell.value, doorbell.length, &qd.event);
             }
         }
     }
