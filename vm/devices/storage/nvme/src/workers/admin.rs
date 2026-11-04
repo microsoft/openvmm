@@ -7,6 +7,7 @@ use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
+use crate::BROADCAST_NSID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::MAX_NSID;
 use crate::MAX_QES;
@@ -863,10 +864,20 @@ impl AdminHandler {
                 dw[0] = state.async_event_config;
             }
             spec::Feature::NVM_RESERVATION_PERSISTENCE => {
+                // FFFFFFFFh gets Invalid Field in Command (NVMe Base 2.1
+                // section 5.1.25.1.30), which overrides the Invalid Namespace
+                // or Format section 4.4 gives other namespace-scope features.
+                // Other NSIDs follow Figure 92 and section 3.2.1.5.
+                if command.nsid == BROADCAST_NSID {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 let namespace = self
                     .namespaces
                     .get(&command.nsid)
-                    .ok_or(spec::Status::INVALID_NAMESPACE_OR_FORMAT)?;
+                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?;
 
                 return namespace.get_feature(command).await;
             }
