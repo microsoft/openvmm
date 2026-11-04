@@ -24,6 +24,7 @@ use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
 use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::emuplat::EmuplatServicing;
 use crate::emuplat::cmos_rtc_time_source::UnderhillCmosRtcTimeSourceResolver;
+use crate::emuplat::fallback_mmio_device::FallbackMmioDevice;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
 use crate::emuplat::local_clock::ArcMutexUnderhillLocalClock;
@@ -62,7 +63,6 @@ use crate::vmgs_logger::GetVmgsLogger;
 use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
 use async_trait::async_trait;
-use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
@@ -126,6 +126,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::future;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use thiserror::Error;
@@ -3142,7 +3143,7 @@ async fn new_underhill_vm(
         deps_winbond_super_io_and_floppy_full: None,
     };
 
-    let fallback_mmio_device = if use_mmio_hypercalls {
+    let (fallback_mmio_device, pending_host_mmios) = if use_mmio_hypercalls {
         let mshv_hvcall =
             hcl::ioctl::MshvHvcall::new().context("failed to open mshv_hvcall device")?;
         mshv_hvcall.set_allowed_hypercalls(&[
@@ -3170,12 +3171,17 @@ async fn new_underhill_vm(
                 Some(untrusted_mmio_ranges)
             };
 
-        Some(Arc::new(CloseableMutex::new(FallbackMmioDevice {
-            mmio_ranges: untrusted_mmio_ranges,
-            mshv_hvcall,
-        })) as _)
+        let counter = Arc::new(AtomicUsize::new(0));
+        (
+            Some(Arc::new(CloseableMutex::new(FallbackMmioDevice {
+                mmio_ranges: untrusted_mmio_ranges,
+                mshv_hvcall: Arc::new(mshv_hvcall),
+                pending_mmios: counter.clone(),
+            })) as _),
+            Some(counter),
+        )
     } else {
-        None
+        (None, None)
     };
 
     let BaseChipsetBuilderOutput {
@@ -3942,6 +3948,7 @@ async fn new_underhill_vm(
         crash_notification_recv,
         control_send,
 
+        pending_host_mmios,
         _periodic_telemetry_task: periodic_telemetry_task,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
         mana_keep_alive: env_cfg.mana_keep_alive,
@@ -4346,61 +4353,6 @@ async fn load_firmware(
         .context("failed to set initial registers")?;
 
     Ok(())
-}
-
-// Represents a stub MMIO device that handles unhandled MMIO accesses by
-// forwarding them to the host. It needs to implement the ChipsetDevice and
-// MmioIntercept traits.
-struct FallbackMmioDevice {
-    mmio_ranges: Option<Vec<MemoryRange>>,
-    mshv_hvcall: hcl::ioctl::MshvHvcall,
-}
-
-impl FallbackMmioDevice {
-    fn is_allowed(&self, addr: u64, data_len: usize) -> bool {
-        self.mmio_ranges.as_ref().is_none_or(|v| {
-            v.iter().any(|range| {
-                range.contains_addr(addr) && range.contains_addr(addr + data_len as u64 - 1)
-            })
-        })
-    }
-}
-
-impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
-    fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-        data.fill(!0);
-        if self.is_allowed(addr, data.len()) {
-            if let Err(err) = self.mshv_hvcall.mmio_read(addr, data) {
-                tracelimit::error_ratelimited!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    "failed host MMIO read"
-                );
-            }
-        }
-
-        chipset_device::io::IoResult::Ok
-    }
-
-    fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
-        if self.is_allowed(addr, data.len()) {
-            if let Err(err) = self.mshv_hvcall.mmio_write(addr, data) {
-                tracelimit::error_ratelimited!(
-                    CVM_ALLOWED,
-                    error = &err as &dyn std::error::Error,
-                    "failed host MMIO write"
-                );
-            }
-        }
-
-        chipset_device::io::IoResult::Ok
-    }
-}
-
-impl ChipsetDevice for FallbackMmioDevice {
-    fn supports_mmio(&mut self) -> Option<&mut dyn chipset_device::mmio::MmioIntercept> {
-        Some(self)
-    }
 }
 
 struct WatchdogTimeoutReset {
