@@ -7,7 +7,6 @@ use crate::print_sha256_hash;
 use anyhow::Context;
 use crypto::rsa::RsaKeyPair;
 use crypto::rsa::RsaPrivateKeyComponents;
-use der::Encode;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -33,17 +32,9 @@ pub fn create_random_rsa_key_in_tpm2_import_blob_format(
     private_key_tpm2b_file: &str,
 ) -> anyhow::Result<()> {
     let private_key = RsaKeyPair::generate(2048).context("failed to generate RSA key")?;
-    let public_components = private_key
-        .to_components()
-        .context("failed to export RSA public key components")?;
-    let public_key_der = pkcs1::RsaPublicKey {
-        modulus: der::asn1::UintRef::new(&public_components.modulus)
-            .context("failed to encode RSA modulus")?,
-        public_exponent: der::asn1::UintRef::new(&public_components.public_exponent)
-            .context("failed to encode RSA public exponent")?,
-    }
-    .to_der()
-    .context("failed to encode RSA public key as PKCS#1 DER")?;
+    let public_key_der = private_key
+        .to_pkcs1_der()
+        .context("failed to encode RSA public key as PKCS#1 DER")?;
     let private_components = private_key
         .to_private_components()
         .context("failed to export RSA private key components")?;
@@ -191,7 +182,7 @@ mod tests {
     use crate::vtpm_helper::TPM_TEST_LOCK;
     use crate::vtpm_helper::create_tpm_engine_helper;
     use crypto::rsa::RsaKeyPair;
-    use der::Decode;
+    use crypto::rsa::RsaPublicKey;
     use std::fs;
     use std::io::Write;
     use test_with_tracing::test;
@@ -213,12 +204,14 @@ mod tests {
         .unwrap();
 
         let public_der = fs::read(public_path).unwrap();
-        let public_key = pkcs1::RsaPublicKey::from_der(&public_der).unwrap();
-        assert_eq!(public_key.modulus.as_bytes().len(), 256);
-        assert_eq!(public_key.public_exponent.as_bytes(), &[1, 0, 1]);
+        let public_key = RsaPublicKey::from_pkcs1_der(&public_der)
+            .unwrap()
+            .to_components()
+            .unwrap();
+        assert_eq!(public_key.modulus.len(), 256);
+        assert_eq!(public_key.public_exponent, &[1, 0, 1]);
         let expected_exponent = public_key
             .public_exponent
-            .as_bytes()
             .iter()
             .fold(0u32, |value, &byte| (value << 8) | u32::from(byte));
         let import_blob = fs::read(private_path).unwrap();
@@ -241,7 +234,7 @@ mod tests {
         assert_eq!(public_area.parameters.key_bits.get(), 2048);
         assert_eq!(
             &public_area.unique.buffer[..usize::from(public_area.unique.size.get())],
-            public_key.modulus.as_bytes(),
+            public_key.modulus.as_slice(),
         );
         // TPM wire exponent zero denotes the default RSA exponent, 65537.
         let exponent = match public_area.parameters.exponent.get() {
