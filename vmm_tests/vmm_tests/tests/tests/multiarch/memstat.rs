@@ -18,10 +18,10 @@ use std::time::Duration;
 use vmm_test_macros::vmm_test;
 
 #[repr(u32)]
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum TestVPCount {
-    SmallVPCount,
-    LargeVPCount,
+    SmallVPCount = 2,
+    LargeVPCount = 64,
 }
 
 #[repr(u64)]
@@ -42,24 +42,6 @@ fn get_arch_str(isolation_type: Option<IsolationType>, machine_arch: MachineArch
             MachineArch::X86_64 => "gp-x64",
         })
         .to_string()
-}
-
-fn get_vp_count(
-    vps: &TestVPCount,
-    isolation_type: Option<IsolationType>,
-    machine_arch: MachineArch,
-) -> u32 {
-    match vps {
-        TestVPCount::SmallVPCount => 2,
-        TestVPCount::LargeVPCount => match (isolation_type, machine_arch) {
-            // These tests run on VMs that only have 32 VPs
-            (None | Some(IsolationType::Vbs), MachineArch::X86_64) => 64,
-            // SNP, TDX, and ARM runners have at least 64 VPs
-            (Some(IsolationType::Snp | IsolationType::Tdx), MachineArch::X86_64)
-            | (None, MachineArch::Aarch64) => 64,
-            _ => unreachable!("invalid isolation configuration"),
-        },
-    }
 }
 
 // evaluate validity based on a percent change from the baseline
@@ -149,7 +131,7 @@ async fn idle_test<T: PetriVmmBackend>(
 ) -> anyhow::Result<()> {
     let isolation_type = config.isolation();
     let machine_arch = config.arch();
-    let vp_count = get_vp_count(&vps, isolation_type, machine_arch);
+    let vp_count = vps as u32;
 
     let vm_boot_result = config
         .with_processor_topology({
