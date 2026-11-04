@@ -1546,7 +1546,7 @@ fn validate_completions(
     sq_id: u32,
     rq_id: u32,
 ) -> Result<Option<u32>, CompletionValidationError> {
-    // The checks for duplicate completion direction and send queue ID missmatch
+    // The checks for duplicate completion direction and send queue ID mismatch
     // are warning-only for now. If the tracing shows hits, it may be worth rejecting.
     let same_wq_direction = cqes[0].params.is_send_wq() == cqes[1].params.is_send_wq();
     if same_wq_direction {
