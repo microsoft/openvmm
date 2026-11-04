@@ -46,7 +46,6 @@ mod vc;
 
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
-use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
@@ -171,7 +170,7 @@ fn validate_platform(
     if platform.version != SNP_BOOT_SHIM_PLATFORM_VERSION {
         return Err(PlatformError::UnsupportedVersion);
     }
-    if platform.flags & !SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY != 0 {
+    if platform.flags.reserved() != 0 {
         return Err(PlatformError::UnknownFlags);
     }
     if !platform.c_bit_mask.is_power_of_two() {
@@ -595,7 +594,7 @@ extern "C" fn start(params_gpa: u64) -> ! {
     let Ok(mut map) = efi::build_memory_map(&layout) else {
         terminate(Failure::MemoryMap)
     };
-    let accept_all = platform.flags & SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY != 0;
+    let accept_all = platform.flags.accept_all_memory();
     let result = efi::initial_acceptance(&layout)
         .try_for_each(|(range, ty)| map.accept(range, ty, &mut accept))
         .and_then(|()| {
@@ -658,6 +657,7 @@ fn main() {}
 mod tests {
     use super::*;
     use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
+    use loader_defs::linux::SnpBootShimPlatformFlags;
     use test_with_tracing::test;
     use zerocopy::FromZeros;
 
@@ -893,7 +893,7 @@ mod tests {
             ),
             (
                 SnpBootShimPlatformParams {
-                    flags: 1 << 31,
+                    flags: SnpBootShimPlatformFlags::new().with_reserved(1 << 30),
                     ..valid_platform()
                 },
                 PlatformError::UnknownFlags,

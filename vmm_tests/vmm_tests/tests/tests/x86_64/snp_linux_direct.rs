@@ -31,13 +31,9 @@ async fn boot_with_vps(
             ..Default::default()
         })
         .with_memory(MemoryConfig {
-            // Enough RAM that Linux still has unaccepted memory after boot.
             startup_bytes: 2 * petri::SIZE_1_GB,
             ..Default::default()
         })
-        // The ECAM stays at its default placement above 4 GiB. Linux accepts
-        // it because the shim boots the EFI stub, so the kernel reads the
-        // SMBIOS BIOS date.
         .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;

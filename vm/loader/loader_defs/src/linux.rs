@@ -9,6 +9,7 @@
 #![expect(missing_docs)]
 #![expect(non_camel_case_types)]
 
+use bitfield_struct::bitfield;
 use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -314,15 +315,6 @@ pub const SNP_BOOT_SHIM_HEAP_SIZE: u64 = 1024 * 1024;
 /// The stack that the shim gives to the Linux EFI stub. UEFI spec 2.3.4
 /// requires at least 128 KiB on x64.
 pub const SNP_BOOT_SHIM_EFI_STACK_SIZE: u64 = 256 * 1024;
-/// The lowest address at which the Linux EFI stub places the decompressed
-/// kernel. The stub passes `LOAD_PHYSICAL_ADDR` to `efi_random_alloc`
-/// (`drivers/firmware/efi/libstub/x86-stub.c`). Linux defines it in
-/// `arch/x86/include/asm/page_types.h` from `CONFIG_PHYSICAL_START`, which
-/// defaults to 16 MiB.
-pub const SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS: u64 = 16 << 20;
-/// The shim accepts all RAM before it calls the Linux EFI stub, instead of
-/// reporting the RAM that it does not need as unaccepted.
-pub const SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY: u32 = 1 << 0;
 /// Maximum number of PCIe host bridges supported by the SNP bootshim.
 pub const SNP_BOOT_SHIM_MAX_PCIE_BRIDGES: usize = 8;
 /// Maximum number of CPUs in the host device tree.
@@ -376,6 +368,18 @@ pub struct SnpBootShimParams {
     pub ranges: [SnpBootShimRange; SNP_BOOT_SHIM_MAX_RANGES],
 }
 
+/// Options for the SNP bootshim, set by the image generator.
+#[bitfield(u32)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct SnpBootShimPlatformFlags {
+    /// The shim accepts all RAM before it calls the Linux EFI stub, instead
+    /// of reporting the RAM that it does not need as unaccepted.
+    pub accept_all_memory: bool,
+    /// Must be zero.
+    #[bits(31)]
+    pub reserved: u32,
+}
+
 /// Measured locations and capacities for the shim's work and for the Linux
 /// EFI boot.
 ///
@@ -387,8 +391,7 @@ pub struct SnpBootShimParams {
 pub struct SnpBootShimPlatformParams {
     pub magic: u64,
     pub version: u32,
-    /// `SNP_BOOT_SHIM_PLATFORM_FLAG_*` values.
-    pub flags: u32,
+    pub flags: SnpBootShimPlatformFlags,
     /// The parameter area for the host device tree.
     pub dt_gpa: u64,
     pub dt_size: u64,

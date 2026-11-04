@@ -186,7 +186,7 @@ pub struct EfiScsiDevice {
 /// Minimal layout covering header fields and the pointers needed by
 /// the Linux EFI stub (firmware vendor, configuration table).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable, KnownLayout)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiSystemTable {
     // EFI_TABLE_HEADER (UEFI spec 4.2)
     pub signature: u64,
@@ -210,6 +210,147 @@ pub struct EfiSystemTable {
     pub configuration_table: u64,
 }
 
+/// From UEFI spec 4.2 — EFI_TABLE_HEADER
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiTableHeader {
+    pub signature: u64,
+    pub revision: u32,
+    pub header_size: u32,
+    pub crc32: u32,
+    pub reserved: u32,
+}
+
+const_assert_eq!(size_of::<EfiTableHeader>(), 24);
+
+/// From UEFI spec 4.4 — the number of functions in EFI_BOOT_SERVICES.
+pub const EFI_BOOT_SERVICES_COUNT: usize = 44;
+/// From UEFI spec 4.5 — the number of functions in EFI_RUNTIME_SERVICES.
+pub const EFI_RUNTIME_SERVICES_COUNT: usize = 14;
+
+/// From UEFI spec 4.4 — the index of each function in EFI_BOOT_SERVICES,
+/// after the table header.
+pub mod boot_service_index {
+    pub const RAISE_TPL: usize = 0;
+    pub const RESTORE_TPL: usize = 1;
+    pub const ALLOCATE_PAGES: usize = 2;
+    pub const FREE_PAGES: usize = 3;
+    pub const GET_MEMORY_MAP: usize = 4;
+    pub const ALLOCATE_POOL: usize = 5;
+    pub const FREE_POOL: usize = 6;
+    pub const CREATE_EVENT: usize = 7;
+    pub const SET_TIMER: usize = 8;
+    pub const WAIT_FOR_EVENT: usize = 9;
+    pub const SIGNAL_EVENT: usize = 10;
+    pub const CLOSE_EVENT: usize = 11;
+    pub const CHECK_EVENT: usize = 12;
+    pub const INSTALL_PROTOCOL_INTERFACE: usize = 13;
+    pub const REINSTALL_PROTOCOL_INTERFACE: usize = 14;
+    pub const UNINSTALL_PROTOCOL_INTERFACE: usize = 15;
+    pub const HANDLE_PROTOCOL: usize = 16;
+    pub const RESERVED: usize = 17;
+    pub const REGISTER_PROTOCOL_NOTIFY: usize = 18;
+    pub const LOCATE_HANDLE: usize = 19;
+    pub const LOCATE_DEVICE_PATH: usize = 20;
+    pub const INSTALL_CONFIGURATION_TABLE: usize = 21;
+    pub const LOAD_IMAGE: usize = 22;
+    pub const START_IMAGE: usize = 23;
+    pub const EXIT: usize = 24;
+    pub const UNLOAD_IMAGE: usize = 25;
+    pub const EXIT_BOOT_SERVICES: usize = 26;
+    pub const GET_NEXT_MONOTONIC_COUNT: usize = 27;
+    pub const STALL: usize = 28;
+    pub const SET_WATCHDOG_TIMER: usize = 29;
+    pub const CONNECT_CONTROLLER: usize = 30;
+    pub const DISCONNECT_CONTROLLER: usize = 31;
+    pub const OPEN_PROTOCOL: usize = 32;
+    pub const CLOSE_PROTOCOL: usize = 33;
+    pub const OPEN_PROTOCOL_INFORMATION: usize = 34;
+    pub const PROTOCOLS_PER_HANDLE: usize = 35;
+    pub const LOCATE_HANDLE_BUFFER: usize = 36;
+    pub const LOCATE_PROTOCOL: usize = 37;
+    pub const INSTALL_MULTIPLE_PROTOCOL_INTERFACES: usize = 38;
+    pub const UNINSTALL_MULTIPLE_PROTOCOL_INTERFACES: usize = 39;
+    pub const CALCULATE_CRC32: usize = 40;
+    pub const COPY_MEM: usize = 41;
+    pub const SET_MEM: usize = 42;
+    pub const CREATE_EVENT_EX: usize = 43;
+}
+
+/// From UEFI spec 4.6 — EFI_CONFIGURATION_TABLE
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiConfigurationTable {
+    pub vendor_guid: Guid,
+    pub vendor_table: u64,
+}
+
+const_assert_eq!(size_of::<EfiConfigurationTable>(), 24);
+
+/// From UEFI spec 9.1 — EFI_LOADED_IMAGE_PROTOCOL
+#[repr(C)]
+#[derive(Clone, Copy, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiLoadedImageProtocol {
+    pub revision: u32,
+    pub _pad0: u32,
+    pub parent_handle: u64,
+    pub system_table: u64,
+    pub device_handle: u64,
+    pub file_path: u64,
+    pub reserved: u64,
+    pub load_options_size: u32,
+    pub _pad1: u32,
+    pub load_options: u64,
+    pub image_base: u64,
+    pub image_size: u64,
+    pub image_code_type: EfiMemoryType,
+    pub image_data_type: EfiMemoryType,
+    pub unload: u64,
+}
+
+const_assert_eq!(size_of::<EfiLoadedImageProtocol>(), 96);
+
+/// From UEFI spec 9.1 — EFI_LOADED_IMAGE_PROTOCOL_REVISION
+pub const EFI_LOADED_IMAGE_PROTOCOL_REVISION: u32 = 0x1000;
+
+/// From UEFI spec 12.4 — EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiSimpleTextOutputProtocol {
+    pub reset: u64,
+    pub output_string: u64,
+    pub test_string: u64,
+    pub query_mode: u64,
+    pub set_mode: u64,
+    pub set_attribute: u64,
+    pub clear_screen: u64,
+    pub set_cursor_position: u64,
+    pub enable_cursor: u64,
+    pub mode: u64,
+}
+
+/// From UEFI spec 12.4 — SIMPLE_TEXT_OUTPUT_MODE
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiSimpleTextOutputMode {
+    pub max_mode: i32,
+    pub mode: i32,
+    pub attribute: i32,
+    pub cursor_column: i32,
+    pub cursor_row: i32,
+    pub cursor_visible: u8,
+    pub _pad: [u8; 3],
+}
+
+/// From UEFI spec 12.3 — EFI_SIMPLE_TEXT_INPUT_PROTOCOL
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiSimpleTextInputProtocol {
+    pub reset: u64,
+    pub read_key_stroke: u64,
+    pub wait_for_key: u64,
+}
+
 /// From UEFI spec 4.6
 pub const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453595320494249; // "IBI SYST"
 /// EFI 2.70 system table revision.
@@ -220,8 +361,6 @@ pub const EFI_BOOT_SERVICES_SIGNATURE: u64 = 0x56524553544f4f42; // "BOOTSERV"
 pub const EFI_RUNTIME_SERVICES_SIGNATURE: u64 = 0x56524553544e5552; // "RUNTSERV"
 /// From UEFI spec 7.1 — the task priority level of applications.
 pub const TPL_APPLICATION: usize = 4;
-/// From UEFI spec 9.1 — EFI_LOADED_IMAGE_PROTOCOL_REVISION
-pub const EFI_LOADED_IMAGE_PROTOCOL_REVISION: u32 = 0x1000;
 /// From UEFI spec 7.2 — the size of a page in AllocatePages and the memory
 /// map.
 pub const EFI_PAGE_SIZE: u64 = 0x1000;
@@ -304,7 +443,7 @@ const_assert_eq!(size_of::<LinuxEfiMemreserve>(), 16);
 /// services are supported. Setting `runtime_services_supported` to zero
 /// means no runtime services are backed by real code.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, IntoBytes, Immutable, KnownLayout)]
+#[derive(Clone, Copy, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct EfiRtPropertiesTable {
     pub version: u16,
     pub length: u16,
