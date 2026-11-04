@@ -258,9 +258,7 @@ impl<T: Copy, U: Copy, const N: usize> HeaderVec<T, U, N> {
 
     /// Extends the tail elements from the given slice.
     pub fn extend_tail_from_slice(&mut self, other: &[U]) {
-        // SAFETY: `[MaybeUninit<U>]` and `[U]` have the same layout.
-        let other = unsafe { core::mem::transmute::<&[U], &[MaybeUninit<U>]>(other) };
-        self.extend_tail(other.len()).copy_from_slice(other);
+        self.extend_tail(other.len()).write_copy_of_slice(other);
         self.len += other.len();
     }
 
@@ -368,7 +366,10 @@ mod tests {
         // Extend from slice
         {
             let mut v: HeaderVec<T, U, N> = HeaderVec::new(head);
+            v.extend_tail_from_slice(&[]);
+            assert!(v.tail.is_empty());
             v.extend_tail_from_slice(&vals);
+            v.extend_tail_from_slice(&[]);
             assert_eq!(v.head, head);
             assert_eq!(&v.tail, vals.as_slice());
         }

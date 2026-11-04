@@ -4858,6 +4858,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -7754,6 +7755,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
