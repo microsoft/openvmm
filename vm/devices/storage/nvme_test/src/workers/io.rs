@@ -40,7 +40,6 @@ use thiserror::Error;
 use unicycle::FuturesUnordered;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
-use zerocopy::FromZeros;
 
 #[derive(Inspect)]
 pub struct IoHandler {
@@ -308,11 +307,7 @@ impl IoHandler {
                         }
                         _ => spec::Status::INVALID_FIELD_IN_COMMAND,
                     };
-                    (
-                        cid,
-                        NvmeError::do_not_retry(status).into(),
-                        Command::new_zeroed(),
-                    )
+                    (cid, NvmeError::do_not_retry(status).into(), command)
                 }
             };
 
