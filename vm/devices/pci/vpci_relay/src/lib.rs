@@ -65,6 +65,7 @@ use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
+use vpci_protocol::ProtocolVersion;
 
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
@@ -427,6 +428,13 @@ impl VpciRelay {
                 .expect("failed to exercise TDISP flow test");
 
             // Do not mark tdisp_capable = true because the test is already done.
+        } else if vpci_client.protocol_version() < ProtocolVersion::RB {
+            // TDISP support only exists from RB onward.
+            tracing::info!(
+                %instance_id,
+                protocol_version = ?vpci_client.protocol_version(),
+                "TDISP not supported: host negotiated a VPCI protocol older than RB"
+            );
         } else {
             // Probe TDISP capability without attesting.
             match vpci_device.tdisp().query_capabilities().await {
