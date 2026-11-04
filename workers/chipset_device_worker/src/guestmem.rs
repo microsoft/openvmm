@@ -13,8 +13,12 @@ use guestmem::GuestMemoryBackingError;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use parking_lot::Mutex;
+use std::future::poll_fn;
 use std::ptr::NonNull;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::StopTask;
 
 /// Requests sent to the parent process for guest memory access.
 #[derive(MeshPayload)]
@@ -41,6 +45,24 @@ pub struct GuestMemoryProxy {
     gm: GuestMemory,
     req_recv: mesh::Receiver<GuestMemoryRequest>,
     resp_send: mesh::Sender<GuestMemoryResponse>,
+}
+
+pub(crate) struct GuestMemoryTask;
+
+impl AsyncRun<[GuestMemoryProxy; 2]> for GuestMemoryTask {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        proxies: &mut [GuestMemoryProxy; 2],
+    ) -> Result<(), Cancelled> {
+        stop.until_stopped(poll_fn(|cx| {
+            for proxy in proxies.iter_mut() {
+                proxy.poll(cx);
+            }
+            Poll::Pending
+        }))
+        .await
+    }
 }
 
 #[derive(MeshPayload)]
