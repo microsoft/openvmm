@@ -2150,16 +2150,12 @@ impl InitializedVm {
                 })?;
         }
 
-        // Add the GIC.
+        // Fixed platform wires exist even when their devices are absent.
         #[cfg(guest_arch = "aarch64")]
-        chipset_builder.add_external_line_target(
-            IRQ_LINE_SET,
-            0..=vmm_core::emuplat::gic::SPI_RANGE.end() - vmm_core::emuplat::gic::SPI_RANGE.start(),
-            *vmm_core::emuplat::gic::SPI_RANGE.start(),
-            "gic",
-            Arc::new(vmm_core::emuplat::gic::GicInterruptTarget::new(
-                partition.clone().control_gic(Vtl::Vtl0),
-            )),
+        vmm_core::emuplat::gic::add_gic_line_target(
+            &chipset_builder,
+            partition.control_gic(Vtl::Vtl0),
+            vmm_core::emuplat::gic::PLATFORM_LINE_SPI_RANGE,
         );
 
         // Add the x86 BSP's LINTs for the PIC to use.
@@ -2595,6 +2591,7 @@ impl InitializedVm {
                     resolved,
                     &mut pcie_host_bridges,
                     &chipset_builder,
+                    partition.control_gic(Vtl::Vtl0),
                     &gm,
                     acpi_available,
                 )?,

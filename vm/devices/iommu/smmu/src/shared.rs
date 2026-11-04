@@ -889,10 +889,8 @@ impl SmmuSharedState {
         qs.gerrorn = registers::Gerror::from(gerrorn);
         self.update_gerror_irq(&qs);
         // Sync EVTQ wired interrupt line to match restored queue state.
-        if qs.evtq_irqen {
-            if let Some(irq) = &self.evtq_irq {
-                irq.set_level(!evtq_indices_equal(&qs));
-            }
+        if let Some(irq) = &self.evtq_irq {
+            irq.set_level(qs.evtq_irqen && !evtq_indices_equal(&qs));
         }
     }
 

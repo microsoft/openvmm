@@ -288,11 +288,11 @@ impl Pic {
         }
     }
 
-    /// Resets the PIC state, preserving the line state. If `during_icw1`,
-    /// preserve ELCR.
+    /// Resets the PIC state. Guest ICW1 preserves live inputs and ELCR;
+    /// VM reset clears inputs for reconstruction at line-set start.
     fn reset(&mut self, during_icw1: bool) {
         *self = Self {
-            lines: self.lines,
+            lines: if during_icw1 { self.lines } else { 0 },
             elcr: if during_icw1 { self.elcr } else { 0 },
             ..Self::new(self.primary)
         };

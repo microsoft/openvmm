@@ -1226,6 +1226,62 @@ mod tests {
         serial.write(register.0.into(), &[value]).unwrap();
     }
 
+    #[test]
+    fn restore_publishes_interrupt_before_polling() {
+        use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+
+        let mut pool = pal_async::DefaultPool::new();
+        for (ier, out2, high) in [(0, true, false), (2, true, true), (2, false, false)] {
+            let new_serial = |line| {
+                Serial16550::new(
+                    "com1".into(),
+                    MmioOrIoPort::IoPort(0x3f8),
+                    1,
+                    line,
+                    Box::new(MockBackend::new().0),
+                    false,
+                    None,
+                )
+                .unwrap()
+            };
+            let mut source = new_serial(LineInterrupt::detached());
+            write_reg(&mut source, Register::IER, ier);
+            write_reg(&mut source, Register::MCR, if out2 { 8 } else { 0 });
+            let saved = SavedStateBlob::new(source.save().unwrap());
+
+            for reset in [false, true] {
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut serial =
+                    new_serial(LineInterrupt::new_with_target("uart", target.clone(), 0));
+                if reset {
+                    write_reg(&mut serial, Register::IER, 2);
+                    write_reg(&mut serial, Register::MCR, 8);
+                    assert_eq!(target.last_level(0), Some(true));
+                    target.clear();
+                    pool.run_until(serial.reset());
+                    assert_eq!(target.last_level(0), Some(false));
+                }
+                target.clear();
+                serial.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(
+                    target.last_level(0),
+                    Some(high),
+                    "IER={ier}, OUT2={out2}, reset={reset}"
+                );
+                if ier != 0 && !out2 {
+                    write_reg(&mut serial, Register::MCR, 8);
+                    assert_eq!(
+                        target.last_level(0),
+                        Some(true),
+                        "masked pending interrupt must survive"
+                    );
+                }
+            }
+        }
+    }
+
     fn new_throttle_serial(driver: DefaultDriver, backend: MockBackend) -> Serial16550 {
         Serial16550::new(
             "com1".to_string(),

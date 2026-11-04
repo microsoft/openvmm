@@ -2231,3 +2231,58 @@ mod save_restore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chipset_device::pio::ExternallyManagedPortIoIntercepts;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmcore::isa_dma_channel::FloatingDmaChannel;
+    use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    #[async_test]
+    async fn restore_publishes_interrupt_before_polling() {
+        let new_device = |line| {
+            FloppyDiskController::new(
+                GuestMemory::empty(),
+                line,
+                &mut ExternallyManagedPortIoIntercepts,
+                0x3f0,
+                DriveRibbon::None,
+                Box::new(FloatingDmaChannel),
+            )
+            .unwrap()
+        };
+        for pending in [false, true] {
+            let mut source = new_device(LineInterrupt::detached());
+            if pending {
+                source.raise_interrupt(true);
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut dev =
+                    new_device(LineInterrupt::new_with_target("floppy", target.clone(), 0));
+                if reset {
+                    dev.raise_interrupt(true);
+                    target.clear();
+                    ChangeDeviceState::reset(&mut dev).await;
+                    assert_eq!(target.last_level(0), Some(false));
+                }
+                target.clear();
+                dev.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(target.last_level(0), Some(pending));
+                dev.lower_interrupt();
+                assert_eq!(target.last_level(0), Some(false));
+                dev.raise_interrupt(true);
+                assert_eq!(target.last_level(0), Some(true));
+                target.clear();
+                ChangeDeviceState::reset(&mut dev).await;
+                assert_eq!(target.last_level(0), Some(false));
+            }
+        }
+    }
+}

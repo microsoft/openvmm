@@ -42,6 +42,12 @@ do not require a reset, since no unit state has been restored.
 Saving restored state before starting the VM is supported; restoring that
 snapshot still requires a fresh or reset destination.
 
+For devices with interrupt outputs, restore must establish each output before
+the VM starts, without processing new work. Producers save the state determining
+their outputs; targets save the history needed to recognize interrupts. See
+[Line interrupts](../../reference/architecture/devices/line-interrupts.md)
+for ownership, lifecycle ordering, and pulse behavior.
+
 ### Synchronous and asynchronous implementations
 
 New code should implement `vmcore::save_restore::AsyncSaveRestore`, even if it

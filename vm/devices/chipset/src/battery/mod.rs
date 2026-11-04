@@ -398,7 +398,63 @@ mod save_restore {
 mod tests {
     use super::*;
     use futures::task::Context;
+    use test_with_tracing::test;
     use vmcore::line_interrupt::LineInterrupt;
+
+    #[test]
+    fn restore_publishes_notification_before_polling() {
+        use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateBlob;
+
+        let mut pool = pal_async::DefaultPool::new();
+        for pending in [false, true] {
+            let (mut source, tx) = create_test_platform();
+            send_update(&mut source, HostBatteryUpdate::default(), &tx);
+            if !pending {
+                source.write_register(
+                    RegisterOffset::BATTERY_ACPI_NOTIFY_CLEAR,
+                    ACPI_DEVICE_NOTIFY_VALID_BITS,
+                );
+            }
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let target = RecordingLineInterruptTarget::new_arc();
+                let (tx, rx) = mesh::channel();
+                let mut battery = BatteryDevice::new(
+                    BatteryRuntimeDeps {
+                        battery_status_recv: rx,
+                        notify_interrupt: LineInterrupt::new_with_target(
+                            "battery",
+                            target.clone(),
+                            0,
+                        ),
+                    },
+                    BATTERY_MMIO_REGION_BASE_ADDRESS_X64,
+                );
+                if reset {
+                    target.clear();
+                    pool.run_until(battery.reset());
+                    assert_eq!(target.last_level(0), Some(false));
+                }
+                // A queued update must not be consumed by restore.
+                tx.send(HostBatteryUpdate::default());
+                target.clear();
+                battery.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(target.last_level(0), Some(pending));
+                battery.write_register(
+                    RegisterOffset::BATTERY_ACPI_NOTIFY_CLEAR,
+                    ACPI_DEVICE_NOTIFY_VALID_BITS,
+                );
+                assert_eq!(target.last_level(0), Some(false));
+                battery.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
+                assert_eq!(target.last_level(0), Some(true));
+                target.clear();
+                pool.run_until(battery.reset());
+                assert_eq!(target.last_level(0), Some(false));
+            }
+        }
+    }
 
     fn create_test_platform() -> (BatteryDevice, mesh::Sender<HostBatteryUpdate>) {
         let (tx, rx) = mesh::channel::<HostBatteryUpdate>();

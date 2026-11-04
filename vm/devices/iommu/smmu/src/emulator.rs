@@ -3524,6 +3524,68 @@ mod tests {
         assert!(!target.is_high(0) && !target.is_high(1));
     }
 
+    #[pal_async::async_test]
+    async fn restore_publishes_wired_interrupts_before_processing() {
+        use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+        use vmcore::save_restore::SavedStateBlob;
+
+        for (pending, enabled) in [(false, true), (true, true), (true, false)] {
+            let mut source = make_evtq_test_device();
+            if pending {
+                source
+                    .shared_state
+                    .write_event(EvtEntry::translation_fault(1, 0x2000, false));
+                source.shared_state.toggle_cmdq_err();
+            }
+            write32(
+                &mut source,
+                IRQ_CTRL,
+                IrqCtrl::new()
+                    .with_eventq_irqen(enabled)
+                    .with_gerror_irqen(enabled)
+                    .into(),
+            );
+            let saved = SavedStateBlob::new(source.save().unwrap());
+            for reset in [false, true] {
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut dev = SmmuDevice::new(
+                    TEST_MMIO_BASE,
+                    source.guest_memory.clone(),
+                    &test_config(),
+                    Some(LineInterrupt::new_with_target("EVTQ", target.clone(), 0)),
+                    Some(LineInterrupt::new_with_target("GERROR", target.clone(), 1)),
+                );
+                if reset {
+                    target.clear();
+                    dev.reset().await;
+                    assert_eq!(target.last_level(0), Some(false));
+                    assert_eq!(target.last_level(1), Some(false));
+                }
+                target.clear();
+                dev.restore(saved.parse().unwrap()).unwrap();
+                assert_eq!(
+                    target.last_level(0),
+                    Some(pending && enabled),
+                    "EVTQ, reset={reset}"
+                );
+                assert_eq!(
+                    target.last_level(1),
+                    Some(pending && enabled),
+                    "GERROR, reset={reset}"
+                );
+                assert_eq!(
+                    read32_page1(&mut dev, EVENTQ_PROD_PAGE1),
+                    u32::from(pending)
+                );
+                write32_page1(&mut dev, EVENTQ_CONS_PAGE1, u32::from(pending));
+                let error = read32(&mut dev, GERROR);
+                write32(&mut dev, GERRORN, error);
+                assert_eq!(target.last_level(0), Some(false));
+                assert_eq!(target.last_level(1), Some(false));
+            }
+        }
+    }
+
     #[test]
     fn test_evtq_write_and_read() {
         let mut dev = make_evtq_test_device();

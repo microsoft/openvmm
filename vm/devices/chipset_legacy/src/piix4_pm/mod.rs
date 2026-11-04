@@ -318,6 +318,10 @@ impl PortIoIntercept for Piix4Pm {
 /// manual, section 7.2. The PIIX4 manual calls this register the "General
 /// Purpose Status Register"
 impl LineInterruptTarget for Piix4Pm {
+    fn replay_irq(&mut self, vector: u32, high: bool) {
+        self.inner.replay_irq(vector, high)
+    }
+
     fn set_irq(&mut self, vector: u32, high: bool) {
         LineInterruptTarget::set_irq(&mut self.inner, vector, high)
     }

@@ -307,7 +307,7 @@ impl Rtc {
         initial_cmos: Option<[u8; 256]>,
         enlightened_interrupts: bool,
     ) -> Self {
-        Rtc {
+        let rtc = Rtc {
             century_reg: CmosReg(century_reg_idx),
             initial_cmos,
             enlightened_interrupts,
@@ -321,7 +321,9 @@ impl Rtc {
             last_update_bit_blip: LocalClockTime::from_millis_since_unix_epoch(0),
 
             state: RtcState::new(initial_cmos),
-        }
+        };
+        rtc.sync_interrupt_line_level();
+        rtc
     }
 
     /// (for use by wrapper devices) reference to the raw underlying CMOS data

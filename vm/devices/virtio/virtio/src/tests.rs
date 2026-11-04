@@ -4711,6 +4711,146 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 // ==================== Save/Restore Tests ====================
 
 #[async_test]
+async fn mmio_restore_publishes_interrupt_before_start(driver: DefaultDriver) {
+    use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let new_device = |line| {
+        VirtioMmioDevice::new(
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+            &driver,
+            GuestMemory::empty(),
+            line,
+            None,
+            0,
+            0x1000,
+        )
+        .unwrap()
+    };
+    for status in [0, 1, 2, 3] {
+        let mut source = new_device(LineInterrupt::detached());
+        let mut state = source.save().unwrap();
+        // Queue-used and configuration-change status are independently saved.
+        state.interrupt_status = status;
+        let saved = SavedStateBlob::new(state);
+        for reset in [false, true] {
+            let target = RecordingLineInterruptTarget::new_arc();
+            let mut dev = new_device(LineInterrupt::new_with_target("virtio", target.clone(), 0));
+            if reset {
+                target.clear();
+                dev.reset().await;
+                assert_eq!(target.last_level(0), Some(false));
+            }
+            target.clear();
+            dev.restore(saved.parse().unwrap()).unwrap();
+            assert_eq!(target.last_level(0), Some(status != 0));
+            target.clear();
+            dev.reset().await;
+            assert_eq!(
+                target.last_level(0),
+                Some(false),
+                "reset must discard a pending interrupt"
+            );
+            target.clear();
+            dev.restore(saved.parse().unwrap()).unwrap();
+            assert_eq!(target.last_level(0), Some(status != 0));
+            dev.write_u32(0x64, 1);
+            assert_eq!(target.last_level(0), Some(status & 2 != 0));
+            dev.write_u32(0x64, 2);
+            assert_eq!(target.last_level(0), Some(false));
+        }
+    }
+}
+
+#[async_test]
+async fn pci_restore_publishes_intx_before_start(driver: DefaultDriver) {
+    use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
+    use vmcore::save_restore::AsyncSaveRestore;
+    use vmcore::save_restore::SavedStateBlob;
+
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let new_device = |line| {
+        VirtioPciDevice::new(
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+            &driver,
+            GuestMemory::empty(),
+            PciInterruptModel::IntX(pci_core::PciInterruptPin::IntA, line),
+            None,
+            &mut ExternallyManagedMmioIntercepts,
+            None,
+        )
+        .unwrap()
+    };
+    for status in [0, 1, 2, 3] {
+        for masked in [false, true] {
+            let mut source = new_device(LineInterrupt::detached());
+            source
+                .pci_cfg_write(
+                    4,
+                    ByteEnabledDwordWrite::new(
+                        cfg_space::Command::new()
+                            .with_intx_disable(masked)
+                            .into_bits()
+                            .into(),
+                        PciConfigByteEnable::LOW_WORD,
+                    ),
+                )
+                .unwrap();
+            let mut state = source.save().await.unwrap();
+            state.interrupt_status = status;
+            let saved = SavedStateBlob::new(state);
+            for reset in [false, true] {
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut dev = new_device(LineInterrupt::new_with_target(
+                    "virtio INTx",
+                    target.clone(),
+                    0,
+                ));
+                if reset {
+                    target.clear();
+                    dev.reset().await;
+                    assert_eq!(target.last_level(0), Some(false));
+                }
+                target.clear();
+                dev.restore(saved.parse().unwrap()).await.unwrap();
+                assert_eq!(target.last_level(0), Some(status != 0 && !masked));
+                dev.pci_cfg_write(
+                    4,
+                    ByteEnabledDwordWrite::new(0, PciConfigByteEnable::LOW_WORD),
+                )
+                .unwrap();
+                assert_eq!(
+                    target.last_level(0),
+                    Some(status != 0),
+                    "masked pending INTx must survive"
+                );
+                target.clear();
+                dev.reset().await;
+                assert_eq!(target.last_level(0), Some(false));
+            }
+        }
+    }
+}
+
+#[async_test]
 async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::save_restore::AsyncSaveRestore;

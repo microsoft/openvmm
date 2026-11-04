@@ -69,6 +69,7 @@ impl GenerationId {
         // Just reset the pointer, not the ID. Since this is not a "time travel"
         // event, there is no need to change the ID.
         self.ptr = [None; 2];
+        self.rt.notify_interrupt.set_level(false);
     }
 
     /// Update the low bits of the generation id pointer.
@@ -171,6 +172,7 @@ mod save_restore {
 
             self.id = id;
             self.ptr = ptr;
+            self.rt.notify_interrupt.set_level(false);
             Ok(())
         }
     }
