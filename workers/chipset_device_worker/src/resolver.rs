@@ -4,7 +4,6 @@
 //! The resolver for remote chipset devices.
 
 use crate::RemoteDynamicResolvers;
-use crate::guestmem::GuestMemoryProxy;
 use crate::guestmem::GuestMemoryTask;
 use crate::proxy::ChipsetDeviceProxy;
 use crate::worker::RemoteChipsetDeviceHandleParams;
@@ -60,11 +59,11 @@ impl<T: RemoteDynamicResolvers>
         let (resp_send, resp_recv) = mesh::channel();
         let (cap_send, cap_recv) = mesh::oneshot();
 
-        let (gm_proxy, gm_remote) = GuestMemoryProxy::new(input.guest_memory.clone());
-        let (enc_gm_proxy, enc_gm_remote) =
-            GuestMemoryProxy::new(input.encrypted_guest_memory.clone());
-
-        let mut guest_memory = TaskControl::new(GuestMemoryTask::new(gm_proxy, enc_gm_proxy));
+        let (memory_task, gm_remote, enc_gm_remote) = GuestMemoryTask::new(
+            input.guest_memory.clone(),
+            input.encrypted_guest_memory.clone(),
+        );
+        let mut guest_memory = TaskControl::new(memory_task);
         guest_memory.insert(
             input.task_driver_source.simple(),
             "chipset-guest-memory",

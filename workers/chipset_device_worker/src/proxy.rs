@@ -307,7 +307,6 @@ impl AsyncProtobufSaveRestore for ChipsetDeviceProxy {
 mod tests {
     use super::ChipsetDeviceProxy;
     use crate::RemoteDynamicResolvers;
-    use crate::guestmem::GuestMemoryProxy;
     use crate::guestmem::GuestMemoryTask;
     use crate::protocol::DeviceInit;
     use crate::worker::RemoteChipsetDeviceHandleParams;
@@ -471,9 +470,9 @@ mod tests {
         let (req_send, req_recv) = mesh::channel();
         let (resp_send, resp_recv) = mesh::channel();
         let (cap_send, cap_recv) = mesh::oneshot();
-        let (gm_proxy, gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
-        let (enc_gm_proxy, enc_gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
-        let mut guest_memory = TaskControl::new(GuestMemoryTask::new(gm_proxy, enc_gm_proxy));
+        let (memory_task, gm_remote, enc_gm_remote) =
+            GuestMemoryTask::new(GuestMemory::allocate(4096), GuestMemory::allocate(4096));
+        let mut guest_memory = TaskControl::new(memory_task);
         guest_memory.insert(driver, "test-guest-memory", ());
         guest_memory.start();
         let worker = mesh_worker::launch_local_worker::<RemoteChipsetDeviceWorker<TestResolvers>>(
