@@ -169,6 +169,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
         stop: &mut StopTask<'_>,
         state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
             // Set once the queue can no longer produce work, because the guest
             // violated the queue protocol. Fetching stops, but in-flight IOs
@@ -177,6 +178,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
             let mut queue_done = false;
 
             while !(queue_done && self.ios.is_empty()) {
+                check.check()?;
                 enum Event {
                     NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
                     Completed(IoCompletion),
@@ -222,8 +224,9 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                     }
                 }
             }
+            Ok(())
         })
-        .await
+        .await?
     }
 }
 

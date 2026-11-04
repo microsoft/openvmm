@@ -95,34 +95,31 @@ impl<M: RingMem> IcPipe<M> {
                 Ok(None)
             }
             NegotiateState::WaitVersion => {
-                let versions = loop {
-                    let (message_type, _status, buf) = self.read_message().await?;
-                    // A response to a request issued before the channel was
-                    // reset (e.g. across save/restore) may still be in flight.
-                    // There is no one left to receive it, so drop it.
-                    if message_type != MessageType::VERSION_NEGOTIATION {
-                        tracelimit::warn_ratelimited!(
-                            ?message_type,
-                            "dropping unexpected message while negotiating versions"
-                        );
-                        continue;
-                    }
-                    let (message, rest) =
-                        hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
-                            .ok()
-                            .context("missing negotiate message")?;
-                    if message.framework_version_count != 1 || message.message_version_count != 1 {
-                        anyhow::bail!("no supported versions");
-                    }
-                    let ([framework_version, message_version], _) =
-                        <[Version; 2]>::read_from_prefix(rest)
-                            .ok()
-                            .context("missing version table")?;
+                let (message_type, _status, buf) = self.read_message().await?;
+                // A response to a request issued before the channel was
+                // reset (e.g. across save/restore) may still be in flight.
+                // There is no one left to receive it, so drop it.
+                if message_type != MessageType::VERSION_NEGOTIATION {
+                    tracelimit::warn_ratelimited!(
+                        ?message_type,
+                        "dropping unexpected message while negotiating versions"
+                    );
+                    return Ok(None);
+                }
+                let (message, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf)
+                    .ok()
+                    .context("missing negotiate message")?;
+                if message.framework_version_count != 1 || message.message_version_count != 1 {
+                    anyhow::bail!("no supported versions");
+                }
+                let ([framework_version, message_version], _) =
+                    <[Version; 2]>::read_from_prefix(rest)
+                        .ok()
+                        .context("missing version table")?;
 
-                    break Versions {
-                        framework_version,
-                        message_version,
-                    };
+                let versions = Versions {
+                    framework_version,
+                    message_version,
                 };
 
                 *state = NegotiateState::Invalid;
@@ -285,6 +282,15 @@ mod tests {
             .await
             .unwrap();
         guest.send(&version_response()).await.unwrap();
+        for _ in 0..2 {
+            assert!(
+                pipe.negotiate(&mut state, TEST_MESSAGE_VERSIONS)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(matches!(state, NegotiateState::WaitVersion));
+        }
         let versions = pipe
             .negotiate(&mut state, TEST_MESSAGE_VERSIONS)
             .await

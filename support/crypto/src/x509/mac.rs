@@ -19,6 +19,7 @@ use der::Decode;
 use der::Encode;
 use std::ptr;
 use x509_cert::Certificate;
+use x509_cert::ext::pkix::AuthorityKeyIdentifier;
 
 type SecCertificateRef = CFTypeRef;
 
@@ -67,6 +68,11 @@ pub struct X509CertificateInner {
 
 impl X509CertificateInner {
     pub fn from_der(data: &[u8]) -> Result<Self, X509Error> {
+        use der::Reader;
+
+        let data = der::SliceReader::new(data)
+            .and_then(|mut reader| reader.tlv_bytes())
+            .map_err(|e| der_err(e, "reading the DER certificate prefix"))?;
         let parsed =
             Certificate::from_der(data).map_err(|e| der_err(e, "parsing the DER certificate"))?;
         let cf = cf_data(data, "creating a CFData for the certificate").map_err(err)?;
@@ -198,6 +204,41 @@ impl X509CertificateInner {
 
     pub fn issuer_dn(&self) -> Result<String, X509Error> {
         Ok(self.parsed.tbs_certificate().issuer().to_string())
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        Ok(self
+            .parsed
+            .tbs_certificate()
+            .issuer()
+            .common_name()
+            .map_err(|e| der_err(e, "reading the issuer common name"))?
+            .map(|name| name.value().into_owned()))
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        let tbs = self.parsed.tbs_certificate();
+        let validity = tbs.validity();
+        let time = |time: x509_cert::time::Time| {
+            jiff::tz::Offset::UTC
+                .to_datetime(jiff::Timestamp::UNIX_EPOCH)
+                .checked_add(time.to_unix_duration())
+        };
+        Ok((time(validity.not_before)?, time(validity.not_after)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        let Some((_, aki)) = self
+            .parsed
+            .tbs_certificate()
+            .get_extension::<AuthorityKeyIdentifier>()
+            .map_err(|e| der_err(e, "reading authority key identifier"))?
+        else {
+            return Ok(None);
+        };
+        Ok(aki.key_identifier.map(|id| id.as_bytes().to_vec()))
     }
 
     pub fn serial_number(&self) -> Result<Vec<u8>, X509Error> {

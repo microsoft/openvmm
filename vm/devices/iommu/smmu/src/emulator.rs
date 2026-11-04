@@ -3487,6 +3487,43 @@ mod tests {
         dev
     }
 
+    #[pal_async::async_test]
+    async fn reset_deasserts_wired_interrupts() {
+        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+
+        let target = TestLineInterruptTarget::new_arc();
+        let mut dev = SmmuDevice::new(
+            TEST_MMIO_BASE,
+            GuestMemory::allocate(0x4_0000),
+            &test_config(),
+            Some(LineInterrupt::new_with_target("EVTQ", target.clone(), 0)),
+            Some(LineInterrupt::new_with_target("GERROR", target.clone(), 1)),
+        );
+        write64(
+            &mut dev,
+            EVENTQ_BASE,
+            QueueBase::new()
+                .with_log2size(TEST_EVTQ_LOG2SIZE)
+                .with_addr_bits(TEST_EVTQ_GPA >> 5)
+                .into(),
+        );
+        write32(&mut dev, CR0, Cr0::new().with_eventqen(true).into());
+        write32(
+            &mut dev,
+            IRQ_CTRL,
+            IrqCtrl::new()
+                .with_eventq_irqen(true)
+                .with_gerror_irqen(true)
+                .into(),
+        );
+        dev.shared_state
+            .write_event(EvtEntry::translation_fault(1, 0x2000, false));
+        dev.shared_state.toggle_cmdq_err();
+        assert!(target.is_high(0) && target.is_high(1));
+        dev.reset().await;
+        assert!(!target.is_high(0) && !target.is_high(1));
+    }
+
     #[test]
     fn test_evtq_write_and_read() {
         let mut dev = make_evtq_test_device();

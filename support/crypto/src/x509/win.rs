@@ -390,6 +390,50 @@ impl X509CertificateInner {
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.common_name(0)
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.common_name(windows::Win32::Security::Cryptography::CERT_NAME_ISSUER_FLAG)
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        fn time(
+            value: windows::Win32::Foundation::FILETIME,
+        ) -> Result<jiff::civil::DateTime, jiff::Error> {
+            const FILETIME_EPOCH: jiff::civil::DateTime =
+                jiff::civil::date(1601, 1, 1).at(0, 0, 0, 0);
+            const TICKS_PER_DAY: u64 = 864_000_000_000;
+            const NANOS_PER_FILETIME_TICK: u64 = 100;
+
+            let ticks =
+                (u64::from(value.dwHighDateTime) << u32::BITS) | u64::from(value.dwLowDateTime);
+            let days = jiff::Span::new().try_days((ticks / TICKS_PER_DAY) as i64)?;
+            let remainder =
+                std::time::Duration::from_nanos((ticks % TICKS_PER_DAY) * NANOS_PER_FILETIME_TICK);
+            FILETIME_EPOCH.checked_add(days)?.checked_add(remainder)
+        }
+        let info = self.0.cert_info();
+        Ok((time(info.NotBefore)?, time(info.NotAfter)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        let info = self.0.cert_info();
+        let Some(extension) = find_extension(info, szOID_AUTHORITY_KEY_IDENTIFIER2) else {
+            return Ok(None);
+        };
+        let data = blob_as_slice(&extension.Value)
+            .ok_or_else(|| invalid_err("malformed authority key identifier extension"))?;
+        let aki = decode_object::<CERT_AUTHORITY_KEY_ID2_INFO>(X509_AUTHORITY_KEY_ID2, data)
+            .map_err(X509Error)?;
+        let key = blob_as_slice(&aki.value.KeyId)
+            .ok_or_else(|| invalid_err("malformed authority key identifier"))?;
+        Ok((!key.is_empty()).then(|| key.to_vec()))
+    }
+
+    fn common_name(&self, flags: u32) -> Result<Option<String>, X509Error> {
         let oid = szOID_COMMON_NAME.0.cast::<c_void>();
         // SAFETY: ctx is valid; passing None for psznamestring queries the
         // required size.
@@ -397,7 +441,7 @@ impl X509CertificateInner {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
                 self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
-                0,
+                flags,
                 Some(oid),
                 None,
             )
@@ -416,7 +460,7 @@ impl X509CertificateInner {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
                 self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
-                0,
+                flags,
                 Some(oid),
                 Some(&mut buf),
             )

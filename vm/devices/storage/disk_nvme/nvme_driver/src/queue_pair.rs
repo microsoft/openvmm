@@ -369,6 +369,7 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
         stop: &mut task_control::StopTask<'_>,
         _: &mut (),
     ) -> Result<(), task_control::Cancelled> {
+        let check = stop.check_handle()?;
         stop.until_stopped(async {
             self.queue_handler
                 .run(
@@ -376,10 +377,11 @@ impl<A: AerHandler, D: DeviceBacking> AsyncRun<()> for QueueHandlerLoop<A, D> {
                     &mut self.recv_req,
                     &mut self.recv_cmd,
                     &mut self.interrupt,
+                    &check,
                 )
-                .await;
+                .await
         })
-        .await
+        .await?
     }
 }
 
@@ -1202,7 +1204,8 @@ impl<A: AerHandler> QueueHandler<A> {
         recv_req: &mut mesh::Receiver<Req>,
         recv_cmd: &mut mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
-    ) {
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), task_control::Cancelled> {
         if matches!(
             &self.drain_after_restore,
             DrainAfterRestore::Draining { .. }
@@ -1211,11 +1214,17 @@ impl<A: AerHandler> QueueHandler<A> {
         }
 
         loop {
+            if let Err(cancelled) = check.check() {
+                self.sq.commit(registers);
+                self.cq.commit(registers);
+                return Err(cancelled);
+            }
             enum Event {
                 Request(Req),
                 Command(Cmd),
                 Completion(spec::Completion),
                 DrainComplete,
+                Cancelled(task_control::Cancelled),
             }
 
             let event = if matches!(self.drain_after_restore, DrainAfterRestore::AllDrained) {
@@ -1237,6 +1246,9 @@ impl<A: AerHandler> QueueHandler<A> {
                     }
                     // Look for completions
                     while !self.commands.is_empty() {
+                        if let Err(cancelled) = check.check() {
+                            return Event::Cancelled(cancelled).into();
+                        }
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
                         }
@@ -1266,6 +1278,9 @@ impl<A: AerHandler> QueueHandler<A> {
                     }
 
                     while !self.commands.is_empty() {
+                        if let Err(cancelled) = check.check() {
+                            return Event::Cancelled(cancelled).into();
+                        }
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
                         }
@@ -1281,6 +1296,11 @@ impl<A: AerHandler> QueueHandler<A> {
             };
 
             match event {
+                Event::Cancelled(cancelled) => {
+                    self.sq.commit(registers);
+                    self.cq.commit(registers);
+                    return Err(cancelled);
+                }
                 Event::Request(req) => match req {
                     Req::Save(queue_state) => {
                         tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
@@ -1350,6 +1370,7 @@ impl<A: AerHandler> QueueHandler<A> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Save queue data for servicing.

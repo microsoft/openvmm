@@ -60,6 +60,7 @@ members = [
   "vm/loader/snp_bootshim",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "vm/vtpm_util",
   # opentmk
   "opentmk",
   "opentmk/opentmk_executor",
@@ -75,7 +76,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.95"
+rust-version = "1.97"
 edition = "2024"
 # The canonical OpenVMM version. It remains at the most recently released
 # version until a reviewed pull request selects the next release.
@@ -142,7 +143,6 @@ console_relay = { path = "support/console_relay" }
 crypto = { path = "support/crypto" }
 debug_ptr = { path = "support/debug_ptr" }
 fast_memcpy = { path = "support/fast_memcpy" }
-fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
@@ -537,7 +537,6 @@ syn = "3"
 
 # --- Build-time utilities ---
 cc = "1.2.34"
-cfg-if = "1"
 embed-resource = "3.0.2"
 linkme = "0.3.9"
 static_assertions = "1.1"
@@ -594,13 +593,13 @@ x509-cert = { version = "0.3.0-rc.4", default-features = false }
 # TPM 1.38
 ms-tpm-20-ref = { git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", rev = "9a24154df7b09cd1a0b90f25a7bf9cbb16e24c7d", default-features = false }
 # TPM 1.85
-ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "517ae1a64aeb990019d809b963ac2c2726080e24", default-features = false }
+ms-tcg-tpm-sys = { git = "https://github.com/microsoft/ms-tcg-tpm-sys.git", rev = "5276f871eb8141149aaa762cdb34d5f4e3291d50", default-features = false }
 
 # --- Data structures / collections ---
 arrayvec = { version = "0.7", default-features = false }
 bitfield-struct = "0.11.0"
 bitvec = { version = "1.1", default-features = false }
-heapless = { version = "0.8", default-features = false }
+heapless = { version = "0.9", default-features = false }
 petgraph = "0.8.0"
 range_map_vec = "0.2.0"
 rustc-hash = "2.1.1"
@@ -645,7 +644,7 @@ hyper-tls = "0.6"
 hyper-util = "0.1"
 pcap-file = "2.0.0"
 resolv-conf = "0.7"
-smoltcp = { version = "0.12.0", default-features = false }
+smoltcp = { version = "0.14.0", default-features = false }
 socket2 = "0.6"
 
 # --- Time ---

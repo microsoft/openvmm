@@ -174,6 +174,14 @@ pub fn openat(
     };
     let path = path_to_cstr(path)?;
     let creating = flags & libc::O_CREAT != 0 || flags & libc::O_TMPFILE == libc::O_TMPFILE;
+    // O_PATH opens reject data-open flags.
+    let flags = if flags & libc::O_PATH == 0 {
+        // Avoid waiting for a peer if the final component is a FIFO.
+        // TODO: Retain O_PATH handles at lookup to reject special files before data opens.
+        flags | libc::O_NOCTTY | libc::O_NONBLOCK
+    } else {
+        flags
+    };
     let how = OpenHow {
         flags: (flags | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u32 as u64,
         mode: if creating {

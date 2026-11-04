@@ -14,11 +14,14 @@ Root Complex (GenericPcieRootComplex)
 └── Root Port N  (PcieDownstreamPort)  → ...
 ```
 
-The root complex owns the ECAM MMIO region. When the guest reads
-or writes a config space address, the root complex decodes the
-bus/device/function from the ECAM offset and routes the access
-to the correct port. Each port has a Type 1 (bridge)
-configuration space with PCIe Express and MSI capabilities.
+The root complex owns the ECAM MMIO region. On x86_64, a segment-zero root
+complex that spans the complete bus range also supports legacy
+configuration access through I/O ports CF8/CFC, unless a PIIX4 PCI bus owns
+those ports. When segment zero is split across multiple root complexes, those
+root complexes use ECAM so that one legacy handler does not hide buses owned
+by another root complex. Root complexes in additional segments are always
+ECAM-only because CF8/CFC can address only segment zero. Each port has a Type 1
+(bridge) configuration space with PCIe Express and MSI capabilities.
 
 Ports may optionally be hotplug-capable. Devices behind
 non-hotplug ports are attached at VM construction time.

@@ -34,9 +34,15 @@ use crate::vm_controller::VmControllerRpc;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
+use hyperv_ic_resources::shutdown::ShutdownIcHandle;
+use hyperv_ic_resources::shutdown::ShutdownParams;
+use hyperv_ic_resources::shutdown::ShutdownResult;
+use hyperv_ic_resources::shutdown::ShutdownRpc;
+use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
@@ -52,6 +58,7 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_backend_resources::consomme::ConsommeRequest;
+use net_backend_resources::consomme::DnsRecordConfig;
 use net_backend_resources::consomme::HostPort;
 use net_backend_resources::consomme::HostPortConfig;
 use net_backend_resources::consomme::HostPortProtocol;
@@ -59,6 +66,8 @@ use net_backend_resources::mac_address::MacAddress;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::ArchTopologyConfig;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::IgvmPersonality;
@@ -84,6 +93,7 @@ use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::open_disk_type;
 use openvmm_ttrpc_vmservice as vmservice;
@@ -563,9 +573,20 @@ impl VmService {
 
 struct Vm {
     worker_rpc: mesh::Sender<VmRpc>,
+    shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
+    acpi_power_button_rpc: Option<mesh::Sender<PowerButtonRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
-    consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
+    consomme_rpc: std::collections::HashMap<Guid, mesh::Sender<ConsommeRequest>>,
     iommufds: Arc<IommufdContexts>,
+}
+
+impl Vm {
+    fn consomme_rpc(&self, nic_id: Guid) -> anyhow::Result<mesh::Sender<ConsommeRequest>> {
+        self.consomme_rpc
+            .get(&nic_id)
+            .cloned()
+            .with_context(|| format!("no consomme NIC {nic_id}"))
+    }
 }
 
 #[derive(Default)]
@@ -647,8 +668,11 @@ fn validate_platform_config(config: &vmservice::VmConfig) -> anyhow::Result<()> 
                 "SCSI disks require VMBus; use PCIe NVMe or virtio-blk instead"
             );
             anyhow::ensure!(
-                devices.nic_config.is_empty(),
-                "NICConfig requires VMBus; use PCIe virtio-net instead"
+                devices
+                    .nic_config
+                    .iter()
+                    .all(|nic| nic.frontend == vmservice::NicFrontend::Virtio as i32),
+                "VMBus NICConfig requires VMBus; use the virtio frontend instead"
             );
             if cfg!(windows) || cfg!(target_os = "macos") {
                 anyhow::ensure!(
@@ -751,6 +775,7 @@ fn grpc_error(err: anyhow::Error) -> Status {
     } else {
         Code::Unknown
     };
+    tracing::warn!(?code, error = format!("{:#}", err), "ttrpc request failed");
     Status {
         code: code.into(),
         message: format!("{:#}", err),
@@ -805,6 +830,10 @@ impl VmService {
             }
             vmservice::Vm::ResumeVm((), response) => {
                 response.send(map_grpc(self.resume_vm().await));
+            }
+            vmservice::Vm::ShutdownVm(request, response) => {
+                let r = self.shutdown_vm(ctx, request);
+                self.start_rpc(response, r);
             }
             vmservice::Vm::WaitVm((), response) => {
                 if self.vm.is_none() {
@@ -992,7 +1021,11 @@ impl VmService {
                         boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                         smbios,
                     },
-                    vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+                    if req_config.disable_hv {
+                        vm_manifest_builder::BaseChipsetType::UnenlightenedLinuxDirect
+                    } else {
+                        vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect
+                    },
                     None,
                     None,
                 )
@@ -1080,10 +1113,41 @@ impl VmService {
             }
         };
 
+        // Build the PCIe topology before the chipset manifest so full-domain
+        // legacy PCI configuration ownership can be coordinated.
+        let pcie = if let Some(pcie) = req_config.pcie.take() {
+            build_pcie_topology(
+                pcie,
+                &registry,
+                &iommufds,
+                arch == vm_manifest_builder::MachineArch::X86_64,
+            )
+            .await?
+        } else {
+            BuiltPcieTopology::default()
+        };
+
         let mut chipset_builder =
             VmManifestBuilder::new(base_chipset_type, arch).with_serial(ports);
+        let acpi_power_button_rpc = if supports_acpi_power_button(&load_mode) {
+            let (send, recv) = mesh::channel();
+            let irq = match arch {
+                vm_manifest_builder::MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+                vm_manifest_builder::MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+            };
+            chipset_builder = chipset_builder.with_acpi_power_button(irq, recv);
+            Some(send)
+        } else {
+            None
+        };
+        if req_config.guest_watchdog {
+            chipset_builder = chipset_builder.with_guest_watchdog();
+        }
         if req_config.disable_vmbus {
             chipset_builder = chipset_builder.without_vmbus();
+        }
+        if pcie.legacy_pci_config_io_for_pcie {
+            chipset_builder = chipset_builder.with_legacy_pci_config_io_for_pcie();
         }
         if let Some(uefi_manifest) = uefi_config {
             // The UEFI helper device backs the firmware's variable store and
@@ -1138,14 +1202,6 @@ impl VmService {
             .unwrap_or(1);
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
 
-        // Build the PCIe topology (root complexes, switches, and the devices
-        // attached behind their ports).
-        let pcie = if let Some(pcie) = req_config.pcie.take() {
-            build_pcie_topology(pcie, &registry, &iommufds).await?
-        } else {
-            BuiltPcieTopology::default()
-        };
-
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
@@ -1196,8 +1252,18 @@ impl VmService {
 
         let guest_power_actions = guest_power_actions_from_proto(req_config.guest_power_actions)?;
 
+        let shutdown_rpc = if config.hypervisor.with_hv && config.vmbus.is_some() {
+            let (send, recv) = mesh::channel();
+            config
+                .vmbus_devices
+                .push((DeviceVtl::Vtl0, ShutdownIcHandle { recv }.into_resource()));
+            Some(send)
+        } else {
+            None
+        };
+
         let mut scsi_rpc = None;
-        let mut consomme_rpc = None;
+        let mut consomme_rpc = std::collections::HashMap::new();
         if let Some(devices_config) = req_config.devices_config {
             if !devices_config.scsi_disks.is_empty() {
                 let mut devices = Vec::new();
@@ -1225,19 +1291,37 @@ impl VmService {
                     &nic.backend,
                     Some(vmservice::nic_config::Backend::Consomme(_))
                 );
-                // Only wire the bind/unbind RPC channel to the first consomme
-                // NIC. Additional consomme NICs work but cannot be targeted by
-                // runtime bind/unbind commands.
-                let recv = if is_consomme && consomme_rpc.is_none() {
+                let recv = if is_consomme {
+                    let nic_id: Guid = nic.nic_id.parse().context("invalid NIC ID")?;
                     let (send, recv) = mesh::channel();
-                    consomme_rpc = Some(send);
+                    if consomme_rpc.insert(nic_id, send).is_some() {
+                        bail!("duplicate consomme NIC {nic_id}");
+                    }
                     Some(recv)
                 } else {
                     None
                 };
-                config
-                    .vmbus_devices
-                    .push(parse_nic_config(nic, recv, &registry)?);
+                match parse_nic_config(nic, recv, &registry)? {
+                    NicDevice::Vmbus(resource) => {
+                        config.vmbus_devices.push((DeviceVtl::Vtl0, resource));
+                    }
+                    NicDevice::Virtio {
+                        instance_id,
+                        resource,
+                    } => {
+                        if !req_config.disable_vmbus && (cfg!(windows) || cfg!(target_os = "macos"))
+                        {
+                            config.vpci_devices.push(VpciDeviceConfig {
+                                vtl: DeviceVtl::Vtl0,
+                                instance_id,
+                                resource: VirtioPciDeviceHandle(resource).into_resource(),
+                                vnode: None,
+                            });
+                        } else {
+                            config.virtio_devices.push((VirtioBus::Mmio, resource));
+                        }
+                    }
+                }
             }
 
             for virtiofs in devices_config.virtiofs_config {
@@ -1360,6 +1444,8 @@ impl VmService {
         self.vm_controller_events = Some(event_recv);
         self.controller_task = Some(controller_task);
         self.vm = Some(Arc::new(Vm {
+            shutdown_rpc,
+            acpi_power_button_rpc,
             scsi_rpc,
             consomme_rpc,
             worker_rpc: send,
@@ -1431,6 +1517,102 @@ impl VmService {
             ],
             supported_guest_os: vec![SupportedGuestOs::Linux as i32],
         }
+    }
+
+    fn shutdown_vm(
+        &self,
+        mut ctx: mesh::CancelContext,
+        request: vmservice::ShutdownVmRequest,
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+        use vmservice::shutdown_vm_request::Mechanism;
+
+        enum ShutdownSender {
+            HypervIc(mesh::Sender<ShutdownRpc>),
+            Acpi(mesh::Sender<PowerButtonRpc>),
+        }
+
+        let requested_mechanism = Mechanism::from_i32(request.mechanism)
+            .ok_or_else(|| anyhow!(Code::InvalidArgument))
+            .with_context(|| format!("unknown shutdown mechanism {}", request.mechanism))?;
+        match requested_mechanism {
+            Mechanism::Unspecified => {
+                return Err(
+                    anyhow!(Code::InvalidArgument).context("shutdown mechanism must be specified")
+                );
+            }
+            Mechanism::HypervIc => {}
+            Mechanism::Acpi => {
+                anyhow::ensure!(
+                    !request.force,
+                    anyhow!(Code::InvalidArgument).context("ACPI shutdown does not support force")
+                );
+            }
+        }
+        let vm = self
+            .vm
+            .as_ref()
+            .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+            .context("VM not created yet")?;
+        anyhow::ensure!(
+            matches!(self.lifecycle, VmLifecycle::Running),
+            anyhow!(Code::FailedPrecondition).context("VM must be running to request shutdown")
+        );
+        let send = if requested_mechanism == Mechanism::Acpi {
+            ShutdownSender::Acpi(
+                vm.acpi_power_button_rpc
+                    .as_ref()
+                    .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+                    .context("ACPI shutdown requires direct ACPI or UEFI boot")?
+                    .clone(),
+            )
+        } else {
+            ShutdownSender::HypervIc(
+                vm.shutdown_rpc
+                    .as_ref()
+                    .ok_or_else(|| anyhow!(Code::FailedPrecondition))
+                    .context("Hyper-V IC shutdown requires Hyper-V enlightenments and VMBus")?
+                    .clone(),
+            )
+        };
+        Ok(async move {
+            if let Some(reason) = ctx.cancelled().now_or_never() {
+                return Err(
+                    anyhow!(reason).context("guest shutdown request cancelled or timed out")
+                );
+            }
+            match send {
+                ShutdownSender::HypervIc(send) => {
+                    let result = ctx
+                        .until_cancelled(send.call(
+                            ShutdownRpc::Shutdown,
+                            ShutdownParams {
+                                shutdown_type: ShutdownType::PowerOff,
+                                force: request.force,
+                            },
+                        ))
+                        .await
+                        .context("guest shutdown request cancelled or timed out")?
+                        .context("communication failure during guest shutdown")?;
+                    match result {
+                        ShutdownResult::Ok => Ok(()),
+                        ShutdownResult::NotReady => {
+                            Err(anyhow!(Code::FailedPrecondition).context("shutdown IC not ready"))
+                        }
+                        ShutdownResult::AlreadyInProgress => {
+                            Err(anyhow!(Code::AlreadyExists)
+                                .context("shutdown already in progress"))
+                        }
+                        ShutdownResult::Failed(status) => Err(anyhow!(Code::Internal)
+                            .context(format!("guest rejected shutdown with status {status:#x}"))),
+                    }
+                }
+                ShutdownSender::Acpi(send) => ctx
+                    .until_cancelled(send.call(PowerButtonRpc::Press, ()))
+                    .await
+                    .context("guest shutdown request cancelled or timed out")?
+                    .context("communication failure during ACPI power-button injection"),
+            }
+        })
     }
 
     async fn pause_vm(&mut self) -> anyhow::Result<()> {
@@ -1579,7 +1761,9 @@ impl VmService {
     fn modify_resource(
         &self,
         request: vmservice::ModifyResourceRequest,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
+    ) -> anyhow::Result<
+        impl Future<Output = anyhow::Result<vmservice::ModifyResourceResponse>> + use<>,
+    > {
         use vmservice::modify_resource_request::Resource;
         let vm = self.vm.as_ref().context("VM not created yet")?;
         match request.resource.context("missing resource")? {
@@ -1600,7 +1784,8 @@ impl VmService {
                         scsi_rpc
                             .call_failable(ScsiControllerRequest::AddDevice, config)
                             .await
-                            .map_err(anyhow::Error::from)
+                            .map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
                     }
                     .boxed())
                 } else if request.r#type == vmservice::ModifyType::Remove as i32 {
@@ -1609,7 +1794,11 @@ impl VmService {
                         .as_ref()
                         .context("no scsi controller")?
                         .call_failable(ScsiControllerRequest::RemoveDevice, scsi_path);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+                    Ok(async move {
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
+                    }
+                    .boxed())
                 } else {
                     anyhow::bail!("unsupported request type {}", request.r#type);
                 }
@@ -1625,53 +1814,59 @@ impl VmService {
                              configure it at VM creation time"
                         );
                     }
-                    let config = parse_nic_config(nic, None, &self.registry)?;
-                    let recv = vm.worker_rpc.call_failable(VmRpc::AddVmbusDevice, config);
-                    Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
-                } else if request.r#type == vmservice::ModifyType::Update as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port update only supported for consomme backend"),
+                    let NicDevice::Vmbus(resource) = parse_nic_config(nic, None, &self.registry)?
+                    else {
+                        anyhow::bail!(
+                            "adding a virtio NIC via ModifyResource is not supported; \
+                             configure it at VM creation time"
+                        );
                     };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
+                    let recv = vm
+                        .worker_rpc
+                        .call_failable(VmRpc::AddVmbusDevice, (DeviceVtl::Vtl0, resource));
                     Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Bind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
-                        }
-                        Ok(())
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
+                    }
+                    .boxed())
+                } else if request.r#type == vmservice::ModifyType::Update as i32
+                    || request.r#type == vmservice::ModifyType::Remove as i32
+                {
+                    let modification = ConsommeNicModification::parse(nic, request.r#type)?;
+                    Ok(modify_consomme_nic(vm, modification)?.boxed())
+                } else {
+                    anyhow::bail!("unsupported NIC modify type {}", request.r#type);
+                }
+            }
+            Resource::HvsocketListener(listener) => {
+                let service_id = parse_hvsocket_service(listener.service)?;
+                if request.r#type == vmservice::ModifyType::Add as i32 {
+                    let socket = UnixListener::bind(&listener.path).with_context(|| {
+                        format!("failed to bind hvsocket listener path: {}", listener.path)
+                    })?;
+                    let recv = vm.worker_rpc.call_failable(
+                        VmRpc::AddHvsockListener,
+                        (DeviceVtl::Vtl0, service_id, socket),
+                    );
+                    Ok(async move {
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
                     }
                     .boxed())
                 } else if request.r#type == vmservice::ModifyType::Remove as i32 {
-                    let consomme = match nic.backend.context("missing backend")? {
-                        vmservice::nic_config::Backend::Consomme(c) => c,
-                        _ => anyhow::bail!("port remove only supported for consomme backend"),
-                    };
-                    let consomme_rpc = vm
-                        .consomme_rpc
-                        .as_ref()
-                        .context("no consomme port channel")?
-                        .clone();
+                    let recv = vm
+                        .worker_rpc
+                        .call_failable(VmRpc::RemoveHvsockListener, (DeviceVtl::Vtl0, service_id));
                     Ok(async move {
-                        for port in consomme.ports {
-                            let cfg = parse_port_config(port)?;
-                            consomme_rpc
-                                .call_failable(ConsommeRequest::Unbind, cfg)
-                                .await
-                                .map_err(anyhow::Error::from)?;
-                        }
-                        Ok(())
+                        recv.await.map_err(anyhow::Error::from)?;
+                        Ok(vmservice::ModifyResourceResponse::default())
                     }
                     .boxed())
                 } else {
-                    anyhow::bail!("unsupported NIC modify type {}", request.r#type);
+                    anyhow::bail!(
+                        "unsupported hvsocket listener modify type {}",
+                        request.r#type
+                    );
                 }
             }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
@@ -1681,6 +1876,140 @@ impl VmService {
             }
         }
     }
+}
+
+fn parse_hvsocket_service(
+    service: Option<vmservice::hv_socket_listener::Service>,
+) -> anyhow::Result<Guid> {
+    use vmservice::hv_socket_listener::Service;
+    match service.context("missing hvsocket service")? {
+        Service::ServiceId(id) => id.parse().context("invalid hvsocket service ID"),
+        Service::VsockPort(port) => Ok(crate::new_hvsock_service_id(port)),
+    }
+}
+
+/// A fully parsed modification to a running consomme NIC.
+struct ConsommeNicModification {
+    nic_id: Guid,
+    action: ConsommeNicAction,
+}
+
+enum ConsommeNicAction {
+    AddDnsRecord(DnsRecordConfig),
+    CreateVirtualAddress(std::net::IpAddr),
+    BindPorts(Vec<HostPortConfig>),
+    UnbindPorts(Vec<HostPortConfig>),
+}
+
+impl ConsommeNicModification {
+    /// Parses an UPDATE or REMOVE `NicConfig` (untrusted input) targeting a
+    /// consomme backend into a modification that needs no further validation.
+    fn parse(nic: vmservice::NicConfig, modify_type: i32) -> anyhow::Result<Self> {
+        use vmservice::consomme_backend::Operation;
+
+        let consomme = match nic.backend.context("missing backend")? {
+            vmservice::nic_config::Backend::Consomme(c) => c,
+            _ => anyhow::bail!("NIC update/remove only supported for consomme backend"),
+        };
+        let is_update = if modify_type == vmservice::ModifyType::Update as i32 {
+            true
+        } else if modify_type == vmservice::ModifyType::Remove as i32 {
+            false
+        } else {
+            anyhow::bail!("unsupported NIC modify type {modify_type}");
+        };
+        let nic_id = nic.nic_id.parse().context("invalid NIC ID")?;
+        let action = match consomme.operation {
+            Some(operation) => {
+                anyhow::ensure!(
+                    is_update,
+                    "DNS and virtual-address operations require NIC UPDATE"
+                );
+                anyhow::ensure!(
+                    consomme.ports.is_empty(),
+                    "cannot combine a consomme operation with port modifications"
+                );
+                match operation {
+                    Operation::AddDnsRecord(request) => {
+                        ConsommeNicAction::AddDnsRecord(DnsRecordConfig {
+                            name: request.name,
+                            address: request
+                                .address
+                                .parse()
+                                .context("invalid IPv4 address for A record")?,
+                        })
+                    }
+                    Operation::CreateVirtualAddress(request) => {
+                        ConsommeNicAction::CreateVirtualAddress(
+                            request
+                                .destination
+                                .parse()
+                                .context("invalid destination address")?,
+                        )
+                    }
+                }
+            }
+            None => {
+                let ports = consomme
+                    .ports
+                    .into_iter()
+                    .map(parse_port_config)
+                    .collect::<anyhow::Result<_>>()?;
+                if is_update {
+                    ConsommeNicAction::BindPorts(ports)
+                } else {
+                    ConsommeNicAction::UnbindPorts(ports)
+                }
+            }
+        };
+        Ok(Self { nic_id, action })
+    }
+}
+
+fn modify_consomme_nic(
+    vm: &Vm,
+    modification: ConsommeNicModification,
+) -> anyhow::Result<impl Future<Output = anyhow::Result<vmservice::ModifyResourceResponse>> + use<>>
+{
+    let ConsommeNicModification { nic_id, action } = modification;
+    let consomme_rpc = vm.consomme_rpc(nic_id)?;
+    Ok(async move {
+        let result = match action {
+            ConsommeNicAction::AddDnsRecord(record) => {
+                consomme_rpc
+                    .call_failable(ConsommeRequest::AddDnsRecord, record)
+                    .await?;
+                None
+            }
+            ConsommeNicAction::CreateVirtualAddress(destination) => {
+                let virtual_address = consomme_rpc
+                    .call_failable(ConsommeRequest::CreateVirtualAddress, destination.into())
+                    .await?;
+                Some(vmservice::modify_resource_response::Result::VirtualAddress(
+                    vmservice::CreateVirtualAddressResponse {
+                        virtual_address: std::net::IpAddr::from(virtual_address).to_string(),
+                    },
+                ))
+            }
+            ConsommeNicAction::BindPorts(ports) => {
+                for cfg in ports {
+                    consomme_rpc
+                        .call_failable(ConsommeRequest::Bind, cfg)
+                        .await?;
+                }
+                None
+            }
+            ConsommeNicAction::UnbindPorts(ports) => {
+                for cfg in ports {
+                    consomme_rpc
+                        .call_failable(ConsommeRequest::Unbind, cfg)
+                        .await?;
+                }
+                None
+            }
+        };
+        Ok(vmservice::ModifyResourceResponse { result })
+    })
 }
 
 /// Returns the appropriate serial backend open function and a human-readable
@@ -1836,14 +2165,24 @@ fn parse_port_config(port: vmservice::PortConfig) -> anyhow::Result<HostPortConf
     })
 }
 
+enum NicDevice {
+    Vmbus(Resource<VmbusDeviceHandleKind>),
+    Virtio {
+        instance_id: Guid,
+        resource: Resource<VirtioDeviceHandle>,
+    },
+}
+
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
     registry: &FdRegistry,
-) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
+) -> anyhow::Result<NicDevice> {
     use self::vmservice::nic_config::Backend;
     #[cfg(not(target_os = "linux"))]
     let _ = registry;
+    let frontend = vmservice::NicFrontend::from_i32(nic.frontend)
+        .with_context(|| format!("unknown NIC frontend {}", nic.frontend))?;
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -1863,32 +2202,35 @@ fn parse_nic_config(
         .into_resource(),
         #[cfg(target_os = "linux")]
         Backend::Tap(tap) => build_tap_backend(tap, registry)?,
-        Backend::Consomme(consomme) => net_backend_resources::consomme::ConsommeHandle {
-            cidr: if consomme.cidr.is_empty() {
-                None
-            } else {
-                Some(consomme.cidr)
-            },
-            ports: consomme
-                .ports
-                .into_iter()
-                .map(parse_port_config)
-                .collect::<anyhow::Result<_>>()?,
-            recv,
-        }
-        .into_resource(),
+        Backend::Consomme(consomme) => build_consomme_handle(consomme, recv)?.into_resource(),
         _ => anyhow::bail!("unsupported backend"),
     };
-    let cfg = NetvspHandle {
-        instance_id: nic.nic_id.parse().context("invalid instance ID")?,
-        mac_address: nic
-            .mac_address
-            .parse::<MacAddress>()
-            .context("invalid mac address")?,
-        endpoint,
-        max_queues: None,
-    };
-    Ok((DeviceVtl::Vtl0, cfg.into_resource()))
+    let instance_id = nic.nic_id.parse().context("invalid instance ID")?;
+    let mac_address = nic
+        .mac_address
+        .parse::<MacAddress>()
+        .context("invalid mac address")?;
+    Ok(match frontend {
+        vmservice::NicFrontend::Vmbus => NicDevice::Vmbus(
+            NetvspHandle {
+                instance_id,
+                mac_address,
+                endpoint,
+                max_queues: None,
+            }
+            .into_resource(),
+        ),
+        vmservice::NicFrontend::Virtio => NicDevice::Virtio {
+            instance_id,
+            resource: virtio_resources::net::VirtioNetHandle {
+                max_queues: None,
+                mac_address,
+                endpoint,
+                enable_rx_gso: false,
+            }
+            .into_resource(),
+        },
+    })
 }
 
 async fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPath> {
@@ -2032,18 +2374,21 @@ struct BuiltPcieTopology {
     switches: Vec<PcieSwitchConfig>,
     devices: Vec<PcieDeviceConfig>,
     generic_initiators: Vec<PcieGenericInitiatorConfig>,
+    legacy_pci_config_io_for_pcie: bool,
 }
 
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
     registry: &FdRegistry,
     iommufds: &IommufdContexts,
+    enable_legacy_pci_config_io: bool,
 ) -> anyhow::Result<BuiltPcieTopology> {
     let vmservice::PcieTopologyConfig {
         root_complexes: proto_root_complexes,
         generic_initiators,
     } = topology;
     let mut root_complexes = Vec::new();
+    let mut legacy_pci_config_io_for_pcie = false;
     let mut switches = Vec::new();
     // Devices are built after the topology walk so that the (async) device
     // construction does not need to recurse.
@@ -2091,12 +2436,18 @@ async fn build_pcie_topology(
             }
         }
 
+        let legacy_pci_config_io = enable_legacy_pci_config_io
+            && segment == 0
+            && start_bus == 0
+            && end_bus == u32::from(u8::MAX);
+        legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         root_complexes.push(PcieRootComplexConfig {
             index: index as u32,
             name,
             segment: segment.try_into().context("segment out of range")?,
             start_bus: start_bus.try_into().context("start_bus out of range")?,
             end_bus: end_bus.try_into().context("end_bus out of range")?,
+            legacy_pci_config_io,
             low_mmio: pcie_mmio_range_config(low_mmio, low_mmio_base)?,
             high_mmio: pcie_mmio_range_config(high_mmio, high_mmio_base)?,
             ports,
@@ -2129,6 +2480,7 @@ async fn build_pcie_topology(
         switches,
         devices,
         generic_initiators,
+        legacy_pci_config_io_for_pcie,
     })
 }
 
@@ -2405,12 +2757,14 @@ async fn build_virtio_device(
             max_queues,
             backend,
             mac_address,
+            enable_rx_gso,
         }) => {
             let endpoint = build_nic_backend(backend.context("missing net backend")?, registry)?;
             virtio_resources::net::VirtioNetHandle {
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
                     .transpose()?,
+                enable_rx_gso,
                 mac_address: mac_address
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,
@@ -2543,6 +2897,44 @@ async fn build_vmgs(config: Option<vmservice::VmgsConfig>) -> anyhow::Result<Opt
     ))
 }
 
+/// Builds a consomme endpoint handle from the proto `ConsommeBackend`.
+fn build_consomme_handle(
+    consomme: vmservice::ConsommeBackend,
+    recv: Option<mesh::Receiver<ConsommeRequest>>,
+) -> anyhow::Result<net_backend_resources::consomme::ConsommeHandle> {
+    anyhow::ensure!(
+        consomme.operation.is_none(),
+        "consomme operations require NIC UPDATE via ModifyResource"
+    );
+    fn parse_optional<T: std::str::FromStr>(value: &str, name: &str) -> anyhow::Result<Option<T>>
+    where
+        T::Err: std::error::Error + Send + Sync + 'static,
+    {
+        (!value.is_empty())
+            .then(|| value.parse())
+            .transpose()
+            .with_context(|| format!("invalid {name} '{value}'"))
+    }
+
+    Ok(net_backend_resources::consomme::ConsommeHandle {
+        params: net_backend_resources::consomme::ConsommeParams {
+            client_ip: parse_optional(&consomme.client_ip, "client IP")?,
+            gateway_ip: parse_optional(&consomme.gateway_ip, "gateway IP")?,
+            net_mask: parse_optional(&consomme.net_mask, "net mask")?,
+            client_ip_ipv6: parse_optional(&consomme.client_ip_ipv6, "client IPv6")?,
+            allow_host_local_access: consomme.allow_host_local_access,
+        },
+        cidr: (!consomme.cidr.is_empty()).then_some(consomme.cidr),
+        internal_dns: consomme.internal_dns.unwrap_or(true),
+        ports: consomme
+            .ports
+            .into_iter()
+            .map(parse_port_config)
+            .collect::<anyhow::Result<_>>()?,
+        recv,
+    })
+}
+
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
@@ -2553,17 +2945,7 @@ fn build_nic_backend(
     let _ = registry;
     let vmservice::NicBackend { kind } = backend;
     Ok(match kind.context("missing network backend")? {
-        Kind::Consomme(vmservice::ConsommeBackend { cidr, ports }) => {
-            net_backend_resources::consomme::ConsommeHandle {
-                cidr: (!cidr.is_empty()).then_some(cidr),
-                ports: ports
-                    .into_iter()
-                    .map(parse_port_config)
-                    .collect::<anyhow::Result<_>>()?,
-                recv: None,
-            }
-            .into_resource()
-        }
+        Kind::Consomme(consomme) => build_consomme_handle(consomme, None)?.into_resource(),
         #[cfg(target_os = "linux")]
         Kind::Tap(tap) => build_tap_backend(tap, registry)?,
         #[cfg(windows)]
@@ -2680,12 +3062,103 @@ fn build_vhost_user_device(
     anyhow::bail!("vhost-user is only supported on unix hosts")
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use test_with_tracing::test;
+    #[cfg(target_os = "linux")]
     use vfio_assigned_device_resources::BarAddressConfig;
+    #[cfg(target_os = "linux")]
     use vmservice::vfio_bar_address::Source;
+
+    fn service(
+        driver: DefaultDriver,
+        shutdown_rpc: Option<mesh::Sender<ShutdownRpc>>,
+    ) -> VmService {
+        let (worker_rpc, _) = mesh::channel();
+        VmService {
+            driver,
+            vm: Some(Arc::new(Vm {
+                worker_rpc,
+                shutdown_rpc,
+                acpi_power_button_rpc: None,
+                scsi_rpc: None,
+                consomme_rpc: Default::default(),
+                iommufds: Arc::new(IommufdContexts::default()),
+            })),
+            vm_controller: None,
+            vm_controller_events: None,
+            controller_task: None,
+            wait_vm_response: None,
+            lifecycle: VmLifecycle::Running,
+            rpc_tasks: Vec::new(),
+            transport: ResolvedTransport::Auto,
+            registry: FdRegistry::default(),
+        }
+    }
+
+    fn shutdown_request() -> vmservice::ShutdownVmRequest {
+        vmservice::ShutdownVmRequest {
+            mechanism: vmservice::shutdown_vm_request::Mechanism::HypervIc as i32,
+            force: false,
+        }
+    }
+
+    #[test]
+    fn hvsocket_modify_resource_responses() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let (send, mut recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .worker_rpc = send;
+            let dir = tempfile::tempdir().unwrap();
+            let service_id = guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3");
+            for modify_type in [vmservice::ModifyType::Add, vmservice::ModifyType::Remove] {
+                let response = service
+                    .modify_resource(vmservice::ModifyResourceRequest {
+                        r#type: modify_type as i32,
+                        resource: Some(
+                            vmservice::modify_resource_request::Resource::HvsocketListener(
+                                vmservice::HvSocketListener {
+                                    path: dir.path().join("service").to_str().unwrap().into(),
+                                    service: Some(
+                                        vmservice::hv_socket_listener::Service::VsockPort(50001),
+                                    ),
+                                },
+                            ),
+                        ),
+                    })
+                    .unwrap();
+                let worker = async {
+                    match (modify_type, recv.next().await.unwrap()) {
+                        (vmservice::ModifyType::Add, VmRpc::AddHvsockListener(rpc)) => {
+                            let ((vtl, id, _listener), response) = rpc.split();
+                            assert_eq!(vtl, DeviceVtl::Vtl0);
+                            assert_eq!(id, service_id);
+                            response.complete(Ok(()));
+                        }
+                        (vmservice::ModifyType::Remove, VmRpc::RemoveHvsockListener(rpc)) => {
+                            let ((vtl, id), response) = rpc.split();
+                            assert_eq!(vtl, DeviceVtl::Vtl0);
+                            assert_eq!(id, service_id);
+                            response.complete(Ok(()));
+                        }
+                        _ => panic!("unexpected worker RPC"),
+                    }
+                };
+                let (response, ()) = futures::join!(response, worker);
+                assert!(response.unwrap().result.is_none());
+            }
+        });
+    }
+
+    fn acpi_shutdown_request() -> vmservice::ShutdownVmRequest {
+        vmservice::ShutdownVmRequest {
+            mechanism: vmservice::shutdown_vm_request::Mechanism::Acpi as i32,
+            force: false,
+        }
+    }
 
     fn memory_disk() -> vmservice::DiskBackend {
         vmservice::DiskBackend {
@@ -2916,6 +3389,470 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shutdown_request_acceptance_does_not_halt_or_teardown_vm() {
+        DefaultPool::run_with(async |driver| {
+            for force in [false, true] {
+                let (send, mut recv) = mesh::channel();
+                let mut service = service(driver.clone(), Some(send));
+                let (response, result) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(
+                            vmservice::ShutdownVmRequest {
+                                force,
+                                ..shutdown_request()
+                            },
+                            response,
+                        ),
+                    )
+                    .await;
+                assert_eq!(service.rpc_tasks.len(), 1);
+                let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                    panic!("expected shutdown request");
+                };
+                assert!(matches!(rpc.input().shutdown_type, ShutdownType::PowerOff));
+                assert_eq!(rpc.input().force, force);
+                rpc.complete(ShutdownResult::Ok);
+                result.await.unwrap().unwrap();
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                assert!(service.vm.is_some());
+            }
+        });
+    }
+
+    #[test]
+    fn acpi_shutdown_injects_without_ic_and_does_not_halt_or_teardown() {
+        DefaultPool::run_with(async |driver| {
+            use prost::Message;
+            use vmservice::shutdown_vm_request::Mechanism;
+
+            assert_eq!(Mechanism::Acpi as i32, 2);
+            assert_eq!(Mechanism::Acpi.as_str_name(), "MECHANISM_ACPI");
+            let request = acpi_shutdown_request();
+            let request =
+                vmservice::ShutdownVmRequest::decode(request.encode_to_vec().as_slice()).unwrap();
+
+            for with_ic in [false, true] {
+                let (ic_send, mut ic_recv) = mesh::channel();
+                let (send, mut recv) = mesh::channel();
+                let mut service = service(driver.clone(), with_ic.then_some(ic_send));
+                Arc::get_mut(service.vm.as_mut().unwrap())
+                    .unwrap()
+                    .acpi_power_button_rpc = Some(send);
+                let (response, result) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(request.clone(), response),
+                    )
+                    .await;
+                let PowerButtonRpc::Press(rpc) = recv.next().await.unwrap();
+                let mut result = std::pin::pin!(result);
+                assert!(futures::poll!(&mut result).is_pending());
+                rpc.complete(());
+                result.await.unwrap().unwrap();
+                service.rpc_tasks.pop().unwrap().await;
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                assert!(service.vm.is_some());
+                if with_ic {
+                    assert!(futures::poll!(ic_recv.next()).is_pending());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn acpi_shutdown_validates_force_lifecycle_and_device_without_fallback() {
+        DefaultPool::run_with(async |driver| {
+            let (ic_send, mut ic_recv) = mesh::channel();
+            let mut service = service(driver, Some(ic_send));
+            let vm = service.vm.take();
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), acpi_shutdown_request())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("VM not created"));
+            service.vm = vm;
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), acpi_shutdown_request())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("direct ACPI or UEFI boot"));
+
+            let (send, mut recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(send);
+            for lifecycle in [
+                VmLifecycle::Paused,
+                VmLifecycle::Halted("PowerOff".into()),
+                VmLifecycle::Uninitialized,
+                VmLifecycle::Running,
+            ] {
+                service.lifecycle = lifecycle;
+                for force in [false, true] {
+                    if !force && matches!(service.lifecycle, VmLifecycle::Running) {
+                        continue;
+                    }
+                    let status = grpc_error(
+                        service
+                            .shutdown_vm(
+                                mesh::CancelContext::new(),
+                                vmservice::ShutdownVmRequest {
+                                    force,
+                                    ..acpi_shutdown_request()
+                                },
+                            )
+                            .err()
+                            .unwrap(),
+                    );
+                    assert_eq!(
+                        status.code,
+                        if force {
+                            Code::InvalidArgument
+                        } else {
+                            Code::FailedPrecondition
+                        } as i32
+                    );
+                    assert!(status.message.contains(if force {
+                        "does not support force"
+                    } else {
+                        "VM must be running"
+                    }));
+                }
+            }
+            assert!(futures::poll!(recv.next()).is_pending());
+            assert!(futures::poll!(ic_recv.next()).is_pending());
+        });
+    }
+
+    #[test]
+    fn acpi_shutdown_deadline_and_communication_failure() {
+        DefaultPool::run_with(async |driver| {
+            let (send, mut recv) = mesh::channel();
+            let mut service = service(driver, None);
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(send);
+
+            let expired = mesh::CancelContext::new().with_timeout(Duration::ZERO);
+            let error = service
+                .shutdown_vm(expired, acpi_shutdown_request())
+                .unwrap()
+                .await
+                .unwrap_err();
+            assert_eq!(grpc_error(error).code, Code::DeadlineExceeded as i32);
+            assert!(futures::poll!(recv.next()).is_pending());
+
+            let ctx = mesh::CancelContext::new().with_timeout(Duration::from_millis(10));
+            let mut request =
+                std::pin::pin!(service.shutdown_vm(ctx, acpi_shutdown_request()).unwrap());
+            assert!(futures::poll!(&mut request).is_pending());
+            let pending_rpc = recv.next().await.unwrap();
+            assert_eq!(
+                grpc_error(request.await.unwrap_err()).code,
+                Code::DeadlineExceeded as i32
+            );
+            drop(pending_rpc);
+            drop(recv);
+            let error = service
+                .shutdown_vm(mesh::CancelContext::new(), acpi_shutdown_request())
+                .unwrap()
+                .await
+                .unwrap_err();
+            assert!(grpc_error(error).message.contains("communication failure"));
+            assert!(matches!(service.lifecycle, VmLifecycle::Running));
+        });
+    }
+
+    #[test]
+    fn shutdown_request_defaults_and_unknown_mechanisms() {
+        DefaultPool::run_with(async |driver| {
+            use prost::Message;
+            use vmservice::shutdown_vm_request::Mechanism;
+
+            let defaults = vmservice::ShutdownVmRequest::decode(&[][..]).unwrap();
+            assert_eq!(defaults.mechanism, Mechanism::Unspecified as i32);
+            assert!(!defaults.force);
+            assert_eq!(defaults, vmservice::ShutdownVmRequest::default());
+
+            let (send, mut recv) = mesh::channel();
+            let mut service = service(driver, Some(send));
+            let (acpi_send, mut acpi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(acpi_send);
+            for mechanism in [-1, 3, i32::MIN, i32::MAX] {
+                for force in [false, true] {
+                    let request = vmservice::ShutdownVmRequest { mechanism, force };
+                    let request =
+                        vmservice::ShutdownVmRequest::decode(request.encode_to_vec().as_slice())
+                            .unwrap();
+                    let (response, result) = mesh::oneshot();
+                    service
+                        .handle(
+                            mesh::CancelContext::new(),
+                            vmservice::Vm::ShutdownVm(request, response),
+                        )
+                        .await;
+                    let status = result.await.unwrap().unwrap_err();
+                    assert_eq!(status.code, Code::InvalidArgument as i32);
+                    assert!(
+                        status
+                            .message
+                            .contains(&format!("unknown shutdown mechanism {mechanism}"))
+                    );
+                    assert!(service.rpc_tasks.is_empty());
+                    assert!(futures::poll!(recv.next()).is_pending());
+                    assert!(futures::poll!(acpi_recv.next()).is_pending());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_guest_errors() {
+        DefaultPool::run_with(async |driver| {
+            for (reply, code, message) in [
+                (
+                    ShutdownResult::NotReady,
+                    Code::FailedPrecondition,
+                    "shutdown IC not ready",
+                ),
+                (
+                    ShutdownResult::AlreadyInProgress,
+                    Code::AlreadyExists,
+                    "shutdown already in progress",
+                ),
+                (
+                    ShutdownResult::Failed(0x80004005),
+                    Code::Internal,
+                    "0x80004005",
+                ),
+            ] {
+                let (send, mut recv) = mesh::channel();
+                let service = service(driver.clone(), Some(send));
+                let request = service
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
+                    .unwrap();
+                let guest = async {
+                    let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                        panic!("expected shutdown request");
+                    };
+                    rpc.complete(reply);
+                };
+                let (result, ()) = futures::join!(request, guest);
+                let status = grpc_error(result.unwrap_err());
+                assert_eq!(status.code, code as i32);
+                assert!(status.message.contains(message));
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_requires_running_vm_and_integration_component() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let (acpi_send, mut acpi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(acpi_send);
+            let vm = service.vm.take();
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("VM not created"));
+            service.vm = vm;
+            let status = grpc_error(
+                service
+                    .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
+                    .err()
+                    .unwrap(),
+            );
+            assert_eq!(status.code, Code::FailedPrecondition as i32);
+            assert!(status.message.contains("Hyper-V enlightenments and VMBus"));
+
+            let (send, mut recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .shutdown_rpc = Some(send);
+            for lifecycle in [
+                VmLifecycle::Paused,
+                VmLifecycle::Halted("power off".into()),
+                VmLifecycle::Uninitialized,
+            ] {
+                service.lifecycle = lifecycle;
+                let status = grpc_error(
+                    service
+                        .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
+                        .err()
+                        .unwrap(),
+                );
+                assert_eq!(status.code, Code::FailedPrecondition as i32);
+                assert!(status.message.contains("VM must be running"));
+            }
+            assert!(futures::poll!(recv.next()).is_pending());
+            assert!(futures::poll!(acpi_recv.next()).is_pending());
+        });
+    }
+
+    #[test]
+    fn shutdown_unspecified_mechanism_does_not_send() {
+        DefaultPool::run_with(async |driver| {
+            use prost::Message;
+
+            let (send, mut recv) = mesh::channel();
+            let mut service = service(driver, Some(send));
+            let (acpi_send, mut acpi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap())
+                .unwrap()
+                .acpi_power_button_rpc = Some(acpi_send);
+            for request in [
+                vmservice::ShutdownVmRequest::default(),
+                vmservice::ShutdownVmRequest::decode(&[][..]).unwrap(),
+                vmservice::ShutdownVmRequest::decode(&[0x08, 0x00][..]).unwrap(),
+                vmservice::ShutdownVmRequest {
+                    mechanism: 0,
+                    force: true,
+                },
+            ] {
+                let (response, result) = mesh::oneshot();
+                service
+                    .handle(
+                        mesh::CancelContext::new(),
+                        vmservice::Vm::ShutdownVm(request, response),
+                    )
+                    .await;
+                let status = result.await.unwrap().unwrap_err();
+                assert_eq!(status.code, Code::InvalidArgument as i32);
+                assert!(
+                    status
+                        .message
+                        .contains("shutdown mechanism must be specified")
+                );
+                assert!(service.rpc_tasks.is_empty());
+                assert!(futures::poll!(recv.next()).is_pending());
+                assert!(futures::poll!(acpi_recv.next()).is_pending());
+                assert!(matches!(service.lifecycle, VmLifecycle::Running));
+            }
+        });
+    }
+
+    #[test]
+    fn shutdown_without_caller_deadline_waits_for_acknowledgement() {
+        DefaultPool::run_with(async |driver| {
+            let (send, mut recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            let ctx = mesh::CancelContext::new();
+            assert!(ctx.deadline().is_none());
+            let mut request = std::pin::pin!(service.shutdown_vm(ctx, shutdown_request()).unwrap());
+            assert!(futures::poll!(&mut request).is_pending());
+            let ShutdownRpc::Shutdown(rpc) = recv.next().await.unwrap() else {
+                panic!("expected shutdown request");
+            };
+            assert!(futures::poll!(&mut request).is_pending());
+            rpc.complete(ShutdownResult::Ok);
+            request.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn shutdown_expired_deadline_before_dispatch_does_not_send() {
+        DefaultPool::run_with(async |driver| {
+            let (send, mut recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            let ctx = mesh::CancelContext::new().with_timeout(Duration::ZERO);
+            let request = service.shutdown_vm(ctx, shutdown_request()).unwrap();
+            let status = grpc_error(request.await.unwrap_err());
+            assert_eq!(status.code, Code::DeadlineExceeded as i32);
+            assert!(
+                recv.next().now_or_never().is_none(),
+                "expired shutdown must not enqueue an IC request"
+            );
+        });
+    }
+
+    #[cfg(feature = "ttrpc")]
+    #[test]
+    fn shutdown_deadline_over_ttrpc() {
+        DefaultPool::run_with(async |driver| {
+            mesh::CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(async {
+                    let (client_socket, server_socket) = unix_socket::UnixStream::pair().unwrap();
+                    let mut server = mesh_rpc::Server::new();
+                    let mut requests = server.add_service::<vmservice::Vm>();
+                    let server_driver = driver.clone();
+                    let server_task = driver.spawn("shutdown-test-server", async move {
+                        server.run_single(&server_driver, server_socket).await
+                    });
+                    let client = mesh_rpc::Client::new(
+                        &driver,
+                        mesh_rpc::client::ExistingConnection::new(
+                            pal_async::socket::PolledSocket::new(&driver, client_socket).unwrap(),
+                        ),
+                    );
+                    let (send, mut recv) = mesh::channel();
+                    let mut service = service(driver.clone(), Some(send));
+                    let request = client
+                        .call()
+                        .timeout(Some(Duration::from_secs(1)))
+                        .start(vmservice::Vm::ShutdownVm, shutdown_request());
+                    let (ctx, rpc) = requests.next().await.unwrap();
+                    assert!(ctx.deadline().is_some());
+                    service.handle(ctx, rpc).await;
+
+                    // Keep the IC reply pending to exercise the server's deadline,
+                    // rather than a client-side timeout or a closed IC channel.
+                    let pending_rpc = recv.next().await.unwrap();
+                    assert!(matches!(&pending_rpc, ShutdownRpc::Shutdown(_)));
+                    service.rpc_tasks.pop().unwrap().await;
+                    let status = request.await.unwrap_err();
+                    assert_eq!(status.code, Code::DeadlineExceeded as i32);
+                    assert!(
+                        status
+                            .message
+                            .contains("guest shutdown request cancelled or timed out")
+                    );
+                    assert!(matches!(service.lifecycle, VmLifecycle::Running));
+                    drop(pending_rpc);
+                    client.shutdown().await;
+                    server_task.await.unwrap();
+                })
+                .await
+                .expect("shutdown handler did not honor the one-second RPC deadline");
+        });
+    }
+
+    #[test]
+    fn shutdown_communication_failure() {
+        DefaultPool::run_with(async |driver| {
+            let (send, recv) = mesh::channel();
+            let service = service(driver, Some(send));
+            drop(recv);
+            let result = service
+                .shutdown_vm(mesh::CancelContext::new(), shutdown_request())
+                .unwrap()
+                .await;
+            assert!(
+                grpc_error(result.unwrap_err())
+                    .message
+                    .contains("communication failure")
+            );
+        });
+    }
     #[test]
     fn guest_power_actions_defaults() {
         use vmservice::vm_config::GuestPowerAction as Action;
@@ -3189,6 +4126,48 @@ mod tests {
     }
 
     #[test]
+    fn hvsocket_service_selection() {
+        use vmservice::hv_socket_listener::Service;
+
+        for (port, id) in [
+            (0, guid::guid!("00000000-facb-11e6-bd58-64006a7986d3")),
+            (50001, guid::guid!("0000c351-facb-11e6-bd58-64006a7986d3")),
+            (
+                u32::MAX,
+                guid::guid!("ffffffff-facb-11e6-bd58-64006a7986d3"),
+            ),
+        ] {
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::VsockPort(port))).unwrap(),
+                id
+            );
+            assert_eq!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+                id
+            );
+        }
+        let id = Guid::new_random();
+        assert_eq!(
+            parse_hvsocket_service(Some(Service::ServiceId(id.to_string()))).unwrap(),
+            id
+        );
+        assert!(
+            parse_hvsocket_service(None)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        for id in ["", "not-a-guid"] {
+            assert!(
+                parse_hvsocket_service(Some(Service::ServiceId(id.into())))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid hvsocket service ID")
+            );
+        }
+    }
+
+    #[test]
     fn platform_config_flags() {
         for disable_vmbus in [false, true] {
             for disable_hv in [false, true] {
@@ -3210,6 +4189,7 @@ mod tests {
             }
         }
         let defaults = vmservice::VmConfig::default();
+        assert!(!defaults.guest_watchdog);
         assert!(!defaults.disable_vmbus);
         assert!(!defaults.disable_hv);
         assert!(validate_platform_config(&defaults).is_ok());
@@ -3250,7 +4230,7 @@ mod tests {
 
     #[test]
     fn validate_iommufd_contexts() {
-        assert!(IommufdContexts::new(vec![]).unwrap().files.is_empty());
+        assert!(IommufdContexts::new(vec![]).is_ok());
         assert!(
             IommufdContexts::new(vec![vmservice::IommufdConfig { id: String::new() }])
                 .err()
@@ -3275,6 +4255,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn iommufd_context_references_share_open_file() {
         use std::io::Seek;
         use std::io::SeekFrom;
@@ -3301,6 +4282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn vfio_rejects_invalid_iommufd_reference_without_fallback() {
         for id in ["", "undeclared"] {
             let error = build_vfio_device(
@@ -3393,6 +4375,7 @@ mod tests {
                 },
                 &FdRegistry::default(),
                 &IommufdContexts::default(),
+                false,
             ));
             if has_iommu && !cfg!(guest_arch = "aarch64") {
                 assert!(result.is_err());
@@ -3400,6 +4383,41 @@ mod tests {
                 assert_eq!(result.unwrap().root_complexes[0].iommu.is_some(), has_iommu);
             }
         }
+    }
+
+    #[test]
+    fn pcie_topology_assigns_legacy_pci_config_io() {
+        let topology = vmservice::PcieTopologyConfig {
+            root_complexes: vec![
+                vmservice::PcieRootComplex {
+                    name: "segment-zero".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: u8::MAX.into(),
+                    ..Default::default()
+                },
+                vmservice::PcieRootComplex {
+                    name: "segment-one".into(),
+                    segment: 1,
+                    start_bus: 0,
+                    end_bus: u8::MAX.into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let topology = futures::executor::block_on(build_pcie_topology(
+            topology,
+            &FdRegistry::default(),
+            &IommufdContexts::default(),
+            true,
+        ))
+        .unwrap();
+
+        assert!(topology.legacy_pci_config_io_for_pcie);
+        assert!(topology.root_complexes[0].legacy_pci_config_io);
+        assert!(!topology.root_complexes[1].legacy_pci_config_io);
     }
 
     #[test]
@@ -3427,6 +4445,7 @@ mod tests {
                         },
                         &FdRegistry::default(),
                         &IommufdContexts::default(),
+                        false,
                     ))
                     .unwrap();
                     let expected = pasid.unwrap_or(false);
@@ -3449,11 +4468,13 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn vfio_bar_address(bar_index: u32, source: Option<Source>) -> vmservice::VfioBarAddress {
         vmservice::VfioBarAddress { bar_index, source }
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn parse_vfio_bar_address_config() {
         let bars = parse_vfio_bar_addresses(vec![
             vfio_bar_address(0, Some(Source::Host(()))),
@@ -3467,6 +4488,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn reject_invalid_vfio_bar_address_config() {
         assert!(
             parse_vfio_bar_addresses(vec![vfio_bar_address(6, Some(Source::Host(())))]).is_err()

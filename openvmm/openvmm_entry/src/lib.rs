@@ -27,6 +27,7 @@ use console_relay::ConsoleLaunchOptions;
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
@@ -66,6 +67,8 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -93,6 +96,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
@@ -191,6 +195,7 @@ struct VmResources {
     serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
@@ -807,6 +812,7 @@ async fn vm_config_from_command_line(
                 },
                 mac_address: None,
                 max_queues: None,
+                enable_rx_gso: false,
                 underhill: false,
                 pcie_port: None,
             },
@@ -973,6 +979,7 @@ async fn vm_config_from_command_line(
     };
 
     let mut pcie_root_complexes = Vec::new();
+    let mut legacy_pci_config_io_for_pcie = false;
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
@@ -1007,12 +1014,19 @@ async fn vm_config_from_command_line(
         } else {
             None
         };
+        let legacy_pci_config_io = arch == MachineArch::X86_64
+            && !opt.pcat
+            && rc_cli.segment == 0
+            && rc_cli.start_bus == 0
+            && rc_cli.end_bus == u8::MAX;
+        legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
+            legacy_pci_config_io,
             low_mmio: if let Some(base) = rc_cli.low_mmio_base {
                 PcieMmioRangeConfig::Fixed(
                     memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
@@ -1234,6 +1248,10 @@ async fn vm_config_from_command_line(
 
     let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
+    if legacy_pci_config_io_for_pcie {
+        chipset = chipset.with_legacy_pci_config_io_for_pcie();
+    }
+
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();
     }
@@ -1319,17 +1337,6 @@ async fn vm_config_from_command_line(
     // the system identity to the paravisor and fails closed on BIOS overrides
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
-
-    let layout_config = chipset.layout_config();
-    let VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-        pci_chipset_devices,
-        isa_dma_controller,
-        capabilities,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
 
     let tpm_version = opt.tpm.map(|cli_ver| match cli_ver {
         TpmVersionCli::V138 => TpmVersion::V138,
@@ -1521,6 +1528,27 @@ async fn vm_config_from_command_line(
             smbios,
         };
     }
+
+    if supports_acpi_power_button(&load_mode) {
+        let (send, recv) = mesh::channel();
+        let irq = match arch {
+            MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+            MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+        };
+        chipset = chipset.with_acpi_power_button(irq, recv);
+        resources.acpi_power_button = Some(send);
+    }
+
+    let layout_config = chipset.layout_config();
+    let VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        capabilities,
+    } = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
 
     let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
         let encryption_policy = if opt.test_gsp_by_id {
@@ -1865,6 +1893,7 @@ async fn vm_config_from_command_line(
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         let resource = virtio_resources::net::VirtioNetHandle {
             max_queues: vport.max_queues,
+            enable_rx_gso: vport.enable_rx_gso,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
         }
@@ -2355,7 +2384,9 @@ fn parse_endpoint(
             };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
+                params: Default::default(),
                 ports,
+                internal_dns: true,
                 recv,
             }
             .into_resource()
@@ -2417,6 +2448,7 @@ fn parse_endpoint(
         endpoint,
         mac_address,
         max_queues: cli_cfg.max_queues,
+        enable_rx_gso: cli_cfg.enable_rx_gso,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
@@ -2428,6 +2460,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    enable_rx_gso: bool,
     pcie_port: Option<String>,
 }
 
@@ -3073,6 +3106,7 @@ async fn run_control_inner(
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
             consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
+            acpi_power_button: resources.acpi_power_button,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
@@ -3399,6 +3433,7 @@ mod tests {
                 assert!(config.vmbus.is_some());
                 assert!(config.vtl2_vmbus.is_some());
                 assert!(resources.ged_rpc.is_some());
+                assert!(resources.acpi_power_button.is_none());
                 for id in ["ged", "gel"] {
                     assert!(
                         config.vmbus_devices.iter().any(|(vtl, resource)| {

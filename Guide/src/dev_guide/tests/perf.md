@@ -114,6 +114,7 @@ burette run --test network --nic virtio-net -o network.json
 
 The report records TCP throughput and UDP packet-rate metrics. Keep the NIC,
 network backend, host CPU placement, and MTU constant between compared runs.
+Virtio-net benchmarks enable receive GSO with both Consomme and TAP backends.
 
 Compare shared vs. private memory overhead:
 

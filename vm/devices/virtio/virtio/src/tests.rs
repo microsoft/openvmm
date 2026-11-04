@@ -121,6 +121,7 @@ async fn yield_and_poll_device(dev: &mut impl PollDevice) {
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
+    failed_write_range: Mutex<Option<std::ops::Range<u64>>>,
     doorbell_count: AtomicUsize,
     /// The doorbells that are currently INSTALLED, i.e. whose registration
     /// object is still alive.
@@ -269,6 +270,18 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
         src: *const u8,
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
+        let end = address.saturating_add(len as u64);
+        if self
+            .failed_write_range
+            .lock()
+            .as_ref()
+            .is_some_and(|range| address < range.end && range.start < end)
+        {
+            return Err(GuestMemoryBackingError::other(
+                address,
+                io::Error::other("injected guest-memory write failure"),
+            ));
+        }
         match self.memory_map.lock().get(address, len) {
             Some((true, value)) => {
                 // SAFETY: guaranteed by caller
@@ -4700,7 +4713,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
 
@@ -4715,7 +4728,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     dev.pci_device.stop().await;
 
     // Save state.
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
     // Verify saved state has expected values.
     assert_eq!(
@@ -4735,6 +4748,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
     // Verify stop is a no-op — restore must not start queues.
@@ -4827,7 +4841,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
 #[async_test]
 async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let mem = GuestMemory::new("test", test_mem.clone());
@@ -4842,7 +4856,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     guest.setup_pci_device(&mut dev, driver_features).await;
 
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
     // Confirm saved state includes the device-specific feature bit.
     assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
@@ -4870,7 +4884,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev2.restore(saved);
+    let result = dev2.restore(saved).await;
     assert!(
         result.is_err(),
         "restore should fail with incompatible features"
@@ -4879,7 +4893,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_save_not_supported_device(_driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let msi_conn = MsiConnection::new();
 
@@ -4903,7 +4917,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev.save();
+    let result = dev.save().await;
     assert!(result.is_err(), "save should fail for unsupported device");
 }
 
@@ -4938,7 +4952,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
 
 #[async_test]
 async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     const QUEUE_COUNT: u16 = 2;
     // What `setup_pci_device` programs BAR0 to.
@@ -4973,7 +4987,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     );
 
     dev.pci_device.stop().await;
-    let saved = dev.pci_device.save().expect("save should succeed");
+    let saved = dev.pci_device.save().await.expect("save should succeed");
 
     // Drop the saved device before restoring, so what the assertions below see
     // can only be the RESTORED device's doorbells and not the original's.
@@ -4994,6 +5008,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     let mut dev2 = VirtioPciTestDevice::new(&driver, QUEUE_COUNT, &test_mem, None);
     dev2.pci_device
         .restore(saved)
+        .await
         .expect("restore should succeed");
 
     assert_eq!(
@@ -5691,6 +5706,84 @@ async fn in_order_double_complete_panics(driver: DefaultDriver) {
     in_order.complete(&mut queue, w1b.into_completion(), 1);
 }
 
+#[async_test]
+async fn completion_write_failure_releases_queue_capacity(driver: DefaultDriver) {
+    use crate::test_helpers::read_used_idx;
+
+    for prepared in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("completion-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| queue.try_next().unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            for work in work {
+                if prepared {
+                    queue.complete_prepared(work.into_completion(), 0);
+                } else {
+                    queue.complete(work, 0);
+                }
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    queue.try_next().unwrap().is_some(),
+                    "failed publication must not strand host queue capacity"
+                );
+            }
+        }
+    }
+}
+
+#[async_test]
+async fn in_order_write_failure_releases_ownership_and_capacity(driver: DefaultDriver) {
+    use crate::in_order::InOrderCompletion;
+    use crate::test_helpers::read_used_idx;
+
+    for buffered in [false, true] {
+        for offset in [USED_OFFSET_RING, USED_OFFSET_IDX] {
+            let access = VirtioTestMemoryAccess::new();
+            access.modify_memory_map(BOUND_TEST_DESC_ADDR, &vec![0; 0x4000], true);
+            let mem = GuestMemory::new("in-order-write-failure", access.clone());
+            let (mem, mut queue) =
+                new_bound_test_queue_with_memory(&driver, false, None, mem).unwrap();
+            let mut in_order = InOrderCompletion::new(BOUND_TEST_QUEUE_SIZE);
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, 0);
+            let mut work: Vec<_> = (0..BOUND_TEST_QUEUE_SIZE)
+                .map(|_| in_order.try_next(&mut queue).unwrap().unwrap())
+                .collect();
+            let failed_address = BOUND_TEST_USED_ADDR + offset;
+            *access.failed_write_range.lock() = Some(failed_address..failed_address + 2);
+
+            if buffered {
+                work.reverse();
+            }
+            for work in work {
+                in_order.complete(&mut queue, work.into_completion(), 0);
+            }
+            assert_eq!(read_used_idx(&mem, BOUND_TEST_USED_ADDR), 0);
+            assert_eq!(in_order.outstanding(), 0);
+
+            make_split_bound_test_work(&mem, BOUND_TEST_QUEUE_SIZE, BOUND_TEST_QUEUE_SIZE);
+            for _ in 0..BOUND_TEST_QUEUE_SIZE {
+                assert!(
+                    in_order.try_next(&mut queue).unwrap().is_some(),
+                    "failed publication must not strand host descriptor ownership or capacity"
+                );
+            }
+        }
+    }
+}
+
 const BOUND_TEST_QUEUE_SIZE: u16 = 4;
 const BOUND_TEST_DESC_ADDR: u64 = 0x1000;
 const BOUND_TEST_AVAIL_ADDR: u64 = 0x2000;
@@ -5720,11 +5813,24 @@ fn new_bound_test_queue_result(
     packed: bool,
     initial_state: Option<QueueState>,
 ) -> Result<(GuestMemory, VirtioQueue), QueueError> {
+    new_bound_test_queue_with_memory(
+        driver,
+        packed,
+        initial_state,
+        GuestMemory::allocate(0x10000),
+    )
+}
+
+fn new_bound_test_queue_with_memory(
+    driver: &DefaultDriver,
+    packed: bool,
+    initial_state: Option<QueueState>,
+    mem: GuestMemory,
+) -> Result<(GuestMemory, VirtioQueue), QueueError> {
     use crate::test_helpers::init_avail_ring;
     use crate::test_helpers::init_used_ring;
     use crate::test_helpers::write_descriptor;
 
-    let mem = GuestMemory::allocate(0x10000);
     init_avail_ring(&mem, BOUND_TEST_AVAIL_ADDR);
     init_used_ring(&mem, BOUND_TEST_USED_ADDR);
     if !packed {
@@ -5849,6 +5955,61 @@ fn write_packed_descriptor(
         &0x100u32.to_le_bytes(),
     )
     .unwrap();
+}
+
+#[async_test]
+async fn split_queue_rejects_out_of_range_descriptor_head(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [BOUND_TEST_QUEUE_SIZE, u16::MAX] {
+        for peek in [false, true] {
+            let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+            let mut avail = 0;
+            make_available(
+                &mem,
+                BOUND_TEST_AVAIL_ADDR,
+                BOUND_TEST_QUEUE_SIZE,
+                head,
+                &mut avail,
+            );
+
+            let result = if peek {
+                queue.try_peek().map(|_| ())
+            } else {
+                queue.try_next().map(|_| ())
+            };
+            let error = result.expect_err("an out-of-range descriptor head must be rejected");
+            assert!(matches!(
+                queue_error(&error),
+                Some(QueueError::InvalidDescriptorIndex(index)) if *index == head
+            ));
+            assert!(matches!(queue.try_next(), Ok(None)));
+            assert!(matches!(queue.try_peek(), Ok(None)));
+        }
+    }
+}
+
+#[async_test]
+async fn split_queue_accepts_descriptor_head_boundaries(driver: DefaultDriver) {
+    use crate::test_helpers::make_available;
+
+    for head in [0, BOUND_TEST_QUEUE_SIZE - 1] {
+        let (mem, mut queue) = new_bound_test_queue(&driver, false, None);
+        let mut avail = 0;
+        make_available(
+            &mem,
+            BOUND_TEST_AVAIL_ADDR,
+            BOUND_TEST_QUEUE_SIZE,
+            head,
+            &mut avail,
+        );
+
+        assert!(queue.try_peek().unwrap().is_some());
+        let work = queue.try_next().unwrap().unwrap();
+        assert_eq!(work.descriptor_index(), head);
+        queue.complete(work, 0);
+        assert!(queue.try_next().unwrap().is_none());
+    }
 }
 
 #[async_test]

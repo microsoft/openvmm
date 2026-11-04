@@ -4,6 +4,9 @@
 //! The LxUtil crate provides an API that allows you to write the same file system code on Windows
 //! and Linux, using Linux semantics on both platforms (subject to the limitations of the underlying
 //! file system).
+//!
+//! Filesystem operations take native host paths. Use [`PathExt`] or [`PathBufExt`]
+//! to convert Linux paths before passing them to a volume. The volume root is a host path.
 
 #![cfg(any(windows, target_os = "linux"))]
 #![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
@@ -105,6 +108,13 @@ impl LxVolume {
     /// may still conflict if a path traverses a mount point.
     pub fn supports_stable_file_id(&self) -> bool {
         self.inner.supports_stable_file_id()
+    }
+
+    /// Returns whether Windows sandbox restrictions are enabled.
+    ///
+    /// Always returns false on Unix, where volume options are ignored.
+    pub fn is_sandbox(&self) -> bool {
+        self.inner.is_sandbox()
     }
 
     /// Retrieves the attributes of a file. Symlinks are not followed.
@@ -242,23 +252,42 @@ impl LxVolume {
         self.set_attr(path, attr)
     }
 
-    /// Opens or creates a file.
+    /// Opens or creates a file, rejecting final symlinks with `ELOOP`.
     ///
-    /// Symlinks are never followed, even if `O_NOFOLLOW` is omitted.
+    /// Symlinks are never followed, handles are non-inheritable, and opens never
+    /// acquire a controlling terminal. Creation requires `LxCreateOptions`.
+    /// Flags use the platform's Linux `O_*` definitions from [`lx`].
+    /// Unsupported bits, including caller-selectable host safety flags, return `EINVAL`.
+    ///
+    /// # Unix
+    ///
+    /// Host data opens always use `O_NONBLOCK` to avoid waiting for a FIFO peer.
+    /// This does not make regular-file I/O asynchronous.
     ///
     /// # Windows
     ///
-    /// Not all open flags are supported. In particular, only the flags present in the `lx` module
-    /// are supported. Unknown flags are ignored.
-    ///
-    /// The `O_NOFOLLOW` flag will successfully open a symbolic link, whereas on Unix it will fail
-    /// without the `O_PATH` flag (the O_PATH flag is ignored on Windows).
+    /// Alternate data streams are not supported. Use [`PathExt`] to convert Linux filenames.
+    /// Nonblocking, direct I/O, no-atime, and synchronization flags are ignored on Windows.
     pub fn open(
         &self,
         path: impl AsRef<Path>,
         flags: i32,
         options: Option<LxCreateOptions>,
     ) -> lx::Result<LxFile> {
+        let supported = lx::O_ACCESS_MASK
+            | lx::O_CREAT
+            | lx::O_EXCL
+            | lx::O_TRUNC
+            | lx::O_APPEND
+            | lx::O_NONBLOCK
+            | lx::O_DSYNC
+            | lx::O_DIRECT
+            | lx::O_DIRECTORY
+            | lx::O_NOATIME
+            | lx::O_SYNC;
+        if flags & !supported != 0 || (flags & lx::O_CREAT != 0 && options.is_none()) {
+            return Err(lx::Error::EINVAL);
+        }
         Ok(LxFile {
             inner: self.inner.open(path.as_ref(), flags, options)?,
         })
@@ -689,6 +718,8 @@ impl LxFile {
     /// # Windows
     ///
     /// The . and .. entries are always returned, but their inode number is not set.
+    /// Sandbox filtering uses the names and attributes captured in each cached
+    /// enumeration window; subsequent path-based operations recheck access.
     ///
     /// # Unix
     ///
@@ -705,6 +736,14 @@ impl LxFile {
     /// This function can optionally synchronize only data, not metadata.
     pub fn fsync(&self, data_only: bool) -> lx::Result<()> {
         self.inner.fsync(data_only)
+    }
+
+    /// Synchronizes a directory's buffer.
+    ///
+    /// The `data_only` request may be upgraded to a full sync on platforms that do not support
+    /// data-only synchronization of directories.
+    pub fn fsync_dir(&self, data_only: bool) -> lx::Result<()> {
+        self.inner.fsync_dir(data_only)
     }
 }
 
@@ -1085,7 +1124,7 @@ impl Default for LxVolumeOptions {
 ///
 /// The user ID and group ID are only used on Windows; on Unix platforms, set the thread's effective
 /// user ID and group ID to change the owner of a newly created file.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct LxCreateOptions {
     mode: lx::mode_t,
     #[cfg_attr(not(windows), expect(dead_code))]
@@ -1181,6 +1220,55 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    fn unsupported_open_flags_do_not_change_files() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        let original_stat = env.volume.lstat("file").unwrap();
+        for unsupported in [
+            lx::O_PATH,
+            lx::O_NOCTTY,
+            lx::O_CLOEXEC,
+            lx::O_LARGEFILE,
+            lx::O_NOFOLLOW,
+            0x2000,
+            0x400000,
+            i32::MIN,
+        ] {
+            for name in ["file", "new"] {
+                let result = env.volume.open(
+                    name,
+                    unsupported | lx::O_WRONLY | lx::O_TRUNC | lx::O_CREAT,
+                    Some(LxCreateOptions::default()),
+                );
+                assert_eq!(result.err().unwrap(), lx::Error::EINVAL);
+                assert_eq!(env.volume.lstat("file").unwrap(), original_stat);
+            }
+        }
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+        assert!(!env.root_dir.path().join("new").exists());
+    }
+
+    #[test]
+    fn directory_only_open_rejects_regular_files() {
+        let env = TestEnv::new();
+        env.create_file("file", "unchanged");
+        assert_eq!(
+            env.volume
+                .open("file", lx::O_DIRECTORY, None)
+                .err()
+                .unwrap(),
+            lx::Error::ENOTDIR
+        );
+        assert_eq!(
+            fs::read(env.root_dir.path().join("file")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
     fn lstat() {
         let env = TestEnv::new();
         env.create_file("testfile", "test");
@@ -1214,10 +1302,7 @@ mod tests {
         assert_eq!(stat, fstat);
 
         let stat = env.volume.lstat("").unwrap();
-        let file = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let file = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
@@ -1227,6 +1312,14 @@ mod tests {
     #[test]
     fn read_write() {
         let env = TestEnv::new();
+        assert_eq!(
+            env.volume
+                .open("testfile", lx::O_WRONLY | lx::O_CREAT, None)
+                .err()
+                .unwrap(),
+            lx::Error::EINVAL
+        );
+        assert!(!env.root_dir.path().join("testfile").exists());
         let file = env
             .volume
             .open(
@@ -1328,10 +1421,7 @@ mod tests {
             assert!(map.insert(name, false).is_none());
         }
 
-        let mut dir = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let mut dir = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         let mut count = 0;
         let mut next_offset = 0;
@@ -1423,10 +1513,7 @@ mod tests {
     fn read_dir_panic() {
         let env = TestEnv::new();
         env.create_file("testfile", "test");
-        let mut dir = env
-            .volume
-            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
-            .unwrap();
+        let mut dir = env.volume.open("", lx::O_DIRECTORY, None).unwrap();
 
         // Make sure the closure can safely panic even when invoked through the C callback on
         // Windows.
@@ -1757,11 +1844,20 @@ mod tests {
             .unwrap();
         assert!(lx::s_islnk(env.volume.lstat("link").unwrap().mode));
         assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
-        assert!(
-            env.volume
-                .open("link", lx::O_WRONLY | lx::O_TRUNC, None)
-                .is_err()
-        );
+        for flags in [
+            lx::O_RDONLY,
+            lx::O_RDWR,
+            lx::O_WRONLY | lx::O_TRUNC,
+            lx::O_CREAT | lx::O_RDONLY,
+            lx::O_CREAT | lx::O_WRONLY | lx::O_TRUNC,
+        ] {
+            let options = (flags & lx::O_CREAT != 0).then(LxCreateOptions::default);
+            assert_eq!(
+                env.volume.open("link", flags, options).err().unwrap(),
+                lx::Error::ELOOP
+            );
+            assert_eq!(env.volume.read_link("link").unwrap(), "target/file");
+        }
         env.volume.rename("link", "renamed", 0).unwrap();
         assert_eq!(env.volume.read_link("renamed").unwrap(), "target/file");
         env.volume.unlink("renamed", 0).unwrap();
@@ -2193,14 +2289,27 @@ mod tests {
         let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
         file.fsync(false).unwrap();
         file.fsync(true).unwrap();
+
+        let dir = env
+            .volume
+            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        dir.fsync_dir(false).unwrap();
+        dir.fsync_dir(true).unwrap();
     }
 
     #[test]
     fn xattr() {
+        fn names(bytes: &[u8]) -> Vec<&[u8]> {
+            let mut names: Vec<_> = bytes.split_inclusive(|&byte| byte == 0).collect();
+            names.sort_unstable();
+            names
+        }
+
         let env = TestEnv::new();
         env.create_file("testfile", "test");
 
-        // No attributes to start with.
+        // A new file may already carry host-managed attributes such as security.selinux.
         let err = env
             .volume
             .get_xattr("testfile", "user.test", None)
@@ -2209,7 +2318,13 @@ mod tests {
         assert_eq!(err.value(), lx::ENODATA);
 
         let size = env.volume.list_xattr("testfile", None).unwrap();
-        assert_eq!(size, 0);
+        let mut inherited = vec![0u8; size];
+        assert_eq!(
+            env.volume
+                .list_xattr("testfile", Some(&mut inherited))
+                .unwrap(),
+            size
+        );
 
         let err = env
             .volume
@@ -2226,7 +2341,7 @@ mod tests {
         let size = env.volume.get_xattr("testfile", "user.test", None).unwrap();
 
         assert_eq!(size, 3);
-        let mut buffer = [0u8; 1024];
+        let mut buffer = vec![0u8; inherited.len() + 1024];
         let size = env
             .volume
             .get_xattr("testfile", "user.test", Some(&mut buffer))
@@ -2248,15 +2363,17 @@ mod tests {
         assert_eq!(size, 0);
 
         // List the attributes.
+        let mut expected = inherited.clone();
+        expected.extend_from_slice(b"user.test\0user.empty\0");
         let size = env.volume.list_xattr("testfile", None).unwrap();
-        assert_eq!(size, 21);
+        assert_eq!(size, expected.len());
         let size = env
             .volume
             .list_xattr("testfile", Some(&mut buffer))
             .unwrap();
 
-        assert_eq!(size, 21);
-        assert_eq!(&buffer[..21], b"user.test\0user.empty\0");
+        assert_eq!(size, expected.len());
+        assert_eq!(names(&buffer[..size]), names(&expected));
 
         // Remove an attribute.
         env.volume.remove_xattr("testfile", "user.empty").unwrap();
@@ -2272,8 +2389,10 @@ mod tests {
             .list_xattr("testfile", Some(&mut buffer))
             .unwrap();
 
-        assert_eq!(size, 10);
-        assert_eq!(&buffer[..10], b"user.test\0");
+        let mut expected = inherited;
+        expected.extend_from_slice(b"user.test\0");
+        assert_eq!(size, expected.len());
+        assert_eq!(names(&buffer[..size]), names(&expected));
 
         // Test flags.
         let err = env
@@ -2505,8 +2624,8 @@ mod tests {
                     .unwrap();
 
                 for (path, mask, flags) in [
-                    ("", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
-                    ("testdir", dmask, lx::O_RDONLY | lx::O_DIRECTORY),
+                    ("", dmask, lx::O_DIRECTORY),
+                    ("testdir", dmask, lx::O_DIRECTORY),
                     ("testdir/testfile", fmask, lx::O_RDONLY),
                 ] {
                     let path = Path::from_lx(path).unwrap();

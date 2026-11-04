@@ -156,13 +156,12 @@ impl GenericChannel {
     fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Result<OwnedMessage, RecvError>> {
         let mut old_waker = None;
         self.port.with_handler(|queue| match &queue.state {
+            QueueState::Open if let Some(message) = queue.messages.pop_front() => {
+                Poll::Ready(Ok(message))
+            }
             QueueState::Open => {
-                if let Some(message) = queue.messages.pop_front() {
-                    Poll::Ready(Ok(message))
-                } else {
-                    old_waker = queue.waker.replace(cx.waker().clone());
-                    Poll::Pending
-                }
+                old_waker = queue.waker.replace(cx.waker().clone());
+                Poll::Pending
             }
             QueueState::Closed => Poll::Ready(queue.messages.pop_front().ok_or(RecvError::Closed)),
             QueueState::Failed(err) => Poll::Ready(Err(RecvError::Error(err.clone().into()))),
@@ -327,5 +326,38 @@ impl HandlePortEvent for MessageQueue {
 
     fn drain(&mut self) -> Vec<OwnedMessage> {
         std::mem::take(&mut self.messages).into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Channel;
+    use super::RecvError;
+    use std::assert_matches;
+    use std::task::Context;
+    use std::task::Poll;
+    use std::task::Waker;
+    use test_with_tracing::test;
+
+    #[test]
+    fn poll_recv_open() {
+        let (sender, mut receiver) = Channel::<u32, u32>::new_pair();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_matches!(receiver.poll_recv(&mut cx), Poll::Pending);
+        sender.send(7);
+        assert_matches!(receiver.poll_recv(&mut cx), Poll::Ready(Ok(7)));
+        assert_matches!(receiver.poll_recv(&mut cx), Poll::Pending);
+    }
+
+    #[test]
+    fn poll_recv_closed_drains_messages() {
+        let (sender, mut receiver) = Channel::<u32, u32>::new_pair();
+        let mut cx = Context::from_waker(Waker::noop());
+        sender.send_and_close(7);
+        assert_matches!(receiver.poll_recv(&mut cx), Poll::Ready(Ok(7)));
+        assert_matches!(
+            receiver.poll_recv(&mut cx),
+            Poll::Ready(Err(RecvError::Closed))
+        );
     }
 }

@@ -75,8 +75,25 @@ pub const QID_TYPE_SYMLINK: u8 = 0x02;
 pub const QID_TYPE_DIRECTORY: u8 = 0x80;
 
 // Flags used by the Tlopen message.
-// N.B. Omitted flags match their Linux equivalent.
+pub const OPEN_FLAG_ACCESS_MASK: u32 = 0o3;
+pub const OPEN_FLAG_RDONLY: u32 = 0o0;
+pub const OPEN_FLAG_WRONLY: u32 = 0o1;
+pub const OPEN_FLAG_RDWR: u32 = 0o2;
+pub const OPEN_FLAG_NOACCESS: u32 = 0o3;
+pub const OPEN_FLAG_CREAT: u32 = 0o100;
+pub const OPEN_FLAG_EXCL: u32 = 0o200;
+pub const OPEN_FLAG_TRUNC: u32 = 0o1000;
+pub const OPEN_FLAG_APPEND: u32 = 0o2000;
+pub const OPEN_FLAG_NONBLOCK: u32 = 0o4000;
+pub const OPEN_FLAG_DSYNC: u32 = 0o10000;
+pub const OPEN_FLAG_SYNC: u32 = 0o4000000;
+pub const OPEN_FLAG_NOATIME: u32 = 0o1000000;
+pub const OPEN_FLAG_DIRECT: u32 = 0o40000;
+pub const OPEN_FLAG_NOCTTY: u32 = 0o400;
+pub const OPEN_FLAG_CLOEXEC: u32 = 0o2000000;
+pub const OPEN_FLAG_LARGEFILE: u32 = 0o100000;
 pub const OPEN_FLAG_DIRECTORY: u32 = 0o200000;
+pub const OPEN_FLAG_NOFOLLOW: u32 = 0o400000;
 
 // The header of a 9p protocol message.
 pub struct Header {

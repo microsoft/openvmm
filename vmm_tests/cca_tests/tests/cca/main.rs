@@ -19,7 +19,7 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
-const CCA_TEST_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const CCA_TEST_TIMEOUT: Duration = Duration::from_mins(20);
 const CCA_TEST_SUCCESS_MARKER: &str = "PASS";
 const CCA_PLANE0_PROMPT: &str = "sh-5.2#";
 const CCA_START_TMK_COMMAND: &str = "/root/busybox sh /root/start-tmk.sh";
