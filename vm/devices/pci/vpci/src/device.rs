@@ -18,6 +18,8 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use pci_core::bar_mapping::BarMappings;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::spec::cfg_space;
@@ -48,6 +50,8 @@ use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_ring as ring;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
+use vmcore::vm_task::VmTaskDriver;
+use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
@@ -693,11 +697,16 @@ struct InFlightRequest {
     transaction_id: Option<u64>,
     /// The request as read off the ring.
     packet: Vec<u8>,
-    /// The number of interrupts the request has registered so far.
+    /// The config space steps the request has finished: the BARs for
+    /// `ASSIGNED_RESOURCES`, the power-off for `RELEASE_RESOURCES`.
     ///
-    /// A resumed request skips them. Its other steps run again, since they
-    /// only write the same device state a second time.
-    progress: u32,
+    /// A resumed request skips them. A step that was cut off is not made
+    /// again: the channel keeps its call, and the resumed request waits on
+    /// it.
+    writes_done: u32,
+    /// The interrupts the request has registered. A resumed request skips
+    /// them.
+    registered: u32,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
@@ -923,7 +932,8 @@ impl ReadyState {
                     self.in_flight = Some(InFlightRequest {
                         transaction_id,
                         packet,
-                        progress: 0,
+                        writes_done: 0,
+                        registered: 0,
                     });
                 }
                 Err(err) => fail_request(conn, dev, transaction_id, &err)?,
@@ -965,9 +975,9 @@ impl ReadyState {
         Ok(())
     }
 
-    /// Returns the in-flight request's progress count.
-    fn progress(&mut self) -> &mut u32 {
-        &mut self.in_flight.as_mut().unwrap().progress
+    /// Returns the request in flight.
+    fn in_flight(&mut self) -> &mut InFlightRequest {
+        self.in_flight.as_mut().unwrap()
     }
 
     async fn handle_packet(
@@ -1019,15 +1029,16 @@ impl ReadyState {
                         resources,
                         reply_type,
                     } => {
-                        // Once an interrupt is registered, the BARs are set.
-                        if *self.progress() == 0 {
+                        if self.in_flight().writes_done == 0 {
                             dev.set_bars(&resources.mmio_ranges)
                                 .await
                                 .map_err(PacketError::InvalidBars)?;
+                            self.in_flight().writes_done = 1;
                         }
 
                         let mut tr = Vec::<u8>::new();
-                        dev.map_interrupts(&resources.interrupts, self.progress(), &mut |r| {
+                        let registered = &mut self.in_flight().registered;
+                        dev.map_interrupts(&resources.interrupts, registered, &mut |r| {
                             match reply_type {
                                 AssignedResourcesReplyType::V1 => {
                                     tr.extend(protocol::MsiResource::from(r).as_bytes());
@@ -1050,13 +1061,14 @@ impl ReadyState {
                         conn.send_completion(transaction_id, &translated, &tr)?;
                     }
                     DeviceRequest::ReleaseResources => {
-                        dev.release_all().await;
+                        dev.release_all(&mut self.in_flight().writes_done).await;
                         conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
                     }
                     DeviceRequest::CreateInterrupt { interrupt } => {
                         let mut resource = FromZeros::new_zeroed();
                         // TODO: pass failures back the guest, don't fail the channel.
-                        dev.map_interrupts(&[interrupt], self.progress(), &mut |r| resource = r)
+                        let registered = &mut self.in_flight().registered;
+                        dev.map_interrupts(&[interrupt], registered, &mut |r| resource = r)
                             .await?;
                         conn.send_completion(
                             transaction_id,
@@ -1126,20 +1138,7 @@ impl ReadyState {
                                 dma_isolation: protocol::ResourceIsolation::INVALID,
                             }
                         } else {
-                            // The reporter returns a `'static` boxed future, so
-                            // we can drop the sync device guard before awaiting
-                            // it. This avoids holding the chipset device lock
-                            // across attestation work.
-                            let fut = {
-                                let mut locked_dev = dev.device.lock();
-                                locked_dev
-                                    .supports_tdisp_relay()
-                                    .map(|r| r.tdisp_isolation_report())
-                            };
-                            let report = match fut {
-                                Some(f) => Some(f.await),
-                                None => None,
-                            };
+                            let report = dev.isolation_report().await;
                             tracelimit::info_ratelimited!(
                                 instance_id = %dev.instance_id,
                                 ?report,
@@ -1384,77 +1383,141 @@ impl VpciChannel {
         }
         tracing::debug!(?bars, "setting bars");
 
-        {
-            for (i, bar) in bars.into_iter().enumerate() {
-                let bar = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
-                let result = self
-                    .device
-                    .lock()
-                    .supports_pci()
-                    .unwrap()
-                    .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
-                match result {
-                    IoResult::Ok => (),
-                    IoResult::Defer(token) => token
-                        .write_future()
-                        .await
-                        .expect("deferred BAR write failed"),
-                    IoResult::Err(err) => {
-                        tracing::error!(
-                        ?err,
-                        instance_id = %self.instance_id,
-                        index = i,
-                        "failed to write bar");
-                        panic!("failed to write bar");
+        let device = self.device.clone();
+        let instance_id = self.instance_id;
+        self.write_config(ConfigWriteStep::Bars(bars), move || {
+            Box::pin(async move {
+                for (i, bar) in bars.into_iter().enumerate() {
+                    let bar = ByteEnabledDwordWrite::with_all_bytes_enabled(bar);
+                    let result = device
+                        .lock()
+                        .supports_pci()
+                        .unwrap()
+                        .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+                    match result {
+                        IoResult::Ok => (),
+                        IoResult::Defer(token) => token
+                            .write_future()
+                            .await
+                            .expect("deferred BAR write failed"),
+                        IoResult::Err(err) => {
+                            tracing::error!(
+                            ?err,
+                            %instance_id,
+                            index = i,
+                            "failed to write bar");
+                            panic!("failed to write bar");
+                        }
                     }
                 }
-            }
-        }
+            })
+        })
+        .await;
         self.bars_set = true;
         Ok(())
     }
 
     async fn set_power(&mut self, on: bool) {
-        let result = {
-            let mut device = self.device.lock();
-            let pci = device.supports_pci().unwrap();
-            let mut command = {
-                let mut value_u32 = 0;
-                let value =
-                    ByteEnabledDwordRead::new(&mut value_u32, PciConfigByteEnable::LOW_WORD);
-                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, value)
-                    .now_or_never()
-                    .map(|_| value_u32)
-                    .unwrap_or(0)
-            };
-            let mmio = cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32;
-            if on {
-                command |= mmio;
-            } else {
-                command &= !mmio;
-            }
-            let command = ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
-            pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
-        };
-        match result {
-            IoResult::Ok => (),
-            IoResult::Defer(token) => token
-                .write_future()
-                .await
-                .expect("deferred power state change failed"),
-            IoResult::Err(err) => {
-                tracing::error!(
-                    ?err,
-                    instance_id = %self.instance_id,
-                    "failed to change power state"
-                );
-                panic!("failed to change power state");
-            }
-        }
+        let device = self.device.clone();
+        let instance_id = self.instance_id;
+        self.write_config(ConfigWriteStep::Power(on), move || {
+            Box::pin(async move {
+                let result = {
+                    let mut device = device.lock();
+                    let pci = device.supports_pci().unwrap();
+                    let mut command = {
+                        let mut value_u32 = 0;
+                        let value = ByteEnabledDwordRead::new(
+                            &mut value_u32,
+                            PciConfigByteEnable::LOW_WORD,
+                        );
+                        pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, value)
+                            .now_or_never()
+                            .map(|_| value_u32)
+                            .unwrap_or(0)
+                    };
+                    let mmio = cfg_space::Command::new()
+                        .with_mmio_enabled(true)
+                        .into_bits() as u32;
+                    if on {
+                        command |= mmio;
+                    } else {
+                        command &= !mmio;
+                    }
+                    let command =
+                        ByteEnabledDwordWrite::new(command, PciConfigByteEnable::LOW_WORD);
+                    pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
+                };
+                match result {
+                    IoResult::Ok => (),
+                    IoResult::Defer(token) => token
+                        .write_future()
+                        .await
+                        .expect("deferred power state change failed"),
+                    IoResult::Err(err) => {
+                        tracing::error!(?err, %instance_id, "failed to change power state");
+                        panic!("failed to change power state");
+                    }
+                }
+            })
+        })
+        .await;
 
         // TODO: set power cap, too, on devices that support it.
+    }
+
+    /// Makes the config space writes of one step.
+    ///
+    /// If a write call is pending, waits for it instead of making a new one:
+    /// it was made for this step by a run that was stopped. A deferred write
+    /// is not made twice, since the device can act on each write it sees.
+    async fn write_config(
+        &mut self,
+        step: ConfigWriteStep,
+        call: impl FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) {
+        let pending = self
+            .pending_call
+            .get_or_insert_with(|| PendingCall::ConfigWrite { step, call: call() });
+        let PendingCall::ConfigWrite {
+            step: pending,
+            call,
+        } = pending
+        else {
+            unreachable!("another call is pending");
+        };
+        assert_eq!(*pending, step, "config write pending for another step");
+        call.as_mut().await;
+        self.pending_call = None;
+    }
+
+    /// Asks the device for its isolation report. Returns `None` if the device
+    /// does not report one.
+    ///
+    /// If a report is pending, waits for it instead of asking again: it was
+    /// asked for by a run that was stopped.
+    async fn isolation_report(&mut self) -> Option<tdisp::TdispIsolationReport> {
+        if self.pending_call.is_none() {
+            // The reporter returns a `'static` boxed future, so the sync
+            // device guard is dropped before awaiting it. This avoids holding
+            // the chipset device lock across attestation work.
+            let call = self
+                .device
+                .lock()
+                .supports_tdisp_relay()
+                .map(|r| r.tdisp_isolation_report())?;
+            // Run the report on its own task. It can hold device state, such
+            // as a TDISP client lock, across round trips to the host, and a
+            // stopped worker would otherwise hold it until restarted.
+            let task = self.driver.spawn("vpci-isolation-report", call);
+            self.pending_call = Some(PendingCall::IsolationReport(task));
+        }
+        let Some(PendingCall::IsolationReport(task)) = &mut self.pending_call else {
+            unreachable!("another call is pending");
+        };
+        let report = task.await;
+        self.pending_call = None;
+        Some(report)
     }
 
     /// Registers the interrupts of one request.
@@ -1514,9 +1577,15 @@ impl VpciChannel {
     }
 
     /// Release all resources associated with the device (not the bus).
-    async fn release_all(&mut self) {
+    ///
+    /// `writes_done` counts the config space steps that are finished. A
+    /// resumed release skips the power-off once it is done.
+    async fn release_all(&mut self, writes_done: &mut u32) {
         // Power off the device.
-        self.set_power(false).await;
+        if *writes_done == 0 {
+            self.set_power(false).await;
+            *writes_done = 1;
+        }
 
         // Unmap all interrupts. Each is removed only once it is unregistered,
         // so a release resumed after a stop skips none.
@@ -1538,14 +1607,14 @@ impl VpciChannel {
         &mut self,
         interrupt: &InterruptResourceRequest,
     ) -> Result<MsiAddressData, RegisterInterruptError> {
-        let call = self.pending_mapper_call.get_or_insert_with(|| {
+        let call = self.pending_call.get_or_insert_with(|| {
             let mapper = self.msi_mapper.clone();
             let vector_count = interrupt.vector_count.into();
             let vector = interrupt.vector;
             let multicast = interrupt.delivery_mode == InterruptType::Fixed
                 && interrupt.target_processors.len() > 1;
             let target_processors = interrupt.target_processors.clone();
-            PendingMapperCall::Register(Box::pin(async move {
+            PendingCall::Register(Box::pin(async move {
                 let params = VpciInterruptParameters {
                     vector,
                     multicast,
@@ -1554,11 +1623,11 @@ impl VpciChannel {
                 mapper.register_interrupt(vector_count, &params).await
             }))
         });
-        let PendingMapperCall::Register(call) = call else {
-            unreachable!("an unregister call is pending");
+        let PendingCall::Register(call) = call else {
+            unreachable!("another call is pending");
         };
         let r = call.as_mut().await;
-        self.pending_mapper_call = None;
+        self.pending_call = None;
         r
     }
 
@@ -1567,9 +1636,9 @@ impl VpciChannel {
     /// If an unregister call is pending, waits for it instead of making a new
     /// one: it was made for this interrupt by a run that was stopped.
     async fn unregister_interrupt(&mut self, interrupt: MsiAddressData) {
-        let call = self.pending_mapper_call.get_or_insert_with(|| {
+        let call = self.pending_call.get_or_insert_with(|| {
             let mapper = self.msi_mapper.clone();
-            PendingMapperCall::Unregister {
+            PendingCall::Unregister {
                 interrupt,
                 call: Box::pin(async move {
                     mapper
@@ -1578,59 +1647,87 @@ impl VpciChannel {
                 }),
             }
         });
-        let PendingMapperCall::Unregister {
+        let PendingCall::Unregister {
             interrupt: pending,
             call,
         } = call
         else {
-            unreachable!("a register call is pending");
+            unreachable!("another call is pending");
         };
         assert_eq!(
             *pending, interrupt,
             "unregister call pending for another interrupt"
         );
         call.as_mut().await;
-        self.pending_mapper_call = None;
+        self.pending_call = None;
     }
 
-    /// Finishes a mapper call left by a request that the closed channel will
-    /// never complete, and drops what it registered.
-    async fn finish_pending_mapper_call(&mut self) {
-        match &mut self.pending_mapper_call {
+    /// Finishes a call left by a request that the closed channel will never
+    /// complete, and drops what it registered.
+    async fn finish_pending_call(&mut self) {
+        match &mut self.pending_call {
             None => {}
-            Some(PendingMapperCall::Register(call)) => {
+            Some(PendingCall::Register(call)) => {
                 let r = call.as_mut().await;
-                self.pending_mapper_call = None;
+                self.pending_call = None;
                 if let Ok(interrupt) = r {
                     self.unregister_interrupt(interrupt).await;
                 }
             }
-            Some(PendingMapperCall::Unregister { interrupt, .. }) => {
+            Some(PendingCall::Unregister { interrupt, .. }) => {
                 let interrupt = *interrupt;
                 self.unregister_interrupt(interrupt).await;
-                self.interrupts.retain(|x| x != &interrupt);
+                if let Some(i) = self.interrupts.iter().position(|x| x == &interrupt) {
+                    self.interrupts.swap_remove(i);
+                }
+            }
+            Some(PendingCall::ConfigWrite { call, .. }) => {
+                call.as_mut().await;
+                self.pending_call = None;
+            }
+            Some(PendingCall::IsolationReport(task)) => {
+                task.await;
+                self.pending_call = None;
             }
         }
     }
 }
 
-/// A mapper call that was made but has not finished.
+/// A call to the mapper or the device that was made but has not finished.
 ///
 /// It is kept on the channel rather than in the request's future, so a
 /// worker stop does not drop it. The resumed request waits on the same call
 /// instead of making it a second time.
-enum PendingMapperCall {
+enum PendingCall {
     Register(Pin<Box<dyn Future<Output = Result<MsiAddressData, RegisterInterruptError>> + Send>>),
     Unregister {
         interrupt: MsiAddressData,
         call: Pin<Box<dyn Future<Output = ()> + Send>>,
     },
+    /// The config space writes of one step.
+    ConfigWrite {
+        step: ConfigWriteStep,
+        call: Pin<Box<dyn Future<Output = ()> + Send>>,
+    },
+    /// The isolation report, running on its own task.
+    IsolationReport(Task<tdisp::TdispIsolationReport>),
+}
+
+/// The step a [`PendingCall::ConfigWrite`] was made for.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ConfigWriteStep {
+    /// The BAR values written.
+    Bars([u32; 6]),
+    /// Whether the device is powered on or off.
+    Power(bool),
 }
 
 /// Virtual PCI Channel
 #[derive(InspectMut)]
 pub struct VpciChannel {
     // Runtime services.
+    #[inspect(skip)]
+    driver: VmTaskDriver,
     #[inspect(skip)]
     msi_mapper: VpciInterruptMapper,
     #[inspect(skip)]
@@ -1658,7 +1755,7 @@ pub struct VpciChannel {
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
     #[inspect(skip)]
-    pending_mapper_call: Option<PendingMapperCall>,
+    pending_call: Option<PendingCall>,
     #[inspect(skip)]
     eject: VpciBusEject,
 }
@@ -1762,6 +1859,7 @@ impl VpciConfigSpaceOffset {
 impl VpciChannel {
     /// Create New VPCI Channel
     pub(crate) fn new(
+        driver_source: &VmTaskDriverSource,
         device: &Arc<CloseableMutex<dyn ChipsetDevice>>,
         instance_id: Guid,
         config_space: VpciConfigSpace,
@@ -1777,6 +1875,7 @@ impl VpciChannel {
         }
 
         Ok(VpciChannel {
+            driver: driver_source.simple(),
             msi_mapper,
             config_space,
             instance_id,
@@ -1788,7 +1887,7 @@ impl VpciChannel {
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
-            pending_mapper_call: None,
+            pending_call: None,
             eject: VpciBusEject::default(),
         })
     }
@@ -1842,8 +1941,10 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.eject.disconnect();
-        self.finish_pending_mapper_call().await;
-        self.release_all().await;
+        // Wait for a call a stopped request left, however long it takes, so no
+        // interrupt mapping leaks and no device operation is cut off halfway.
+        self.finish_pending_call().await;
+        self.release_all(&mut 0).await;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
         self.config_space.unmap();
@@ -1882,6 +1983,7 @@ pub struct NotPciDevice;
 #[cfg(test)]
 mod tests {
     use super::Connection;
+    use super::MmioResource;
     use super::ProtocolState;
     use super::VpciChannel;
     use super::VpciChannelState;
@@ -1892,6 +1994,8 @@ mod tests {
     use chipset_arc_mutex_device::test_chipset::TestChipset;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
+    use chipset_device::io::deferred::DeferredWrite;
+    use chipset_device::io::deferred::defer_write;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
@@ -1912,8 +2016,8 @@ mod tests {
     use openhcl_tdisp::new_get_device_interface_info_command;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
-    use pal_async::driver::SpawnDriver;
     use pal_async::task::Spawn;
+    use pal_async::timer::PolledTimer;
     use parking_lot::Mutex;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
@@ -1926,10 +2030,15 @@ mod tests {
     use pci_core::spec::hwid::Subclass;
     use ring::FlatRingMem;
     use ring::OutgoingPacketType;
+    use std::pin::pin;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use std::task::Context;
+    use std::task::Waker;
+    use std::time::Duration;
+    use std::time::Instant;
     use task_control::AsyncRun;
     use task_control::Cancelled;
     use task_control::InspectTaskMut;
@@ -1950,6 +2059,8 @@ mod tests {
     use vmbus_async::queue::connected_queues;
     use vmbus_channel::simple::SimpleVmbusDevice;
     use vmbus_ring as ring;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
     use vmcore::vpci_msi::MapVpciInterrupt;
     use vmcore::vpci_msi::MsiAddressData;
     use vmcore::vpci_msi::RegisterInterruptError;
@@ -1992,12 +2103,12 @@ mod tests {
     }
 
     fn connected_device(
-        driver: &impl SpawnDriver,
+        driver: &DefaultDriver,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         msi_mapper: Arc<TestVpciInterruptController>,
     ) -> MockVpciGuestDevice {
         let (mut state, mut worker, guest) =
-            new_channel(device, VpciInterruptMapper::new(msi_mapper));
+            new_channel(driver, device, VpciInterruptMapper::new(msi_mapper));
         driver
             .spawn("worker", async move {
                 StopTask::run_unstoppable(async |stop| {
@@ -2043,23 +2154,50 @@ mod tests {
         msi_mapper: Arc<GatedMapper>,
     ) -> (ChannelControl, MockVpciGuestDevice) {
         let pci = Arc::new(CloseableMutex::new(NullDevice {
-            config_space: ConfigSpaceType0Emulator::new(
-                HardwareIds {
-                    vendor_id: 0x123,
-                    device_id: 0x789,
-                    revision_id: 1,
-                    prog_if: ProgrammingInterface::NONE,
-                    base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
-                    sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
-                    type0_sub_vendor_id: 0x456,
-                    type0_sub_system_id: 0x1,
-                },
-                Vec::new(),
-                Vec::new(),
-                DeviceBars::new(),
-            ),
+            config_space: test_config_space(),
         }));
-        let (state, worker, guest) = new_channel(pci, VpciInterruptMapper::new(msi_mapper));
+        controlled_channel(driver, pci, msi_mapper)
+    }
+
+    /// Starts a channel for a [`HoldingDevice`] under a [`TaskControl`].
+    fn controlled_holding_device(
+        driver: &DefaultDriver,
+        msi_mapper: Arc<GatedMapper>,
+    ) -> (ChannelControl, MockVpciGuestDevice, Arc<HoldingState>) {
+        let state = Arc::new(HoldingState::default());
+        let pci = Arc::new(CloseableMutex::new(HoldingDevice {
+            config_space: test_config_space(),
+            state: state.clone(),
+        }));
+        let (control, guest) = controlled_channel(driver, pci, msi_mapper);
+        (control, guest, state)
+    }
+
+    fn test_config_space() -> ConfigSpaceType0Emulator {
+        ConfigSpaceType0Emulator::new(
+            HardwareIds {
+                vendor_id: 0x123,
+                device_id: 0x789,
+                revision_id: 1,
+                prog_if: ProgrammingInterface::NONE,
+                base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+                sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+                type0_sub_vendor_id: 0x456,
+                type0_sub_system_id: 0x1,
+            },
+            Vec::new(),
+            Vec::new(),
+            DeviceBars::new(),
+        )
+    }
+
+    fn controlled_channel(
+        driver: &DefaultDriver,
+        device: Arc<CloseableMutex<dyn ChipsetDevice>>,
+        msi_mapper: Arc<GatedMapper>,
+    ) -> (ChannelControl, MockVpciGuestDevice) {
+        let (state, worker, guest) =
+            new_channel(driver, device, VpciInterruptMapper::new(msi_mapper));
         let mut control = TaskControl::new(ChannelTask(state));
         control.insert(driver, "vpci", worker);
         control.start();
@@ -2161,6 +2299,7 @@ mod tests {
     }
 
     fn new_channel(
+        driver: &DefaultDriver,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         msi_mapper: VpciInterruptMapper,
     ) -> (
@@ -2181,6 +2320,7 @@ mod tests {
             None,
         );
         let state = VpciChannel {
+            driver: VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple(),
             msi_mapper,
             config_space,
             instance_id: Guid::new_random(),
@@ -2192,7 +2332,7 @@ mod tests {
             device,
             bars_set: false,
             interrupts: Vec::new(),
-            pending_mapper_call: None,
+            pending_call: None,
             eject: VpciBusEject::default(),
         };
         let eject = state.eject_control();
@@ -2619,6 +2759,25 @@ mod tests {
             self.send_request(&message, &[]).await
         }
 
+        /// Sends `DEVICE_POWER_STATE_CHANGE` to `target_state` for slot 0.
+        async fn send_power_change(&mut self, target_state: protocol::DevicePowerState) -> u64 {
+            let message = protocol::DevicePowerChange {
+                message_type: protocol::MessageType::DEVICE_POWER_STATE_CHANGE,
+                slot: SlotNumber::new(),
+                target_state,
+            };
+            self.send_request(&message, &[]).await
+        }
+
+        /// Sends `VPCI_QUERY_ISOLATED_RESOURCES` for slot 0.
+        async fn send_isolated_resources_query(&mut self) -> u64 {
+            let message = protocol::VpciQueryIsolatedResources {
+                message_type: protocol::MessageType::VPCI_QUERY_ISOLATED_RESOURCES,
+                slot: SlotNumber::new(),
+            };
+            self.send_request(&message, &[]).await
+        }
+
         /// Sends `CURRENT_RESOURCE_REQUIREMENTS` for slot 0.
         async fn send_query_resources(&mut self) -> u64 {
             let message = protocol::QueryResourceRequirements {
@@ -2832,6 +2991,372 @@ mod tests {
             .deliver_interrupt(reply.interrupt.address, reply.interrupt.data_payload);
         let delivered = mapper.controller.get_next_interrupt().unwrap();
         assert_eq!(delivered.vector, 0x30);
+    }
+
+    /// Closing the channel while a request waits on an unregister finishes
+    /// that call and drops the entry, whatever its place in the list.
+    #[async_test]
+    async fn close_mid_delete_of_non_last_interrupt_leaks_nothing(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+        let interrupts = assign_interrupts(&mut guest, &[0x30, 0x31, 0x32]).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Unregister(0));
+        guest.send_delete_interrupt(interrupts[0]).await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        drop(control.remove());
+        release.send(());
+        SimpleVmbusDevice::<FlatRingMem>::close(&mut control.task_mut().0).await;
+
+        assert_eq!(mapper.unregisters.load(Ordering::SeqCst), 3);
+        for msi in interrupts {
+            assert!(!mapper.is_registered(msi), "{msi:?} leaked");
+        }
+    }
+
+    /// A stop while a power change waits on a deferred command register
+    /// write keeps that write: the device sees one write for one request.
+    #[async_test]
+    async fn stop_mid_deferred_power_change_writes_command_once(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper);
+        guest.start_device(0x140000000).await;
+
+        device.writes.lock().clear();
+        let entered = device.hold_write(COMMAND);
+        let transaction_id = guest
+            .send_power_change(protocol::DevicePowerState::D0)
+            .await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        device.release_write();
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (status, _) = protocol::Status::read_from_prefix(&payload).unwrap();
+        assert_eq!(status, protocol::Status::SUCCESS);
+        let writes = device.command_writes();
+        assert_eq!(
+            writes, 1,
+            "command register written {writes} times for one request"
+        );
+    }
+
+    /// A stop while `ASSIGNED_RESOURCES` waits on a deferred BAR write
+    /// resumes the BAR writes where they stopped.
+    #[async_test]
+    async fn stop_mid_deferred_bar_write_writes_each_bar_once(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+
+        device.writes.lock().clear();
+        let entered = device.hold_write(BAR0 + 8);
+        let transaction_id = guest.send_assigned_resources(&[0x30]).await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        device.release_write();
+
+        let interrupts = parse_translate_reply(&guest.expect_completion(transaction_id).await);
+        assert_eq!(interrupts.len(), 1);
+        assert_eq!(mapper.registers.load(Ordering::SeqCst), 1);
+        let writes = device.bar_writes();
+        assert_eq!(writes, 6, "BARs written {writes} times for one request");
+    }
+
+    /// A stop while `RELEASE_RESOURCES` waits on a deferred BAR write skips
+    /// the power-off it already did and resumes the BAR writes.
+    #[async_test]
+    async fn stop_mid_deferred_release_bar_write_skips_done_steps(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+        let interrupts = assign_interrupts(&mut guest, &[0x30]).await;
+
+        device.writes.lock().clear();
+        let entered = device.hold_write(BAR0);
+        let transaction_id = guest.send_release_resources().await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        device.release_write();
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (status, _) = protocol::Status::read_from_prefix(&payload).unwrap();
+        assert_eq!(status, protocol::Status::SUCCESS);
+        let writes = device.command_writes();
+        assert_eq!(
+            writes, 1,
+            "command register written {writes} times for one request"
+        );
+        let writes = device.bar_writes();
+        assert_eq!(writes, 6, "BARs written {writes} times for one request");
+        assert_eq!(mapper.unregisters.load(Ordering::SeqCst), 1);
+        assert!(!mapper.is_registered(interrupts[0]));
+    }
+
+    /// A stop while `VPCI_QUERY_ISOLATED_RESOURCES` waits on the isolation
+    /// report keeps that report: the device is asked for it once.
+    #[async_test]
+    async fn stop_mid_isolation_report_asks_once(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper);
+        guest.protocol_version = protocol::ProtocolVersion::RB;
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = device.hold_report();
+        let transaction_id = guest.send_isolated_resources_query().await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        release.send(());
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (reply, _) = protocol::VpciIsolatedResourcesReply::read_from_prefix(&payload).unwrap();
+        assert_eq!(reply.status, protocol::Status::SUCCESS);
+        let reports = device.reports.load(Ordering::SeqCst);
+        assert_eq!(
+            reports, 1,
+            "isolation report asked {reports} times for one request"
+        );
+    }
+
+    /// Closing the channel while a request waits on a deferred config space
+    /// write waits for that write before writing anything else.
+    #[async_test]
+    async fn close_mid_deferred_write_waits_for_it(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper);
+        guest.start_device(0x140000000).await;
+
+        let entered = device.hold_write(COMMAND);
+        guest
+            .send_power_change(protocol::DevicePowerState::D0)
+            .await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        drop(control.remove());
+        device.writes.lock().clear();
+        let mut close = pin!(SimpleVmbusDevice::<FlatRingMem>::close(
+            &mut control.task_mut().0
+        ));
+        let poll = close.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        assert!(poll.is_pending(), "close must wait for the deferred write");
+        assert!(device.writes.lock().is_empty());
+        device.release_write();
+        close.await;
+    }
+
+    /// Closing the channel while a request waits on the isolation report
+    /// finishes the report.
+    #[async_test]
+    async fn close_mid_isolation_report_finishes_it(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper);
+        guest.protocol_version = protocol::ProtocolVersion::RB;
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = device.hold_report();
+        guest.send_isolated_resources_query().await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        drop(control.remove());
+        release.send(());
+        SimpleVmbusDevice::<FlatRingMem>::close(&mut control.task_mut().0).await;
+
+        assert_eq!(device.reports.load(Ordering::SeqCst), 1);
+        assert_eq!(device.reports_finished.load(Ordering::SeqCst), 1);
+    }
+
+    /// A stopped channel keeps the isolation report it asked for running, so
+    /// a report that holds a device lock does not hold it for the whole stop.
+    #[async_test]
+    async fn isolation_report_runs_while_stopped(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest, device) = controlled_holding_device(&driver, mapper);
+        guest.protocol_version = protocol::ProtocolVersion::RB;
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = device.hold_report();
+        let transaction_id = guest.send_isolated_resources_query().await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        release.send(());
+        let mut timer = PolledTimer::new(&driver);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while device.reports_finished.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "isolation report did not finish while the channel was stopped"
+            );
+            timer.sleep(Duration::from_millis(10)).await;
+        }
+
+        control.start();
+        let payload = guest.expect_completion(transaction_id).await;
+        let (reply, _) = protocol::VpciIsolatedResourcesReply::read_from_prefix(&payload).unwrap();
+        assert_eq!(reply.status, protocol::Status::SUCCESS);
+        assert_eq!(device.reports.load(Ordering::SeqCst), 1);
+    }
+
+    /// A config space call left by a stopped request belongs to one step. A
+    /// different step finding it is a bug, not a write it may skip.
+    #[async_test]
+    #[should_panic(expected = "config write pending for another step")]
+    async fn config_write_pending_for_another_step_panics(driver: DefaultDriver) {
+        let state = Arc::new(HoldingState::default());
+        let pci = Arc::new(CloseableMutex::new(HoldingDevice {
+            config_space: test_config_space(),
+            state: state.clone(),
+        }));
+        let (mut dev, _runner, _guest) =
+            new_channel(&driver, pci, VpciInterruptMapper::new(GatedMapper::new()));
+
+        let entered = state.hold_write(COMMAND);
+        {
+            let mut power = pin!(dev.set_power(true));
+            let poll = power.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+            assert!(poll.is_pending());
+        }
+        entered.await.unwrap();
+        state.release_write();
+
+        dev.set_bars(&[MmioResource::default(); 6]).await.unwrap();
+    }
+
+    const COMMAND: u16 = 0x4;
+    const BAR0: u16 = 0x10;
+
+    /// A device that can hold one config space write and its isolation report
+    /// until the test releases them, and counts both.
+    struct HoldingDevice {
+        config_space: ConfigSpaceType0Emulator,
+        state: Arc<HoldingState>,
+    }
+
+    #[derive(Default)]
+    struct HoldingState {
+        /// The offset of each config space write, in order.
+        writes: Mutex<Vec<u16>>,
+        /// The offset whose next write is held, and where to say it was.
+        write_hold: Mutex<Option<(u16, mesh::OneshotSender<()>)>>,
+        held_write: Mutex<Option<DeferredWrite>>,
+        /// The isolation reports asked for, and the ones that finished.
+        reports: AtomicU32,
+        reports_finished: AtomicU32,
+        report_hold: Mutex<Option<(mesh::OneshotSender<()>, mesh::OneshotReceiver<()>)>>,
+    }
+
+    impl HoldingState {
+        /// Defers the next write to `offset`. Returns a receiver that fires
+        /// when that write is made.
+        fn hold_write(&self, offset: u16) -> mesh::OneshotReceiver<()> {
+            let (send, recv) = mesh::oneshot();
+            *self.write_hold.lock() = Some((offset, send));
+            recv
+        }
+
+        /// Completes the deferred write.
+        fn release_write(&self) {
+            self.held_write
+                .lock()
+                .take()
+                .expect("no write is held")
+                .complete();
+        }
+
+        /// Holds the next isolation report. Returns a receiver that fires
+        /// when it starts waiting, and a sender that lets it finish.
+        fn hold_report(&self) -> (mesh::OneshotReceiver<()>, mesh::OneshotSender<()>) {
+            let (entered_send, entered_recv) = mesh::oneshot();
+            let (release_send, release_recv) = mesh::oneshot();
+            *self.report_hold.lock() = Some((entered_send, release_recv));
+            (entered_recv, release_send)
+        }
+
+        fn command_writes(&self) -> usize {
+            self.writes.lock().iter().filter(|&&o| o == COMMAND).count()
+        }
+
+        fn bar_writes(&self) -> usize {
+            self.writes
+                .lock()
+                .iter()
+                .filter(|&&o| (BAR0..BAR0 + 24).contains(&o))
+                .count()
+        }
+    }
+
+    impl InspectMut for HoldingDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl ChipsetDevice for HoldingDevice {
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
+        }
+
+        fn supports_tdisp_relay(&mut self) -> Option<&mut dyn tdisp::TdispRelayedDeviceTarget> {
+            Some(self)
+        }
+    }
+
+    impl PciConfigSpace for HoldingDevice {
+        fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
+            self.config_space.read_byte_enabled(offset, value)
+        }
+
+        fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
+            self.state.writes.lock().push(offset);
+            let r = self.config_space.write_byte_enabled(offset, value);
+            let hold = {
+                let mut hold = self.state.write_hold.lock();
+                if hold.as_ref().is_some_and(|(o, _)| *o == offset) {
+                    hold.take()
+                } else {
+                    None
+                }
+            };
+            let Some((_, entered)) = hold else {
+                return r;
+            };
+            let (write, token) = defer_write();
+            *self.state.held_write.lock() = Some(write);
+            entered.send(());
+            IoResult::Defer(token)
+        }
+    }
+
+    impl tdisp::TdispRelayedDeviceTarget for HoldingDevice {
+        fn tdisp_isolation_report(
+            &mut self,
+        ) -> std::pin::Pin<Box<dyn Future<Output = tdisp::TdispIsolationReport> + Send + 'static>>
+        {
+            let state = self.state.clone();
+            state.reports.fetch_add(1, Ordering::SeqCst);
+            let hold = state.report_hold.lock().take();
+            Box::pin(async move {
+                if let Some((entered, release)) = hold {
+                    entered.send(());
+                    release.await.unwrap();
+                }
+                state.reports_finished.fetch_add(1, Ordering::SeqCst);
+                tdisp::TdispIsolationReport::NotTdispCapable
+            })
+        }
     }
 
     struct NullDevice {
