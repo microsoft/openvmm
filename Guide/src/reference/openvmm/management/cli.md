@@ -389,10 +389,11 @@ describes the source definitions.
 
   The capture has no deadline, from gating host input at the snapshot boundary
   through the commit: the process that launches OpenVMM bounds it by ending
-  OpenVMM. If a device fails to stop its host input, OpenVMM resumes host input
-  and the guest continues without a snapshot, unless resuming fails too, which
-  ends the VM. Delivering portb output waits for a connected peer to read it;
-  output accepted while no portb peer is connected is saved in the snapshot and
+  OpenVMM, which logs each state unit that has not answered after five seconds.
+  If a device fails to stop its host input, OpenVMM resumes host input and the
+  guest continues without a snapshot, unless resuming fails too, which ends the
+  VM. Delivering portb output waits for a connected peer to read it; output
+  accepted while no portb peer is connected is saved in the snapshot and
   written by the restored VM. A request with no configured destination is
   ignored and the guest continues. Capture requires 1, 2, 4, or 8 vCPUs,
   KVM, MSHV, or WHP, and shared file-backed RAM. Sandbox block media must

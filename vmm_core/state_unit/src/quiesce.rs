@@ -14,9 +14,9 @@ impl StateUnits {
     /// Stops host-input producers before establishing a snapshot vCPU boundary.
     ///
     /// Waits for every unit, without a deadline: a unit that does not answer
-    /// stalls the gate. Fails, once every unit has answered, if any reported an
-    /// error; the units that did stop their input resume it with
-    /// [`Self::resume_input_after_save`].
+    /// stalls the gate, and the log names it while it waits. Fails, once every
+    /// unit has answered, if any reported an error; the units that did stop
+    /// their input resume it with [`Self::resume_input_after_save`].
     pub async fn quiesce_input_for_save(&self) -> anyhow::Result<()> {
         self.run_input_op("quiesce_input", StateRequest::QuiesceInput)
             .await
