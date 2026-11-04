@@ -37,6 +37,7 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 chipset_arc_mutex_device.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
 openhcl_tdisp.workspace = true
 pal_async.workspace = true
 test_with_tracing.workspace = true

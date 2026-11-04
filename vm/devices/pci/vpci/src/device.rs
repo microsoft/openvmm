@@ -25,6 +25,7 @@ use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -303,16 +304,24 @@ fn get_interrupt_type(mode: vpci_protocol::DeliveryMode) -> Result<InterruptType
     }
 }
 
-fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketData, PacketError> {
-    let mut buf = vec![0u64; protocol::MAXIMUM_PACKET_SIZE / 8];
+fn read_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<Vec<u8>, PacketError> {
     let mut reader = packet.reader();
-    let len = reader.len();
+    if reader.len() > protocol::MAXIMUM_PACKET_SIZE {
+        return Err(PacketError::PacketTooLarge);
+    }
+    let mut buf = vec![0; reader.len()];
+    reader.read(&mut buf).map_err(PacketError::Access)?;
+    Ok(buf)
+}
+
+fn parse_packet(packet: &[u8]) -> Result<PacketData, PacketError> {
+    // Copy to an aligned buffer so the messages can be referenced in place.
+    let mut buf = vec![0u64; protocol::MAXIMUM_PACKET_SIZE / 8];
     let buf = buf
         .as_mut_bytes()
-        .get_mut(..len)
+        .get_mut(..packet.len())
         .ok_or(PacketError::PacketTooLarge)?;
-
-    reader.read(buf).map_err(PacketError::Access)?;
+    buf.copy_from_slice(packet);
     let buf = &*buf;
     let message_type = protocol::MessageType::read_from_prefix(buf)
         .map_err(|_| PacketError::PacketTooSmall("header"))?
@@ -566,6 +575,22 @@ impl From<Cancelled> for WorkerError {
     }
 }
 
+/// Logs a failed request and completes it with `BAD_DATA`.
+fn fail_request(
+    conn: &mut Connection<impl RingMem>,
+    dev: &VpciChannel,
+    transaction_id: Option<u64>,
+    err: &PacketError,
+) -> Result<(), WorkerError> {
+    tracelimit::warn_ratelimited!(
+        error = err as &dyn std::error::Error,
+        transaction_id,
+        instance_id = ?dev.instance_id,
+        "request failed"
+    );
+    conn.send_completion(transaction_id, &protocol::Status::BAD_DATA, &[])
+}
+
 impl<T: RingMem> Connection<T> {
     async fn send_packet<
         P: IntoBytes + Debug + Immutable + KnownLayout + ?Sized,
@@ -657,6 +682,22 @@ struct ReadyState {
     send_completion: Option<u64>,
     vpci_version: protocol::ProtocolVersion,
     pending_eject: Option<FailableRpc<(), ()>>,
+    in_flight: Option<InFlightRequest>,
+}
+
+/// A request taken off the ring whose completion has not been sent yet.
+///
+/// It stays here until it is completed, so a worker stop does not lose it:
+/// the next run handles it again before reading the ring.
+struct InFlightRequest {
+    transaction_id: Option<u64>,
+    /// The request as read off the ring.
+    packet: Vec<u8>,
+    /// The number of interrupts the request has registered so far.
+    ///
+    /// A resumed request skips them. Its other steps run again, since they
+    /// only write the same device state a second time.
+    progress: u32,
 }
 
 impl<T: RingMem> VpciChannelState<T> {
@@ -683,7 +724,7 @@ impl<T: RingMem> VpciChannelState<T> {
                         let IncomingPacket::Data(data) = &*packet else {
                             return Err(WorkerError::InvalidPacketType);
                         };
-                        let packet = parse_packet(data).map_err(WorkerError::Packet)?;
+                        let packet = parse_packet(&read_packet(data)?)?;
                         (packet, data.transaction_id())
                     };
 
@@ -727,6 +768,7 @@ impl<T: RingMem> VpciChannelState<T> {
                                 send_device: false,
                                 send_completion: None,
                                 pending_eject: None,
+                                in_flight: None,
                             });
                         }
                     } else {
@@ -807,6 +849,10 @@ impl ReadyState {
     ) -> Result<(), WorkerError> {
         loop {
             check.check()?;
+            if self.in_flight.is_some() {
+                self.handle_in_flight(conn, dev).await?;
+                continue;
+            }
             if self.send_device {
                 let span =
                     tracing::trace_span!("vpci_send_child_device", instance_id = ?dev.instance_id);
@@ -824,7 +870,7 @@ impl ReadyState {
                 .await?;
 
             enum Event {
-                Packet(Result<(Result<PacketData, PacketError>, Option<u64>), WorkerError>),
+                Packet(Result<(Result<Vec<u8>, PacketError>, Option<u64>), WorkerError>),
                 Eject(Result<FailableRpc<(), ()>, mesh::RecvError>),
             }
 
@@ -835,7 +881,7 @@ impl ReadyState {
                     let IncomingPacket::Data(data) = packet.as_ref() else {
                         return Err(WorkerError::InvalidPacketType);
                     };
-                    Ok((parse_packet(data), data.transaction_id()))
+                    Ok((read_packet(data), data.transaction_id()))
                 };
                 let mut packet = pin!(packet);
                 let mut eject = pin!(eject_recv.recv());
@@ -872,33 +918,56 @@ impl ReadyState {
                 Event::Eject(Err(error)) => return Err(WorkerError::EjectControl(error)),
             };
 
-            let r = match packet {
+            match packet {
                 Ok(packet) => {
-                    tracing::trace!(?packet, instance_id = ?dev.instance_id, "vpci packet");
-                    let span = tracing::trace_span!("vpci_handle_packet", instance_id = ?dev.instance_id, packet = ?packet, transaction_id);
-                    match self
-                        .handle_packet(packet, dev, conn, transaction_id)
-                        .instrument(span)
-                        .await
-                    {
-                        Ok(()) => Ok(()),
-                        Err(WorkerError::Packet(err)) => Err(err),
-                        Err(err) => return Err(err),
-                    }
+                    self.in_flight = Some(InFlightRequest {
+                        transaction_id,
+                        packet,
+                        progress: 0,
+                    });
                 }
-                Err(err) => Err(err),
-            };
-
-            if let Err(err) = r {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    transaction_id,
-                    instance_id = ?dev.instance_id,
-                    "request failed"
-                );
-                conn.send_completion(transaction_id, &protocol::Status::BAD_DATA, &[])?;
+                Err(err) => fail_request(conn, dev, transaction_id, &err)?,
             }
         }
+    }
+
+    /// Handles the request in flight, then clears it.
+    ///
+    /// The request is cleared only once it is completed, so if this future is
+    /// dropped, the next call handles the same request again.
+    async fn handle_in_flight(
+        &mut self,
+        conn: &mut Connection<impl RingMem>,
+        dev: &mut VpciChannel,
+    ) -> Result<(), WorkerError> {
+        let request = self.in_flight.as_ref().unwrap();
+        let transaction_id = request.transaction_id;
+        let r = match parse_packet(&request.packet) {
+            Ok(packet) => {
+                tracing::trace!(?packet, instance_id = ?dev.instance_id, "vpci packet");
+                let span = tracing::trace_span!("vpci_handle_packet", instance_id = ?dev.instance_id, packet = ?packet, transaction_id);
+                match self
+                    .handle_packet(packet, dev, conn, transaction_id)
+                    .instrument(span)
+                    .await
+                {
+                    Ok(()) => Ok(()),
+                    Err(WorkerError::Packet(err)) => Err(err),
+                    Err(err) => return Err(err),
+                }
+            }
+            Err(err) => Err(err),
+        };
+        self.in_flight = None;
+        if let Err(err) = r {
+            fail_request(conn, dev, transaction_id, &err)?;
+        }
+        Ok(())
+    }
+
+    /// Returns the in-flight request's progress count.
+    fn progress(&mut self) -> &mut u32 {
+        &mut self.in_flight.as_mut().unwrap().progress
     }
 
     async fn handle_packet(
@@ -950,17 +1019,22 @@ impl ReadyState {
                         resources,
                         reply_type,
                     } => {
-                        dev.set_bars(&resources.mmio_ranges)
-                            .await
-                            .map_err(PacketError::InvalidBars)?;
+                        // Once an interrupt is registered, the BARs are set.
+                        if *self.progress() == 0 {
+                            dev.set_bars(&resources.mmio_ranges)
+                                .await
+                                .map_err(PacketError::InvalidBars)?;
+                        }
 
                         let mut tr = Vec::<u8>::new();
-                        dev.map_interrupts(&resources.interrupts, &mut |r| match reply_type {
-                            AssignedResourcesReplyType::V1 => {
-                                tr.extend(protocol::MsiResource::from(r).as_bytes());
-                            }
-                            AssignedResourcesReplyType::V2 => {
-                                tr.extend(protocol::MsiResource2::from(r).as_bytes());
+                        dev.map_interrupts(&resources.interrupts, self.progress(), &mut |r| {
+                            match reply_type {
+                                AssignedResourcesReplyType::V1 => {
+                                    tr.extend(protocol::MsiResource::from(r).as_bytes());
+                                }
+                                AssignedResourcesReplyType::V2 => {
+                                    tr.extend(protocol::MsiResource2::from(r).as_bytes());
+                                }
                             }
                         })
                         .await?;
@@ -982,7 +1056,7 @@ impl ReadyState {
                     DeviceRequest::CreateInterrupt { interrupt } => {
                         let mut resource = FromZeros::new_zeroed();
                         // TODO: pass failures back the guest, don't fail the channel.
-                        dev.map_interrupts(&[interrupt], &mut |r| resource = r)
+                        dev.map_interrupts(&[interrupt], self.progress(), &mut |r| resource = r)
                             .await?;
                         conn.send_completion(
                             transaction_id,
@@ -1383,42 +1457,44 @@ impl VpciChannel {
         // TODO: set power cap, too, on devices that support it.
     }
 
+    /// Registers the interrupts of one request.
+    ///
+    /// `registered` counts the interrupts of this request that are already
+    /// registered, which are the last entries of `self.interrupts`. A resumed
+    /// request continues with the next one. Once all are registered,
+    /// `add_resource` is called for each, in request order.
     async fn map_interrupts(
         &mut self,
         interrupts: &[InterruptResourceRequest],
+        registered: &mut u32,
         add_resource: &mut (dyn FnMut(protocol::MsiResourceRemapped) + Send),
     ) -> Result<(), PacketError> {
         let interrupts = interrupts.iter().filter(|r| r.vector_count != 0);
         let count = interrupts.clone().count();
-        let new_count = self.interrupts.len() + count;
+        let done = *registered as usize;
+        let new_count = self.interrupts.len() - done + count;
         if new_count > protocol::MAX_SUPPORTED_INTERRUPT_MESSAGES as usize {
             return Err(PacketError::TooManyMsis(new_count as u32));
         }
 
-        for interrupt in interrupts {
-            let params = VpciInterruptParameters {
-                vector: interrupt.vector,
-                multicast: interrupt.delivery_mode == InterruptType::Fixed
-                    && interrupt.target_processors.len() > 1,
-                target_processors: &interrupt.target_processors,
-            };
-
+        for interrupt in interrupts.clone().skip(done) {
             let address_data = self
-                .msi_mapper
-                .register_interrupt(interrupt.vector_count.into(), &params)
+                .register_interrupt(interrupt)
                 .await
                 .map_err(PacketError::RegisterInterrupt)?;
+            tracing::debug!(?address_data, "mapped interrupt");
+            self.interrupts.push(address_data);
+            *registered += 1;
+        }
 
+        let first = self.interrupts.len() - count;
+        for (interrupt, address_data) in interrupts.zip(&self.interrupts[first..]) {
             add_resource(protocol::MsiResourceRemapped {
                 reserved: 0,
                 message_count: interrupt.vector_count.into(),
                 data_payload: address_data.data,
                 address: address_data.address,
             });
-
-            tracing::debug!(?address_data, "mapped interrupt");
-
-            self.interrupts.push(address_data);
         }
 
         Ok(())
@@ -1431,9 +1507,7 @@ impl VpciChannel {
             .position(|x| x == &interrupt)
             .ok_or(PacketError::UnknownInterrupt(interrupt))?;
 
-        self.msi_mapper
-            .unregister_interrupt(interrupt.address, interrupt.data)
-            .await;
+        self.unregister_interrupt(interrupt).await;
         self.interrupts.swap_remove(i);
         tracing::debug!(?interrupt, "unmapped interrupt");
         Ok(())
@@ -1444,15 +1518,113 @@ impl VpciChannel {
         // Power off the device.
         self.set_power(false).await;
 
-        // Unmap all interrupts.
-        for MsiAddressData { address, data } in self.interrupts.drain(..) {
-            self.msi_mapper.unregister_interrupt(address, data).await;
+        // Unmap all interrupts. Each is removed only once it is unregistered,
+        // so a release resumed after a stop skips none.
+        while let Some(&interrupt) = self.interrupts.last() {
+            self.unregister_interrupt(interrupt).await;
+            self.interrupts.pop();
         }
 
         // Clear the BARs.
         self.set_bars(&[MmioResource::default(); 6]).await.unwrap();
         self.bars_set = false;
     }
+
+    /// Registers `interrupt` with the mapper.
+    ///
+    /// If a register call is pending, waits for it instead of making a new
+    /// one: it was made for this interrupt by a run that was stopped.
+    async fn register_interrupt(
+        &mut self,
+        interrupt: &InterruptResourceRequest,
+    ) -> Result<MsiAddressData, RegisterInterruptError> {
+        let call = self.pending_mapper_call.get_or_insert_with(|| {
+            let mapper = self.msi_mapper.clone();
+            let vector_count = interrupt.vector_count.into();
+            let vector = interrupt.vector;
+            let multicast = interrupt.delivery_mode == InterruptType::Fixed
+                && interrupt.target_processors.len() > 1;
+            let target_processors = interrupt.target_processors.clone();
+            PendingMapperCall::Register(Box::pin(async move {
+                let params = VpciInterruptParameters {
+                    vector,
+                    multicast,
+                    target_processors: &target_processors,
+                };
+                mapper.register_interrupt(vector_count, &params).await
+            }))
+        });
+        let PendingMapperCall::Register(call) = call else {
+            unreachable!("an unregister call is pending");
+        };
+        let r = call.as_mut().await;
+        self.pending_mapper_call = None;
+        r
+    }
+
+    /// Unregisters `interrupt` with the mapper.
+    ///
+    /// If an unregister call is pending, waits for it instead of making a new
+    /// one: it was made for this interrupt by a run that was stopped.
+    async fn unregister_interrupt(&mut self, interrupt: MsiAddressData) {
+        let call = self.pending_mapper_call.get_or_insert_with(|| {
+            let mapper = self.msi_mapper.clone();
+            PendingMapperCall::Unregister {
+                interrupt,
+                call: Box::pin(async move {
+                    mapper
+                        .unregister_interrupt(interrupt.address, interrupt.data)
+                        .await
+                }),
+            }
+        });
+        let PendingMapperCall::Unregister {
+            interrupt: pending,
+            call,
+        } = call
+        else {
+            unreachable!("a register call is pending");
+        };
+        assert_eq!(
+            *pending, interrupt,
+            "unregister call pending for another interrupt"
+        );
+        call.as_mut().await;
+        self.pending_mapper_call = None;
+    }
+
+    /// Finishes a mapper call left by a request that the closed channel will
+    /// never complete, and drops what it registered.
+    async fn finish_pending_mapper_call(&mut self) {
+        match &mut self.pending_mapper_call {
+            None => {}
+            Some(PendingMapperCall::Register(call)) => {
+                let r = call.as_mut().await;
+                self.pending_mapper_call = None;
+                if let Ok(interrupt) = r {
+                    self.unregister_interrupt(interrupt).await;
+                }
+            }
+            Some(PendingMapperCall::Unregister { interrupt, .. }) => {
+                let interrupt = *interrupt;
+                self.unregister_interrupt(interrupt).await;
+                self.interrupts.retain(|x| x != &interrupt);
+            }
+        }
+    }
+}
+
+/// A mapper call that was made but has not finished.
+///
+/// It is kept on the channel rather than in the request's future, so a
+/// worker stop does not drop it. The resumed request waits on the same call
+/// instead of making it a second time.
+enum PendingMapperCall {
+    Register(Pin<Box<dyn Future<Output = Result<MsiAddressData, RegisterInterruptError>> + Send>>),
+    Unregister {
+        interrupt: MsiAddressData,
+        call: Pin<Box<dyn Future<Output = ()> + Send>>,
+    },
 }
 
 /// Virtual PCI Channel
@@ -1485,6 +1657,8 @@ pub struct VpciChannel {
     bars_set: bool,
     #[inspect(iter_by_index)]
     interrupts: Vec<MsiAddressData>,
+    #[inspect(skip)]
+    pending_mapper_call: Option<PendingMapperCall>,
     #[inspect(skip)]
     eject: VpciBusEject,
 }
@@ -1614,6 +1788,7 @@ impl VpciChannel {
             device: device.clone(),
             bars_set: false,
             interrupts: Vec::new(),
+            pending_mapper_call: None,
             eject: VpciBusEject::default(),
         })
     }
@@ -1667,6 +1842,7 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
 
     async fn close(&mut self) {
         self.eject.disconnect();
+        self.finish_pending_mapper_call().await;
         self.release_all().await;
 
         // Unmap the claimed config space. This can also occur if the device sends a D0 exit via the vpci protocol.
@@ -1732,11 +1908,13 @@ mod tests {
     use hvdef::HV_PAGE_SIZE;
     use inspect::Inspect;
     use inspect::InspectMut;
+    use inspect::InspectionBuilder;
     use openhcl_tdisp::new_get_device_interface_info_command;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
     use pal_async::task::Spawn;
+    use parking_lot::Mutex;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1749,8 +1927,14 @@ mod tests {
     use ring::FlatRingMem;
     use ring::OutgoingPacketType;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use task_control::AsyncRun;
+    use task_control::Cancelled;
+    use task_control::InspectTaskMut;
+    use task_control::StopTask;
+    use task_control::TaskControl;
     use tdisp::GuestToHostResponseExt;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
@@ -1764,11 +1948,17 @@ mod tests {
     use vmbus_async::queue::OutgoingPacket;
     use vmbus_async::queue::Queue;
     use vmbus_async::queue::connected_queues;
+    use vmbus_channel::simple::SimpleVmbusDevice;
     use vmbus_ring as ring;
+    use vmcore::vpci_msi::MapVpciInterrupt;
+    use vmcore::vpci_msi::MsiAddressData;
+    use vmcore::vpci_msi::RegisterInterruptError;
     use vmcore::vpci_msi::VpciInterruptMapper;
+    use vmcore::vpci_msi::VpciInterruptParameters;
     use vpci_protocol as protocol;
     use vpci_protocol::SlotNumber;
     use zerocopy::FromBytes;
+    use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
@@ -1806,6 +1996,178 @@ mod tests {
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         msi_mapper: Arc<TestVpciInterruptController>,
     ) -> MockVpciGuestDevice {
+        let (mut state, mut worker, guest) =
+            new_channel(device, VpciInterruptMapper::new(msi_mapper));
+        driver
+            .spawn("worker", async move {
+                StopTask::run_unstoppable(async |stop| {
+                    let check = stop.check_handle().unwrap();
+                    worker.run(&mut state, &check).await
+                })
+                .await
+            })
+            .detach();
+        guest
+    }
+
+    /// Runs the channel the way the vmbus device wrapper does, so the
+    /// channel's own `run` and `inspect` are what the task control calls.
+    struct ChannelTask(VpciChannel);
+
+    impl AsyncRun<VpciChannelState<FlatRingMem>> for ChannelTask {
+        async fn run(
+            &mut self,
+            stop: &mut StopTask<'_>,
+            runner: &mut VpciChannelState<FlatRingMem>,
+        ) -> Result<(), Cancelled> {
+            SimpleVmbusDevice::run(&mut self.0, stop, runner).await
+        }
+    }
+
+    impl InspectTaskMut<VpciChannelState<FlatRingMem>> for ChannelTask {
+        fn inspect_mut(
+            &mut self,
+            req: inspect::Request<'_>,
+            runner: Option<&mut VpciChannelState<FlatRingMem>>,
+        ) {
+            SimpleVmbusDevice::inspect(&mut self.0, req, runner)
+        }
+    }
+
+    type ChannelControl = TaskControl<ChannelTask, VpciChannelState<FlatRingMem>>;
+
+    /// Starts a channel under a [`TaskControl`], so a test can stop and
+    /// inspect it while it runs.
+    fn controlled_device(
+        driver: &DefaultDriver,
+        msi_mapper: Arc<GatedMapper>,
+    ) -> (ChannelControl, MockVpciGuestDevice) {
+        let pci = Arc::new(CloseableMutex::new(NullDevice {
+            config_space: ConfigSpaceType0Emulator::new(
+                HardwareIds {
+                    vendor_id: 0x123,
+                    device_id: 0x789,
+                    revision_id: 1,
+                    prog_if: ProgrammingInterface::NONE,
+                    base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+                    sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+                    type0_sub_vendor_id: 0x456,
+                    type0_sub_system_id: 0x1,
+                },
+                Vec::new(),
+                Vec::new(),
+                DeviceBars::new(),
+            ),
+        }));
+        let (state, worker, guest) = new_channel(pci, VpciInterruptMapper::new(msi_mapper));
+        let mut control = TaskControl::new(ChannelTask(state));
+        control.insert(driver, "vpci", worker);
+        control.start();
+        (control, guest)
+    }
+
+    /// A mapper call that a [`GatedMapper`] can hold.
+    #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+    enum GatedCall {
+        /// The register call with this index, counting from zero.
+        Register(u32),
+        /// The unregister call with this index, counting from zero.
+        Unregister(u32),
+    }
+
+    struct Gate {
+        call: GatedCall,
+        entered: mesh::OneshotSender<()>,
+        release: mesh::OneshotReceiver<()>,
+    }
+
+    /// An interrupt mapper that can hold one chosen call until the test
+    /// releases it.
+    ///
+    /// Each call reaches the controller before it waits, like a call relayed
+    /// to another process, so a call that is made twice is visible.
+    struct GatedMapper {
+        controller: Arc<TestVpciInterruptController>,
+        registers: AtomicU32,
+        unregisters: AtomicU32,
+        gate: Mutex<Option<Gate>>,
+    }
+
+    impl GatedMapper {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                controller: TestVpciInterruptController::new(),
+                registers: AtomicU32::new(0),
+                unregisters: AtomicU32::new(0),
+                gate: Mutex::new(None),
+            })
+        }
+
+        /// Holds `call` when it is made. Returns a receiver that fires when
+        /// the call starts waiting, and a sender that lets it finish.
+        fn hold(&self, call: GatedCall) -> (mesh::OneshotReceiver<()>, mesh::OneshotSender<()>) {
+            let (entered_send, entered_recv) = mesh::oneshot();
+            let (release_send, release_recv) = mesh::oneshot();
+            *self.gate.lock() = Some(Gate {
+                call,
+                entered: entered_send,
+                release: release_recv,
+            });
+            (entered_recv, release_send)
+        }
+
+        async fn wait(&self, call: GatedCall) {
+            let gate = {
+                let mut gate = self.gate.lock();
+                if gate.as_ref().is_some_and(|gate| gate.call == call) {
+                    gate.take()
+                } else {
+                    None
+                }
+            };
+            if let Some(gate) = gate {
+                gate.entered.send(());
+                gate.release.await.unwrap();
+            }
+        }
+
+        /// Returns true if any interrupt at `msi` is still registered.
+        fn is_registered(&self, msi: MsiAddressData) -> bool {
+            self.controller.deliver_interrupt(msi.address, msi.data);
+            self.controller.get_next_interrupt().is_some()
+        }
+    }
+
+    impl MapVpciInterrupt for GatedMapper {
+        async fn register_interrupt(
+            &self,
+            vector_count: u32,
+            params: &VpciInterruptParameters<'_>,
+        ) -> Result<MsiAddressData, RegisterInterruptError> {
+            let index = self.registers.fetch_add(1, Ordering::SeqCst);
+            let r = self
+                .controller
+                .register_interrupt(vector_count, params)
+                .await;
+            self.wait(GatedCall::Register(index)).await;
+            r
+        }
+
+        async fn unregister_interrupt(&self, address: u64, data: u32) {
+            let index = self.unregisters.fetch_add(1, Ordering::SeqCst);
+            self.controller.unregister_interrupt(address, data).await;
+            self.wait(GatedCall::Unregister(index)).await;
+        }
+    }
+
+    fn new_channel(
+        device: Arc<CloseableMutex<dyn ChipsetDevice>>,
+        msi_mapper: VpciInterruptMapper,
+    ) -> (
+        VpciChannel,
+        VpciChannelState<FlatRingMem>,
+        MockVpciGuestDevice,
+    ) {
         let (host, guest) = connected_queues(16384);
         let (hardware_ids, bar_masks);
         {
@@ -1818,8 +2180,8 @@ mod tests {
             ExternallyManagedMmioIntercepts.new_io_region("test", 2 * HV_PAGE_SIZE),
             None,
         );
-        let mut state = VpciChannel {
-            msi_mapper: VpciInterruptMapper::new(msi_mapper),
+        let state = VpciChannel {
+            msi_mapper,
             config_space,
             instance_id: Guid::new_random(),
             serial_num: 0x1234,
@@ -1830,24 +2192,20 @@ mod tests {
             device,
             bars_set: false,
             interrupts: Vec::new(),
+            pending_mapper_call: None,
             eject: VpciBusEject::default(),
         };
         let eject = state.eject_control();
-        let mut worker = VpciChannelState {
+        let worker = VpciChannelState {
             conn: Connection { queue: host },
             state: ProtocolState::Init,
             eject_recv: eject.connect(),
         };
-        driver
-            .spawn("worker", async move {
-                task_control::StopTask::run_unstoppable(async |stop| {
-                    let check = stop.check_handle().unwrap();
-                    worker.run(&mut state, &check).await
-                })
-                .await
-            })
-            .detach();
-        MockVpciGuestDevice::new(guest, 0, hardware_ids, eject)
+        (
+            state,
+            worker,
+            MockVpciGuestDevice::new(guest, 0, hardware_ids, eject),
+        )
     }
 
     #[derive(Debug, Error)]
@@ -2177,6 +2535,303 @@ mod tests {
             }
             reply
         }
+
+        /// Sends `header` followed by `extra` as a request that wants a
+        /// completion, and returns its transaction id.
+        async fn send_request<T: IntoBytes + Immutable + KnownLayout>(
+            &mut self,
+            header: &T,
+            extra: &[u8],
+        ) -> u64 {
+            let transaction_id = self.transaction_id.fetch_add(1, Ordering::Relaxed);
+            self.write_packet_with_header(Some(transaction_id), header, extra)
+                .await
+                .unwrap();
+            transaction_id
+        }
+
+        /// Sends `ASSIGNED_RESOURCES2` with no BARs and one single-vector
+        /// interrupt per entry of `vectors`, each targeting processor 0.
+        async fn send_assigned_resources(&mut self, vectors: &[u8]) -> u64 {
+            let header = protocol::DeviceTranslate {
+                message_type: protocol::MessageType::ASSIGNED_RESOURCES2,
+                slot: SlotNumber::new(),
+                mmio_resources: FromZeros::new_zeroed(),
+                msi_resource_count: vectors.len() as u32,
+                reserved: 0,
+            };
+            let mut resources = Vec::new();
+            for &vector in vectors {
+                let mut descriptor = protocol::MsiResourceDescriptor2 {
+                    vector,
+                    delivery_mode: protocol::DeliveryMode::FIXED,
+                    vector_count: 1,
+                    processor_count: 1,
+                    processor_array: Default::default(),
+                    reserved: 0,
+                };
+                descriptor.processor_array[0] = 0;
+                resources.extend_from_slice(protocol::MsiResource2::from(descriptor).as_bytes());
+            }
+            self.send_request(&header, &resources).await
+        }
+
+        /// Sends `CREATE_INTERRUPT2` for one vector targeting processor 0.
+        async fn send_create_interrupt(&mut self, vector: u8) -> u64 {
+            let mut interrupt = protocol::MsiResourceDescriptor2 {
+                vector,
+                delivery_mode: protocol::DeliveryMode::FIXED,
+                vector_count: 1,
+                processor_count: 1,
+                processor_array: Default::default(),
+                reserved: 0,
+            };
+            interrupt.processor_array[0] = 0;
+            let message = protocol::CreateInterrupt2 {
+                message_type: protocol::MessageType::CREATE_INTERRUPT2,
+                slot: SlotNumber::new(),
+                interrupt,
+            };
+            self.send_request(&message, &[]).await
+        }
+
+        /// Sends `RELEASE_RESOURCES` for slot 0.
+        async fn send_release_resources(&mut self) -> u64 {
+            let message = protocol::PdoMessage {
+                message_type: protocol::MessageType::RELEASE_RESOURCES,
+                slot: SlotNumber::new(),
+            };
+            self.send_request(&message, &[]).await
+        }
+
+        /// Sends `DELETE_INTERRUPT` for the interrupt at `msi`.
+        async fn send_delete_interrupt(&mut self, msi: MsiAddressData) -> u64 {
+            let message = protocol::DeleteInterrupt {
+                message_type: protocol::MessageType::DELETE_INTERRUPT,
+                slot: SlotNumber::new(),
+                interrupt: protocol::MsiResourceRemapped {
+                    reserved: 0,
+                    message_count: 1,
+                    data_payload: msi.data,
+                    address: msi.address,
+                },
+            };
+            self.send_request(&message, &[]).await
+        }
+
+        /// Sends `CURRENT_RESOURCE_REQUIREMENTS` for slot 0.
+        async fn send_query_resources(&mut self) -> u64 {
+            let message = protocol::QueryResourceRequirements {
+                message_type: protocol::MessageType::CURRENT_RESOURCE_REQUIREMENTS,
+                slot: SlotNumber::new(),
+            };
+            self.send_request(&message, &[]).await
+        }
+
+        /// Reads the next packet, which must be a completion, and returns its
+        /// transaction id and payload.
+        async fn read_completion(&mut self) -> (u64, Vec<u8>) {
+            let mut queue = self.host_queue.split().0;
+            let packet = queue.read().await.unwrap();
+            let IncomingPacket::Completion(completion) = &*packet else {
+                panic!("expected a completion");
+            };
+            (
+                completion.transaction_id(),
+                completion.reader().read_all().unwrap(),
+            )
+        }
+
+        /// Sends a follow-up request after `transaction_id` and reads the next
+        /// completion, which must be the one for `transaction_id`.
+        ///
+        /// The follow-up turns a request the server dropped into a failed
+        /// assertion instead of a test that waits forever.
+        async fn expect_completion(&mut self, transaction_id: u64) -> Vec<u8> {
+            let follow_up = self.send_query_resources().await;
+            let (id, payload) = self.read_completion().await;
+            assert_eq!(
+                id, transaction_id,
+                "request {transaction_id} was never completed (next completion is for {id})"
+            );
+            let (id, _) = self.read_completion().await;
+            assert_eq!(id, follow_up);
+            payload
+        }
+    }
+
+    /// Parses a `DeviceTranslateReply` with V2 interrupt resources.
+    fn parse_translate_reply(payload: &[u8]) -> Vec<MsiAddressData> {
+        let (reply, mut rest) = protocol::DeviceTranslateReply::read_from_prefix(payload).unwrap();
+        assert_eq!(reply.status, protocol::Status::SUCCESS);
+        let mut interrupts = Vec::new();
+        for _ in 0..reply.msi_resource_count {
+            let (resource, next) = protocol::MsiResource2::read_from_prefix(rest).unwrap();
+            rest = next;
+            let remapped = resource.remapped();
+            assert_eq!(remapped.message_count, 1);
+            interrupts.push(MsiAddressData {
+                address: remapped.address,
+                data: remapped.data_payload,
+            });
+        }
+        interrupts
+    }
+
+    /// Registers one interrupt per entry of `vectors` through
+    /// `ASSIGNED_RESOURCES2` and returns their address/data.
+    async fn assign_interrupts(
+        guest: &mut MockVpciGuestDevice,
+        vectors: &[u8],
+    ) -> Vec<MsiAddressData> {
+        let transaction_id = guest.send_assigned_resources(vectors).await;
+        parse_translate_reply(&guest.expect_completion(transaction_id).await)
+    }
+
+    /// A stop in the middle of `ASSIGNED_RESOURCES` keeps the request: after
+    /// the restart it finishes from the interrupt it was waiting on, and the
+    /// guest gets one completion with every interrupt, each registered once.
+    #[async_test]
+    async fn stop_mid_map_interrupts_completes_after_restart(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Register(1));
+        let vectors = [0x30, 0x31, 0x32];
+        let transaction_id = guest.send_assigned_resources(&vectors).await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        release.send(());
+
+        let interrupts = parse_translate_reply(&guest.expect_completion(transaction_id).await);
+        assert_eq!(interrupts.len(), vectors.len());
+        assert_eq!(mapper.registers.load(Ordering::SeqCst), 3);
+        for (msi, &vector) in interrupts.iter().zip(&vectors) {
+            mapper.controller.deliver_interrupt(msi.address, msi.data);
+            let delivered = mapper.controller.get_next_interrupt().unwrap();
+            assert_eq!(delivered.vector, vector.into());
+            assert_eq!(delivered.destination, 0);
+        }
+    }
+
+    /// A stop in the middle of `RELEASE_RESOURCES` loses no interrupt: after
+    /// the restart every interrupt is unregistered exactly once.
+    #[async_test]
+    async fn stop_mid_release_all_leaks_nothing(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+        let interrupts = assign_interrupts(&mut guest, &[0x30, 0x31, 0x32]).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Unregister(1));
+        let transaction_id = guest.send_release_resources().await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        release.send(());
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (status, _) = protocol::Status::read_from_prefix(&payload).unwrap();
+        assert_eq!(status, protocol::Status::SUCCESS);
+        for msi in interrupts {
+            assert!(!mapper.is_registered(msi), "{msi:?} leaked");
+        }
+        assert_eq!(mapper.unregisters.load(Ordering::SeqCst), 3);
+    }
+
+    /// A stop in the middle of `DELETE_INTERRUPT` keeps the request: after
+    /// the restart it completes and the interrupt is unregistered once.
+    #[async_test]
+    async fn stop_mid_delete_interrupt_completes_after_restart(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+        let interrupts = assign_interrupts(&mut guest, &[0x30, 0x31]).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Unregister(0));
+        let transaction_id = guest.send_delete_interrupt(interrupts[0]).await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        control.start();
+        release.send(());
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (status, _) = protocol::Status::read_from_prefix(&payload).unwrap();
+        assert_eq!(status, protocol::Status::SUCCESS);
+        assert!(!mapper.is_registered(interrupts[0]));
+        assert!(mapper.is_registered(interrupts[1]));
+        assert_eq!(mapper.unregisters.load(Ordering::SeqCst), 1);
+
+        // The deleted interrupt is gone from the channel too, so releasing
+        // the resources unregisters only the one that is left.
+        let transaction_id = guest.send_release_resources().await;
+        guest.expect_completion(transaction_id).await;
+        assert!(!mapper.is_registered(interrupts[1]));
+        assert_eq!(mapper.unregisters.load(Ordering::SeqCst), 2);
+    }
+
+    /// Closing the channel while a request waits on the mapper finishes that
+    /// call and unregisters what it registered.
+    #[async_test]
+    async fn close_mid_map_interrupts_leaks_nothing(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Register(1));
+        guest.send_assigned_resources(&[0x30, 0x31]).await;
+        entered.await.unwrap();
+
+        control.stop().await;
+        drop(control.remove());
+        release.send(());
+        SimpleVmbusDevice::<FlatRingMem>::close(&mut control.task_mut().0).await;
+
+        assert_eq!(mapper.registers.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            mapper.unregisters.load(Ordering::SeqCst),
+            2,
+            "close must unregister both interrupts"
+        );
+        for index in 0..2 {
+            let msi = MsiAddressData {
+                address: 0xfee00000 | (index << 2),
+                data: 0,
+            };
+            assert!(!mapper.is_registered(msi), "{msi:?} leaked");
+        }
+    }
+
+    /// An inspect while a request waits on the mapper does not lose the
+    /// request.
+    #[async_test]
+    async fn inspect_during_pending_packet_does_not_wedge(driver: DefaultDriver) {
+        let mapper = GatedMapper::new();
+        let (mut control, mut guest) = controlled_device(&driver, mapper.clone());
+        guest.start_device(0x140000000).await;
+
+        let (entered, release) = mapper.hold(GatedCall::Register(0));
+        let transaction_id = guest.send_create_interrupt(0x30).await;
+        entered.await.unwrap();
+
+        let mut inspection = InspectionBuilder::new("").inspect(&mut control);
+        inspection.resolve().await;
+        release.send(());
+
+        let payload = guest.expect_completion(transaction_id).await;
+        let (reply, _) = protocol::CreateInterruptReply::read_from_prefix(&payload).unwrap();
+        assert_eq!(reply.status, protocol::Status::SUCCESS);
+        assert_eq!(mapper.registers.load(Ordering::SeqCst), 1);
+        mapper
+            .controller
+            .deliver_interrupt(reply.interrupt.address, reply.interrupt.data_payload);
+        let delivered = mapper.controller.get_next_interrupt().unwrap();
+        assert_eq!(delivered.vector, 0x30);
     }
 
     struct NullDevice {
