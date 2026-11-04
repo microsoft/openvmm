@@ -6,7 +6,6 @@
 //! This module provides a [`ChipsetDeviceProxy`] that implements the
 //! [`ChipsetDevice`] trait and forwards all operations over a channel.
 
-use crate::guestmem::GuestMemoryProxy;
 use crate::guestmem::GuestMemoryTask;
 use crate::protocol::*;
 use anyhow::Context;
@@ -56,7 +55,7 @@ pub(crate) struct ChipsetDeviceProxy {
     in_flight_writes: Slab<DeferredWrite>,
 
     #[inspect(skip)]
-    _guest_memory: TaskControl<GuestMemoryTask, [GuestMemoryProxy; 2]>,
+    _guest_memory: TaskControl<GuestMemoryTask, ()>,
 
     mmio: Option<MmioProxy>,
     pio: Option<PioProxy>,
@@ -88,7 +87,7 @@ impl ChipsetDeviceProxy {
         resp_recv: mesh::Receiver<DeviceResponse>,
         cap_recv: mesh::OneshotReceiver<DeviceInit>,
         worker: WorkerHandle,
-        guest_memory: TaskControl<GuestMemoryTask, [GuestMemoryProxy; 2]>,
+        guest_memory: TaskControl<GuestMemoryTask, ()>,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> anyhow::Result<Self> {
         let DeviceInit { mmio, pio, pci } = cap_recv
@@ -351,12 +350,21 @@ mod tests {
     }
 
     #[derive(InspectMut)]
-    struct TestDevice(u32, #[inspect(skip)] [GuestMemory; 2]);
+    struct TestDevice {
+        value: u32,
+        #[inspect(skip)]
+        guest_memory: GuestMemory,
+        #[inspect(skip)]
+        encrypted_guest_memory: GuestMemory,
+    }
 
     impl TestDevice {
         fn access_memory(&self) {
-            for (index, memory) in self.1.iter().enumerate() {
-                let expected = [self.0 as u8, index as u8, index as u8, index as u8];
+            for (index, memory) in [&self.guest_memory, &self.encrypted_guest_memory]
+                .into_iter()
+                .enumerate()
+            {
+                let expected = [self.value as u8, index as u8, index as u8, index as u8];
                 memory.write_at(0, &expected[..1]).unwrap();
                 memory.fill_at(1, index as u8, 3).unwrap();
                 let mut actual = [0; 4];
@@ -397,10 +405,10 @@ mod tests {
         async fn save(&mut self) -> Result<TestSavedState, SaveError> {
             self.access_memory();
             yield_once().await;
-            if self.0 == 0xdead {
+            if self.value == 0xdead {
                 return Err(SaveError::Other(anyhow::anyhow!("save failed")));
             }
-            Ok(TestSavedState { value: self.0 })
+            Ok(TestSavedState { value: self.value })
         }
 
         async fn restore(&mut self, state: TestSavedState) -> Result<(), RestoreError> {
@@ -410,7 +418,7 @@ mod tests {
                     "invalid value"
                 )));
             }
-            self.0 = state.value;
+            self.value = state.value;
             self.access_memory();
             Ok(())
         }
@@ -434,13 +442,11 @@ mod tests {
             _resource: TestDeviceHandle,
             input: ResolveChipsetDeviceHandleParams<'_>,
         ) -> Result<Self::Output, Self::Error> {
-            let device = TestDevice(
-                0,
-                [
-                    input.guest_memory.clone(),
-                    input.encrypted_guest_memory.clone(),
-                ],
-            );
+            let device = TestDevice {
+                value: 0,
+                guest_memory: input.guest_memory.clone(),
+                encrypted_guest_memory: input.encrypted_guest_memory.clone(),
+            };
             device.access_memory();
             Ok(device.into())
         }
@@ -467,8 +473,11 @@ mod tests {
         let (cap_send, cap_recv) = mesh::oneshot();
         let (gm_proxy, gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
         let (enc_gm_proxy, enc_gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
-        let mut guest_memory = TaskControl::new(GuestMemoryTask);
-        guest_memory.insert(driver, "test-guest-memory", [gm_proxy, enc_gm_proxy]);
+        let mut guest_memory = TaskControl::new(GuestMemoryTask {
+            guest_memory: gm_proxy,
+            encrypted_guest_memory: enc_gm_proxy,
+        });
+        guest_memory.insert(driver, "test-guest-memory", ());
         guest_memory.start();
         let worker = mesh_worker::launch_local_worker::<RemoteChipsetDeviceWorker<TestResolvers>>(
             RemoteChipsetDeviceWorkerParameters {
@@ -512,7 +521,6 @@ mod tests {
         proxy.worker.stop();
         proxy.worker.join().await.unwrap();
         proxy._guest_memory.stop().await;
-        drop(proxy._guest_memory.remove());
     }
 
     #[async_test]

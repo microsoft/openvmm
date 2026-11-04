@@ -47,18 +47,16 @@ pub struct GuestMemoryProxy {
     resp_send: mesh::Sender<GuestMemoryResponse>,
 }
 
-pub(crate) struct GuestMemoryTask;
+pub(crate) struct GuestMemoryTask {
+    pub(crate) guest_memory: GuestMemoryProxy,
+    pub(crate) encrypted_guest_memory: GuestMemoryProxy,
+}
 
-impl AsyncRun<[GuestMemoryProxy; 2]> for GuestMemoryTask {
-    async fn run(
-        &mut self,
-        stop: &mut StopTask<'_>,
-        proxies: &mut [GuestMemoryProxy; 2],
-    ) -> Result<(), Cancelled> {
+impl AsyncRun<()> for GuestMemoryTask {
+    async fn run(&mut self, stop: &mut StopTask<'_>, _: &mut ()) -> Result<(), Cancelled> {
         stop.until_stopped(poll_fn(|cx| {
-            for proxy in proxies.iter_mut() {
-                proxy.poll(cx);
-            }
+            self.guest_memory.poll(cx);
+            self.encrypted_guest_memory.poll(cx);
             Poll::Pending
         }))
         .await

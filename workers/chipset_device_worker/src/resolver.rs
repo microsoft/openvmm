@@ -64,11 +64,14 @@ impl<T: RemoteDynamicResolvers>
         let (enc_gm_proxy, enc_gm_remote) =
             GuestMemoryProxy::new(input.encrypted_guest_memory.clone());
 
-        let mut guest_memory = TaskControl::new(GuestMemoryTask);
+        let mut guest_memory = TaskControl::new(GuestMemoryTask {
+            guest_memory: gm_proxy,
+            encrypted_guest_memory: enc_gm_proxy,
+        });
         guest_memory.insert(
             input.task_driver_source.simple(),
             "chipset-guest-memory",
-            [gm_proxy, enc_gm_proxy],
+            (),
         );
         guest_memory.start();
 
