@@ -754,45 +754,6 @@ struct PreparedRestore {
     snapshot_id: Guid,
 }
 
-/// Owns a launched VM worker and its mesh until the VM is committed to the
-/// service. If VM construction is abandoned first (an error, or the request
-/// future is dropped because the client cancelled), the worker is stopped and
-/// joined so it doesn't keep running, or keep a snapshot's `memory.bin`
-/// mapped, behind the service's back.
-struct PendingWorker {
-    driver: DefaultDriver,
-    inner: Option<(VmmMesh, mesh_worker::WorkerHandle)>,
-}
-
-impl PendingWorker {
-    fn new(driver: DefaultDriver, mesh: VmmMesh, worker: mesh_worker::WorkerHandle) -> Self {
-        Self {
-            driver,
-            inner: Some((mesh, worker)),
-        }
-    }
-
-    /// Hands the worker over to the caller; no cleanup is done afterward.
-    fn commit(mut self) -> (VmmMesh, mesh_worker::WorkerHandle) {
-        self.inner.take().expect("pending worker already taken")
-    }
-}
-
-impl Drop for PendingWorker {
-    fn drop(&mut self) {
-        if let Some((mesh, mut worker)) = self.inner.take() {
-            tracing::info!("stopping VM worker for abandoned VM construction");
-            worker.stop();
-            self.driver
-                .spawn("abandoned-vm-worker", async move {
-                    let _ = worker.join().await;
-                    mesh.shutdown().await;
-                })
-                .detach();
-        }
-    }
-}
-
 /// Validates the snapshot against the VM configuration and opens its memory.
 /// The manifest and saved state were read and checked up front by
 /// `restore_vm`.
@@ -1678,7 +1639,6 @@ impl VmService {
                 },
             )
             .await?;
-        let pending_worker = PendingWorker::new(self.driver.clone(), mesh, worker);
 
         let memory = config_mem_size;
         let processors = config_proc_count;
@@ -1686,9 +1646,6 @@ impl VmService {
         // Create channels for VmController.
         let (vm_controller_send, vm_controller_recv) = mesh::channel();
         let (event_send, event_recv) = mesh::channel();
-
-        // No awaits from here until the VM is committed below.
-        let (mesh, worker) = pending_worker.commit();
 
         // Build VmController with no paravisor-specific fields.
         let controller = VmController {
