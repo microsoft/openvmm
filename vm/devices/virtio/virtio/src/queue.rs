@@ -99,54 +99,8 @@ pub struct QueueState {
     pub used_index: u16,
 }
 
-/// An accepted descriptor chain retained across save/restore.
-#[derive(Debug, Clone, mesh::payload::Protobuf)]
-#[mesh(package = "virtio.queue")]
-pub struct SavedQueueWork {
-    #[mesh(1)]
-    pub completion: SavedQueueCompletion,
-    #[mesh(2)]
-    pub payload: Vec<SavedQueuePayload>,
-    #[mesh(3)]
-    pub readable_prefix: Option<Vec<u8>>,
-}
-
-/// Completion metadata for an accepted descriptor chain.
-#[derive(Debug, Clone, mesh::payload::Protobuf)]
-#[mesh(package = "virtio.queue")]
-pub enum SavedQueueCompletion {
-    #[mesh(1)]
-    Split {
-        #[mesh(1)]
-        descriptor_index: u16,
-    },
-    #[mesh(2)]
-    Packed {
-        #[mesh(1)]
-        descriptor_index: u16,
-        #[mesh(2)]
-        buffer_id: u16,
-        #[mesh(3)]
-        descriptor_count: u16,
-    },
-}
-
-/// A saved payload buffer, independent of the runtime descriptor representation.
-#[derive(Debug, Clone, mesh::payload::Protobuf)]
-#[mesh(package = "virtio.queue")]
-pub struct SavedQueuePayload {
-    #[mesh(1)]
-    pub writeable: bool,
-    #[mesh(2)]
-    pub address: u64,
-    #[mesh(3)]
-    pub length: u32,
-}
-
 #[derive(Debug, Error)]
 pub enum QueueError {
-    #[error("invalid saved pending virtio work")]
-    InvalidPendingWork,
     #[error("error accessing queue memory")]
     Memory(#[source] GuestMemoryError),
     #[error("an indirect descriptor had the indirect flag set")]
@@ -203,19 +157,6 @@ pub struct QueueCompletion {
 }
 
 impl QueueCompletion {
-    pub(crate) fn save(&self) -> SavedQueueCompletion {
-        match &self.context {
-            QueueCompletionContext::Split => SavedQueueCompletion::Split {
-                descriptor_index: self.descriptor_index,
-            },
-            QueueCompletionContext::Packed(context) => SavedQueueCompletion::Packed {
-                descriptor_index: self.descriptor_index,
-                buffer_id: context.buffer_id,
-                descriptor_count: context.descriptor_count,
-            },
-        }
-    }
-
     pub fn descriptor_index(&self) -> u16 {
         self.descriptor_index
     }
@@ -286,85 +227,6 @@ pub(crate) struct QueueCoreGetWork {
 }
 
 impl QueueCoreGetWork {
-    pub fn restore_pending_work(
-        &self,
-        pending: Vec<SavedQueueWork>,
-    ) -> Result<Vec<VirtioQueueCallbackWork>, QueueError> {
-        let mut count = 0u32;
-        let mut work = Vec::new();
-        for saved in pending {
-            let (descriptor_index, context) = match saved.completion {
-                SavedQueueCompletion::Split { descriptor_index }
-                    if !self.features.ring_packed() =>
-                {
-                    (descriptor_index, QueueCompletionContext::Split)
-                }
-                SavedQueueCompletion::Packed {
-                    descriptor_index,
-                    buffer_id,
-                    descriptor_count,
-                } if self.features.ring_packed()
-                    && descriptor_count != 0
-                    && descriptor_count <= self.queue_size =>
-                {
-                    (
-                        descriptor_index,
-                        QueueCompletionContext::Packed(PackedQueueCompletionContext {
-                            buffer_id,
-                            descriptor_count,
-                        }),
-                    )
-                }
-                _ => return Err(QueueError::InvalidPendingWork),
-            };
-            if descriptor_index >= self.queue_size {
-                return Err(QueueError::InvalidPendingWork);
-            }
-            let completion = QueueCompletion {
-                context,
-                descriptor_index,
-            };
-            count += u32::from(completion.in_flight_cost());
-            if count > u32::from(self.in_flight) {
-                return Err(QueueError::InvalidPendingWork);
-            }
-            let readable_len = saved
-                .payload
-                .iter()
-                .filter(|payload| !payload.writeable)
-                .try_fold(0u64, |len, payload| {
-                    len.checked_add(u64::from(payload.length))
-                })
-                .ok_or(QueueError::InvalidPendingWork)?;
-            if saved
-                .readable_prefix
-                .as_ref()
-                .is_some_and(|prefix| prefix.len() as u64 > readable_len)
-            {
-                return Err(QueueError::InvalidPendingWork);
-            }
-            work.push(
-                VirtioQueueCallbackWork::from_parts(
-                    completion,
-                    saved
-                        .payload
-                        .into_iter()
-                        .map(|payload| VirtioQueuePayload {
-                            writeable: payload.writeable,
-                            address: payload.address,
-                            length: payload.length,
-                        })
-                        .collect(),
-                )
-                .with_readable_prefix(saved.readable_prefix),
-            );
-        }
-        if count != u32::from(self.in_flight) {
-            return Err(QueueError::InvalidPendingWork);
-        }
-        Ok(work)
-    }
-
     pub fn avail_index(&self) -> u16 {
         match &self.inner {
             QueueGetWorkInner::Split(split) => split.last_avail_index(),
@@ -877,62 +739,6 @@ impl Iterator for DescriptorChain<'_> {
 mod tests {
     use super::QueueError;
     use super::packed_in_flight;
-    use test_with_tracing::test;
-
-    #[test]
-    fn restored_pending_work_preserves_split_and_packed_completion_accounting() {
-        for packed in [false, true] {
-            let memory = guestmem::GuestMemory::allocate(0x4000);
-            let mut features = super::VirtioDeviceFeatures::new();
-            if packed {
-                features.set_bank(1, 1 << 2);
-            }
-            let state = super::QueueState {
-                avail_index: if packed { cursor(2, true) } else { 1 },
-                used_index: if packed { cursor(0, true) } else { 0 },
-            };
-            let (mut get, mut complete) = super::new_queue(
-                features,
-                memory,
-                super::QueueParams {
-                    size: 8,
-                    enable: true,
-                    desc_addr: 0,
-                    avail_addr: 0x1000,
-                    used_addr: 0x2000,
-                },
-                Some(state),
-            )
-            .unwrap();
-            assert!(get.restore_pending_work(Vec::new()).is_err());
-            let saved = super::SavedQueueWork {
-                completion: if packed {
-                    super::SavedQueueCompletion::Packed {
-                        descriptor_index: 0,
-                        buffer_id: 7,
-                        descriptor_count: 2,
-                    }
-                } else {
-                    super::SavedQueueCompletion::Split {
-                        descriptor_index: 0,
-                    }
-                },
-                payload: Vec::new(),
-                readable_prefix: None,
-            };
-            let saved = mesh::payload::decode(&mesh::payload::encode(saved)).unwrap();
-            let work = get
-                .restore_pending_work(vec![saved])
-                .unwrap()
-                .pop()
-                .unwrap();
-            get.work_completed(work.completion());
-            complete
-                .complete_descriptor(work.completion(), 512)
-                .unwrap();
-            assert_eq!(complete.used_index(), state.avail_index);
-        }
-    }
 
     /// Encodes a packed cursor as it is stored in `QueueState`:
     /// `index | (wrap_counter << 15)`.

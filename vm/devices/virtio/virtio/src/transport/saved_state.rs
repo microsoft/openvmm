@@ -10,7 +10,6 @@
 
 pub mod state {
     use crate::queue::QueueState;
-    use crate::queue::SavedQueueWork;
     use mesh::payload::Protobuf;
 
     /// Transport-agnostic per-queue saved state.
@@ -29,8 +28,6 @@ pub mod state {
         pub used_addr: u64,
         #[mesh(6)]
         pub queue_state: Option<QueueState>,
-        #[mesh(7)]
-        pub pending_work: Vec<SavedQueueWork>,
     }
 
     /// Transport-agnostic saved state for the virtio common configuration.
@@ -61,8 +58,6 @@ use vmcore::save_restore::RestoreError;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum VirtioRestoreError {
-    #[error("queue {index}: pending work requires an enabled queue with saved ring progress")]
-    InvalidPendingWork { index: usize },
     #[error("driver feature bank {bank}: saved {saved:#x} has bits not in device {device:#x}")]
     IncompatibleFeatures {
         bank: usize,
