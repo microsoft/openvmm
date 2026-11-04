@@ -11,6 +11,7 @@ mod hypervisor_resolvers;
 // Resources.
 vm_resource::register_static_resolvers! {
     // Chipset devices
+    chipset::acpi_power_button::AcpiPowerButtonResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
     #[cfg(guest_arch = "x86_64")]

@@ -110,6 +110,14 @@ pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
 /// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
 pub const DEFAULT_VMBUS_PPI: u32 = 18;
 
+/// Default IOAPIC interrupt for the ACPI power button on x86_64.
+pub const DEFAULT_ACPI_POWER_BUTTON_IRQ_X64: u32 = 10;
+/// Default GIC SPI index (INTID 39) for the ACPI power button on AArch64.
+///
+/// Firmware reserves INTIDs 35-38 for generation ID, battery, PMEM, and
+/// processor-idle events.
+pub const DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64: u32 = 7;
+
 /// How firmware tables are presented to the guest in Linux direct boot.
 ///
 /// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
