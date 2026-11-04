@@ -63,6 +63,8 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
+            // Bit 0: Currently Write Protected.
+            nsattr: self.disk.is_read_only().into(),
             ..FromZeros::new_zeroed()
         };
         id.lbaf[0] = nvm::Lbaf::new().with_lbads(self.block_shift as u8);
@@ -275,6 +277,7 @@ mod tests {
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     const DATA_GPA: u64 = 0x1000;
     const SECTOR_SIZE: usize = 512;
@@ -320,6 +323,17 @@ mod tests {
         let mut data = [0xff; SECTOR_SIZE];
         mem.read_at(DATA_GPA, &mut data).unwrap();
         assert_eq!(data, [0; SECTOR_SIZE]);
+    }
+
+    #[test]
+    fn identify_reports_read_only_as_write_protected() {
+        for read_only in [false, true] {
+            let mem = GuestMemory::allocate(0x1000);
+            let namespace = Namespace::new(mem, 1, ram_disk(1 << 20, read_only).unwrap());
+            let mut id = nvm::IdentifyNamespace::new_zeroed();
+            namespace.identify(id.as_mut_bytes());
+            assert_eq!(id.nsattr, u8::from(read_only), "read_only = {read_only}");
+        }
     }
 
     #[async_test]
