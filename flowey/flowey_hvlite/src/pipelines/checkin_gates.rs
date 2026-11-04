@@ -1962,7 +1962,10 @@ impl IntoPipeline for CheckinGatesCli {
                     prep_steps_variants,
                     external_deps,
                     upload_logs_on_success: true,
-                    fail_job_on_test_fail: true,
+                    // The Windows SNP tests fail intermittently on the host's
+                    // side, so their failures don't fail the job, which still
+                    // reports and uploads them.
+                    fail_job_on_test_fail: label != "x64-windows-amd-snp",
                     repetitions: std::num::NonZeroU64::new(1).unwrap(),
                     petri_params: PetriParams {
                         disable_remote_artifacts: true,
