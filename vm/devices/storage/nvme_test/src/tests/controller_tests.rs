@@ -877,3 +877,67 @@ async fn test_admin_completion_waits_for_free_cq_slot(driver: DefaultDriver) {
     assert_eq!(cqe.cid, 0xa00 + last as u16);
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
 }
+
+/// The SMART / Health Information log page is not supported per namespace
+/// (LPA.SMARTS is 0), so NSID 0h and FFFFFFFFh both return the controller log
+/// page and any other NSID is Invalid Field in Command (NVMe Base 2.1 section
+/// 5.1.12.1.3).
+#[async_test]
+async fn test_get_smart_log_page_nsid(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        FaultConfiguration::new(CellUpdater::new(false).cell()),
+    )
+    .await;
+
+    let data_gpa = 0x8000u64;
+    for (admin_slot, (nsid, expected)) in [
+        (0, spec::Status::SUCCESS),
+        (!0, spec::Status::SUCCESS),
+        (1, spec::Status::INVALID_FIELD_IN_COMMAND),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        gm.write_plain::<[u8; 512]>(data_gpa, &[0xff; 512]).unwrap();
+
+        let mut cmd = Command::new_zeroed();
+        cmd.cdw0.set_opcode(spec::AdminOpcode::GET_LOG_PAGE.0);
+        cmd.nsid = nsid;
+        // 512 bytes = 128 dwords; NUMDL is a 0-based dword count.
+        cmd.cdw10 = spec::Cdw10GetLogPage::new()
+            .with_lid(spec::LogPageIdentifier::HEALTH_INFORMATION.0)
+            .with_numdl_z(127)
+            .into();
+        cmd.dptr[0] = data_gpa;
+
+        write_command_to_queue(&gm, &asq, admin_slot, &cmd);
+        nvmec
+            .write_bar0(0x1000, (admin_slot as u32 + 1).as_bytes())
+            .unwrap();
+        wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+        let cqe = read_completion_from_queue(&gm, &acq, admin_slot);
+
+        assert_eq!(
+            cqe.status.status(),
+            expected.0,
+            "unexpected status for nsid {nsid:#x}"
+        );
+        if expected == spec::Status::SUCCESS {
+            let page = gm.read_plain::<[u8; 512]>(data_gpa).unwrap();
+            assert_eq!(page, [0; 512], "log page not written for nsid {nsid:#x}");
+        }
+    }
+}

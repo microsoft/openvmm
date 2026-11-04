@@ -1602,3 +1602,70 @@ async fn test_get_supported_log_pages(driver: DefaultDriver) {
         );
     }
 }
+
+/// The SMART / Health Information log page is not supported per namespace
+/// (LPA.SMARTS is 0), so NSID 0h and FFFFFFFFh both return the controller log
+/// page and any other NSID is Invalid Field in Command (NVMe Base 2.1 section
+/// 5.1.12.1.3).
+#[async_test]
+async fn test_get_smart_log_page_nsid(driver: DefaultDriver) {
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+    )
+    .await;
+
+    let data_gpa = 0x8000u64;
+    for (admin_slot, (nsid, expected)) in [
+        (0, spec::Status::SUCCESS),
+        (!0, spec::Status::SUCCESS),
+        (1, spec::Status::INVALID_FIELD_IN_COMMAND),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        gm.write_plain::<[u8; 512]>(data_gpa, &[0xff; 512]).unwrap();
+
+        let mut cmd = spec::Command::new_zeroed();
+        cmd.cdw0.set_opcode(spec::AdminOpcode::GET_LOG_PAGE.0);
+        cmd.nsid = nsid;
+        // 512 bytes = 128 dwords; NUMDL is a 0-based dword count.
+        cmd.cdw10 = spec::Cdw10GetLogPage::new()
+            .with_lid(spec::LogPageIdentifier::HEALTH_INFORMATION.0)
+            .with_numdl_z(127)
+            .into();
+        cmd.dptr[0] = data_gpa;
+
+        let cqe = submit_admin_command(
+            &mut nvmec,
+            &gm,
+            &asq,
+            &acq,
+            &int_controller,
+            driver.clone(),
+            admin_slot as u32,
+            &cmd,
+        )
+        .await;
+        assert_eq!(
+            cqe.status.status(),
+            expected.0,
+            "unexpected status for nsid {nsid:#x}"
+        );
+        if expected == spec::Status::SUCCESS {
+            let page = gm.read_plain::<[u8; 512]>(data_gpa).unwrap();
+            assert_eq!(page, [0; 512], "log page not written for nsid {nsid:#x}");
+        }
+    }
+}
