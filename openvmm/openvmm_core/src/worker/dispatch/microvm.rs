@@ -33,7 +33,6 @@ use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VmWorkerParameters;
 use std::sync::Arc;
-use std::time::Duration;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioMmioInterruptMode;
 use virtio::resolve::ResolvedVirtioDevice;
@@ -135,8 +134,6 @@ pub(super) struct SnapshotBoundary {
     stop_guard: Option<StopGuard>,
     /// Completes the guest's snapshot transaction when the boundary is released.
     transaction_complete: Option<Rpc<(), ()>>,
-    /// Input-gate timeout of the active boundary.
-    input_gate_timeout: Option<Duration>,
 }
 
 impl SnapshotBoundary {
@@ -218,24 +215,19 @@ impl LoadedVm {
             self.snapshot_restore.restore_acknowledged();
         }
         if !self.snapshot_restore.input_gated {
+            // The gate waits for every unit. When a unit fails it, roll it
+            // back and let the guest continue without a snapshot; only a
+            // failed rollback ends the VM.
             let input_gate = openvmm_defs::profile::ProfileSpan::start();
-            if let Err(error) = self
-                .state_units
-                .quiesce_input_for_save(request.input_gate_timeout)
-                .await
-            {
+            if let Err(error) = self.state_units.quiesce_input_for_save().await {
                 tracelimit::error_ratelimited!(
                     error = error.as_ref() as &dyn std::error::Error,
                     "failed to gate host input before snapshot boundary"
                 );
-                if let Err(resume_error) = self
-                    .state_units
-                    .resume_input_after_save(request.input_gate_timeout)
-                    .await
-                {
+                if let Err(resume_error) = self.state_units.resume_input_after_save().await {
                     tracelimit::error_ratelimited!(
                         error = resume_error.as_ref() as &dyn std::error::Error,
-                        "host-input gate rollback is uncertain; terminating VM worker"
+                        "failed to roll back the host-input gate; terminating VM worker"
                     );
                     request.transaction_complete.complete(());
                     return false;
@@ -262,7 +254,6 @@ impl LoadedVm {
                 );
                 self.snapshot_boundary.stop_guard = Some(stop_guard);
                 self.snapshot_boundary.transaction_complete = Some(request.transaction_complete);
-                self.snapshot_boundary.input_gate_timeout = Some(request.input_gate_timeout);
                 snapshot_ready.send(request.scratch_policy);
                 true
             }
@@ -278,13 +269,12 @@ impl LoadedVm {
     }
 
     pub(super) async fn release_snapshot_boundary(&mut self) -> anyhow::Result<()> {
-        let input_gate_timeout = self
-            .snapshot_boundary
-            .input_gate_timeout
-            .context("snapshot boundary is missing its input-gate timeout")?;
-        self.state_units
-            .resume_input_after_save(input_gate_timeout)
-            .await?;
+        // Resume host input only while a boundary holds it.
+        anyhow::ensure!(
+            self.snapshot_boundary.transaction_complete.is_some(),
+            "no active microVM snapshot boundary"
+        );
+        self.state_units.resume_input_after_save().await?;
         let transaction_complete = self
             .snapshot_boundary
             .transaction_complete
@@ -296,7 +286,6 @@ impl LoadedVm {
             .take()
             .context("snapshot boundary is missing its vCPU stop guard")?;
         let restore_gate_profile = self.snapshot_restore.gate_profile.take();
-        self.snapshot_boundary.input_gate_timeout = None;
         self.snapshot_restore.gate_timeout = None;
         self.snapshot_restore.gate_deadline = None;
         self.snapshot_restore.input_gated = false;
@@ -308,9 +297,16 @@ impl LoadedVm {
         Ok(())
     }
 
+    /// Quiesces the VM for a guest-requested snapshot and saves its state,
+    /// leaving it stopped.
+    ///
+    /// The quiesce stops every state unit and has no deadline: a unit that
+    /// never stops stalls the capture until the process that drives the VM
+    /// ends it, with nothing published and the source never resumed. Each
+    /// error after the quiesce leaves every unit stopped, so the VM can roll
+    /// back with [`Self::resume_after_failed_snapshot`].
     pub(super) async fn quiesce_for_snapshot(
         &mut self,
-        timeout: Duration,
     ) -> Result<openvmm_defs::rpc::SnapshotSaveResponse, openvmm_defs::rpc::SnapshotQuiesceError>
     {
         use mesh::payload::message::ProtobufMessage;
@@ -329,13 +325,7 @@ impl LoadedVm {
         }
 
         let quiesce = openvmm_defs::profile::ProfileSpan::start();
-        if let Err(error) = self.state_units.quiesce_for_save(timeout).await {
-            return Err(if error.has_uncertain_state() {
-                openvmm_defs::rpc::SnapshotQuiesceError::Uncertain(RemoteError::new(error))
-            } else {
-                openvmm_defs::rpc::SnapshotQuiesceError::RollbackSafe(RemoteError::new(error))
-            });
-        }
+        self.state_units.stop().await;
         quiesce.complete("capture", "quiesce", Default::default());
         self.running = false;
 
@@ -404,13 +394,13 @@ impl LoadedVm {
         anyhow::bail!("microVM snapshots require an x86-64 guest")
     }
 
-    /// Resumes the VM after a rollback-safe snapshot failure and releases the
-    /// snapshot boundary.
-    pub(super) async fn resume_after_failed_snapshot(
-        &mut self,
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        self.state_units.resume_after_failed_save(timeout).await?;
+    /// Resumes the VM after a snapshot failure that followed a complete
+    /// quiesce, and releases the snapshot boundary.
+    ///
+    /// A unit whose task does not answer leaves the units that did start
+    /// stopped again, and fails the rollback.
+    pub(super) async fn resume_after_failed_snapshot(&mut self) -> anyhow::Result<()> {
+        self.state_units.start().await?;
         self.running = true;
         self.release_snapshot_boundary().await?;
         Ok(())

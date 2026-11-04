@@ -675,7 +675,6 @@ pub struct MicrovmSnapshotRequest {
     io_region: (&'static str, RangeInclusive<u16>),
     #[inspect(skip)]
     notify: Option<mesh::Sender<chipset_resources::microvm::MicrovmSnapshotBoundaryRequest>>,
-    input_gate_timeout: std::time::Duration,
     #[inspect(skip)]
     pending: Option<PendingSnapshotWrite>,
     #[inspect(skip)]
@@ -694,12 +693,10 @@ impl MicrovmSnapshotRequest {
     /// Creates a snapshot-request device with an optional asynchronous notification target.
     pub fn new(
         notify: Option<mesh::Sender<chipset_resources::microvm::MicrovmSnapshotBoundaryRequest>>,
-        input_gate_timeout: std::time::Duration,
     ) -> Self {
         Self {
             io_region: ("microvm-snapshot-request", SNAPSHOT_PORT..=SNAPSHOT_PORT),
             notify,
-            input_gate_timeout,
             pending: None,
             poll_waker: None,
         }
@@ -811,7 +808,6 @@ impl PortIoIntercept for MicrovmSnapshotRequest {
                     scratch_policy,
                     release_write,
                     write_completed: write_completed_recv,
-                    input_gate_timeout: self.input_gate_timeout,
                     transaction_complete,
                 },
                 (),
@@ -1899,7 +1895,7 @@ mod tests {
             [PowerRequest::PowerOffWithStatus { code: 0x25 }]
         );
 
-        let mut snapshot = MicrovmSnapshotRequest::new(None, std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(None);
         let mut data = [0; 4];
         assert!(matches!(
             snapshot.io_read(SNAPSHOT_PORT, &mut data),
@@ -1915,8 +1911,7 @@ mod tests {
     #[test]
     fn snapshot_requests_are_coalesced_until_acknowledged() {
         let (send, mut recv) = mesh::channel();
-        let mut snapshot =
-            MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
         snapshot.poll_device(&mut Context::from_waker(Waker::noop()));
 
         let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[1]) else {
@@ -1971,8 +1966,7 @@ mod tests {
     #[test]
     fn snapshot_request_completed_transaction_is_reusable_without_poll() {
         let (send, mut recv) = mesh::channel();
-        let mut snapshot =
-            MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
         let mut cx = Context::from_waker(Waker::noop());
 
         let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[1]) else {
@@ -2005,8 +1999,7 @@ mod tests {
     #[test]
     fn snapshot_request_early_completion_releases_previous_write() {
         let (send, mut recv) = mesh::channel();
-        let mut snapshot =
-            MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
         let mut cx = Context::from_waker(Waker::noop());
 
         let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[0]) else {
@@ -2037,8 +2030,7 @@ mod tests {
     #[test]
     fn snapshot_request_closed_transaction_is_reusable() {
         let (send, mut recv) = mesh::channel();
-        let mut snapshot =
-            MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
         let mut cx = Context::from_waker(Waker::noop());
 
         let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[1]) else {
@@ -2083,8 +2075,7 @@ mod tests {
         let waker = futures::task::waker(Arc::clone(&wakes));
         let mut cx = Context::from_waker(&waker);
         let (send, mut recv) = mesh::channel();
-        let mut snapshot =
-            MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+        let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
         snapshot.poll_device(&mut cx);
         assert!(matches!(
             snapshot.io_write(SNAPSHOT_PORT, &[0]),
@@ -2116,8 +2107,7 @@ mod tests {
     fn snapshot_request_stop_and_reset_cancel_unreleased_write() {
         for reset in [false, true] {
             let (send, mut recv) = mesh::channel();
-            let mut snapshot =
-                MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+            let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
             let mut cx = Context::from_waker(Waker::noop());
             let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[1]) else {
                 panic!("snapshot write was not deferred");
@@ -2152,8 +2142,7 @@ mod tests {
     fn snapshot_request_stop_and_reset_preserve_released_transaction() {
         for reset in [false, true] {
             let (send, mut recv) = mesh::channel();
-            let mut snapshot =
-                MicrovmSnapshotRequest::new(Some(send), std::time::Duration::from_secs(1));
+            let mut snapshot = MicrovmSnapshotRequest::new(Some(send));
             let mut cx = Context::from_waker(Waker::noop());
             let IoResult::Defer(mut deferred_write) = snapshot.io_write(SNAPSHOT_PORT, &[1]) else {
                 panic!("snapshot write was not deferred");

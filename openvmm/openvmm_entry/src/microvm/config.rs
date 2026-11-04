@@ -465,9 +465,6 @@ impl<'a> MicrovmConfigBuilder<'a> {
                 self.resources.snapshot_requests = Some(requests);
                 MicrovmSnapshotRequestHandle {
                     notify: Some(notify),
-                    input_gate_timeout: Duration::from_millis(
-                        opt.microvm.snapshot_quiesce_timeout_ms,
-                    ),
                 }
                 .into_resource()
             },

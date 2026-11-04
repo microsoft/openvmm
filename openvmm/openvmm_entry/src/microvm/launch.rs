@@ -307,9 +307,6 @@ impl MicrovmLaunch {
             snapshot_block_identity: self.snapshot_block_identity,
             snapshot_generation_id: self.snapshot_generation_id,
             snapshot_scratch_restore_mode: self.snapshot_scratch_restore_mode,
-            snapshot_quiesce_timeout: Duration::from_millis(
-                opt.microvm.snapshot_quiesce_timeout_ms,
-            ),
             source_hypervisor,
             effective_command_line: self.effective_command_line,
             resources: self.resources,

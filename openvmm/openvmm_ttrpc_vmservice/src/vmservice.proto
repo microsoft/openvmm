@@ -878,11 +878,15 @@ message SMBIOSConfig {
 // Snapshot options for the microVM machine profile.
 message MicrovmSnapshotConfig {
     // Publish a guest-requested snapshot to this previously nonexistent path.
+    // The capture has no deadline; the client bounds it by ending the server.
     string destination_path = 1;
     // Restore authoritatively from this snapshot directory.
     string restore_path = 2;
-    // Maximum quiesce time for capture. Zero selects the five-second default.
-    uint64 quiesce_timeout_ms = 3;
+    // Field 3 was previously `quiesce_timeout_ms`, and then
+    // `boundary_timeout_ms`. It bounded the capture's quiesce, and then its
+    // host-input gate and console flush, none of which has a deadline now.
+    reserved 3;
+    reserved "quiesce_timeout_ms", "boundary_timeout_ms";
     // Unix socket (Linux) or named pipe (Windows) that receives exactly one
     // OPENVMM_RESTORE_READY_V1 event before restored guest execution begins.
     string restore_ready_path = 4;

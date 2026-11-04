@@ -186,25 +186,21 @@ impl MicrovmOutputDrain {
 
     /// Writes and flushes the output accepted by portb to its endpoint, which
     /// stays open, and the output that the boot console's terminal relay
-    /// holds, and fails after `timeout`.
+    /// holds.
     ///
-    /// The host relay of portb is not awaited because it completes only once
-    /// the endpoint closes.
-    pub(crate) async fn flush(&self, timeout: Duration) -> anyhow::Result<()> {
-        CancelContext::new()
-            .with_timeout(timeout)
-            .until_cancelled(async {
-                self.portb
-                    .call_failable(std::convert::identity, MicrovmPortbDrain::Flush)
-                    .await
-                    .context("failed to flush the microVM portb endpoint")?;
-                if let Some(console) = &self.console {
-                    console.write_pending().await?;
-                }
-                anyhow::Ok(())
-            })
+    /// Has no deadline, as the capture that it precedes has none: an endpoint
+    /// whose reader stops reading stalls it until the process that launched
+    /// OpenVMM ends OpenVMM. The host relay of portb is not awaited because it
+    /// completes only once the endpoint closes.
+    pub(crate) async fn flush(&self) -> anyhow::Result<()> {
+        self.portb
+            .call_failable(std::convert::identity, MicrovmPortbDrain::Flush)
             .await
-            .context("microVM console output flush timed out")?
+            .context("failed to flush the microVM portb endpoint")?;
+        if let Some(console) = &self.console {
+            console.write_pending().await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn drain(self) -> anyhow::Result<()> {
@@ -277,7 +273,7 @@ mod tests {
             let (_complete, completed) = oneshot();
             let (drain, mut requests) = MicrovmOutputDrain::new(Some(completed), None);
             {
-                let mut flush = pin!(drain.flush(Duration::from_secs(5)));
+                let mut flush = pin!(drain.flush());
                 assert!(poll!(&mut flush).is_pending());
                 let request = requests.recv().await.unwrap();
                 assert_eq!(*request.input(), MicrovmPortbDrain::Flush);
@@ -298,7 +294,7 @@ mod tests {
     fn flush_reports_endpoint_failure() {
         block_on(async {
             let (drain, mut requests) = MicrovmOutputDrain::new(None, None);
-            let mut flush = pin!(drain.flush(Duration::from_secs(5)));
+            let mut flush = pin!(drain.flush());
             assert!(poll!(&mut flush).is_pending());
             requests
                 .recv()
@@ -310,11 +306,18 @@ mod tests {
     }
 
     #[test]
-    fn flush_has_a_bounded_deadline() {
+    fn flush_has_no_deadline() {
         block_on(async {
-            let (drain, _requests) = MicrovmOutputDrain::new(None, None);
-            let error = drain.flush(Duration::from_millis(10)).await.unwrap_err();
-            assert!(format!("{error:#}").contains("timed out"));
+            let (drain, mut requests) = MicrovmOutputDrain::new(None, None);
+            let mut flush = pin!(drain.flush());
+            assert!(poll!(&mut flush).is_pending());
+            let request = requests.recv().await.unwrap();
+            // An endpoint whose reader has stopped reading answers late, and
+            // the flush waits for it instead of failing.
+            thread::sleep(Duration::from_millis(100));
+            assert!(poll!(&mut flush).is_pending());
+            request.complete(Ok(()));
+            flush.await.unwrap();
         });
     }
 
@@ -525,7 +528,7 @@ mod tests {
         .unwrap();
         block_on(async {
             let (drain, mut requests) = MicrovmOutputDrain::new(None, Some(relay));
-            let (flushed, ()) = futures::join!(drain.flush(Duration::from_secs(5)), async {
+            let (flushed, ()) = futures::join!(drain.flush(), async {
                 let request = requests.recv().await.unwrap();
                 assert_eq!(*request.input(), MicrovmPortbDrain::Flush);
                 request.complete(Ok(()));

@@ -4208,14 +4208,12 @@ impl LoadedVm {
                             .await
                     }
                     VmRpc::QuiesceForSnapshot(rpc) => {
-                        rpc.handle(async |timeout| self.quiesce_for_snapshot(timeout).await)
+                        rpc.handle(async |()| self.quiesce_for_snapshot().await)
                             .await;
                     }
                     VmRpc::ResumeAfterFailedSnapshot(rpc) => {
-                        rpc.handle_failable(async |timeout| {
-                            self.resume_after_failed_snapshot(timeout).await
-                        })
-                        .await;
+                        rpc.handle_failable(async |()| self.resume_after_failed_snapshot().await)
+                            .await;
                     }
                     VmRpc::ReleaseSnapshotBoundary(rpc) => {
                         rpc.handle_failable(async |()| self.release_snapshot_boundary().await)

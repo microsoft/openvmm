@@ -79,7 +79,6 @@ mod tests {
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
-    use std::time::Duration;
     use test_with_tracing::test;
     use vmcore::device_state::ChangeDeviceState;
 
@@ -89,7 +88,7 @@ mod tests {
     fn snapshot_boundary_drops_requests_cancelled_by_stop_or_reset() {
         for reset in [false, true] {
             let (send, mut requests) = mesh::channel();
-            let mut device = MicrovmSnapshotRequest::new(Some(send), Duration::from_secs(1));
+            let mut device = MicrovmSnapshotRequest::new(Some(send));
             device.start();
             let IoResult::Defer(mut cancelled_write) = device.io_write(SNAPSHOT_PORT, &[0]) else {
                 panic!("snapshot write was not deferred");
@@ -132,7 +131,7 @@ mod tests {
     #[test]
     fn snapshot_boundary_accepts_live_request() {
         let (send, mut requests) = mesh::channel();
-        let mut device = MicrovmSnapshotRequest::new(Some(send), Duration::from_secs(1));
+        let mut device = MicrovmSnapshotRequest::new(Some(send));
         device.start();
         let IoResult::Defer(mut write) = device.io_write(SNAPSHOT_PORT, &[0]) else {
             panic!("snapshot write was not deferred");
@@ -150,7 +149,7 @@ mod tests {
     #[test]
     fn snapshot_boundary_drops_request_from_dropped_device() {
         let (send, mut requests) = mesh::channel();
-        let mut device = MicrovmSnapshotRequest::new(Some(send), Duration::from_secs(1));
+        let mut device = MicrovmSnapshotRequest::new(Some(send));
         assert!(matches!(
             device.io_write(SNAPSHOT_PORT, &[0]),
             IoResult::Defer(_)
@@ -174,8 +173,8 @@ mod tests {
     #[test]
     fn snapshot_control_and_reads_reach_dispatch() {
         for message in [
-            VmRpc::QuiesceForSnapshot(Rpc::detached(Duration::from_secs(1))),
-            VmRpc::ResumeAfterFailedSnapshot(Rpc::detached(Duration::from_secs(1))),
+            VmRpc::QuiesceForSnapshot(Rpc::detached(())),
+            VmRpc::ResumeAfterFailedSnapshot(Rpc::detached(())),
             VmRpc::ReleaseSnapshotBoundary(Rpc::detached(())),
             VmRpc::ReadMemory(Rpc::detached((0, 1))),
         ] {

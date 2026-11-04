@@ -416,11 +416,7 @@ pub(super) fn attach_chipset_devices(
         },
         ChipsetDeviceHandle {
             name: MicrovmSnapshotRequestHandle::ID.to_owned(),
-            resource: MicrovmSnapshotRequestHandle {
-                notify: None,
-                input_gate_timeout: std::time::Duration::from_secs(5),
-            }
-            .into_resource(),
+            resource: MicrovmSnapshotRequestHandle { notify: None }.into_resource(),
         },
     ]);
     runtime

@@ -313,9 +313,9 @@ impl LoadedVm {
     /// post-restore input gate, the restore readiness event, and the release
     /// of the restored VPs around the start.
     pub(super) async fn start_state_units(&mut self) -> anyhow::Result<()> {
-        if let Some(timeout) = self.snapshot_restore.gate_timeout {
+        if self.snapshot_restore.gate_timeout.is_some() {
             self.state_units
-                .quiesce_input_for_save(timeout)
+                .quiesce_input_for_save()
                 .await
                 .context("failed to establish post-restore input gate")?;
             self.snapshot_restore.input_gated = true;

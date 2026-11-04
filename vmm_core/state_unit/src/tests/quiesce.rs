@@ -1,68 +1,37 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tests for snapshot quiesce and for restart after a failed save.
+//! Tests for gating host input around the snapshot boundary.
 
-use super::TestUnit;
+use super::slow::Log;
+use crate::SLOW_STATE_CHANGE_INTERVAL;
+use crate::SpawnedUnit;
 use crate::StateUnit;
 use crate::StateUnits;
 use crate::run_unit;
 use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use test_with_tracing::test;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 
-struct SlowStopUnit {
+/// A unit whose input quiesce takes `delay` and then fails if `fail` is set,
+/// and which records whether its input is quiesced.
+struct InputUnit {
     driver: DefaultDriver,
     delay: Duration,
+    fail: bool,
+    quiesced: Arc<AtomicBool>,
 }
 
-impl StateUnit for SlowStopUnit {
+impl StateUnit for InputUnit {
     async fn start(&mut self) {}
-
-    async fn stop(&mut self) {
-        pal_async::timer::PolledTimer::new(&self.driver)
-            .sleep(self.delay)
-            .await;
-    }
-
-    async fn reset(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn save(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
-        Ok(None)
-    }
-
-    async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
-        Err(RestoreError::SavedStateNotSupported)
-    }
-}
-
-impl InspectMut for SlowStopUnit {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        req.respond();
-    }
-}
-
-struct SlowRollbackStartUnit {
-    driver: DefaultDriver,
-    starts: u32,
-}
-
-impl StateUnit for SlowRollbackStartUnit {
-    async fn start(&mut self) {
-        if self.starts != 0 {
-            pal_async::timer::PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
-                .await;
-        }
-        self.starts += 1;
-    }
 
     async fn stop(&mut self) {}
 
@@ -77,93 +46,122 @@ impl StateUnit for SlowRollbackStartUnit {
     async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
         Err(RestoreError::SavedStateNotSupported)
     }
+
+    async fn quiesce_input(&mut self) -> anyhow::Result<()> {
+        pal_async::timer::PolledTimer::new(&self.driver)
+            .sleep(self.delay)
+            .await;
+        anyhow::ensure!(!self.fail, "the device refused to quiesce its input");
+        self.quiesced.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn resume_input(&mut self) -> anyhow::Result<()> {
+        self.quiesced.store(false, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
-impl InspectMut for SlowRollbackStartUnit {
+impl InspectMut for InputUnit {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         req.respond();
     }
 }
 
-#[async_test]
-async fn test_quiesce_and_resume_after_failed_save(driver: DefaultDriver) {
-    let mut units = StateUnits::new();
-    let _unit = units
-        .add("unit")
-        .spawn(&driver, |recv| run_unit(TestUnit::default(), recv))
-        .unwrap();
-    units.start().await.unwrap();
-
-    units
-        .quiesce_for_save(Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert!(!units.is_running());
-
-    units
-        .resume_after_failed_save(Duration::from_secs(1))
-        .await
-        .unwrap();
-    assert!(units.is_running());
-}
-
-#[async_test]
-async fn test_quiesce_timeout_is_uncertain(driver: DefaultDriver) {
-    let mut units = StateUnits::new();
-    let _unit = units
-        .add("slow")
-        .spawn(&driver, {
+/// Adds an [`InputUnit`] named `name` to `units`, and returns it with its
+/// record of whether its input is quiesced.
+fn add_input_unit(
+    units: &StateUnits,
+    driver: &DefaultDriver,
+    name: &str,
+    delay: Duration,
+    fail: bool,
+) -> (SpawnedUnit<InputUnit>, Arc<AtomicBool>) {
+    let quiesced = Arc::new(AtomicBool::new(false));
+    let unit = units
+        .add(name)
+        .spawn(driver, {
             let driver = driver.clone();
+            let quiesced = quiesced.clone();
             |recv| {
                 run_unit(
-                    SlowStopUnit {
+                    InputUnit {
                         driver,
-                        delay: Duration::from_secs(1),
+                        delay,
+                        fail,
+                        quiesced,
                     },
                     recv,
                 )
             }
         })
         .unwrap();
-    units.start().await.unwrap();
-
-    let started = std::time::Instant::now();
-    let error = units
-        .quiesce_for_save(Duration::from_millis(10))
-        .await
-        .unwrap_err();
-    assert!(error.has_uncertain_state());
-    assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(
-        units
-            .resume_after_failed_save(Duration::from_secs(1))
-            .await
-            .is_err()
-    );
+    (unit, quiesced)
 }
 
 #[async_test]
-async fn test_rollback_start_timeout_is_bounded(driver: DefaultDriver) {
+async fn input_quiesce_and_resume_reach_the_units(driver: DefaultDriver) {
     let mut units = StateUnits::new();
-    let _unit = units
-        .add("slow-rollback")
-        .spawn(&driver, {
-            let driver = driver.clone();
-            |recv| run_unit(SlowRollbackStartUnit { driver, starts: 0 }, recv)
-        })
-        .unwrap();
+    let (_unit, quiesced) = add_input_unit(&units, &driver, "input", Duration::ZERO, false);
     units.start().await.unwrap();
-    units
-        .quiesce_for_save(Duration::from_secs(1))
-        .await
-        .unwrap();
 
-    let started = std::time::Instant::now();
-    let error = units
-        .resume_after_failed_save(Duration::from_millis(10))
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("snapshot rollback"));
-    assert!(started.elapsed() < Duration::from_millis(500));
-    assert!(!units.is_running());
+    units.quiesce_input_for_save().await.unwrap();
+    assert!(quiesced.load(Ordering::Relaxed));
+
+    units.resume_input_after_save().await.unwrap();
+    assert!(!quiesced.load(Ordering::Relaxed));
+    assert!(units.is_running());
+}
+
+#[async_test]
+async fn a_slow_input_quiesce_is_awaited_and_names_its_unit(driver: DefaultDriver) {
+    let log = Log::default();
+    let _subscriber = tracing::subscriber::set_default(log.subscriber());
+    let mut units = StateUnits::new();
+    let (_fast, fast) = add_input_unit(&units, &driver, "fast", Duration::ZERO, false);
+    let (_slow, slow) = add_input_unit(
+        &units,
+        &driver,
+        "slow",
+        3 * SLOW_STATE_CHANGE_INTERVAL,
+        false,
+    );
+    units.start().await.unwrap();
+
+    // The gate has no deadline: it waits for the slow unit, whose input
+    // quiesce takes three logging intervals, and the log names that unit.
+    units.quiesce_input_for_save().await.unwrap();
+
+    assert!(fast.load(Ordering::Relaxed));
+    assert!(slow.load(Ordering::Relaxed));
+    let unanswered = log.unanswered();
+    assert!(
+        !unanswered.is_empty(),
+        "the slow input quiesce was not logged"
+    );
+    for line in unanswered {
+        assert!(line.contains(r#"unit="slow""#), "{line}");
+        assert!(!line.contains("fast"), "{line}");
+    }
+}
+
+#[async_test]
+async fn a_failed_input_quiesce_rolls_back(driver: DefaultDriver) {
+    let mut units = StateUnits::new();
+    let (_good, good) = add_input_unit(&units, &driver, "good", Duration::ZERO, false);
+    let (_bad, bad) = add_input_unit(&units, &driver, "bad", Duration::ZERO, true);
+    units.start().await.unwrap();
+
+    let error = format!("{:#}", units.quiesce_input_for_save().await.unwrap_err());
+    assert!(error.contains("quiesce_input failed: bad: "), "{error}");
+    assert!(error.contains("refused to quiesce its input"), "{error}");
+    assert!(!error.contains("good"), "{error}");
+    assert!(good.load(Ordering::Relaxed));
+    assert!(!bad.load(Ordering::Relaxed));
+
+    // The snapshot boundary rolls a failed gate back before the guest
+    // continues without a snapshot, which resumes the input of every unit.
+    units.resume_input_after_save().await.unwrap();
+    assert!(!good.load(Ordering::Relaxed));
+    assert!(units.is_running());
 }

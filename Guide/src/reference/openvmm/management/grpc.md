@@ -179,10 +179,11 @@ restore flow over both transports:
 
 * `destination_path` configures guest-requested capture. Supply a microVM
   configuration, including `DirectBoot` kernel/initrd files, memory, and the
-  processor count. The path must not exist. `quiesce_timeout_ms` defaults to
-  five seconds when zero. Before quiescing, the source delivers the serial
-  port 0 (portb) output the guest wrote before its request, within the same
-  bound, so the endpoint receives it before the source terminates.
+  processor count. The path must not exist. Before quiescing, the source
+  delivers the serial port 0 (portb) output the guest wrote before its
+  request, so the endpoint receives it before the source terminates. The
+  capture has no deadline, from gating host input through the commit; the
+  client bounds it by ending the server.
   `memory_capacity_bytes` optionally reserves an immutable, 128-MiB-aligned
   RAM capacity while keeping the configured base memory as the exact
   `memory.bin` payload and initial Linux direct e820 map.

@@ -11,7 +11,6 @@ use mesh::rpc::RpcSend;
 use openvmm_defs::rpc::SnapshotQuiesceError;
 use openvmm_defs::rpc::VmRpc;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// MicroVM state owned by the VM controller.
 #[derive(Default)]
@@ -36,8 +35,6 @@ pub(crate) struct MicrovmController {
     /// Restore-time materialization policy recorded for paired scratch.
     pub(crate) snapshot_scratch_restore_mode:
         crate::cli_args::microvm::SnapshotScratchRestoreModeCli,
-    /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
-    pub(crate) snapshot_quiesce_timeout: Duration,
     /// Hypervisor backend recorded in captured machine contracts.
     pub(crate) source_hypervisor: String,
     /// Effective kernel command line of the MP-table boot.
@@ -227,10 +224,10 @@ impl VmController {
 
         // The source terminates once the snapshot commits, so deliver the
         // console output the guest wrote before its request while the endpoint
-        // is still open. Bytes that miss the bound stay in the snapshot.
+        // is still open. The flush has no deadline, as the capture has none.
         if let Some(drain) = &self.microvm.resources.output_drain {
             let output_flush = openvmm_defs::profile::ProfileSpan::start();
-            match drain.flush(self.microvm.snapshot_quiesce_timeout).await {
+            match drain.flush().await {
                 Ok(()) => output_flush.complete("capture", "output_flush", Default::default()),
                 Err(error) => tracelimit::warn_ratelimited!(
                     error = error.as_ref() as &dyn std::error::Error,
@@ -239,14 +236,7 @@ impl VmController {
             }
         }
 
-        let response = match self
-            .vm_rpc
-            .call(
-                VmRpc::QuiesceForSnapshot,
-                self.microvm.snapshot_quiesce_timeout,
-            )
-            .await
-        {
+        let response = match self.vm_rpc.call(VmRpc::QuiesceForSnapshot, ()).await {
             Ok(Ok(response)) => response,
             Ok(Err(SnapshotQuiesceError::Rejected(error))) => {
                 tracing::error!(
@@ -257,13 +247,6 @@ impl VmController {
             }
             Ok(Err(SnapshotQuiesceError::RollbackSafe(error))) => {
                 return self.rollback_failed_guest_snapshot(error.into()).await;
-            }
-            Ok(Err(SnapshotQuiesceError::Uncertain(error))) => {
-                tracing::error!(
-                    error = &error as &dyn std::error::Error,
-                    "microVM snapshot quiesce left uncertain state; terminating source"
-                );
-                return GuestSnapshotAction::Terminate { exit_code: 1 };
             }
             Err(error) => {
                 tracing::error!(
@@ -513,10 +496,7 @@ impl VmController {
         );
         match self
             .vm_rpc
-            .call_failable(
-                VmRpc::ResumeAfterFailedSnapshot,
-                self.microvm.snapshot_quiesce_timeout,
-            )
+            .call_failable(VmRpc::ResumeAfterFailedSnapshot, ())
             .await
         {
             Ok(()) => {

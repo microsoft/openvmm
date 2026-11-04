@@ -13,7 +13,6 @@ use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use std::fmt;
 use std::fs::File;
-use std::time::Duration;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -21,10 +20,14 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 #[derive(MeshPayload)]
 pub enum VmRpc {
     Save(FailableRpc<(), ProtobufMessage>),
-    /// Boundedly quiesce the VM and return saved state while leaving it stopped.
-    QuiesceForSnapshot(Rpc<Duration, Result<SnapshotSaveResponse, SnapshotQuiesceError>>),
-    /// Resume a VM after a rollback-safe snapshot failure before commit.
-    ResumeAfterFailedSnapshot(FailableRpc<Duration, ()>),
+    /// Quiesce the VM and return saved state while leaving it stopped.
+    ///
+    /// The quiesce has no deadline: the process that drives the VM bounds the
+    /// capture.
+    QuiesceForSnapshot(Rpc<(), Result<SnapshotSaveResponse, SnapshotQuiesceError>>),
+    /// Resume a VM after a snapshot failure that followed a complete quiesce,
+    /// before commit.
+    ResumeAfterFailedSnapshot(FailableRpc<(), ()>),
     /// Release a post-OUT boundary without starting a snapshot transaction.
     ReleaseSnapshotBoundary(FailableRpc<(), ()>),
     Resume(FailableRpc<(), bool>),
@@ -60,7 +63,7 @@ pub enum VmRpc {
     DumpState(FailableRpc<File, ()>),
 }
 
-/// State returned after a successful bounded snapshot quiesce.
+/// State returned after a successful snapshot quiesce.
 #[derive(Debug, MeshPayload)]
 pub struct SnapshotSaveResponse {
     /// Encoded VM saved state.
@@ -73,18 +76,15 @@ pub struct SnapshotSaveResponse {
     pub time: crate::time_abi::TimeCapture,
 }
 
-/// Failure classification for a bounded snapshot quiesce/save operation.
+/// Failure classification for a snapshot quiesce/save operation.
 #[derive(Debug, MeshPayload, thiserror::Error)]
 pub enum SnapshotQuiesceError {
     /// The request was rejected before any state transition began.
     #[error("snapshot quiesce request was rejected")]
     Rejected(#[source] RemoteError),
-    /// No uncertain transition occurred; the controller may request rollback.
-    #[error("snapshot quiesce failed without uncertain state")]
+    /// The VM quiesced completely; the controller may request rollback.
+    #[error("snapshot failed after the VM quiesced")]
     RollbackSafe(#[source] RemoteError),
-    /// A unit may have partially transitioned; the VM must be terminated.
-    #[error("snapshot quiesce left uncertain state")]
-    Uncertain(#[source] RemoteError),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

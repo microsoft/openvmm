@@ -349,10 +349,6 @@ pub struct MicrovmCli {
     )]
     pub snapshot_scratch_restore_mode: Option<SnapshotScratchRestoreModeCli>,
 
-    /// Maximum time allowed to quiesce the VM for a guest-requested snapshot.
-    #[clap(long, value_name = "MILLISECONDS", default_value_t = 5000)]
-    pub snapshot_quiesce_timeout_ms: u64,
-
     /// Attach a fixed-role microVM sandbox block device.
     ///
     /// The value is `<role>:<disk>`, where the role is `distro` or `scratch`.
@@ -857,10 +853,6 @@ impl Options {
             anyhow::ensure!(
                 !self.memory.hugepages,
                 "microVM snapshot capture does not support explicit hugepage backing"
-            );
-            anyhow::ensure!(
-                self.microvm.snapshot_quiesce_timeout_ms != 0,
-                "microVM snapshot quiesce timeout must be nonzero"
             );
             anyhow::ensure!(
                 self.microvm.snapshot_tier.is_some()
@@ -1634,6 +1626,42 @@ mod tests {
         ])
         .unwrap();
         assert!(unaligned.validate_microvm_options().is_err());
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_snapshot_capture_takes_no_timeout() {
+        let capture = |extra: &[&str]| {
+            Options::try_parse_from(
+                [
+                    "openvmm",
+                    "--machine",
+                    "microvm",
+                    "--snapshot-destination",
+                    "snapshot",
+                ]
+                .iter()
+                .chain(extra),
+            )
+        };
+
+        capture(&[]).unwrap().validate_microvm_options().unwrap();
+
+        // The capture has no deadline, so the options that bounded its
+        // quiesce, and then its input gate and console flush, are gone.
+        for option in [
+            "--snapshot-quiesce-timeout-ms",
+            "--snapshot-boundary-timeout-ms",
+        ] {
+            let Err(error) = capture(&[option, "250"]) else {
+                panic!("{option} was accepted");
+            };
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{option}: {error}"
+            );
+        }
     }
 
     #[cfg(guest_arch = "x86_64")]

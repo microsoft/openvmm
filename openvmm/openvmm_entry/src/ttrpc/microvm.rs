@@ -79,7 +79,6 @@ pub(super) struct CreateVm {
     snapshot_destination: Option<PathBuf>,
     restore_online_vp_count: Option<u32>,
     restore_gate_timeout: Duration,
-    snapshot_quiesce_timeout: Duration,
     memory_capacity_bytes: u64,
     restore_ready_path: String,
     source_hypervisor: String,
@@ -116,7 +115,6 @@ impl CreateVm {
         let vmservice::MicrovmSnapshotConfig {
             destination_path,
             restore_path,
-            quiesce_timeout_ms,
             restore_ready_path,
             restore_processor_count,
             restore_gate_timeout_ms,
@@ -171,15 +169,6 @@ impl CreateVm {
             restore_ready_path.is_empty() || restore_path.is_some(),
             "restore_ready_path requires restore_path"
         );
-        anyhow::ensure!(
-            quiesce_timeout_ms == 0 || snapshot_destination.is_some(),
-            "quiesce_timeout_ms requires destination_path"
-        );
-        let snapshot_quiesce_timeout = Duration::from_millis(if quiesce_timeout_ms == 0 {
-            5_000
-        } else {
-            quiesce_timeout_ms
-        });
 
         let authoritative_restore = if let Some(path) = restore_path {
             let snapshot = openvmm_helpers::snapshot::restore::OpenedSnapshot::open(&path)?;
@@ -341,7 +330,6 @@ impl CreateVm {
                 snapshot_destination,
                 restore_online_vp_count,
                 restore_gate_timeout,
-                snapshot_quiesce_timeout,
                 memory_capacity_bytes,
                 restore_ready_path,
                 source_hypervisor: String::new(),
@@ -779,7 +767,6 @@ impl CreateVm {
                 name: MicrovmSnapshotRequestHandle::ID.to_owned(),
                 resource: MicrovmSnapshotRequestHandle {
                     notify: self.snapshot_notify.take(),
-                    input_gate_timeout: self.snapshot_quiesce_timeout,
                 }
                 .into_resource(),
             },
@@ -1345,7 +1332,6 @@ impl CreateVm {
                 snapshot_block_identity: Default::default(),
                 snapshot_generation_id: None,
                 snapshot_scratch_restore_mode: Default::default(),
-                snapshot_quiesce_timeout: self.snapshot_quiesce_timeout,
                 source_hypervisor: self.source_hypervisor,
                 effective_command_line: self.effective_command_line,
                 resources: self.resources,

@@ -27,8 +27,6 @@ pub struct MicrovmSnapshotBoundaryRequest {
     pub release_write: mesh::OneshotSender<()>,
     /// Completes after the deferred PMIO write has completed.
     pub write_completed: mesh::OneshotReceiver<()>,
-    /// Maximum time allowed to gate host input before stopping vCPUs.
-    pub input_gate_timeout: std::time::Duration,
     /// Completed only after the final transaction outcome is known.
     pub transaction_complete: mesh::rpc::Rpc<(), ()>,
 }
@@ -104,8 +102,6 @@ impl ResourceId<ChipsetDeviceHandleKind> for MicrovmShutdownHandle {
 pub struct MicrovmSnapshotRequestHandle {
     /// Optional worker-local boundary coordination target.
     pub notify: Option<mesh::Sender<MicrovmSnapshotBoundaryRequest>>,
-    /// Maximum time allowed to gate host input before stopping vCPUs.
-    pub input_gate_timeout: std::time::Duration,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for MicrovmSnapshotRequestHandle {

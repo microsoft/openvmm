@@ -32,7 +32,7 @@
 
 mod advance_time;
 mod inventory;
-pub mod quiesce;
+mod quiesce;
 mod start;
 
 use futures::FutureExt;
@@ -270,7 +270,7 @@ enum State {
     Saving,
     Restoring,
     AdvancingTime,
-    QuiesceUncertain,
+    StartUncertain,
 }
 
 #[derive(Debug)]

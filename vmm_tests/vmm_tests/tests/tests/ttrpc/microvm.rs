@@ -484,7 +484,6 @@ while :; do sleep 1; done
             log_id: String::new(),
             microvm_snapshot: Some(vmservice::MicrovmSnapshotConfig {
                 destination_path: snapshot_path.to_string_lossy().into_owned(),
-                quiesce_timeout_ms: 5_000,
                 memory_capacity_bytes: 512 * 1024 * 1024,
                 ..Default::default()
             }),
@@ -502,6 +501,8 @@ while :; do sleep 1; done
         })?;
     let mut source_output = Vec::new();
     wait_for_bytes(&mut portb_read, &mut source_output, READY_MARKER).await?;
+    // The capture has no deadline of its own, so this drain bounds it, and
+    // the server is killed when its `TestChild` drops.
     CancelContext::new()
         .with_timeout(Duration::from_secs(15))
         .until_cancelled(drain_until_closed(&mut portb_read, &mut source_output))

@@ -57,7 +57,7 @@ impl InspectMut for SlowStopUnit {
 
 /// The text that a subscriber logs.
 #[derive(Clone, Default)]
-struct Log(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Log(Arc<Mutex<Vec<u8>>>);
 
 impl std::io::Write for Log {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -71,7 +71,7 @@ impl std::io::Write for Log {
 }
 
 impl Log {
-    fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + use<> {
+    pub(super) fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + use<> {
         let log = self.clone();
         tracing_subscriber::fmt()
             .with_ansi(false)
@@ -80,7 +80,7 @@ impl Log {
     }
 
     /// Returns the logged lines that report an unanswered request.
-    fn unanswered(&self) -> Vec<String> {
+    pub(super) fn unanswered(&self) -> Vec<String> {
         String::from_utf8_lossy(&self.0.lock())
             .lines()
             .filter(|line| line.contains("has not answered its state change request"))
