@@ -11,7 +11,9 @@ use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::os::windows::prelude::*;
+use std::path::Component;
 use std::path::Path;
+use std::path::Prefix;
 use std::ptr::NonNull;
 use std::ptr::null_mut;
 use std::str::FromStr;
@@ -389,13 +391,54 @@ where
     }
 }
 
+/// Encodes `path` for the Win32 creation functions. Without the extended-length
+/// `\\?\` prefix, `CreateDirectoryW` refuses a path of 248 or more UTF-16 code
+/// units and `CreateFileW` one of 260 or more.
+///
+/// The path is resolved, as Win32 resolves it, before the prefix is added,
+/// since the file system takes an extended-length path as given. Win32 also
+/// takes an NT path, `\??\...`, as given, and refuses an empty path itself, so
+/// both keep their form.
+fn secure_create_path(path: &Path) -> std::io::Result<U16CString> {
+    fn encode(path: &Path) -> std::io::Result<U16CString> {
+        U16CString::from_os_str(path.as_os_str())
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))
+    }
+
+    let raw = path.as_os_str();
+    if raw.is_empty() || raw.encode_wide().take(4).eq(r"\??\".encode_utf16()) {
+        return encode(path);
+    }
+    let path = std::path::absolute(path)?;
+    let name = encode(&path)?;
+    if name.len() < 248 {
+        return Ok(name);
+    }
+    let (prefix, skip) = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(_) => (r"\\?\", 0),
+            Prefix::UNC(..) => (r"\\?\UNC\", 2),
+            _ => ("", 0),
+        },
+        _ => ("", 0),
+    };
+    U16CString::from_vec(
+        prefix
+            .encode_utf16()
+            .chain(name.as_slice().iter().copied().skip(skip))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))
+}
+
 /// Creates a directory with `security_descriptor` applied atomically.
+///
+/// `path` may exceed the legacy Win32 `MAX_PATH` limit.
 pub fn create_directory_with_security(
     path: &Path,
     security_descriptor: &SecurityDescriptor,
 ) -> std::io::Result<()> {
-    let path = U16CString::from_os_str(path.as_os_str())
-        .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))?;
+    let path = secure_create_path(path)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: security_descriptor.as_ptr(),
@@ -410,12 +453,13 @@ pub fn create_directory_with_security(
 }
 
 /// Exclusively creates a regular file with `security_descriptor` applied atomically.
+///
+/// `path` may exceed the legacy Win32 `MAX_PATH` limit.
 pub fn create_file_with_security(
     path: &Path,
     security_descriptor: &SecurityDescriptor,
 ) -> std::io::Result<std::fs::File> {
-    let path = U16CString::from_os_str(path.as_os_str())
-        .map_err(|error| std::io::Error::new(ErrorKind::InvalidInput, error))?;
+    let path = secure_create_path(path)?;
     let attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: security_descriptor.as_ptr(),
@@ -451,6 +495,7 @@ mod tests {
     use std::io::Read;
     use std::io::Seek;
     use std::io::Write;
+    use std::os::windows::ffi::OsStrExt;
     use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
     use test_with_tracing::test;
@@ -495,9 +540,12 @@ mod tests {
         "D:P(A;;FA;;;WD)".parse().unwrap()
     }
 
+    fn utf16_len(path: &Path) -> usize {
+        path.as_os_str().encode_wide().count()
+    }
+
     fn dacl_sddl(path: &Path) -> io::Result<String> {
-        let path = U16CString::from_os_str(path.as_os_str())
-            .map_err(|error| io::Error::new(ErrorKind::InvalidInput, error))?;
+        let path = secure_create_path(path)?;
         let mut required = 0;
         unsafe {
             GetFileSecurityW(
@@ -585,6 +633,153 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"existing file contents");
         assert_eq!(dacl_sddl(&directory).unwrap(), directory_dacl);
         assert_eq!(dacl_sddl(&file).unwrap(), file_dacl);
+    }
+
+    #[test]
+    fn secure_create_path_encodes_long_paths() {
+        fn encode(path: &str) -> String {
+            String::from_utf16(secure_create_path(Path::new(path)).unwrap().as_slice()).unwrap()
+        }
+        let name = |length| "a".repeat(length);
+
+        // Disk paths keep their form below 248 UTF-16 code units.
+        let short = format!(r"C:\{}", name(244));
+        let long = format!(r"C:\{}", name(245));
+        assert_eq!(encode(&short), short);
+        assert_eq!(encode(&long), format!(r"\\?\{long}"));
+
+        // UNC paths replace their leading separators.
+        let short = format!(r"\\server\share\{}", name(232));
+        let long = format!(r"\\server\share\{}", name(233));
+        assert_eq!(encode(&short), short);
+        assert_eq!(encode(&long), format!(r"\\?\UNC\{}", &long[2..]));
+
+        // Separators, `.`, `..`, and relative paths are resolved first.
+        assert_eq!(
+            encode(&format!("C:/{}/./child/../leaf", name(300))),
+            format!(r"\\?\C:\{}\leaf", name(300))
+        );
+        let relative = std::env::current_dir().unwrap().join(name(300));
+        assert_eq!(encode(&name(300)), encode(relative.to_str().unwrap()));
+
+        // Verbatim, NT, and device paths are already in their final form, and
+        // Win32 reports its own error for an empty path.
+        for path in [
+            format!(r"\\?\C:\{}", name(300)),
+            format!(r"\\?\UNC\server\share\{}", name(300)),
+            format!(r"\??\C:\{}", name(300)),
+            format!(r"\\.\C:\{}", name(300)),
+            String::new(),
+        ] {
+            assert_eq!(encode(&path), path);
+        }
+
+        assert_eq!(
+            secure_create_path(Path::new(&format!("C:\\{}\0b", name(300))))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn secure_creation_supports_long_paths() {
+        let root = TestDirectory::new();
+        let descriptor = protected_descriptor();
+        let expected = descriptor.to_sddl().unwrap();
+
+        // Straddle the 248-unit limit of legacy Win32 directory paths.
+        for length in [247, 248] {
+            let name_length = length - utf16_len(&root.0) - 1;
+            let directory = root.join("d".repeat(name_length));
+            let file = root.join("f".repeat(name_length));
+            assert_eq!(utf16_len(&directory), length);
+            create_directory_with_security(&directory, &descriptor).unwrap();
+            create_file_with_security(&file, &descriptor).unwrap();
+            assert_eq!(dacl_sddl(&directory).unwrap(), expected);
+            assert_eq!(dacl_sddl(&file).unwrap(), expected);
+        }
+
+        // Exceed the legacy limits of both directory and file paths.
+        let mut parent = root.join("long");
+        while utf16_len(&parent) <= 320 {
+            parent.push("long-path-component");
+        }
+        fs::create_dir_all(&parent).unwrap();
+        let mut verbatim_parent = OsString::from(r"\\?\");
+        verbatim_parent.push(&parent);
+        let verbatim_parent = PathBuf::from(verbatim_parent);
+        assert!(matches!(
+            verbatim_parent.components().next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
+        ));
+
+        let cases = [
+            (parent.clone(), "ordinary"),
+            (parent.join("child").join(".."), "resolved"),
+            (verbatim_parent, "verbatim"),
+            (parent.clone(), "astral-\u{1F600}"),
+        ];
+        let mut names = Vec::new();
+        for (requested_parent, case) in cases {
+            let directory_name = format!("{case}-directory");
+            let file_name = format!("{case}-file");
+            let requested_directory = requested_parent.join(&directory_name);
+            let requested_file = requested_parent.join(&file_name);
+
+            create_directory_with_security(&requested_directory, &descriptor).unwrap();
+            let mut file = create_file_with_security(&requested_file, &descriptor).unwrap();
+            file.write_all(case.as_bytes()).unwrap();
+            drop(file);
+
+            let directory = parent.join(&directory_name);
+            let file = parent.join(&file_name);
+            assert!(fs::metadata(&directory).unwrap().is_dir(), "{case}");
+            assert_eq!(fs::read(&file).unwrap(), case.as_bytes(), "{case}");
+            assert_eq!(dacl_sddl(&directory).unwrap(), expected, "{case}");
+            assert_eq!(dacl_sddl(&file).unwrap(), expected, "{case}");
+
+            assert_eq!(
+                create_directory_with_security(&requested_directory, &descriptor)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::AlreadyExists,
+                "{case}"
+            );
+            assert_eq!(
+                create_file_with_security(&requested_file, &descriptor)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::AlreadyExists,
+                "{case}"
+            );
+            assert_eq!(fs::read(&file).unwrap(), case.as_bytes(), "{case}");
+            names.extend([OsString::from(directory_name), OsString::from(file_name)]);
+        }
+
+        // Every object has its exact UTF-16 name, and `child` was never created.
+        let mut created: Vec<_> = fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        created.sort();
+        names.sort();
+        assert_eq!(created, names);
+    }
+
+    #[test]
+    fn nt_paths_keep_their_form() {
+        let root = TestDirectory::new();
+        let descriptor = protected_descriptor();
+        let mut nt_root = OsString::from(r"\??\");
+        nt_root.push(&root.0);
+        let nt_root = PathBuf::from(nt_root);
+
+        create_directory_with_security(&nt_root.join("directory"), &descriptor).unwrap();
+        create_file_with_security(&nt_root.join("file"), &descriptor).unwrap();
+
+        assert!(fs::metadata(root.join("directory")).unwrap().is_dir());
+        assert!(fs::metadata(root.join("file")).unwrap().is_file());
     }
 
     #[test]
