@@ -2703,11 +2703,15 @@ async fn build_virtio_device(
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
         Kind::Fs(config) => build_virtio_fs(config)?.into_resource(),
-        Kind::Pmem(config) => virtio_resources::pmem::VirtioPmemHandle {
-            path: config.host_path,
-            read_only: config.read_only,
+        Kind::Pmem(vmservice::VirtioPmem { backend, read_only }) => {
+            let path = match backend
+                .and_then(|b| b.kind)
+                .context("missing pmem backend")?
+            {
+                vmservice::pmem_backend::Kind::File(vmservice::PmemFile { path }) => path,
+            };
+            virtio_resources::pmem::VirtioPmemHandle { path, read_only }.into_resource()
         }
-        .into_resource(),
     })
 }
 
