@@ -473,10 +473,7 @@ mod tests {
         let (cap_send, cap_recv) = mesh::oneshot();
         let (gm_proxy, gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
         let (enc_gm_proxy, enc_gm_remote) = GuestMemoryProxy::new(GuestMemory::allocate(4096));
-        let mut guest_memory = TaskControl::new(GuestMemoryTask {
-            guest_memory: gm_proxy,
-            encrypted_guest_memory: enc_gm_proxy,
-        });
+        let mut guest_memory = TaskControl::new(GuestMemoryTask::new(gm_proxy, enc_gm_proxy));
         guest_memory.insert(driver, "test-guest-memory", ());
         guest_memory.start();
         let worker = mesh_worker::launch_local_worker::<RemoteChipsetDeviceWorker<TestResolvers>>(

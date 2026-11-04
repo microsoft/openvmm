@@ -47,9 +47,18 @@ pub struct GuestMemoryProxy {
     resp_send: mesh::Sender<GuestMemoryResponse>,
 }
 
-pub(crate) struct GuestMemoryTask {
-    pub(crate) guest_memory: GuestMemoryProxy,
-    pub(crate) encrypted_guest_memory: GuestMemoryProxy,
+pub struct GuestMemoryTask {
+    guest_memory: GuestMemoryProxy,
+    encrypted_guest_memory: GuestMemoryProxy,
+}
+
+impl GuestMemoryTask {
+    pub fn new(guest_memory: GuestMemoryProxy, encrypted_guest_memory: GuestMemoryProxy) -> Self {
+        Self {
+            guest_memory,
+            encrypted_guest_memory,
+        }
+    }
 }
 
 impl AsyncRun<()> for GuestMemoryTask {
