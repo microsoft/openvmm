@@ -76,6 +76,8 @@ use gdma_defs::SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION;
 use gdma_defs::Sge;
 use gdma_defs::SmcMessageType;
 use gdma_defs::SmcProtoHdr;
+use gdma_defs::bnic::ManaCommandCode;
+use gdma_defs::bnic::ManaQueryDeviceCfgResp;
 use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::collections::HashMap;
@@ -938,31 +940,33 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             self.wait_cq().await.with_context(cq_wait_context)?;
             self.sq.advance_head(sqe_len);
             self.rq.advance_head(RWQE_SIZE);
-            self.push_rqe();
 
+            // Save the response before returning the DMA page to the device.
             let resp_hdr = self
                 .dma_buffer
                 .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
-
-            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
-                anyhow::bail!(
-                    "response too small, request={:#x}, activity_id={:#x}",
-                    req_msg_type,
-                    hdr.activity_id
-                );
-            }
-            if resp_hdr.status != 0 {
-                anyhow::bail!(
-                    "failed with {:#x}, request={:#x}, activity_id={:#x}",
-                    resp_hdr.status,
-                    req_msg_type,
-                    hdr.activity_id
-                );
-            }
-
             let resp = self
                 .dma_buffer
                 .read_obj::<Resp>(RESPONSE_PAGE * PAGE_SIZE + size_of_val(&resp_hdr));
+            self.push_rqe();
+
+            if let Err(err) = validate_response(&hdr, &resp_hdr, size_of::<Resp>()) {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    request_type = hdr.req.msg_type,
+                    expected_type = hdr.resp.msg_type,
+                    response_type = resp_hdr.response.msg_type,
+                    activity_id = hdr.activity_id,
+                    response_activity_id = resp_hdr.activity_id,
+                    dev_type = hdr.dev_id.ty.0,
+                    dev_instance = hdr.dev_id.instance,
+                    response_size = resp_hdr.response.msg_size,
+                    response_status = resp_hdr.status,
+                    "HWC response validation failed"
+                );
+                return Err(err.into());
+            }
+
             Ok(resp)
         };
         let resp = match hw_access.await {
@@ -1509,5 +1513,159 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             GdmaDestroyDmaRegionReq { gdma_region },
         )
         .await
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+enum ResponseValidationError {
+    #[error("HWC response message type mismatch, expected={expected:#x}, received={received:#x}")]
+    MessageTypeMismatch { expected: u32, received: u32 },
+    #[error("HWC response activity ID mismatch, expected={expected:#x}, received={received:#x}")]
+    ActivityIdMismatch { expected: u32, received: u32 },
+    #[error("response too small, size={received}, minimum={minimum}")]
+    TooSmall { received: u32, minimum: usize },
+    #[error("HWC response failed with {0:#x}")]
+    FailedStatus(u32),
+}
+
+fn validate_response(
+    req_hdr: &GdmaReqHdr,
+    resp_hdr: &GdmaRespHdr,
+    payload_size: usize,
+) -> Result<(), ResponseValidationError> {
+    if resp_hdr.response.msg_type != req_hdr.resp.msg_type {
+        return Err(ResponseValidationError::MessageTypeMismatch {
+            expected: req_hdr.resp.msg_type,
+            received: resp_hdr.response.msg_type,
+        });
+    }
+
+    if resp_hdr.activity_id != req_hdr.activity_id {
+        return Err(ResponseValidationError::ActivityIdMismatch {
+            expected: req_hdr.activity_id,
+            received: resp_hdr.activity_id,
+        });
+    }
+
+    let min_payload_size = if req_hdr.resp.msg_type == ManaCommandCode::MANA_QUERY_DEV_CONFIG.0 {
+        // V1 ends before the MTU and link-speed fields. Older firmware may
+        // omit those fields even when a newer response version is requested.
+        std::mem::offset_of!(ManaQueryDeviceCfgResp, adapter_mtu)
+    } else {
+        payload_size
+    };
+    let min_response_size = size_of::<GdmaRespHdr>() + min_payload_size;
+    if (resp_hdr.response.msg_size as usize) < min_response_size {
+        return Err(ResponseValidationError::TooSmall {
+            received: resp_hdr.response.msg_size,
+            minimum: min_response_size,
+        });
+    }
+    if resp_hdr.status != 0 {
+        return Err(ResponseValidationError::FailedStatus(resp_hdr.status));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ResponseValidationError::ActivityIdMismatch;
+    use ResponseValidationError::FailedStatus;
+    use ResponseValidationError::MessageTypeMismatch;
+    use ResponseValidationError::TooSmall;
+    use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
+    use gdma_defs::bnic::ManaCreateWqobjResp;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case::matching_response(2, 7, 0, Ok(()))]
+    #[case::message_type_mismatch(3, 7, 0, Err(MessageTypeMismatch { expected: 2, received: 3 }))]
+    #[case::activity_id_mismatch(2, 8, 0, Err(ActivityIdMismatch { expected: 7, received: 8 }))]
+    #[case::failed_status(2, 7, 1, Err(FailedStatus(1)))]
+    #[test_with_tracing::test]
+    fn test_validate_response(
+        #[case] msg_type: u32,
+        #[case] activity_id: u32,
+        #[case] status: u32,
+        #[case] expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = 1;
+        hdr.resp.msg_type = 2;
+        hdr.activity_id = 7;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = msg_type;
+        resp_hdr.response.msg_size = 32;
+        resp_hdr.activity_id = activity_id;
+        resp_hdr.status = status;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<()>()),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::header_only(32, Err(TooSmall { received: 32, minimum: 48 }))]
+    #[case::truncated_payload(47, Err(TooSmall { received: 47, minimum: 48 }))]
+    #[case::complete(48, Ok(()))]
+    #[test_with_tracing::test]
+    fn test_create_wq_response_size(
+        #[case] msg_size: u32,
+        #[case] expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = ManaCommandCode::MANA_CREATE_WQ_OBJ.0;
+        hdr.resp.msg_type = hdr.req.msg_type;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = hdr.resp.msg_type;
+        resp_hdr.response.msg_size = msg_size;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<ManaCreateWqobjResp>()),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::truncated_v1(71, Err(TooSmall { received: 71, minimum: 72 }))]
+    #[case::v1_compatible(72, Ok(()))]
+    #[case::v4(80, Ok(()))]
+    #[test_with_tracing::test]
+    fn test_query_dev_config_response_size(
+        #[case] msg_size: u32,
+        #[case] expected: Result<(), ResponseValidationError>,
+    ) {
+        let mut hdr = GdmaReqHdr::new_zeroed();
+        hdr.req.msg_type = ManaCommandCode::MANA_QUERY_DEV_CONFIG.0;
+        hdr.resp.msg_type = hdr.req.msg_type;
+        hdr.resp.msg_version = MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_type = hdr.resp.msg_type;
+        resp_hdr.response.msg_size = msg_size;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<ManaQueryDeviceCfgResp>()),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case::truncated_header(31, Err(TooSmall { received: 31, minimum: 32 }))]
+    #[case::complete_header(32, Ok(()))]
+    #[test_with_tracing::test]
+    fn test_empty_response_size(
+        #[case] msg_size: u32,
+        #[case] expected: Result<(), ResponseValidationError>,
+    ) {
+        let hdr = GdmaReqHdr::new_zeroed();
+        let mut resp_hdr = GdmaRespHdr::new_zeroed();
+        resp_hdr.response.msg_size = msg_size;
+
+        assert_eq!(
+            validate_response(&hdr, &resp_hdr, size_of::<()>()),
+            expected
+        );
     }
 }
