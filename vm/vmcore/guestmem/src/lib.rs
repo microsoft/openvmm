@@ -2317,6 +2317,9 @@ pub trait MappableGuestMemory: Send + Sync {
 /// Trait implemented for a region of memory that can have memory mapped into
 /// it.
 pub trait MappedMemoryRegion: Send + Sync {
+    /// Returns the region's current guest address, or `None` if it is unmapped.
+    fn guest_address(&self) -> Option<u64>;
+
     /// Maps an object at `offset` in the region.
     ///
     /// Behaves like mmap--overwrites and splits existing mappings.
