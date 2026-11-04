@@ -59,10 +59,7 @@ mod save_restore;
 use crate::ring::gparange::MultiPagedRangeBuf;
 use anyhow::Context as _;
 use async_trait::async_trait;
-use fast_select::FastSelect;
-use futures::FutureExt;
 use futures::StreamExt;
-use futures::select_biased;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
@@ -96,10 +93,14 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::Release;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 use storvsp_resources::ScsiPath;
 use task_control::AsyncRun;
 use task_control::InspectTask;
@@ -193,9 +194,68 @@ impl InspectMut for StorageDevice {
 
 struct Worker<T: RingMem = GpadlRingMem> {
     inner: WorkerInner,
-    rescan_notification: futures::channel::mpsc::Receiver<()>,
-    fast_select: FastSelect,
+    rescan_notification: Arc<RescanNotification>,
     queue: Queue<T>,
+}
+
+/// A coalescing notification with one waiter per worker.
+#[derive(Default)]
+struct RescanNotification {
+    pending: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl RescanNotification {
+    fn notify(&self) {
+        self.pending.store(true, Release);
+        // Keep registration across notifications, including a wake delayed
+        // until after the pending flag has already been consumed.
+        let waker = self.waker.lock().clone();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn reset(&self) {
+        self.pending.store(false, Relaxed);
+    }
+
+    fn receiver(&self) -> RescanReceiver<'_> {
+        RescanReceiver {
+            notification: self,
+            last_waker: None,
+        }
+    }
+}
+
+struct RescanReceiver<'a> {
+    notification: &'a RescanNotification,
+    last_waker: Option<Waker>,
+}
+
+impl RescanReceiver<'_> {
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // Register once unless the task's waker changes. Unrelated
+        // I/O wakeups only compare the waker and load the pending flag.
+        if self
+            .last_waker
+            .as_ref()
+            .is_none_or(|waker| !cx.waker().will_wake(waker))
+        {
+            let waker = cx.waker().clone();
+            let old_waker = self.notification.waker.lock().replace(waker.clone());
+            self.last_waker = Some(waker);
+            drop(old_waker);
+        }
+        // Check after registration so a concurrent notification cannot
+        // leave the worker asleep.
+        if self.notification.pending.load(Relaxed) {
+            self.notification.pending.swap(false, Acquire);
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 struct Protocol {
@@ -669,11 +729,10 @@ impl ScsiCommandQueue {
                     }
                 }
             }
-            _ if controller_disk.is_some() => {
+            _ if let Some(controller_disk) = controller_disk => {
                 let mut cdb = [0; 16];
                 cdb.copy_from_slice(&request.payload[0..storvsp_protocol::CDB16GENERIC_LENGTH]);
                 controller_disk
-                    .unwrap()
                     .disk
                     .execute_scsi(
                         &external_data,
@@ -778,9 +837,8 @@ impl<T: RingMem + 'static> Worker<T> {
         force_path_id: Option<u8>,
     ) -> anyhow::Result<Self> {
         let queue = Queue::new(channel)?;
-        #[expect(clippy::disallowed_methods)] // TODO
-        let (source, target) = futures::channel::mpsc::channel(1);
-        controller.add_rescan_notification_source(source);
+        let rescan_notification = Arc::new(RescanNotification::default());
+        controller.add_rescan_notification(rescan_notification.clone());
 
         let max_io_queue_depth = io_queue_depth.max(1) as usize;
         Ok(Self {
@@ -803,8 +861,7 @@ impl<T: RingMem + 'static> Worker<T> {
                 stats: Default::default(),
             },
             queue,
-            rescan_notification: target,
-            fast_select: FastSelect::new(),
+            rescan_notification,
         })
     }
 
@@ -939,19 +996,33 @@ impl<T: RingMem> Worker<T> {
             let current_state = *self.inner.protocol.state.read();
             match current_state {
                 ProtocolState::Ready { version, .. } => {
-                    break loop {
-                        check.check()?;
-                        select_biased! {
-                            r = self.inner.process_ready(&mut self.queue, version, check).fuse() => break r,
-                            _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
-                                if version >= Version::Win7
-                                {
-                                    tracing::debug!("rescan notification received, sending ENUMERATE_BUS");
-                                    self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
-                                }
+                    self.inner.request_size = version.max_request_size();
+                    let mut rescan = self.rescan_notification.receiver();
+                    break poll_fn(|cx| {
+                        loop {
+                            check.check()?;
+                            if let Poll::Ready(r) =
+                                self.inner.poll_process_ready(cx, &mut self.queue, check)
+                            {
+                                return Poll::Ready(r);
+                            }
+                            if rescan.poll(cx).is_pending() {
+                                return Poll::Pending;
+                            }
+                            if version >= Version::Win7 {
+                                tracing::debug!(
+                                    "rescan notification received, sending ENUMERATE_BUS"
+                                );
+                                self.inner.send_packet(
+                                    &mut self.queue.split().1,
+                                    storvsp_protocol::Operation::ENUMERATE_BUS,
+                                    storvsp_protocol::NtStatus::SUCCESS,
+                                    &(),
+                                )?;
                             }
                         }
-                    };
+                    })
+                    .await;
                 }
                 ProtocolState::Init(state) => {
                     let (mut reader, mut writer) = self.queue.split();
@@ -1121,7 +1192,7 @@ impl<T: RingMem> Worker<T> {
                                     )?;
                                     // Reset the rescan notification event now, before the guest has a
                                     // chance to send any SCSI requests to scan the bus.
-                                    self.rescan_notification.try_next().ok();
+                                    self.rescan_notification.reset();
                                     *self.inner.protocol.state.write() = ProtocolState::Ready {
                                         version,
                                         subchannel_count: subchannel_count.unwrap_or(0),
@@ -1448,7 +1519,7 @@ impl<T: RingMem> Drop for Worker<T> {
     fn drop(&mut self) {
         self.inner
             .controller
-            .remove_rescan_notification_source(&self.rescan_notification);
+            .remove_rescan_notification(&self.rescan_notification);
     }
 }
 
@@ -1655,7 +1726,7 @@ impl ScsiControllerDisk {
 
 struct ScsiControllerState {
     disks: RwLock<HashMap<ScsiPath, ScsiControllerDisk>>,
-    rescan_notification_source: Mutex<Vec<futures::channel::mpsc::Sender<()>>>,
+    rescan_notifications: Mutex<Vec<Arc<RescanNotification>>>,
     poll_mode_queue_depth: AtomicU32,
 }
 
@@ -1681,7 +1752,7 @@ impl ScsiController {
         Self {
             state: Arc::new(ScsiControllerState {
                 disks: Default::default(),
-                rescan_notification_source: Mutex::new(Vec::new()),
+                rescan_notifications: Mutex::new(Vec::new()),
                 poll_mode_queue_depth: AtomicU32::new(
                     poll_mode_queue_depth.unwrap_or(DEFAULT_POLL_MODE_QUEUE_DEPTH),
                 ),
@@ -1694,10 +1765,8 @@ impl ScsiController {
             Entry::Occupied(_) => return Err(ScsiPathInUse(path)),
             Entry::Vacant(entry) => entry.insert(disk),
         };
-        for source in self.state.rescan_notification_source.lock().iter_mut() {
-            // Ok to ignore errors here. If the channel is full a previous notification has not yet
-            // been processed by the primary channel worker.
-            source.try_send(()).ok();
+        for notification in self.state.rescan_notifications.lock().iter() {
+            notification.notify();
         }
         Ok(())
     }
@@ -1709,27 +1778,25 @@ impl ScsiController {
                 entry.remove();
             }
         }
-        for source in self.state.rescan_notification_source.lock().iter_mut() {
-            // Ok to ignore errors here. If the channel is full a previous notification has not yet
-            // been processed by the primary channel worker.
-            source.try_send(()).ok();
+        for notification in self.state.rescan_notifications.lock().iter() {
+            notification.notify();
         }
         Ok(())
     }
 }
 
 impl ScsiControllerState {
-    fn add_rescan_notification_source(&self, source: futures::channel::mpsc::Sender<()>) {
-        self.rescan_notification_source.lock().push(source);
+    fn add_rescan_notification(&self, notification: Arc<RescanNotification>) {
+        self.rescan_notifications.lock().push(notification);
     }
 
-    fn remove_rescan_notification_source(&self, target: &futures::channel::mpsc::Receiver<()>) {
-        let mut sources = self.rescan_notification_source.lock();
-        if let Some(index) = sources
+    fn remove_rescan_notification(&self, notification: &Arc<RescanNotification>) {
+        let mut notifications = self.rescan_notifications.lock();
+        if let Some(index) = notifications
             .iter()
-            .position(|source| source.is_connected_to(target))
+            .position(|source| Arc::ptr_eq(source, notification))
         {
-            sources.remove(index);
+            notifications.remove(index);
         }
     }
 }
@@ -1871,6 +1938,7 @@ mod tests {
     use pal_async::async_test;
     use scsi::srb::SrbStatus;
     use scsi_buffers::OwnedRequestBuffers;
+    use std::task::Wake;
     use test_with_tracing::test;
     use vmbus_channel::connected_async_channels;
     use vmcore::vm_task::SingleDriverBackend;
@@ -1885,6 +1953,67 @@ mod tests {
                 state: self.state.clone(),
             }
         }
+    }
+
+    #[test]
+    fn test_rescan_notification_latches_coalesces_and_resets() {
+        let notification = RescanNotification::default();
+        let mut receiver = notification.receiver();
+        let mut cx = Context::from_waker(Waker::noop());
+        notification.notify();
+        notification.notify();
+        assert!(receiver.poll(&mut cx).is_ready());
+        assert!(receiver.poll(&mut cx).is_pending());
+
+        notification.notify();
+        notification.reset();
+        assert!(receiver.poll(&mut cx).is_pending());
+        notification.notify();
+        assert!(receiver.poll(&mut cx).is_ready());
+
+        assert!(receiver.poll(&mut cx).is_pending());
+        drop(receiver);
+        notification.notify();
+        assert!(notification.receiver().poll(&mut cx).is_ready());
+    }
+
+    #[derive(Default)]
+    struct RescanWakeCount(AtomicU32);
+
+    impl Wake for RescanWakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Relaxed);
+        }
+    }
+
+    #[test]
+    fn test_rescan_notification_rearms_and_updates_waker() {
+        let notification = RescanNotification::default();
+        let first = Arc::new(RescanWakeCount::default());
+        let second = Arc::new(RescanWakeCount::default());
+        let first_waker = Waker::from(first.clone());
+        let second_waker = Waker::from(second.clone());
+        let mut first_cx = Context::from_waker(&first_waker);
+        let mut second_cx = Context::from_waker(&second_waker);
+
+        let mut receiver = notification.receiver();
+        assert!(receiver.poll(&mut first_cx).is_pending());
+        assert!(receiver.poll(&mut first_cx).is_pending());
+        assert!(receiver.poll(&mut second_cx).is_pending());
+        notification.notify();
+        assert_eq!(first.0.load(Relaxed), 0);
+        assert_eq!(second.0.load(Relaxed), 1);
+        assert!(receiver.poll(&mut second_cx).is_ready());
+
+        assert!(receiver.poll(&mut second_cx).is_pending());
+        // A delayed wake from the previous notification must not disarm the
+        // receiver when its pending flag has already been consumed.
+        let delayed_waker = notification.waker.lock().clone().unwrap();
+        delayed_waker.wake();
+        assert!(receiver.poll(&mut second_cx).is_pending());
+        notification.notify();
+        assert_eq!(second.0.load(Relaxed), 3);
+        assert!(receiver.poll(&mut second_cx).is_ready());
     }
 
     #[async_test]

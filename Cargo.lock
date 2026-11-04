@@ -2150,15 +2150,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fast_select"
-version = "0.0.0"
-dependencies = [
- "futures",
- "pal_async",
- "parking_lot",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3504,6 +3495,9 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+dependencies = [
+ "test_with_tracing",
+]
 
 [[package]]
 name = "heapless"
@@ -4864,6 +4858,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -7761,6 +7756,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -8348,6 +8344,7 @@ dependencies = [
  "pal",
  "parking_lot",
  "tempfile",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "trycopy",
  "windows-sys 0.61.0",
@@ -8495,7 +8492,6 @@ dependencies = [
  "criterion",
  "disklayer_ram",
  "event-listener",
- "fast_select",
  "futures",
  "guestmem",
  "guid",
@@ -9264,6 +9260,7 @@ version = "0.0.0"
 dependencies = [
  "criterion",
  "libc",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "windows-sys 0.61.0",
  "zerocopy",
@@ -10315,6 +10312,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "parking_lot",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vm_topology",

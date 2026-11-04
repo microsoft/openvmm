@@ -487,6 +487,7 @@ mod tests {
         _wait: Option<FdWait<IoInitiator>>,
     }
 
+    #[expect(clippy::manual_noop_waker)]
     impl Wake for WaitWaker {
         fn wake(self: Arc<Self>) {}
     }

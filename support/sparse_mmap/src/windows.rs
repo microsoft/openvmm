@@ -843,7 +843,9 @@ impl SparseMapping {
         access: u32,
         numa_node: Option<u32>,
     ) -> Result<(), Error> {
-        assert_ne!(len, 0);
+        if len == 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
         self.map(offset, len, |addr| unsafe {
             // Keep a handle for the mapping's lifetime (unmap/split re-map
             // through it), restricted to just `access` as mild defense in depth.

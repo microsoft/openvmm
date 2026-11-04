@@ -122,7 +122,9 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -187,7 +189,9 @@ impl PetriVmConfigOpenVmm {
                 mac_address,
                 endpoint: net_backend_resources::consomme::ConsommeHandle {
                     cidr: None,
+                    params: Default::default(),
                     ports: Vec::new(),
+                    internal_dns: true,
                     recv: None,
                 }
                 .into_resource(),
@@ -217,7 +221,9 @@ impl PetriVmConfigOpenVmm {
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -277,7 +283,9 @@ impl PetriVmConfigOpenVmm {
     ) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -310,6 +318,7 @@ impl PetriVmConfigOpenVmm {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
@@ -318,6 +327,7 @@ impl PetriVmConfigOpenVmm {
                 host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
                 guest_port: pipette_client::PIPETTE_PORT as u16,
             }],
+            internal_dns: true,
             recv: None,
         }
         .into_resource();

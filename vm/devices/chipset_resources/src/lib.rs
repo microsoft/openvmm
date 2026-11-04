@@ -412,9 +412,45 @@ pub mod hyperv_guest_watchdog {
     }
 }
 
+pub mod acpi_power_button {
+    //! Resource definitions for ACPI power-button events.
+
+    use mesh::MeshPayload;
+    use mesh::rpc::Rpc;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Power-button status register, in the architectural MMIO reservation on
+    /// both x86_64 and AArch64. Bit 0 is pending and write-one-to-clear.
+    // TODO: This should be made dynamic, as there is no hyper-v equivalent that
+    // it has to match.
+    pub const ACPI_POWER_BUTTON_MMIO_BASE: u32 = 0xfed8_0000;
+
+    /// Host requests to inject an ACPI power-button event.
+    #[derive(MeshPayload)]
+    pub enum PowerButtonRpc {
+        /// Acknowledge once the button event has been injected or latched.
+        Press(Rpc<(), ()>),
+    }
+
+    /// A handle to an ACPI generic event device with a latched power-button event.
+    #[derive(MeshPayload)]
+    pub struct AcpiPowerButtonDeviceHandle {
+        /// Interrupt line in the platform's IRQ line set.
+        pub irq: u32,
+        /// Button presses, acknowledged after the event is latched.
+        pub recv: mesh::Receiver<PowerButtonRpc>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for AcpiPowerButtonDeviceHandle {
+        const ID: &'static str = "acpi_power_button";
+    }
+}
+
 pub mod pm {
     //! Resource definitions for power management devices.
 
+    use crate::acpi_power_button::PowerButtonRpc;
     use mesh::MeshPayload;
     use vm_resource::CanResolveTo;
     use vm_resource::Resource;
@@ -462,6 +498,8 @@ pub mod pm {
     pub struct Piix4PowerManagementDeviceHandle {
         /// Optional PM timer assist resource.
         pub pm_timer_assist: Option<Resource<PmTimerAssistHandleKind>>,
+        /// Fixed ACPI power-button presses, acknowledged after latching PM1 status.
+        pub power_button_recv: Option<mesh::Receiver<PowerButtonRpc>>,
     }
 
     /// The fixed BDF used by the PIIX4 PM device in the Gen1 chipset.

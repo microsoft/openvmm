@@ -52,6 +52,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, Piix4PowerManagementDeviceHan
             input.vmtime.access("piix4-pm"),
             None, // PIIX4 manages ACPI mode via PCI config space
             deps.pm_timer_assist,
+            resource.power_button_recv,
         );
 
         let pm = Piix4Pm::new(inner, input.register_pio);
