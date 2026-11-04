@@ -83,9 +83,11 @@ const ISA_INTERRUPT_ROUTING_ENTRY_COUNT: usize = 2 + ISA_ROUTED_IRQ_COUNT;
 /// Guest-visible processor and interrupt data represented by MP tables.
 #[derive(Debug, Clone, Copy)]
 pub struct MpTableConfig<'a> {
-    /// APIC IDs in virtual-processor order. The first entry is the BSP.
+    /// APIC IDs in virtual-processor order. The first entry is the BSP. The
+    /// IDs must be 0, 1, 2, and so on, for 1 to 15 processors, because the
+    /// I/O APIC takes the next ID, which must fit in four bits.
     pub apic_ids: &'a [u32],
-    /// ISA IRQs described as active-high, level-triggered.
+    /// ISA IRQs, 0 through 15, described as active-high, level-triggered.
     pub level_triggered_irqs: &'a [u32],
 }
 
