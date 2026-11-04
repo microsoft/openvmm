@@ -9,6 +9,7 @@
 #![cfg(test)]
 
 use super::RelayedVpciDevice;
+use super::TdispOperationCount;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
@@ -147,8 +148,18 @@ struct TestRelay {
     cfg: Arc<Mutex<HostConfigSpace>>,
     /// Keeps the VPCI channel server running for the lifetime of the test.
     _server: pal_async::task::Task<()>,
-    /// Keeps the client alive for the lifetime of the test.
-    _client: VpciClient,
+    /// The client for the bus the device is on.
+    client: VpciClient,
+}
+
+/// How the emulated host behaves.
+struct TestHost {
+    /// Whether the host device implements TDISP. Without it, the host answers
+    /// every TDISP command with `NOT_SUPPORTED`.
+    offers_tdisp: bool,
+    /// Whether the host accepts VPCI protocol version `RB`. When it does not,
+    /// the bus falls back to `VB`.
+    accepts_rb: bool,
 }
 
 /// How the relay under test decides whether the device is TDISP capable.
@@ -166,25 +177,33 @@ enum RelayTdisp {
 /// which the relay normally decides by probing the device when the host offers
 /// it.
 async fn connect_relay(driver: &DefaultDriver, tdisp_capable: bool) -> TestRelay {
-    connect_relay_with(driver, true, RelayTdisp::Assume(tdisp_capable)).await
+    connect_relay_with(
+        driver,
+        TestHost {
+            offers_tdisp: true,
+            accepts_rb: true,
+        },
+        RelayTdisp::Assume(tdisp_capable),
+    )
+    .await
 }
 
 /// Brings up a VPCI bus with an emulated device on it and wraps the resulting
 /// client device in the relay under test.
 ///
 /// * `driver` - Runs the VPCI channel server.
-/// * `host_offers_tdisp` - Whether the emulated host device implements TDISP.
-///   Without it, the host answers every TDISP command with `NOT_SUPPORTED`.
+/// * `test_host` - How the emulated host behaves.
 /// * `relay_tdisp` - How the relay decides whether the device is TDISP
 ///   capable.
 async fn connect_relay_with(
     driver: &DefaultDriver,
-    host_offers_tdisp: bool,
+    test_host: TestHost,
     relay_tdisp: RelayTdisp,
 ) -> TestRelay {
     let cfg = Arc::new(Mutex::new(HostConfigSpace::default()));
     let host_device = Arc::new(CloseableMutex::new(TestHostDevice {
-        tdisp_interface: host_offers_tdisp
+        tdisp_interface: test_host
+            .offers_tdisp
             .then(|| new_null_tdisp_interface("vpci-relay-unit-test")),
         cfg: cfg.clone(),
     }));
@@ -200,6 +219,9 @@ async fn connect_relay_with(
         VpciInterruptMapper::new(TestVpciInterruptController::new()),
     )
     .unwrap();
+    if !test_host.accepts_rb {
+        channel.set_max_protocol_version(vpci_protocol::ProtocolVersion::VB);
+    }
 
     let (host, guest) = vmbus_channel::connected_async_channels(32768);
     let mut runner = channel.open(host, GuestMemory::empty()).unwrap();
@@ -228,9 +250,13 @@ async fn connect_relay_with(
         .unwrap();
     let device = Arc::new(device);
 
+    let tdisp_operations = TdispOperationCount::default();
     let tdisp_capable = match relay_tdisp {
         RelayTdisp::Assume(tdisp_capable) => tdisp_capable,
-        RelayTdisp::Probe => super::probe_tdisp_capable(&client, &device, Guid::new_random()).await,
+        RelayTdisp::Probe => {
+            super::probe_tdisp_capable(&client, &device, Guid::new_random(), &tdisp_operations)
+                .await
+        }
     };
 
     // Drop everything the client did while bringing the device up so that each
@@ -244,11 +270,12 @@ async fn connect_relay_with(
             queued: VecDeque::new(),
             waker: Waker::noop().clone(),
             tdisp_capable,
+            tdisp_operations,
         }),
         device,
         cfg,
         _server: server,
-        _client: client,
+        client,
     }
 }
 
@@ -461,7 +488,15 @@ async fn writes_pass_through_when_nothing_is_in_flight(driver: DefaultDriver) {
 /// gracefully by turning off TDISP support for this device.
 #[async_test]
 async fn not_supported_initial_probe_is_non_tdisp(driver: DefaultDriver) {
-    let t = connect_relay_with(&driver, false, RelayTdisp::Probe).await;
+    let t = connect_relay_with(
+        &driver,
+        TestHost {
+            offers_tdisp: false,
+            accepts_rb: true,
+        },
+        RelayTdisp::Probe,
+    )
+    .await;
 
     assert!(!t.relay.lock().tdisp_capable);
     assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
@@ -475,4 +510,42 @@ async fn not_supported_initial_probe_is_non_tdisp(driver: DefaultDriver) {
     ));
     assert_eq!(t.written_offsets().last(), Some(&offset));
     assert_eq!(t.read(offset) & 0xffff, command(true));
+}
+
+/// Ensures that when the host only negotiates VPCI protocol `VB`, the relay
+/// never sends the device a TDISP command: probing does not reach the host, and
+/// enabling MMIO completes without any TDISP work.
+#[async_test]
+async fn downlevel_host_never_sees_tdisp_commands(driver: DefaultDriver) {
+    // The host device implements TDISP, so only the protocol version keeps the
+    // relay from probing it.
+    let t = connect_relay_with(
+        &driver,
+        TestHost {
+            offers_tdisp: true,
+            accepts_rb: false,
+        },
+        RelayTdisp::Probe,
+    )
+    .await;
+
+    assert_eq!(
+        t.client.protocol_version(),
+        vpci_protocol::ProtocolVersion::VB
+    );
+    assert!(!t.relay.lock().tdisp_capable);
+    assert_eq!(t.relay.lock().tdisp_operations.get(), 0);
+
+    // With no TDISP operation to run, the write completes immediately and
+    // reaches the device.
+    let offset = HeaderType00::STATUS_COMMAND.0;
+    assert!(matches!(
+        t.write(offset, command(true), PciConfigByteEnable::LOW_WORD),
+        IoResult::Ok
+    ));
+    assert_eq!(t.written_offsets().last(), Some(&offset));
+    assert_eq!(t.read(offset) & 0xffff, command(true));
+
+    assert_eq!(t.relay.lock().tdisp_operations.get(), 0);
+    assert_eq!(t.device.tdisp().tdi_state().await, TdispTdiState::Unlocked);
 }

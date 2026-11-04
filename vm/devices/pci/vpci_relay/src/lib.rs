@@ -44,6 +44,8 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
 use tdisp::TdispIsolationReport;
@@ -121,10 +123,35 @@ pub struct VpciRelay {
     mock_bar_mmio: Option<u64>,
 }
 
+/// Counts the TDISP operations the relay has started on one device. Used to
+/// determine how much TDISP traffic has taken place for this device.
+#[derive(Clone, Default)]
+struct TdispOperationCount(Arc<AtomicU64>);
+
+impl TdispOperationCount {
+    /// Records that the relay is starting a TDISP operation on the device.
+    fn record(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The number of TDISP operations the relay has started on the device.
+    fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl Inspect for TdispOperationCount {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.value(self.get());
+    }
+}
+
 #[derive(Inspect)]
 struct RelayedDevice {
     bus_instance_id: Guid,
     bus_client: VpciClient,
+    /// The TDISP operations the relay has started on the device.
+    tdisp_operations: TdispOperationCount,
     #[inspect(skip)]
     vpci_device: Arc<VpciDevice>,
     #[inspect(skip)]
@@ -146,6 +173,7 @@ impl RelayedDevice {
 
         // Unbind any TDI state if the device is a TDISP device.
         if self.vpci_device.tdisp().tdi_state().await != TdispTdiState::Unlocked {
+            self.tdisp_operations.record();
             self.vpci_device
                 .tdisp()
                 .unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
@@ -416,6 +444,8 @@ impl VpciRelay {
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
 
+        let tdisp_operations = TdispOperationCount::default();
+
         // The host gets to decide if a device is TDISP capable or not
         let tdisp_capable = if self.options.test_tdisp_flow {
             let bar_mmio = self
@@ -428,7 +458,7 @@ impl VpciRelay {
             // Do not mark the device TDISP capable because the test is already done.
             false
         } else {
-            probe_tdisp_capable(&vpci_client, &vpci_device, instance_id).await
+            probe_tdisp_capable(&vpci_client, &vpci_device, instance_id, &tdisp_operations).await
         };
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
@@ -440,6 +470,7 @@ impl VpciRelay {
                     queued: VecDeque::new(),
                     waker: Waker::noop().clone(),
                     tdisp_capable,
+                    tdisp_operations: tdisp_operations.clone(),
                 })
             })
             .await?;
@@ -477,6 +508,7 @@ impl VpciRelay {
         entry.insert(RelayedDevice {
             bus_instance_id: instance_id,
             bus_client: vpci_client,
+            tdisp_operations,
             vpci_device: vpci_device.clone(),
             removed,
             bus_unit,
@@ -501,10 +533,12 @@ impl VpciRelay {
 /// * `vpci_client` - The client for the bus the device is on.
 /// * `vpci_device` - The device to probe.
 /// * `instance_id` - The bus instance id, for logging.
+/// * `tdisp_operations` - Records the probe if it sends anything to the host.
 async fn probe_tdisp_capable(
     vpci_client: &VpciClient,
     vpci_device: &VpciDevice,
     instance_id: Guid,
+    tdisp_operations: &TdispOperationCount,
 ) -> bool {
     if vpci_client.protocol_version() < ProtocolVersion::RB {
         // TDISP support only exists from RB onward.
@@ -518,6 +552,7 @@ async fn probe_tdisp_capable(
     }
 
     // Probe TDISP capability without attesting.
+    tdisp_operations.record();
     match vpci_device.tdisp().query_capabilities().await {
         Ok(_) => {
             tracing::info!(
@@ -566,6 +601,9 @@ struct RelayedVpciDevice {
 
     /// Is the device TDISP capable?
     tdisp_capable: bool,
+
+    /// The TDISP operations the relay has started on the device.
+    tdisp_operations: TdispOperationCount,
 }
 
 /// A config space write held off because a TDISP operation was in flight.
@@ -631,6 +669,7 @@ impl RelayedVpciDevice {
             // once attestation is complete.
             (false, true) => {
                 let device = self.device.clone();
+                self.tdisp_operations.record();
                 CfgWriteOutcome::Started(Box::pin(async move {
                     if !device.tdisp_on_device_activate(value).await {
                         tracing::warn!(
@@ -644,6 +683,7 @@ impl RelayedVpciDevice {
             // command register in its off state and unmaps all private BARs.
             (true, false) => {
                 let device = self.device.clone();
+                self.tdisp_operations.record();
                 CfgWriteOutcome::Started(Box::pin(async move {
                     device.tdisp_on_device_deactivate().await;
                 }))
@@ -736,6 +776,7 @@ impl TdispRelayedDeviceTarget for RelayedVpciDevice {
     ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>> {
         let device = self.device.clone();
         let tdisp_capable = self.tdisp_capable;
+        let tdisp_operations = self.tdisp_operations.clone();
 
         Box::pin(async move {
             // If the device is not TDISP capable, return early with an invalid report.
@@ -744,6 +785,7 @@ impl TdispRelayedDeviceTarget for RelayedVpciDevice {
             }
 
             // This might fire an attestation flow if it hasn't already happened yet.
+            tdisp_operations.record();
             let report = device.tdisp().isolation_snapshot_attested().await;
 
             // Typically, the guest needs to know the isolation report of the
@@ -755,6 +797,7 @@ impl TdispRelayedDeviceTarget for RelayedVpciDevice {
                 ?report,
                 "Unbinding after the isolation report to prepare for guest resource programming"
             );
+            tdisp_operations.record();
             device
                 .tdisp()
                 .unbind(tdisp::TdispGuestUnbindReason::Graceful)
