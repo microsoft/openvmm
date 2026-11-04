@@ -41,6 +41,7 @@ use futures::future::join_all;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::Sender;
@@ -901,8 +902,7 @@ fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRe
         let span = tracing::info_span!("device_state_change", device = name.as_ref());
         async move {
             let start = Instant::now();
-            let r = send
-                .call(request, input)
+            let r = log_while_unanswered(&name, start, send.call(request, input))
                 .await
                 .map_err(|err| UnitRecvError { name, source: err });
             tracing::debug!(duration = ?Instant::now() - start, "device state change complete");
@@ -910,6 +910,34 @@ fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRe
         }
         .instrument(span)
         .await
+    }
+}
+
+/// How long a unit may take to answer a state change request before it is
+/// logged, and how often it is logged again until it answers.
+const SLOW_STATE_CHANGE_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(100)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
+/// Awaits `answer`, a unit's answer to a state change request sent at `start`,
+/// and logs the unit every [`SLOW_STATE_CHANGE_INTERVAL`] until it answers.
+///
+/// A state change waits for every unit to answer, so a unit that never answers
+/// stalls it. The log names the units that it still waits for.
+async fn log_while_unanswered<T>(name: &str, start: Instant, answer: impl Future<Output = T>) -> T {
+    let mut answer = pin!(answer);
+    loop {
+        let mut interval = CancelContext::new().with_timeout(SLOW_STATE_CHANGE_INTERVAL);
+        if let Ok(answer) = interval.until_cancelled(answer.as_mut()).await {
+            break answer;
+        }
+        tracing::warn!(
+            unit = name,
+            elapsed = ?start.elapsed(),
+            "state unit has not answered its state change request"
+        );
     }
 }
 
@@ -1099,6 +1127,7 @@ impl Ready {
 mod tests {
     mod inventory;
     mod quiesce;
+    mod slow;
     mod start;
 
     use super::StateTransitionErrorKind;
