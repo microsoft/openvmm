@@ -19,6 +19,7 @@ use crate::mptable;
 use hvdef::HV_PAGE_SIZE;
 use loader_defs::linux as defs;
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use page_table::IdentityMapSize;
 use page_table::x64::IdentityMapBuilder;
 use page_table::x64::PageTable;
@@ -70,25 +71,13 @@ fn build_setup_header(cmdline: &CString, initrd_base: u64, initrd_size: u64) -> 
     hdr
 }
 
+/// Returns whether `range` is non-empty and RAM backs all of it, even across
+/// adjacent RAM ranges.
 fn range_is_in_ram(mem_layout: &MemoryLayout, range: MemoryRange) -> bool {
-    if range.is_empty() {
-        return false;
-    }
-
-    let mut next = range.start();
-    for ram in mem_layout.ram() {
-        if ram.range.end() <= next {
-            continue;
-        }
-        if ram.range.start() > next {
-            return false;
-        }
-        if ram.range.end() >= range.end() {
-            return true;
-        }
-        next = ram.range.end();
-    }
-    false
+    !range.is_empty()
+        && subtract_ranges([range], mem_layout.ram().iter().map(|ram| ram.range))
+            .next()
+            .is_none()
 }
 
 fn overlaps_range(range: &MemoryRange, start: u64, end: u64) -> bool {
