@@ -5,6 +5,7 @@
 
 use crate::RemoteDynamicResolvers;
 use crate::guestmem::GuestMemoryProxy;
+use crate::guestmem::GuestMemoryTask;
 use crate::proxy::ChipsetDeviceProxy;
 use crate::worker::RemoteChipsetDeviceHandleParams;
 use crate::worker::RemoteChipsetDeviceWorkerParameters;
@@ -13,6 +14,7 @@ use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
+use task_control::TaskControl;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
@@ -62,6 +64,14 @@ impl<T: RemoteDynamicResolvers>
         let (enc_gm_proxy, enc_gm_remote) =
             GuestMemoryProxy::new(input.encrypted_guest_memory.clone());
 
+        let mut guest_memory = TaskControl::new(GuestMemoryTask);
+        guest_memory.insert(
+            input.task_driver_source.simple(),
+            "chipset-guest-memory",
+            [gm_proxy, enc_gm_proxy],
+        );
+        guest_memory.start();
+
         let worker = worker_host
             .launch_worker(
                 remote_chipset_device_worker_id(),
@@ -83,17 +93,10 @@ impl<T: RemoteDynamicResolvers>
             .await
             .map_err(ResolveRemoteChipsetDeviceError::LaunchWorker)?;
 
-        let proxy = ChipsetDeviceProxy::new(
-            req_send,
-            resp_recv,
-            cap_recv,
-            worker,
-            gm_proxy,
-            enc_gm_proxy,
-            input,
-        )
-        .await
-        .map_err(ResolveRemoteChipsetDeviceError::ConstructProxy)?;
+        let proxy =
+            ChipsetDeviceProxy::new(req_send, resp_recv, cap_recv, worker, guest_memory, input)
+                .await
+                .map_err(ResolveRemoteChipsetDeviceError::ConstructProxy)?;
 
         Ok(proxy.into())
     }

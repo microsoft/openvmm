@@ -13,8 +13,12 @@ use guestmem::GuestMemoryBackingError;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use parking_lot::Mutex;
+use std::future::poll_fn;
 use std::ptr::NonNull;
 use std::task::Poll;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::StopTask;
 
 /// Requests sent to the parent process for guest memory access.
 #[derive(MeshPayload)]
@@ -41,6 +45,24 @@ pub struct GuestMemoryProxy {
     gm: GuestMemory,
     req_recv: mesh::Receiver<GuestMemoryRequest>,
     resp_send: mesh::Sender<GuestMemoryResponse>,
+}
+
+pub(crate) struct GuestMemoryTask;
+
+impl AsyncRun<[GuestMemoryProxy; 2]> for GuestMemoryTask {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        proxies: &mut [GuestMemoryProxy; 2],
+    ) -> Result<(), Cancelled> {
+        stop.until_stopped(poll_fn(|cx| {
+            for proxy in proxies.iter_mut() {
+                proxy.poll(cx);
+            }
+            Poll::Pending
+        }))
+        .await
+    }
 }
 
 #[derive(MeshPayload)]
@@ -80,33 +102,31 @@ impl GuestMemoryProxy {
     }
 
     pub fn poll(&mut self, cx: &mut std::task::Context<'_>) {
-        while let Poll::Ready(request) = self.req_recv.poll_next_unpin(cx) {
-            let response = match request {
-                Some(GuestMemoryRequest::Read { addr, len }) => {
-                    let mut data = vec![0u8; len];
-                    let result = self
-                        .gm
-                        .read_at(addr, &mut data)
-                        .map(|_| data)
-                        .map_err(RemoteError::new);
-                    GuestMemoryResponse::Read(result)
-                }
-                Some(GuestMemoryRequest::Write { addr, data }) => {
-                    let result = self.gm.write_at(addr, &data).map_err(RemoteError::new);
-                    GuestMemoryResponse::Write(result)
-                }
-                Some(GuestMemoryRequest::Fill { addr, val, len }) => {
-                    let result = self.gm.fill_at(addr, val, len).map_err(RemoteError::new);
-                    GuestMemoryResponse::Write(result)
-                }
-                None => {
-                    // The remote device may just drop guest memory if it
-                    // doesn't need it. We can just stop processing requests.
-                    break;
-                }
-            };
-            self.resp_send.send(response);
-        }
+        let Poll::Ready(Some(request)) = self.req_recv.poll_next_unpin(cx) else {
+            return;
+        };
+        let response = match request {
+            GuestMemoryRequest::Read { addr, len } => {
+                let mut data = vec![0u8; len];
+                let result = self
+                    .gm
+                    .read_at(addr, &mut data)
+                    .map(|_| data)
+                    .map_err(RemoteError::new);
+                GuestMemoryResponse::Read(result)
+            }
+            GuestMemoryRequest::Write { addr, data } => {
+                let result = self.gm.write_at(addr, &data).map_err(RemoteError::new);
+                GuestMemoryResponse::Write(result)
+            }
+            GuestMemoryRequest::Fill { addr, val, len } => {
+                let result = self.gm.fill_at(addr, val, len).map_err(RemoteError::new);
+                GuestMemoryResponse::Write(result)
+            }
+        };
+        self.resp_send.send(response);
+        // Bound each poll so both memory services and task control can run.
+        cx.waker().wake_by_ref();
     }
 }
 
