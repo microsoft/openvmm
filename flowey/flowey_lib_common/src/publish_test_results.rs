@@ -77,8 +77,9 @@ impl FlowNode for Node {
             let step_name = format!("publish test results: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
 
+            let native_results = matches!(ctx.backend(), FlowBackend::Ado);
             let should_publish_junit_xml = test_results.map(ctx, move |r| {
-                r.junit_xml.is_some() && (upload_logs_on_success || !r.all_tests_passed)
+                should_publish_junit_xml(&r, upload_logs_on_success, native_results)
             });
 
             match ctx.backend() {
@@ -259,6 +260,20 @@ impl FlowNode for Node {
     }
 }
 
+fn should_publish_junit_xml(
+    results: &TestResults,
+    upload_logs_on_success: bool,
+    native_results: bool,
+) -> bool {
+    let bundled = results
+        .resources
+        .as_ref()
+        .is_some_and(|dir| dir.join("junit.xml").is_file());
+    results.junit_xml.is_some()
+        && (upload_logs_on_success || !results.all_tests_passed)
+        && (native_results || !bundled)
+}
+
 fn attachment_path_to_string(path: PathBuf) -> String {
     if path.as_os_str().is_empty() {
         String::new()
@@ -271,6 +286,60 @@ fn attachment_path_to_string(path: PathBuf) -> String {
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn bundled_junit_is_not_uploaded_separately() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs_err::write(dir.path().join("junit.xml"), "<testsuites/>")?;
+        for all_tests_passed in [false, true] {
+            let results = TestResults {
+                all_tests_passed,
+                junit_xml: Some(dir.path().join("junit.xml")),
+                resources: Some(dir.path().to_owned()),
+            };
+            for upload_logs_on_success in [false, true] {
+                assert!(!should_publish_junit_xml(
+                    &results,
+                    upload_logs_on_success,
+                    false
+                ));
+                assert_eq!(
+                    should_publish_junit_xml(&results, upload_logs_on_success, true),
+                    upload_logs_on_success || !all_tests_passed,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unbundled_junit_preserves_retention_and_copy_failure_fallback() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        for resources in [None, Some(dir.path().to_owned())] {
+            for all_tests_passed in [false, true] {
+                let mut results = TestResults {
+                    all_tests_passed,
+                    junit_xml: Some(dir.path().join("original-junit.xml")),
+                    resources: resources.clone(),
+                };
+                for native_results in [false, true] {
+                    for upload_logs_on_success in [false, true] {
+                        assert_eq!(
+                            should_publish_junit_xml(
+                                &results,
+                                upload_logs_on_success,
+                                native_results
+                            ),
+                            upload_logs_on_success || !all_tests_passed,
+                        );
+                    }
+                }
+                results.junit_xml = None;
+                assert!(!should_publish_junit_xml(&results, true, false));
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn absent_attachment_path_stays_empty() {

@@ -128,6 +128,34 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(summary["resource_coverage_percent"], 50)
         self.assertEqual(len(summary["warnings"]), 3)
 
+    def test_unavailable_disk_counters_are_reported_without_throughput(self):
+        metadata_path = self.directory / "metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        reason = "Windows disk I/O collection is disabled."
+        metadata["disk_io_unavailable_reason"] = reason
+        self.write_json("metadata.json", metadata)
+        for row in self.samples:
+            row["disks"] = None
+        self.write_samples()
+        report = resources.analyze(self.directory)
+        self.assertEqual(report["summary"]["warnings"], [reason])
+        html = resources.render_html(report)
+        self.assertIn(reason, html)
+        self.assertNotIn("MiB/s", html)
+        self.assertIn("Host CPU, percent", html)
+        self.assertEqual(report["summary"]["test_attempts"], 2)
+
+    def test_missing_disk_sample_does_not_bridge_unknown_interval(self):
+        self.samples[2]["disks"] = None
+        self.write_samples()
+        report = resources.analyze(self.directory)
+        self.assertIn("Disk I/O counters are unavailable", report["summary"]["warnings"][0])
+        disk_chart = resources.render_html(report).split(
+            "read_bytes MiB/s (", 1
+        )[1].split("</svg>", 1)[0]
+        self.assertNotIn("200.00,", disk_chart)
+        self.assertIn('<polyline points="500.00,0.00 1000.00,0.00"', disk_chart)
+
     def test_out_of_order_samples_rejected(self):
         self.samples[2]["elapsed_seconds"] = 1
         self.write_samples()

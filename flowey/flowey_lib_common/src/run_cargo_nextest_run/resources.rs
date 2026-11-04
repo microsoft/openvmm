@@ -17,6 +17,14 @@ use sysinfo::Disks;
 use sysinfo::System;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const DISK_IO_UNAVAILABLE_REASON: Option<&str> = if cfg!(windows) {
+    Some(
+        "Windows disk I/O collection is disabled: volume performance queries can fail \
+         on native VHD boot without sysinfo exposing whether the counters are valid.",
+    )
+} else {
+    None
+};
 
 pub(super) struct ResourceMonitor {
     dir: PathBuf,
@@ -43,8 +51,14 @@ impl ResourceMonitor {
         let mut system = System::new();
         system.refresh_cpu_usage();
         system.refresh_memory();
-        let disks =
-            Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_io_usage());
+        let disks = if let Some(reason) = DISK_IO_UNAVAILABLE_REASON {
+            log::warn!("{reason}");
+            None
+        } else {
+            Some(Disks::new_with_refreshed_list_specifics(
+                DiskRefreshKind::nothing().with_io_usage(),
+            ))
+        };
         let started = Instant::now();
         let started_unix_seconds = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -77,6 +91,7 @@ impl ResourceMonitor {
                     .collect::<Vec<_>>()
             }).collect::<Vec<_>>(),
             "scheduler_env": scheduler_env,
+            "disk_io_unavailable_reason": DISK_IO_UNAVAILABLE_REASON,
         });
         fs_err::write(
             dir.join("metadata.json"),
@@ -137,7 +152,7 @@ impl Drop for ResourceMonitor {
 
 fn sample(
     mut system: System,
-    mut disks: Disks,
+    mut disks: Option<Disks>,
     output: fs_err::File,
     started: Instant,
     stop: mpsc::Receiver<()>,
@@ -165,21 +180,23 @@ fn sample(
             None
         };
         system.refresh_memory();
-        if !initial {
-            disks.refresh_specifics(false, DiskRefreshKind::nothing().with_io_usage());
-        }
-        let disk_usage = disks
-            .iter()
-            .map(|disk| {
-                let usage = disk.usage();
-                serde_json::json!({
-                    "name": disk.name().to_string_lossy(),
-                    "mount_point": disk.mount_point().to_string_lossy(),
-                    "read_bytes": usage.total_read_bytes,
-                    "written_bytes": usage.total_written_bytes,
+        let disk_usage = disks.as_mut().map(|disks| {
+            if !initial {
+                disks.refresh_specifics(false, DiskRefreshKind::nothing().with_io_usage());
+            }
+            disks
+                .iter()
+                .map(|disk| {
+                    let usage = disk.usage();
+                    serde_json::json!({
+                        "name": disk.name().to_string_lossy(),
+                        "mount_point": disk.mount_point().to_string_lossy(),
+                        "read_bytes": usage.total_read_bytes,
+                        "written_bytes": usage.total_written_bytes,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        });
         let row = serde_json::json!({
             "elapsed_seconds": started.elapsed().as_secs_f64(),
             "cpu_percent": cpu_percent,
@@ -204,6 +221,28 @@ mod tests {
     use super::*;
     use crate::gen_cargo_nextest_run_cmd::CommandShell;
     use test_with_tracing::test;
+
+    #[test]
+    fn unavailable_disk_collection_records_null_instead_of_zero_counters() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("samples.jsonl");
+        let (stop, receiver) = mpsc::channel();
+        stop.send(())?;
+        sample(
+            System::new(),
+            None,
+            fs_err::File::create(&path)?,
+            Instant::now(),
+            receiver,
+        )?;
+        let rows = fs_err::read_to_string(path)?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row["disks"].is_null()));
+        Ok(())
+    }
 
     #[test]
     fn captures_short_failed_runs_and_joins_worker() -> anyhow::Result<()> {
@@ -232,6 +271,13 @@ mod tests {
         assert!(rows[0]["cpu_percent"].is_null());
         assert!(rows[1]["elapsed_seconds"].as_f64() > rows[0]["elapsed_seconds"].as_f64());
         assert!(rows[1]["cpu_percent"].as_f64().is_some());
+        if cfg!(windows) {
+            assert!(metadata["disk_io_unavailable_reason"].is_string());
+            assert!(rows.iter().all(|row| row["disks"].is_null()));
+        } else {
+            assert!(metadata["disk_io_unavailable_reason"].is_null());
+            assert!(rows.iter().all(|row| row["disks"].is_array()));
+        }
         let outcome: serde_json::Value =
             serde_json::from_slice(&fs_err::read(dir.join("outcome.json"))?)?;
         assert_eq!(outcome["collection_complete"], true);

@@ -35,6 +35,8 @@ flowey_request! {
         pub run_kind: NextestRunKind,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
+        /// Collect host resource measurements when using the CI profile.
+        pub collect_resources: bool,
         /// Nextest test filter expression
         pub nextest_filter_expr: Option<String>,
         /// Nextest working directory (defaults to repo root)
@@ -77,6 +79,7 @@ impl FlowNode for Node {
             friendly_name,
             run_kind,
             nextest_profile,
+            collect_resources,
             nextest_filter_expr,
             nextest_working_dir,
             nextest_config_file,
@@ -116,7 +119,8 @@ impl FlowNode for Node {
                     nextest_profile: nextest_profile.as_str().to_owned(),
                     extra_env: Some(extra_env),
                     with_rlimit_unlimited_core_size: true,
-                    collect_resources: matches!(nextest_profile, NextestProfile::Ci),
+                    collect_resources: collect_resources
+                        && matches!(nextest_profile, NextestProfile::Ci),
                     nextest_filter_expr,
                     run_ignored,
                     pre_run_deps,

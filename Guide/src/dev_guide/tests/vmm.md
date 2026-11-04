@@ -104,13 +104,16 @@ engineers' local machines and in CI. Put these special words in your test to opt
 
 ### Measuring CI parallelism
 
-Flowey runs using the `ci` nextest profile sample host resources once per
-second while the nextest command runs. CI publishes a `<test-label>-resources`
-artifact on both success and ordinary test failure, independently of whether
-successful test logs are retained. The artifact contains:
+PR CI runs using the `ci` nextest profile sample host resources once per
+second while the nextest command runs. CI publishes one combined
+`<test-label>-resources` artifact containing JUnit results and measurements,
+instead of also uploading a separate JUnit artifact. ADO's native test-results
+integration is unchanged. Burn-in runs do not collect resources and retain
+their existing successful-run log policy. The combined artifact contains:
 
 - `samples.jsonl`: monotonic elapsed time, host CPU utilization, used and
-  available memory, swap usage, and cumulative per-disk I/O counters.
+  available memory, swap usage, and cumulative per-disk I/O counters where
+  supported.
 - `metadata.json` and `nextest.toml`: host capacity, OS/kernel, command,
   profile, scheduler environment overrides, and a snapshot of the
   repository's nextest configuration.
@@ -134,6 +137,11 @@ headroom, and the drain time after the last test attempt starts. Retries
 count as separate attempts. Resource averages cover the JUnit run window,
 not archive extraction or compilation; command duration is reported
 separately. Missing CPU samples are unknown, not zero utilization.
+Windows disk I/O collection is disabled because volume counters can be
+unavailable on native VHD boot without a detectable error from the collection
+library. Samples record `disks: null` and the report explains the limitation
+rather than showing zero throughput. CPU, memory, and test timing are still
+collected.
 
 Compare runs with the same test selection, machine type, and profile.
 Collect a baseline before changing `threads-required` or test thread

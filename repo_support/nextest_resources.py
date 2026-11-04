@@ -145,6 +145,9 @@ def analyze(directory: Path) -> dict:
         warnings.append("Resource samples cover less than 99% of the JUnit run.")
     if cpu_seconds / duration < 0.99:
         warnings.append("Valid CPU samples cover less than 99% of the JUnit run.")
+    if any(row["disks"] is None for row in samples):
+        warnings.append(metadata.get("disk_io_unavailable_reason")
+                        or "Disk I/O counters are unavailable for some resource samples.")
     if any(trial.start < start - 0.01 or trial.end > end + 0.01 for trial in trials):
         warnings.append("Some test attempts extend outside the JUnit run window.")
     last_start = max((trial.start for trial in trials), default=start)
@@ -236,14 +239,15 @@ def render_html(report: dict) -> str:
     disk_rates = defaultdict(list)
     for previous, row in zip(samples, samples[1:]):
         elapsed = row["elapsed_seconds"] - previous["elapsed_seconds"]
-        before = {(disk["name"], disk["mount_point"]): disk for disk in previous["disks"]}
-        for disk in row["disks"]:
-            key = (disk["name"], disk["mount_point"])
-            if key not in before:
-                continue
+        before = {(disk["name"], disk["mount_point"]): disk for disk in previous["disks"] or []}
+        after = {(disk["name"], disk["mount_point"]): disk for disk in row["disks"] or []}
+        for key in before.keys() | after.keys():
             for counter in ["read_bytes", "written_bytes"]:
-                delta = disk[counter] - before[key][counter]
-                rate = delta / elapsed / 1024**2 if delta >= 0 else None
+                delta = (
+                    after[key][counter] - before[key][counter]
+                    if key in before and key in after else None
+                )
+                rate = delta / elapsed / 1024**2 if delta is not None and delta >= 0 else None
                 rates = disk_rates[f"{key[0]} ({key[1]}) {counter} MiB/s"]
                 if not rates:
                     rates.append((previous["elapsed_seconds"], None))
