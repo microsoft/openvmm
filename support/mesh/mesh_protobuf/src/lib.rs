@@ -70,7 +70,6 @@ use alloc::boxed::Box;
 use alloc::fmt;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::mem::MaybeUninit;
 use core::num::Wrapping;
 use inplace::InplaceOption;
 use protofile::DescribeMessage;
@@ -1006,6 +1005,15 @@ mod tests {
                 6: bytes <0a0208420a020843>
                 raw: 0a0501020304051207616263646566671a0208011a0208021a0208031a0208041a020805220361626322036465662a050a030102032a050a0304050632080a0208400a02084132080a0208420a020843"#]),
         );
+    }
+
+    #[test]
+    fn test_vec_zero_sized_elements() {
+        for len in [0, 1, 5] {
+            let values = vec![(); len];
+            let data = encode((values.clone(),));
+            assert_eq!(decode::<(Vec<()>,)>(&data).unwrap().0, values);
+        }
     }
 
     #[test]

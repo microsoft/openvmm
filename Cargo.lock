@@ -3495,6 +3495,9 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+dependencies = [
+ "test_with_tracing",
+]
 
 [[package]]
 name = "heapless"
@@ -4855,6 +4858,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -6919,6 +6923,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "sha2",
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
@@ -7751,6 +7756,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -10306,6 +10312,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "parking_lot",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vm_topology",

@@ -603,7 +603,7 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -774,7 +774,7 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1011,7 +1011,7 @@ jobs:
     name: build openhcl (mi-secure) [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1431,7 +1431,7 @@ jobs:
     name: clippy [x64-linux, macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1675,7 +1675,7 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -5801,7 +5801,7 @@ jobs:
     name: build artifacts (shared VMM tests) [linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:

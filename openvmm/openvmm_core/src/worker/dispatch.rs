@@ -30,6 +30,7 @@ use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::acpi_power_button::ACPI_POWER_BUTTON_MMIO_BASE;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
@@ -3477,6 +3478,7 @@ impl LoadedVmInner {
                         acpi_builder.build_acpi_tables(rsdp_gpa, |dsdt| {
                             add_devices_to_dsdt_arm64(
                                 dsdt,
+                                &self.chipset_capabilities,
                                 enable_serial,
                                 self.vmbus_server.is_some(),
                                 &self.chipset_mmio,
@@ -3540,6 +3542,9 @@ impl LoadedVmInner {
                     acpi_builder.build_ivrs(),
                     // DMAR (Intel VT-d)
                     acpi_builder.build_dmar(),
+                    // UEFI supplies its own DSDT, which lacks our power button.
+                    // Linux direct boot adds the button to its generated DSDT.
+                    build_ssdt(&self.chipset_capabilities),
                 ];
                 let acpi_tables: Vec<_> =
                     acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
@@ -4440,6 +4445,14 @@ impl LoadedVm {
     }
 }
 
+fn build_ssdt(capabilities: &VmChipsetCapabilities) -> Option<Vec<u8>> {
+    capabilities.acpi_power_button_gsi.map(|gsi| {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        ssdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+        ssdt.to_bytes()
+    })
+}
+
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
@@ -4453,6 +4466,9 @@ fn add_devices_to_dsdt_x64(
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
 ) {
     dsdt.add_apic();
+    if let Some(gsi) = capabilities.acpi_power_button_gsi {
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+    }
 
     // Any serial port configured means all are enabled.
     if serial_uarts {
@@ -4507,11 +4523,15 @@ fn add_devices_to_dsdt_x64(
 #[cfg(guest_arch = "aarch64")]
 fn add_devices_to_dsdt_arm64(
     dsdt: &mut dsdt::Dsdt,
+    capabilities: &VmChipsetCapabilities,
     enable_serial: bool,
     with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     with_hv: bool,
 ) {
+    if let Some(gsi) = capabilities.acpi_power_button_gsi {
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+    }
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
     use serial_pl011_resources::PL011_SERIAL_SIZE;
@@ -4596,6 +4616,7 @@ mod uart_tests {
             with_generic_isa_dma: false,
             with_psp: false,
             with_guest_watchdog: false,
+            acpi_power_button_gsi: None,
             with_i440bx_host_pci_bridge: false,
             dt_com_ports: [true, true, false, true],
             dt_pl011_uarts: false,

@@ -87,6 +87,11 @@ or reopen the file.
 ## Graceful guest shutdown
 
 `ShutdownVM` requests a cooperative guest power-off, non-forced by default.
+
+Success means IC acknowledgement or ACPI event injection, not that the guest
+has halted. Neither mechanism falls back to the other or forcibly powers off
+the VM.
+
 See `ShutdownVM` and `ShutdownVMRequest` in [`vmservice.proto`] for prerequisites,
 request fields, shutdown lifecycle.
 

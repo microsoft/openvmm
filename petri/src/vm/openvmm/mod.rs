@@ -42,6 +42,7 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -232,6 +233,7 @@ struct PetriVmResourcesOpenVmm {
     firmware_event_recv: Receiver<FirmwareEvent>,
     ipmi_sel_event_recv: Receiver<get_resources::ged::IpmiSelEvent>,
     shutdown_ic_send: Option<Sender<ShutdownRpc>>,
+    acpi_power_button_send: Option<Sender<PowerButtonRpc>>,
     kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
