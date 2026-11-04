@@ -595,14 +595,12 @@ impl AdminHandler {
             }
         };
 
-        let status = spec::CompletionStatus::new().with_status(result.status.0);
-
         let completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
             sqhd: state.admin_sq.sqhd(),
-            status,
+            status: result.completion_status(),
             cid,
         };
 
@@ -1123,6 +1121,7 @@ impl AdminHandler {
         Ok(Some(CommandResult {
             status: spec::Status::SUCCESS,
             dw: [1, 0],
+            dnr: false,
         }))
     }
 
