@@ -231,8 +231,16 @@ mod gicd {
         /// Level-triggered SPI input lines currently asserted by devices.
         #[inspect(iter_by_index)]
         asserted: Vec<u32>,
+        /// Software and edge requests not yet transferred to a list register.
         #[inspect(iter_by_index)]
         pending: Vec<u32>,
+        /// Pending latches transferred to reserved or in-flight list registers.
+        #[inspect(iter_by_index)]
+        lr_pending_latch: Vec<u32>,
+        /// Returned pending entries available for repacking by their owner.
+        /// Cleared on reservation to suppress duplicate level-only selection.
+        #[inspect(iter_by_index)]
+        lr_pending: Vec<u32>,
         /// Bitmap of 32-INTID words that contain pending or asserted SPIs.
         pending_word_summary: u32,
         /// SPIs reserved for injection or represented in the CCA virtual
@@ -267,6 +275,8 @@ mod gicd {
                 state: Arc::new(Mutex::new(DistributorState {
                     asserted: vec![0; n],
                     pending: vec![0; n],
+                    lr_pending_latch: vec![0; n],
+                    lr_pending: vec![0; n],
                     pending_word_summary: 0,
                     in_flight: vec![None; n * 32],
                     in_flight_by_vp: Vec::new(),
@@ -358,6 +368,8 @@ mod gicd {
             };
             for intid in owned {
                 if !is_in_flight(intid) {
+                    Self::set_bit(&mut state.lr_pending_latch, intid, false);
+                    Self::set_bit(&mut state.lr_pending, intid, false);
                     state.in_flight[intid as usize] = None;
                     state.in_flight_by_vp[vp_index].retain(|owned_intid| *owned_intid != intid);
                 }
@@ -372,6 +384,10 @@ mod gicd {
 
             let mut state = self.state.lock();
             if state.in_flight[intid as usize] == Some(vp.index()) {
+                if Self::set_bit(&mut state.lr_pending_latch, intid, false) {
+                    Self::set_pending_locked(&mut state, intid, true);
+                }
+                Self::set_bit(&mut state.lr_pending, intid, false);
                 state.in_flight[intid as usize] = None;
                 if let Some(owned) = state.in_flight_by_vp.get_mut(vp.index() as usize) {
                     owned.retain(|owned_intid| *owned_intid != intid);
@@ -387,11 +403,20 @@ mod gicd {
             };
 
             for intid in owned {
+                let latch_backed = Self::set_bit(&mut state.lr_pending_latch, intid, false);
                 let returned = lrs.iter().find(|lr| lr.intid == intid);
                 let keep = returned.is_some();
+                Self::set_bit(
+                    &mut state.lr_pending,
+                    intid,
+                    returned.is_some_and(|lr| lr.pending),
+                );
                 if let Some(lr) = returned {
                     Self::set_bit(&mut state.active, intid, lr.active);
-                    if lr.pending {
+                    // A pending LR may come solely from a live level input.
+                    // Restore a latch only if one backed the reservation;
+                    // independently raised pending requests remain untouched.
+                    if lr.pending && latch_backed {
                         Self::set_pending_locked(&mut state, intid, true);
                     }
                 } else {
@@ -418,9 +443,13 @@ mod gicd {
             let interrupts = self.next_spi_interrupts_locked(&state, vp, running_priority)?;
             // Reserve while still holding the selection lock so another VP
             // cannot select the same IRM-routed SPIs.
-            for (&intid, _) in &interrupts {
-                Self::set_pending_locked(&mut state, intid as u32, false);
-                Self::set_in_flight_locked(&mut state, vp, intid as u32);
+            for &intid in interrupts.keys() {
+                let intid = intid as u32;
+                if Self::set_pending_locked(&mut state, intid, false) {
+                    Self::set_bit(&mut state.lr_pending_latch, intid, true);
+                }
+                Self::set_bit(&mut state.lr_pending, intid, false);
+                Self::set_in_flight_locked(&mut state, vp, intid);
             }
             Some(interrupts)
         }
@@ -452,6 +481,7 @@ mod gicd {
                 }
             } else {
                 let mut state = self.state.lock();
+                Self::set_bit(&mut state.lr_pending_latch, intid, false);
                 Self::set_pending_locked(&mut state, intid, false);
             }
         }
@@ -489,19 +519,23 @@ mod gicd {
                     let mask = 1 << bit;
                     let pending = state.pending[word] & mask != 0;
                     let level_asserted =
-                        state.asserted[word] & mask != 0 && !Self::edge_triggered(&state, intid);
+                        state.asserted[word] & mask != 0 && !Self::edge_triggered(state, intid);
                     let group1 = state.group_status[word] & mask != 0;
                     if !pending && !level_asserted {
                         continue;
                     }
                     let owned_by_vp = state.in_flight[intid as usize] == Some(vp.index());
-                    if !pending && owned_by_vp {
+                    let active = state.active[word] & mask != 0;
+                    // Repack an unacknowledged level request using the live
+                    // line, but do not repend an active SPI from its level or
+                    // select the same level-only reservation twice.
+                    if !pending && (active || (owned_by_vp && state.lr_pending[word] & mask == 0)) {
                         continue;
                     }
                     if intid > self.max_spi_intid
                         || (state.in_flight[intid as usize].is_some() && !owned_by_vp)
                         || (state.active[word] & mask != 0 && !owned_by_vp)
-                        || !self.spi_targets_vp(&state, intid, vp)
+                        || !self.spi_targets_vp(state, intid, vp)
                     {
                         continue;
                     }
@@ -515,7 +549,7 @@ mod gicd {
                         intid,
                         priority,
                         group1,
-                        level_triggered: !Self::edge_triggered(&state, intid),
+                        level_triggered: !Self::edge_triggered(state, intid),
                     };
 
                     interrupts.insert(intid as u64, interrupt);
@@ -874,6 +908,7 @@ mod gicd {
                         let mut state = self.state.lock();
                         if let Some(pending) = state.pending.get_mut(n as usize) {
                             *pending &= !value;
+                            state.lr_pending_latch[n as usize] &= !value;
                             Self::update_pending_word_summary(&mut state, n as usize);
                         }
                     }
@@ -1764,6 +1799,211 @@ mod gicd {
                 reserve_pending_spi(&distributor, vp).map(|interrupt| interrupt.intid),
                 Some(TEST_SPI)
             );
+        }
+
+        #[test]
+        fn returned_level_spi_pending_follows_the_line() {
+            for deassert_before_fold in [false, true] {
+                let mut distributor = test_distributor();
+                let vp = VpIndex::new(0);
+                let other_vp = VpIndex::new(1);
+                distributor.add_redistributor(1, true);
+                distributor.state.lock().route[TEST_SPI as usize] = 1 << 31;
+                let pending_lr = [ListRegisterInterrupt {
+                    intid: TEST_SPI,
+                    pending: true,
+                    active: false,
+                }];
+
+                distributor.set_spi_irq(TEST_SPI, true);
+                assert!(reserve_pending_spi(&distributor, vp).is_some());
+                for _ in 0..3 {
+                    assert!(reserve_pending_spi(&distributor, vp).is_none());
+                    assert!(reserve_pending_spi(&distributor, other_vp).is_none());
+                    distributor.fold_list_registers(vp, &pending_lr);
+                    // A returned level-only request must not create a latch.
+                    assert_eq!(distributor.state.lock().pending[1] & 1, 0);
+                    assert!(reserve_pending_spi(&distributor, other_vp).is_none());
+                    assert!(reserve_pending_spi(&distributor, vp).is_some());
+                }
+
+                if deassert_before_fold {
+                    distributor.set_spi_irq(TEST_SPI, false);
+                }
+                distributor.fold_list_registers(vp, &pending_lr);
+                if !deassert_before_fold {
+                    distributor.set_spi_irq(TEST_SPI, false);
+                }
+                assert!(reserve_pending_spi(&distributor, vp).is_none());
+                assert!(reserve_pending_spi(&distributor, other_vp).is_none());
+                distributor.fold_list_registers(vp, &[]);
+                assert!(distributor.state.lock().in_flight_by_vp[0].is_empty());
+            }
+        }
+
+        #[test]
+        fn returned_spi_pending_preserves_software_and_edge_latches() {
+            for edge_triggered in [false, true] {
+                let distributor = test_distributor();
+                let vp = VpIndex::new(0);
+                if edge_triggered {
+                    distributor.state.lock().cfg[2] |= 1 << 1;
+                } else {
+                    set_software_pending_spi(&distributor, TEST_SPI, true);
+                }
+                distributor.set_spi_irq(TEST_SPI, true);
+                assert!(reserve_pending_spi(&distributor, vp).is_some());
+                distributor.set_spi_irq(TEST_SPI, false);
+
+                for _ in 0..3 {
+                    distributor.fold_list_registers(
+                        vp,
+                        &[ListRegisterInterrupt {
+                            intid: TEST_SPI,
+                            pending: true,
+                            active: false,
+                        }],
+                    );
+                    assert!(reserve_pending_spi(&distributor, vp).is_some());
+                }
+
+                // Acknowledgement consumes the original latch.
+                distributor.fold_list_registers(
+                    vp,
+                    &[ListRegisterInterrupt {
+                        intid: TEST_SPI,
+                        pending: false,
+                        active: true,
+                    }],
+                );
+                assert!(reserve_pending_spi(&distributor, vp).is_none());
+                distributor.fold_list_registers(vp, &[]);
+                assert!(reserve_pending_spi(&distributor, vp).is_none());
+            }
+        }
+
+        #[test]
+        fn clearing_spi_pending_is_not_undone_by_a_returned_lr() {
+            for edge_triggered in [false, true] {
+                for clear_via_mmio in [false, true] {
+                    let distributor = test_distributor();
+                    let vp = VpIndex::new(0);
+                    if edge_triggered {
+                        distributor.state.lock().cfg[2] |= 1 << 1;
+                        distributor.set_spi_irq(TEST_SPI, true);
+                        distributor.set_spi_irq(TEST_SPI, false);
+                    } else {
+                        set_software_pending_spi(&distributor, TEST_SPI, true);
+                    }
+                    assert!(reserve_pending_spi(&distributor, vp).is_some());
+                    if clear_via_mmio {
+                        set_software_pending_spi(&distributor, TEST_SPI, false);
+                    } else {
+                        distributor.clear_pending(vp.index() as usize, TEST_SPI);
+                    }
+                    distributor.fold_list_registers(
+                        vp,
+                        &[ListRegisterInterrupt {
+                            intid: TEST_SPI,
+                            pending: true,
+                            active: false,
+                        }],
+                    );
+                    assert!(reserve_pending_spi(&distributor, vp).is_none());
+                }
+            }
+        }
+
+        #[test]
+        fn spi_requests_raised_in_flight_survive_reconciliation() {
+            for edge_triggered in [false, true] {
+                for returned_pending in [false, true] {
+                    let distributor = test_distributor();
+                    let vp = VpIndex::new(0);
+                    if edge_triggered {
+                        distributor.state.lock().cfg[2] |= 1 << 1;
+                    }
+                    distributor.set_spi_irq(TEST_SPI, true);
+                    assert!(reserve_pending_spi(&distributor, vp).is_some());
+                    distributor.set_spi_irq(TEST_SPI, false);
+
+                    // Raise an independent request while the old LR owns the
+                    // original request. Folding must not overwrite the new one.
+                    if edge_triggered {
+                        distributor.set_spi_irq(TEST_SPI, true);
+                        distributor.set_spi_irq(TEST_SPI, false);
+                    } else {
+                        set_software_pending_spi(&distributor, TEST_SPI, true);
+                    }
+                    distributor.fold_list_registers(
+                        vp,
+                        &[ListRegisterInterrupt {
+                            intid: TEST_SPI,
+                            pending: returned_pending,
+                            active: !returned_pending,
+                        }],
+                    );
+                    assert!(reserve_pending_spi(&distributor, vp).is_some());
+                }
+            }
+        }
+
+        #[test]
+        fn active_level_spi_is_not_repended_by_the_line() {
+            let distributor = test_distributor();
+            let vp = VpIndex::new(0);
+            distributor.set_spi_irq(TEST_SPI, true);
+            assert!(reserve_pending_spi(&distributor, vp).is_some());
+            distributor.fold_list_registers(
+                vp,
+                &[ListRegisterInterrupt {
+                    intid: TEST_SPI,
+                    pending: true,
+                    active: true,
+                }],
+            );
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+
+            // An independent software request can repend an active SPI.
+            set_software_pending_spi(&distributor, TEST_SPI, true);
+            assert!(reserve_pending_spi(&distributor, vp).is_some());
+            distributor.set_spi_irq(TEST_SPI, false);
+            distributor.fold_list_registers(
+                vp,
+                &[ListRegisterInterrupt {
+                    intid: TEST_SPI,
+                    pending: true,
+                    active: true,
+                }],
+            );
+            assert!(reserve_pending_spi(&distributor, vp).is_some());
+            distributor.fold_list_registers(vp, &[]);
+            assert!(reserve_pending_spi(&distributor, vp).is_none());
+        }
+
+        #[test]
+        fn cancelling_spi_reservation_restores_only_latched_requests() {
+            for latched in [false, true] {
+                let mut distributor = test_distributor();
+                let vp = VpIndex::new(0);
+                let other_vp = VpIndex::new(1);
+                distributor.add_redistributor(1, true);
+                distributor.state.lock().route[TEST_SPI as usize] = 1 << 31;
+                distributor.set_spi_irq(TEST_SPI, true);
+                if latched {
+                    set_software_pending_spi(&distributor, TEST_SPI, true);
+                }
+                assert!(reserve_pending_spi(&distributor, vp).is_some());
+                distributor.set_spi_irq(TEST_SPI, false);
+                // A different VP cannot cancel the owner's reservation.
+                distributor.cancel_spi_reservation(other_vp, TEST_SPI);
+                assert!(reserve_pending_spi(&distributor, other_vp).is_none());
+                distributor.cancel_spi_reservation(vp, TEST_SPI);
+                assert_eq!(
+                    reserve_pending_spi(&distributor, other_vp).is_some(),
+                    latched
+                );
+            }
         }
 
         #[test]
