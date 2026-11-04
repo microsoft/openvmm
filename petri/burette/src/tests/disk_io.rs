@@ -35,7 +35,7 @@ impl std::fmt::Display for DiskBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum DiskWorkload {
     Read,
     Write,
@@ -52,6 +52,17 @@ impl DiskWorkload {
             Self::Randwrite => ("randwrite", "write"),
         }
     }
+}
+
+fn validate_workloads(workloads: &[DiskWorkload]) -> anyhow::Result<()> {
+    for (index, workload) in workloads.iter().enumerate() {
+        anyhow::ensure!(
+            !workloads[..index].contains(workload),
+            "--disk-workloads contains duplicate workload '{}'",
+            workload.fio_mode().0
+        );
+    }
+    Ok(())
 }
 
 /// Block I/O test via fio.
@@ -146,6 +157,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             !self.direct || matches!(self.backend, DiskBackend::VirtioBlk),
             "--disk-direct currently requires --disk-backend virtio-blk"
         );
+        validate_workloads(&self.workloads)?;
         std::fs::create_dir_all(&self.fio_output_dir)?;
 
         // Create the data disk file if using file-backed storage.
@@ -575,6 +587,23 @@ fn parse_fio_iops(json: &str, metric_name: &str, field: &str) -> anyhow::Result<
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn duplicate_workloads_are_rejected() {
+        use DiskWorkload::*;
+
+        assert!(validate_workloads(&[Randwrite, Read, Write, Randread]).is_ok());
+        for (workloads, duplicate) in [
+            (&[Read, Write, Read][..], "read"),
+            (&[Randread, Randread][..], "randread"),
+        ] {
+            let error = validate_workloads(workloads).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("--disk-workloads contains duplicate workload '{duplicate}'")
+            );
+        }
+    }
 
     #[test]
     fn fio_errors_are_not_reported_as_measurements() {

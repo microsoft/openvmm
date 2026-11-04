@@ -178,13 +178,16 @@ latency distributions. Reports also include p50, p99, and p99.9 completion
 latency in microseconds.
 
 Use `--disk-workloads randread` to isolate a workload, or pass a comma-separated
-list of `read,write,randread,randwrite` to choose their order. By default all
-four run in that order.
+list of `read,write,randread,randwrite` to choose their order. Each workload may
+appear only once. By default all four run in that order.
 
 For controlled A/B comparisons, use `--disk-reuse` with an existing,
 fully initialized file of the requested size. This skips truncation and
-initialization, keeping the file's physical placement fixed. Selected write
-workloads still overwrite data. Use the same backing file for host fio reference
+initialization, avoiding explicit recreation of the file. Selected write
+workloads still overwrite data and can allocate new extents on copy-on-write
+storage such as Btrfs. Placement-sensitive write comparisons require backing
+storage configured for in-place writes; reuse alone does not guarantee fixed
+physical placement. Use the same backing file for host fio reference
 measurements: separate files on one filesystem can perform differently.
 `--disk-cpu 0` pins guest fio to vCPU 0; without it the guest scheduler chooses
 the CPU. Guest interrupt counters are retained beside the fio JSON so queue IRQ
