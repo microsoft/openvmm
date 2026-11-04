@@ -181,14 +181,81 @@ fn get_key_in_tpm2_import_format_rsa(
 
 #[cfg(test)]
 mod tests {
+    use super::create_random_rsa_key_in_tpm2_import_blob_format;
     use super::get_key_in_tpm2_import_format_rsa;
     use super::write_key_files;
     use super::write_key_files_with;
+    use crate::TpmVersion;
+    use crate::vtpm_helper::create_tpm_engine_helper;
     use crypto::rsa::RsaKeyPair;
+    use der::Decode;
     use std::fs;
     use std::io::Write;
     use test_with_tracing::test;
+    use tpm_protocol::TPM_GUEST_SECRET_HANDLE;
+    use tpm_protocol::TPM_RSA_SRK_HANDLE;
+    use tpm_protocol::tpm20proto::AlgIdEnum;
+    use tpm_protocol::tpm20proto::TPM20_RH_OWNER;
     use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
+
+    fn generated_key_can_be_provisioned(version: TpmVersion) {
+        let directory = tempfile::tempdir().unwrap();
+        let public_path = directory.path().join("rsa.pub");
+        let private_path = directory.path().join("rsa.tpm2b");
+        create_random_rsa_key_in_tpm2_import_blob_format(
+            public_path.to_str().unwrap(),
+            private_path.to_str().unwrap(),
+        )
+        .unwrap();
+
+        let public_der = fs::read(public_path).unwrap();
+        let public_key = pkcs1::RsaPublicKey::from_der(&public_der).unwrap();
+        assert_eq!(public_key.modulus.as_bytes().len(), 256);
+        assert_eq!(public_key.public_exponent.as_bytes(), &[1, 0, 1]);
+        let expected_exponent = public_key
+            .public_exponent
+            .as_bytes()
+            .iter()
+            .fold(0u32, |value, &byte| (value << 8) | u32::from(byte));
+        let import_blob = fs::read(private_path).unwrap();
+
+        let (mut tpm, _nv_blob_accessor) = create_tpm_engine_helper(version).unwrap();
+        tpm.initialize_tpm_engine().unwrap();
+        let srk = tpm
+            .create_primary(TPM20_RH_OWNER, tpm_lib::srk_pub_template().unwrap())
+            .unwrap();
+        tpm.evict_control(TPM20_RH_OWNER, srk.object_handle, TPM_RSA_SRK_HANDLE)
+            .unwrap();
+        assert!(tpm.find_object(TPM_RSA_SRK_HANDLE).unwrap().is_some());
+        assert!(tpm.find_object(TPM_GUEST_SECRET_HANDLE).unwrap().is_none());
+
+        tpm.initialize_guest_secret_key(&import_blob).unwrap();
+
+        let loaded = tpm.read_public(TPM_GUEST_SECRET_HANDLE).unwrap();
+        let public_area = loaded.out_public.public_area;
+        assert_eq!(public_area.my_type, AlgIdEnum::RSA.into());
+        assert_eq!(public_area.parameters.key_bits.get(), 2048);
+        assert_eq!(
+            &public_area.unique.buffer[..usize::from(public_area.unique.size.get())],
+            public_key.modulus.as_bytes(),
+        );
+        // TPM wire exponent zero denotes the default RSA exponent, 65537.
+        let exponent = match public_area.parameters.exponent.get() {
+            0 => 65537,
+            exponent => exponent,
+        };
+        assert_eq!(exponent, expected_exponent);
+    }
+
+    #[test]
+    fn generated_key_can_be_provisioned_tpm_138() {
+        generated_key_can_be_provisioned(TpmVersion::V138);
+    }
+
+    #[test]
+    fn generated_key_can_be_provisioned_tpm_185() {
+        generated_key_can_be_provisioned(TpmVersion::V185);
+    }
 
     #[test]
     fn import_blob_has_three_length_delimited_fields() {

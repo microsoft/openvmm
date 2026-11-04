@@ -266,9 +266,7 @@ pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
     let mut output_key = vec![0u8; size_of::<AlgId>() + public_area_hash.len()];
     output_key[0] = (algorithm_id.0.get() >> 8) as u8;
     output_key[1] = (algorithm_id.0.get() & 0xFF) as u8;
-    for i in 0..public_area_hash.len() {
-        output_key[i + 2] = public_area_hash[i];
-    }
+    output_key[2..public_area_hash.len() + 2].copy_from_slice(&public_area_hash);
 
     let base64_key = base64::engine::general_purpose::STANDARD.encode(&output_key);
     tracing::info!("Key name: {}", base64_key);
@@ -286,10 +284,7 @@ pub fn print_key_name(srkpub_path: &str) -> anyhow::Result<()> {
 /// Print SHA256 hash of the data.
 pub(crate) fn print_sha256_hash(data: &[u8]) {
     let hash = sha_256(data);
-    let mut hash_str = String::new();
-    for i in 0..hash.len() {
-        hash_str.push_str(&format!("{:02X}", hash[i]));
-    }
+    let hash_str = hex::encode_upper(hash);
     tracing::trace!("SHA256 hash: {}\n", hash_str);
 }
 
