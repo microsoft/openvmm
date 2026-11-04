@@ -53,7 +53,7 @@ impl<T, const N: usize> VtlArray<T, N> {
 
     /// Borrows each element and returns an array of references with the same
     /// size as self.
-    pub fn each_ref(&self) -> VtlArray<&T, N> {
+    pub const fn each_ref(&self) -> VtlArray<&T, N> {
         VtlArray {
             data: self.data.each_ref(),
         }
@@ -61,7 +61,7 @@ impl<T, const N: usize> VtlArray<T, N> {
 
     /// Borrows each element mutably and returns an array of mutable references
     /// with the same size as self.
-    pub fn each_mut(&mut self) -> VtlArray<&mut T, N> {
+    pub const fn each_mut(&mut self) -> VtlArray<&mut T, N> {
         VtlArray {
             data: self.data.each_mut(),
         }

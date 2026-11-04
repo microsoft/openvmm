@@ -347,9 +347,9 @@ struct TcpConnectionInner {
 
 const INITIAL_RTO: Duration = Duration::from_secs(1);
 const MIN_RTO: Duration = Duration::from_secs(1);
-const MAX_RTO: Duration = Duration::from_secs(60);
+const MAX_RTO: Duration = Duration::from_mins(1);
 const CLOCK_GRANULARITY: Duration = Duration::from_millis(1);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Copy, Default, Inspect)]
 #[inspect(tag = "kind")]

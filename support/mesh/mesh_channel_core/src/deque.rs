@@ -270,7 +270,7 @@ impl ErasedVecDeque {
         } else {
             // Double the capacity (geometric growth) to ensure amortized O(1)
             // push_back.
-            let new_cap = self.cap.checked_mul(2).unwrap();
+            let new_cap = self.cap.strict_mul(2);
             // SAFETY: `buf` is a valid allocation with the given layout, and
             // `new_cap` is non-zero.
             let buf = unsafe {

@@ -753,7 +753,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             no_vmbus: !T::SUPPORTS_VMBUS || isolated_without_paravisor,
             no_hv: false,
             capture_inspect_on_failure: false,
-            watchdog_timeout: Some(Duration::from_secs(600)),
+            watchdog_timeout: Some(Duration::from_mins(10)),
             external_pipette: false,
 
             nested_test: artifacts

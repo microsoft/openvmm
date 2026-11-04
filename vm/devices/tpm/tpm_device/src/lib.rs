@@ -97,7 +97,7 @@ const SHA_256_OUTPUT_SIZE_BYTES: usize = 32;
 const ATTESTATION_REPORT_DATA_SIZE: usize = 0x40;
 
 // 24 hours (in seconds)
-const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::new(24 * 60 * 60, 0);
+const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::from_hours(24);
 // 2 seconds
 const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 
