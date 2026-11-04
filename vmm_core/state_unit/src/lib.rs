@@ -526,6 +526,11 @@ impl StateUnits {
     }
 
     /// Starts all the state units.
+    ///
+    /// If a unit's task does not answer its start request, the start fails,
+    /// and the units that did start are stopped again. If a unit may still be
+    /// running after that, [`StateUnits::is_running`] returns true, so that
+    /// [`StateUnits::stop`] can stop it.
     pub async fn start(&mut self) -> anyhow::Result<()> {
         self.restore_allowed = false;
         self.start_with_rollback().await

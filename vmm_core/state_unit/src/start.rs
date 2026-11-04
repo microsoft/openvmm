@@ -33,8 +33,8 @@ impl StateUnits {
     /// stopped again, and the unit is left in a terminal state that fails later
     /// starts. A started unit that cannot be stopped again, because a unit that
     /// depends on it was not stopped, is left running in that terminal state
-    /// too, and the units stay running so that [`StateUnits::stop`] can stop
-    /// them later.
+    /// too. Because a unit in that state may be running, the units then stay
+    /// running, so that [`StateUnits::stop`] can stop it.
     pub(super) async fn start_with_rollback(&mut self) -> anyhow::Result<()> {
         let was_running = self.running;
         let operations = self.start_operations()?;
@@ -47,9 +47,14 @@ impl StateUnits {
             self.running = true;
             Ok(())
         } else {
-            let cleanup_failures = self.stop_after_failed_start(&started_ids).await;
-            self.running = was_running || !cleanup_failures.is_empty();
-            failures.extend(cleanup_failures);
+            failures.extend(self.stop_after_failed_start(&started_ids).await);
+            self.running = was_running
+                || self
+                    .inner
+                    .lock()
+                    .units
+                    .values()
+                    .any(|unit| unit.state != State::Stopped);
             anyhow::bail!("state units could not start: {}", failures.join("; "))
         }
     }
