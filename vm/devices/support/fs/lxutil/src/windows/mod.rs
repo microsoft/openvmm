@@ -1470,6 +1470,12 @@ impl LxFile {
         Ok(())
     }
 
+    pub fn fsync_dir(&self, _data_only: bool) -> lx::Result<()> {
+        // Windows rejects a data-only flush on a directory, so always do a
+        // full sync.
+        self.fsync(false)
+    }
+
     // Helper to emit the . and .. entries.
     fn process_dot_entries<F>(offset: &mut lx::off_t, callback: &mut F) -> lx::Result<bool>
     where
