@@ -167,6 +167,27 @@ impl RsaKeyPairInner {
 pub struct RsaPublicKeyInner(pub(crate) RsaKey);
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        let key = pkcs1::RsaPublicKey::from_der(der)
+            .map_err(|e| der_err(e, "parsing the PKCS#1 DER public key"))?;
+        Self::from_components(key.modulus.as_bytes(), key.public_exponent.as_bytes())
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        use der::Encode;
+        use der::asn1::UintRef;
+
+        let components = self.to_components()?;
+        let key = pkcs1::RsaPublicKey {
+            modulus: UintRef::new(&components.modulus)
+                .map_err(|e| der_err(e, "encoding the modulus"))?,
+            public_exponent: UintRef::new(&components.public_exponent)
+                .map_err(|e| der_err(e, "encoding the public exponent"))?,
+        };
+        key.to_der()
+            .map_err(|e| der_err(e, "encoding the public key as PKCS#1 DER"))
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let key = RsaKey::set_public_key(n, e, RsaKeyUsage::SignAndEncrypt)
             .map_err(|e| err(e, "constructing the RSA public key from its components"))?;
