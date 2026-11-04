@@ -1423,8 +1423,7 @@ impl TcpConnection {
         ));
 
         let rx_bounds = params.rx_buffer;
-        let rx_window_scale =
-            (usize::BITS - rx_bounds.max.leading_zeros()).saturating_sub(16) as u8;
+        let rx_window_scale = rx_bounds.max.bit_width().saturating_sub(16) as u8;
 
         let tx_bounds = params.tx_buffer;
 

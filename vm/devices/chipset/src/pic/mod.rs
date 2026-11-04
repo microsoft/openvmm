@@ -15,7 +15,6 @@ use chipset_device::pio::RegisterPortIoIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::num::Wrapping;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 
@@ -322,11 +321,10 @@ impl Pic {
     fn ready_vec(&self) -> u8 {
         // Restrict to interrupts with higher priority than the highest priority
         // IRQ already being serviced.
-        let isr = Wrapping(self.isr);
-        let highest_isr = isr & -isr;
-        let higher_not_isr = highest_isr - Wrapping(1);
+        let highest_isr = self.isr.isolate_lowest_one();
+        let higher_not_isr = highest_isr.wrapping_sub(1);
         // Restrict to requested interrupts that are not masked.
-        self.irr() & !self.imr & higher_not_isr.0
+        self.irr() & !self.imr & higher_not_isr
     }
 
     fn interrupt_pending(&self) -> bool {
@@ -334,13 +332,7 @@ impl Pic {
     }
 
     fn pending_line(&self) -> Option<u8> {
-        let m = self.ready_vec();
-        if m != 0 {
-            // Find the highest priority IRQ
-            Some(m.trailing_zeros() as u8)
-        } else {
-            None
-        }
+        self.ready_vec().lowest_one().map(|n| n as u8)
     }
 
     fn acknowledge_interrupt(&mut self, stats: &mut DualPicStats) -> (bool, u8) {
@@ -377,7 +369,7 @@ impl Pic {
         let bit = match n {
             Some(level) => 1 << level,
             // On non-specific EOIs, find the highest priority interrupt in service
-            None => self.isr & self.isr.wrapping_neg(),
+            None => self.isr.isolate_lowest_one(),
         };
 
         self.isr &= !bit;
@@ -829,6 +821,24 @@ mod tests {
     use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
 
     const IV_BASE: u8 = 0x30;
+
+    #[test]
+    fn priority_masks_and_non_specific_eoi() {
+        let mut pic = Pic::new(true);
+        pic.lines = u8::MAX;
+        pic.line_low_latch = u8::MAX;
+        for isr in 0..=u8::MAX {
+            pic.isr = isr;
+            let first = (0..8).find(|&irq| isr & (1 << irq) != 0);
+            let expected = ((1u16 << first.unwrap_or(8)) - 1) as u8;
+            assert_eq!(pic.ready_vec(), expected, "ISR {isr:#x}");
+            assert_eq!(pic.pending_line(), (expected != 0).then_some(0));
+
+            pic.eoi(None);
+            let serviced = first.map_or(0, |irq| 1 << irq);
+            assert_eq!(pic.isr, isr & !serviced, "ISR {isr:#x}");
+        }
+    }
 
     pub(super) fn create_pic() -> (impl Fn() -> bool, DualPic) {
         let ready = TestLineInterruptTarget::new_arc();

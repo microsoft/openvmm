@@ -201,9 +201,8 @@ impl IsrStack {
         self.clear();
         let bits = bits.map(|v| [v as u16, (v >> 16) as u16]);
         for (pri, &v) in bits.iter().flatten().enumerate().skip(1) {
-            if v != 0 {
-                let n = 15 - v.leading_zeros() as u8;
-                self.push(pri as u8 * 16 + n);
+            if let Some(n) = v.highest_one() {
+                self.push(pri as u8 * 16 + n as u8);
             }
         }
     }
@@ -1933,8 +1932,8 @@ impl LocalApic {
 
     fn recompute_next_irr(&mut self) {
         for (i, &v) in self.irr.iter().enumerate().rev() {
-            if v != 0 {
-                let vector = (i as u32) * 32 + (31 - v.leading_zeros());
+            if let Some(bit) = v.highest_one() {
+                let vector = (i as u32) * 32 + bit;
                 self.next_irr = Some(vector as u8);
                 return;
             }
@@ -2081,6 +2080,87 @@ mod tests {
     fn software_enable(apic: &mut LocalApic, client: &mut TestClient) {
         apic.access(client)
             .mmio_write(SVR_ADDR, &SVR_ENABLED.to_le_bytes());
+    }
+
+    #[test]
+    fn x2apic_logical_targets_follow_set_bit_order() {
+        let set = LocalApicSet::builder().x2apic_capable(true).build();
+        let mut client = TestClient::default();
+        let mut apics = Vec::new();
+        for (index, apic_id) in [0, 2, 15].into_iter().enumerate() {
+            let mut apic = set.add_apic(
+                &X86VpInfo {
+                    base: VpInfo {
+                        vp_index: VpIndex::new(index as u32),
+                        vnode: 0,
+                    },
+                    apic_id,
+                },
+                false,
+            );
+            software_enable(&mut apic, &mut client);
+            apic.set_apic_base(ApicBase::from(apic_base(true)).with_x2apic(true).into())
+                .unwrap();
+            apics.push(apic);
+        }
+
+        for (mask, mode, vector, expected) in [
+            (0, DeliveryMode::FIXED, TEST_VECTOR, &[][..]),
+            (
+                (1 << 0) | (1 << 15),
+                DeliveryMode::FIXED,
+                TEST_VECTOR,
+                &[0, 2][..],
+            ),
+            (
+                (1 << 0) | (1 << 2) | (1 << 15),
+                DeliveryMode::LOWEST_PRIORITY,
+                TEST_VECTOR + 1,
+                &[0][..],
+            ),
+        ] {
+            let mut woken = Vec::new();
+            set.global
+                .request_interrupt(Destination::Logical(mask), mode, vector, false, |vp| {
+                    woken.push(vp.index())
+                });
+            assert_eq!(woken, expected);
+        }
+    }
+
+    #[test]
+    fn isr_stack_restores_highest_bit_per_priority() {
+        let mut stack = IsrStack::new();
+        stack.load_from_bits([0; 8]);
+        assert!(stack.is_empty());
+
+        stack.load_from_bits([u32::MAX; 8]);
+        assert_eq!(
+            stack.0,
+            (1..16).map(|pri| pri * 16 + 15).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn irr_selects_highest_vector_across_banks() {
+        let (_, mut apic) = new_apic();
+        apic.irr = [0; 8];
+        apic.irr[0] = 1 << 16;
+        apic.irr[7] = 1 | (1 << 31);
+        apic.recompute_next_irr();
+        assert_eq!(apic.next_irr, Some(255));
+
+        apic.irr[7] &= !(1 << 31);
+        apic.recompute_next_irr();
+        assert_eq!(apic.next_irr, Some(224));
+
+        apic.irr[7] = 0;
+        apic.recompute_next_irr();
+        assert_eq!(apic.next_irr, Some(16));
+
+        apic.irr[0] = 0;
+        apic.recompute_next_irr();
+        assert_eq!(apic.next_irr, None);
     }
 
     #[test]

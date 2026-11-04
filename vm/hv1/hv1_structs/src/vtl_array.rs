@@ -233,6 +233,15 @@ impl From<VtlSet> for u16 {
 mod tests {
     use super::VtlSet;
     use hvdef::Vtl;
+    use test_with_tracing::test;
+
+    #[test]
+    fn highest_vtl_matches_reverse_iteration() {
+        for bits in 0..8 {
+            let set = VtlSet::from(bits);
+            assert_eq!(set.highest_set(), set.iter_highest_first().next());
+        }
+    }
 
     #[test]
     fn test_vtlset() {

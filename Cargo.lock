@@ -100,6 +100,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -3637,6 +3638,7 @@ dependencies = [
  "bitvec",
  "hvdef",
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -4119,6 +4121,7 @@ name = "inspect_counters"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -10118,6 +10121,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -11486,6 +11490,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
