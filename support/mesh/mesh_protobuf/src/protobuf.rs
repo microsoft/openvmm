@@ -1047,7 +1047,7 @@ mod tests {
             }
         }
     }
-  
+
     #[test]
     fn test_varint_bounds() {
         let mut overlong_zero = &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00][..];
