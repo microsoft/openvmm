@@ -45,6 +45,8 @@ const MPTABLE_FIXED_BOOT_DATA_RANGES: [(u64, u64); 3] = [
     (MPTABLE_CMDLINE_BASE, MPTABLE_CMDLINE_END),
 ];
 
+/// An e820 entry as a half-open range, before conversion to
+/// [`defs::e820entry`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct E820Range {
     start: u64,
@@ -52,6 +54,8 @@ struct E820Range {
     entry_type: u32,
 }
 
+/// Returns the zero page's setup header. It points to the command line in its
+/// fixed slot and holds the low 32 bits of the initrd's address and size.
 fn build_setup_header(cmdline: &CString, initrd_base: u64, initrd_size: u64) -> defs::setup_header {
     const LOADER_TYPE_UNREGISTERED: u8 = 0xff;
 
@@ -84,12 +88,15 @@ fn overlaps_range(range: &MemoryRange, start: u64, end: u64) -> bool {
     range.start() < end && start < range.end()
 }
 
+/// Returns whether `range` overlaps the MP tables, GDT, zero page, page
+/// tables, or command line.
 fn overlaps_fixed_boot_data(range: &MemoryRange) -> bool {
     MPTABLE_FIXED_BOOT_DATA_RANGES
         .into_iter()
         .any(|(start, end)| overlaps_range(range, start, end))
 }
 
+/// Fails with [`Error::MpTableImageOverlap`] if `image` overlaps `reserved`.
 fn validate_image_not_in_reserved_range(
     image: &MemoryRange,
     reserved: &MemoryRange,
@@ -118,6 +125,12 @@ fn covering_page_range(gpa: u64, size: u64) -> Option<MemoryRange> {
     MemoryRange::try_new(gpa & !(HV_PAGE_SIZE - 1)..end).ok()
 }
 
+/// Checks that the loaded kernel and initrd suit this boot layout. Returns the
+/// page ranges that cover the kernel and, if one was loaded, the initrd.
+///
+/// Each image must lie in RAM below 4 GiB, outside the fixed boot data, the
+/// ISA hole, and the other image, and the kernel entry point must lie in the
+/// kernel.
 fn validate_loaded_ranges(
     load_info: &LoadInfo,
     mem_layout: &MemoryLayout,
@@ -156,6 +169,14 @@ fn validate_loaded_ranges(
     Ok((kernel_range, initrd_range))
 }
 
+/// Returns the e820 map: the RAM in `mem_layout`, with the ISA hole and
+/// `reserved_memory_ranges` marked reserved, sorted by address, and with
+/// adjacent entries of the same type merged.
+///
+/// Fails if RAM does not back the fixed boot data and the ISA hole, if any RAM
+/// lies in the MMIO gap from 3 GiB to 4 GiB, or if the reservations are not
+/// sorted, disjoint, page-aligned, non-empty ranges of RAM outside the boot
+/// data and the ISA hole.
 fn build_mptable_e820(
     mem_layout: &MemoryLayout,
     reserved_memory_ranges: &[MemoryRange],
@@ -254,6 +275,11 @@ fn build_mptable_e820(
     Ok(merged)
 }
 
+/// Returns the zero page: the setup header, the high 32 bits of the initrd's
+/// address and size, and the e820 map from [`build_mptable_e820`].
+///
+/// Fails as [`build_mptable_e820`] does, or if the map has more entries than
+/// the zero page holds.
 fn build_mptable_zero_page(
     mem_layout: &MemoryLayout,
     reserved_memory_ranges: &[MemoryRange],
@@ -285,6 +311,8 @@ fn build_mptable_zero_page(
     Ok(boot_params)
 }
 
+/// Imports the NUL-terminated command line into its fixed slot, or nothing if
+/// the command line is empty. Fails if it does not fit in the slot.
 fn import_command_line(
     importer: &mut impl ImageLoad<X86Register>,
     cmdline: &CString,
@@ -309,6 +337,8 @@ fn import_command_line(
     Ok(())
 }
 
+/// Imports the default GDT and the page tables that identity-map the low
+/// 4 GiB.
 fn import_x86_boot_pages(importer: &mut impl ImageLoad<X86Register>) -> Result<(), Error> {
     import_default_gdt(importer, GDT_BASE / HV_PAGE_SIZE).map_err(Error::Importer)?;
     let mut page_table_work_buffer: Vec<PageTable> =
@@ -334,6 +364,9 @@ fn import_x86_boot_pages(importer: &mut impl ImageLoad<X86Register>) -> Result<(
     Ok(())
 }
 
+/// Sets the BSP's registers to start the kernel at its entry point in 64-bit
+/// mode, paging through the identity map, with `rsi` pointing to the zero
+/// page.
 fn import_x86_registers(
     importer: &mut impl ImageLoad<X86Register>,
     load_info: &LoadInfo,
@@ -358,6 +391,10 @@ fn import_x86_registers(
     Ok(())
 }
 
+/// Validates the command line, the loaded images, the memory layout, and the
+/// reservations, and then imports everything but the images: the MP tables,
+/// command line, GDT, page tables, zero page, and BSP registers. Imports
+/// nothing if validation fails.
 fn import_mptable_config(
     importer: &mut impl ImageLoad<X86Register>,
     load_info: &LoadInfo,
@@ -429,8 +466,23 @@ fn import_mptable_config(
     Ok(())
 }
 
-/// Loads an uncompressed x86-64 ELF kernel through Linux direct boot with
-/// Intel MP tables and no ACPI, SMBIOS, or firmware tables.
+/// Loads an uncompressed x86-64 ELF kernel, and an optional initrd, for Linux
+/// direct boot that describes the processors and interrupt routing with Intel
+/// MP 1.4 tables instead of ACPI, and that has no SMBIOS or other firmware
+/// tables. Returns where the kernel and initrd were loaded.
+///
+/// It also imports the boot data at fixed addresses: the MP tables, GDT, and
+/// zero page in `0x0..0x3000`, the page tables that identity-map the low
+/// 4 GiB in `0x4000..0xa000`, and the NUL-terminated command line, of up to
+/// 64 KiB, in `0x20000..0x30000`. RAM must back these ranges and the ISA
+/// hole, `0xa0000..0x100000`, and no RAM may lie in the MMIO gap from 3 GiB to
+/// 4 GiB.
+///
+/// The kernel and initrd must lie in RAM below 4 GiB, outside the boot data,
+/// the ISA hole, `reserved_memory_ranges`, and each other. The reserved
+/// ranges must be sorted, disjoint, page-aligned, non-empty ranges of RAM
+/// outside the boot data and the ISA hole. The e820 map reports them and the
+/// ISA hole as reserved.
 pub fn load_x86_mptable<F>(
     importer: &mut impl ImageLoad<X86Register>,
     kernel_image: &mut F,
