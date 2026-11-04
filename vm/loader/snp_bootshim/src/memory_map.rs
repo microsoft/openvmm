@@ -80,13 +80,9 @@ impl MemoryMap {
         ty: EfiMemoryType,
         allocated: bool,
     ) -> Result<(), Error> {
+        // `MemoryRange` is always page aligned.
         if range.is_empty() {
             return Ok(());
-        }
-        if !range.start().is_multiple_of(EFI_PAGE_SIZE)
-            || !range.end().is_multiple_of(EFI_PAGE_SIZE)
-        {
-            return Err(Error::InvalidParameter);
         }
         // Rebuild the entries in a new list, splitting the ones that overlap
         // `range`. The list has room for the two pieces of a split entry and
@@ -456,6 +452,81 @@ mod tests {
                 (128 * MB, 192 * MB, CONVENTIONAL),
             ]
         );
+    }
+
+    #[test]
+    fn accepting_an_empty_range_changes_nothing() {
+        let mut map = test_map();
+        let before = layout(&map);
+        map.accept(range(128 * MB, 128 * MB), LOADER_DATA, &mut no_accept())
+            .unwrap();
+        assert_eq!(layout(&map), before);
+    }
+
+    #[test]
+    fn claims_fail_before_accepting_when_the_map_is_full() {
+        let mut map = MemoryMap::default();
+        // Alternate types so that no entries merge.
+        for index in 0..CAPACITY as u64 - 1 {
+            let ty = if index % 2 == 0 { BS_DATA } else { UNACCEPTED };
+            map.set(range(index * MB, (index + 1) * MB), ty).unwrap();
+        }
+        assert_eq!(
+            map.accept(
+                range(MB + EFI_PAGE_SIZE, 2 * MB - EFI_PAGE_SIZE),
+                CONVENTIONAL,
+                &mut no_accept()
+            ),
+            Err(Error::OutOfResources)
+        );
+    }
+
+    #[test]
+    fn allocate_skips_runs_that_are_too_small() {
+        let mut map = MemoryMap::default();
+        map.set(range(0, 16 * MB), CONVENTIONAL).unwrap();
+        // Two small runs above the first, with gaps between them.
+        map.set(range(32 * MB, 36 * MB), UNACCEPTED).unwrap();
+        map.set(range(40 * MB, 42 * MB), UNACCEPTED).unwrap();
+        // 8 MiB fits only in the lowest run.
+        let address = map
+            .allocate(
+                AllocateType::Any,
+                LOADER_DATA,
+                (8 * MB) / EFI_PAGE_SIZE,
+                &mut no_accept(),
+            )
+            .unwrap();
+        assert_eq!(address, 8 * MB);
+        // 12 MiB does not fit in accepted memory any more, nor in the higher
+        // mixed runs, so the fallback search walks past them.
+        assert_eq!(
+            map.allocate(
+                AllocateType::Any,
+                LOADER_DATA,
+                (12 * MB) / EFI_PAGE_SIZE,
+                &mut no_accept(),
+            ),
+            Err(Error::OutOfResources)
+        );
+    }
+
+    #[test]
+    fn free_rejects_ranges_past_the_map() {
+        let mut map = test_map();
+        let address = map
+            .allocate(
+                AllocateType::Address(63 * MB),
+                LOADER_DATA,
+                MB / EFI_PAGE_SIZE,
+                &mut |_| true,
+            )
+            .unwrap();
+        assert_eq!(
+            map.free(address, 2 * MB / EFI_PAGE_SIZE),
+            Err(Error::NotFound)
+        );
+        map.free(address, MB / EFI_PAGE_SIZE).unwrap();
     }
 
     #[test]
