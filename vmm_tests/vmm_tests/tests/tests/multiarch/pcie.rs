@@ -647,6 +647,88 @@ async fn smmu_mixed_topology(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     Ok(())
 }
 
+/// Exercise untagged DMA with software SMMU substream support advertised.
+/// The NVMe endpoint has no PASID capability, so Linux uses a single CD:
+/// S1DSS must be ignored even though IDR1.SSIDSIZE is nonzero.
+/// The suffix includes this test in the AArch64 TCG incubator CI pass.
+#[openvmm_test(linux_direct_aarch64)]
+async fn smmu_software_ssidsize_aarch64_tcg(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const SSID_BITS: u8 = 14;
+    let (vm, agent) = config
+        .with_no_vmbus()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 1024 * 1024 * 1024,
+            ..Default::default()
+        })
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 2)
+                // rp0 is occupied by the no-VMBus agent transport.
+                .with_pcie_nvme("s0rc0rp1", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_custom_config(|c| {
+                    c.hypervisor.with_hv = false;
+                    let rc = c
+                        .pcie_root_complexes
+                        .iter_mut()
+                        .find(|rc| rc.name == "s0rc0")
+                        .expect("test root complex exists");
+                    rc.iommu = Some(openvmm_defs::config::PcieIommuConfig::Smmu {
+                        accel: false,
+                        oas: openvmm_defs::config::SmmuOas::Auto,
+                        ssidsize: openvmm_defs::config::SmmuSsidSize::Fixed(SSID_BITS),
+                    });
+                    for port in &mut rc.ports {
+                        port.acs_capabilities_supported = Some(0x5D);
+                    }
+                    let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    else {
+                        unreachable!("test uses Linux direct boot");
+                    };
+                    cmdline.push_str(" iommu.passthrough=0");
+                })
+        })
+        .run()
+        .await?;
+    let sh = agent.unix_shell();
+
+    // Linux names each discovered SMMU by its MMIO base. Read IDR1 through
+    // guest MMIO to verify the setting reached the actual device model.
+    let iommus = cmd!(sh, "ls /sys/class/iommu").read().await?;
+    let smmus: Vec<_> = iommus
+        .split_whitespace()
+        .filter_map(|name| name.strip_prefix("smmu3."))
+        .collect();
+    anyhow::ensure!(smmus.len() == 1, "expected one SMMU, got: {iommus}");
+    let base = u64::from_str_radix(smmus[0].trim_start_matches("0x"), 16)
+        .context("invalid SMMU MMIO base in sysfs")?;
+    let idr1_addr = format!("{:#x}", base + 4);
+    let idr1 = cmd!(sh, "devmem {idr1_addr} 32").read().await?;
+    let idr1 = u32::from_str_radix(idr1.trim().trim_start_matches("0x"), 16)
+        .context("invalid IDR1 value")?;
+    assert_eq!((idr1 >> 6) & 0x1f, u32::from(SSID_BITS), "guest SSIDSIZE");
+
+    // Require translation rather than identity DMA on the emulated NVMe.
+    let domain = sh
+        .read_file("/sys/class/nvme/nvme0/device/iommu_group/type")
+        .await?;
+    anyhow::ensure!(
+        matches!(domain.trim(), "DMA" | "DMA-FQ"),
+        "NVMe must use SMMU translation, got {domain:?}"
+    );
+    verify_nvme_dma_on_segment(&sh, 1, "0000").await?;
+    let dmesg = cmd!(sh, "dmesg").read().await?;
+    let faults: Vec<_> = dmesg
+        .lines()
+        .filter(|line| line.contains("arm-smmu-v3") && line.contains("event"))
+        .collect();
+    anyhow::ensure!(faults.is_empty(), "unexpected SMMU faults: {faults:?}");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 /// Test AMD IOMMU emulation with a mixed topology:
 ///
 /// - Root complex s0rc0 (segment 0): IOMMU enabled, virtio-net + NVMe behind it
