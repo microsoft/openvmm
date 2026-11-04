@@ -129,7 +129,7 @@ pub unsafe fn try_copy<T>(src: *const T, dest: *mut T, count: usize) -> Result<(
     match ret {
         Ok(()) => Ok(()),
         Err(Fault) => {
-            cold_path();
+            core::hint::cold_path();
             Err(MemoryError::from_last_failure(
                 Some(src.cast()),
                 dest.cast(),
@@ -162,7 +162,7 @@ pub unsafe fn try_write_bytes<T>(dest: *mut T, val: u8, count: usize) -> Result<
     match ret {
         Ok(()) => Ok(()),
         Err(Fault) => {
-            cold_path();
+            core::hint::cold_path();
             Err(MemoryError::from_last_failure(None, dest.cast(), len))
         }
     }
@@ -222,7 +222,7 @@ pub unsafe fn try_compare_exchange<T: Copy>(
         Ok(true) => Ok(Ok(new)),
         Ok(false) => Ok(Err(current)),
         Err(Fault) => {
-            cold_path();
+            core::hint::cold_path();
             Err(MemoryError::from_last_failure(
                 None,
                 dest.cast(),
@@ -273,7 +273,7 @@ pub unsafe fn try_read_volatile<T>(src: *const T) -> Result<T, MemoryError> {
             Ok(unsafe { dest.assume_init() })
         }
         Err(Fault) => {
-            cold_path();
+            core::hint::cold_path();
             Err(MemoryError::from_last_failure(
                 Some(src.cast()),
                 dest.as_mut_ptr().cast(),
@@ -317,7 +317,7 @@ pub unsafe fn try_write_volatile<T>(dest: *mut T, value: &T) -> Result<(), Memor
     match ret {
         Ok(()) => Ok(()),
         Err(Fault) => {
-            cold_path();
+            core::hint::cold_path();
             Err(MemoryError::from_last_failure(
                 None,
                 dest.cast(),
@@ -476,10 +476,6 @@ thread_local! {
         std::cell::Cell::new(AccessFailure::empty())
     };
 }
-
-// FUTURE: replace with [`core::hint::cold_path`] when stabilized.
-#[cold]
-fn cold_path() {}
 
 #[cfg(target_os = "linux")]
 type Context = libc::mcontext_t;

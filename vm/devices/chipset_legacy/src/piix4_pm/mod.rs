@@ -17,6 +17,7 @@ use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
+use chipset_device::poll_device::PollDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
@@ -260,6 +261,16 @@ impl ChipsetDevice for Piix4Pm {
 
     fn supports_line_interrupt_target(&mut self) -> Option<&mut dyn LineInterruptTarget> {
         Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        Some(self)
+    }
+}
+
+impl PollDevice for Piix4Pm {
+    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.inner.poll_device(cx);
     }
 }
 

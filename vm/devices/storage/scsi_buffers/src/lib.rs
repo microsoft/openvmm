@@ -208,10 +208,8 @@ impl BounceBuffer {
 
     /// Returns the bounce buffer memory.
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        // SAFETY: while there are no concurrent references (e.g., via io_vec),
-        // the buffer in pages is exclusively owned, and it is accessible as a
-        // byte array.
-        unsafe { std::slice::from_raw_parts_mut(self.pages.as_mut_ptr().cast::<u8>(), self.len()) }
+        let len = self.len();
+        &mut self.pages.as_mut_bytes()[..len]
     }
 
     /// Returns a reference to the underlying buffer.
@@ -582,8 +580,42 @@ impl BounceBufferTracker {
 mod tests {
     use super::*;
     use sparse_mmap::SparseMapping;
+    use test_with_tracing::test;
 
     const SIZE_1MB: usize = 1048576;
+
+    #[test]
+    fn bounce_buffer_byte_view_preserves_length_and_storage() {
+        for size in [
+            0,
+            1,
+            PAGE_SIZE - 1,
+            PAGE_SIZE,
+            PAGE_SIZE + 1,
+            2 * PAGE_SIZE + 3,
+        ] {
+            let mut buffer = BounceBuffer::new(size);
+            let bytes = buffer.as_mut_bytes();
+            assert_eq!(bytes.len(), size);
+            assert!(bytes.iter().all(|&byte| byte == 0));
+            let ptr = bytes.as_ptr();
+            if size != 0 {
+                assert!(ptr.addr().is_multiple_of(PAGE_SIZE));
+            }
+            for (i, byte) in bytes.iter_mut().enumerate() {
+                *byte = (i % 251) as u8;
+            }
+            assert_eq!(buffer.io_vecs()[0].as_ptr().cast::<u8>(), ptr);
+            assert_eq!(buffer.io_vecs()[0].len(), size);
+            assert!(
+                buffer
+                    .as_mut_bytes()
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &byte)| byte == (i % 251) as u8)
+            );
+        }
+    }
 
     /// Checks that the selected inline capacity matches the default lock's ranges
     /// and allows writes to the same guest memory.

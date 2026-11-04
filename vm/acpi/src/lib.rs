@@ -17,4 +17,5 @@ pub mod builder;
 pub mod cedt;
 pub mod dsdt;
 pub mod minimal;
+mod power_button;
 pub mod ssdt;
