@@ -421,6 +421,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
     fn test_user_namespace_self_map_with_vfork() {
         use super::Stdio;
@@ -470,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     #[cfg(all(target_os = "linux", feature = "sandbox_tests"))]
     fn test_sandbox_ipc_namespace_isolation() {
         // A private fixture namespace ensures the kernel cleans up all IPC

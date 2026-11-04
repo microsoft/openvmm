@@ -65,6 +65,7 @@ mod tests {
     use test_with_tracing::test;
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     fn network_operations_work_in_namespace() {
         let exe = std::env::current_exe().expect("failed to get test executable path");
         let output = Command::new("unshare")

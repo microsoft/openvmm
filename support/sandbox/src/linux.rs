@@ -533,6 +533,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     fn filesystem_staging_is_cleaned_up() {
         for scenario in [
             "file",
@@ -640,6 +641,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     fn filesystem_grants_enforce_access_modes() {
         for order in ["child-first", "parent-first"] {
             let output = Command::new("unshare")
@@ -774,6 +776,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires user namespaces and UID/GID mapping permitted by host policy"]
     fn worker_profiles_preserve_host_resources() {
         for scenario in [
             "resolver",
