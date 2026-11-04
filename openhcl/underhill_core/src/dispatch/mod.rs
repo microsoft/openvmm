@@ -226,6 +226,19 @@ pub struct LoadedVmState<T> {
     pub control_send: mesh::Sender<ControlRequest>,
 }
 
+/// The outcome of a worker restart request.
+#[expect(clippy::large_enum_variant)]
+enum RestartOutcome<T> {
+    /// The VM state was saved, so the worker can restart.
+    Restart(FailableRpc<(), T>, ServicingState),
+    /// The restart failed, but the VM is back in its previous state, so the
+    /// worker can keep serving.
+    Recovered,
+    /// The restart failed and the VM could not be resumed, so the worker
+    /// cannot serve any more.
+    Unrecoverable,
+}
+
 impl LoadedVm {
     /// Start running the VM which will start running VTL0.
     pub async fn run<T: 'static + MeshPayload + Send>(
@@ -328,16 +341,6 @@ impl LoadedVm {
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
-                        enum RestartOutcome<R, S> {
-                            Restart(R, S),
-                            // The restart failed, but the VM is back in its
-                            // previous state, so this worker can keep serving.
-                            Recovered,
-                            // The restart failed and the VM could not be
-                            // resumed, so this worker cannot serve any more.
-                            Unrecoverable,
-                        }
-
                         let outcome = async {
                             let running = self.stop().await;
                             match self
