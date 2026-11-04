@@ -11611,6 +11611,7 @@ dependencies = [
  "anyhow",
  "chipset_device",
  "closeable_mutex",
+ "cvm_tracing",
  "fs-err",
  "futures",
  "guestmem",

@@ -30,6 +30,7 @@ use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::poll_device::PollDevice;
+use cvm_tracing::CVM_ALLOWED;
 use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -416,10 +417,7 @@ impl VpciRelay {
         let vpci_device = Arc::new(vpci_device);
 
         // The host gets to decide if a device is TDISP capable or not
-        let mut tdisp_capable = false;
-
-        // If testing the mock TDISP flow...
-        if self.options.test_tdisp_flow {
+        let tdisp_capable = if self.options.test_tdisp_flow {
             let bar_mmio = self
                 .mock_bar_mmio
                 .expect("the mocked TDISP flow needs a reserved MMIO window");
@@ -427,33 +425,11 @@ impl VpciRelay {
                 .await
                 .expect("failed to exercise TDISP flow test");
 
-            // Do not mark tdisp_capable = true because the test is already done.
-        } else if vpci_client.protocol_version() < ProtocolVersion::RB {
-            // TDISP support only exists from RB onward.
-            tracing::info!(
-                %instance_id,
-                protocol_version = ?vpci_client.protocol_version(),
-                "TDISP not supported: host negotiated a VPCI protocol older than RB"
-            );
+            // Do not mark the device TDISP capable because the test is already done.
+            false
         } else {
-            // Probe TDISP capability without attesting.
-            match vpci_device.tdisp().query_capabilities().await {
-                Ok(_) => {
-                    tdisp_capable = true;
-                    tracing::info!(
-                        %instance_id,
-                        "TDISP capable device; deferring attestation until first guest interaction"
-                    );
-                }
-                Err(e) => {
-                    tracing::info!(
-                        %instance_id,
-                        failure_reason = ?e,
-                        "TDISP not supported or failed to query capabilities"
-                    );
-                }
-            }
-        }
+            probe_tdisp_capable(&vpci_client, &vpci_device, instance_id).await
+        };
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
         let (device_unit, device) = chipset
@@ -510,6 +486,56 @@ impl VpciRelay {
 
         state_units.start_stopped_units().await;
         Ok(())
+    }
+}
+
+/// Decides whether the relay treats a newly offered device as TDISP capable.
+/// Returns `true` only if the host negotiated a VPCI protocol that carries
+/// TDISP and the device reports TDISP capabilities matching the partition's
+/// isolation type. Any failure, including the host rejecting the query, makes
+/// the device non-TDISP rather than failing the device.
+///
+/// The device is not attested here. Attestation is deferred until the guest
+/// first interacts with the device.
+///
+/// * `vpci_client` - The client for the bus the device is on.
+/// * `vpci_device` - The device to probe.
+/// * `instance_id` - The bus instance id, for logging.
+async fn probe_tdisp_capable(
+    vpci_client: &VpciClient,
+    vpci_device: &VpciDevice,
+    instance_id: Guid,
+) -> bool {
+    if vpci_client.protocol_version() < ProtocolVersion::RB {
+        // TDISP support only exists from RB onward.
+        tracing::info!(
+            CVM_ALLOWED,
+            %instance_id,
+            protocol_version = ?vpci_client.protocol_version(),
+            "TDISP not supported: host negotiated a VPCI protocol older than RB"
+        );
+        return false;
+    }
+
+    // Probe TDISP capability without attesting.
+    match vpci_device.tdisp().query_capabilities().await {
+        Ok(_) => {
+            tracing::info!(
+                CVM_ALLOWED,
+                %instance_id,
+                "Device is TDISP capable, deferring attestation until guest enables command register."
+            );
+            true
+        }
+        Err(e) => {
+            tracing::info!(
+                CVM_ALLOWED,
+                %instance_id,
+                failure_reason = ?e,
+                "TDISP not supported or failed to query capabilities"
+            );
+            false
+        }
     }
 }
 

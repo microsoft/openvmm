@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+cvm_tracing.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
 pci_core.workspace = true
