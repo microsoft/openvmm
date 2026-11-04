@@ -257,7 +257,7 @@ impl FromNumber for char {
     fn from_u64(v: u64) -> Result<Self> {
         v.try_into()
             .ok()
-            .and_then(core::char::from_u32)
+            .and_then(char::from_u32)
             .ok_or_else(|| DecodeError::InvalidUtf32.into())
     }
 
