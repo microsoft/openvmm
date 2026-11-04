@@ -3856,7 +3856,16 @@ impl LoadedVm {
                 Event::VmRpc(Err(_)) => break,
                 Event::VmRpc(Ok(message)) => match message {
                     VmRpc::Reset(rpc) => {
-                        rpc.handle_failable(async |()| self.reset(true).await).await
+                        let result = self.reset(true).await;
+                        // The reset pauses the VM, so state units that still
+                        // run after it fails were left by a failed start, and
+                        // can never start again. Tear the VM down, as after a
+                        // failed restart.
+                        let start_failed = result.is_err() && self.state_units.is_running();
+                        rpc.complete(result.map_err(RemoteError::new));
+                        if start_failed {
+                            break;
+                        }
                     }
                     VmRpc::ClearHalt(rpc) => {
                         rpc.handle(async |()| self.inner.partition_unit.clear_halt().await)
