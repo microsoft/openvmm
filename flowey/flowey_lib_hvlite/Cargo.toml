@@ -21,7 +21,6 @@ opentmk_disk.workspace = true
 anyhow.workspace = true
 crossterm = { workspace = true, features = ["events"] }
 log.workspace = true
-rpm = { workspace = true, features = ["payload", "zstd-compression"] }
 paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
@@ -36,6 +35,9 @@ test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rpm = { workspace = true, features = ["payload", "zstd-compression"] }
 
 [lints]
 workspace = true
