@@ -13,6 +13,7 @@
 //! own IDT. The shim image is runtime-services memory, so Linux does not reuse
 //! it.
 
+use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HV_PSP_CPUID_LEAF_COUNT_MAX;
 use x86defs::snp::HvPspCpuidPage;
 
@@ -20,29 +21,30 @@ use x86defs::snp::HvPspCpuidPage;
 ///
 /// This is Linux's `cpuid_function_is_indexed()`
 /// (`arch/x86/include/asm/cpuid/api.h`), plus the other leaves that the Intel
-/// SDM (0x20, 0x23) and the AMD APM (0x8000_0020, 0x8000_0026) define with
+/// SDM Vol. 2A (`CPUID`) and the AMD APM Vol. 3 (Appendix E) define with
 /// subleaves.
 fn is_indexed_leaf(leaf: u32) -> bool {
     matches!(
-        leaf,
-        0x4 | 0x7
-            | 0xb
-            | 0xd
-            | 0xf
-            | 0x10
-            | 0x12
-            | 0x14
-            | 0x17
-            | 0x18
-            | 0x1d
-            | 0x1e
-            | 0x1f
-            | 0x20
-            | 0x23
-            | 0x24
-            | 0x8000_001d
-            | 0x8000_0020
-            | 0x8000_0026
+        CpuidFunction(leaf),
+        CpuidFunction::CacheParameters
+            | CpuidFunction::ExtendedFeatures
+            | CpuidFunction::ExtendedTopologyEnumeration
+            | CpuidFunction::ExtendedStateEnumeration
+            | CpuidFunction::RdtmEnumeration
+            | CpuidFunction::RdtaEnumeration
+            | CpuidFunction::SgxEnumeration
+            | CpuidFunction::IptEnumeration
+            | CpuidFunction::SocVendorAttributeEnumeration
+            | CpuidFunction::DeterministicAddressTranslation
+            | CpuidFunction::TileInformation
+            | CpuidFunction::TmulInformation
+            | CpuidFunction::V2ExtendedTopologyEnumeration
+            | CpuidFunction::HistoryResetFeatures
+            | CpuidFunction::ArchPerfmonExtended
+            | CpuidFunction::Avx10ConvergedIsa
+            | CpuidFunction::CacheTopologyDefinition
+            | CpuidFunction::ExtendedPlatformQos
+            | CpuidFunction::ExtendedCpuTopology
     )
 }
 

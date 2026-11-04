@@ -29,14 +29,13 @@ use loader_defs::linux::SNP_BOOT_SHIM_ACPI_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_DT_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_EFI_STACK_SIZE;
 use loader_defs::linux::SNP_BOOT_SHIM_HEAP_SIZE;
-use loader_defs::linux::SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS;
 use loader_defs::linux::SNP_BOOT_SHIM_MAX_RANGES;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PARAMS_VERSION;
-use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_MAGIC;
 use loader_defs::linux::SNP_BOOT_SHIM_PLATFORM_VERSION;
 use loader_defs::linux::SnpBootShimParams;
+use loader_defs::linux::SnpBootShimPlatformFlags;
 use loader_defs::linux::SnpBootShimPlatformParams;
 use loader_defs::linux::SnpBootShimRange;
 use memory_range::MemoryRange;
@@ -56,9 +55,9 @@ const KVM_VMSA_GPA: u64 = 0xffff_ffff_f000;
 const LOW_TABLES_END: u64 = 1 << 20;
 /// The kernel image and the measured payload start here.
 const PAYLOAD_BASE: u64 = 1 << 20;
-/// Extra boot-pool space for the EFI stub's other allocations: the boot
-/// parameters, the command line, memory-map copies, the copied initrd if no
-/// other accepted memory fits it, and alignment.
+/// Extra boot-pool space for the EFI stub's small allocations: the boot
+/// parameters, the command line, memory-map copies, and alignment. The pool
+/// also has room for the stub's copy of the initrd.
 const BOOT_POOL_SLACK: u64 = 8 << 20;
 /// The SMBIOS structure table follows the entry point, 16-byte aligned.
 const SMBIOS_TABLE_OFFSET: u64 = (loader::smbios::ENTRY_POINT_SIZE as u64).next_multiple_of(16);
@@ -92,6 +91,9 @@ struct Payload<'a> {
     kernel: &'a PeImage,
     /// The bzImage `init_size`: the memory that the decompressed kernel needs.
     kernel_init_size: u64,
+    /// The bzImage `pref_address`: the lowest address at which the EFI stub
+    /// places the decompressed kernel (`LOAD_PHYSICAL_ADDR`).
+    kernel_min_address: u64,
     initrd: Option<&'a [u8]>,
     command_line: &'a CStr,
 }
@@ -154,10 +156,10 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         "the SNP Linux kernel must be a bzImage with an EFI stub (CONFIG_EFI_STUB)"
     );
     let kernel_pe = loader::pe::layout(&kernel).context("parsing the kernel's PE/COFF image")?;
-    let kernel_init_size = loader::bzimage::parse_bzimage(&mut std::io::Cursor::new(&kernel))
-        .context("parsing the bzImage setup header")?
-        .init_size
-        .into();
+    let bzimage = loader::bzimage::parse_bzimage(&mut std::io::Cursor::new(&kernel))
+        .context("parsing the bzImage setup header")?;
+    let kernel_init_size = bzimage.init_size.into();
+    let kernel_min_address: u64 = bzimage.setup_header.pref_address.into();
 
     let bootshim_path = resources
         .get(ResourceType::SnpBootshim)
@@ -165,10 +167,8 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
     let mut bootshim = fs_err::File::open(bootshim_path)?;
 
     let mut loader = new_loader(policy, c_bit_position, memory_page_count, injection_type);
-    let flags = match memory_acceptance {
-        SnpMemoryAcceptance::Lazy => 0,
-        SnpMemoryAcceptance::Eager => SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY,
-    };
+    let flags = SnpBootShimPlatformFlags::new()
+        .with_accept_all_memory(memory_acceptance == SnpMemoryAcceptance::Eager);
     let bootshim_ranges = layout_guest(
         &mut loader,
         memory_page_count,
@@ -177,6 +177,7 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
         &Payload {
             kernel: &kernel_pe,
             kernel_init_size,
+            kernel_min_address,
             initrd: initrd.as_deref(),
             command_line: &linux.command_line,
         },
@@ -214,8 +215,8 @@ pub fn build(params: BuildParams<'_>) -> anyhow::Result<IgvmOutput> {
 /// * From 1 MiB: the kernel's PE/COFF image, the initrd, the UTF-16 command
 ///   line, the bootshim, its parameter and platform pages, the device-tree
 ///   parameter area, the ACPI heap, and the EFI stack.
-/// * Then the boot pool, at or above 16 MiB, where the EFI stub places the
-///   decompressed kernel.
+/// * Then the boot pool, at or above the kernel's `pref_address`, where the
+///   EFI stub places the decompressed kernel and its copy of the initrd.
 ///
 /// The heap, the stack, and the boot pool are not imported. The shim accepts
 /// them. Unless `flags` asks it to accept all RAM, it reports all other
@@ -224,7 +225,7 @@ fn layout_guest(
     loader: &mut IgvmLoader<X86Register>,
     memory_page_count: u64,
     c_bit_position: u8,
-    flags: u32,
+    flags: SnpBootShimPlatformFlags,
     payload: &Payload<'_>,
     load_shim: impl FnOnce(&mut IgvmLoader<X86Register>, u64) -> anyhow::Result<loader::elf::LoadInfo>,
 ) -> anyhow::Result<Vec<SnpBootShimRange>> {
@@ -296,11 +297,13 @@ fn layout_guest(
     platform.stack_gpa = reserve_region(&mut cursor, SNP_BOOT_SHIM_EFI_STACK_SIZE, ram_end)?;
     platform.stack_size = SNP_BOOT_SHIM_EFI_STACK_SIZE;
 
+    let initrd_size = align_up(payload.initrd.map_or(0, |i| i.len() as u64), PAGE_SIZE)?;
     let pool_size = align_up(payload.kernel_init_size, x86defs::X64_LARGE_PAGE_SIZE)?
-        .checked_add(BOOT_POOL_SLACK)
+        .checked_add(initrd_size)
+        .and_then(|size| size.checked_add(BOOT_POOL_SLACK))
         .context("boot pool size overflow")?;
     let mut pool_cursor = align_up(
-        cursor.max(SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS),
+        cursor.max(payload.kernel_min_address),
         x86defs::X64_LARGE_PAGE_SIZE,
     )?;
     platform.boot_pool_gpa = reserve_region(&mut pool_cursor, pool_size, ram_end)
@@ -917,6 +920,7 @@ mod tests {
     const LAYOUT_RAM_PAGES: u64 = 40960;
     const SHIM_PAGES: u64 = 2;
     const KERNEL_INIT_SIZE: u64 = 0x2d2_1000;
+    const KERNEL_MIN_ADDRESS: u64 = 16 << 20;
 
     struct Layout {
         output: IgvmOutput,
@@ -938,13 +942,13 @@ mod tests {
     }
 
     fn try_layout(ram_pages: u64, initrd: Option<&[u8]>) -> anyhow::Result<Layout> {
-        try_layout_with_flags(ram_pages, initrd, 0)
+        try_layout_with_flags(ram_pages, initrd, SnpBootShimPlatformFlags::new())
     }
 
     fn try_layout_with_flags(
         ram_pages: u64,
         initrd: Option<&[u8]>,
-        flags: u32,
+        flags: SnpBootShimPlatformFlags,
     ) -> anyhow::Result<Layout> {
         let kernel = test_kernel();
         let mut loader = test_loader(ram_pages);
@@ -957,6 +961,7 @@ mod tests {
             &Payload {
                 kernel: &kernel,
                 kernel_init_size: KERNEL_INIT_SIZE,
+                kernel_min_address: KERNEL_MIN_ADDRESS,
                 initrd,
                 command_line: c"console=ttyS0",
             },
@@ -1087,31 +1092,24 @@ mod tests {
     #[test]
     fn measures_the_memory_acceptance_flag() {
         let (_, platform) = handoff(&generated_layout());
-        assert_eq!(platform.flags, 0);
-        let layout = try_layout_with_flags(
-            LAYOUT_RAM_PAGES,
-            None,
-            SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY,
-        )
-        .unwrap();
+        assert!(!platform.flags.accept_all_memory());
+        let flags = SnpBootShimPlatformFlags::new().with_accept_all_memory(true);
+        let layout = try_layout_with_flags(LAYOUT_RAM_PAGES, None, flags).unwrap();
         let (_, platform) = handoff(&layout);
-        assert_eq!(
-            platform.flags,
-            SNP_BOOT_SHIM_PLATFORM_FLAG_ACCEPT_ALL_MEMORY
-        );
+        assert_eq!(platform.flags, flags);
     }
 
     #[test]
     fn boot_pool_fits_the_decompressed_kernel() {
         let layout = generated_layout();
         let (_, platform) = handoff(&layout);
-        assert!(platform.boot_pool_gpa >= SNP_BOOT_SHIM_KERNEL_MIN_ADDRESS);
+        assert!(platform.boot_pool_gpa >= KERNEL_MIN_ADDRESS);
         assert!(
             platform
                 .boot_pool_gpa
                 .is_multiple_of(x86defs::X64_LARGE_PAGE_SIZE)
         );
-        assert!(platform.boot_pool_size >= KERNEL_INIT_SIZE + BOOT_POOL_SLACK);
+        assert!(platform.boot_pool_size >= KERNEL_INIT_SIZE + 0x2000 + BOOT_POOL_SLACK);
         assert!(platform.boot_pool_gpa + platform.boot_pool_size <= LAYOUT_RAM_PAGES * PAGE_SIZE);
         // The pool follows every import.
         assert!(platform.stack_gpa + platform.stack_size <= platform.boot_pool_gpa);
