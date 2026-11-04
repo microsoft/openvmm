@@ -420,8 +420,6 @@ impl CxlTestDevice {
 }
 
 impl ChangeDeviceState for CxlTestDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

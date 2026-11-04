@@ -424,6 +424,36 @@ mod tests {
         }
     }
 
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct DefaultTeardownDevice(Arc<AtomicBool>);
+
+    impl Drop for DefaultTeardownDevice {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl ChipsetDevice for DefaultTeardownDevice {}
+
+    impl ChangeDeviceState for DefaultTeardownDevice {
+        fn start(&mut self) {}
+        async fn stop(&mut self) {}
+        async fn reset(&mut self) {}
+    }
+
+    impl SaveRestore for DefaultTeardownDevice {
+        type SavedState = NoSavedState;
+
+        fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
     struct TestDebugEventHandler;
 
     impl DebugEventHandler for TestDebugEventHandler {
@@ -606,6 +636,31 @@ mod tests {
         release.send(());
         finished_recv.recv().await.unwrap();
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[pal_async::async_test]
+    async fn default_teardown_destroys_payload_before_removal_ack(driver: DefaultDriver) {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let teardown = DefaultTeardownDevice(dropped.clone()).teardown();
+        assert!(!dropped.load(Ordering::SeqCst));
+        teardown.await;
+        assert!(dropped.load(Ordering::SeqCst));
+
+        dropped.store(false, Ordering::SeqCst);
+        let device = Arc::new(CloseableMutex::new(DefaultTeardownDevice(dropped.clone())));
+        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let driver = source.simple();
+        let units = StateUnits::new();
+        let unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        let unit = units
+            .add("default-teardown")
+            .spawn(driver.clone(), |recv| unit.run(recv))
+            .unwrap();
+        DynamicDeviceUnit::new(unit, driver, device.clone())
+            .remove()
+            .await;
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(device.lock_if_open().is_none());
     }
 
     #[pal_async::async_test]

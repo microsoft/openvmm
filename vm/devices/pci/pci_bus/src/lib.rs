@@ -338,8 +338,6 @@ impl GenericPciBus {
 }
 
 impl ChangeDeviceState for GenericPciBus {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

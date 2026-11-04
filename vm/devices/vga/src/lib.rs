@@ -77,8 +77,6 @@ impl VgaDevice {
 }
 
 impl ChangeDeviceState for VgaDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {
         self.renderer.start();
     }

@@ -116,8 +116,6 @@ mod inspect_helpers {
 }
 
 impl ChangeDeviceState for MissingDev {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

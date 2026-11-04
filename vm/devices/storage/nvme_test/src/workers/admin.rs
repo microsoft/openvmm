@@ -272,26 +272,6 @@ impl AdminState {
         }
     }
 
-    /// Pauses workers, retaining issued I/O for resume or terminal draining.
-    pub async fn stop(&mut self) {
-        for sq in &mut self.io_sqs {
-            sq.task.stop().await;
-        }
-    }
-
-    pub fn start(&mut self) {
-        for sq in &mut self.io_sqs {
-            sq.task.start();
-        }
-    }
-
-    pub async fn teardown(&mut self) {
-        self.drain().await;
-        for (_, task) in std::mem::take(&mut self.poll_namespace_change) {
-            task.cancel().await;
-        }
-    }
-
     /// Caller must ensure that no queues are active.
     fn set_max_queues(&mut self, handler: &AdminHandler, num_sqs: u16, num_cqs: u16) {
         self.io_sqs.truncate(num_sqs.into());

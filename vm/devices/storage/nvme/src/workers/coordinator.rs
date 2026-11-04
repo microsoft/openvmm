@@ -35,7 +35,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 #[derive(InspectMut)]
 pub struct NvmeWorkers {
     #[inspect(skip)]
-    task: Task<()>,
+    _task: Task<()>,
     #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
     #[inspect(skip)]
@@ -82,12 +82,11 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
-            paused: false,
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
         Self {
-            task,
+            _task: task,
             send,
             doorbells,
             state: EnableState::Disabled,
@@ -98,25 +97,6 @@ impl NvmeWorkers {
         NvmeControllerClient {
             send: self.send.clone(),
         }
-    }
-
-    pub fn start(&mut self) {
-        self.send.send(CoordinatorRequest::Start);
-    }
-
-    pub async fn stop(&mut self) {
-        self.send
-            .call(CoordinatorRequest::Stop, ())
-            .await
-            .expect("NVMe coordinator is gone");
-    }
-
-    pub async fn teardown(self) {
-        self.send
-            .call(CoordinatorRequest::Teardown, ())
-            .await
-            .expect("NVMe coordinator is gone");
-        self.task.await;
     }
 
     pub fn doorbell(&self, db_id: u16, value: u32) {
@@ -165,7 +145,7 @@ impl NvmeWorkers {
 
     pub fn poll_controller_reset(&mut self) -> bool {
         let Self {
-            task: _,
+            _task: _,
             send: _,
             doorbells,
             state,
@@ -185,11 +165,22 @@ impl NvmeWorkers {
 
     // Reset the workers from whatever state they are in.
     pub async fn reset(&mut self) {
-        self.send
-            .call(CoordinatorRequest::Reset, ())
-            .await
-            .expect("NVMe coordinator is gone");
-        self.state = EnableState::Disabled;
+        loop {
+            match &mut self.state {
+                EnableState::Disabled => break,
+                EnableState::Enabling(recv) => {
+                    recv.await.unwrap();
+                    self.state = EnableState::Enabled;
+                }
+                EnableState::Enabled => {
+                    self.controller_reset();
+                }
+                EnableState::Resetting(recv) => {
+                    recv.await.unwrap();
+                    self.state = EnableState::Disabled;
+                }
+            }
+        }
         self.doorbells.write().reset();
     }
 }
@@ -225,14 +216,9 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
-    paused: bool,
 }
 
 enum CoordinatorRequest {
-    Start,
-    Stop(Rpc<(), ()>),
-    Teardown(Rpc<(), ()>),
-    Reset(Rpc<(), ()>),
     EnableAdmin(Rpc<EnableAdminParams, ()>),
     AddNamespace(Rpc<(u32, Disk), Result<(), AddNamespaceError>>),
     RemoveNamespace(Rpc<u32, bool>),
@@ -256,7 +242,7 @@ impl Coordinator {
             }
 
             let controller_reset = async {
-                if self.reset.is_some() && !self.paused {
+                if self.reset.is_some() {
                     self.admin.stop().await;
                     if let Some(state) = self.admin.state_mut() {
                         state.drain().await;
@@ -276,46 +262,6 @@ impl Coordinator {
 
             match event {
                 Event::Request(Some(req)) => match req {
-                    CoordinatorRequest::Start => {
-                        self.paused = false;
-                        if self.reset.is_none() {
-                            if let Some(state) = self.admin.state_mut() {
-                                state.start();
-                            }
-                            self.admin.start();
-                        }
-                    }
-                    CoordinatorRequest::Stop(rpc) => {
-                        self.paused = true;
-                        self.admin.stop().await;
-                        if let Some(state) = self.admin.state_mut() {
-                            state.stop().await;
-                        }
-                        rpc.complete(());
-                    }
-                    CoordinatorRequest::Reset(rpc) => {
-                        self.admin.stop().await;
-                        if let Some(state) = self.admin.state_mut() {
-                            state.drain().await;
-                            self.admin.remove();
-                        }
-                        if let Some(reset) = self.reset.take() {
-                            reset.complete(());
-                        }
-                        rpc.complete(());
-                    }
-                    CoordinatorRequest::Teardown(rpc) => {
-                        assert!(
-                            !self.admin.is_running(),
-                            "NVMe must be stopped before teardown"
-                        );
-                        if let Some(state) = self.admin.state_mut() {
-                            state.teardown().await;
-                        }
-                        drop(self);
-                        rpc.complete(());
-                        return;
-                    }
                     CoordinatorRequest::EnableAdmin(rpc) => rpc.handle_sync(
                         |EnableAdminParams {
                              asq,
@@ -369,54 +315,5 @@ impl Coordinator {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pal_async::DefaultDriver;
-    use pal_async::async_test;
-    use test_with_tracing::test;
-    use vmcore::vm_task::SingleDriverBackend;
-
-    #[async_test]
-    async fn teardown_joins_workers_with_a_retained_client(driver: DefaultDriver) {
-        let source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        let mut workers = NvmeWorkers::new(
-            &source,
-            GuestMemory::allocate(0x4000),
-            vec![Interrupt::from_fn(|| {})],
-            1,
-            1,
-            Arc::new(Mutex::new(IoQueueEntrySizes::default())),
-            Guid::new_random(),
-        );
-        let client = workers.client();
-        workers.start();
-        workers.enable(0, 8, 0x1000, 8);
-        if let EnableState::Enabling(recv) = &mut workers.state {
-            recv.await.unwrap();
-        }
-        workers.state = EnableState::Enabled;
-        workers.stop().await;
-        workers.start();
-        workers.stop().await;
-        workers.controller_reset();
-        workers.stop().await;
-        let EnableState::Resetting(recv) = &mut workers.state else {
-            unreachable!()
-        };
-        assert!(recv.now_or_never().is_none());
-        workers.reset().await;
-        assert!(matches!(workers.state, EnableState::Disabled));
-        workers.teardown().await;
-        assert!(
-            client
-                .send
-                .call(CoordinatorRequest::RemoveNamespace, 1)
-                .await
-                .is_err()
-        );
     }
 }

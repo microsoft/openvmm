@@ -610,8 +610,6 @@ fn ecam_size_from_bus_numbers(start_bus: u8, end_bus: u8) -> u64 {
 }
 
 impl ChangeDeviceState for GenericPcieRootComplex {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

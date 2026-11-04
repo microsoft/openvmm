@@ -512,8 +512,6 @@ impl PowerManagementDevice {
 }
 
 impl ChangeDeviceState for PowerManagementDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

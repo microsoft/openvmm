@@ -63,15 +63,12 @@ const PUMP_POLL_BUDGET: u32 = 256;
 /// bytes reached the real backend. `poll_connect`/`poll_disconnect` assume a
 /// single consumer (the serial emulator, which waits on only one of them at a
 /// time).
-/// Closing waits for the pump and backend to be released, but may discard
-/// buffered bytes.
 pub struct DebuggerRelay {
     inner: Arc<Mutex<Inner>>,
-    _pump: Option<Task<()>>,
+    _pump: Task<()>,
 }
 
 struct Inner {
-    closing: bool,
     rx: RingBuf,
     tx: RingBuf,
     connected: bool,
@@ -97,7 +94,6 @@ impl DebuggerRelay {
     pub fn new(driver: impl Spawn + Driver, name: &str, inner: Box<dyn SerialIo>) -> Self {
         let connected = inner.is_connected();
         let shared = Arc::new(Mutex::new(Inner {
-            closing: false,
             rx: RingBuf::new(RX_RING_CAP),
             tx: RingBuf::new(TX_RING_CAP),
             connected,
@@ -118,7 +114,7 @@ impl DebuggerRelay {
 
         Self {
             inner: shared,
-            _pump: Some(pump),
+            _pump: pump,
         }
     }
 }
@@ -245,12 +241,6 @@ impl Inner {
     fn wake_pump(&mut self, wakes: &mut WakeList) {
         wakes.take(&mut self.pump_waker);
     }
-
-    fn close(&mut self, wakes: &mut WakeList) {
-        self.closing = true;
-        self.disconnect(wakes);
-        self.wake_pump(wakes);
-    }
 }
 
 async fn run_pump(
@@ -265,20 +255,6 @@ async fn run_pump(
     let mut rx_next_drain: Option<Instant> = None;
 
     poll_fn(move |cx| {
-        if shared.lock().closing {
-            return match Pin::new(&mut *inner).poll_close(cx) {
-                Poll::Ready(result) => {
-                    if let Err(error) = result {
-                        tracing::warn!(
-                            error = &error as &dyn std::error::Error,
-                            "serial debugger backend close failed"
-                        );
-                    }
-                    Poll::Ready(())
-                }
-                Poll::Pending => Poll::Pending,
-            };
-        }
         let mut budget = PUMP_POLL_BUDGET;
         loop {
             let mut made_progress = false;
@@ -421,11 +397,6 @@ async fn run_pump(
 
             let should_park = {
                 let mut state = shared.lock();
-                if state.closing {
-                    drop(state);
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
-                }
                 if !had_tx && !state.tx.is_empty() {
                     false
                 } else {
@@ -516,17 +487,7 @@ impl AsyncWrite for DebuggerRelay {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut wakes = WakeList::default();
-        {
-            let mut state = self.inner.lock();
-            state.close(&mut wakes);
-        }
-        wakes.wake();
-        if let Some(pump) = &mut self._pump {
-            std::task::ready!(Pin::new(pump).poll(cx));
-            self._pump.take();
-        }
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
@@ -567,7 +528,6 @@ mod tests {
         infinite_read: bool,
         read_polls: usize,
         panic_after_read_polls: Option<usize>,
-        read_hook: Option<Box<dyn FnOnce() + Send>>,
         write_zero: bool,
         written: Vec<u8>,
         write_limit: usize,
@@ -598,7 +558,6 @@ mod tests {
                 infinite_read: false,
                 read_polls: 0,
                 panic_after_read_polls: None,
-                read_hook: None,
                 write_zero: false,
                 written: Vec::new(),
                 write_limit: usize::MAX,
@@ -669,10 +628,6 @@ mod tests {
             cx: &mut Context<'_>,
             buf: &mut [u8],
         ) -> Poll<io::Result<usize>> {
-            let hook = self.state.lock().read_hook.take();
-            if let Some(hook) = hook {
-                hook();
-            }
             let mut wakes = WakeList::default();
             let result = {
                 let mut state = self.state.lock();
@@ -893,7 +848,6 @@ mod tests {
 
     fn new_shared(connected: bool) -> Arc<Mutex<Inner>> {
         Arc::new(Mutex::new(Inner {
-            closing: false,
             rx: RingBuf::new(RX_RING_CAP),
             tx: RingBuf::new(TX_RING_CAP),
             connected,
@@ -1220,35 +1174,6 @@ mod tests {
 
         drop(relay);
         handle.wait_until(|state| state.dropped).await;
-    }
-
-    #[async_test]
-    async fn closing_relay_waits_for_backend_release(driver: DefaultDriver) {
-        let (io, handle) = MockSerialIo::new();
-        let mut relay = DebuggerRelay::new(driver, "teardown", Box::new(io));
-        futures::io::AsyncWriteExt::close(&mut relay).await.unwrap();
-        assert!(handle.state.lock().dropped);
-        futures::io::AsyncWriteExt::close(&mut relay).await.unwrap();
-    }
-
-    #[test]
-    fn closing_during_pump_poll_cannot_lose_wakeup() {
-        let shared = new_shared(true);
-        let (io, handle) = MockSerialIo::new();
-        let closing = shared.clone();
-        handle.state.lock().read_hook = Some(Box::new(move || {
-            let mut wakes = WakeList::default();
-            closing.lock().close(&mut wakes);
-            wakes.wake();
-        }));
-        let mut pump = Box::pin(run_pump(Box::new(io), shared, None));
-        let (counter, waker) = CountingWaker::new();
-        let mut cx = Context::from_waker(&waker);
-        assert!(pump.as_mut().poll(&mut cx).is_pending());
-        assert!(counter.count() > 0);
-        assert!(pump.as_mut().poll(&mut cx).is_ready());
-        drop(pump);
-        assert!(handle.state.lock().dropped);
     }
 
     /// TX must keep being forwarded to the backend even while the RX side is a

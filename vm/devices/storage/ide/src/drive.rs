@@ -146,13 +146,6 @@ impl DiskDrive {
             DiskDrive::OpticalDevice(device) => device.poll_device(cx),
         }
     }
-
-    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> std::task::Poll<()> {
-        match self {
-            DiskDrive::HardDevice(device) => device.poll_drain(cx),
-            DiskDrive::OpticalDevice(device) => device.poll_drain(cx),
-        }
-    }
 }
 
 pub mod save_restore {
@@ -160,14 +153,6 @@ pub mod save_restore {
     use super::*;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
-
-    #[derive(Debug, thiserror::Error)]
-    pub(super) enum DriveRestoreError {
-        #[error("cannot restore an IDE drive with issued I/O")]
-        IoPending,
-        #[error("invalid pending IDE I/O")]
-        InvalidPendingIo,
-    }
 
     pub trait DriveSaveRestore {
         fn save(&self) -> Result<SavedDriveState, SaveError>;

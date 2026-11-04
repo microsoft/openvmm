@@ -64,27 +64,28 @@ These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
 
-Removal success means that device teardown has finished, including the
-release of resources held by device background tasks. Before teardown,
-guest access is permanently revoked so late accesses cannot reach the
-removed device. Issued disk I/O is drained, not discarded by dropping its
-future.
+Removal waits for the device's teardown hook and payload destruction.
+Before teardown, guest access is permanently revoked so late accesses
+cannot reach the removed device. Background resources are released before
+removal completes only when the device implements the necessary cleanup;
+the default hook does not join background tasks or drain issued I/O.
 
-`stop()` is a save-consistent pause, not a disk-I/O drain or a guarantee
-that DMA has ceased. Disk-backed devices retain issued requests across
-pause and account for them in saved state where save/restore is supported.
-Resume continues the original requests; restore replays saved requests.
-Terminal teardown, including VM shutdown of boot-time devices, finishes
-issued I/O before releasing its resources.
+`stop()` is a save-consistent pause, not a requirement to drain disk I/O
+or a guarantee that DMA has ceased. Devices retaining issued requests
+across pause must account for them in saved state where save/restore is
+supported. Device-specific lifecycle changes are separate from this
+infrastructure.
 
-`ChangeDeviceState::teardown(self)` is a required terminal operation that
-consumes a stopped device. Removal permanently closes the shared wrapper,
+`ChangeDeviceState::teardown(self)` is a terminal operation with a default
+implementation that drops the stopped device. Removal permanently closes
+the shared wrapper,
 takes ownership of its payload, and stops it if running; paused and
 never-started units are already stopped. Async teardown owns the device
 until cleanup completes and its remaining fields are dropped, even if stale
-references still hold the inaccessible wrapper. Synchronous devices
-explicitly implement an empty teardown and release their resources through
-ordinary destruction.
+references still hold the inaccessible wrapper. Synchronous devices can use
+the default hook to release their resources through ordinary destruction.
+Devices with asynchronous cleanup must override it, retaining and finishing
+cancellation-unsafe I/O before releasing its resources.
 
 Chipset MMIO and PIO mapping controls unregister their active ranges when
 dropped. Devices own remappable controls; the device state unit retains

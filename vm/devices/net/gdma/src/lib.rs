@@ -380,19 +380,9 @@ impl GdmaDevice {
 }
 
 impl ChangeDeviceState for GdmaDevice {
-    async fn teardown(mut self) {
-        self.hwc.task_mut().bnic.teardown().await;
-    }
+    fn start(&mut self) {}
 
-    fn start(&mut self) {
-        self.hwc.task_mut().bnic.start();
-        self.hwc.start();
-    }
-
-    async fn stop(&mut self) {
-        self.hwc.stop().await;
-        self.hwc.task_mut().bnic.stop().await;
-    }
+    async fn stop(&mut self) {}
 
     async fn reset(&mut self) {}
 }

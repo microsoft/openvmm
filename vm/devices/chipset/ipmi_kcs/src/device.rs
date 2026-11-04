@@ -63,8 +63,6 @@ impl IpmiKcsDevice {
 }
 
 impl ChangeDeviceState for IpmiKcsDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

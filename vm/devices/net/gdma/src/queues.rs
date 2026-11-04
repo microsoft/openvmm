@@ -277,19 +277,6 @@ pub struct Queues {
     msis: Vec<Interrupt>,
 }
 
-#[cfg(test)]
-pub(crate) fn test_queues(driver: pal_async::DefaultDriver) -> std::sync::Arc<Queues> {
-    let source =
-        vmcore::vm_task::VmTaskDriverSource::new(vmcore::vm_task::SingleDriverBackend::new(driver));
-    let connection = pci_core::msi::MsiConnection::new();
-    let (msix, _) = MsixEmulator::new(4, 64, &connection.target());
-    std::sync::Arc::new(Queues::new(
-        GuestMemory::allocate(0x8000),
-        source.simple(),
-        &msix,
-    ))
-}
-
 impl Inspect for Queues {
     fn inspect(&self, req: inspect::Request<'_>) {
         fn inspect_list<T: Inspect>(

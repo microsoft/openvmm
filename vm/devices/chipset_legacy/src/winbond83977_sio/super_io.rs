@@ -498,8 +498,6 @@ impl SioController {
 }
 
 impl ChangeDeviceState for SioController {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

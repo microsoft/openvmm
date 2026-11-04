@@ -225,8 +225,6 @@ impl RtcState {
 }
 
 impl ChangeDeviceState for Rtc {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

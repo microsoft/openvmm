@@ -320,10 +320,6 @@ impl FramebufferDevice {
 }
 
 impl ChangeDeviceState for FramebufferDevice {
-    async fn teardown(mut self) {
-        self.reset().await;
-    }
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

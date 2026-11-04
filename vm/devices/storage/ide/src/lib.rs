@@ -865,30 +865,15 @@ impl Channel {
 }
 
 impl ChangeDeviceState for IdeDevice {
-    async fn teardown(mut self) {
-        self.drain_io().await;
-    }
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.drain_io().await;
         self.bus_master_pio_dynamic.unmap();
         self.bus_master_state = BusMasterState::new();
         for channel in &mut self.channels {
             channel.reset();
-        }
-    }
-}
-
-impl IdeDevice {
-    async fn drain_io(&mut self) {
-        for channel in &mut self.channels {
-            for drive in channel.drives.iter_mut().flatten() {
-                std::future::poll_fn(|cx| drive.poll_drain(cx)).await;
-            }
         }
     }
 }

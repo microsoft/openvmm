@@ -606,7 +606,7 @@ impl VfioAssignedPciDevice {
                 mapped_region
                     .map(
                         0,
-                        vfio_device.device.as_ref(),
+                        &*vfio_device.device,
                         region.vfio_offset + area.start(),
                         area.len() as usize,
                         true,
@@ -1509,27 +1509,6 @@ fn write_msix_emulator(emulator: &mut MsixEmulator, offset: u64, data: &[u8]) {
 }
 
 impl ChangeDeviceState for VfioAssignedPciDevice {
-    async fn teardown(mut self) {
-        if self.msix.as_ref().is_some_and(|m| m.enabled) {
-            self.msix_disable();
-        }
-        self.mmio_enabled = false;
-        self.update_bar_mappings();
-        let Self {
-            bar_direct_maps,
-            accel_stream,
-            vfio_device,
-            binding,
-            ..
-        } = self;
-        drop(bar_direct_maps);
-        drop(accel_stream);
-        // Closing the device lets VFIO quiesce hardware while the DMA binding
-        // is still alive. Wait for the manager to release that binding afterward.
-        drop(vfio_device);
-        binding.remove().await;
-    }
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

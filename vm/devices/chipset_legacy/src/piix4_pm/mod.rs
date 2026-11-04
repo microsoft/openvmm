@@ -237,17 +237,9 @@ impl Piix4Pm {
 }
 
 impl ChangeDeviceState for Piix4Pm {
-    async fn teardown(self) {
-        self.inner.teardown().await;
-    }
+    fn start(&mut self) {}
 
-    fn start(&mut self) {
-        self.inner.start();
-    }
-
-    async fn stop(&mut self) {
-        self.inner.stop().await;
-    }
+    async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
         self.inner.reset().await;

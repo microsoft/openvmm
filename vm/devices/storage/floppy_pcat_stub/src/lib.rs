@@ -123,8 +123,6 @@ impl FloppyCommand {
 }
 
 impl ChangeDeviceState for StubFloppyDiskController {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

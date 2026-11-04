@@ -53,10 +53,10 @@ pub trait ChangeDeviceState {
     /// this method.
     fn reset(&mut self) -> impl Send + Future<Output = ()>;
 
-    /// Consumes the device and releases its backing resources.
+    /// Consumes the stopped device, optionally performing asynchronous cleanup.
     ///
-    /// This is called when a dynamically added device is removed from a
-    /// running VM. Devices that own host resources (for example, open disk
+    /// This is called when a device is removed or the VM chipset is torn down.
+    /// Devices that own host resources (for example, open disk
     /// files) in background tasks should release them here so that the
     /// resources are closed by the time removal completes, rather than at
     /// some later point when the background tasks are reaped.
@@ -70,8 +70,19 @@ pub trait ChangeDeviceState {
     /// quiesced without losing state during stop must be quiesced here.
     /// Dropping issued I/O futures is not generally safe and can abort the process.
     ///
-    /// Synchronous resources are released by dropping the consumed device's
-    /// fields. The returned future must remain owned and be driven to completion;
+    /// The default performs no asynchronous cleanup; it only drops the device.
+    /// Devices owning background work or issued I/O need an implementation that
+    /// settles that work before their fields are dropped. The default does not
+    /// establish that such resources have been released.
+    ///
+    /// The returned future must remain owned and be driven to completion;
     /// dropping it can discard cancellation-unsafe issued I/O.
-    fn teardown(self) -> impl Send + Future<Output = ()>;
+    fn teardown(self) -> impl Send + Future<Output = ()>
+    where
+        Self: Sized + Send,
+    {
+        async move {
+            drop(self);
+        }
+    }
 }

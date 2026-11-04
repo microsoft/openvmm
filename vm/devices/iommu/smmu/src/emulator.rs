@@ -994,8 +994,6 @@ impl ChipsetDevice for SmmuDevice {
 }
 
 impl ChangeDeviceState for SmmuDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {
         self.shared_state.freeze_capabilities();
     }

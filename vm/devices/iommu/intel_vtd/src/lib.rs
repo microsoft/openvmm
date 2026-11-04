@@ -2303,8 +2303,6 @@ impl MmioIntercept for IntelVtdDevice {
 // =============================================================================
 
 impl vmcore::device_state::ChangeDeviceState for IntelVtdDevice {
-    async fn teardown(self) {}
-
     fn start(&mut self) {}
 
     async fn stop(&mut self) {}

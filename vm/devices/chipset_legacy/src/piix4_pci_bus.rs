@@ -82,17 +82,9 @@ impl Piix4PciBus {
 }
 
 impl ChangeDeviceState for Piix4PciBus {
-    async fn teardown(self) {
-        self.bus.teardown().await;
-    }
+    fn start(&mut self) {}
 
-    fn start(&mut self) {
-        self.bus.start();
-    }
-
-    async fn stop(&mut self) {
-        self.bus.stop().await;
-    }
+    async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
         self.bus.reset().await;
