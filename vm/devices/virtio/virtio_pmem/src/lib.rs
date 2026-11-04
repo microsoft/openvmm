@@ -327,7 +327,10 @@ async fn process_pmem_request(
             0 => match worker.flush().await {
                 Ok(()) => 0,
                 Err(err) => {
-                    tracing::error!(error = %err, "flush error");
+                    tracing::error!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "flush error"
+                    );
                     1
                 }
             },
