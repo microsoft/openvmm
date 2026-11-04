@@ -298,6 +298,7 @@ mod tests {
     use super::write_sensitive_file_with;
     use super::write_srk;
     use super::write_srk_with_version;
+    use crate::vtpm_helper::TPM_TEST_LOCK;
     use std::fs;
     use std::io::Write;
     use test_with_tracing::test;
@@ -492,6 +493,7 @@ mod tests {
 
     #[test]
     fn write_srk_rejects_input_output_aliases() {
+        let _guard = TPM_TEST_LOCK.lock();
         let directory = tempfile::tempdir().unwrap();
         let blob_path = directory.path().join("vtpm.blob");
         let alias_path = directory.path().join("vtpm-alias.blob");
@@ -513,6 +515,7 @@ mod tests {
 
     #[test]
     fn tpm_185_blob_can_export_srk() {
+        let _guard = TPM_TEST_LOCK.lock();
         let directory = tempfile::tempdir().unwrap();
         let blob_path = directory.path().join("vtpm-185.blob");
         let srk_path = directory.path().join("srk-185.tpm2b");

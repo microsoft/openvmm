@@ -14,6 +14,10 @@ use tpm_resources::default_vtpm_size;
 
 use crate::TpmVersion;
 
+// TPM platforms are process-global, so tests must serialize engine lifetimes.
+#[cfg(test)]
+pub(crate) static TPM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 pub enum CvmTpmEngine {
     V138(MsTpm20RefPlatform),
     V185(MsTpm185Platform),

@@ -124,9 +124,11 @@ fn write_key_files_with(
 
     public_file
         .persist_noclobber(public_key_file)
+        .map_err(|error| error.error)
         .context("failed to persist public key file")?;
     private_file
         .persist_noclobber(private_key_file)
+        .map_err(|error| error.error)
         .with_context(|| {
             format!(
                 "failed to persist TPM import blob file; public key file was retained at {public_key_file}"
@@ -186,6 +188,7 @@ mod tests {
     use super::write_key_files;
     use super::write_key_files_with;
     use crate::TpmVersion;
+    use crate::vtpm_helper::TPM_TEST_LOCK;
     use crate::vtpm_helper::create_tpm_engine_helper;
     use crypto::rsa::RsaKeyPair;
     use der::Decode;
@@ -199,6 +202,7 @@ mod tests {
     use tpm_protocol::tpm20proto::protocol::Tpm2bPublic;
 
     fn generated_key_can_be_provisioned(version: TpmVersion) {
+        let _guard = TPM_TEST_LOCK.lock();
         let directory = tempfile::tempdir().unwrap();
         let public_path = directory.path().join("rsa.pub");
         let private_path = directory.path().join("rsa.tpm2b");
