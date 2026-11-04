@@ -471,6 +471,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test_with_tracing",
  "tracing",
  "virtio_resources",
  "vm_resource",

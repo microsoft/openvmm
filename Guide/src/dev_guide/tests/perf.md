@@ -160,7 +160,35 @@ burette run --test disk-io --disk-backend storvsc -o disk.json
 
 # File-backed disk for realistic host I/O latency
 burette run --test disk-io --data-disk /tmp/test.raw --data-disk-size-gib 8
+
+# Host direct I/O, 4 KiB random/sequential jobs at queue depth 1
+burette run --test disk-io --data-disk /path/to/test.raw --disk-direct --disk-io-depth 1
 ```
+
+The data file is created or truncated, and the entire data disk is written and
+flushed before measurements to avoid benchmarking sparse holes. Guest fio always
+uses direct I/O; `--disk-direct` additionally bypasses the host page cache on
+Linux with the virtio-blk backend. By default host file I/O is cached.
+
+Use `--disk-block-size-kib` (default 4), `--disk-io-depth` (default 32),
+`--disk-runtime-secs` (default 10), and `--disk-ramp-secs` (default 5) to
+control the workload. Jobs are time-based. Raw fio JSON is retained in
+`<LOG_DIR>/fio/`, including initialization, warmup, achieved queue depth, and
+latency distributions. Reports also include p50, p99, and p99.9 completion
+latency in microseconds.
+
+Use `--disk-workloads randread` to isolate a workload, or pass a comma-separated
+list of `read,write,randread,randwrite` to choose their order. By default all
+four run in that order.
+
+For controlled A/B comparisons, use `--disk-reuse` with an existing,
+fully initialized file of the requested size. This skips truncation and
+initialization, keeping the file's physical placement fixed. Selected write
+workloads still overwrite data. Use the same backing file for host fio reference
+measurements: separate files on one filesystem can perform differently.
+`--disk-cpu 0` pins guest fio to vCPU 0; without it the guest scheduler chooses
+the CPU. Guest interrupt counters are retained beside the fio JSON so queue IRQ
+locality can be checked. Keep host vCPU/device-thread placement fixed as well.
 
 Reported metrics per backend:
 

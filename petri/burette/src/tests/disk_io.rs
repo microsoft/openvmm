@@ -35,6 +35,25 @@ impl std::fmt::Display for DiskBackend {
     }
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum DiskWorkload {
+    Read,
+    Write,
+    Randread,
+    Randwrite,
+}
+
+impl DiskWorkload {
+    fn fio_mode(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Read => ("read", "read"),
+            Self::Write => ("write", "write"),
+            Self::Randread => ("randread", "read"),
+            Self::Randwrite => ("randwrite", "write"),
+        }
+    }
+}
+
 /// Block I/O test via fio.
 pub struct DiskIoTest {
     /// Print guest diagnostics.
@@ -49,6 +68,16 @@ pub struct DiskIoTest {
     pub data_disk_size_gib: u64,
     /// If set, record per-phase perf traces in this directory.
     pub perf_dir: Option<PathBuf>,
+    pub io_depth: u32,
+    pub block_size_kib: u32,
+    pub direct: bool,
+    pub runtime_secs: u32,
+    pub ramp_secs: u32,
+    /// Raw fio output, including latency distributions and achieved queue depth.
+    pub fio_output_dir: PathBuf,
+    pub workloads: Vec<DiskWorkload>,
+    pub reuse: bool,
+    pub cpu: Option<u32>,
 }
 
 /// State kept across warm iterations.
@@ -57,6 +86,7 @@ pub struct DiskIoTestState {
     agent: petri::pipette::PipetteClient,
     /// Guest device path for the data disk (e.g. "/dev/vda" or "/dev/sdb").
     disk_device: String,
+    iteration: u32,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -112,22 +142,36 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             "data_disk_size_gib must be greater than 0"
         );
         let disk_size_bytes = self.data_disk_size_gib * 1024 * 1024 * 1024;
+        anyhow::ensure!(
+            !self.direct || matches!(self.backend, DiskBackend::VirtioBlk),
+            "--disk-direct currently requires --disk-backend virtio-blk"
+        );
+        std::fs::create_dir_all(&self.fio_output_dir)?;
 
         // Create the data disk file if using file-backed storage.
         if let Some(path) = &self.data_disk {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(path)
-                .with_context(|| format!("failed to create data disk at {}", path.display()))?;
-            file.set_len(disk_size_bytes).with_context(|| {
-                format!(
-                    "failed to set data disk size to {} GiB",
-                    self.data_disk_size_gib
-                )
-            })?;
-            drop(file);
+            if self.reuse {
+                let metadata = std::fs::metadata(path).with_context(|| {
+                    format!("failed to inspect data disk at {}", path.display())
+                })?;
+                anyhow::ensure!(
+                    metadata.is_file() && metadata.len() == disk_size_bytes,
+                    "reused data disk must be a regular file of {disk_size_bytes} bytes"
+                );
+            } else {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(path)
+                    .with_context(|| format!("failed to create data disk at {}", path.display()))?;
+                file.set_len(disk_size_bytes).with_context(|| {
+                    format!(
+                        "failed to set data disk size to {} GiB",
+                        self.data_disk_size_gib
+                    )
+                })?;
+            }
         } else {
             tracing::info!(
                 size_gib = self.data_disk_size_gib,
@@ -169,7 +213,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             DiskBackend::VirtioBlk => {
                 // Build the disk resource before entering the closure (which
                 // can't propagate errors).
-                let disk = make_disk_resource(&data_disk_path, disk_size_bytes)
+                let disk = make_disk_resource(&data_disk_path, disk_size_bytes, self.direct)
                     .await
                     .context("failed to create data disk resource")?;
                 builder = builder.modify_backend(move |b| {
@@ -273,10 +317,34 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             .context("failed to discover data disk device")?;
         tracing::info!(disk_device = %disk_device, backend = ?self.backend, "discovered data disk");
 
+        // Write the entire disk before reading it: sparse holes and unwritten
+        // extents do not measure storage read performance.
+        if !self.reuse {
+            let mut sh = agent.unix_shell();
+            sh.chroot("/perf");
+            let json = cmd!(sh, "fio --name=initialize --filename={disk_device} --rw=write --bs=1m --ioengine=io_uring --direct=1 --iodepth=32 --end_fsync=1 --output-format=json")
+                .read()
+                .await
+                .context("failed to initialize data disk")?;
+            parse_fio_output(&json)?;
+            std::fs::write(self.fio_output_dir.join("initialize.json"), &json)?;
+        }
+        tracing::info!(
+            io_depth = self.io_depth,
+            block_size_kib = self.block_size_kib,
+            host_direct = self.direct,
+            runtime_secs = self.runtime_secs,
+            ramp_secs = self.ramp_secs,
+            reuse = self.reuse,
+            cpu = self.cpu,
+            "prepared disk benchmark"
+        );
+
         Ok(DiskIoTestState {
             vm,
             agent,
             disk_device,
+            iteration: 0,
         })
     }
 
@@ -286,19 +354,12 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let dev = &state.disk_device;
+        state.iteration += 1;
 
-        // Each fio job: 10s runtime + 5s ramp = 15s.
         // For sequential modes we only extract BW; for random modes we extract
         // both BW and IOPS from a single fio run to avoid redundant work.
-        let fio_jobs: &[(&str, &str)] = &[
-            // (fio_rw_mode, primary_field)
-            ("read", "read"),
-            ("write", "write"),
-            ("randread", "read"),
-            ("randwrite", "write"),
-        ];
-
-        for &(rw_mode, field) in fio_jobs {
+        for workload in &self.workloads {
+            let (rw_mode, field) = workload.fio_mode();
             let is_random = rw_mode.starts_with("rand");
             let phase = if is_random {
                 rw_mode.strip_prefix("rand").unwrap()
@@ -307,17 +368,33 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             };
             let prefix = if is_random { "rand" } else { "seq" };
 
-            let perf_label = format!("fio_{label}_{prefix}_{phase}");
+            let perf_label = format!("fio_{label}_{prefix}_{phase}_{}", state.iteration);
             recorder.start(&perf_label)?;
 
-            let json = run_fio_job(&state.agent, dev, rw_mode)
+            let json = run_fio_job(&state.agent, dev, rw_mode, self)
                 .await
                 .with_context(|| format!("fio {rw_mode} failed"))?;
 
             recorder.stop()?;
+            std::fs::write(
+                self.fio_output_dir
+                    .join(format!("{:03}-{rw_mode}.json", state.iteration)),
+                &json,
+            )?;
+            let output = parse_fio_output(&json)?;
 
             let bw_name = format!("fio_{label}_{prefix}_{phase}_bw");
             metrics.push(parse_fio_bw(&json, &bw_name, field)?);
+            for percentile in ["50.000000", "99.000000", "99.900000"] {
+                let latency_ns = output["jobs"][0][field]["clat_ns"]["percentile"][percentile]
+                    .as_f64()
+                    .with_context(|| format!("missing {field} latency percentile {percentile}"))?;
+                metrics.push(MetricResult {
+                    name: format!("fio_{label}_{prefix}_{phase}_p{percentile}_latency"),
+                    unit: "us".into(),
+                    value: latency_ns / 1000.0,
+                });
+            }
 
             if is_random {
                 let iops_name = format!("fio_{label}_{prefix}_{phase}_iops");
@@ -325,6 +402,16 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             }
         }
 
+        let sh = state.agent.unix_shell();
+        let interrupts = cmd!(sh, "cat /proc/interrupts")
+            .read()
+            .await
+            .context("failed to capture guest interrupt routing")?;
+        std::fs::write(
+            self.fio_output_dir
+                .join(format!("{:03}-interrupts.txt", state.iteration)),
+            interrupts,
+        )?;
         Ok(metrics)
     }
 
@@ -339,13 +426,14 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 async fn make_disk_resource(
     path: &Option<PathBuf>,
     size_bytes: u64,
+    direct: bool,
 ) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
     match path {
         Some(p) => openvmm_helpers::disk::open_disk_type(
             p,
             openvmm_helpers::disk::OpenDiskOptions {
                 read_only: false,
-                direct: false,
+                direct,
             },
         )
         .await
@@ -415,14 +503,38 @@ async fn run_fio_job(
     agent: &petri::pipette::PipetteClient,
     device: &str,
     rw_mode: &str,
+    config: &DiskIoTest,
 ) -> anyhow::Result<String> {
     let mut sh = agent.unix_shell();
     sh.chroot("/perf");
-    let output: String = cmd!(sh, "fio --name=test --filename={device} --rw={rw_mode} --bs=4k --ioengine=io_uring --direct=1 --runtime=10 --ramp_time=5 --iodepth=32 --numjobs=1 --output-format=json")
+    let bs = format!("{}k", config.block_size_kib);
+    let runtime = config.runtime_secs.to_string();
+    let ramp = config.ramp_secs.to_string();
+    let depth = config.io_depth.to_string();
+    let mut command = cmd!(
+        sh,
+        "fio --name=test --filename={device} --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=1 --time_based=1 --runtime={runtime} --ramp_time={ramp} --iodepth={depth} --numjobs=1 --output-format=json"
+    );
+    if let Some(cpu) = config.cpu {
+        command = command.arg(format!("--cpus_allowed={cpu}"));
+    }
+    let output: String = command
         .read()
         .await
         .with_context(|| format!("fio {rw_mode} on {device} failed"))?;
 
+    Ok(output)
+}
+
+fn parse_fio_output(json: &str) -> anyhow::Result<serde_json::Value> {
+    let output: serde_json::Value =
+        serde_json::from_str(json).context("failed to parse fio JSON")?;
+    let jobs = output["jobs"].as_array().context("missing fio jobs")?;
+    anyhow::ensure!(!jobs.is_empty(), "fio returned no jobs");
+    for job in jobs {
+        let error = job["error"].as_u64().context("missing fio job error")?;
+        anyhow::ensure!(error == 0, "fio job failed with error {error}: {job}");
+    }
     Ok(output)
 }
 
@@ -457,4 +569,25 @@ fn parse_fio_iops(json: &str, metric_name: &str, field: &str) -> anyhow::Result<
         unit: "IOPS".to_string(),
         value: iops,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn fio_errors_are_not_reported_as_measurements() {
+        assert!(parse_fio_output(r#"{"jobs":[{"error":0}]}"#).is_ok());
+        for json in [
+            r#"{"jobs":[{"error":5}]}"#,
+            r#"{"jobs":[{"error":0},{"error":22}]}"#,
+            r#"{"jobs":[{}]}"#,
+            r#"{"jobs":[]}"#,
+            r#"{}"#,
+            "not JSON",
+        ] {
+            assert!(parse_fio_output(json).is_err(), "{json}");
+        }
+    }
 }
