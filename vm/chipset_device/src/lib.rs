@@ -148,6 +148,7 @@ pub mod interrupt;
 pub mod io;
 pub mod isa_dma;
 pub mod mmio;
+pub mod msi;
 pub mod pci;
 pub mod pio;
 pub mod poll_device;

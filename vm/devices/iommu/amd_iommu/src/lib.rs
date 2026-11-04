@@ -1257,7 +1257,9 @@ impl AmdIommuDevice {
             PendingInvalidation::Device(id) => Some(Some(id)),
             PendingInvalidation::All => Some(None),
         } {
-            self.shared.retranslate_interrupts.invalidate(device_id);
+            self.shared
+                .retranslate_interrupts
+                .invalidate(device_id.map(u32::from));
         }
     }
 

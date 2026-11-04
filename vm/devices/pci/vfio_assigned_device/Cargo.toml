@@ -31,6 +31,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

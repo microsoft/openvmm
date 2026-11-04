@@ -66,8 +66,8 @@ impl ItsIrqFd {
 }
 
 impl IrqFd for ItsIrqFd {
-    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn IrqFdRoute>> {
-        let inner_route = self.inner.new_irqfd_route()?;
+    fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+        let inner_route = self.inner.new_irqfd_route(event)?;
         Ok(Box::new(ItsIrqFdRoute {
             inner: inner_route,
             segment: self.segment,
@@ -87,12 +87,12 @@ impl IrqFdRoute for ItsIrqFdRoute {
         self.inner.event()
     }
 
-    fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
+    fn enable(&self, address: u64, data: u32, devid: Option<u32>) -> bool {
         let Some(bdf) = devid else {
-            return;
+            return false;
         };
         let its_devid = (self.segment as u32) << 16 | (bdf & 0xFFFF);
-        self.inner.enable(address, data, Some(its_devid));
+        self.inner.enable(address, data, Some(its_devid))
     }
 
     fn disable(&self) {

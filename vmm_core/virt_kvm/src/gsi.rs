@@ -185,9 +185,9 @@ impl KvmIrqFdState {
 
     pub fn new_irqfd_route<T: MsiRouteBuilder>(
         &self,
+        event: Event,
         builder: T,
     ) -> anyhow::Result<KvmIrqFdRoute<T>> {
-        let event = Event::new();
         let route = self
             .partition
             .new_route(Some(event.clone()))
@@ -225,19 +225,22 @@ impl<T: MsiRouteBuilder> IrqFdRoute for KvmIrqFdRoute<T> {
         &self.event
     }
 
-    fn enable(&self, address: u64, data: u32, devid: Option<u32>) {
+    fn enable(&self, address: u64, data: u32, devid: Option<u32>) -> bool {
         if let Some(partition) = self.route.partition.upgrade() {
             if let Some(entry) = self.builder.routing_entry(&partition, address, data, devid) {
                 self.route.inner.enable(&partition, entry);
+                true
             } else {
-                tracelimit::warn_ratelimited!(
-                    address,
-                    data,
-                    "failed to build irqfd interrupt route"
-                );
+                // The address does not decode to a kernel-serviceable sink
+                // (e.g. it targets a different segment's ITS or an emulated
+                // controller). Leave the kernel route disabled so the caller
+                // can deliver in usermode; the fd is left unconsumed here.
                 self.route.inner.disable(&partition);
                 self.route.inner.set_entry(&partition, None);
+                false
             }
+        } else {
+            false
         }
     }
 

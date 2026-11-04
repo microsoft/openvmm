@@ -19,6 +19,15 @@ use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
+/// Requirements of a producer attached to an interrupt's backing event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, inspect::Inspect)]
+pub enum InterruptEventSource {
+    /// The producer can notify the event without a kernel delivery binding.
+    Independent,
+    /// The producer needs a kernel binding to establish interrupt delivery.
+    RequiresKernelBinding,
+}
+
 /// An object representing an interrupt-like signal to notify the guest of
 /// device activity.
 ///

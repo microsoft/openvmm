@@ -1341,8 +1341,10 @@ impl MsiRouteBuilder for KvmX86MsiRouteBuilder {
 }
 
 impl virt::irqfd::IrqFd for KvmIrqFdState {
-    fn new_irqfd_route(&self) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
-        Ok(Box::new(self.new_irqfd_route(KvmX86MsiRouteBuilder)?))
+    fn new_irqfd_route(&self, event: Event) -> anyhow::Result<Box<dyn virt::irqfd::IrqFdRoute>> {
+        Ok(Box::new(
+            self.new_irqfd_route(event, KvmX86MsiRouteBuilder)?,
+        ))
     }
 }
 
