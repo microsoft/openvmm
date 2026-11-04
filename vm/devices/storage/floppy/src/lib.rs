@@ -2239,8 +2239,7 @@ mod tests {
     use pal_async::async_test;
     use test_with_tracing::test;
     use vmcore::isa_dma_channel::FloatingDmaChannel;
-    use vmcore::line_interrupt::LineSet;
-    use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+    use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
     use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateBlob;
 
@@ -2264,28 +2263,25 @@ mod tests {
             }
             let saved = SavedStateBlob::new(source.save().unwrap());
             for reset in [false, true] {
-                let set = LineSet::new();
-                let target = TestLineInterruptTarget::new_arc();
-                set.add_target(0..=0, 0, "irq", target.clone());
-                let mut dev = new_device(set.new_line(0, "floppy").unwrap());
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut dev =
+                    new_device(LineInterrupt::new_with_target("floppy", target.clone(), 0));
                 if reset {
                     dev.raise_interrupt(true);
-                    set.reset();
+                    target.clear();
                     ChangeDeviceState::reset(&mut dev).await;
+                    assert_eq!(target.last_level(0), Some(false));
                 }
+                target.clear();
                 dev.restore(saved.parse().unwrap()).unwrap();
-                assert!(!target.is_high(0));
-                set.start();
-                assert_eq!(target.is_high(0), pending);
+                assert_eq!(target.last_level(0), Some(pending));
                 dev.lower_interrupt();
-                assert!(!target.is_high(0));
+                assert_eq!(target.last_level(0), Some(false));
                 dev.raise_interrupt(true);
-                assert!(target.is_high(0));
-                set.stop();
-                set.reset();
+                assert_eq!(target.last_level(0), Some(true));
+                target.clear();
                 ChangeDeviceState::reset(&mut dev).await;
-                set.start();
-                assert!(!target.is_high(0));
+                assert_eq!(target.last_level(0), Some(false));
             }
         }
     }

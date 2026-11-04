@@ -1228,8 +1228,7 @@ mod tests {
 
     #[test]
     fn restore_publishes_interrupt_before_polling() {
-        use vmcore::line_interrupt::LineSet;
-        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
         use vmcore::save_restore::SaveRestore;
         use vmcore::save_restore::SavedStateBlob;
 
@@ -1253,39 +1252,31 @@ mod tests {
             let saved = SavedStateBlob::new(source.save().unwrap());
 
             for reset in [false, true] {
-                let set = LineSet::new();
-                let target = TestLineInterruptTarget::new_arc();
-                set.add_target(0..=0, 0, "irq", target.clone());
-                let mut serial = new_serial(set.new_line(0, "uart").unwrap());
-                set.start();
-                assert!(!target.is_high(0));
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut serial =
+                    new_serial(LineInterrupt::new_with_target("uart", target.clone(), 0));
                 if reset {
                     write_reg(&mut serial, Register::IER, 2);
                     write_reg(&mut serial, Register::MCR, 8);
-                    assert!(target.is_high(0));
-                }
-                set.stop();
-                if reset {
-                    set.reset();
+                    assert_eq!(target.last_level(0), Some(true));
+                    target.clear();
                     pool.run_until(serial.reset());
-                    set.start();
-                    assert!(!target.is_high(0));
-                    set.stop();
+                    assert_eq!(target.last_level(0), Some(false));
                 }
+                target.clear();
                 serial.restore(saved.parse().unwrap()).unwrap();
-                assert!(
-                    !target.is_high(0),
-                    "restore must not reach a stopped target"
-                );
-                set.start();
                 assert_eq!(
-                    target.is_high(0),
-                    high,
+                    target.last_level(0),
+                    Some(high),
                     "IER={ier}, OUT2={out2}, reset={reset}"
                 );
                 if ier != 0 && !out2 {
                     write_reg(&mut serial, Register::MCR, 8);
-                    assert!(target.is_high(0), "masked pending interrupt must survive");
+                    assert_eq!(
+                        target.last_level(0),
+                        Some(true),
+                        "masked pending interrupt must survive"
+                    );
                 }
             }
         }

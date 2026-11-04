@@ -1450,8 +1450,7 @@ mod tests {
 
     #[test]
     fn restore_publishes_interrupt_before_polling() {
-        use vmcore::line_interrupt::LineSet;
-        use vmcore::line_interrupt::test_helpers::TestLineInterruptTarget;
+        use vmcore::line_interrupt::test_helpers::RecordingLineInterruptTarget;
         use vmcore::save_restore::SaveRestore;
         use vmcore::save_restore::SavedStateBlob;
 
@@ -1480,33 +1479,32 @@ mod tests {
             }
             let saved = SavedStateBlob::new(source.save().unwrap());
             for reset in [false, true] {
-                let set = LineSet::new();
-                let target = TestLineInterruptTarget::new_arc();
-                set.add_target(0..=0, 0, "irq", target.clone());
-                let mut serial = new_serial(set.new_line(0, "uart").unwrap());
-                set.start();
-                assert!(!target.is_high(0));
-                set.stop();
+                let target = RecordingLineInterruptTarget::new_arc();
+                let mut serial =
+                    new_serial(LineInterrupt::new_with_target("uart", target.clone(), 0));
                 if reset {
-                    set.reset();
+                    target.clear();
                     pool.run_until(serial.reset());
+                    assert_eq!(target.last_level(0), Some(false));
                 }
+                target.clear();
                 serial.restore(saved.parse().unwrap()).unwrap();
-                assert!(
-                    !target.is_high(0),
-                    "restore must not reach a stopped target"
-                );
-                set.start();
-                assert_eq!(target.is_high(0), pending && enabled);
+                assert_eq!(target.last_level(0), Some(pending && enabled));
                 if pending && !enabled {
                     write(&mut serial, Register::UARTIMSC, UARTINT_TX);
-                    assert!(target.is_high(0), "masked pending interrupt must survive");
+                    assert_eq!(
+                        target.last_level(0),
+                        Some(true),
+                        "masked pending interrupt must survive"
+                    );
                 }
-                set.stop();
-                set.reset();
+                target.clear();
                 pool.run_until(serial.reset());
-                set.start();
-                assert!(!target.is_high(0), "reset must discard pending interrupts");
+                assert_eq!(
+                    target.last_level(0),
+                    Some(false),
+                    "reset must discard pending interrupts"
+                );
             }
         }
     }

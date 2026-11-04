@@ -566,6 +566,32 @@ pub mod test_helpers {
     use std::task::Poll;
     use std::task::Waker;
 
+    /// Records the last publication per vector, distinguishing low from no publication.
+    #[derive(Default)]
+    pub struct RecordingLineInterruptTarget {
+        levels: Mutex<BTreeMap<u32, bool>>,
+    }
+
+    impl RecordingLineInterruptTarget {
+        pub fn new_arc() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        pub fn clear(&self) {
+            self.levels.lock().clear();
+        }
+
+        pub fn last_level(&self, vector: u32) -> Option<bool> {
+            self.levels.lock().get(&vector).copied()
+        }
+    }
+
+    impl LineSetTarget for RecordingLineInterruptTarget {
+        fn set_irq(&self, vector: u32, high: bool) {
+            self.levels.lock().insert(vector, high);
+        }
+    }
+
     pub struct TestLineInterruptTarget {
         state: Mutex<BTreeMap<u32, LineState>>,
     }
