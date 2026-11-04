@@ -54,7 +54,11 @@ impl FlowNodeWithConfig for Node {
             "automatic mshv RPM acquisition requires Linux; supply local boot artifacts instead"
         );
 
-        let installed = if local_path.is_none() {
+        let installed = if local_path.is_none()
+            && !matches!(
+                ctx.platform(),
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+            ) {
             Some(ctx.reqv(
                 |done| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec!["curl".into()],
