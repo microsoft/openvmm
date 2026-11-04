@@ -49,6 +49,7 @@ use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
+use get_resources::ged::IpmiSelEvent;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -148,6 +149,8 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Enable the IPMI KCS interface.
+    pub enable_ipmi: bool,
     /// Suppress attestation.
     pub no_persistent_secrets: bool,
     /// Guest state lifetime
@@ -220,6 +223,8 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
     #[inspect(skip)]
+    ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
+    #[inspect(skip)]
     framebuffer_control: Option<Box<dyn FramebufferControl>>,
     #[inspect(skip)]
     guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
@@ -255,6 +260,7 @@ impl GuestEmulationDevice {
         config: GuestConfig,
         power_client: PowerRequestClient,
         firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
+        ipmi_sel_event_send: Option<mesh::Sender<IpmiSelEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
@@ -265,6 +271,7 @@ impl GuestEmulationDevice {
             config,
             power_client,
             firmware_event_send,
+            ipmi_sel_event_send,
             framebuffer_control,
             guest_request_recv,
             vmgs: vmgs_disk.map(|disk| VmgsState {
@@ -282,6 +289,12 @@ impl GuestEmulationDevice {
 
     fn send_event(&self, event: FirmwareEvent) {
         if let Some(sender) = &self.firmware_event_send {
+            sender.send(event);
+        }
+    }
+
+    fn send_ipmi_sel_event(&self, event: IpmiSelEvent) {
+        if let Some(sender) = &self.ipmi_sel_event_send {
             sender.send(event);
         }
     }
@@ -1096,6 +1109,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostNotifications::EVENT_LOG => {
                 self.handle_event_log(state, message_buf)?;
             }
+            HostNotifications::IPMI_SEL => {
+                self.handle_ipmi_sel(state, message_buf)?;
+            }
             HostNotifications::RESTORE_GUEST_VTL2_STATE_COMPLETED => {
                 self.handle_restore_guest_vtl2_state_completed(message_buf)?;
             }
@@ -1115,6 +1131,21 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 return Err(Error::InvalidFieldValue);
             }
         }
+        Ok(())
+    }
+
+    fn handle_ipmi_sel(
+        &mut self,
+        state: &GuestEmulationDevice,
+        message_buf: &[u8],
+    ) -> Result<(), Error> {
+        let notification = get_protocol::IpmiSelNotification::read_from_prefix(message_buf)
+            .map_err(|_| Error::MessageTooSmall)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+        state.send_ipmi_sel_event(IpmiSelEvent {
+            record_id: notification.record_id.get(),
+            record: notification.record,
+        });
         Ok(())
     }
 
@@ -1344,6 +1375,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     _ => panic!("Invalid secure boot template"),
                 },
                 enable_battery: state.config.enable_battery,
+                enable_ipmi: state.config.enable_ipmi,
                 console_mode: uefi_console_mode.unwrap_or(UefiConsoleMode::DEFAULT).0,
                 bios_guid: if state.test_gsp_by_id {
                     guid::guid!("2b701019-2816-4a85-9692-3981f1af4423")
