@@ -1707,85 +1707,95 @@ async fn test_ttrpc_interface(
                     "RestoreVm should leave the VM paused when resume is false"
                 );
 
-                // The restored guest continues where it was saved, without
-                // rebooting.
-                let mut shell = SerialShell::new(
-                    &driver,
-                    PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
-                    params.log_source.log_file("linux-restored")?,
-                );
-                client
-                    .call()
-                    .start(vmservice::Vm::ResumeVm, ())
-                    .await
-                    .unwrap();
-                let props = query_props().await.unwrap();
-                assert_eq!(
-                    props.state,
-                    vmservice::VmState::Running as i32,
-                    "after resuming the restored VM, expected RUNNING"
-                );
-                shell.run("echo POST-$((40+3))", "POST-43").await?;
-                assert!(
-                    !shell.output.contains("Linux version"),
-                    "the restored guest rebooted"
-                );
+                // aarch64 saves only part of the processor state (for example,
+                // not the GIC or timer state), so a restored aarch64 guest
+                // can't run yet. The petri OpenVMM backend also skips its
+                // save/restore check on aarch64.
+                if petri_artifacts_common::tags::MachineArch::host()
+                    == petri_artifacts_common::tags::MachineArch::X86_64
+                {
+                    // The restored guest continues where it was saved, without
+                    // rebooting.
+                    let mut shell = SerialShell::new(
+                        &driver,
+                        PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                        params.log_source.log_file("linux-restored")?,
+                    );
+                    client
+                        .call()
+                        .start(vmservice::Vm::ResumeVm, ())
+                        .await
+                        .unwrap();
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "after resuming the restored VM, expected RUNNING"
+                    );
+                    shell.run("echo POST-$((40+3))", "POST-43").await?;
+                    assert!(
+                        !shell.output.contains("Linux version"),
+                        "the restored guest rebooted"
+                    );
 
-                // Save the restored VM to a new snapshot, and restore that one
-                // with `resume: true`. The first snapshot can't be restored
-                // again because restore uses its memory in place.
-                let save_result = client
-                    .call()
-                    .start(
-                        vmservice::Vm::SaveVm,
-                        vmservice::SaveVmRequest {
-                            destination_dir: second_snapshot_path.to_string_lossy().into_owned(),
-                        },
-                    )
-                    .await
-                    .unwrap();
-                let second_snapshot_id = save_result.snapshot_id;
-                assert_ne!(
-                    second_snapshot_id, snapshot_id,
-                    "each SaveVm should generate a new snapshot ID"
-                );
-                client
-                    .call()
-                    .start(vmservice::Vm::TeardownVm, ())
-                    .await
-                    .unwrap();
-                drop(shell);
+                    // Save the restored VM to a new snapshot, and restore that one
+                    // with `resume: true`. The first snapshot can't be restored
+                    // again because restore uses its memory in place.
+                    let save_result = client
+                        .call()
+                        .start(
+                            vmservice::Vm::SaveVm,
+                            vmservice::SaveVmRequest {
+                                destination_dir: second_snapshot_path
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    let second_snapshot_id = save_result.snapshot_id;
+                    assert_ne!(
+                        second_snapshot_id, snapshot_id,
+                        "each SaveVm should generate a new snapshot ID"
+                    );
+                    client
+                        .call()
+                        .start(vmservice::Vm::TeardownVm, ())
+                        .await
+                        .unwrap();
+                    drop(shell);
 
-                let restore_result = client
-                    .call()
-                    .start(
-                        vmservice::Vm::RestoreVm,
-                        vmservice::RestoreVmRequest {
-                            source_dir: second_snapshot_path.to_string_lossy().into_owned(),
-                            config: restore_config,
-                            expected_snapshot_id: Some(second_snapshot_id.clone()),
-                            resume: true,
-                        },
-                    )
-                    .await
-                    .unwrap();
-                assert_eq!(restore_result.snapshot_id, second_snapshot_id);
-                let props = query_props().await.unwrap();
-                assert_eq!(
-                    props.state,
-                    vmservice::VmState::Running as i32,
-                    "RestoreVm should leave the VM running when resume is true"
-                );
-                let mut shell = SerialShell::new(
-                    &driver,
-                    PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
-                    params.log_source.log_file("linux-restored-resume")?,
-                );
-                shell.run("echo RESUME-$((40+4))", "RESUME-44").await?;
-                assert!(
-                    !shell.output.contains("Linux version"),
-                    "the guest restored with resume rebooted"
-                );
+                    let restore_result = client
+                        .call()
+                        .start(
+                            vmservice::Vm::RestoreVm,
+                            vmservice::RestoreVmRequest {
+                                source_dir: second_snapshot_path.to_string_lossy().into_owned(),
+                                config: restore_config,
+                                expected_snapshot_id: Some(second_snapshot_id.clone()),
+                                resume: true,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(restore_result.snapshot_id, second_snapshot_id);
+                    let props = query_props().await.unwrap();
+                    assert_eq!(
+                        props.state,
+                        vmservice::VmState::Running as i32,
+                        "RestoreVm should leave the VM running when resume is true"
+                    );
+                    let mut shell = SerialShell::new(
+                        &driver,
+                        PolledSocket::new(&driver, UnixStream::connect(&com1_path)?)?,
+                        params.log_source.log_file("linux-restored-resume")?,
+                    );
+                    shell.run("echo RESUME-$((40+4))", "RESUME-44").await?;
+                    assert!(
+                        !shell.output.contains("Linux version"),
+                        "the guest restored with resume rebooted"
+                    );
+                }
 
                 client
                     .call()
@@ -2174,8 +2184,11 @@ impl SerialShell {
         self.writer
             .write_all(format!("{command}\n").as_bytes())
             .await?;
-        self.wait_for(expected, start, Duration::from_secs(60))
-            .await
+        let timeout = Duration::from_secs(60);
+        self.wait_for(expected, start, timeout).await?;
+        // Also wait for the end of the line, so the reader has logged it.
+        let end = start + self.output[start..].find(expected).unwrap();
+        self.wait_for("\n", end, timeout).await
     }
 }
 
