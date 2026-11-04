@@ -327,7 +327,9 @@ impl virt::Partition for MshvPartition {
     }
 
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
-        Some(self)
+        // TODO: Support resetting CCA launch state and rebuilding the protected
+        // guest before advertising reset support.
+        self.inner.cca().is_none().then_some(self)
     }
 
     fn doorbell_registration(
