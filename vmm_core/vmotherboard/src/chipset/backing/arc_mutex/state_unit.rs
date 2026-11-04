@@ -256,13 +256,26 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
 #[cfg(test)]
 mod tests {
     use super::ArcMutexChipsetDeviceUnit;
+    use super::DynamicDeviceUnit;
+    use crate::DebugEventHandler;
+    use crate::chipset::Chipset;
+    use crate::chipset::io_ranges::IoRanges;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
+    use chipset_device::mmio::MmioIntercept;
+    use chipset_device::pio::PortIoIntercept;
+    use chipset_device_resources::ResolvedChipsetDevice;
     use closeable_mutex::CloseableMutex;
     use futures::poll;
     use inspect::InspectMut;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use state_unit::StateUnit;
+    use state_unit::StateUnits;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use std::task::Poll;
     use test_with_tracing::test;
     use vmcore::device_state::ChangeDeviceState;
@@ -270,7 +283,10 @@ mod tests {
     use vmcore::save_restore::NoSavedState;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateBlob;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
 
     #[derive(InspectMut)]
     struct Device {
@@ -373,30 +389,6 @@ mod tests {
         );
         assert!(!device.lock().restored);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::DebugEventHandler;
-    use crate::chipset::Chipset;
-    use crate::chipset::io_ranges::IoRanges;
-    use chipset_device::ChipsetDevice;
-    use chipset_device::io::IoResult;
-    use chipset_device::mmio::MmioIntercept;
-    use chipset_device::pio::PortIoIntercept;
-    use chipset_device_resources::ResolvedChipsetDevice;
-    use pal_async::DefaultDriver;
-    use state_unit::StateUnits;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-    use test_with_tracing::test;
-    use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::NoSavedState;
-    use vmcore::save_restore::SaveRestore;
-    use vmcore::vm_task::SingleDriverBackend;
-    use vmcore::vm_task::VmTaskDriverSource;
 
     struct DropMarker(Arc<AtomicBool>);
 
