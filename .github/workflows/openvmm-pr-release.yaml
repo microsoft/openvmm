@@ -43,8 +43,8 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -185,7 +185,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -612,7 +612,7 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -748,7 +748,7 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -950,7 +950,7 @@ jobs:
     name: build openhcl (mi-secure) [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-amd-westus3-v7
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1168,7 +1168,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -1349,7 +1349,7 @@ jobs:
     name: clippy [macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1558,7 +1558,7 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -1813,7 +1813,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
@@ -2010,8 +2010,8 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2248,8 +2248,8 @@ jobs:
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -3943,7 +3943,7 @@ jobs:
     - run: |
         set -x
         sudo tdnf install -y gcc glibc-devel
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4175,6 +4175,7 @@ jobs:
       contents: read
       id-token: write
     needs:
+    - job0
     - job10
     - job3
     - job4
@@ -4187,7 +4188,7 @@ jobs:
     - run: |
         set -x
         sudo tdnf install -y gcc glibc-devel
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4429,7 +4430,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
@@ -4763,7 +4764,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -4899,7 +4900,7 @@ jobs:
     - run: |
         set -x
         sudo tdnf install -y gcc glibc-devel
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5241,7 +5242,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows ARM64)
@@ -5488,7 +5489,7 @@ jobs:
     name: build artifacts (shared VMM tests) [linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=openvmm-gh-intel-westus3-v6
+    - 1ES.Pool=openvmm-gh-amd-westus3-v6
     - 1ES.ImageOverride=ubuntu2404-amd64-prepped
     - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
@@ -5738,7 +5739,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -5902,7 +5903,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -6121,7 +6122,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
@@ -6287,7 +6288,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-        ./rustup-init.exe -y --default-toolchain=1.95.0
+        ./rustup-init.exe -y --default-toolchain=1.97.1
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows'
       name: rustup (Windows X64)
