@@ -99,8 +99,6 @@ const ATTESTATION_REPORT_DATA_SIZE: usize = 0x40;
 
 // 24 hours (in seconds)
 const AK_CERT_RENEW_PERIOD: std::time::Duration = std::time::Duration::from_hours(24);
-// 2 seconds
-const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 
 // 16kB and 32kB: These are the sizes of the blob that gets provisioned for the
 // vTPM state. vtpmservice provisions a 16kB blob; HCL/OpenHCL provision a 32kB
@@ -1630,40 +1628,23 @@ impl Tpm {
             std::time::Duration::new(0, 0)
         };
 
-        let attestation_report_renew_elapsed =
-            if let Some(renew_time) = self.attestation_report_renew_time {
-                now.duration_since(renew_time)
-                    .expect("system clock went backwards")
-            } else {
-                std::time::Duration::new(0, 0)
-            };
-
         // On start of read of attestation report index, refresh report when
         // attestation report is supported.
         if u32::from(nv_read.nv_index) == TPM_NV_INDEX_ATTESTATION_REPORT
             && self.ak_cert_type.attested()
         {
-            if attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
-                || self.attestation_report_renew_time.is_none()
-            {
-                // Renew the attestation report.
-                if let Err(e) = self.renew_attestation_report() {
-                    tracelimit::error_ratelimited!(
-                        CVM_ALLOWED,
-                        error = &e as &dyn std::error::Error,
-                        "Error renewing the attestation report"
-                    );
-                }
-            } else {
-                tracing::warn!("Hardware attestation report generation was rate limited");
+            // Renew the attestation report.
+            if let Err(e) = self.renew_attestation_report() {
+                tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
+                    error = &e as &dyn std::error::Error,
+                    "Error renewing the attestation report"
+                );
             }
         } else {
-            // Renew AkCert if exceeds 24 hours since renewal, or not populated,
-            // and past hardware renewal period.
-            let renew_cert_needed = (self.ak_cert_renew_time.is_none()
-                || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD)
-                && (attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
-                    || self.attestation_report_renew_time.is_none());
+            // Renew AkCert if exceeds 24 hours since renewal, or not populated.
+            let renew_cert_needed =
+                self.ak_cert_renew_time.is_none() || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD;
 
             tracing::debug!(renew_cert_needed, ak_cert_renew_time =? self.ak_cert_renew_time, "tpm: cert renew check");
 
