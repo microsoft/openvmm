@@ -8669,8 +8669,16 @@ name = "tdisp_lstoraccel"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "disklayer_ram",
  "nvme_spec",
+ "pal_async",
+ "static_assertions",
  "tdisp",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "vmcore",
+ "vmgs",
+ "vmgs_broker",
  "zerocopy",
 ]
 

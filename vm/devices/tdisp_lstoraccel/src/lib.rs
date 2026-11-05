@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This crate reads the vendor/device specific information a local storage
-//! accelerator (lstoraccel) places in the DEVICE_SPECIFIC_INFO field of its
-//! TDI interface report, which `tdisp::devicereport::deserialize_tdi_report`
-//! surfaces as an uninterpreted byte slice.
+//! Device-specific TDISP support and namespace credential storage for a local
+//! storage accelerator (lstoraccel).
+//!
+//! The report parser reads the DEVICE_SPECIFIC_INFO field of the accelerator's
+//! TDI interface report. `tdisp::devicereport::deserialize_tdi_report` surfaces
+//! this field as an uninterpreted byte slice.
 //!
 //! The field holds two sections, in order:
 //!
@@ -35,6 +37,9 @@
 //! the key confirmation digest and NVMe queue hash are not verified.
 
 #![forbid(unsafe_code)]
+
+/// Persistent namespace credentials backed by a non-volatile store.
+pub mod credential_store;
 
 /// The key information section of the vendor/device specific information.
 pub mod key_info;
