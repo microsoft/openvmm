@@ -2698,10 +2698,16 @@ mod tests {
         assert!(!GstsReg::from(read32(&mut dev, 0x01C)).qies());
         assert_eq!(read64(&mut dev, 0x080), 0);
 
-        write32(&mut dev, 0x018, enabled);
+        // Empty the queue before enabling so replay or a queue error cannot
+        // mask a failure to reset completion tracking.
         write64(&mut dev, 0x088, 0);
+        write32(&mut dev, 0x018, enabled);
+        assert_eq!(read64(&mut dev, 0x080), 0);
+        assert_eq!(read64(&mut dev, 0x088), 0);
+        assert!(!FstsReg::from(read32(&mut dev, 0x034)).iqe());
         write32(&mut dev, 0x018, 0);
         assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
+        assert!(!FstsReg::from(read32(&mut dev, 0x034)).iqe());
     }
 
     #[test]
