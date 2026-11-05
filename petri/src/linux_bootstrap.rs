@@ -89,7 +89,7 @@ fn build_init_script(
         GuestNetwork::QemuUser => ("10.0.2.15", "10.0.2.2", "10.0.2.3"),
     };
     let mut script = String::from("#!/bin/sh\n");
-    if matches!(agent, AgentLocation::Initrd(_)) {
+    if require_mshv || matches!(agent, AgentLocation::Initrd(_)) {
         script.push_str("set -eu\n");
     }
     script.push_str(&format!(
@@ -99,7 +99,10 @@ fn build_init_script(
          mount -t devpts devpts /dev/pts\ndate -u -s @{epoch}\n"
     ));
     if require_mshv {
-        script.push_str("test -c /dev/mshv\nuname -a\n");
+        script.push_str(
+            "test -c /dev/mshv || { echo 'incubator: /dev/mshv is missing' >&2; exit 1; }\n\
+             uname -a\n",
+        );
     }
     let pipette = match agent {
         AgentLocation::Initrd(_) => "/pipette",
@@ -226,11 +229,21 @@ mod tests {
                 AgentLocation::Initrd(Path::new("unused")),
                 true,
             ),
+            (
+                GuestNetwork::QemuUser,
+                AgentLocation::Share("/share/agent's pipette"),
+                true,
+            ),
         ] {
             let script = build_init_script(network, agent, mshv, 123456789);
             assert!(script.contains("export SSL_CERT_FILE=/incubator-ca-certificates.crt\n"));
             assert!(script.contains("date -u -s @123456789\n"));
-            assert_eq!(script.contains("test -c /dev/mshv\n"), mshv);
+            assert_eq!(script.contains("test -c /dev/mshv ||"), mshv);
+            assert_eq!(script.contains("incubator: /dev/mshv is missing"), mshv);
+            assert_eq!(
+                script.contains("set -eu\n"),
+                mshv || matches!(agent, AgentLocation::Initrd(_)),
+            );
             if matches!(agent, AgentLocation::Initrd(_)) {
                 let transport = match network {
                     GuestNetwork::QemuUser => "tcp",

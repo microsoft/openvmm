@@ -17,6 +17,7 @@ flowey_request! {
         pub kernel: Option<PathBuf>,
         pub initrd: Option<PathBuf>,
         pub firmware: Option<PathBuf>,
+        pub firmware_vars: Option<PathBuf>,
         pub boot_artifacts: Option<PathBuf>,
         pub share: PathBuf,
         pub dir: PathBuf,
@@ -39,6 +40,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_mshv_host_boot::Node>();
         ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
+        ctx.import::<crate::resolve_mshv_support::Node>();
+        ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
@@ -52,6 +55,7 @@ impl SimpleFlowNode for Node {
             kernel,
             initrd,
             firmware,
+            firmware_vars,
             boot_artifacts,
             share,
             dir,
@@ -61,19 +65,41 @@ impl SimpleFlowNode for Node {
             incubator_args,
             done,
         } = request;
+        let source = parse_source_profile(&source_profile)?;
+        let qemu_tcg = source["incubator"]["type"].as_str() == Some("qemu-tcg");
+        let arch = if qemu_tcg {
+            CommonArch::Aarch64
+        } else {
+            CommonArch::X86_64
+        };
+        let host_arch: CommonArch = ctx.arch().try_into()?;
         ctx.config(crate::resolve_mshv_boot_artifacts::Config {
             local_path: boot_artifacts.map(|path| ConfigVar(ReadVar::from_static(path))),
         });
-        let openvmm = ctx.reqv(|openvmm| crate::build_openvmm::Request {
-            params: crate::build_openvmm::OpenvmmBuildParams {
-                target: CommonTriple::X86_64_LINUX_GNU,
-                profile,
-                features: Default::default(),
-            },
-            openvmm,
+        let openvmm = (!qemu_tcg).then(|| {
+            ctx.reqv(|openvmm| crate::build_openvmm::Request {
+                params: crate::build_openvmm::OpenvmmBuildParams {
+                    target: CommonTriple::X86_64_LINUX_GNU,
+                    profile,
+                    features: Default::default(),
+                },
+                openvmm,
+            })
+        });
+        let qemu = qemu_tcg.then(|| {
+            ctx.reqv(|qemu| {
+                crate::resolve_openvmm_qemu::Request::Get(
+                    crate::resolve_openvmm_qemu::QemuFile::SystemAarch64,
+                    host_arch,
+                    qemu,
+                )
+            })
         });
         let incubator = ctx.reqv(|incubator| crate::build_incubator::Request {
-            target: CommonTriple::X86_64_LINUX_GNU,
+            target: match host_arch {
+                CommonArch::X86_64 => CommonTriple::X86_64_LINUX_GNU,
+                CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_GNU,
+            },
             profile: if profile.to_release() {
                 crate::run_cargo_build::BuildProfile::Release
             } else {
@@ -82,41 +108,62 @@ impl SimpleFlowNode for Node {
             incubator,
         });
         let pipette = ctx.reqv(|pipette| crate::build_pipette::Request {
-            target: CommonTriple::X86_64_LINUX_MUSL,
+            target: match arch {
+                CommonArch::X86_64 => CommonTriple::X86_64_LINUX_MUSL,
+                CommonArch::Aarch64 => CommonTriple::AARCH64_LINUX_MUSL,
+            },
             profile,
             pipette,
         });
-        let host_boot =
-            ctx.reqv(|host_boot| crate::build_mshv_host_boot::Request { profile, host_boot });
-        let artifacts = ctx.reqv(|artifacts| crate::resolve_mshv_boot_artifacts::Request {
-            arch: CommonArch::X86_64,
-            artifacts,
+        let host_boot = ctx.reqv(|host_boot| crate::build_mshv_host_boot::Request {
+            arch,
+            profile,
+            host_boot,
         });
+        let artifacts =
+            ctx.reqv(|artifacts| crate::resolve_mshv_boot_artifacts::Request { arch, artifacts });
         let kernel = kernel.map(ReadVar::from_static).unwrap_or_else(|| {
             ctx.reqv(|kernel| {
                 crate::resolve_openvmm_test_linux_kernel::Request::Get(
-                    crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage,
-                    CommonArch::X86_64,
+                    match arch {
+                        CommonArch::X86_64 => {
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::BzImage
+                        }
+                        CommonArch::Aarch64 => {
+                            crate::resolve_openvmm_test_linux_kernel::OpenvmmTestKernelFile::Kernel
+                        }
+                    },
+                    arch,
                     crate::resolve_openvmm_test_linux_kernel::LinuxTestKernelVersion::MshvTest,
                     kernel,
                 )
             })
         });
         let initrd = initrd.map(ReadVar::from_static).unwrap_or_else(|| {
-            ctx.reqv(|initrd| {
-                crate::resolve_openvmm_test_initrd::Request::Get(CommonArch::X86_64, initrd)
+            ctx.reqv(|initrd| crate::resolve_openvmm_test_initrd::Request::Get(arch, initrd))
+        });
+        let sbsa = (qemu_tcg && firmware.is_none()).then(|| {
+            ctx.reqv(|directory| crate::resolve_mshv_support::Request {
+                package: crate::resolve_mshv_support::MshvSupport::Sbsa,
+                directory,
             })
         });
-        let firmware = firmware.map(ReadVar::from_static).unwrap_or_else(|| {
-            ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                arch: CommonArch::X86_64,
+        let firmware = match (firmware, sbsa.clone()) {
+            (Some(path), _) => ReadVar::from_static(path),
+            (None, Some(sbsa)) => sbsa.map(ctx, |dir| dir.join("SBSA_FLASH0.fd")),
+            (None, None) => ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch,
                 flavor: None,
                 msvm_fd,
-            })
-        });
+            }),
+        };
+        let firmware_vars = firmware_vars
+            .map(ReadVar::from_static)
+            .or_else(|| sbsa.map(|sbsa| sbsa.map(ctx, |dir| dir.join("SBSA_FLASH1.fd"))));
 
         ctx.emit_rust_step("prepare standalone Incubator profile and command", |ctx| {
             let openvmm = openvmm.claim(ctx);
+            let qemu = qemu.claim(ctx);
             let incubator = incubator.claim(ctx);
             let pipette = pipette.claim(ctx);
             let host_boot = host_boot.claim(ctx);
@@ -124,13 +171,19 @@ impl SimpleFlowNode for Node {
             let kernel = kernel.claim(ctx);
             let initrd = initrd.claim(ctx);
             let firmware = firmware.claim(ctx);
+            let firmware_vars = firmware_vars.claim(ctx);
             done.claim(ctx);
             move |rt| {
                 let runner = rt.read(incubator).bin;
-                let crate::build_openvmm::OpenvmmOutput::LinuxBin { bin: openvmm, .. } =
-                    rt.read(openvmm)
-                else {
-                    unreachable!()
+                let launcher = if let Some(qemu) = qemu {
+                    rt.read(qemu)
+                } else {
+                    let crate::build_openvmm::OpenvmmOutput::LinuxBin { bin, .. } =
+                        rt.read(openvmm.context("missing OpenVMM launcher")?)
+                    else {
+                        unreachable!()
+                    };
+                    bin
                 };
                 let crate::build_pipette::PipetteOutput::LinuxBin { bin: pipette, .. } =
                     rt.read(pipette)
@@ -146,31 +199,35 @@ impl SimpleFlowNode for Node {
                 let runtime = stage_runtime(
                     &dir.join("runtime"),
                     &[
-                        ("openvmm", &openvmm),
+                        ("launcher", &launcher),
                         ("incubator", &runner),
                         ("pipette", &pipette),
                         ("mshv_host_boot.efi", &host_boot),
                     ],
                 )?;
-                let openvmm = runtime.join("openvmm");
+                let launcher = runtime.join("launcher");
                 let runner = runtime.join("incubator");
                 let host_boot = runtime.join("mshv_host_boot.efi");
                 let pipette_path = runtime.join("pipette");
                 let relative_pipette = pipette_path.strip_prefix(&share)?;
                 let guest_pipette = format!("/share/{}", path_str(relative_pipette)?);
 
-                let config = resolve_profile(
+                let mut config = resolve_profile(
                     &source_profile,
-                    &openvmm,
+                    &launcher,
                     &host_boot,
                     &firmware,
                     &artifacts,
                     kernel_cmdline.as_deref(),
                     hypervisor_cmdline.as_deref(),
                 )?;
+                if let Some(firmware_vars) = firmware_vars {
+                    config["boot"]["firmware-vars"] =
+                        toml_edit::value(path_str(&rt.read(firmware_vars))?);
+                }
                 let profile_path = dir.join("profile.toml");
                 let profile_file = tempfile::NamedTempFile::new_in(&dir)?;
-                fs_err::write(profile_file.path(), config)?;
+                fs_err::write(profile_file.path(), config.to_string())?;
                 profile_file.persist(&profile_path)?;
                 let args = vec![
                     "--profile".into(),
@@ -215,25 +272,35 @@ pub fn parse_source_profile(contents: &str) -> anyhow::Result<toml_edit::Documen
     let incubator = config.get("incubator").context("missing [incubator]")?;
     let boot = config.get("boot").context("missing [boot]")?;
     anyhow::ensure!(
-        incubator.get("type").and_then(|v| v.as_str()) == Some("openvmm")
-            && incubator.get("arch").and_then(|v| v.as_str()) == Some("x86-64")
-            && boot.get("type").and_then(|v| v.as_str()) == Some("mshv"),
-        "Incubator provisioning currently supports only type=openvmm, arch=x86-64, boot.type=mshv profiles"
+        matches!(
+            (
+                incubator.get("type").and_then(|v| v.as_str()),
+                incubator.get("arch").and_then(|v| v.as_str())
+            ),
+            (Some("openvmm"), Some("x86-64")) | (Some("qemu-tcg"), Some("aarch64"))
+        ) && boot.get("type").and_then(|v| v.as_str()) == Some("mshv"),
+        "Incubator provisioning supports mshv boot with x64 OpenVMM or ARM64 QEMU TCG"
     );
+    if incubator.get("type").and_then(|v| v.as_str()) == Some("qemu-tcg") {
+        anyhow::ensure!(
+            incubator.get("machine").and_then(|v| v.as_str()) == Some("sbsa-ref"),
+            "ARM64 Incubator provisioning requires the sbsa-ref machine"
+        );
+    }
     Ok(config)
 }
 
 fn resolve_profile(
     source: &str,
-    openvmm: &Path,
+    launcher: &Path,
     host_boot: &Path,
     firmware: &Path,
     artifacts: &Path,
     kernel_cmdline: Option<&str>,
     hypervisor_cmdline: Option<&str>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<toml_edit::DocumentMut> {
     let mut config = parse_source_profile(source)?;
-    config["incubator"]["binary"] = toml_edit::value(path_str(openvmm)?);
+    config["incubator"]["binary"] = toml_edit::value(path_str(launcher)?);
     config["boot"]["host-boot"] = toml_edit::value(path_str(host_boot)?);
     config["boot"]["firmware"] = toml_edit::value(path_str(firmware)?);
     config["boot"]["boot-artifacts"] = toml_edit::value(path_str(artifacts)?);
@@ -243,7 +310,7 @@ fn resolve_profile(
     if let Some(value) = hypervisor_cmdline {
         config["boot"]["hypervisor-cmdline"] = toml_edit::value(value);
     }
-    Ok(config.to_string())
+    Ok(config)
 }
 
 fn path_str(path: &Path) -> anyhow::Result<&str> {
@@ -313,6 +380,43 @@ mod tests {
 
     const SOURCE_PROFILE: &str =
         include_str!("../../../../petri/incubator/profiles/x86_64-mshv.toml");
+    const ARM64_PROFILE: &str =
+        include_str!("../../../../petri/incubator/profiles/aarch64-tcg-mshv.toml");
+
+    #[test]
+    fn arm64_profile_preserves_platform_and_boot_options() -> anyhow::Result<()> {
+        let config = resolve_profile(
+            ARM64_PROFILE,
+            Path::new("/resolved/qemu"),
+            Path::new("/resolved/host-boot"),
+            Path::new("/resolved/flash0"),
+            Path::new("/resolved/artifacts"),
+            None,
+            None,
+        )?;
+        assert_eq!(
+            config["incubator"]["binary"].as_str(),
+            Some("/resolved/qemu")
+        );
+        assert_eq!(config["incubator"]["machine"].as_str(), Some("sbsa-ref"));
+        assert_eq!(config["incubator"]["smp"].as_str(), Some("1"));
+        assert_eq!(
+            config["boot"]["firmware"].as_str(),
+            Some("/resolved/flash0")
+        );
+        let source = parse_source_profile(ARM64_PROFILE)?;
+        assert_eq!(
+            config["boot"]["kernel-cmdline"].as_str(),
+            source["boot"]["kernel-cmdline"].as_str()
+        );
+        assert_eq!(
+            config["boot"]["hypervisor-cmdline"].as_str(),
+            source["boot"]["hypervisor-cmdline"].as_str()
+        );
+        assert!(parse_source_profile(&ARM64_PROFILE.replace("sbsa-ref", "virt")).is_err());
+        assert!(parse_source_profile(&ARM64_PROFILE.replace("aarch64", "x86-64")).is_err());
+        Ok(())
+    }
 
     #[test]
     fn unsupported_profiles_are_rejected_before_provisioning() {
@@ -339,7 +443,7 @@ mod tests {
         ];
         let resolved =
             resolve_profile(&source, paths[0], paths[1], paths[2], paths[3], None, None)?;
-        let config = parse_source_profile(&resolved)?;
+        let config = parse_source_profile(&resolved.to_string())?;
         assert_eq!(config["incubator"]["memory"].as_str(), Some("12G"));
         assert_eq!(config["incubator"]["processors"].as_integer(), Some(4));
         assert_eq!(
@@ -376,7 +480,7 @@ mod tests {
             Some("debug"),
             Some("MSHV_ENABLE=TRUE"),
         )?;
-        let config = parse_source_profile(&overridden)?;
+        let config = parse_source_profile(&overridden.to_string())?;
         assert_eq!(config["boot"]["kernel-cmdline"].as_str(), Some("debug"));
         assert_eq!(
             config["boot"]["hypervisor-cmdline"].as_str(),

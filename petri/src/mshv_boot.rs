@@ -9,6 +9,7 @@ use crate::ResolvedArtifact;
 use crate::linux_bootstrap::AgentLocation;
 use crate::linux_bootstrap::GuestNetwork;
 use crate::mshv_image::MshvImage;
+use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_vmm_test::artifacts::loadable;
 use std::sync::Arc;
@@ -28,14 +29,14 @@ impl From<PetriInitrd> for MshvInitrd {
     }
 }
 
-/// Explicit boot media for an x86-64 mshv root partition.
+/// Explicit boot media for an mshv root partition.
 ///
 /// Pass this recipe to [`crate::UefiGuest::Mshv`]. Petri composes and owns the
 /// boot disk when preparing the VM. The caller supplies UEFI firmware and
 /// configures nested virtualization, storage, networking, and file shares.
 #[derive(Debug, Clone)]
 pub struct MshvBoot {
-    /// Development-only x64 UEFI host boot application executable.
+    /// Development-only UEFI host boot application for the guest architecture.
     pub host_boot: ResolvedArtifact,
     /// Linux kernel with mshv EFI-launch support.
     pub kernel: ResolvedArtifact,
@@ -85,6 +86,7 @@ impl MshvBoot {
     /// userspace nor selects its agent, network, or trust store.
     pub(crate) fn build(
         &self,
+        arch: MachineArch,
         use_virtio_vsock: bool,
         prepared: Option<&PetriInitrd>,
     ) -> anyhow::Result<Disk> {
@@ -98,6 +100,7 @@ impl MshvBoot {
         fs_err::remove_file(&image)?;
         let boot = self.boot_artifacts.get().join("boot");
         MshvImage {
+            arch,
             host_boot: self.host_boot.get(),
             payload: &boot,
             kernel: self.kernel.get(),
@@ -152,7 +155,7 @@ mod tests {
             kernel_cmdline: "test_option=caller".into(),
             hypervisor_cmdline: "MSHV_SCHEDULER_TYPE=ROOT".into(),
         }
-        .build(true, None)?;
+        .build(MachineArch::X86_64, true, None)?;
         let Disk::Temporary(path) = &disk else {
             panic!("expected owned temporary disk")
         };
@@ -206,7 +209,7 @@ mod tests {
             kernel_cmdline: "test_option=caller".into(),
             hypervisor_cmdline: "MSHV_SCHEDULER_TYPE=ROOT".into(),
         };
-        let error = boot.build(true, None).unwrap_err();
+        let error = boot.build(MachineArch::X86_64, true, None).unwrap_err();
         assert!(
             error
                 .to_string()

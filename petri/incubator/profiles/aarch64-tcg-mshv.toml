@@ -1,0 +1,22 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# TF-A + SBSA UEFI: supply matching ARM64 boot artifacts and a root kernel.
+[incubator]
+type = "qemu-tcg"
+arch = "aarch64"
+binary = "qemu-system-aarch64"
+machine = "sbsa-ref"
+cpu = "max"
+memory = "8G"
+smp = "1"
+cmdline = ""
+
+[boot]
+type = "mshv"
+host-boot = "/path/to/aarch64/mshv_host_boot.efi"
+firmware = "/path/to/SBSA_FLASH0.fd"
+firmware-vars = "/path/to/SBSA_FLASH1.fd"
+boot-artifacts = "/path/to/aarch64-artifacts"
+kernel-cmdline = "console=ttyAMA0,115200 earlycon panic=-1"
+hypervisor-cmdline = "MSHV_ROOT=\\Windows MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=ROOT MSHV_FORCE_NESTED=TRUE"

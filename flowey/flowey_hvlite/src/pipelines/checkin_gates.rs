@@ -1132,6 +1132,7 @@ impl IntoPipeline for CheckinGatesCli {
             let job = if let Some((pub_host_boot, _)) = mshv_host_boot_artifact {
                 job.publish(pub_host_boot, |host_boot| {
                     flowey_lib_hvlite::build_mshv_host_boot::Request {
+                        arch: CommonArch::X86_64,
                         profile: CommonProfile::from_release(release),
                         host_boot,
                     }

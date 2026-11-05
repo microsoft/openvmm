@@ -1,23 +1,28 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compose an x86-64 mshv boot disk without host filesystem utilities.
+//! Compose an mshv boot disk without host filesystem utilities.
 
 #![forbid(unsafe_code)]
 
 use clap::Parser;
+use incubator::Arch;
 use petri::mshv_image::MshvImage;
+use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 struct Args {
-    /// Development-only mshv_host_boot.efi built for x86_64-unknown-uefi.
+    /// Architecture of the supplied boot executables.
+    #[arg(long, value_enum, default_value = "x86-64")]
+    arch: Arch,
+    /// Development-only mshv_host_boot.efi built for the matching UEFI target.
     #[arg(long)]
     host_boot: PathBuf,
     /// Directory containing HvLoader.efi, lxhvloader.dll, and Windows/System32.
     #[arg(long)]
     payload: PathBuf,
-    /// mshv-enabled x64 Linux kernel with EFI stub support.
+    /// mshv-enabled Linux kernel with EFI stub support.
     #[arg(long)]
     kernel: PathBuf,
     /// Initramfs containing /init and the desired runtime.
@@ -36,7 +41,12 @@ struct Args {
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    let arch = match args.arch {
+        Arch::X86_64 => MachineArch::X86_64,
+        Arch::Aarch64 => MachineArch::Aarch64,
+    };
     MshvImage {
+        arch,
         host_boot: &args.host_boot,
         payload: &args.payload,
         kernel: &args.kernel,

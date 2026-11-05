@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! QEMU backend for Petri. Currently only supports Aarch64 CPU emulation on
-//! Linux x64 hosts, but could be modified to support more qemu-system-arch
+//! Linux x64 and ARM64 hosts, but could be modified to support more qemu-system-arch
 //! configurations in the future.
 
 pub mod devices;
@@ -68,6 +68,7 @@ pub struct QemuPetriConfig {
     smp: Option<String>,
     memory: Option<String>,
     command_line: String,
+    firmware_vars: Option<Arc<TempPath>>,
 }
 
 impl QemuPetriBackend {
@@ -86,6 +87,9 @@ pub struct QemuPetriRuntime {
     host_pipette_port: u16,
     log_tasks: Vec<Task<anyhow::Result<()>>>,
     output_dir: PathBuf,
+    // QEMU opens disks after spawn; keep temporary media alive until teardown.
+    _boot_disks: Vec<crate::PcieVirtioBlkDrive>,
+    _firmware_vars: Option<Arc<TempPath>>,
 }
 
 #[async_trait]
@@ -97,8 +101,8 @@ impl PetriVmmBackend for QemuPetriBackend {
     const SUPPORTS_FILE_SHARING: bool = true;
 
     fn check_compat(_firmware: &Firmware, _arch: MachineArch) -> bool {
-        // Our QEMU bachend only supports linux X64 at this time
-        MachineArch::X86_64 == MachineArch::host() && cfg!(target_os = "linux")
+        // Registered QEMU tests resolve an x64 executable; Incubator supplies its own.
+        MachineArch::host() == MachineArch::X86_64 && cfg!(target_os = "linux")
     }
 
     fn quirks(_firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
@@ -141,9 +145,6 @@ impl PetriVmmBackend for QemuPetriBackend {
     }
 
     fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
-        // QEMU bachend only supports linux X64 with an aarch64 guest
-        // TODO: we should have QEMU_SYSTEM_<GUEST_ARCH>_NATIVE symbols
-        // and match here based on guest arch.
         assert_eq!(arch, MachineArch::Aarch64);
         QemuPetriBackend {
             qemu_path: resolver
@@ -177,9 +178,7 @@ impl PetriVmmBackend for QemuPetriBackend {
             &config,
             &qemu_config,
             host_pipette_port,
-            prebuilt_initrd
-                .as_ref()
-                .context("QEMU requires a prebuilt initrd")?,
+            prebuilt_initrd.as_ref(),
         )?;
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
@@ -223,6 +222,8 @@ impl PetriVmmBackend for QemuPetriBackend {
                 host_pipette_port,
                 log_tasks,
                 output_dir: log_source.output_dir().to_owned(),
+                _boot_disks: config.pcie_virtio_blk_drives,
+                _firmware_vars: qemu_config.firmware_vars,
             },
             config
                 .firmware
@@ -231,7 +232,25 @@ impl PetriVmmBackend for QemuPetriBackend {
     }
 }
 
+/// Copy a cached firmware template into disposable writable flash.
+pub fn copy_firmware_vars(template: &Path) -> anyhow::Result<Arc<TempPath>> {
+    let vars = tempfile::Builder::new()
+        .prefix("petri-flash1-")
+        .tempfile()
+        .context("failed to create disposable firmware flash")?
+        .into_temp_path();
+    fs_err::copy(template, &vars).context("failed to copy writable firmware flash template")?;
+    Ok(Arc::new(vars))
+}
+
 impl QemuPetriConfig {
+    /// Use paired pflash images instead of `-bios`, retaining the caller's
+    /// disposable writable flash until the VM stops.
+    pub fn with_firmware_vars(mut self, path: Option<Arc<TempPath>>) -> Self {
+        self.firmware_vars = path;
+        self
+    }
+
     /// Override the emulated machine, CPU, topology, and kernel command line.
     pub fn with_platform(
         mut self,
@@ -468,7 +487,7 @@ pub fn build_qemu_command(
     config: &PetriVmConfig,
     qemu_config: &QemuPetriConfig,
     host_pipette_port: u16,
-    prebuilt_initrd: &PetriInitrd,
+    prebuilt_initrd: Option<&PetriInitrd>,
 ) -> anyhow::Result<Command> {
     let PetriVmConfig {
         name: _,
@@ -510,6 +529,7 @@ pub fn build_qemu_command(
         smp,
         memory,
         command_line,
+        firmware_vars,
     } = qemu_config;
 
     // make sure we aren't silently ignoring any configurations
@@ -530,11 +550,11 @@ pub fn build_qemu_command(
     assert!(tpm.is_none());
     assert!(vmbus_storage_controllers.is_empty());
     assert!(pcie_nvme_drives.is_empty());
-    assert!(pcie_virtio_blk_drives.is_empty());
     assert!(physical_nvme_devices.is_empty());
 
     let mut cmd = Command::new(binary);
 
+    cmd.arg("-accel").arg("tcg");
     cmd.arg("-machine").arg(
         machine
             .as_deref()
@@ -551,19 +571,89 @@ pub fn build_qemu_command(
     cmd.arg("-smp")
         .arg(smp.clone().unwrap_or_else(|| vp_count.to_string()));
     cmd.arg("-nographic");
-
-    let PetriInitrd { path, rdinit_param } = prebuilt_initrd;
+    let is_sbsa = machine.as_deref().and_then(|m| m.split(',').next()) == Some("sbsa-ref");
+    if is_sbsa {
+        // SBSA always creates this display; its x86 option ROM is not needed.
+        cmd.arg("-global").arg("bochs-display.romfile=");
+    }
 
     match firmware {
         Firmware::LinuxDirect { kernel, .. } => {
+            anyhow::ensure!(
+                firmware_vars.is_none(),
+                "QEMU linux-direct boot does not support firmware flash"
+            );
+            anyhow::ensure!(
+                pcie_virtio_blk_drives.is_empty(),
+                "QEMU linux-direct boot does not support PCIe boot drives"
+            );
+            let PetriInitrd { path, rdinit_param } =
+                prebuilt_initrd.context("QEMU linux-direct boot requires a prebuilt initrd")?;
             cmd.arg("-kernel").arg(kernel);
             cmd.arg("-initrd").arg(path.as_ref());
+            cmd.arg("-append")
+                .arg(format!("{command_line} rdinit={rdinit_param}").trim());
         }
-        _ => anyhow::bail!("qemu backend only supports linux direct"),
+        Firmware::Uefi {
+            uefi_firmware,
+            guest: crate::UefiGuest::Mshv(_),
+            ..
+        } => {
+            anyhow::ensure!(
+                command_line.trim().is_empty(),
+                "QEMU UEFI boot takes kernel options from the mshv boot recipe"
+            );
+            let [boot_disk] = pcie_virtio_blk_drives.as_slice() else {
+                anyhow::bail!("QEMU mshv boot requires exactly one PCIe virtio boot disk");
+            };
+            anyhow::ensure!(
+                boot_disk.port_name == "s0rc0rp0" && !boot_disk.drive.is_dvd,
+                "QEMU mshv boot requires a disk at the default PCIe boot port"
+            );
+            let Some(crate::Disk::Temporary(path)) = &boot_disk.drive.disk else {
+                anyhow::bail!("QEMU mshv boot requires a temporary raw boot disk");
+            };
+            if let Some(vars) = firmware_vars {
+                for (unit, path, read_only) in [
+                    (0, uefi_firmware.get(), "on"),
+                    (1, vars.as_ref().as_ref(), "off"),
+                ] {
+                    let path = path
+                        .to_str()
+                        .context("firmware flash path is not UTF-8")?
+                        .replace(',', ",,");
+                    cmd.arg("-drive").arg(format!(
+                        "if=pflash,unit={unit},format=raw,readonly={read_only},file={path}"
+                    ));
+                }
+            } else {
+                cmd.arg("-bios").arg(uefi_firmware);
+            }
+            cmd.arg("-blockdev").arg(
+                serde_json::json!({
+                    "driver": "raw",
+                    "node-name": "mshv-boot",
+                    "file": {
+                        "driver": "file",
+                        "filename": path.to_str().context("mshv boot disk path is not UTF-8")?,
+                    },
+                })
+                .to_string(),
+            );
+            if is_sbsa {
+                cmd.arg("-device")
+                    .arg("ide-hd,drive=mshv-boot,bus=ide.0,bootindex=0");
+            } else {
+                cmd.arg("-device")
+                    .arg("pcie-root-port,id=mshv-boot-port,slot=0");
+                cmd.arg("-device").arg(
+                    "virtio-blk-pci,drive=mshv-boot,bus=mshv-boot-port,bootindex=0,disable-legacy=on,romfile=",
+                );
+            }
+        }
+        _ => anyhow::bail!("qemu backend supports only linux-direct or mshv UEFI boot"),
     };
 
-    cmd.arg("-append")
-        .arg(format!("{command_line} rdinit={rdinit_param}").trim());
     cmd.arg("-no-reboot");
 
     // 9p: share the host directory into the guest
@@ -651,9 +741,8 @@ mod tests {
     use super::*;
     use test_with_tracing::test;
 
-    #[test]
-    fn preserves_standalone_platform_options() -> anyhow::Result<()> {
-        let config = PetriVmConfig {
+    fn linux_direct_config() -> PetriVmConfig {
+        PetriVmConfig {
             name: "test".into(),
             arch: MachineArch::Aarch64,
             host_log_levels: None,
@@ -673,7 +762,12 @@ mod tests {
             pcie_virtio_blk_drives: Vec::new(),
             physical_nvme_devices: Default::default(),
             guest_shares: Default::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn preserves_standalone_platform_options() -> anyhow::Result<()> {
+        let config = linux_direct_config();
         let platform = QemuPetriConfig::default().with_platform(
             "virt,gic-version=3".into(),
             "max,sve=off".into(),
@@ -685,12 +779,13 @@ mod tests {
             path: crate::TempOrPersistentPath::Persistent("patched initrd".into()),
             rdinit_param: "/tcg-init.sh".into(),
         };
-        let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, &initrd)?;
+        let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, Some(&initrd))?;
         let args = cmd
             .get_args()
             .map(|s| s.to_str().unwrap())
             .collect::<Vec<_>>();
         for pair in [
+            ["-accel", "tcg"],
             ["-machine", "virt,gic-version=3"],
             ["-cpu", "max,sve=off"],
             ["-m", "4096"],
@@ -709,9 +804,145 @@ mod tests {
             &config,
             &QemuPetriConfig::default(),
             12345,
-            &initrd,
+            Some(&initrd),
         )?;
         assert!(default_cmd.get_args().any(|a| a == "rdinit=/tcg-init.sh"));
+        Ok(())
+    }
+
+    #[test]
+    fn mshv_uefi_uses_firmware_and_owned_raw_media() -> anyhow::Result<()> {
+        let mut config = linux_direct_config();
+        let unused = || ResolvedArtifact::from_local_path("unused".into());
+        config.firmware = Firmware::Uefi {
+            uefi_firmware: ResolvedArtifact::from_local_path("firmware with spaces.fd".into()),
+            guest: crate::UefiGuest::Mshv(crate::mshv_boot::MshvBoot {
+                host_boot: unused(),
+                kernel: unused(),
+                initrd: crate::mshv_boot::MshvInitrd::Base(unused()),
+                boot_artifacts: unused(),
+                kernel_cmdline: "console=ttyAMA0,115200 earlycon panic=-1".into(),
+                hypervisor_cmdline: "MSHV_ROOT=\\Windows MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=ROOT MSHV_FORCE_NESTED=TRUE".into(),
+            }),
+            uefi_config: Default::default(),
+        };
+        let platform = QemuPetriConfig::default();
+        let build = |config: &PetriVmConfig, platform: &QemuPetriConfig| {
+            build_qemu_command(Path::new("qemu"), config, platform, 12345, None)
+        };
+        let error = build(&config, &platform).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one PCIe virtio boot disk")
+        );
+        let disk = tempfile::Builder::new()
+            .prefix("mshv boot,")
+            .tempfile()?
+            .into_temp_path();
+        config
+            .pcie_virtio_blk_drives
+            .push(crate::PcieVirtioBlkDrive {
+                port_name: "s0rc0rp0".into(),
+                drive: Drive::new(Some(crate::Disk::Temporary(Arc::new(disk))), false),
+            });
+        let command = build(&config, &platform)?;
+        let args = command
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            args.windows(2)
+                .any(|a| a == ["-bios", "firmware with spaces.fd"])
+        );
+        assert!(
+            !args
+                .iter()
+                .any(|a| ["-kernel", "-initrd", "-append"].contains(a))
+        );
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with("virtio-blk-pci,drive=mshv-boot,")
+                    && a.contains("bootindex=0"))
+        );
+        let blockdev = args.windows(2).find(|a| a[0] == "-blockdev").unwrap()[1];
+        let blockdev: serde_json::Value = serde_json::from_str(blockdev)?;
+        assert_eq!(blockdev["driver"], "raw");
+        assert!(
+            blockdev["file"]["filename"]
+                .as_str()
+                .unwrap()
+                .contains("mshv boot,")
+        );
+        let vars = Arc::new(
+            tempfile::Builder::new()
+                .prefix("firmware vars,")
+                .tempfile()?
+                .into_temp_path(),
+        );
+        let pflash = QemuPetriConfig::default()
+            .with_platform(
+                "sbsa-ref".into(),
+                "max".into(),
+                "1".into(),
+                "8G".into(),
+                String::new(),
+            )
+            .with_firmware_vars(Some(vars.clone()));
+        let command = build(&config, &pflash)?;
+        let args = command
+            .get_args()
+            .map(|a| a.to_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!args.contains(&"-bios"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-global", "bochs-display.romfile="])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-device", "ide-hd,drive=mshv-boot,bus=ide.0,bootindex=0"])
+        );
+        assert!(!args.iter().any(|arg| arg.contains("mshv-boot-port")
+            || arg.starts_with("virtio-blk-pci,drive=mshv-boot,")));
+        let drives = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-drive")
+            .map(|pair| pair[1])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            drives,
+            [
+                "if=pflash,unit=0,format=raw,readonly=on,file=firmware with spaces.fd",
+                &format!(
+                    "if=pflash,unit=1,format=raw,readonly=off,file={}",
+                    vars.to_str().unwrap().replace(',', ",,")
+                ),
+            ]
+        );
+        assert!(
+            build(&linux_direct_config(), &pflash)
+                .unwrap_err()
+                .to_string()
+                .contains("does not support firmware flash")
+        );
+        let invalid = QemuPetriConfig {
+            command_line: "ignored options".into(),
+            ..Default::default()
+        };
+        assert!(
+            build(&config, &invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("kernel options")
+        );
+        config.pcie_virtio_blk_drives[0].drive.disk = Some(crate::Disk::Memory(4096));
+        assert!(
+            build(&config, &platform)
+                .unwrap_err()
+                .to_string()
+                .contains("temporary raw boot disk")
+        );
         Ok(())
     }
 }
