@@ -135,7 +135,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
                 ..
             }
         ) {
-            return cfg!(target_os = "linux")
+            return cfg!(any(windows, target_os = "linux"))
                 && arch == MachineArch::X86_64
                 && MachineArch::host() == MachineArch::X86_64;
         }

@@ -45,9 +45,7 @@ pub fn prepare_initrd(
         AgentLocation::Initrd(path) => Some(fs_err::read(path).context("reading guest Pipette")?),
         AgentLocation::Share(_) => None,
     };
-    let ca_path = host_ca_certificates_path()?;
-    let certificates = fs_err::read(&ca_path)
-        .with_context(|| format!("reading host CA bundle {}", ca_path.display()))?;
+    let certificates = host_ca_certificates()?;
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("host clock is before the Unix epoch")?
@@ -131,19 +129,59 @@ fn build_init_script(
     script
 }
 
-fn host_ca_certificates_path() -> anyhow::Result<PathBuf> {
-    select_ca_bundle(
-        std::env::var_os("SSL_CERT_FILE")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from),
+fn host_ca_certificates() -> anyhow::Result<Vec<u8>> {
+    if let Some(path) = std::env::var_os("SSL_CERT_FILE")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+    {
+        return fs_err::read(&path)
+            .with_context(|| format!("reading SSL_CERT_FILE {}", path.display()));
+    }
+    system_ca_certificates()
+}
+
+#[cfg(not(windows))]
+fn system_ca_certificates() -> anyhow::Result<Vec<u8>> {
+    let path = select_ca_bundle(
+        None,
         &[
             "/etc/ssl/certs/ca-certificates.crt".into(),
             "/etc/pki/tls/certs/ca-bundle.crt".into(),
             "/etc/ssl/ca-bundle.pem".into(),
         ],
-    )
+    )?;
+    fs_err::read(&path).with_context(|| format!("reading host CA bundle {}", path.display()))
 }
 
+#[cfg(windows)]
+fn system_ca_certificates() -> anyhow::Result<Vec<u8>> {
+    let output = powershell_builder::PowerShellBuilder::new()
+        .cmdlet(
+            "$ErrorActionPreference = 'Stop'; \
+             Get-ChildItem Cert:\\LocalMachine\\Root,Cert:\\CurrentUser\\Root | \
+             ForEach-Object { \
+                 '-----BEGIN CERTIFICATE-----'; \
+                 [Convert]::ToBase64String($_.RawData, [Base64FormattingOptions]::InsertLineBreaks); \
+                 '-----END CERTIFICATE-----' \
+             }",
+        )
+        .finish()
+        .build()
+        .output()
+        .context("exporting Windows root certificates for the Linux guest")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "exporting Windows root certificates failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    anyhow::ensure!(
+        !output.stdout.is_empty(),
+        "Windows root certificate stores are empty"
+    );
+    Ok(output.stdout)
+}
+
+#[cfg(any(not(windows), test))]
 fn select_ca_bundle(explicit: Option<PathBuf>, defaults: &[PathBuf]) -> anyhow::Result<PathBuf> {
     if let Some(path) = explicit {
         anyhow::ensure!(

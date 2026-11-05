@@ -138,7 +138,7 @@ impl SimpleFlowNode for Node {
                     unreachable!()
                 };
                 let host_boot = rt.read(host_boot).efi;
-                let artifacts = rt.read(artifacts);
+                let artifacts = rt.read(artifacts).directory;
                 let kernel = rt.read(kernel);
                 let firmware = rt.read(firmware);
                 let initrd = rt.read(initrd);

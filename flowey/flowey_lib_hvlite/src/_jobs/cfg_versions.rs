@@ -54,6 +54,8 @@ flowey_request! {
         LocalUefi(CommonArch, ReadVar<PathBuf>),
         /// Temporary mshv root bzImage override, separate from child kernels.
         LocalMshvKernel(ReadVar<PathBuf>),
+        /// Use extracted MSHV payloads instead of Linux RPM acquisition.
+        LocalMshvBootArtifacts(ReadVar<PathBuf>),
     }
 }
 
@@ -68,6 +70,7 @@ impl FlowNode for Node {
         ctx.import::<crate::resolve_openvmm_qemu::Node>();
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
+        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::cfg_rustup_version::Node>();
@@ -93,6 +96,7 @@ impl FlowNode for Node {
         let mut local_kernel: BTreeMap<CommonArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> = BTreeMap::new();
         let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
         let mut local_mshv_kernel = None;
+        let mut local_mshv_boot_artifacts = None;
 
         for req in requests {
             match req {
@@ -135,7 +139,14 @@ impl FlowNode for Node {
                 Request::LocalMshvKernel(path) => {
                     anyhow::ensure!(local_mshv_kernel.replace(path).is_none(), "mshv kernel override specified more than once");
                 }
+                Request::LocalMshvBootArtifacts(path) => {
+                    anyhow::ensure!(local_mshv_boot_artifacts.replace(path).is_none(), "MSHV boot artifact override specified more than once");
+                }
             }
+        }
+
+        if let Some(path) = local_mshv_boot_artifacts {
+            ctx.config(crate::resolve_mshv_boot_artifacts::Config { local_path: Some(ConfigVar(path)) });
         }
 
         // Track whether we have local paths for openvmm_deps and protoc
