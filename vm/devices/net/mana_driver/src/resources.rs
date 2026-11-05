@@ -49,11 +49,6 @@ impl ResourceArena {
         self.resources.is_empty()
     }
 
-    /// Returns the number of allocated resources.
-    pub fn len(&self) -> usize {
-        self.resources.len()
-    }
-
     pub(crate) fn push(&mut self, resource: Resource) {
         self.resources.push(resource);
     }
@@ -67,17 +62,7 @@ impl ResourceArena {
         self.resources.remove(i);
     }
 
-    /// Moves every resource in `other` into this arena, leaving `other` empty.
-    pub fn append(&mut self, other: &mut ResourceArena) {
-        self.resources.append(&mut other.resources);
-    }
-
-    /// Tears down the resources, newest first.
-    ///
-    /// Each resource leaves the arena only after its teardown returns, so if
-    /// this future is dropped partway, the arena still holds everything not
-    /// yet torn down and a later call finishes the job.
-    pub(crate) async fn destroy_in_place<T: DeviceBacking>(&mut self, gdma: &mut GdmaDriver<T>) {
+    pub(crate) async fn destroy<T: DeviceBacking>(mut self, gdma: &mut GdmaDriver<T>) {
         let skip_hwc = gdma.get_reset_request_pending().is_some();
         if skip_hwc {
             tracing::info!(
@@ -85,15 +70,18 @@ impl ResourceArena {
                 "skipping resource teardown during HWC reset request"
             );
         }
-        while let Some(resource) = self.resources.last() {
-            let r = match *resource {
-                Resource::MemoryBlock(_) => Ok(()),
+        for resource in self.resources.drain(..).rev() {
+            let r = match resource {
+                Resource::MemoryBlock(mem) => {
+                    drop(ManuallyDrop::into_inner(mem));
+                    Ok(())
+                }
                 // When an HWC reset request is pending, skip sending teardown commands for HWC resources.
                 // HWC requests will fail and the device reclaims resources on its own reset.
                 Resource::DmaRegion { .. } | Resource::Eq { .. } | Resource::BnicQueue { .. }
                     if skip_hwc =>
                 {
-                    Ok(())
+                    continue;
                 }
                 Resource::DmaRegion {
                     dev_id,
@@ -110,9 +98,6 @@ impl ResourceArena {
                         .await
                 }
             };
-            if let Some(Resource::MemoryBlock(mem)) = self.resources.pop() {
-                drop(ManuallyDrop::into_inner(mem));
-            }
             if let Err(err) = r {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
@@ -120,10 +105,6 @@ impl ResourceArena {
                 );
             }
         }
-    }
-
-    pub(crate) async fn destroy<T: DeviceBacking>(mut self, gdma: &mut GdmaDriver<T>) {
-        self.destroy_in_place(gdma).await;
     }
 }
 

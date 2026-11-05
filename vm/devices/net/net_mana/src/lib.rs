@@ -61,7 +61,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
-use parking_lot::Mutex;
+use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -103,9 +103,13 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     vport: Arc<Vport<T>>,
     queues: Vec<QueueResources>,
     arena: ResourceArena,
-    /// Resources a cancelled `get_queues` allocated, destroyed by the next
-    /// `get_queues` or `stop`.
-    orphans: Arc<Mutex<ResourceArena>>,
+    /// The task running the body of `get_queues` or `stop`.
+    ///
+    /// The caller can drop either call at any await point, but the device
+    /// requests they issue must not be abandoned once posted, so the work
+    /// runs in a task that outlives the caller. The handle stays here until
+    /// the task's result is taken, so the next call finishes it.
+    pending: Option<Task<Finished<T>>>,
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
     bounce_buffer: bool,
@@ -113,21 +117,36 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     test_configuration: ManaTestConfiguration,
 }
 
-/// The resources a `get_queues` call has allocated so far.
-///
-/// If the call is dropped before it hands them to the endpoint, they move to
-/// `orphans` instead of leaking.
-struct PendingArena {
-    arena: ResourceArena,
-    orphans: Arc<Mutex<ResourceArena>>,
+/// The state a `get_queues` or `stop` task needs, owned so the task can
+/// outlive the call that spawned it.
+struct EndpointCore<T: DeviceBacking> {
+    vport: Arc<Vport<T>>,
+    queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
+    bounce_buffer: bool,
+    #[cfg(test)]
+    test_configuration: ManaTestConfiguration,
 }
 
-impl Drop for PendingArena {
-    fn drop(&mut self) {
-        if !self.arena.is_empty() {
-            self.orphans.lock().append(&mut self.arena);
-        }
-    }
+/// The result of a `get_queues` or `stop` task.
+enum Finished<T: DeviceBacking> {
+    /// `get_queues` succeeded.
+    Started(StartedQueues<T>),
+    /// `get_queues` failed after freeing what it had allocated.
+    Failed(anyhow::Error),
+    /// `stop` tore everything down.
+    Stopped,
+}
+
+struct StartedQueues<T: DeviceBacking> {
+    queues: Vec<ManaQueue<T>>,
+    resources: Vec<QueueResources>,
+    arena: ResourceArena,
+}
+
+/// An owned copy of [`RssConfig`].
+struct OwnedRssConfig {
+    key: Vec<u8>,
+    indirection_table: Vec<u16>,
 }
 
 struct QueueResources {
@@ -155,7 +174,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             vport: Arc::new(vport),
             queues: Vec::new(),
             arena: ResourceArena::new(),
-            orphans: Arc::new(Mutex::new(ResourceArena::new())),
+            pending: None,
             receive_update: endpoint_rx,
             queue_tracker: Arc::new((AtomicUsize::new(0), SlimEvent::new())),
             bounce_buffer: match dma_mode {
@@ -170,6 +189,55 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
     #[cfg(test)]
     fn set_test_configuration(&mut self, config: ManaTestConfiguration) {
         self.test_configuration = config;
+    }
+
+    fn core(&self) -> EndpointCore<T> {
+        EndpointCore {
+            vport: self.vport.clone(),
+            queue_tracker: self.queue_tracker.clone(),
+            bounce_buffer: self.bounce_buffer,
+            #[cfg(test)]
+            test_configuration: self.test_configuration,
+        }
+    }
+
+    /// Waits for the task in `pending`, if any, and takes its result.
+    ///
+    /// The handle leaves `pending` only once the task has finished, so if this
+    /// future is dropped, the task keeps running and the next wait gets its
+    /// result.
+    async fn wait_pending(&mut self) -> Option<Finished<T>> {
+        let task = self.pending.as_mut()?;
+        let finished = task.await;
+        self.pending = None;
+        Some(finished)
+    }
+
+    /// Finishes the task of a `get_queues` or `stop` whose caller went away.
+    async fn finish_cancelled(&mut self) {
+        match self.wait_pending().await {
+            Some(Finished::Started(started)) => {
+                // Nobody received the queues. Keep their resources so the next
+                // stop tears them down.
+                assert!(self.arena.is_empty() && self.queues.is_empty());
+                drop(started.queues);
+                self.queues = started.resources;
+                self.arena = started.arena;
+            }
+            // A failed `get_queues` has already freed its resources, and a
+            // `stop` leaves nothing behind.
+            Some(Finished::Failed(_) | Finished::Stopped) | None => {}
+        }
+    }
+}
+
+impl<T: DeviceBacking> Drop for ManaEndpoint<T> {
+    fn drop(&mut self) {
+        // Dropping the handle would cancel the task, possibly between posting
+        // a request and receiving its response. Let it run to the end.
+        if let Some(task) = self.pending.take() {
+            task.detach();
+        }
     }
 }
 
@@ -319,9 +387,9 @@ impl<T: DeviceBacking> InspectMut for ManaEndpoint<T> {
     }
 }
 
-impl<T: DeviceBacking> ManaEndpoint<T> {
+impl<T: DeviceBacking> EndpointCore<T> {
     async fn new_queue(
-        &mut self,
+        &self,
         tx_config: &TxConfig,
         arena: &mut ResourceArena,
         cpu: u32,
@@ -415,15 +483,34 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         Ok((queue, resources))
     }
 
-    async fn get_queues_inner(
-        &mut self,
-        arena: &mut ResourceArena,
-        config: Vec<QueueConfig>,
-        rss: Option<&RssConfig<'_>>,
-        queues: &mut Vec<Box<dyn Queue>>,
-    ) -> anyhow::Result<()> {
-        assert!(self.queues.is_empty());
+    async fn get_queues(self, queue_count: usize, rss: Option<OwnedRssConfig>) -> Finished<T> {
+        let mut arena = ResourceArena::new();
+        let mut queues = Vec::new();
+        match self
+            .get_queues_inner(&mut arena, queue_count, rss.as_ref(), &mut queues)
+            .await
+        {
+            Ok(resources) => Finished::Started(StartedQueues {
+                queues,
+                resources,
+                arena,
+            }),
+            Err(err) => {
+                // Drop the queues before destroying the resources they use.
+                drop(queues);
+                self.vport.destroy(arena).await;
+                Finished::Failed(err)
+            }
+        }
+    }
 
+    async fn get_queues_inner(
+        &self,
+        arena: &mut ResourceArena,
+        queue_count: usize,
+        rss: Option<&OwnedRssConfig>,
+        queues: &mut Vec<ManaQueue<T>>,
+    ) -> anyhow::Result<Vec<QueueResources>> {
         let tx_config = self
             .vport
             .config_tx()
@@ -432,13 +519,13 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
 
         let mut queue_resources = Vec::new();
 
-        for _config in config {
+        for _ in 0..queue_count {
             // Start the queue interrupt on CPU 0, which is already used by the
             // HWC so this is cheap. The actual interrupt will be allocated
             // later when `update_target_vp` is first called.
             let (queue, resources) = self.new_queue(&tx_config, arena, 0).await?;
 
-            queues.push(Box::new(queue));
+            queues.push(queue);
             queue_resources.push(resources);
         }
 
@@ -459,7 +546,13 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             RxConfig {
                 rx_enable: Some(true),
                 rss_enable: Some(true),
-                hash_key: Some(rss.key.try_into().ok().context("wrong hash key size")?),
+                hash_key: Some(
+                    rss.key
+                        .as_slice()
+                        .try_into()
+                        .ok()
+                        .context("wrong hash key size")?,
+                ),
                 default_rxobj: Some(queue_resources[0].rxq.wq_obj()),
                 indirection_table: Some(&indirection_table),
             }
@@ -474,48 +567,10 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         };
 
         self.vport.config_rx(&rx_config).await?;
-        self.queues = queue_resources;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
-    fn endpoint_type(&self) -> &'static str {
-        "mana"
+        Ok(queue_resources)
     }
 
-    async fn get_queues(
-        &mut self,
-        config: Vec<QueueConfig>,
-        rss: Option<&RssConfig<'_>>,
-        queues: &mut Vec<Box<dyn Queue>>,
-    ) -> anyhow::Result<()> {
-        // A cancelled `get_queues` or `stop` leaves resources behind; finish
-        // tearing them down before allocating new ones.
-        if !self.arena.is_empty() || !self.orphans.lock().is_empty() {
-            self.stop().await;
-        }
-        let mut pending = PendingArena {
-            arena: ResourceArena::new(),
-            orphans: self.orphans.clone(),
-        };
-        match self
-            .get_queues_inner(&mut pending.arena, config, rss, queues)
-            .await
-        {
-            Ok(()) => {
-                self.arena.append(&mut pending.arena);
-                Ok(())
-            }
-            Err(err) => {
-                self.vport.destroy_in_place(&mut pending.arena).await;
-                Err(err)
-            }
-        }
-    }
-
-    async fn stop(&mut self) {
+    async fn stop(self, queues: Vec<QueueResources>, arena: ResourceArena) -> Finished<T> {
         if let Err(err) = self
             .vport
             .config_rx(&RxConfig {
@@ -537,11 +592,9 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             );
         }
 
-        self.queues.clear();
-        let mut orphans = std::mem::take(&mut *self.orphans.lock());
-        self.arena.append(&mut orphans);
+        drop(queues);
         self.vport
-            .destroy_in_place(&mut self.arena)
+            .destroy(arena)
             .instrument(tracing::info_span!(
                 "destroying vport resources",
                 vport_id = self.vport.id()
@@ -560,6 +613,66 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 ))
                 .await;
         }
+        Finished::Stopped
+    }
+}
+
+impl OwnedRssConfig {
+    fn new(rss: &RssConfig<'_>) -> Self {
+        Self {
+            key: rss.key.to_vec(),
+            indirection_table: rss.indirection_table.to_vec(),
+        }
+    }
+}
+
+#[async_trait]
+impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
+    fn endpoint_type(&self) -> &'static str {
+        "mana"
+    }
+
+    async fn get_queues(
+        &mut self,
+        config: Vec<QueueConfig>,
+        rss: Option<&RssConfig<'_>>,
+        queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        self.finish_cancelled().await;
+        // A `get_queues` whose caller went away leaves its resources here;
+        // tear them down before allocating new ones.
+        if !self.arena.is_empty() {
+            self.stop().await;
+        }
+        let task = self
+            .core()
+            .get_queues(config.len(), rss.map(OwnedRssConfig::new));
+        self.pending = Some(self.spawner.spawn("mana-get-queues", task));
+        match self.wait_pending().await {
+            Some(Finished::Started(started)) => {
+                self.queues = started.resources;
+                self.arena = started.arena;
+                queues.extend(
+                    started
+                        .queues
+                        .into_iter()
+                        .map(|queue| Box::new(queue) as Box<dyn Queue>),
+                );
+                Ok(())
+            }
+            Some(Finished::Failed(err)) => Err(err),
+            Some(Finished::Stopped) | None => unreachable!(),
+        }
+    }
+
+    async fn stop(&mut self) {
+        self.finish_cancelled().await;
+        let task = self.core().stop(
+            std::mem::take(&mut self.queues),
+            std::mem::take(&mut self.arena),
+        );
+        self.pending = Some(self.spawner.spawn("mana-stop", task));
+        self.wait_pending().await;
     }
 
     fn is_ordered(&self) -> bool {

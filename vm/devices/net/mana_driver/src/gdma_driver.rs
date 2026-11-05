@@ -165,24 +165,11 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_warning_time_in_ms: u32,
     hwc_timeout_in_ms: u32,
     hwc_failure: bool,
-    /// An HWC request whose caller was dropped after it was posted. The
-    /// device still completes it into the one request/response page pair,
-    /// so the next request finishes it before reusing those pages.
-    #[inspect(debug)]
-    hwc_in_flight: Option<HwcInFlight>,
     db_id: u32,
     state_saved: bool,
     // The option will be set if there is a pending VF reset event. The
     // option value indicates whether to remove the subordinate VF or not.
     reset_request_pending: Option<bool>,
-}
-
-/// A posted HWC request that has not had all its completions consumed.
-#[derive(Debug, Clone, Copy)]
-struct HwcInFlight {
-    sqe_len: u32,
-    /// Completions still owed: one for the send and one for the response.
-    cqes_pending: u8,
 }
 
 const EQ_PAGE: usize = 0;
@@ -515,7 +502,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
-            hwc_in_flight: None,
             state_saved: false,
             db_id,
             reset_request_pending: None,
@@ -550,11 +536,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
         if self.reset_request_pending.is_some() {
             anyhow::bail!("cannot save/restore with HWC reset request pending");
-        }
-
-        if let Err(err) = self.finish_hwc_in_flight().await {
-            self.hwc_failure = true;
-            return Err(err.context("cannot save/restore: HWC request did not complete"));
         }
 
         self.state_saved = true;
@@ -700,7 +681,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
-            hwc_in_flight: None,
             state_saved: false,
             db_id: db_id as u32,
             reset_request_pending: None,
@@ -844,35 +824,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
     }
 
-    /// Returns true if a posted HWC request still owes completions.
-    #[cfg(test)]
-    pub(crate) fn hwc_request_in_flight(&self) -> bool {
-        self.hwc_in_flight.is_some()
-    }
-
-    /// Consumes the completions of the posted HWC request, if any, and
-    /// returns its send and receive slots.
-    ///
-    /// Progress is recorded after each completion, so if this future is
-    /// dropped, the next call picks up where it stopped.
-    async fn finish_hwc_in_flight(&mut self) -> anyhow::Result<()> {
-        while let Some(in_flight) = self.hwc_in_flight {
-            if in_flight.cqes_pending > 0 {
-                self.wait_cq().await?;
-                self.hwc_in_flight = Some(HwcInFlight {
-                    cqes_pending: in_flight.cqes_pending - 1,
-                    ..in_flight
-                });
-                continue;
-            }
-            self.sq.advance_head(in_flight.sqe_len);
-            self.rq.advance_head(RWQE_SIZE);
-            self.push_rqe();
-            self.hwc_in_flight = None;
-        }
-        Ok(())
-    }
-
     fn push_rqe(&mut self) {
         let n = self
             .rq
@@ -906,10 +857,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
         if self.hwc_failure {
             anyhow::bail!("Previous hardware failure");
-        }
-        if let Err(err) = self.finish_hwc_in_flight().await {
-            self.hwc_failure = true;
-            return Err(err.context("earlier HWC request did not complete"));
         }
         let req_hdr = GdmaMsgHdr {
             hdr_type: GDMA_STANDARD_HEADER_TYPE,
@@ -973,10 +920,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .expect("send queue should not be full");
 
             self.sq.commit();
-            self.hwc_in_flight = Some(HwcInFlight {
-                sqe_len,
-                cqes_pending: 2,
-            });
             let req_phys_addr = self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64;
             let sgl_phys_addr = self.dma_buffer.pfns()[SQ_PAGE] * PAGE_SIZE64;
             let mem_key = self.gpa_mkey;
@@ -991,9 +934,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     mem_key,
                 )
             };
-            self.finish_hwc_in_flight()
-                .await
-                .with_context(cq_wait_context)?;
+            self.wait_cq().await.with_context(cq_wait_context)?;
+            self.wait_cq().await.with_context(cq_wait_context)?;
+            self.sq.advance_head(sqe_len);
+            self.rq.advance_head(RWQE_SIZE);
+            self.push_rqe();
 
             let resp_hdr = self
                 .dma_buffer

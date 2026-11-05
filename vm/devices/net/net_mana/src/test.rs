@@ -24,10 +24,17 @@ use net_backend::VlanMetadata;
 use net_backend::loopback::LoopbackEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::task::Runnable;
+use pal_async::task::Schedule;
+use pal_async::task::Spawn;
+use pal_async::task::TaskMetadata;
 use pci_core::msi::MsiConnection;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 use test_with_tracing::test;
@@ -1117,14 +1124,18 @@ async fn new_test_queue(
     ManaEndpoint<TestEmulatedDevice>,
 ) {
     let TestEndpoint {
-        mut endpoint,
+        endpoint,
         mem: _mem,
         mana: _mana,
-    } = new_test_endpoint(driver, "test queue").await;
+    } = new_test_endpoint(driver, driver.clone(), "test queue").await;
     let tx_config = endpoint.vport.config_tx().await.unwrap();
 
     let mut arena = ResourceArena::new();
-    let (queue, _resources) = endpoint.new_queue(&tx_config, &mut arena, 0).await.unwrap();
+    let (queue, _resources) = endpoint
+        .core()
+        .new_queue(&tx_config, &mut arena, 0)
+        .await
+        .unwrap();
 
     (queue, arena, endpoint)
 }
@@ -1138,8 +1149,13 @@ struct TestEndpoint {
     mana: ManaDevice<TestEmulatedDevice>,
 }
 
-/// Sets up the full device stack and returns an endpoint with no queues.
-async fn new_test_endpoint(driver: &DefaultDriver, name: &str) -> TestEndpoint {
+/// Sets up the full device stack and returns an endpoint with no queues that
+/// spawns its tasks on `spawner`.
+async fn new_test_endpoint(
+    driver: &DefaultDriver,
+    spawner: impl 'static + Spawn,
+    name: &str,
+) -> TestEndpoint {
     let pages = 256;
     let mem = DeviceTestMemory::new(pages * 2, true, name);
     let msi_conn = MsiConnection::new();
@@ -1169,7 +1185,7 @@ async fn new_test_endpoint(driver: &DefaultDriver, name: &str) -> TestEndpoint {
     let thing = ManaDevice::new(driver, device, 1, 1, None).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
     TestEndpoint {
-        endpoint: ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await,
+        endpoint: ManaEndpoint::new(spawner, vport, GuestDmaMode::DirectDma).await,
         mem,
         mana: thing,
     }
@@ -1194,6 +1210,96 @@ async fn poll_step<F: Future>(mut fut: Pin<&mut F>) -> Option<F::Output> {
     None
 }
 
+/// Holds back the tasks an endpoint spawns, so a test can run them one poll at
+/// a time.
+///
+/// Left to the executor, a spawned task runs to completion within a single
+/// yield of the test, so a cancelled call would never leave one mid-request.
+struct TaskGate {
+    held: mesh::Receiver<Runnable>,
+    released: Arc<AtomicBool>,
+}
+
+/// The spawner side of a [`TaskGate`].
+struct GatedSpawner {
+    driver: DefaultDriver,
+    held: mesh::Sender<Runnable>,
+    released: Arc<AtomicBool>,
+}
+
+struct GatedSchedule {
+    inner: Arc<dyn Schedule>,
+    held: mesh::Sender<Runnable>,
+    released: Arc<AtomicBool>,
+}
+
+impl TaskGate {
+    /// Returns a gate, initially released, and a spawner it controls.
+    fn new(driver: &DefaultDriver) -> (Self, GatedSpawner) {
+        let (send, recv) = mesh::channel();
+        let released = Arc::new(AtomicBool::new(true));
+        let gate = Self {
+            held: recv,
+            released: released.clone(),
+        };
+        let spawner = GatedSpawner {
+            driver: driver.clone(),
+            held: send,
+            released,
+        };
+        (gate, spawner)
+    }
+
+    /// Polls `fut` and the held tasks in turn, one poll of each per step, for
+    /// at most `steps` steps. Then drops `fut` and lets the tasks run freely.
+    async fn poll_steps<F: Future>(&mut self, fut: F, steps: usize) -> Option<F::Output> {
+        self.released.store(false, Ordering::Relaxed);
+        let output = {
+            let mut fut = pin!(fut);
+            let mut output = None;
+            for _ in 0..steps {
+                output = poll_step(fut.as_mut()).await;
+                if output.is_some() {
+                    break;
+                }
+                if let Ok(runnable) = self.held.try_recv() {
+                    runnable.run();
+                }
+            }
+            output
+        };
+        self.released.store(true, Ordering::Relaxed);
+        while let Ok(runnable) = self.held.try_recv() {
+            runnable.schedule();
+        }
+        output
+    }
+}
+
+impl Spawn for GatedSpawner {
+    fn scheduler(&self, metadata: &TaskMetadata) -> Arc<dyn Schedule> {
+        Arc::new(GatedSchedule {
+            inner: self.driver.scheduler(metadata),
+            held: self.held.clone(),
+            released: self.released.clone(),
+        })
+    }
+}
+
+impl Schedule for GatedSchedule {
+    fn schedule(&self, runnable: Runnable) {
+        if self.released.load(Ordering::Relaxed) {
+            self.inner.schedule(runnable);
+        } else {
+            self.held.send(runnable);
+        }
+    }
+
+    fn name(&self) -> Arc<str> {
+        self.inner.name()
+    }
+}
+
 fn one_queue_config(driver: &DefaultDriver) -> Vec<QueueConfig> {
     vec![QueueConfig {
         driver: Box::new(driver.clone()),
@@ -1205,93 +1311,114 @@ fn one_queue_config(driver: &DefaultDriver) -> Vec<QueueConfig> {
 /// only bounds the loops below so a hang fails instead of spinning forever.
 const MAX_CANCEL_STEPS: usize = 1000;
 
-// The cancellation tests below build a fresh endpoint for every cancel point.
-// The emulated device does not implement GDMA_DESTROY_DMA_REGION, and the
-// driver treats the failed status as a permanent HWC failure, so an endpoint
-// cannot allocate again after its first `stop`.
+// The cancellation tests below build a fresh endpoint for every cancel point,
+// so a failure at one cannot carry into the next: the emulated device does
+// not implement GDMA_DESTROY_DMA_REGION, and the driver treats any failed
+// request as a permanent HWC failure.
+//
+// After the call that follows a cancelled one, each test runs one more
+// `get_queues` and `stop` and requires them to succeed. That fails if anything
+// went wrong on the device side: the device rejects creating a queue that
+// still exists, so a queue that was created but never recorded is caught, and
+// a destroy sent twice is rejected, or a request abandoned after it was posted
+// leaves the next one reading a stale completion, either of which fails the
+// HWC for every later request.
 
-/// A `get_queues` dropped at any await point must leave what it allocated
-/// with the endpoint, and the next `stop` must tear all of it down.
+/// Asserts that `endpoint` holds nothing, then that it can allocate and free
+/// queues again.
+async fn assert_torn_down(
+    driver: &DefaultDriver,
+    endpoint: &mut ManaEndpoint<TestEmulatedDevice>,
+    steps: usize,
+) {
+    assert!(
+        endpoint.pending.is_none(),
+        "cancelled after {steps} steps: a task is still pending"
+    );
+    assert!(
+        endpoint.arena.is_empty() && endpoint.queues.is_empty(),
+        "cancelled after {steps} steps: resources are left"
+    );
+    assert_eq!(
+        endpoint.queue_tracker.0.load(Ordering::Acquire),
+        0,
+        "cancelled after {steps} steps: queues are left"
+    );
+    let mut queues = Vec::new();
+    endpoint
+        .get_queues(one_queue_config(driver), None, &mut queues)
+        .await
+        .unwrap_or_else(|err| panic!("cancelled after {steps} steps: {err:#}"));
+    queues.clear();
+    endpoint.stop().await;
+    assert!(
+        endpoint.arena.is_empty(),
+        "cancelled after {steps} steps: resources are left after a clean stop"
+    );
+}
+
+/// A `get_queues` dropped at any await point must still finish, and the next
+/// `stop` must tear down what it allocated.
 #[async_test]
-async fn cancelled_get_queues_keeps_and_frees_its_resources(driver: DefaultDriver) {
-    let mut kept_orphans = false;
+async fn cancelled_get_queues_finishes_and_is_torn_down(driver: DefaultDriver) {
+    let mut left_running = false;
     for steps in 1..MAX_CANCEL_STEPS {
+        let (mut gate, spawner) = TaskGate::new(&driver);
         let TestEndpoint {
             mut endpoint,
             mem: _mem,
             mana: _mana,
-        } = new_test_endpoint(&driver, "cancelled get_queues").await;
+        } = new_test_endpoint(&driver, spawner, "cancelled get_queues").await;
         let mut queues = Vec::new();
-        let mut completed = false;
+        let completed = match gate
+            .poll_steps(
+                endpoint.get_queues(one_queue_config(&driver), None, &mut queues),
+                steps,
+            )
+            .await
         {
-            let mut fut = pin!(endpoint.get_queues(one_queue_config(&driver), None, &mut queues));
-            for _ in 0..steps {
-                if let Some(r) = poll_step(fut.as_mut()).await {
-                    r.unwrap();
-                    completed = true;
-                    break;
-                }
+            Some(r) => {
+                r.unwrap();
+                true
             }
-        }
+            None => false,
+        };
+        left_running |= endpoint.pending.as_ref().is_some_and(|t| !t.is_finished());
         queues.clear();
-        kept_orphans |= !endpoint.orphans.lock().is_empty();
         endpoint.stop().await;
-        assert!(endpoint.arena.is_empty(), "cancelled after {steps} steps");
-        assert!(
-            endpoint.orphans.lock().is_empty(),
-            "cancelled after {steps} steps"
-        );
+        assert_torn_down(&driver, &mut endpoint, steps).await;
         if completed {
-            assert!(
-                kept_orphans,
-                "no cancel point left allocated resources with the endpoint"
-            );
+            assert!(left_running, "no cancel point left the task running");
             return;
         }
     }
     panic!("get_queues never completed");
 }
 
-/// A `stop` dropped at any await point must keep exactly what it has not yet
-/// torn down, and the next `stop` must finish the teardown.
+/// A `stop` dropped at any await point must still finish, and the next `stop`
+/// must not tear anything down twice.
 #[async_test]
-async fn cancelled_stop_keeps_and_frees_its_resources(driver: DefaultDriver) {
-    let mut saw_partial = false;
+async fn cancelled_stop_finishes_and_tears_down_once(driver: DefaultDriver) {
+    let mut left_running = false;
     for steps in 1..MAX_CANCEL_STEPS {
+        let (mut gate, spawner) = TaskGate::new(&driver);
         let TestEndpoint {
             mut endpoint,
             mem: _mem,
             mana: _mana,
-        } = new_test_endpoint(&driver, "cancelled stop").await;
+        } = new_test_endpoint(&driver, spawner, "cancelled stop").await;
         let mut queues = Vec::new();
         endpoint
             .get_queues(one_queue_config(&driver), None, &mut queues)
             .await
             .unwrap();
         queues.clear();
-        let total = endpoint.arena.len();
-        let mut completed = false;
-        {
-            let mut fut = pin!(endpoint.stop());
-            for _ in 0..steps {
-                if poll_step(fut.as_mut()).await.is_some() {
-                    completed = true;
-                    break;
-                }
-            }
-        }
-        // Teardown pops each resource only once it is gone, so some cancel
-        // point must leave part of the arena. A teardown that took the whole
-        // arena up front would leave all of it or none.
-        let left = endpoint.arena.len();
-        saw_partial |= left > 0 && left < total;
+        let completed = gate.poll_steps(endpoint.stop(), steps).await.is_some();
+        left_running |= endpoint.pending.as_ref().is_some_and(|t| !t.is_finished());
         endpoint.stop().await;
-        assert!(endpoint.arena.is_empty(), "cancelled after {steps} steps");
+        assert_torn_down(&driver, &mut endpoint, steps).await;
         if completed {
-            assert!(
-                saw_partial,
-                "no cancel point left part of the resources with the endpoint"
-            );
+            assert!(left_running, "no cancel point left the task running");
             return;
         }
     }
