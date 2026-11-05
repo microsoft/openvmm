@@ -12,7 +12,10 @@
 //! a single completion queue in order to effect multiple IO classes, not to
 //! increase throughput.
 
+use crate::BROADCAST_NSID;
+use crate::MAX_NSID;
 use crate::error::CommandResult;
+use crate::error::NvmeError;
 use crate::namespace::Namespace;
 use crate::queue::CompletionQueue;
 use crate::queue::DoorbellMemory;
@@ -267,14 +270,42 @@ impl IoHandler {
                         continue;
                     }
 
-                    // Invalid namespace — synthesize the completion inline.
-                    // `io_count` was already incremented above so the
+                    // No namespace behind the NSID: synthesize the completion
+                    // inline. `io_count` was already incremented above so the
                     // unconditional decrement on the completion-posting path
                     // (or in `delete_sq`/`state.completions` drain) balances.
+                    //
+                    // NVMe Base 2.1 section 3.2.1.5: an invalid NSID (0h or
+                    // above NN) fails with Invalid Namespace or Format, an
+                    // inactive one (valid, nothing attached) with Invalid
+                    // Field in Command. FFFFFFFFh is neither (3.2.1.2): only
+                    // Flush and Cancel may support it (NVM Command Set 1.1
+                    // Figure 21, notes 2 and 4), and this device has no
+                    // Cancel, so Figure 92 fails it with Invalid Field in
+                    // Command. Flush is the exception: Identify reports Flush
+                    // Behavior 10b (Figure 312, VWC), which fails it with
+                    // Invalid Namespace or Format (section 7.2). This runs
+                    // before opcode dispatch, so an unsupported opcode also
+                    // gets its NSID's answer (section 4.2.3 lets the
+                    // controller choose when several apply). Each answer
+                    // sets Do Not Retry: the same command sent again names
+                    // the same NSID and fails the same way.
+                    let status = match command.nsid {
+                        BROADCAST_NSID
+                            if nvm::NvmOpcode(command.cdw0.opcode()) == nvm::NvmOpcode::FLUSH =>
+                        {
+                            spec::Status::INVALID_NAMESPACE_OR_FORMAT
+                        }
+                        BROADCAST_NSID => spec::Status::INVALID_FIELD_IN_COMMAND,
+                        nsid if nsid == 0 || nsid > MAX_NSID => {
+                            spec::Status::INVALID_NAMESPACE_OR_FORMAT
+                        }
+                        _ => spec::Status::INVALID_FIELD_IN_COMMAND,
+                    };
                     IoResult {
                         cid,
                         sq_idx,
-                        result: spec::Status::INVALID_NAMESPACE_OR_FORMAT.into(),
+                        result: NvmeError::do_not_retry(status).into(),
                     }
                 }
             };
@@ -286,7 +317,7 @@ impl IoHandler {
                 sqhd: sq.sq.sqhd(),
                 sqid: sq.sqid,
                 cid: io_result.cid,
-                status: spec::CompletionStatus::new().with_status(io_result.result.status.0),
+                status: io_result.result.completion_status(),
             };
 
             match state.cq.write(completion) {
