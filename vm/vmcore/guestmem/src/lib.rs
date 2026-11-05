@@ -2424,11 +2424,23 @@ pub trait UnmapRom: Send + Sync {
 }
 
 #[cfg(test)]
-mod subrange_lock_tests {
-    use super::*;
+#[expect(clippy::undocumented_unsafe_blocks)]
+mod tests {
+    use crate::AccessType;
+    use crate::GuestMemory;
+    use crate::GuestMemoryAccess;
+    use crate::GuestMemoryBackingError;
+    use crate::GuestMemoryError;
+    use crate::PAGE_SIZE64;
+    use crate::PageFaultAction;
+    use crate::PageFaultError;
+
     use parking_lot::Mutex;
     use sparse_mmap::SparseMapping;
+    use std::ptr::NonNull;
+    use std::sync::Arc;
     use test_with_tracing::test;
+    use thiserror::Error;
 
     #[derive(Debug, PartialEq, Eq)]
     enum LockOperation {
@@ -2636,21 +2648,6 @@ mod subrange_lock_tests {
             }
         }
     }
-}
-
-#[cfg(test)]
-#[expect(clippy::undocumented_unsafe_blocks)]
-mod tests {
-    use crate::GuestMemory;
-    use crate::PAGE_SIZE64;
-    use crate::PageFaultAction;
-    use crate::PageFaultError;
-
-    use sparse_mmap::SparseMapping;
-    use std::ptr::NonNull;
-    use std::sync::Arc;
-    use thiserror::Error;
-
     /// An implementation of a GuestMemoryAccess trait that expects all of
     /// guest memory to be mapped at a given base, with mmap or the Windows
     /// equivalent. Pages that are not backed by RAM will return failure
@@ -2661,7 +2658,7 @@ mod tests {
         bitmap: Option<Vec<u8>>,
     }
 
-    unsafe impl crate::GuestMemoryAccess for GuestMemoryMapping {
+    unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2804,7 +2801,7 @@ mod tests {
     #[error("fault")]
     struct Fault;
 
-    unsafe impl crate::GuestMemoryAccess for FaultingMapping {
+    unsafe impl GuestMemoryAccess for FaultingMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2919,7 +2916,7 @@ mod tests {
     }
 
     // SAFETY: the mapping is valid for the full range reported by `max_address`.
-    unsafe impl crate::GuestMemoryAccess for ToggleLockMapping {
+    unsafe impl GuestMemoryAccess for ToggleLockMapping {
         fn mapping(&self) -> Option<NonNull<u8>> {
             NonNull::new(self.mapping.as_ptr().cast())
         }
@@ -2945,7 +2942,7 @@ mod tests {
         // the backing's `lock_gpns`.
         let gm = GuestMemory::new("nolock", ToggleLockMapping::new(SIZE_1MB, false));
         assert!(!gm.supports_locking());
-        assert!(gm.lock_gpns(crate::AccessType::Write, false, &[0]).is_err());
+        assert!(gm.lock_gpns(AccessType::Write, false, &[0]).is_err());
 
         // Multi-region: locking is supported only when every present backing
         // supports it.
