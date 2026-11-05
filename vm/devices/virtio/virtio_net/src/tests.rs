@@ -571,7 +571,6 @@ impl TestHarness {
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
         let device = Device::builder()
-            .enable_rx_gso(true)
             .build(&driver_source, Box::new(endpoint), mac)
             .unwrap();
 
@@ -3021,7 +3020,7 @@ fn guest_tso_requires_guest_csum() {
 /// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
 /// when the endpoint supports TCP/UDP/TSO/USO offloads.
 #[async_test]
-async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
+async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
@@ -3037,7 +3036,6 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     };
 
     let device = Device::builder()
-        .enable_rx_gso(true)
         .build(&driver_source, Box::new(endpoint), mac)
         .unwrap();
     let traits = device.traits();
@@ -3085,55 +3083,6 @@ async fn feature_negotiation_with_offloads_and_rx_gso(driver: DefaultDriver) {
     assert_eq!(device.registers.duplex, 0xff);
 }
 
-/// Receive GSO remains opt-in independently of mergeable receive buffers.
-#[async_test]
-async fn receive_gso_is_disabled_by_default(driver: DefaultDriver) {
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
-
-    let endpoint = MockEndpointWithTxOffloads {
-        offloads: TxOffloadSupport::default(),
-        link_speed: 10_000 * BITS_PER_MEGABIT,
-    };
-
-    let device = Device::builder()
-        .build(&driver_source, Box::new(endpoint), mac)
-        .unwrap();
-    let bank0 = NetworkFeaturesBank0::from(device.traits().device_features.bank(0));
-
-    assert!(
-        bank0.guest_csum(),
-        "checksum receive offload remains available"
-    );
-    assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
-    assert_eq!(device.queue_size(0), virtio::DEFAULT_QUEUE_SIZE);
-    assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
-}
-
-#[async_test]
-async fn receive_gso_is_independent_of_transmit_offloads(driver: DefaultDriver) {
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let endpoint = MockEndpointWithTxOffloads {
-        offloads: TxOffloadSupport::default(),
-        link_speed: 10_000 * BITS_PER_MEGABIT,
-    };
-    let device = Device::builder()
-        .enable_rx_gso(true)
-        .build(
-            &driver_source,
-            Box::new(endpoint),
-            MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]),
-        )
-        .unwrap();
-    let bank0 = NetworkFeaturesBank0::from(device.traits().device_features.bank(0));
-    assert!(!bank0.csum());
-    assert!(bank0.guest_csum());
-    assert!(bank0.guest_tso4());
-    assert!(bank0.guest_tso6());
-    assert_eq!(device.queue_size(0), virtio::MAX_QUEUE_SIZE);
-    assert_eq!(device.queue_size(1), virtio::DEFAULT_QUEUE_SIZE);
-}
-
 /// The device advertises VIRTIO_F_IN_ORDER, since it guarantees in-order
 /// descriptor completion per queue.
 #[async_test]
@@ -3173,7 +3122,7 @@ async fn in_order_negotiated_rx_roundtrip(driver: DefaultDriver) {
 }
 
 /// Verify that the device does not advertise transmit offloads without
-/// backend support, while receive GSO remains disabled by default.
+/// backend support, while receive GSO and mergeable buffers remain available.
 #[async_test]
 async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -3191,11 +3140,13 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
     assert!(bank0.mac());
+    assert!(bank0.mrg_rxbuf());
     assert!(bank0.mtu(), "MTU feature should always be set");
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
-    assert!(!bank0.guest_tso4(), "GUEST_TSO4 must be opt-in");
-    assert_eq!(device.queue_size(0), virtio::DEFAULT_QUEUE_SIZE);
-    assert!(!bank0.guest_tso6(), "GUEST_TSO6 must be opt-in");
+    assert!(bank0.guest_tso4(), "GUEST_TSO4 should be set by default");
+    assert!(bank0.guest_tso6(), "GUEST_TSO6 should be set by default");
+    assert_eq!(device.queue_size(0), virtio::MAX_QUEUE_SIZE);
+    assert_eq!(device.queue_size(1), virtio::DEFAULT_QUEUE_SIZE);
     assert!(!bank0.csum(), "CSUM should not be set without offloads");
     assert!(
         !bank0.host_tso4(),

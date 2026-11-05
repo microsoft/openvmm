@@ -228,7 +228,6 @@ struct Adapter {
     tx_fast_completions: bool,
     mac_address: MacAddress,
     tx_offload_support: TxOffloadSupport,
-    enable_rx_gso: bool,
 }
 
 pub struct Device {
@@ -258,7 +257,7 @@ enum QueuePairState {
 
 impl VirtioDevice for Device {
     fn queue_size(&self, queue_index: u16) -> u16 {
-        if queue_index.is_multiple_of(2) && self.adapter.enable_rx_gso {
+        if queue_index.is_multiple_of(2) {
             // A coalesced packet can consume many mergeable buffers. Keep
             // enough receives in flight to amortize guest replenishment.
             virtio::MAX_QUEUE_SIZE
@@ -287,8 +286,8 @@ impl VirtioDevice for Device {
             .with_mtu(true)
             .with_csum(csum)
             .with_guest_csum(true)
-            .with_guest_tso4(self.adapter.enable_rx_gso)
-            .with_guest_tso6(self.adapter.enable_rx_gso)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 
@@ -555,18 +554,11 @@ struct PendingTxPacket {
 
 pub struct NicBuilder {
     max_queue_pairs: u16,
-    enable_rx_gso: bool,
 }
 
 impl NicBuilder {
     pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
         self.max_queue_pairs = max_queue_pairs;
-        self
-    }
-
-    /// Enables advertising guest TCP segmentation offload.
-    pub fn enable_rx_gso(mut self, enable: bool) -> Self {
-        self.enable_rx_gso = enable;
         self
     }
 
@@ -610,7 +602,6 @@ impl NicBuilder {
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
             tx_offload_support,
-            enable_rx_gso: self.enable_rx_gso,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
@@ -655,7 +646,6 @@ impl Device {
     pub fn builder() -> NicBuilder {
         NicBuilder {
             max_queue_pairs: !0,
-            enable_rx_gso: false,
         }
     }
 }
