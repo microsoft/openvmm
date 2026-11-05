@@ -223,6 +223,37 @@ async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(
     Ok(())
 }
 
+/// Keep APs in sidecar throughout guest boot and shutdown to stress test sidecar.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+)]
+async fn sidecar_boot_no_hotplug<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = configure_for_sidecar(config, 4, 1)
+        .with_openhcl_command_line("OPENHCL_NO_SIDECAR_HOTPLUG=1")
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    assert_eq!(
+        sh.read_file("/sys/devices/system/cpu/online").await?.trim(),
+        "0-3",
+        "all guest VPs must have booted"
+    );
+    assert_eq!(
+        vm.inspect_openhcl("vm/partition/vp/1/sidecar", None, None)
+            .await?,
+        inspect::Node::Value(true.into()),
+        "VP 1 must remain managed by sidecar after guest boot"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let nvme_guid = guid::guid!("78fc4861-29bf-408d-88b7-24199de560d1");
