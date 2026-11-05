@@ -396,6 +396,9 @@ mod gicd {
         }
 
         pub fn fold_list_registers(&self, vp: VpIndex, lrs: &[ListRegisterInterrupt]) {
+            let returned_by_intid: HashMap<u32, &ListRegisterInterrupt> =
+                lrs.iter().map(|lr| (lr.intid, lr)).collect();
+
             let mut state = self.state.lock();
             let vp_index = vp.index() as usize;
             let Some(owned) = state.in_flight_by_vp.get(vp_index).cloned() else {
@@ -404,7 +407,7 @@ mod gicd {
 
             for intid in owned {
                 let latch_backed = Self::set_bit(&mut state.lr_pending_latch, intid, false);
-                let returned = lrs.iter().find(|lr| lr.intid == intid);
+                let returned = returned_by_intid.get(&intid).copied();
                 let keep = returned.is_some();
                 Self::set_bit(
                     &mut state.lr_pending,
