@@ -773,8 +773,9 @@ impl GuestMemoryAccessRange {
     }
 
     fn translate_gpns(&self, gpns: &[u64]) -> Result<Vec<u64>, GuestMemoryBackingError> {
-        // GPNs are relative to this view, but hooks use backing-relative GPNs.
-        // Check whole pages, not just the byte touched by the lock probe.
+        // GPNs are relative to this subrange. Convert them to the backing's
+        // page numbers before calling its lock or unlock methods.
+        // Check each full page; the lock probe checks only its first byte.
         if !self.lockable {
             return Err(GuestMemoryBackingError::other(self.offset, NotLockable));
         }
@@ -920,7 +921,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
     }
 
     fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
-        // The default no-op hook would bypass backing protection tracking.
+        // Let the backing prevent permission changes while these pages are locked.
         self.base.imp.lock_gpns(&self.translate_gpns(gpns)?)
     }
 
