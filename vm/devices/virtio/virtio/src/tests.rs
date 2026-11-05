@@ -4318,6 +4318,7 @@ trait TestTransport {
     fn stop(&mut self) -> impl Future<Output = ()>;
     /// Drive ChangeDeviceState::start().
     fn start(&mut self);
+    fn teardown(self) -> impl Future<Output = ()>;
 }
 
 /// Yield to the executor and poll the transport once. This ensures the device
@@ -4391,6 +4392,9 @@ impl TestTransport for MmioTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -4529,6 +4533,9 @@ impl TestTransport for PciTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn teardown(self) {
+        self.dev.teardown().await;
     }
 }
 
@@ -6299,4 +6306,81 @@ async fn queue_stream_parks_after_failure(driver: DefaultDriver) {
             .is_pending(),
         "failed queue must park rather than repeat the error or end the stream"
     );
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct DropTrackingDevice(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropTrackingDevice {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl VirtioDevice for DropTrackingDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::BLK,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _: u16) -> u32 {
+        0
+    }
+
+    async fn write_registers_u32(&mut self, _: u16, _: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _: u16,
+        _: QueueResources,
+        _: &VirtioDeviceFeatures,
+        _: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn stop_queue(&mut self, _: u16) -> Option<QueueState> {
+        None
+    }
+}
+
+async fn verify_teardown_drops_backend(
+    mut transport: impl TestTransport,
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+    started: bool,
+) {
+    if started {
+        transport.write_driver_ok();
+        transport.stop().await;
+    }
+    assert!(!dropped.load(Ordering::SeqCst));
+    transport.teardown().await;
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "teardown returned before the backend was destroyed"
+    );
+}
+
+#[async_test]
+async fn teardown_drops_backend_pci(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            PciTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
+}
+
+#[async_test]
+async fn teardown_drops_backend_mmio(driver: DefaultDriver) {
+    for started in [false, true] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let transport =
+            MmioTestTransport::new(Box::new(DropTrackingDevice(dropped.clone())), &driver, 1);
+        verify_teardown_drops_backend(transport, dropped, started).await;
+    }
 }
