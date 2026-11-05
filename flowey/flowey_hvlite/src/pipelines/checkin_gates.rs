@@ -1803,7 +1803,7 @@ impl IntoPipeline for CheckinGatesCli {
                 //   runners as well as kvm, since it is emulated.
                 nextest_filter_expr: "all() & !test(pcat) & !test(qemu)".into(),
                 downloaded_artifacts: linux_x64_host_test_artifacts.clone(),
-                prep_steps_variants: Vec::new(),
+                prep_steps_variants: standard_x64_prep_variants.clone(),
                 external_deps: VmmTestsExternalDeps::Linux(VmmTestsExternalDepsLinux {
                     hugetlb_2mb_overcommit_pages: None,
                     prepare_vhost_vsock: true,
