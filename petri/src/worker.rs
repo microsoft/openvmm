@@ -134,9 +134,14 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+    pub(crate) async fn remove_pcie_device(
+        &self,
+        port_name: String,
+        orderly: bool,
+    ) -> anyhow::Result<()> {
+        let (ctx, _cancel) = mesh::CancelContext::new().with_cancel();
         self.rpc
-            .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .call_failable(VmRpc::RemovePcieDevice, (ctx, port_name, orderly))
             .await?;
         Ok(())
     }
@@ -151,5 +156,83 @@ impl Worker {
         self.handle.stop();
         self.handle.join().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::FutureExt;
+    use futures_concurrency::future::Race;
+    use pal_async::DefaultPool;
+    use pal_async::timer::PolledTimer;
+    use std::time::Duration;
+    use test_with_tracing::test;
+
+    fn worker_with_rpc() -> (Worker, mesh::Receiver<VmRpc>, mesh_worker::WorkerHostRunner) {
+        let (host, runner) = mesh_worker::worker_host();
+        let handle = host
+            .start_worker(mesh_worker::WorkerId::<()>::new("test-pcie-removal"), ())
+            .unwrap();
+        let (rpc, recv) = mesh::channel();
+        (Worker { handle, rpc }, recv, runner)
+    }
+
+    #[test]
+    fn dropping_pending_pcie_removal_notifies_worker() {
+        DefaultPool::run_with(async |driver| {
+            let (worker, mut recv, _runner) = worker_with_rpc();
+            let mut removal = Box::pin(worker.remove_pcie_device("rp0".into(), true));
+            assert!(futures::poll!(&mut removal).is_pending());
+            let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected PCIe removal");
+            };
+            let ((mut ctx, port_name, orderly), _response) = rpc.split();
+            assert_eq!(port_name, "rp0");
+            assert!(orderly);
+            assert!(ctx.deadline().is_none());
+            assert!(!ctx.is_cancelled());
+            drop(removal);
+            let mut timer = PolledTimer::new(&driver);
+            let reason = (
+                ctx.cancelled().map(Some),
+                timer.sleep(Duration::from_secs(1)).map(|_| None),
+            )
+                .race()
+                .await;
+            assert_eq!(reason, Some(mesh::CancelReason::Cancelled));
+        });
+    }
+
+    #[test]
+    fn caller_timeout_cancels_pending_pcie_removal() {
+        DefaultPool::run_with(async |_driver| {
+            let (worker, mut recv, _runner) = worker_with_rpc();
+            let result = mesh::CancelContext::new()
+                .with_timeout(Duration::ZERO)
+                .until_cancelled(worker.remove_pcie_device("rp0".into(), true))
+                .await;
+            assert_eq!(result.unwrap_err(), mesh::CancelReason::DeadlineExceeded);
+            let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected PCIe removal");
+            };
+            let ((mut ctx, _, _), _response) = rpc.split();
+            assert!(ctx.is_cancelled());
+        });
+    }
+
+    #[test]
+    fn completed_pcie_removal_returns_worker_result() {
+        DefaultPool::run_with(async |_driver| {
+            let (worker, mut recv, _runner) = worker_with_rpc();
+            let mut removal = Box::pin(worker.remove_pcie_device("rp0".into(), true));
+            assert!(futures::poll!(&mut removal).is_pending());
+            let VmRpc::RemovePcieDevice(rpc) = recv.recv().await.unwrap() else {
+                panic!("expected PCIe removal");
+            };
+            let (_, response) = rpc.split();
+            response.complete(Ok(()));
+            removal.await.unwrap();
+        });
     }
 }

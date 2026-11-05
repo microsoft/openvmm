@@ -460,6 +460,11 @@ name:
   available devfn. Ports are assigned in order, so an explicit `addr` that
   collides with an already-assigned port is an error.
 - `hotplug`: enables hotplug support for that root port.
+- `attention_button`: enables attention button ejection. Requires `hotplug`
+  and is disabled by default. Enables `orderly=true` in removal requests.
+- `eject_timeout_ms=<MS>`: maximum wait for orderly ejection in milliseconds.
+  Required with `attention_button` and omitted without it. No default.
+  Zero checks for completion without waiting.
 - `acs=<mask>`: sets the Access Control Services capability mask for the
   root port. The value can be decimal or hexadecimal. Default is `0x005f`.
   Use `acs=0` to disable ACS for a root port.
@@ -480,6 +485,8 @@ name:
   Use `acs=0` to disable ACS for switch downstream ports.
 - `pasid`: advertises support for TLP prefixing (such as for guest PASID
   behind a virtual IOMMU)
+
+Attention button ejection is supported only on root ports.
 
 ### Generic initiators
 

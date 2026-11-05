@@ -10,6 +10,7 @@ use crate::meshworker::VmmMesh;
 use anyhow::Context;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
@@ -19,6 +20,8 @@ use mesh::rpc::RpcSend;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use openvmm_defs::rpc::VmRpc;
+use std::collections::VecDeque;
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::pin;
@@ -167,6 +170,36 @@ fn action_for(reason: &HaltReason, actions: &GuestPowerActions) -> GuestPowerAct
     }
 }
 
+async fn wait_until_quit<T>(
+    operation: impl Future<Output = anyhow::Result<T>>,
+    rpc_recv: &mut mesh::Receiver<VmControllerRpc>,
+    buffered: &mut VecDeque<VmControllerRpc>,
+    quit: &mut bool,
+) -> anyhow::Result<T> {
+    let stop = async {
+        loop {
+            match rpc_recv.recv().await {
+                Ok(VmControllerRpc::Quit) => break "controller quit",
+                Ok(rpc) => buffered.push_back(rpc),
+                Err(error) => {
+                    tracing::info!(
+                        error = &error as &dyn std::error::Error,
+                        "controller disconnected"
+                    );
+                    break "controller RPC channel closed";
+                }
+            }
+        }
+    };
+    match (operation.map(Ok), stop.map(Err)).race().await {
+        Ok(result) => result,
+        Err(reason) => {
+            *quit = true;
+            Err(anyhow::Error::new(mesh::CancelReason::Cancelled).context(reason))
+        }
+    }
+}
+
 impl VmController {
     /// Run the controller, processing RPCs and worker events until the VM
     /// stops or the caller (REPL or ttrpc server) sends Quit.
@@ -186,11 +219,14 @@ impl VmController {
 
         let mut quit = false;
         let mut rpc_closed = false;
+        let mut buffered = VecDeque::new();
         loop {
             let event = {
                 let rpc = pin!(async {
-                    if rpc_closed {
+                    if rpc_closed || quit {
                         std::future::pending().await
+                    } else if let Some(rpc) = buffered.pop_front() {
+                        Event::Rpc(rpc)
                     } else {
                         match rpc_recv.next().await {
                             Some(msg) => Event::Rpc(msg),
@@ -213,7 +249,8 @@ impl VmController {
 
             match event {
                 Event::Rpc(rpc) => {
-                    self.handle_rpc(rpc, &mut quit).await;
+                    self.handle_rpc(rpc, &mut quit, &mut rpc_recv, &mut buffered)
+                        .await;
                 }
                 Event::RpcClosed => {
                     // Controller RPC channel closed (REPL/ttrpc disconnected).
@@ -274,6 +311,7 @@ impl VmController {
                         tracing::info!("vnc worker restarted");
                     }
                 },
+                Event::Halt(_) if quit => {}
                 Event::Halt(reason) => {
                     tracing::info!(?reason, "guest halted");
                     // On a guest crash, write a `.vmrs` dump (if configured)
@@ -282,7 +320,14 @@ impl VmController {
                     if matches!(&reason, HaltReason::TripleFault { .. }) {
                         if let Some(path) = self.crash_dump_path.clone() {
                             tracing::info!(path = %path.display(), "dumping VM state on guest crash");
-                            match self.handle_dump_state(&path).await {
+                            match wait_until_quit(
+                                self.handle_dump_state(&path),
+                                &mut rpc_recv,
+                                &mut buffered,
+                                &mut quit,
+                            )
+                            .await
+                            {
                                 Ok(()) => tracing::info!(
                                     path = %path.display(),
                                     "VM state dumped to VMRS file on guest crash"
@@ -293,6 +338,10 @@ impl VmController {
                                     "failed to write VM crash dump"
                                 ),
                             }
+                        }
+                        if quit {
+                            self.vm_worker.stop();
+                            continue;
                         }
                     }
                     let action = action_for(&reason, &self.guest_power_actions);
@@ -310,9 +359,17 @@ impl VmController {
                         GuestPowerAction::Reset => {
                             // Reboot the VM in place.
                             tracing::info!("resetting VM on guest power event");
-                            if let Err(err) = self.vm_rpc.call_failable(VmRpc::Reset, ()).await {
+                            let reset = self.vm_rpc.call_failable(VmRpc::Reset, ());
+                            if let Err(err) = wait_until_quit(
+                                async { reset.await.map_err(anyhow::Error::from) },
+                                &mut rpc_recv,
+                                &mut buffered,
+                                &mut quit,
+                            )
+                            .await
+                            {
                                 tracing::error!(
-                                    error = &err as &dyn std::error::Error,
+                                    error = err.as_ref() as &dyn std::error::Error,
                                     "failed to reset VM on guest power event; keeping it stopped"
                                 );
                                 event_send
@@ -324,6 +381,9 @@ impl VmController {
                         }
                     }
                 }
+            }
+            if quit {
+                self.vm_worker.stop();
             }
         }
 
@@ -359,14 +419,21 @@ impl VmController {
         self.mesh.shutdown().await;
     }
 
-    async fn handle_rpc(&mut self, rpc: VmControllerRpc, quit: &mut bool) {
+    async fn handle_rpc(
+        &mut self,
+        rpc: VmControllerRpc,
+        quit: &mut bool,
+        rpc_recv: &mut mesh::Receiver<VmControllerRpc>,
+        buffered: &mut VecDeque<VmControllerRpc>,
+    ) {
         match rpc {
             VmControllerRpc::Restart(req) => {
-                let result = self.handle_restart().await;
+                let result = wait_until_quit(self.handle_restart(), rpc_recv, buffered, quit).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::RestartVnc(req) => {
-                let result = self.handle_restart_vnc().await;
+                let result =
+                    wait_until_quit(self.handle_restart_vnc(), rpc_recv, buffered, quit).await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::Inspect(target, deferred) => {
@@ -381,32 +448,64 @@ impl VmController {
             }
             VmControllerRpc::AddVtl0ScsiDisk(req) => {
                 let (params, req) = req.split();
-                let result = self.handle_add_vtl0_scsi_disk(params).await;
+                let result = wait_until_quit(
+                    self.handle_add_vtl0_scsi_disk(params),
+                    rpc_recv,
+                    buffered,
+                    quit,
+                )
+                .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::RemoveVtl0ScsiDisk(req) => {
                 let (params, req) = req.split();
-                let result = self.handle_remove_vtl0_scsi_disk(params).await;
+                let result = wait_until_quit(
+                    self.handle_remove_vtl0_scsi_disk(params),
+                    rpc_recv,
+                    buffered,
+                    quit,
+                )
+                .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::RemoveVtl0ScsiDiskByNvmeNsid(req) => {
                 let (params, req) = req.split();
-                let result = self.handle_remove_vtl0_scsi_disk_by_nvme_nsid(params).await;
+                let result = wait_until_quit(
+                    self.handle_remove_vtl0_scsi_disk_by_nvme_nsid(params),
+                    rpc_recv,
+                    buffered,
+                    quit,
+                )
+                .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::SaveSnapshot(req) => {
                 let (dir, req) = req.split();
-                let result = self.handle_save_snapshot(Path::new(&dir)).await;
+                let result = wait_until_quit(
+                    self.handle_save_snapshot(Path::new(&dir)),
+                    rpc_recv,
+                    buffered,
+                    quit,
+                )
+                .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::DumpState(req) => {
                 let (path, req) = req.split();
-                let result = self.handle_dump_state(Path::new(&path)).await;
+                let result = wait_until_quit(
+                    self.handle_dump_state(Path::new(&path)),
+                    rpc_recv,
+                    buffered,
+                    quit,
+                )
+                .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::ServiceVtl2(req) => {
                 let (params, req) = req.split();
-                let result = self.handle_service_vtl2(params).await;
+                let result =
+                    wait_until_quit(self.handle_service_vtl2(params), rpc_recv, buffered, quit)
+                        .await;
                 req.complete(result.map_err(mesh::error::RemoteError::new));
             }
             VmControllerRpc::Quit => {
@@ -696,5 +795,111 @@ impl VmController {
         })
         .await?;
         Ok(removed_lun)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use test_with_tracing::test;
+
+    #[pal_async::async_test]
+    async fn controller_quit_interrupts_pending_reset_and_dump(_driver: DefaultDriver) {
+        for dump in [false, true] {
+            for disconnect in [false, true] {
+                let (worker, mut worker_recv) = mesh::channel();
+                let request = if dump {
+                    worker.call_failable(
+                        VmRpc::DumpState,
+                        std::fs::File::open(std::env::current_exe().unwrap()).unwrap(),
+                    )
+                } else {
+                    worker.call_failable(VmRpc::Reset, ())
+                };
+                let (controller, mut controller_recv) = mesh::channel();
+                let mut buffered = VecDeque::new();
+                let mut quit = false;
+                let mut wait = Box::pin(wait_until_quit(
+                    async { request.await.map_err(anyhow::Error::from) },
+                    &mut controller_recv,
+                    &mut buffered,
+                    &mut quit,
+                ));
+                assert!(futures::poll!(&mut wait).is_pending());
+                let pending_worker = worker_recv.recv().await.unwrap();
+                controller.send(VmControllerRpc::SaveSnapshot(Rpc::detached("first".into())));
+                controller.send(VmControllerRpc::DumpState(Rpc::detached("second".into())));
+                if !disconnect {
+                    controller.send(VmControllerRpc::Quit);
+                }
+                drop(controller);
+                let result = wait.await.unwrap_err();
+                assert!(matches!(
+                    result.downcast_ref::<mesh::CancelReason>(),
+                    Some(mesh::CancelReason::Cancelled)
+                ));
+                assert!(
+                    quit,
+                    "the controller must request worker stop before the operation replies"
+                );
+                let VmControllerRpc::SaveSnapshot(first) = buffered.pop_front().unwrap() else {
+                    panic!("expected the first buffered operation");
+                };
+                let VmControllerRpc::DumpState(second) = buffered.pop_front().unwrap() else {
+                    panic!("expected the second buffered operation");
+                };
+                assert_eq!(first.input(), "first");
+                assert_eq!(second.input(), "second");
+                match pending_worker {
+                    VmRpc::Reset(rpc) => rpc.complete(Ok(())),
+                    VmRpc::DumpState(rpc) => rpc.complete(Ok(())),
+                    _ => panic!("expected a pending reset or dump"),
+                }
+            }
+        }
+    }
+
+    #[pal_async::async_test]
+    async fn controller_wait_preserves_normal_completion_and_rpc_order(_driver: DefaultDriver) {
+        let (controller, mut controller_recv) = mesh::channel();
+        let mut buffered = VecDeque::new();
+        let mut quit = false;
+        let (complete, completion) = mesh::oneshot::<()>();
+        let mut wait = Box::pin(wait_until_quit(
+            async { completion.await.context("test operation failed") },
+            &mut controller_recv,
+            &mut buffered,
+            &mut quit,
+        ));
+        controller.send(VmControllerRpc::SaveSnapshot(Rpc::detached("first".into())));
+        controller.send(VmControllerRpc::DumpState(Rpc::detached("second".into())));
+        assert!(futures::poll!(&mut wait).is_pending());
+        complete.send(());
+        wait.await.unwrap();
+        assert!(!quit);
+        assert_eq!(buffered.len(), 2);
+        let VmControllerRpc::SaveSnapshot(first) = buffered.pop_front().unwrap() else {
+            panic!("expected the first queued operation");
+        };
+        let VmControllerRpc::DumpState(second) = buffered.pop_front().unwrap() else {
+            panic!("expected the second queued operation");
+        };
+        assert_eq!(first.input(), "first");
+        assert_eq!(second.input(), "second");
+
+        let result = wait_until_quit(
+            async { Err::<(), _>(anyhow::anyhow!("operation failed")) },
+            &mut controller_recv,
+            &mut buffered,
+            &mut quit,
+        );
+        assert!(
+            result
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("operation failed")
+        );
     }
 }

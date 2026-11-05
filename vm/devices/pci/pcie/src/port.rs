@@ -63,6 +63,8 @@ fn validate_cxl_component_register_access(offset: u64, len: usize) -> Result<(),
 /// capabilities does not require changing every constructor signature.
 #[derive(Debug, Default, Clone)]
 pub struct PciePortSettings {
+    /// Enables attention button ejection on a hotplug port.
+    pub attention_button: bool,
     /// ACS capability bits to advertise on this port. `0` means the ACS
     /// extended capability is not present.
     pub acs_capabilities_supported: u16,
@@ -377,6 +379,9 @@ impl PcieDownstreamPort {
         if hotplug {
             let slot_num = slot_number.unwrap_or(0);
             pcie_cap = pcie_cap.with_hotplug_support(slot_num);
+            if settings.attention_button {
+                pcie_cap = pcie_cap.with_attention_button();
+            }
         }
 
         if let Some(max_prefixes) = settings.tlp_prefixing_supported {
@@ -655,8 +660,8 @@ impl PcieDownstreamPort {
 
     /// Notify the guest of a hotplug event via MSI.
     ///
-    /// Fires MSI if the guest has enabled hot_plug_interrupt_enable in
-    /// Slot Control. The caller must have already set the appropriate
+    /// Fires MSI if an enabled hotplug event is pending.
+    /// The caller must have already set the appropriate
     /// status bits (via set_hotplug_state) before calling this.
     fn fire_hotplug_msi(&self) {
         let hotplug_enabled = self
@@ -664,7 +669,7 @@ impl PcieDownstreamPort {
             .capabilities()
             .iter()
             .find_map(|cap| cap.as_pci_express())
-            .is_some_and(|pcie| pcie.hot_plug_interrupt_enabled());
+            .is_some_and(|pcie| pcie.hotplug_interrupt_pending());
 
         if hotplug_enabled {
             if let Some(interrupt) = self
@@ -677,6 +682,37 @@ impl PcieDownstreamPort {
                 interrupt.deliver();
             }
         }
+    }
+
+    /// Writes port configuration and signals link transitions or unmasked events.
+    pub(crate) fn cfg_write(
+        &mut self,
+        addr: PciConfigAddress,
+        value: ByteEnabledDwordWrite,
+    ) -> IoResult {
+        let (link_was_active, pending_events_before) = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .map_or((false, 0), |pcie| {
+                (pcie.link_active(), pcie.enabled_hotplug_events())
+            });
+        let result = self.cfg_space.write(addr, value);
+        let signal = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| {
+                pcie.enabled_hotplug_events() & !pending_events_before != 0
+                    || (link_was_active != pcie.link_active()
+                        && pcie.link_state_change_interrupt_pending())
+            });
+        if signal {
+            self.fire_hotplug_msi();
+        }
+        result
     }
 
     /// Forward a configuration space read to the connected device.
@@ -895,20 +931,62 @@ impl PcieDownstreamPort {
         Ok(())
     }
 
-    /// Hot-remove the device from this port at runtime.
-    pub fn hotplug_remove_device(&mut self) -> anyhow::Result<()> {
-        let is_hotplug_capable = self
+    /// Requests guest ejection while keeping the endpoint accessible.
+    ///
+    /// # Returns
+    ///
+    /// The completion receiver from [`PciExpressCapability::request_hotplug_eject`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the port is empty, lacks a PCIe capability, or cannot
+    /// start ejection.
+    pub fn request_hotplug_remove_device(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+        let pcie = self
             .cfg_space
             .capabilities()
             .iter()
             .find_map(|cap| cap.as_pci_express())
-            .is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable());
+            .ok_or_else(|| anyhow::anyhow!("port '{}' has no PCIe capability", self.name))?;
+        let events_before = pcie.enabled_hotplug_events();
+        let completion = pcie.request_hotplug_eject()?;
+        if pcie.enabled_hotplug_events() & !events_before != 0 {
+            self.fire_hotplug_msi();
+        }
+        Ok(completion)
+    }
 
-        if !is_hotplug_capable {
+    /// Disconnects the endpoint and signals physical removal.
+    ///
+    /// For orderly removal, first await the receiver returned by
+    /// [`Self::request_hotplug_remove_device`] and pass `orderly = true` to
+    /// recheck the slot controls before disconnecting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the slot is empty, does not support hotplug, or
+    /// orderly removal was requested but the slot is no longer powered off.
+    pub fn hotplug_remove_device(&mut self, orderly: bool) -> anyhow::Result<()> {
+        let pcie = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express());
+
+        if !pcie.is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable()) {
             bail!("port '{}' is not hotplug capable", self.name);
         }
         if self.link.is_none() {
             bail!("port '{}' is empty", self.name);
+        }
+        if orderly && !pcie.is_some_and(|pcie| pcie.hotplug_eject_complete()) {
+            bail!(
+                "PCIe slot controls changed before removal on port '{}'; device remains attached",
+                self.name
+            );
         }
 
         self.link = None;
@@ -936,6 +1014,557 @@ mod tests {
     use pci_core::spec::hwid::HardwareIds;
     use pci_core::test_helpers::TestCfgAccess;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    #[derive(Default)]
+    struct HotplugMsi(AtomicUsize);
+
+    impl pci_core::msi::SignalMsi for HotplugMsi {
+        fn signal_msi(&self, _devid: Option<u32>, _address: u64, _data: u32) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn make_hotplug_port(port_type: DevicePortType, target: &MsiTarget) -> PcieDownstreamPort {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        PcieDownstreamPort::new(
+            "hotplug-port",
+            HardwareIds {
+                vendor_id: 0x1234,
+                device_id: 0x5678,
+                revision_id: 0,
+                prog_if: ProgrammingInterface::NONE,
+                sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+                base_class: ClassCode::BRIDGE,
+                type0_sub_vendor_id: 0,
+                type0_sub_system_id: 0,
+            },
+            port_type,
+            false,
+            Some(1),
+            target,
+            PciePortSettings {
+                attention_button: true,
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+    }
+
+    fn write_slot_control(port: &mut PcieDownstreamPort, control_status: u32) {
+        let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+        port.cfg_write(
+            PciConfigAddress::new(0, 0, (pcie_offset + 0x18) / 4).unwrap(),
+            ByteEnabledDwordWrite::with_all_bytes_enabled(control_status),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_orderly_removal_rechecks_slot_controls() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+
+        let mut port = make_hotplug_port(DevicePortType::RootPort, &MsiTarget::disconnected());
+        port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+            .unwrap();
+        let power_off = SlotControl::new()
+            .with_power_controller_control(true)
+            .with_power_indicator_control(0b11);
+        write_slot_control(&mut port, u32::from(power_off.into_bits()));
+        let mut completion = port.request_hotplug_remove_device().unwrap();
+        assert!(matches!(
+            Future::poll(
+                std::pin::Pin::new(&mut completion),
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
+            ),
+            std::task::Poll::Ready(Ok(()))
+        ));
+
+        for power_on in [
+            power_off.with_power_controller_control(false),
+            power_off.with_power_indicator_control(0b01),
+        ] {
+            write_slot_control(&mut port, u32::from(power_on.into_bits()));
+            assert!(
+                port.hotplug_remove_device(true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("device remains attached")
+            );
+            assert!(port.link.is_some());
+        }
+        write_slot_control(&mut port, u32::from(power_off.into_bits()));
+        port.hotplug_remove_device(true).unwrap();
+        assert!(port.link.is_none());
+
+        port.hotplug_add_device("replacement", Box::new(TestPciDevice))
+            .unwrap();
+        write_slot_control(&mut port, u32::from(SlotControl::new().into_bits()));
+        port.hotplug_remove_device(false).unwrap();
+        assert!(port.link.is_none());
+    }
+
+    #[test]
+    fn test_orderly_eject_retries_do_not_repeat_hotplug_msi() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            for (hotplug_enabled, attention_enabled, acknowledged) in [
+                (true, true, false),
+                (true, true, true),
+                (false, true, false),
+                (false, true, true),
+                (true, false, false),
+                (true, false, true),
+                (false, false, false),
+                (false, false, true),
+            ] {
+                let recorder = Arc::new(HotplugMsi::default());
+                let connection = pci_core::msi::MsiConnection::new();
+                connection.connect(recorder.clone());
+                let bus_range = AssignedBusRange::new();
+                bus_range.set_bus_range(0, 0);
+                let mut port = make_hotplug_port(port_type, &connection.msi_target(bus_range, 0));
+                let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+                let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+                port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+                port.cfg_space.write_u32(msi_offset + 12, 0x40);
+                port.cfg_space.write_u32(msi_offset, 1 << 16);
+                port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                    .unwrap();
+                let enabled = SlotControl::new()
+                    .with_hot_plug_interrupt_enable(true)
+                    .with_attention_button_pressed_enable(true)
+                    .with_power_indicator_control(0b01);
+                let clear_events = u32::from(
+                    SlotStatus::new()
+                        .with_attention_button_pressed(true)
+                        .with_presence_detect_changed(true)
+                        .with_data_link_layer_state_changed(true)
+                        .into_bits(),
+                ) << 16;
+                write_slot_control(&mut port, u32::from(enabled.into_bits()) | clear_events);
+                recorder.0.store(0, Ordering::SeqCst);
+                drop(port.request_hotplug_remove_device().unwrap());
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+
+                let masked = enabled
+                    .with_hot_plug_interrupt_enable(hotplug_enabled)
+                    .with_attention_button_pressed_enable(attention_enabled);
+                let retry_clear = u32::from(
+                    SlotStatus::new()
+                        .with_attention_button_pressed(acknowledged)
+                        .with_presence_detect_changed(true)
+                        .with_data_link_layer_state_changed(true)
+                        .into_bits(),
+                ) << 16;
+                write_slot_control(&mut port, u32::from(masked.into_bits()) | retry_clear);
+                for _ in 0..3 {
+                    drop(port.request_hotplug_remove_device().unwrap());
+                    assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+                }
+                let mut retry = port.request_hotplug_remove_device().unwrap();
+                assert!(
+                    Future::poll(
+                        std::pin::Pin::new(&mut retry),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                    )
+                    .is_pending()
+                );
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+                assert!(port.link.is_some());
+
+                let power_off = masked
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11);
+                write_slot_control(&mut port, u32::from(power_off.into_bits()));
+                assert!(matches!(
+                    Future::poll(
+                        std::pin::Pin::new(&mut retry),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                    ),
+                    std::task::Poll::Ready(Ok(()))
+                ));
+                port.hotplug_remove_device(true).unwrap();
+                assert!(port.link.is_none());
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn test_slot_power_changes_signal_enabled_link_interrupts() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            for (hotplug_enable, link_enable, msi_enable) in [
+                (true, true, true),
+                (false, true, true),
+                (true, false, true),
+                (true, true, false),
+            ] {
+                let recorder = Arc::new(HotplugMsi::default());
+                let connection = pci_core::msi::MsiConnection::new();
+                connection.connect(recorder.clone());
+                let bus_range = AssignedBusRange::new();
+                bus_range.set_bus_range(0, 0);
+                let mut port = make_hotplug_port(port_type, &connection.msi_target(bus_range, 0));
+                let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+                let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+                port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+                port.cfg_space.write_u32(msi_offset + 12, 0x40);
+                port.cfg_space
+                    .write_u32(msi_offset, u32::from(msi_enable) << 16);
+                let control = SlotControl::new()
+                    .with_hot_plug_interrupt_enable(hotplug_enable)
+                    .with_data_link_layer_state_changed_enable(link_enable);
+                let power_off = control
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11);
+                write_slot_control(&mut port, u32::from(power_off.into_bits()));
+                port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                    .unwrap();
+                recorder.0.store(0, Ordering::SeqCst);
+                let clear_events = u32::from(
+                    SlotStatus::new()
+                        .with_presence_detect_changed(true)
+                        .with_data_link_layer_state_changed(true)
+                        .into_bits(),
+                ) << 16;
+                write_slot_control(&mut port, u32::from(control.into_bits()) | clear_events);
+                let expected = usize::from(hotplug_enable && link_enable && msi_enable);
+                assert_eq!(recorder.0.load(Ordering::SeqCst), expected);
+                let status = SlotStatus::from_bits(
+                    (port.cfg_space.read_u32(pcie_offset + 0x18) >> 16) as u16,
+                );
+                assert!(status.data_link_layer_state_changed());
+                write_slot_control(&mut port, u32::from(control.into_bits()) | clear_events);
+                assert_eq!(recorder.0.load(Ordering::SeqCst), expected);
+                write_slot_control(&mut port, u32::from(power_off.into_bits()) | clear_events);
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 2 * expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pending_link_interrupt_is_delivered_when_unmasked() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for port_type in [
+            DevicePortType::RootPort,
+            DevicePortType::DownstreamSwitchPort,
+        ] {
+            for mask_hotplug in [false, true] {
+                for clear_on_unmask in [false, true] {
+                    let recorder = Arc::new(HotplugMsi::default());
+                    let connection = pci_core::msi::MsiConnection::new();
+                    connection.connect(recorder.clone());
+                    let bus_range = AssignedBusRange::new();
+                    bus_range.set_bus_range(0, 0);
+                    let mut port =
+                        make_hotplug_port(port_type, &connection.msi_target(bus_range, 0));
+                    let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+                    let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+                    port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+                    port.cfg_space.write_u32(msi_offset + 12, 0x40);
+                    port.cfg_space.write_u32(msi_offset, 1 << 16);
+                    port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                        .unwrap();
+                    let enabled = SlotControl::new()
+                        .with_hot_plug_interrupt_enable(true)
+                        .with_data_link_layer_state_changed_enable(true);
+                    let clear_events = u32::from(
+                        SlotStatus::new()
+                            .with_presence_detect_changed(true)
+                            .with_data_link_layer_state_changed(true)
+                            .into_bits(),
+                    ) << 16;
+                    write_slot_control(&mut port, u32::from(enabled.into_bits()) | clear_events);
+                    let masked = enabled
+                        .with_hot_plug_interrupt_enable(!mask_hotplug)
+                        .with_data_link_layer_state_changed_enable(mask_hotplug);
+                    write_slot_control(&mut port, u32::from(masked.into_bits()) | clear_events);
+                    recorder.0.store(0, Ordering::SeqCst);
+                    write_slot_control(
+                        &mut port,
+                        u32::from(masked.with_power_controller_control(true).into_bits()),
+                    );
+                    assert_eq!(recorder.0.load(Ordering::SeqCst), 0);
+                    let status = SlotStatus::from_bits(
+                        (port.cfg_space.read_u32(pcie_offset + 0x18) >> 16) as u16,
+                    );
+                    assert!(status.data_link_layer_state_changed());
+                    let unmasked = enabled.with_power_controller_control(true).into_bits();
+                    let ack = if clear_on_unmask { clear_events } else { 0 };
+                    write_slot_control(&mut port, u32::from(unmasked) | ack);
+                    let expected = usize::from(!clear_on_unmask);
+                    assert_eq!(recorder.0.load(Ordering::SeqCst), expected);
+                    write_slot_control(&mut port, u32::from(unmasked));
+                    assert_eq!(recorder.0.load(Ordering::SeqCst), expected);
+                    write_slot_control(&mut port, u32::from(unmasked) | clear_events);
+                    write_slot_control(
+                        &mut port,
+                        u32::from(masked.with_power_controller_control(true).into_bits()),
+                    );
+                    write_slot_control(&mut port, u32::from(unmasked));
+                    assert_eq!(recorder.0.load(Ordering::SeqCst), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_presence_interrupt_respects_individual_mask_and_unmasking() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for global_enable in [false, true] {
+            let recorder = Arc::new(HotplugMsi::default());
+            let connection = pci_core::msi::MsiConnection::new();
+            connection.connect(recorder.clone());
+            let bus_range = AssignedBusRange::new();
+            bus_range.set_bus_range(0, 0);
+            let mut port = make_hotplug_port(
+                DevicePortType::RootPort,
+                &connection.msi_target(bus_range, 0),
+            );
+            let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+            let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+            port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+            port.cfg_space.write_u32(msi_offset + 12, 0x40);
+            port.cfg_space.write_u32(msi_offset, 1 << 16);
+            let masked = SlotControl::new().with_hot_plug_interrupt_enable(global_enable);
+            write_slot_control(&mut port, u32::from(masked.into_bits()));
+            port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                .unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 0);
+            let enabled = masked
+                .with_hot_plug_interrupt_enable(true)
+                .with_presence_detect_changed_enable(true);
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+            let clear = u32::from(
+                SlotStatus::new()
+                    .with_presence_detect_changed(true)
+                    .into_bits(),
+            ) << 16;
+            write_slot_control(&mut port, u32::from(enabled.into_bits()) | clear);
+            write_slot_control(&mut port, u32::from(masked.into_bits()));
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn test_attention_interrupt_pending_across_mask_changes() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for mask_global in [false, true] {
+            let recorder = Arc::new(HotplugMsi::default());
+            let connection = pci_core::msi::MsiConnection::new();
+            connection.connect(recorder.clone());
+            let bus_range = AssignedBusRange::new();
+            bus_range.set_bus_range(0, 0);
+            let mut port = make_hotplug_port(
+                DevicePortType::RootPort,
+                &connection.msi_target(bus_range, 0),
+            );
+            let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+            let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+            port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+            port.cfg_space.write_u32(msi_offset + 12, 0x40);
+            port.cfg_space.write_u32(msi_offset, 1 << 16);
+            port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                .unwrap();
+            let enabled = SlotControl::new()
+                .with_hot_plug_interrupt_enable(true)
+                .with_attention_button_pressed_enable(true)
+                .with_power_indicator_control(0b01);
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            let _completion = port.request_hotplug_remove_device().unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+            let masked = if mask_global {
+                enabled.with_hot_plug_interrupt_enable(false)
+            } else {
+                enabled.with_attention_button_pressed_enable(false)
+            };
+            write_slot_control(&mut port, u32::from(masked.into_bits()));
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 2);
+            let clear = u32::from(
+                SlotStatus::new()
+                    .with_attention_button_pressed(true)
+                    .into_bits(),
+            ) << 16;
+            write_slot_control(&mut port, u32::from(enabled.into_bits()) | clear);
+            write_slot_control(&mut port, u32::from(masked.into_bits()));
+            write_slot_control(&mut port, u32::from(enabled.into_bits()));
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn test_pending_attention_msi_survives_restore_into_new_port() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+
+        for new_instance in [false, true] {
+            let recorder = Arc::new(HotplugMsi::default());
+            let connection = pci_core::msi::MsiConnection::new();
+            connection.connect(recorder.clone());
+            let bus_range = AssignedBusRange::new();
+            bus_range.set_bus_range(0, 0);
+            let target = connection.msi_target(bus_range, 0);
+            let mut port = make_hotplug_port(DevicePortType::RootPort, &target);
+            let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+            let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+            port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+            port.cfg_space.write_u32(msi_offset + 12, 0x40);
+            port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                .unwrap();
+            let control = SlotControl::new()
+                .with_hot_plug_interrupt_enable(true)
+                .with_attention_button_pressed_enable(true)
+                .with_power_indicator_control(0b01);
+            write_slot_control(&mut port, u32::from(control.into_bits()));
+            let _completion = port.request_hotplug_remove_device().unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 0);
+            let saved = port.cfg_space.save().unwrap();
+            if new_instance {
+                port = make_hotplug_port(DevicePortType::RootPort, &target);
+                port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                    .unwrap();
+            }
+            port.cfg_space.restore(saved).unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 0);
+            let enable = PciConfigAddress::new(0, 0, msi_offset / 4).unwrap();
+            port.cfg_write(
+                enable,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(1 << 16),
+            )
+            .unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+            port.cfg_write(
+                enable,
+                ByteEnabledDwordWrite::with_all_bytes_enabled(1 << 16),
+            )
+            .unwrap();
+            assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn test_powered_off_hot_add_notifies_attention_button_guest() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        let recorder = Arc::new(HotplugMsi::default());
+        let connection = pci_core::msi::MsiConnection::new();
+        connection.connect(recorder.clone());
+        let bus_range = AssignedBusRange::new();
+        bus_range.set_bus_range(0, 0);
+        let mut port = make_hotplug_port(
+            DevicePortType::RootPort,
+            &connection.msi_target(bus_range, 0),
+        );
+        let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+        let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+        port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+        port.cfg_space.write_u32(msi_offset + 12, 0x40);
+        port.cfg_space.write_u32(msi_offset, 1 << 16);
+        let control = SlotControl::new()
+            .with_hot_plug_interrupt_enable(true)
+            .with_attention_button_pressed_enable(true)
+            .with_data_link_layer_state_changed_enable(true)
+            .with_power_controller_control(true)
+            .with_power_indicator_control(0b11);
+        write_slot_control(&mut port, u32::from(control.into_bits()));
+        port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+            .unwrap();
+        let status =
+            SlotStatus::from_bits((port.cfg_space.read_u32(pcie_offset + 0x18) >> 16) as u16);
+        assert!(status.presence_detect_changed());
+        assert!(!status.data_link_layer_state_changed());
+        assert!(status.attention_button_pressed());
+        assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_newly_enabled_source_notifies_while_another_source_is_acknowledged() {
+        use pci_core::spec::caps::pci_express::SlotControl;
+        use pci_core::spec::caps::pci_express::SlotStatus;
+
+        for attention_first in [false, true] {
+            for acknowledge_old in [true, false] {
+                let recorder = Arc::new(HotplugMsi::default());
+                let connection = pci_core::msi::MsiConnection::new();
+                connection.connect(recorder.clone());
+                let bus_range = AssignedBusRange::new();
+                bus_range.set_bus_range(0, 0);
+                let mut port = make_hotplug_port(
+                    DevicePortType::RootPort,
+                    &connection.msi_target(bus_range, 0),
+                );
+                let pcie_offset = port.cfg_space.read_u32(0x34) as u16 & 0xff;
+                let msi_offset = (port.cfg_space.read_u32(pcie_offset) >> 8) as u16 & 0xff;
+                port.cfg_space.write_u32(msi_offset + 4, 0xfee0_0000);
+                port.cfg_space.write_u32(msi_offset + 12, 0x40);
+                port.cfg_space.write_u32(msi_offset, 1 << 16);
+                let control = SlotControl::new()
+                    .with_hot_plug_interrupt_enable(true)
+                    .with_presence_detect_changed_enable(!attention_first)
+                    .with_attention_button_pressed_enable(attention_first)
+                    .with_power_controller_control(true)
+                    .with_power_indicator_control(0b11);
+                write_slot_control(&mut port, u32::from(control.into_bits()));
+                port.hotplug_add_device("endpoint", Box::new(TestPciDevice))
+                    .unwrap();
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 1);
+                let enabled = control
+                    .with_presence_detect_changed_enable(true)
+                    .with_attention_button_pressed_enable(true);
+                let clear = if acknowledge_old {
+                    SlotStatus::new()
+                        .with_presence_detect_changed(!attention_first)
+                        .with_attention_button_pressed(attention_first)
+                        .into_bits()
+                } else {
+                    0
+                };
+                write_slot_control(
+                    &mut port,
+                    u32::from(enabled.into_bits()) | (u32::from(clear) << 16),
+                );
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 2);
+                write_slot_control(&mut port, u32::from(enabled.into_bits()));
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 2);
+                let clear_all = SlotStatus::new()
+                    .with_presence_detect_changed(true)
+                    .with_attention_button_pressed(true)
+                    .into_bits();
+                write_slot_control(
+                    &mut port,
+                    u32::from(enabled.into_bits()) | (u32::from(clear_all) << 16),
+                );
+                assert_eq!(recorder.0.load(Ordering::SeqCst), 2);
+            }
+        }
+    }
 
     fn make_cxl_bar_port() -> PcieDownstreamPort {
         use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
@@ -966,6 +1595,7 @@ mod tests {
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
                 tlp_prefixing_supported: None,
+                ..Default::default()
             },
             Some(&mut mmio),
             Some(PortBarDefinition {
@@ -1558,6 +2188,7 @@ mod tests {
                     CxlFlexBusPortDvsecCapability::new().with_mem_capable(true),
                 ),
                 tlp_prefixing_supported: None,
+                ..Default::default()
             },
             None,
             Some(PortBarDefinition {

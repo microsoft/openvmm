@@ -52,17 +52,40 @@ everything via config space registers and MSI.
    programs the bridge's bus numbers, scans the secondary bus
    for new devices, and clears the RW1C status bits.
 
-4. **Device removal** follows the same flow in reverse —
-   presence and link active are cleared, changed bits are set,
-   and MSI fires.
+4. **Orderly removal** starts with an attention button event.
+   The endpoint remains accessible during guest driver teardown.
+   Once the guest turns off both slot power and the power
+   indicator, the VMM disconnects and destroys the device
+   and signals physical removal.
+
+Attention button support is disabled by default. Enable it on a
+hotplug root port with `attention_button` to advertise the attention
+button, power controller and power indicator.
 
 ### Runtime API
 
-Hot-add and hot-remove are triggered via
-`VmRpc::AddPcieDevice` and `VmRpc::RemovePcieDevice` messages.
-These resolve a device resource, create the device with MMIO
-registration, attach it to the named port, and fire the hotplug
-notification.
+`VmRpc::AddPcieDevice` resolves a device resource, creates the
+device with MMIO registration, attaches it to the named root port
+and fires the hotplug notification.
+
+`RemovePcieDeviceRequest` requires a dynamically added endpoint. Its `orderly` field
+defaults to `false`, removing the device without guest
+acknowledgement, including while the VM is paused.
+
+With `orderly=true`, removal requires a running guest that is not halted and a
+port with `attention_button`. Signaling a new ejection requires guest attention
+button events and hotplug interrupts to be enabled. Configure
+`eject_timeout_ms` beside `attention_button` on the port through CLI or
+`CreateVM`.
+There is no default timeout. Zero checks for completion without waiting.
+Timeout or supported cancellation while waiting for ejection returns an error
+and leaves the device attached. See
+[request cancellation](../../openvmm/management/grpc.md#request-cancellation)
+for the signals supported by each management transport. Once removal starts
+it runs to completion. Retrying after a timeout does not send another attention
+button event, which could cancel ejection. If the guest completes ejection after
+a timeout, retry the RPC to finish removal. Alternatively, request surprise
+removal with `orderly=false` without waiting for guest teardown.
 
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)
