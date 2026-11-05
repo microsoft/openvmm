@@ -66,7 +66,7 @@
         "vtl2_total": 524288,
         "2vp": {
             "usage": {
-                "debug": 249263,
+                "debug": 249336,
                 "release": 76676
             },
             "reservation": {
@@ -74,23 +74,23 @@
                 "release": 34616
             },
             "active_anon": {
-                "debug": 23107,
+                "debug": 23108,
                 "release": 4334
             },
             "inactive_anon": {
-                "debug": 182860,
+                "debug": 182916,
                 "release": 24752
             },
             "underhill-init_rss": {
-                "debug": 6455,
+                "debug": 6596,
                 "release": 4460
             },
             "openvmm_hcl_rss": {
-                "debug": 27044,
+                "debug": 27624,
                 "release": 9485
             },
             "underhill-vm_rss": {
-                "debug": 29759,
+                "debug": 39972,
                 "release": 14858
             }
         },
