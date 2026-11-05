@@ -3343,16 +3343,14 @@ impl VmTimeGuestTimer {
         ref_time_now: u64,
         ref_time_next: u64,
     ) -> VmTime {
-        /// Convert reference time in 100ns units to Duration.
-        fn duration_from_100ns(n: u64) -> std::time::Duration {
-            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-        }
-
         // Convert from reference timer basis to [`VmTime`] basis via
         // difference of programmed timer and current reference time.
         let ref_diff = ref_time_next.saturating_sub(ref_time_now);
-        vmtime.now().wrapping_add(duration_from_100ns(ref_diff))
+        vmtime
+            .now()
+            .wrapping_add(std::time::Duration::from_nanos_u128(
+                u128::from(ref_diff) * 100,
+            ))
     }
 }
 

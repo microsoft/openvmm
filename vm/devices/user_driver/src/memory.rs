@@ -88,7 +88,7 @@ unsafe impl MappedDmaTarget for RestrictedView {
     fn view(&self, offset: usize, len: usize) -> Option<MemoryBlock> {
         Some(MemoryBlock::new(RestrictedView::new(
             self.mem.clone(),
-            self.offset.checked_add(offset).unwrap(),
+            self.offset.strict_add(offset),
             len,
         )))
     }

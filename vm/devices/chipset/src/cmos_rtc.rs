@@ -413,9 +413,9 @@ impl Rtc {
         }
 
         const DURATION_SEC: Duration = Duration::from_secs(1);
-        const DURATION_MIN: Duration = Duration::from_secs(60);
-        const DURATION_HOUR: Duration = Duration::from_secs(60 * 60);
-        const DURATION_DAY: Duration = Duration::from_secs(60 * 60 * 24);
+        const DURATION_MIN: Duration = Duration::from_mins(1);
+        const DURATION_HOUR: Duration = Duration::from_hours(1);
+        const DURATION_DAY: Duration = Duration::from_hours(24);
 
         let go_around_again = match (alarm_sec, alarm_min, alarm_hour) {
             (ALARM_WILDCARD, _, _) => DURATION_SEC,

@@ -347,9 +347,9 @@ struct TcpConnectionInner {
 
 const INITIAL_RTO: Duration = Duration::from_secs(1);
 const MIN_RTO: Duration = Duration::from_secs(1);
-const MAX_RTO: Duration = Duration::from_secs(60);
+const MAX_RTO: Duration = Duration::from_mins(1);
 const CLOCK_GRANULARITY: Duration = Duration::from_millis(1);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Copy, Default, Inspect)]
 #[inspect(tag = "kind")]
@@ -1423,8 +1423,7 @@ impl TcpConnection {
         ));
 
         let rx_bounds = params.rx_buffer;
-        let rx_window_scale =
-            (usize::BITS - rx_bounds.max.leading_zeros()).saturating_sub(16) as u8;
+        let rx_window_scale = rx_bounds.max.bit_width().saturating_sub(16) as u8;
 
         let tx_bounds = params.tx_buffer;
 

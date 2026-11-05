@@ -352,6 +352,26 @@ fn verify(
 }
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        pkcs1::RsaPublicKey::from_der(der)
+            .map_err(|e| der_err(e, "parsing the PKCS#1 DER public key"))?;
+        Ok(Self(import_public(der)?))
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        let pub_key = self.public_key_handle()?;
+        let mut error: CFErrorRef = ptr::null();
+        // SAFETY: pub_key.0 is valid.
+        let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
+        if data.is_null() {
+            // SAFETY: error is null or a valid CFErrorRef.
+            return Err(unsafe { rsa_sec_err(error, "exporting the RSA public key") });
+        }
+        let data = CfHandle(data);
+        // SAFETY: data.0 is valid.
+        Ok(unsafe { cf_data_to_vec(data.0) })
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let der = build_pkcs1_pub(n, e)?;
         Ok(Self(import_public(&der)?))
@@ -419,17 +439,7 @@ impl RsaPublicKeyInner {
     }
 
     pub fn to_components(&self) -> Result<super::RsaPublicKeyComponents, RsaError> {
-        let pub_key = self.public_key_handle()?;
-        let mut error: CFErrorRef = ptr::null();
-        // SAFETY: pub_key.0 is valid.
-        let data = unsafe { SecKeyCopyExternalRepresentation(pub_key.0, &mut error) };
-        if data.is_null() {
-            // SAFETY: error is null or a valid CFErrorRef.
-            return Err(unsafe { rsa_sec_err(error, "exporting the RSA public key") });
-        }
-        let data = CfHandle(data);
-        // SAFETY: data.0 is valid.
-        let der_bytes = unsafe { cf_data_to_vec(data.0) };
+        let der_bytes = self.to_pkcs1_der()?;
         let (modulus, public_exponent) = parse_pkcs1_pub(&der_bytes)?;
         Ok(super::RsaPublicKeyComponents {
             modulus,

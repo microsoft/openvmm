@@ -100,6 +100,7 @@ dependencies = [
  "open_enum",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -230,7 +231,6 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 name = "atomic_ringbuf"
 version = "0.0.0"
 dependencies = [
- "cfg-if",
  "inspect",
  "loom",
  "parking_lot",
@@ -917,7 +917,6 @@ name = "consomme"
 version = "0.0.0"
 dependencies = [
  "blocking",
- "cfg-if",
  "futures",
  "getrandom 0.4.2",
  "heapless",
@@ -1437,7 +1436,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
- "cfg-if",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -2147,15 +2145,6 @@ name = "fast_memcpy"
 version = "0.0.0"
 dependencies = [
  "criterion",
-]
-
-[[package]]
-name = "fast_select"
-version = "0.0.0"
-dependencies = [
- "futures",
- "pal_async",
- "parking_lot",
 ]
 
 [[package]]
@@ -3504,6 +3493,9 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+dependencies = [
+ "test_with_tracing",
+]
 
 [[package]]
 name = "heapless"
@@ -3643,6 +3635,7 @@ dependencies = [
  "bitvec",
  "hvdef",
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -4125,6 +4118,7 @@ name = "inspect_counters"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "test_with_tracing",
 ]
 
 [[package]]
@@ -4154,7 +4148,6 @@ dependencies = [
 name = "inspect_rlimit"
 version = "0.0.0"
 dependencies = [
- "cfg-if",
  "inspect",
  "libc",
  "thiserror 2.0.16",
@@ -4864,6 +4857,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -4970,7 +4964,6 @@ name = "minimal_rt"
 version = "0.0.0"
 dependencies = [
  "arrayvec",
- "cfg-if",
  "hvdef",
  "memory_range",
  "minimal_rt_build",
@@ -5053,7 +5046,7 @@ dependencies = [
 [[package]]
 name = "ms-tcg-tpm-sys"
 version = "0.0.0"
-source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=517ae1a64aeb990019d809b963ac2c2726080e24#517ae1a64aeb990019d809b963ac2c2726080e24"
+source = "git+https://github.com/microsoft/ms-tcg-tpm-sys.git?rev=5276f871eb8141149aaa762cdb34d5f4e3291d50#5276f871eb8141149aaa762cdb34d5f4e3291d50"
 dependencies = [
  "bitfield-struct 0.13.0",
  "cmake",
@@ -5447,6 +5440,7 @@ dependencies = [
  "chipset_device",
  "device_emulators",
  "disk_backend",
+ "disk_prwrap",
  "disklayer_ram",
  "futures",
  "futures-concurrency",
@@ -5556,6 +5550,8 @@ dependencies = [
  "chipset_device",
  "device_emulators",
  "disk_backend",
+ "disk_prwrap",
+ "disklayer_ram",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -5752,7 +5748,6 @@ dependencies = [
  "aarch64defs",
  "arrayvec",
  "bitfield-struct 0.11.0",
- "cfg-if",
  "crc32fast",
  "fdt",
  "host_fdt_parser",
@@ -5961,7 +5956,6 @@ version = "0.0.0"
 dependencies = [
  "acpi_spec",
  "bitfield-struct 0.11.0",
- "cfg-if",
  "hvdef",
  "linked_list_allocator",
  "log",
@@ -6083,7 +6077,6 @@ dependencies = [
  "async-trait",
  "build_rs_guest_arch",
  "cache_topology",
- "cfg-if",
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker",
@@ -6584,7 +6577,6 @@ version = "0.0.0"
 dependencies = [
  "async-channel",
  "async-task",
- "cfg-if",
  "futures",
  "getrandom 0.4.2",
  "headervec",
@@ -6928,6 +6920,7 @@ dependencies = [
  "serial_16550_resources",
  "serial_core",
  "serial_socket",
+ "sha2",
  "smbios_defs",
  "sparse_mmap",
  "storvsp_resources",
@@ -7694,9 +7687,6 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 [[package]]
 name = "safe_intrinsics"
 version = "0.0.0"
-dependencies = [
- "cfg-if",
-]
 
 [[package]]
 name = "safeatomic"
@@ -7760,6 +7750,7 @@ dependencies = [
  "safeatomic",
  "smallvec",
  "sparse_mmap",
+ "test_with_tracing",
  "zerocopy",
 ]
 
@@ -8289,6 +8280,7 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "pci_core",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -8495,7 +8487,6 @@ dependencies = [
  "criterion",
  "disklayer_ram",
  "event-listener",
- "fast_select",
  "futures",
  "guestmem",
  "guid",
@@ -8775,7 +8766,6 @@ name = "test_igvm_agent_rpc_server"
 version = "0.0.0"
 dependencies = [
  "cc",
- "cfg-if",
  "clap",
  "get_resources",
  "guid",
@@ -9113,6 +9103,7 @@ name = "tpm_protocol"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "zerocopy",
 ]
@@ -9517,7 +9508,6 @@ dependencies = [
  "bootloader_fdt_parser",
  "build_info",
  "build_rs_guest_arch",
- "cfg-if",
  "chipset_device",
  "chipset_device_resources",
  "chipset_device_worker",
@@ -10120,6 +10110,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "slab",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -10161,7 +10152,6 @@ dependencies = [
  "anyhow",
  "bitfield-struct 0.11.0",
  "build_rs_guest_arch",
- "cfg-if",
  "guestmem",
  "hv1_emulator",
  "hv1_hypercall",
@@ -10234,7 +10224,6 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "bitvec",
  "build_rs_guest_arch",
- "cfg-if",
  "cvm_tracing",
  "fs-err",
  "guestmem",
@@ -10316,6 +10305,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "parking_lot",
+ "test_with_tracing",
  "tracelimit",
  "tracing",
  "vm_topology",
@@ -10716,7 +10706,6 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "build_rs_guest_arch",
- "cfg-if",
  "cxl_spec",
  "inspect",
  "memory_range",
@@ -11024,6 +11013,7 @@ dependencies = [
  "parking_lot",
  "safeatomic",
  "slab",
+ "tempfile",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
@@ -11449,7 +11439,6 @@ dependencies = [
 name = "vmsocket"
 version = "0.0.0"
 dependencies = [
- "cfg-if",
  "guid",
  "libc",
  "mesh",
@@ -11487,6 +11476,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "socket2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -11684,6 +11674,29 @@ dependencies = [
  "prost",
  "prost-build",
  "serde",
+]
+
+[[package]]
+name = "vtpm_util"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "crypto",
+ "getrandom 0.4.2",
+ "hex",
+ "ms-tcg-tpm-sys",
+ "ms-tpm-20-ref",
+ "parking_lot",
+ "tempfile",
+ "test_with_tracing",
+ "tpm_lib",
+ "tpm_protocol",
+ "tpm_resources",
+ "tracing",
+ "tracing-subscriber",
+ "zerocopy",
 ]
 
 [[package]]

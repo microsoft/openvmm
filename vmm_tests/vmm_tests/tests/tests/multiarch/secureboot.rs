@@ -139,7 +139,7 @@ async fn secure_boot_variable_report_test<T: PetriVmmBackend>(
 
     let (vm, agent) = config.run().await?;
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(verify_secure_boot_variable_reports(
             &vm,
             custom_uefi_json.is_some(),

@@ -56,7 +56,7 @@ use vpci::bus_control::VpciBusEvent;
 /// Default timeout for actions communicating with other components where an action
 /// is expected to take time, but still complete in a reasonable window. Live Migration
 /// expects a 60s timeout.
-const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 
 #[derive(Debug)]
 enum HclNetworkVfManagerMessage {

@@ -693,7 +693,7 @@ async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driv
     // Only the notification makes the distant deadline due.
     fixture.worker.schedule.running = true;
     fixture.worker.schedule.not_before = Instant::now();
-    fixture.worker.schedule.deadline = Instant::now() + Duration::from_secs(86400);
+    fixture.worker.schedule.deadline = Instant::now() + Duration::from_hours(24);
     fixture.worker.notification.notify();
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
@@ -778,7 +778,7 @@ async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver)
     for retry in [false, true] {
         let mut fixture = Fixture::new(&driver, true).await;
         // A distant gate makes polling deterministic without timer delays.
-        let deadline = Instant::now() + Duration::from_secs(86400);
+        let deadline = Instant::now() + Duration::from_hours(24);
         if retry {
             fixture.worker.schedule.completed(deadline, false, 0);
         } else {
@@ -826,7 +826,7 @@ async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: D
     let mut fixture = Fixture::new(&driver, true).await;
     let notification = fixture.worker.notification.clone();
     // Far in the future solely to prove that Start/notify do not bypass the gate.
-    let not_before = Instant::now() + Duration::from_secs(86400);
+    let not_before = Instant::now() + Duration::from_hours(24);
     fixture.worker.schedule.not_before = not_before;
     let (send, recv) = mesh::mpsc_channel();
     let mut run = pin!(fixture.worker.run(recv));
@@ -1857,7 +1857,7 @@ async fn save_restore_rebases_bounded_relative_timers_and_preserves_backoff(driv
 
     // Saving clamps obsolete or excessively distant process-local deadlines.
     fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::now() + Duration::from_secs(86400);
+    fixture.worker.schedule.not_before = Instant::now() + Duration::from_hours(24);
     let bounded: SavedHardwareResealState = fixture
         .worker
         .save()
