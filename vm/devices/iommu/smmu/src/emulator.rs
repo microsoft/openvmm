@@ -4070,7 +4070,8 @@ mod tests {
             &test_config(),
             Some(LineInterrupt::new_with_target("EVTQ", target.clone(), 0)),
             Some(LineInterrupt::new_with_target("GERROR", target.clone(), 1)),
-        );
+        )
+        .unwrap();
         write64(
             &mut dev,
             EVENTQ_BASE,
