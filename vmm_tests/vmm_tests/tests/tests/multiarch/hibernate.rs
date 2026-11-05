@@ -20,13 +20,16 @@ use petri_artifacts_common::tags::IsVmgsTool;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_vmm_test::artifacts::vmgstool::VMGSTOOL_NATIVE;
 use std::process::Command;
-use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test_with;
 
 /// Resume the same Windows session from a hibernation image on VMBus SCSI.
-#[openvmm_test(
-    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+#[vmm_test_with(
+    openvmm,
+    requires(windows_partition_reset),
+    configs(
+        uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+        uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    )
 )]
 async fn hibernate_resume_vmbus_scsi(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -36,9 +39,13 @@ async fn hibernate_resume_vmbus_scsi(
 }
 
 /// Resume the same Windows session from a hibernation image on PCIe NVMe.
-#[openvmm_test(
-    uefi_x64(vhd(windows_datacenter_core_2025_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+#[vmm_test_with(
+    openvmm,
+    requires(windows_partition_reset),
+    configs(
+        uefi_x64(vhd(windows_datacenter_core_2025_x64)),
+        uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    )
 )]
 async fn hibernate_resume_pcie_nvme(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
