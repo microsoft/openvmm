@@ -103,7 +103,7 @@ pub struct VmmTestsRunCli {
     /// Override the pinned mshv root bzImage, independent of the child's kernel.
     #[clap(long)]
     mshv_kernel: Option<PathBuf>,
-    /// Use extracted MSHV payloads; required for local Windows MSHV-root tests.
+    /// Use extracted MSHV payloads instead of preparing them from RPMs.
     #[clap(long)]
     mshv_boot_artifacts: Option<PathBuf>,
     /// Optional: custom UEFI firmware (MSVM.fd) to use instead of the
@@ -591,6 +591,14 @@ fn run_cargo_nextest_list<'a>(
         include_ignored,
     } = req;
 
+    validate_local_discovery_target(
+        target_lexicon::Triple::host().operating_system,
+        target
+            .parse::<target_lexicon::Triple>()
+            .context("invalid test discovery target")?
+            .operating_system,
+    )?;
+
     // Check that cargo-nextest is available
     let nextest_check = Command::new("cargo")
         .args(["nextest", "--version"])
@@ -632,6 +640,19 @@ fn run_cargo_nextest_list<'a>(
         .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
 
     parse_nextest_output(&nextest_stdout)
+}
+
+fn validate_local_discovery_target(
+    host_os: target_lexicon::OperatingSystem,
+    target_os: target_lexicon::OperatingSystem,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        host_os != target_lexicon::OperatingSystem::Windows
+            || target_os == target_lexicon::OperatingSystem::Windows,
+        "vmm-tests-run cannot discover {target_os} tests on Windows; use a Linux/WSL host \
+         or exclude cross-OS nested tests with --filter"
+    );
+    Ok(())
 }
 
 /// Parse `cargo nextest list --message-format json` output to extract test
@@ -905,6 +926,28 @@ mod tests {
     use petri_artifacts_vmm_test::artifacts::openhcl_igvm;
     use petri_artifacts_vmm_test::artifacts::vmfw_dll;
     use test_with_tracing::test;
+
+    #[test]
+    fn local_discovery_rejects_linux_targets_on_windows() {
+        use target_lexicon::OperatingSystem::{Linux, Windows};
+
+        let error = validate_local_discovery_target(Windows, Linux).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot discover linux tests on Windows")
+        );
+    }
+
+    #[test]
+    fn local_discovery_preserves_native_and_linux_host_targets() -> anyhow::Result<()> {
+        use target_lexicon::OperatingSystem::{Linux, Windows};
+
+        validate_local_discovery_target(Windows, Windows)?;
+        validate_local_discovery_target(Linux, Linux)?;
+        validate_local_discovery_target(Linux, Windows)?;
+        Ok(())
+    }
 
     #[test]
     fn linux_targets_resolve() {

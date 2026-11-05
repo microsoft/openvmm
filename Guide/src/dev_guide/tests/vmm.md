@@ -188,8 +188,8 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 
 On Linux hosts, OpenVMM and QEMU automatically share nested test artifacts and
 results with Linux guests over 9p. OpenVMM also supports directory sharing with
-Linux guests on Windows, but cross-OS nesting there remains disabled until CI
-provisions the nested artifacts. Other supported nesting configurations
+Linux guests on Windows when the nested artifacts are provisioned, as in CI.
+Other supported nesting configurations
 continue staging artifacts on the agent disk and
 copying results back through Pipette. Tests do not need to allocate PCIe ports
 for the shares. OpenVMM skips its automatic startup save/restore verification
@@ -240,10 +240,10 @@ artifacts.
 Flowey resolves the published `mshv-test` kernel, builds `mshv_host_boot.efi`,
 and provisions the compatible hypervisor payloads. Linux provisioning uses
 `rpm2cpio` and `bsdtar`; RPM packages and their scripts are never installed
-or executed. Run the native test with:
+or executed. Run the native test from a Linux or WSL host with:
 
 ```bash
-filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
+filter='test(=multiarch::openvmm_linux_x64_boot_mshv_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
 cargo xflowey vmm-tests-run --filter "$filter"
 ```
 
@@ -261,11 +261,16 @@ The x64 KVM and standard Windows x64 test jobs consume that artifact and the
 EFI host boot application. MSHV host jobs exclude the root test because that
 backend does not support another level of nested virtualization.
 
-For local Windows runs, download and extract that CI artifact or supply an
-equivalent authorized payload directory with
-`--mshv-boot-artifacts path/to/mshv-boot-artifacts`. No RPM tools are needed on
-Windows. Guest HTTPS access uses the host's root certificates; `SSL_CERT_FILE`
-can select an explicit PEM bundle instead.
+Native Windows `vmm-tests-run` does not support discovering Linux child tests.
+Selections that include them, including `all()`, are rejected before building
+or querying the Linux test binary. Use a Linux or WSL host, or exclude those
+nested tests with `--filter`. This restriction does not apply to CI's prebuilt
+artifact path; Windows CI workers need no RPM tools.
+
+Use `--mshv-boot-artifacts path/to/mshv-boot-artifacts` to supply extracted
+payloads instead of preparing them from RPMs. Guest HTTPS access uses the
+host's root certificates; `SSL_CERT_FILE` can select an explicit PEM bundle
+instead.
 
 ## Running VMM Tests (Flowey)
 
