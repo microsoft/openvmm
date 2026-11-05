@@ -6,8 +6,6 @@
 
 mod aggregate;
 mod file;
-#[cfg(windows)]
-mod impersonation;
 mod inode;
 #[cfg(test)]
 mod integration_tests;

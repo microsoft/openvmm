@@ -5,19 +5,28 @@
 
 #![cfg(any(feature = "ttrpc", feature = "grpc"))]
 
-// The fd-passing protocol relies on `SCM_RIGHTS` and so exists only on unix.
+// Clients pass OS resources to the server by name: file descriptors via the
+// fd-passing protocol on unix (`SCM_RIGHTS`), and handles via the
+// handle-passing protocol on Windows (`DuplicateHandle`). Both are built on the
+// platform-independent core in `resource_passing`; each platform module
+// provides only its `Connection` transport, selected here as
+// `resource_transport`.
 #[cfg(unix)]
 mod fd_passing;
+#[cfg(windows)]
+mod handle_passing;
+mod resource_passing;
 
 #[cfg(unix)]
-use fd_passing::FdRegistry;
+use fd_passing as resource_transport;
+#[cfg(windows)]
+use handle_passing as resource_transport;
 
-/// On non-unix platforms the fd-passing protocol does not exist. The registry
-/// is still threaded through the shared NIC configuration code, so provide an
-/// empty placeholder there; it is never populated or resolved.
-#[cfg(not(unix))]
-#[derive(Clone, Default)]
-struct FdRegistry {}
+/// The registry of OS resources (fds or handles) passed in by clients, keyed by
+/// client-chosen name.
+type ResourceRegistry = resource_passing::Registry<
+    <resource_transport::Connection as resource_passing::Transport>::Resource,
+>;
 
 use crate::cli_args::DiskCliKind;
 use crate::cli_args::GuestPowerAction;
@@ -247,11 +256,12 @@ impl ResolvedTransport {
 ///   so the first byte is `0x00`.
 /// * gRPC uses HTTP/2 cleartext, whose client connection preface begins with
 ///   the ASCII bytes `"PRI "`, so the first byte is `b'P'`.
-/// * The OpenVMM fd-passing protocol (UNIX only) begins with a handshake whose
-///   first byte is `0xFD`, distinct from both of the above.
+/// * The OpenVMM fd-passing (unix) and handle-passing (Windows) protocols begin
+///   with a handshake whose first byte is `0xFD`, distinct from both of the
+///   above.
 mod dispatch {
-    use super::FdRegistry;
     use super::ResolvedTransport;
+    use super::ResourceRegistry;
     use futures::FutureExt;
     use pal_async::driver::Driver;
     use pal_async::socket::AsSockRef;
@@ -270,7 +280,7 @@ mod dispatch {
         listener: UnixListener,
         cancel: mesh::OneshotReceiver<()>,
         transport: ResolvedTransport,
-        registry: FdRegistry,
+        registry: ResourceRegistry,
     ) -> anyhow::Result<()> {
         let mut listener = PolledSocket::new(driver, listener)?;
         let mut tasks = FuturesUnordered::new();
@@ -307,7 +317,7 @@ mod dispatch {
         server: &mesh_rpc::Server,
         mut conn: PolledSocket<UnixStream>,
         transport: ResolvedTransport,
-        registry: &FdRegistry,
+        registry: &ResourceRegistry,
     ) -> anyhow::Result<()> {
         // Wait for the client to send data (returning early if it hangs up
         // first) and classify the protocol from its first byte.
@@ -315,19 +325,18 @@ mod dispatch {
             return Ok(());
         };
 
-        // The fd-passing protocol (UNIX only) is allowed in every transport
-        // mode; it shares the socket with ttrpc/gRPC and is selected by its
-        // distinct magic first byte.
-        #[cfg(not(unix))]
-        let _ = registry;
-
+        // The fd-passing (UNIX) and handle-passing (Windows) protocols are
+        // allowed in every transport mode; they share the socket with
+        // ttrpc/gRPC and are selected by their common magic first byte.
         match first_byte {
             #[cfg(feature = "ttrpc")]
             0x00 if transport.allows_ttrpc() => server.serve_connection(conn).await,
             #[cfg(feature = "grpc")]
             b'P' if transport.allows_grpc() => server.serve_connection_grpc(conn).await,
-            #[cfg(unix)]
-            super::fd_passing::MAGIC_FIRST_BYTE => super::fd_passing::serve(conn, registry).await,
+            super::resource_passing::wire::MAGIC_FIRST_BYTE => {
+                let mut conn = super::resource_transport::Connection::new(conn);
+                super::resource_passing::serve(&mut conn, registry).await
+            }
             byte => {
                 anyhow::bail!("unrecognized or disallowed rpc protocol (first byte {byte:#04x})")
             }
@@ -394,7 +403,7 @@ impl Worker for TtrpcWorker {
                 lifecycle: VmLifecycle::Uninitialized,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
-                registry: FdRegistry::default(),
+                registry: ResourceRegistry::default(),
             };
             let code = service.run(self.listener, recv).await?;
             self.exit_code.send(code);
@@ -758,9 +767,10 @@ struct VmService {
     lifecycle: VmLifecycle,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
-    /// Registry of file descriptors passed in over the fd-passing protocol,
-    /// resolvable by name (e.g. for tap NIC backends).
-    registry: FdRegistry,
+    /// Registry of OS resources passed in over the fd-passing or
+    /// handle-passing protocol, resolvable by name (e.g. for tap NIC backends
+    /// or virtio-fs user tokens).
+    registry: ResourceRegistry,
 }
 
 fn grpc_error(err: anyhow::Error) -> Status {
@@ -940,8 +950,8 @@ impl VmService {
         let vmgs = build_vmgs(req_config.vmgs.take()).await?;
         let iommufds = IommufdContexts::new(std::mem::take(&mut req_config.iommufds))?;
 
-        // Snapshot the fd registry so tap NIC backends can resolve descriptors
-        // passed in over the fd-passing protocol.
+        // Snapshot the registry so devices can resolve resources passed in
+        // over the fd-passing or handle-passing protocol.
         let registry = self.registry.clone();
 
         // Serial ports are set up before the boot configuration because UEFI
@@ -1325,7 +1335,7 @@ impl VmService {
             }
 
             for virtiofs in devices_config.virtiofs_config {
-                let resource = build_virtio_fs(virtiofs).into_resource();
+                let resource = build_virtio_fs(virtiofs, &registry)?.into_resource();
                 // Use VPCI when possible (currently only on Windows and macOS due
                 // to KVM backend limitations).
                 if cfg!(windows) || cfg!(target_os = "macos") {
@@ -2176,7 +2186,7 @@ enum NicDevice {
 fn parse_nic_config(
     nic: vmservice::NicConfig,
     recv: Option<mesh::Receiver<ConsommeRequest>>,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<NicDevice> {
     use self::vmservice::nic_config::Backend;
     #[cfg(not(target_os = "linux"))]
@@ -2379,7 +2389,7 @@ struct BuiltPcieTopology {
 
 async fn build_pcie_topology(
     topology: vmservice::PcieTopologyConfig,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
     iommufds: &IommufdContexts,
     enable_legacy_pci_config_io: bool,
 ) -> anyhow::Result<BuiltPcieTopology> {
@@ -2579,7 +2589,7 @@ fn walk_pcie_attachment(
 /// function, an NVMe controller, or a VFIO-assigned host device).
 async fn build_pci_device(
     device: vmservice::PcieDeviceKind,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
     iommufds: &IommufdContexts,
 ) -> anyhow::Result<Resource<PciDeviceHandleKind>> {
     use vmservice::pcie_device_kind::Kind;
@@ -2742,7 +2752,7 @@ async fn build_nvme_controller(
 /// `VirtioDevice`.
 async fn build_virtio_device(
     device: vmservice::VirtioDevice,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<VirtioDeviceHandle>> {
     use vmservice::virtio_device::Kind;
     let vmservice::VirtioDevice { kind } = device;
@@ -2804,20 +2814,26 @@ async fn build_virtio_device(
             virtio_resources::console::VirtioConsoleHandle { backend }.into_resource()
         }
         Kind::VhostUser(vhost_user) => build_vhost_user_device(vhost_user)?,
-        Kind::Fs(config) => build_virtio_fs(config).into_resource(),
+        Kind::Fs(config) => build_virtio_fs(config, registry)?.into_resource(),
     })
 }
 
 const OPENVMM_DEFAULT_VSOCK_GUEST_CID: u64 = 3;
 
-fn build_virtio_fs(config: vmservice::VirtioFs) -> virtio_resources::fs::VirtioFsHandle {
+fn build_virtio_fs(
+    config: vmservice::VirtioFs,
+    registry: &ResourceRegistry,
+) -> anyhow::Result<virtio_resources::fs::VirtioFsHandle> {
     let vmservice::VirtioFs {
         tag,
         root_path,
         read_only,
         windows_options,
     } = config;
-    virtio_resources::fs::VirtioFsHandle {
+    let windows_options = windows_options
+        .map(|options| build_virtio_fs_windows_options(options, registry))
+        .transpose()?;
+    Ok(virtio_resources::fs::VirtioFsHandle {
         tag,
         fs: virtio_resources::fs::VirtioFsBackend::HostFs {
             root_path,
@@ -2826,12 +2842,37 @@ fn build_virtio_fs(config: vmservice::VirtioFs) -> virtio_resources::fs::VirtioF
             } else {
                 String::new()
             },
-            windows_options: windows_options.map(|options| {
-                virtio_resources::fs::VirtioFsWindowsOptions {
-                    user_token_handle: options.user_token_handle,
-                }
-            }),
+            windows_options,
         },
+    })
+}
+
+/// Resolves the proto virtio-fs Windows options, looking up the user token
+/// registered via the handle-passing protocol.
+fn build_virtio_fs_windows_options(
+    options: vmservice::virtio_fs::WindowsOptions,
+    registry: &ResourceRegistry,
+) -> anyhow::Result<virtio_resources::fs::VirtioFsWindowsOptions> {
+    let vmservice::virtio_fs::WindowsOptions { user_token_name } = options;
+    #[cfg(windows)]
+    {
+        let user_token = (!user_token_name.is_empty())
+            .then(|| {
+                registry.resolve(&user_token_name).with_context(|| {
+                    format!("failed to resolve virtio-fs user token '{user_token_name}'")
+                })
+            })
+            .transpose()?;
+        Ok(virtio_resources::fs::VirtioFsWindowsOptions { user_token })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = registry;
+        anyhow::ensure!(
+            user_token_name.is_empty(),
+            "virtio-fs user tokens are only supported on Windows"
+        );
+        Ok(virtio_resources::fs::VirtioFsWindowsOptions {})
     }
 }
 
@@ -2932,7 +2973,7 @@ fn build_consomme_handle(
 /// Builds a host network endpoint resource from the proto `NicBackend`.
 fn build_nic_backend(
     backend: vmservice::NicBackend,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::nic_backend::Kind;
     #[cfg(not(target_os = "linux"))]
@@ -2962,7 +3003,7 @@ fn build_nic_backend(
 #[cfg(target_os = "linux")]
 fn build_tap_backend(
     tap: vmservice::TapBackend,
-    registry: &FdRegistry,
+    registry: &ResourceRegistry,
 ) -> anyhow::Result<Resource<NetEndpointHandleKind>> {
     use vmservice::tap_backend::Source;
     let fd = match tap.source.context("missing tap source")? {
@@ -3087,7 +3128,7 @@ mod tests {
             lifecycle: VmLifecycle::Running,
             rpc_tasks: Vec::new(),
             transport: ResolvedTransport::Auto,
-            registry: FdRegistry::default(),
+            registry: ResourceRegistry::default(),
         }
     }
 
@@ -4009,7 +4050,7 @@ mod tests {
                     lifecycle: VmLifecycle::Running,
                     rpc_tasks: vec![driver.spawn("pending-rpc", std::future::pending())],
                     transport: ResolvedTransport::Auto,
-                    registry: FdRegistry::default(),
+                    registry: ResourceRegistry::default(),
                 };
                 event_send.send(VmControllerEvent::ExitRequested { code });
                 assert_eq!(service.run(listener, worker_recv).await.unwrap(), code);
@@ -4376,7 +4417,7 @@ mod tests {
                     }],
                     ..Default::default()
                 },
-                &FdRegistry::default(),
+                &ResourceRegistry::default(),
                 &IommufdContexts::default(),
                 false,
             ));
@@ -4423,7 +4464,7 @@ mod tests {
 
         let topology = futures::executor::block_on(build_pcie_topology(
             topology,
-            &FdRegistry::default(),
+            &ResourceRegistry::default(),
             &IommufdContexts::default(),
             true,
         ))
@@ -4457,7 +4498,7 @@ mod tests {
                             }],
                             ..Default::default()
                         },
-                        &FdRegistry::default(),
+                        &ResourceRegistry::default(),
                         &IommufdContexts::default(),
                         false,
                     ))

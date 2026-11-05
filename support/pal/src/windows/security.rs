@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::ptr::null;
 use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
@@ -26,6 +27,7 @@ use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptor
 use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+use windows_sys::Win32::Security::DuplicateTokenEx;
 use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::ImpersonateSelf;
 use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
@@ -38,6 +40,10 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
 use windows_sys::Win32::Security::SecurityImpersonation;
+use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_IMPERSONATE;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TokenImpersonation;
 use windows_sys::Win32::Storage::FileSystem::CREATE_NEW;
 use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
@@ -46,6 +52,8 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
 use windows_sys::Win32::System::Threading::SetThreadToken;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
@@ -410,6 +418,44 @@ impl<'a> SidAndAttributes<'a> {
             },
             PhantomData,
         )
+    }
+}
+
+/// Opens the current process's primary token with `access` (a combination of
+/// `TOKEN_*` access rights).
+pub fn open_process_token(access: u32) -> std::io::Result<OwnedHandle> {
+    let mut token = null_mut();
+    // SAFETY: The output pointer is valid, and a successful call returns a new
+    // handle owned by this process.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), access, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(token))
+    }
+}
+
+/// Creates an impersonation token, owned by this process, from `token`, with
+/// `TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE` access.
+///
+/// Fails if `token` is not an access token or lacks `TOKEN_DUPLICATE` access.
+pub fn duplicate_impersonation_token(token: BorrowedHandle<'_>) -> std::io::Result<OwnedHandle> {
+    let mut duplicate = null_mut();
+    // SAFETY: DuplicateTokenEx does not take ownership of `token`. On success,
+    // `duplicate` is a new handle owned by this process.
+    unsafe {
+        if DuplicateTokenEx(
+            token.as_raw_handle(),
+            TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE,
+            null(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut duplicate,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(duplicate))
     }
 }
 

@@ -1000,7 +1000,7 @@ message TapBackend {
         // Open /dev/net/tun by this device name (existing behavior).
         string name = 1;
         // Use the file descriptor registered under this name via the
-        // fd-passing protocol (see fd_passing.md).
+        // resource-passing protocol (see resource_passing.md).
         string fd_name = 2;
     }
 }
@@ -1087,11 +1087,11 @@ message VirtioFs {
     WindowsOptions windows_options = 5;
 
     message WindowsOptions {
-        // A token handle duplicated into the VM service process. OpenVMM
-        // duplicates the token for host filesystem access. The caller may
-        // close the handle after this RPC succeeds. Zero uses the VM service
-        // process token.
-        uint64 user_token_handle = 1;
+        // Name of an access token registered with the resource-passing
+        // protocol (see resource_passing.md). OpenVMM duplicates the token for host
+        // filesystem access. The name may be deregistered after this RPC
+        // succeeds. Empty uses the VM service process token.
+        string user_token_name = 1;
     }
 }
 

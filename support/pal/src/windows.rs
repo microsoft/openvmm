@@ -117,6 +117,37 @@ impl BorrowedHandleExt for BorrowedHandle<'_> {
     }
 }
 
+/// Duplicates the handle with value `handle` in this process, with the same
+/// access, returning a new owned handle.
+///
+/// This neither takes ownership of nor closes `handle`, so it cannot invalidate
+/// a handle owned elsewhere in this process. It is intended for handle values
+/// that another process duplicated into this one and passed by value.
+// `handle` is an opaque handle value passed to the kernel, not dereferenced.
+#[expect(clippy::not_unsafe_ptr_arg_deref)]
+pub fn duplicate_raw_handle(handle: RawHandle) -> Result<OwnedHandle> {
+    let mut duplicate = null_mut();
+    // SAFETY: DuplicateHandle does not take ownership of or close `handle`; an
+    // invalid value fails the call. On success, `duplicate` is a new handle
+    // owned by this process.
+    unsafe {
+        let process = windows_sys::Win32::System::Threading::GetCurrentProcess();
+        if windows_sys::Win32::Foundation::DuplicateHandle(
+            process,
+            handle,
+            process,
+            &mut duplicate,
+            0,
+            0,
+            windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS,
+        ) == 0
+        {
+            return Err(Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(duplicate))
+    }
+}
+
 pub trait OwnedSocketExt: Sized {
     /// Prepares the socket for being sent to another process.
     ///

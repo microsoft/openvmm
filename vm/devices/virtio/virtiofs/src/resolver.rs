@@ -161,8 +161,9 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
 
 cfg_if! {
     if #[cfg(windows)] {
-        use crate::impersonation::duplicate_user_token;
+        use pal::windows::security::duplicate_impersonation_token;
         use pal::windows::security::RevertToSelfGuard;
+        use std::os::windows::io::AsHandle;
         use std::os::windows::io::OwnedHandle;
 
         struct ParsedHostFsPlatform {
@@ -172,10 +173,8 @@ cfg_if! {
         impl ParsedHostFsPlatform {
             fn parse(windows_options: Option<VirtioFsWindowsOptions>) -> anyhow::Result<Self> {
                 let user_token = windows_options
-                    .as_ref()
-                    .map(|options| options.user_token_handle)
-                    .filter(|handle| *handle != 0)
-                    .map(duplicate_user_token)
+                    .and_then(|options| options.user_token)
+                    .map(|token| duplicate_impersonation_token(token.as_handle()))
                     .transpose()
                     .context("invalid virtio-fs user token")?;
 
@@ -208,12 +207,8 @@ cfg_if! {
 
         impl ParsedHostFsPlatform {
             fn parse(windows_options: Option<VirtioFsWindowsOptions>) -> anyhow::Result<Self> {
-                if let Some(options) = windows_options {
-                    anyhow::ensure!(
-                        options.user_token_handle == 0,
-                        "virtio-fs windows_options are only supported on Windows"
-                    );
-                }
+                // The options carry no fields on non-Windows hosts.
+                let _ = windows_options;
                 Ok(Self)
             }
 
@@ -284,23 +279,7 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn parse_rejects_windows_backends_and_tokens_on_non_windows() {
-        let mut resource = host_fs("tag", "root", "");
-        let VirtioFsBackend::HostFs {
-            windows_options, ..
-        } = &mut resource.fs
-        else {
-            unreachable!();
-        };
-        *windows_options = Some(virtio_resources::fs::VirtioFsWindowsOptions {
-            user_token_handle: 1,
-        });
-        let error = ParsedVirtioFs::parse(resource).err().unwrap();
-        assert_eq!(
-            error.to_string(),
-            "virtio-fs windows_options are only supported on Windows"
-        );
-
+    fn parse_rejects_windows_backends_on_non_windows() {
         let resource = VirtioFsHandle {
             tag: "tag".to_owned(),
             fs: VirtioFsBackend::SectionFs {

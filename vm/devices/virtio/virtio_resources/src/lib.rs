@@ -53,7 +53,10 @@ pub mod fs {
 
     #[derive(MeshPayload, Default)]
     pub struct VirtioFsWindowsOptions {
-        pub user_token_handle: u64,
+        /// Access token to impersonate for host file system access. `None`
+        /// uses the VMM process token.
+        #[cfg(windows)]
+        pub user_token: Option<std::os::windows::io::OwnedHandle>,
     }
 
     #[derive(MeshPayload)]
