@@ -642,6 +642,18 @@ impl AdminHandler {
                                 send.send(());
                             }
                         }
+                        AdminQueueFaultBehavior::Hold { entered, release } => {
+                            if let Some(entered) = entered.take() {
+                                entered.send(());
+                            }
+                            if let Some(release) = release.take() {
+                                tracing::info!(
+                                    "configured fault: admin command held in sq: {:?}",
+                                    &command
+                                );
+                                let _ = release.await;
+                            }
+                        }
                     }
                 }
 
@@ -813,6 +825,19 @@ impl AdminHandler {
                     // Verify that the command was received.
                     if let Some(send) = send.take() {
                         send.send(());
+                    }
+                }
+                AdminQueueFaultBehavior::Hold { entered, release } => {
+                    if let Some(entered) = entered.take() {
+                        entered.send(());
+                    }
+                    if let Some(release) = release.take() {
+                        tracing::info!(
+                            "configured fault: admin completion held in cq. command: {:?}, completion: {:?}",
+                            &command,
+                            &completion
+                        );
+                        let _ = release.await;
                     }
                 }
             }
