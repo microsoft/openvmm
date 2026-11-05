@@ -570,6 +570,54 @@ async fn with_timeout<F: Future>(
     }
 }
 
+#[cfg(windows)]
+#[async_test]
+async fn teardown_releases_backing_file(driver: DefaultDriver) {
+    use chipset_device::mmio::ExternallyManagedMmioIntercepts;
+    use disk_file::FileDisk;
+    use pci_core::msi::MsiConnection;
+    use std::fs::OpenOptions;
+    use std::os::windows::fs::OpenOptionsExt;
+    use virtio::PciInterruptModel;
+    use virtio::transport::VirtioPciDevice;
+    use vmcore::device_state::ChangeDeviceState;
+
+    let file = tempfile::NamedTempFile::new().unwrap();
+    file.as_file().set_len(64 * 1024).unwrap();
+    let (file, path) = file.into_parts();
+    let disk = Disk::new(FileDisk::open(file, false).unwrap()).unwrap();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let device = VirtioBlkDevice::new(&driver_source, disk, false, None).unwrap();
+    let msi = MsiConnection::new();
+    let mut transport = VirtioPciDevice::new(
+        Box::new(device),
+        &driver,
+        GuestMemory::empty(),
+        PciInterruptModel::Msix(&msi.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    transport.start();
+    transport.stop().await;
+    let exclusive_open = || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .open(&path)
+    };
+    let error = exclusive_open().expect_err("stop must retain the backing file for resume");
+    assert_eq!(error.raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION
+
+    transport.teardown().await;
+    // Do not yield or retry: removal must release the file before returning.
+    let _reopened =
+        exclusive_open().expect("teardown returned before the backing file could be reopened");
+}
+
 #[async_test]
 async fn stop_drains_one_accepted_write_exactly_once(driver: DefaultDriver) {
     let (_device_thread, device_driver) = DefaultPool::spawn_on_thread("virtio-blk-drain");

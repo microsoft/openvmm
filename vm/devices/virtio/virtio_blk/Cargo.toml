@@ -34,5 +34,11 @@ pal_async.workspace = true
 pal_event.workspace = true
 test_with_tracing.workspace = true
 
+[target.'cfg(windows)'.dev-dependencies]
+chipset_device.workspace = true
+disk_file.workspace = true
+pci_core.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true
