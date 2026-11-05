@@ -487,7 +487,10 @@ impl AdminHandler {
             poll_fn(|cx| state.admin_cq.poll_ready(cx)).await?;
 
             if !state.changed_namespaces.is_empty() && !state.notified_changed_namespaces {
-                if let Some(command) = state.asynchronous_event_requests.pop() {
+                // Pop the request only after the completion fault, which may
+                // delay, has been applied. Stopping the worker drops this
+                // future, and the request must still be queued afterwards.
+                if let Some(&command) = state.asynchronous_event_requests.last() {
                     let completion = spec::Completion {
                             dw0: spec::AsynchronousEventRequestDw0::new()
                                 .with_event_type(spec::AsynchronousEventType::NOTICE.0)
@@ -501,10 +504,11 @@ impl AdminHandler {
                             status: spec::CompletionStatus::new(),
                         };
 
-                    let Some(updated_completion) = self
+                    let updated_completion = self
                         .apply_completion_queue_fault(&command, &completion)
-                        .await
-                    else {
+                        .await;
+                    state.asynchronous_event_requests.pop();
+                    let Some(updated_completion) = updated_completion else {
                         continue; // Skip notifying if the completion is configured to be dropped
                     };
 
@@ -636,6 +640,18 @@ impl AdminHandler {
                             // Verify that the command was received.
                             if let Some(send) = send.take() {
                                 send.send(());
+                            }
+                        }
+                        AdminQueueFaultBehavior::Hold { entered, release } => {
+                            if let Some(entered) = entered.take() {
+                                entered.send(());
+                            }
+                            if let Some(release) = release.take() {
+                                tracing::info!(
+                                    "configured fault: admin command held in sq: {:?}",
+                                    &command
+                                );
+                                let _ = release.await;
                             }
                         }
                     }
@@ -809,6 +825,19 @@ impl AdminHandler {
                     // Verify that the command was received.
                     if let Some(send) = send.take() {
                         send.send(());
+                    }
+                }
+                AdminQueueFaultBehavior::Hold { entered, release } => {
+                    if let Some(entered) = entered.take() {
+                        entered.send(());
+                    }
+                    if let Some(release) = release.take() {
+                        tracing::info!(
+                            "configured fault: admin completion held in cq. command: {:?}, completion: {:?}",
+                            &command,
+                            &completion
+                        );
+                        let _ = release.await;
                     }
                 }
             }

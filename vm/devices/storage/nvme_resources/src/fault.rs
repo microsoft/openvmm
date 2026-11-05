@@ -5,6 +5,7 @@
 
 use mesh::Cell;
 use mesh::MeshPayload;
+use mesh::OneshotReceiver;
 use mesh::OneshotSender;
 use mesh::rpc::Rpc;
 use nvme_spec::Command;
@@ -31,6 +32,16 @@ pub enum AdminQueueFaultBehavior<T> {
     CustomPayload(Vec<u8>),
     /// Verify that a command was seen.
     Verify(Option<OneshotSender<()>>),
+    /// Hold the queue entry until `release` fires or its sender is dropped,
+    /// signalling `entered` when the hold starts. Only the first match holds:
+    /// it takes both, so a later match (for example after a worker stop
+    /// dropped the hold) passes the entry through.
+    Hold {
+        /// Signalled when the hold starts.
+        entered: Option<OneshotSender<()>>,
+        /// Ends the hold.
+        release: Option<OneshotReceiver<()>>,
+    },
 }
 
 /// Supported fault behaviour for NVMe IO queues

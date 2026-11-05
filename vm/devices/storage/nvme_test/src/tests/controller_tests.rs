@@ -23,10 +23,16 @@ use disk_prwrap::DiskWithReservations;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use guid::Guid;
+use mesh::CancelContext;
 use mesh::CellUpdater;
+use mesh::rpc::RpcSend;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
+use nvme_resources::fault::NamespaceChange;
+use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_spec::Command;
 use nvme_spec::Completion;
 use pal_async::DefaultDriver;
@@ -876,4 +882,151 @@ async fn test_admin_completion_waits_for_free_cq_slot(driver: DefaultDriver) {
     assert!(cqe.status.phase(), "the held completion was never posted");
     assert_eq!(cqe.cid, 0xa00 + last as u16);
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+}
+
+#[async_test]
+async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
+    let (ns_change_send, ns_change_recv) = mesh::channel();
+    let (entered_send, entered_recv) = mesh::oneshot();
+    let (release_send, release_recv) = mesh::oneshot();
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
+                    .build(),
+                AdminQueueFaultBehavior::Hold {
+                    entered: Some(entered_send),
+                    release: Some(release_recv),
+                },
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+
+    let mut aer = Command::new_zeroed();
+    aer.cdw0
+        .set_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0);
+    aer.cdw0.set_cid(7);
+    write_command_to_queue(&gm, &asq, 0, &aer);
+    nvmec.write_bar0(0x1000, 1u32.as_bytes()).unwrap();
+
+    // Completes once the AER completion has been written.
+    let notified = ns_change_send.call(NamespaceChange::ChangeNotification, 1);
+
+    // Stop and restart the admin worker while it holds the AER completion.
+    // The hold is never released, so only the stop ends it, and the restarted
+    // worker's match on the AER passes it through.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(entered_recv)
+        .await
+        .expect("the AER completion was never held")
+        .unwrap();
+    assert!(!nvmec.client().remove_namespace(1).await);
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(notified)
+        .await
+        .expect("AER was not completed")
+        .unwrap();
+
+    let cqe = read_completion_from_queue(&gm, &acq, 0);
+    assert!(cqe.status.phase());
+    assert_eq!(cqe.cid, 7);
+    assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    drop(release_send);
+}
+
+#[async_test]
+async fn test_io_completion_fault_matches_inline_completed_command(driver: DefaultDriver) {
+    const IO_CQ_BASE: u64 = 0x4000;
+    const IO_SQ_BASE: u64 = 0x5000;
+    const DATA_BASE: u64 = 0x6000;
+
+    let payload = vec![0xa5; 16];
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(CellUpdater::new(true).cell()).with_completion_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvm::NvmOpcode::READ.0)
+                    .build(),
+                IoQueueFaultBehavior::CustomPayload(payload.clone()),
+            ),
+        );
+
+    let acq = PrpRange::new(vec![0], 0, PAGE_SIZE64).unwrap();
+    let asq = PrpRange::new(vec![0x1000], 0, PAGE_SIZE64).unwrap();
+    let io_cq = PrpRange::new(vec![IO_CQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let io_sq = PrpRange::new(vec![IO_SQ_BASE], 0, PAGE_SIZE64).unwrap();
+    let gm = test_memory();
+    let int_controller = TestPciInterruptController::new();
+    let mut nvmec = instantiate_and_build_admin_queue(
+        &acq,
+        64,
+        &asq,
+        64,
+        true,
+        Some(&int_controller),
+        driver.clone(),
+        &gm,
+        fault_configuration,
+    )
+    .await;
+
+    create_io_queue_pair(
+        &mut nvmec,
+        &gm,
+        &acq,
+        &asq,
+        &int_controller,
+        driver.clone(),
+        0,
+        /* qid = */ 1,
+        IO_CQ_BASE,
+        IO_SQ_BASE,
+        /* qsize_z = */ 15,
+        /* cq_iv = */ 0,
+    )
+    .await;
+
+    // NSID 0 is invalid, so the read is completed inline without reaching a
+    // namespace.
+    let mut read = Command::new_zeroed();
+    read.cdw0.set_opcode(nvm::NvmOpcode::READ.0);
+    read.cdw0.set_cid(3);
+    read.nsid = 0;
+    read.dptr[0] = DATA_BASE;
+    write_command_to_queue(&gm, &io_sq, 0, &read);
+    nvmec.write_bar0(sq_db(1), 1u32.as_bytes()).unwrap();
+    wait_for_msi(driver.clone(), &int_controller, 1000, 0xfeed0000, 0x1111).await;
+
+    let cqe = read_completion_from_queue(&gm, &io_cq, 0);
+    assert!(cqe.status.phase());
+    assert_eq!(cqe.cid, 3);
+    assert_eq!(
+        cqe.status.status(),
+        spec::Status::INVALID_NAMESPACE_OR_FORMAT.0
+    );
+
+    let mut data = vec![0; payload.len()];
+    gm.read_at(DATA_BASE, &mut data).unwrap();
+    assert_eq!(data, payload);
 }
