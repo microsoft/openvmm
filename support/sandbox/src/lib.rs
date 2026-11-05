@@ -3,10 +3,10 @@
 
 //! Default-deny worker-process sandboxing for OpenVMM and OpenHCL.
 //!
-//! This crate confines a worker process to the minimum authority it needs. A
-//! worker starts from [`Profile::deny_all`] and is widened only by the explicit
-//! grants its policy declares, so the confinement is default-deny by
-//! construction rather than by remembering to lock things down.
+//! A [`Profile`] describes filesystem grants, network scope, and optional
+//! syscall denials. [`prepare`] computes launch requirements; [`apply`]
+//! establishes worker-side confinement. Selecting and enabling a policy is the
+//! consumer's responsibility, not an automatic consequence of using this crate.
 //!
 //! # Integration status and limits
 //!
@@ -35,7 +35,7 @@
 //!    worker configures the namespaces it was cloned into, then applies
 //!    `pivot_root`, capability drop, hardening, `no_new_privs`, and optional
 //!    seccomp. It must run before any thread is spawned, any async runtime
-//!    starts, or any resource is opened.
+//!    starts, or any untrusted input is consumed.
 //! 3. [`tighten`] — an optional, additive-only ratchet a worker calls once it
 //!    has finished initializing, to shed its init-only authority. It takes
 //!    [`Restrictions`], a type that can only ever *narrow*.
@@ -54,6 +54,10 @@
 //! produced by [`prepare`], but the post-launch [`apply`]/[`tighten`] half is not yet
 //! implemented and returns [`Error::UnsupportedPlatform`] rather than a silent
 //! no-op (fail-loud). Other platforms are unsupported.
+//!
+//! Linux namespace creation and UID/GID mapping must be permitted by host
+//! policy. Kernel support alone is not sufficient; this crate does not install
+//! AppArmor policy or change system security settings.
 
 #![warn(missing_docs)]
 
@@ -103,7 +107,7 @@ pub const EXIT_SANDBOX_FAILED: i32 = 90;
 /// present in the environment, [`apply`] and [`tighten`] become no-ops so a
 /// developer can run a worker outside its confinement while iterating. Release
 /// builds ignore it entirely: the sandbox can never be switched off by an
-/// environment variable a compromised process could set (R-O4).
+/// environment variable a compromised process could set.
 pub const DISABLE_ENV: &str = "OPENVMM_SANDBOX_DISABLE";
 
 /// An error produced while preparing or applying a sandbox.
@@ -142,7 +146,24 @@ pub enum Error {
 /// any *required* primitive fails — the worker should then exit with
 /// [`EXIT_SANDBOX_FAILED`].
 ///
+/// Failure does not roll back restrictions already applied. Do not initialize
+/// the worker or retry in the partially confined process after an error.
+/// Landlock is supplementary on Linux: its absence or failure can leave the
+/// mount-based filesystem boundary in force without returning an error.
+///
 /// In debug builds, becomes a no-op when [`DISABLE_ENV`] is set (see its docs).
+///
+/// # Example
+///
+/// In a worker entry point launched with the matching [`prepare`] configuration:
+///
+/// ```no_run
+/// if let Err(error) = sandbox::apply(&sandbox::profiles::tpm_worker().build()) {
+///     eprintln!("sandbox failed: {error}");
+///     std::process::exit(sandbox::EXIT_SANDBOX_FAILED);
+/// }
+/// // Join Mesh and initialize the worker only after confinement succeeds.
+/// ```
 pub fn apply(profile: &Profile) -> Result<(), Error> {
     if sandbox_disabled() {
         tracing::warn!(
@@ -177,6 +198,20 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
 /// installed before the failure remain in effect.
 ///
 /// In debug builds, becomes a no-op when [`DISABLE_ENV`] is set.
+///
+/// # Example
+///
+/// After successful [`apply`] and worker initialization:
+///
+/// ```no_run
+/// let restrictions = sandbox::Restrictions::none()
+///     .syscalls(&["execve", "socket", "connect"])
+///     .build();
+/// if let Err(error) = sandbox::tighten(&restrictions) {
+///     eprintln!("sandbox tightening failed: {error}");
+///     std::process::exit(sandbox::EXIT_SANDBOX_FAILED);
+/// }
+/// ```
 pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
     if sandbox_disabled() {
         return Ok(());

@@ -3,29 +3,22 @@
 
 //! The Linux backend for [`apply`](crate::apply) and [`tighten`](crate::tighten).
 //!
-//! On Linux the worker starts inside the user, mount, and network namespaces
-//! requested by [`prepare`](crate::prepare), then configures the namespaces
-//! selected by the profile here: a `pivot_root` onto a purpose-built root,
-//! capability drop and securebits lock, process-hardening `prctl`s`,
-//! `no_new_privs`, and an optional seccomp filter. The composition order is
-//! load-bearing and mirrors the order validated against Bubblewrap, `runc`,
-//! systemd, Firejail, and the Chromium sandbox.
+//! The worker starts inside the user, mount, IPC, and optional network
+//! namespaces requested by [`prepare`](crate::prepare). This backend populates
+//! and pivots into a restricted root, locks securebits before dropping
+//! capabilities, applies process-hardening `prctl`s and `no_new_privs`, and
+//! installs any requested seccomp filter last.
 //!
 //! # Failure policy
 //!
-//! Every primitive this backend applies is *required*: if it fails, the worker
-//! aborts via [`Error`] rather than run with a weaker sandbox than its profile
-//! declares (fail-closed). Namespaces, the `pivot_root` scaffold, capability
-//! drop, securebits, filesystem grants, `PR_SET_DUMPABLE`, and `no_new_privs`
-//! all abort on failure.
+//! The `pivot_root` scaffold, capability drop, securebits, filesystem grants,
+//! `PR_SET_DUMPABLE`, and `no_new_privs` return [`Error`] on failure. The caller
+//! must terminate the worker; restrictions already applied are not rolled back.
 //!
-//! The two deliberate exceptions are *supplementary* layers whose failure
-//! policy differs. **Landlock** (an FS-isolation supplement to the mount
-//! namespace, ABI-degraded on older kernels per D11/D16) logs and continues on
-//! failure; the mount namespace remains the primary FS boundary. **Seccomp** is
-//! *opt-in* per worker class (D13) — the deny-all default installs no filter —
-//! but once a profile opts in with [`Syscalls::Deny`], applying it is required
-//! and a failure aborts.
+//! The proc view is best-effort. Landlock is supplementary: it adapts to older
+//! kernel ABIs and logs failures while retaining the mount boundary. Seccomp
+//! is opt-in, but once selected with [`Syscalls::Deny`], installation is
+//! required and failure returns an error.
 
 use crate::Error;
 use crate::profile::Access;
@@ -66,7 +59,7 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
     apply_filesystem(&p.fs)?;
 
     // Step 4 — lock securebits *before* the capability drop, while we still
-    // hold CAP_SETPCAP. Required (design §9): a worker that can regain root-like
+    // hold CAP_SETPCAP. A worker that can regain root-like
     // authority across an execve is not sandboxed.
     hardening::lock_securebits().map_err(required("securebits"))?;
 
@@ -79,7 +72,7 @@ pub fn apply(profile: &Profile) -> Result<(), Error> {
     // seccomp below.
     hardening::set_no_new_privs().map_err(required("no_new_privs"))?;
 
-    // Step 7 — seccomp, *opt-in* per worker class (design D13). The deny-all
+    // Step 7 — seccomp, *opt-in* per worker class. The deny-all
     // default (`Syscalls::Unfiltered`) installs no filter; an explicit
     // `Syscalls::Deny` installs the dangerous-syscall baseline plus any extras.
     if let Syscalls::Deny(names) = &p.syscalls {
@@ -98,7 +91,7 @@ pub fn tighten(restrictions: &Restrictions) -> Result<(), Error> {
 
     // Path revocation via a stacked Landlock ruleset needs the base profile's
     // full grant set to re-express (Landlock layers intersect), which is not
-    // available here. Rather than silently fail open, reject it (R-S12).
+    // available here. Reject it rather than silently retain access.
     if !r.revoke_paths.is_empty() {
         return Err(Error::RequiredPrimitiveUnavailable(
             "path revocation via tighten is not supported in v1",
@@ -149,7 +142,7 @@ fn apply_filesystem(grants: &[FsGrant]) -> Result<(), Error> {
     mount_namespace::umount(Path::new("/.old_root")).map_err(fs_required)?;
     let _ = fs_err::remove_dir("/.old_root");
 
-    // Landlock is a supplementary, opportunistic layer (design D11/D16): a
+    // Landlock is a supplementary, opportunistic layer: a
     // failure degrades rather than aborts.
     if let Err(e) = apply_landlock(&grants) {
         tracing::warn!(
@@ -393,8 +386,6 @@ fn drop_all_capabilities() -> Result<(), Error> {
     Ok(())
 }
 
-/// The seccomp deny action: kill the process in production (design D13), log
-/// (allow + record) in dev so the tuning loop can observe missing syscalls.
 /// The action taken when a denied syscall is invoked.
 ///
 /// Release builds `KillProcess` — the denied set is a fixed, intentional list

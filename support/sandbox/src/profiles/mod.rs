@@ -3,7 +3,10 @@
 
 //! Base and worker-specific sandbox profiles.
 //!
-//! Each base is exposed as a function returning a widening [`Builder`], so a
+//! The VM and TPM presets encode OpenVMM resource choices, not requirements of
+//! the generic sandbox backend. Consumers choose whether to use these policies.
+//!
+//! Each base is exposed as a function returning a configurable [`Builder`], so a
 //! worker starts from one and chains its own grants before calling
 //! [`Builder::build`]:
 //!

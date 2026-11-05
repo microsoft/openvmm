@@ -6,8 +6,7 @@
 //!
 //! # Why data, not a builder mutation
 //!
-//! The design's original `prepare` reached into the platform process builder
-//! directly. This crate instead computes a **pure-data**
+//! Rather than mutating a platform process builder, this crate computes a
 //! [`SandboxProcessConfig`] and hands it back to the caller, which passes it
 //! intact to the platform process builder. That keeps `support/sandbox` free
 //! of any dependency on `mesh` or `pal`: the sandbox decides *what* the
@@ -138,6 +137,21 @@ pub struct WindowsPreparation {
 /// * `handles` — the tagged handles to keep inheritable. They are echoed into
 ///   [`SandboxProcessConfig::inherit_handles`]; the platform process builder
 ///   closes every other descriptor except its configured standard I/O.
+///
+/// # Example
+///
+/// ```
+/// use sandbox::{HandleTag, Identity, Profile, RawHandle};
+///
+/// let profile = Profile::deny_all().build();
+/// let handles = [(HandleTag(0), RawHandle(3))];
+/// let preparation = sandbox::prepare(&profile, &Identity::default(), &handles)?;
+/// # Ok::<(), sandbox::Error>(())
+/// ```
+///
+/// This only records the child-visible descriptor number. The process builder
+/// must map an owned source descriptor to that number and apply the preparation
+/// before spawning; the worker must still call [`apply`](crate::apply).
 pub fn prepare(
     profile: &Profile,
     identity: &Identity,

@@ -26,8 +26,7 @@ const SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED: libc::c_ulong = 1 << 7;
 ///
 /// A non-dumpable process produces no core dump (so guest memory cannot spill
 /// to disk on a crash) and cannot be `ptrace`-attached or have its
-/// `/proc/<pid>/mem` opened by another process of the same UID — the R-S6
-/// lateral-movement defense.
+/// `/proc/<pid>/mem` opened by another process of the same UID.
 pub fn set_dumpable_off() -> io::Result<()> {
     // SAFETY: prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) affects only the calling
     // process and takes no pointer arguments.
@@ -43,8 +42,7 @@ pub fn set_dumpable_off() -> io::Result<()> {
 /// locked bits, a UID-0 worker regains capabilities across `execve`.
 ///
 /// This requires `CAP_SETPCAP`, so it must run *before* the capability drop.
-/// Callers treat it as opportunistic hardening — a failure degrades rather
-/// than aborts.
+/// The Linux backend treats failure as a required-primitive error.
 pub fn lock_securebits() -> io::Result<()> {
     let bits = SECBIT_NOROOT
         | SECBIT_NOROOT_LOCKED

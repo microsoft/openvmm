@@ -6,20 +6,13 @@
 //!
 //! # Status: deferred
 //!
-//! On Windows the security-critical work is the LPAC construction, which
-//! happens *before* the child exists. This crate already surfaces that portion
-//! as pure data: [`prepare`](crate::prepare) returns a
-//! [`WindowsPreparation`](crate::WindowsPreparation) describing the AppContainer
-//! moniker, capability monikers, and launch-time mitigation flags, and the
-//! caller realizes it against `CreateProcess`.
+//! [`prepare`](crate::prepare) returns inert
+//! [`WindowsPreparation`](crate::WindowsPreparation) data describing an intended
+//! LPAC configuration. A Windows launcher would need to realize it against
+//! `CreateProcess`; PAL's sandboxed Windows launch is not implemented.
 //!
-//! What remains for Windows is the *post-launch* half of `apply` — the
-//! mitigations a worker must self-apply after creation (Win32k lockdown, child
-//! process policy, token privilege strip, Job Object). That half needs
-//! `windows-sys` and a Windows host to build and validate against, neither of
-//! which is available in this environment, so it is intentionally left
-//! unimplemented rather than stubbed with an untested no-op that would give a
-//! false sense of security (R-S12: never degrade silently).
+//! Worker-side confinement is also unimplemented. Launch data alone must not
+//! be interpreted as an enforced Windows security boundary.
 //!
 //! Until it lands, [`apply`] and [`tighten`] return
 //! [`Error::UnsupportedPlatform`] on Windows so a caller wiring this crate onto

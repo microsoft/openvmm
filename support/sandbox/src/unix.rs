@@ -9,7 +9,7 @@
 //! Unix targets (macOS, BSDs).
 //!
 //! These are pure mechanism: they name libc flags and return [`io::Result`],
-//! and never appear in the crate's public API (R-S11). Landlock is applied
+//! and never appear in the crate's public API. Landlock is applied
 //! from the Linux backend directly, where it can consult policy types.
 
 // UNSAFETY: Calls to libc syscalls (unshare, mount, umount2, pivot_root,

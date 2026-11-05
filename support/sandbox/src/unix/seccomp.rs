@@ -154,7 +154,7 @@ fn survival_syscall_nrs() -> [i64; 4] {
 /// Returns `None` for any name this crate does not recognize. Callers **must**
 /// treat an unknown name as a hard error rather than silently dropping it: a
 /// dropped deny entry makes the installed filter *less* restrictive than the
-/// author intended, silently leaving a syscall reachable (R-S12, fail-loud).
+/// author intended, silently leaving a syscall reachable.
 ///
 /// The recognized set is intentionally limited to syscalls that exist on every
 /// Linux architecture this project targets, expressed in their modern spelling
@@ -385,7 +385,7 @@ pub fn build_denylist_filter(
 /// along with the `clone3`-to-`ENOSYS` overlay, using TSYNC for both filters.
 ///
 /// Every name must resolve via [`nr_for_name`]; an unknown name is a hard
-/// error (R-S12 fail-loud) rather than a silent omission. A name on the
+/// error rather than a silent omission. A name on the
 /// [survival set](survival_syscall_nrs) is rejected, since blanket-denying a
 /// syscall the process needs to unwind and exit would trap it.
 ///

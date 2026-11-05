@@ -1,21 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The sandbox policy vocabulary: [`Profile`] and its widening [`Builder`],
+//! The sandbox policy vocabulary: [`Profile`] and its [`Builder`],
 //! plus the additive-only [`Restrictions`] ratchet consumed by
 //! [`tighten`](crate::tighten).
 //!
 //! # Default-deny by construction
 //!
-//! A policy is always built from [`Profile::deny_all`], which denies every
-//! ambient authority. The [`Builder`] can only *grant* — no method removes a
-//! denial — so a profile is only ever as permissive as its most permissive
-//! call. A worker whose profile adds nothing can reach nothing but the
-//! handles the control process explicitly kept inheritable.
+//! A policy starts from [`Profile::deny_all`]: no explicit filesystem grants,
+//! isolated networking, and no seccomp filter. Filesystem grants and platform
+//! capabilities add authority; syscall denials can only accumulate. Supplied
+//! handles retain their authority regardless of the path grants.
 //!
-//! # Widening vs. narrowing
+//! # Policy authoring vs. tightening
 //!
-//! [`Builder`] widens a default-deny base at policy-authoring time.
+//! [`Builder`] selects authority at policy-authoring time.
 //! [`Restrictions`] is the complementary, additive-only *narrowing* spec: it
 //! can only ever subtract from an already-applied profile, so a non-monotonic
 //! ratchet is unrepresentable rather than a runtime error.
@@ -42,25 +41,24 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The base every profile builds on: deny all ambient authority.
+    /// Start a policy with no explicit filesystem grants and [`Network::None`].
     ///
-    /// A profile that adds nothing is a worker that can reach nothing but its
-    /// explicitly kept-inheritable handles.
+    /// Syscall filtering is independently opt-in: the default is
+    /// [`Syscalls::Unfiltered`]. The Linux backend still provides implicit
+    /// scratch storage and a best-effort proc view; see [`Builder`].
     pub fn deny_all() -> Builder {
         Builder {
             inner: ProfileInner::default(),
         }
     }
 
-    /// Reopen a finished profile as a [`Builder`] to derive a new, wider
-    /// profile from it.
+    /// Reopen a finished profile as a [`Builder`] to derive a new profile.
     ///
     /// The builder starts from a clone of this profile's grants, so the
     /// original is left intact and any number of variants can be derived from a
-    /// single base. Because a [`Builder`] only ever widens, the accumulating
-    /// dimensions (filesystem and capabilities) can only grow, syscall denials
-    /// can only be added, and the scalar dimensions (`name` and `network`) are
-    /// replaced by a later call.
+    /// single base. Filesystem grants and capabilities can only grow, syscall
+    /// denials can only be added, and the scalar dimensions (`name` and
+    /// `network`) are replaced by a later call.
     ///
     /// Prefer exposing a reusable base as a `fn() -> Builder` — see
     /// [`profiles`](crate::profiles) — and reach for `edit` only when you
@@ -86,12 +84,44 @@ impl Profile {
     }
 }
 
-/// Widening-only policy builder.
+/// Policy builder for filesystem grants, network scope, and syscall denials.
 ///
-/// Every method *grants*; none can relax a denial. Because the base is
-/// [`Profile::deny_all`] and nothing subtracts from it, the default-deny
-/// invariant holds by construction. Post-`apply` *narrowing* is a separate
-/// concern with its own additive-only type — see [`Restrictions`].
+/// Start with [`Profile::deny_all`] or derive a policy with [`Profile::edit`].
+/// Filesystem grants and capabilities accumulate, network scope is replaced by
+/// each [`network`](Self::network) call, and syscall denials compose by union.
+/// Post-`apply` narrowing is separate; see [`Restrictions`].
+///
+/// # Example
+///
+/// ```
+/// use sandbox::{Network, Profile, Syscalls};
+///
+/// let profile = Profile::deny_all()
+///     .name("example_worker")
+///     .read_exec("/usr/lib")
+///     .read_write("/var/lib/worker")
+///     .network(Network::None)
+///     .syscalls(Syscalls::deny(["execve", "execveat"]))
+///     .build();
+/// ```
+///
+/// # Linux filesystem grants
+///
+/// Grants bind existing host paths at the same paths in the worker's root.
+/// Host-side symlinks are followed when binding a source. The bind captures the
+/// source at startup; replacing the host file by rename does not retarget it.
+/// Ordinary grants preserve host restrictions and add `nosuid` and `nodev`;
+/// use [`device`](Self::device) for a single device node.
+///
+/// Duplicate grants and lexically nested paths combine independently of
+/// declaration order, retaining permissions already granted by an ancestor.
+/// Combinations requiring both write and execute access are rejected during
+/// [`apply`](crate::apply).
+///
+/// The backend also provides writable scratch storage at `/tmp` and attempts
+/// to mount `/proc`. These are implicit backend facilities, not explicit grants
+/// added by this builder. Landlock, where enforced, further limits proc access;
+/// the proc mount's own restrictions still apply.
 #[derive(Debug, Clone)]
 pub struct Builder {
     inner: ProfileInner,
@@ -107,14 +137,18 @@ impl Builder {
 
     /// Grant read-only access to `path`, without allowing execution.
     ///
-    /// Directory traversal is still allowed. Use [`Builder::read_exec`] for
-    /// shared libraries, interpreters, and other executable code.
+    /// On Linux the bind is read-only and `noexec`; directory traversal is
+    /// still allowed. Use [`Builder::read_exec`] for shared libraries,
+    /// interpreters, and other executable code.
     pub fn read(mut self, path: impl AsRef<Path>) -> Self {
         self.push_fs(path.as_ref().to_path_buf(), Access::Read);
         self
     }
 
     /// Grant read and execute access to `path`, without allowing writes.
+    ///
+    /// Use this for executable mappings, including shared libraries, rather
+    /// than [`Builder::read`].
     pub fn read_exec(mut self, path: impl AsRef<Path>) -> Self {
         self.push_fs(path.as_ref().to_path_buf(), Access::ReadExec);
         self
@@ -327,6 +361,9 @@ impl RestrictionsBuilder {
 
     /// Enforce an additional restriction that *removes* access to a path the
     /// applied profile previously permitted. It can never add access.
+    ///
+    /// Not implemented: [`tighten`](crate::tighten) rejects path revocation on
+    /// Linux with [`Error::RequiredPrimitiveUnavailable`](crate::Error::RequiredPrimitiveUnavailable).
     pub fn revoke_path(mut self, path: impl AsRef<Path>) -> Self {
         self.inner.revoke_paths.push(path.as_ref().to_path_buf());
         self
