@@ -1,17 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The transport-independent core of the fd-passing (unix) and handle-passing
-//! (Windows) protocols.
+//! The OpenVMM resource-passing protocols: fd-passing (unix) and
+//! handle-passing (Windows).
 //!
-//! Both protocols run over the same `AF_UNIX` stream socket as ttrpc and gRPC,
-//! selected by the magic first byte [`wire::MAGIC_FIRST_BYTE`], and let a
-//! client register OS resources under client-chosen names that the ttrpc/gRPC
-//! API can then reference. They share the handshake, request and response
-//! framing, request semantics, and the registry. They differ only in how a
-//! `Register` request carries its resource, which a [`Transport`] implements:
-//! fd-passing attaches a descriptor with `SCM_RIGHTS`, and handle-passing
-//! appends a handle value the client duplicated into this process.
+//! These are small, bespoke protocols that let a client hand pre-opened OS
+//! resources (file descriptors or handles) to the management server, each under
+//! a client-chosen name. A name can then be referenced from the ordinary
+//! ttrpc/gRPC API, for example a `TapBackend` `fd_name` or a `VirtioFs`
+//! `WindowsOptions.user_token_name`.
+//!
+//! Both run over the same `AF_UNIX` stream socket as ttrpc and gRPC, selected
+//! by the magic first byte [`wire::MAGIC_FIRST_BYTE`]. See
+//! `openvmm_ttrpc_vmservice/src/resource_passing.md` for the wire
+//! specification.
+//!
+//! This module implements everything the protocols share: the handshake,
+//! request and response framing, request semantics, and the registry. They
+//! differ only in how a `Register` request carries its resource, which a
+//! [`Transport`] implements in the platform modules `fd_passing` and
+//! `handle_passing`.
 
 use anyhow::Context as _;
 use parking_lot::Mutex;

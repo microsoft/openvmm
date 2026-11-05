@@ -11387,6 +11387,7 @@ dependencies = [
  "vmgs_resources",
  "vmm_test_igvm_agent",
  "vmm_test_macros",
+ "windows-sys 0.61.0",
  "x509-cert",
  "x86defs",
  "zerocopy",

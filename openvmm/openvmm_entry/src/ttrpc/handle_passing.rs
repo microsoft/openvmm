@@ -1,25 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The OpenVMM handle-passing protocol.
+//! The Windows transport of the resource-passing protocol: handle-passing.
 //!
-//! This is the Windows counterpart of the fd-passing protocol: it lets a client
-//! hand OS handles (for example, a user's access token) to the management
-//! server, each under a client-chosen name. A name can then be referenced from
-//! the ordinary ttrpc/gRPC API (for example `VirtioFs.WindowsOptions`
-//! `user_token_name`).
-//!
-//! It runs over the same `AF_UNIX` stream socket as ttrpc and gRPC, selected by
-//! the same magic first byte as fd-passing. Windows `AF_UNIX` sockets cannot
-//! carry handles, so the client duplicates each handle into this process with
-//! `DuplicateHandle` and sends its value in the `Register` request. This is the
-//! only place OpenVMM interprets a client-supplied handle value; the server
-//! makes its own duplicate and never closes the client's.
-//!
-//! This module implements only how handles arrive; the handshake, framing,
-//! request semantics, and registry are shared with fd-passing in
-//! `resource_passing`. See `openvmm_ttrpc_vmservice/src/resource_passing.md` for
-//! the wire specification.
+//! Windows `AF_UNIX` sockets cannot carry handles, so the client duplicates
+//! each handle into this process with `DuplicateHandle` and appends its value
+//! to the `Register` request. This is the only place OpenVMM interprets a
+//! client-supplied handle value; the server makes its own duplicate and never
+//! closes the client's. Everything else is shared in `resource_passing`.
 
 #![cfg(windows)]
 

@@ -1,23 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The OpenVMM fd-passing protocol.
+//! The unix transport of the resource-passing protocol: fd-passing.
 //!
-//! This is a small, bespoke protocol that lets a client hand pre-opened file
-//! descriptors to the management server, each under a client-chosen name. A
-//! name can then be referenced from the ordinary ttrpc/gRPC API (for example a
-//! `TapBackend` may give an `fd_name` instead of a device `name`).
+//! A `Register` request carries its file descriptor as `SCM_RIGHTS` ancillary
+//! data attached to the request. Everything else is shared in
+//! `resource_passing`.
 //!
-//! It runs over the same `AF_UNIX` stream socket as ttrpc and gRPC, selected by
-//! a distinct magic first byte, and carries descriptors via `SCM_RIGHTS`. See
-//! `openvmm_ttrpc_vmservice/src/resource_passing.md` for the wire specification.
-//!
-//! This module implements only how descriptors arrive; the handshake, framing,
-//! request semantics, and registry are shared with the Windows handle-passing
-//! protocol in `resource_passing`.
-//!
-//! The entire protocol is UNIX-only (it relies on `SCM_RIGHTS`), so this whole
-//! module is compiled only on `cfg(unix)`.
+//! `SCM_RIGHTS` is unix-only, so this module is compiled only on `cfg(unix)`.
 
 #![cfg(unix)]
 

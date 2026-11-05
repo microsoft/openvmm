@@ -14,7 +14,6 @@
 //! `ttrpc` module.
 
 use anyhow::Context;
-use futures::AsyncReadExt as _;
 use futures::AsyncWriteExt as _;
 use guid::Guid;
 use openvmm_ttrpc_vmservice as vmservice;
@@ -68,7 +67,7 @@ async fn fd_passing_tap(
     let mut fd_conn = PolledSocket::connect_unix(&driver, &socket_path)
         .await
         .context("connecting fd-passing socket")?;
-    handshake(&mut fd_conn)
+    super::resource_passing_handshake(&mut fd_conn, HANDSHAKE_MAGIC)
         .await
         .context("fd-passing handshake")?;
 
@@ -157,21 +156,6 @@ async fn fd_passing_tap(
     Ok(())
 }
 
-/// Sends the client handshake and validates the server's reply.
-async fn handshake(sock: &mut PolledSocket<UnixStream>) -> anyhow::Result<()> {
-    let mut client_handshake = [0u8; 8];
-    client_handshake[..4].copy_from_slice(&HANDSHAKE_MAGIC);
-    sock.write_all(&client_handshake).await?;
-    let mut server_handshake = [0u8; 8];
-    sock.read_exact(&mut server_handshake).await?;
-    anyhow::ensure!(
-        server_handshake[..4] == HANDSHAKE_MAGIC,
-        "bad server handshake magic: {:x?}",
-        &server_handshake[..4]
-    );
-    Ok(())
-}
-
 /// Sends a `Register` request carrying `fd` and returns the response.
 async fn register(
     sock: &mut PolledSocket<UnixStream>,
@@ -181,7 +165,7 @@ async fn register(
     let mut frame = vec![OPCODE_REGISTER, name.len() as u8];
     frame.extend_from_slice(name.as_bytes());
     send_frame(sock, &frame, &[fd]).await?;
-    read_response(sock).await
+    super::read_resource_passing_response(sock).await
 }
 
 /// Sends a `Register` request with no attached descriptor (an error case).
@@ -192,7 +176,7 @@ async fn register_without_fd(
     let mut frame = vec![OPCODE_REGISTER, name.len() as u8];
     frame.extend_from_slice(name.as_bytes());
     sock.write_all(&frame).await?;
-    read_response(sock).await
+    super::read_resource_passing_response(sock).await
 }
 
 /// Sends a `Deregister` request and returns the response.
@@ -203,7 +187,7 @@ async fn deregister(
     let mut frame = vec![OPCODE_DEREGISTER, name.len() as u8];
     frame.extend_from_slice(name.as_bytes());
     sock.write_all(&frame).await?;
-    read_response(sock).await
+    super::read_resource_passing_response(sock).await
 }
 
 /// Sends `frame` with `fds` attached, awaiting write readiness so the executor
@@ -236,17 +220,6 @@ async fn send_frame(
         pos += n;
     }
     Ok(())
-}
-
-/// Reads one response frame: `status: u8`, `msg_len: u16` (LE), `msg`.
-async fn read_response(sock: &mut PolledSocket<UnixStream>) -> anyhow::Result<(u8, String)> {
-    let mut hdr = [0u8; 3];
-    sock.read_exact(&mut hdr).await?;
-    let status = hdr[0];
-    let msg_len = u16::from_le_bytes([hdr[1], hdr[2]]) as usize;
-    let mut msg = vec![0u8; msg_len];
-    sock.read_exact(&mut msg).await?;
-    Ok((status, String::from_utf8_lossy(&msg).into_owned()))
 }
 
 /// Builds a minimal direct-boot `CreateVm` request with a single tap NIC whose
