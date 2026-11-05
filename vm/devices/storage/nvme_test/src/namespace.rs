@@ -63,8 +63,7 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
-            // Bit 0: Currently Write Protected.
-            nsattr: self.disk.is_read_only().into(),
+            nsattr: nvm::Nsattr::new().with_write_protected(self.disk.is_read_only()),
             ..FromZeros::new_zeroed()
         };
         id.lbaf[0] = nvm::Lbaf::new().with_lbads(self.block_shift as u8);
@@ -332,7 +331,11 @@ mod tests {
             let namespace = Namespace::new(mem, 1, ram_disk(1 << 20, read_only).unwrap());
             let mut id = nvm::IdentifyNamespace::new_zeroed();
             namespace.identify(id.as_mut_bytes());
-            assert_eq!(id.nsattr, u8::from(read_only), "read_only = {read_only}");
+            assert_eq!(
+                id.nsattr.write_protected(),
+                read_only,
+                "read_only = {read_only}"
+            );
         }
     }
 
