@@ -58,7 +58,7 @@ impl SimpleFlowNode for Node {
                     FlowPlatformLinuxDistro::AzureLinux => {
                         match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
-                    FlowPlatformLinuxDistro::Arch => {
+                    FlowPlatformLinuxDistro::Arch | FlowPlatformLinuxDistro::OpenSuse => {
                         match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
                     FlowPlatformLinuxDistro::Nix => (None, "x86_64-linux-gnu-objcopy"),
@@ -89,6 +89,9 @@ impl SimpleFlowNode for Node {
                                 "aarch64-linux-gnu-objcopy"
                             )
                         )
+                    }
+                    FlowPlatformLinuxDistro::OpenSuse => {
+                        match_arch!(host_arch, FlowArch::Aarch64, (Some("binutils"), "objcopy"))
                     }
                     FlowPlatformLinuxDistro::Nix => (None, "aarch64-linux-gnu-objcopy"),
                     FlowPlatformLinuxDistro::Unknown => {
