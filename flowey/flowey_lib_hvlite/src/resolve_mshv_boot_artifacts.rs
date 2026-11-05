@@ -321,7 +321,15 @@ fn extract_rpm(
     rpm: &Path,
 ) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
     let archive = tempfile::NamedTempFile::new()?;
-    let bytes = sh.wrap(sh.cmd("rpm2cpio")).arg(rpm).output()?.stdout;
+    let bytes = sh
+        .wrap(sh.cmd("rpm2cpio"))
+        .arg(rpm)
+        .output()
+        .context(
+            "local RPM preparation requires rpm2cpio; install it or supply pre-extracted payloads \
+             with --mshv-boot-artifacts (vmm-tests-run) or --boot-artifacts (Incubator)",
+        )?
+        .stdout;
     fs_err::write(archive.path(), bytes)?;
     let archive = archive.path();
     let listing = sh.wrap(sh.cmd(bsdtar)).arg("-tf").arg(archive).read()?;
