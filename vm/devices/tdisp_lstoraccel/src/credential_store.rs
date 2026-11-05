@@ -199,15 +199,9 @@ fn serialize_credential_store(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use test_with_tracing::test;
     use vmcore::non_volatile_store::EphemeralNonVolatileStore;
-    use vmgs::EncryptionAlgorithm;
-    use vmgs::FileId;
-    use vmgs::Vmgs;
-    use vmgs_broker::non_volatile_store::VmgsNonVolatileStore;
-    use vmgs_broker::spawn_vmgs_broker;
 
     async fn new_store() -> LstoraccelCredentialStore {
         LstoraccelCredentialStore::open(EphemeralNonVolatileStore::new_boxed())
@@ -365,6 +359,19 @@ mod tests {
         let store = open_store_with_persisted_bytes(header).await.unwrap();
         assert!(store.state.is_empty());
     }
+}
+
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod vmgs_tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use test_with_tracing::test;
+    use vmgs::EncryptionAlgorithm;
+    use vmgs::FileId;
+    use vmgs::Vmgs;
+    use vmgs_broker::non_volatile_store::VmgsNonVolatileStore;
+    use vmgs_broker::spawn_vmgs_broker;
 
     #[async_test]
     async fn credentials_survive_encrypted_vmgs_reopen(driver: DefaultDriver) {
