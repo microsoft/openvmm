@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! ECDSA cryptographic operations.
+//! ECDSA signatures and ECDH key agreement.
 
 #![cfg(any(openssl, symcrypt, all(native, windows)))]
 
@@ -23,9 +23,9 @@ use symcrypt as sys;
 use crate::HashAlgorithm;
 use thiserror::Error;
 
-/// An error for ECDSA operations.
+/// An error for elliptic-curve operations.
 #[derive(Clone, Debug, Error)]
-#[error("ECDSA operation failed")]
+#[error("elliptic-curve operation failed")]
 pub struct EcdsaError(#[source] pub(crate) super::BackendError);
 
 /// The ECC curve to use.
@@ -112,6 +112,22 @@ impl EcdsaKeyPair {
     ) -> Result<EcdsaSignature, EcdsaError> {
         let hash = hash_algorithm.hash(data);
         self.0.sign_prehash(&hash).map(EcdsaSignature)
+    }
+
+    /// Compute the raw ECDH shared secret with a peer's public key.
+    ///
+    /// The result is the shared point's unsigned big-endian X coordinate,
+    /// padded to [`EcdsaCurve::key_size`] bytes. Apply a protocol-appropriate
+    /// key derivation function before using it as a symmetric key.
+    ///
+    /// Authenticate the peer and check any certificate's key usage before
+    /// relying on the result. Prefer separate signing and key-agreement keys
+    /// unless the protocol explicitly permits reusing a key.
+    ///
+    /// The returned bytes are secret and are not automatically zeroized.
+    #[cfg(any(openssl, symcrypt))]
+    pub fn derive_shared_secret(&self, peer: &EcdsaPublicKey) -> Result<Vec<u8>, EcdsaError> {
+        self.0.derive_shared_secret(&peer.0)
     }
 }
 
@@ -224,6 +240,66 @@ impl std::ops::Deref for EcdsaKeyPair {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(openssl, symcrypt))]
+    #[test]
+    fn ecdh_shared_secret_agreement() {
+        let alice = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        let bob = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        let alice_der = alice.to_public_key_der().unwrap();
+        let bob_components = bob.public_key_bytes().unwrap();
+        let alice_public = EcdsaPublicKey::from_public_key_der(&alice_der).unwrap();
+        let bob_public =
+            EcdsaPublicKey::from_public_key_bytes(EcdsaCurve::P384, &bob_components).unwrap();
+        let message = b"signing and key agreement";
+        let signature = alice.sign(message, HashAlgorithm::Sha384).unwrap();
+
+        let secret = alice.derive_shared_secret(&bob_public).unwrap();
+        assert_eq!(secret.len(), EcdsaCurve::P384.key_size());
+        assert_eq!(secret, bob.derive_shared_secret(&alice_public).unwrap());
+        assert_eq!(secret, alice.derive_shared_secret(&bob).unwrap());
+        assert_eq!(secret, bob.derive_shared_secret(&alice).unwrap());
+        assert_eq!(secret, alice.derive_shared_secret(&bob_public).unwrap());
+        let other = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        assert_ne!(secret, alice.derive_shared_secret(&other).unwrap());
+
+        assert_eq!(alice.to_public_key_der().unwrap(), alice_der);
+        assert_eq!(bob.public_key_bytes().unwrap(), bob_components);
+        assert!(
+            alice_public
+                .verify(message, &signature, HashAlgorithm::Sha384)
+                .unwrap()
+        );
+        let signature = alice.sign(message, HashAlgorithm::Sha384).unwrap();
+        assert!(
+            alice_public
+                .verify(message, &signature, HashAlgorithm::Sha384)
+                .unwrap()
+        );
+    }
+
+    #[cfg(any(openssl, symcrypt))]
+    #[test]
+    fn ecdh_with_certificate_public_key() {
+        use crate::x509::X509Certificate;
+
+        let key = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        let cert = X509Certificate::build_self_signed((&key).into(), &Default::default()).unwrap();
+        let cert = X509Certificate::from_der(&cert.to_der().unwrap()).unwrap();
+        let public_key = cert.public_key().unwrap();
+        assert!(cert.verify(&public_key).unwrap());
+        let public_key = public_key.ecdsa().unwrap();
+        assert_eq!(
+            public_key.to_public_key_der().unwrap(),
+            key.to_public_key_der().unwrap()
+        );
+
+        let peer = EcdsaKeyPair::generate(EcdsaCurve::P384).unwrap();
+        assert_eq!(
+            peer.derive_shared_secret(&public_key).unwrap(),
+            key.derive_shared_secret(&peer).unwrap()
+        );
+    }
 
     #[test]
     fn signature_from_der_roundtrip() {
@@ -695,6 +771,10 @@ mod tests {
         let spki_der = spki.to_der().unwrap();
         assert_eq!(key.to_public_key_der().unwrap(), spki_der);
 
+        for invalid in [&[][..], &[0; 32], &spki_der[..spki_der.len() - 1]] {
+            assert!(EcdsaPublicKey::from_public_key_der(invalid).is_err());
+        }
+
         let public_key = EcdsaPublicKey::from_public_key_der(&spki_der).unwrap();
         assert_eq!(public_key.to_public_key_der().unwrap(), spki_der);
         assert_eq!(public_key.public_key_bytes().unwrap(), pk);
@@ -716,7 +796,11 @@ mod tests {
         assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
 
         invalid_spki.subject_public_key = der::asn1::BitString::from_bytes(&point).unwrap();
-        for parameters in [None, Some(const_oid::db::rfc5912::SECP_521_R_1)] {
+        for parameters in [
+            None,
+            Some(const_oid::db::rfc5912::SECP_256_R_1),
+            Some(const_oid::db::rfc5912::SECP_521_R_1),
+        ] {
             invalid_spki.algorithm.parameters = parameters;
             assert!(EcdsaPublicKey::from_public_key_der(&invalid_spki.to_der().unwrap()).is_err());
         }

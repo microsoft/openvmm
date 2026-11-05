@@ -2696,6 +2696,7 @@ async fn rx_mergeable_invalid_buffer_cannot_split_a_packet(driver: DefaultDriver
     let mem = GuestMemory::allocate(0x10000);
     let features = NetworkFeaturesBank0::new().with_mrg_rxbuf(true);
     let mut worker = Worker {
+        driver: VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple(),
         virtio_state: crate::VirtioState {
             rx_queue: rx_test_queue(&driver, &mem),
             tx_queue: rx_test_queue(&driver, &mem),

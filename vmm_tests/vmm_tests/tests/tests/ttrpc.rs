@@ -180,7 +180,7 @@ exec /bin/busybox poweroff -f
             .await
             .unwrap();
         CancelContext::new()
-            .with_timeout(Duration::from_secs(60))
+            .with_timeout(Duration::from_mins(1))
             .until_cancelled(ready_recv)
             .await
             .context("timed out waiting for shutdown test guest to boot")?
@@ -188,7 +188,7 @@ exec /bin/busybox poweroff -f
 
         let waiter = client
             .call()
-            .timeout(Some(Duration::from_secs(60)))
+            .timeout(Some(Duration::from_mins(1)))
             .start(vmservice::Vm::WaitVm, ());
         CancelContext::new()
             .with_timeout(Duration::from_secs(10))
@@ -360,7 +360,7 @@ async fn test_ttrpc_shutdown_windows_guest(
         .await
         .unwrap();
 
-    const WINDOWS_BOOT_TIMEOUT: Duration = Duration::from_secs(300);
+    const WINDOWS_BOOT_TIMEOUT: Duration = Duration::from_mins(5);
     CancelContext::new()
         .with_timeout(WINDOWS_BOOT_TIMEOUT)
         .until_cancelled(async {
@@ -420,7 +420,7 @@ async fn test_ttrpc_shutdown_windows_guest(
         .unwrap();
     client
         .call()
-        .timeout(Some(Duration::from_secs(120)))
+        .timeout(Some(Duration::from_mins(2)))
         .start(vmservice::Vm::WaitVm, ())
         .await
         .unwrap();
@@ -587,7 +587,7 @@ async fn test_ttrpc_no_vmbus(
             .await
             .unwrap();
         let agent = CancelContext::new()
-            .with_timeout(Duration::from_secs(60))
+            .with_timeout(Duration::from_mins(1))
             .until_cancelled(async {
                 let (conn, _) = pipette_listener.accept().await?;
                 pipette_client::PipetteClient::new(
@@ -624,7 +624,7 @@ async fn test_ttrpc_no_vmbus(
         }
         agent.power_off().await?;
         CancelContext::new()
-            .with_timeout(Duration::from_secs(60))
+            .with_timeout(Duration::from_mins(1))
             .until_cancelled(waiter)
             .await
             .context("timed out waiting for guest poweroff")?
@@ -893,6 +893,8 @@ async fn test_ttrpc_interface(
                                         vmservice::ConsommeBackend {
                                             cidr: String::new(),
                                             ports: vec![],
+                                            internal_dns: None,
+                                            ..Default::default()
                                         },
                                     )),
                                 }),
@@ -1059,6 +1061,11 @@ async fn test_ttrpc_interface(
                             nic_config: vec![vmservice::NicConfig {
                                 nic_id: consomme_nic_id.clone(),
                                 mac_address: "00-15-5D-12-12-12".to_string(),
+                                frontend: if i == 1 {
+                                    vmservice::NicFrontend::Virtio as i32
+                                } else {
+                                    vmservice::NicFrontend::Vmbus as i32
+                                },
                                 backend: Some(vmservice::nic_config::Backend::Consomme(
                                     vmservice::ConsommeBackend {
                                         cidr: String::new(),
@@ -1068,6 +1075,8 @@ async fn test_ttrpc_interface(
                                             protocol: vmservice::IpProtocol::Tcp as i32,
                                             host_address: host_address.to_string(),
                                         }],
+                                        internal_dns: None,
+                                        ..Default::default()
                                     },
                                 )),
                                 ..Default::default()
@@ -1179,6 +1188,8 @@ async fn test_ttrpc_interface(
                                                     protocol,
                                                     host_address: host_address.to_string(),
                                                 }],
+                                                internal_dns: None,
+                                                ..Default::default()
                                             },
                                         )),
                                         ..Default::default()
@@ -1434,7 +1445,7 @@ async fn test_ttrpc_interface(
                     }
 
                     CancelContext::new()
-                        .with_timeout(Duration::from_secs(60))
+                        .with_timeout(Duration::from_mins(1))
                         .until_cancelled(async {
                             for (console, marker) in consoles.iter_mut().zip(console_markers) {
                                 let mut output = Vec::new();
@@ -1737,7 +1748,7 @@ async fn test_ttrpc_uefi_boot(
     // The firmware takes a while to initialize and enumerate the SCSI
     // controller before it can launch anything off of the disk.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_mins(2))
         .until_cancelled(marker_recv)
         .await
         .context("timed out waiting for the guest UEFI application to run")?
@@ -1747,7 +1758,7 @@ async fn test_ttrpc_uefi_boot(
     // so waiting for the halt confirms the guest ran to completion rather
     // than just reaching its first line of output.
     CancelContext::new()
-        .with_timeout(Duration::from_secs(120))
+        .with_timeout(Duration::from_mins(2))
         .until_cancelled(waiter)
         .await
         .context("timed out waiting for the guest to halt")?

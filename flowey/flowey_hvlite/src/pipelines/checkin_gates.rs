@@ -496,7 +496,7 @@ impl IntoPipeline for CheckinGatesCli {
                 FlowArch::X86_64,
                 "build artifacts (shared VMM tests) [linux]",
             )
-            .gh_set_pool(gh_pools::linux_intel_v6_1es())
+            .gh_set_pool(gh_pools::linux_amd_v6_1es())
             .ado_set_pool(ado_pools::default_linux());
         for (
             arch,
@@ -556,7 +556,7 @@ impl IntoPipeline for CheckinGatesCli {
         shared_linux_job = shared_linux_job.publish(pub_incubator, |incubator| {
             flowey_lib_hvlite::build_incubator::Request {
                 target: CommonTriple::X86_64_LINUX_GNU,
-                profile: CommonProfile::from_release(release),
+                profile: CommonProfile::from_release(release).into(),
                 incubator,
             }
         });
@@ -1200,7 +1200,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     build_openhcl_job_tag(arch_tag, mi_secure),
                 )
-                .gh_set_pool(gh_pools::default_linux())
+                .gh_set_pool(gh_pools::linux_amd_v6_1es())
                 .ado_set_pool(ado_pools::default_linux())
                 .dep_on(|ctx| {
                     let mut pub_openhcl_baseline = pub_openhcl_baseline;
@@ -1340,7 +1340,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_intel_v6_1es(),
+                gh_pool: gh_pools::linux_amd_v6_1es(),
                 ado_pool: Some(ado_pools::linux_amd_v6_1es()),
                 clippy_targets: if quick_check_job.is_some() {
                     // quick check already ran clippy for x64-linux;
@@ -1360,7 +1360,7 @@ impl IntoPipeline for CheckinGatesCli {
             ClippyUnitTestJobParams {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
-                gh_pool: gh_pools::linux_intel_v6_1es(),
+                gh_pool: gh_pools::linux_amd_v6_1es(),
                 ado_pool: Some(ado_pools::linux_amd_v6_1es()),
                 clippy_targets: Some((
                     "x64-linux-musl, misc nostd",

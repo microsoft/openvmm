@@ -139,7 +139,7 @@ async fn secure_boot_variable_report_test<T: PetriVmmBackend>(
 
     let (vm, agent) = config.run().await?;
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(Duration::from_mins(1))
         .until_cancelled(verify_secure_boot_variable_reports(
             &vm,
             custom_uefi_json.is_some(),
@@ -332,7 +332,7 @@ async fn custom_uefi_append_sha256_dbx<T: PetriVmmBackend>(
     assert!(
         output
             .stdout
-            .windows(APPENDED_DBX_SHA256.len())
+            .array_windows::<{ APPENDED_DBX_SHA256.len() }>()
             .any(|bytes| bytes == APPENDED_DBX_SHA256),
         "appended SHA-256 digest should be present in dbx"
     );

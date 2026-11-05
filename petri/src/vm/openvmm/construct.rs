@@ -47,6 +47,8 @@ use mesh_process::Mesh;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -63,6 +65,7 @@ use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -506,6 +509,19 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
+        let acpi_power_button_send =
+            if !properties.minimal_mode && supports_acpi_power_button(&load_mode) {
+                let (send, recv) = mesh::channel();
+                let irq = match arch {
+                    MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+                    MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+                };
+                chipset = chipset.with_acpi_power_button(irq, recv);
+                Some(send)
+            } else {
+                None
+            };
+
         let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()
@@ -787,6 +803,7 @@ impl PetriVmConfigOpenVmm {
                 firmware_event_recv,
                 ipmi_sel_event_recv,
                 shutdown_ic_send,
+                acpi_power_button_send,
                 kvp_ic_send,
                 ged_send,
                 pipette_listener,

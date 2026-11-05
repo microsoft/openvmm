@@ -118,9 +118,9 @@ pub async fn delete_token(vmgs_client: &vmgs_broker::VmgsClient) {
 /// behind.
 pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> {
     match vmgs_client.read_file(vmgs::FileId::HIBERNATION_TOKEN).await {
-        Ok(buf) => match <[u8; 8]>::try_from(buf.as_slice()) {
-            Ok(bytes) => {
-                let token = Token::from(u64::from_le_bytes(bytes));
+        Ok(buf) => match buf.as_slice().as_array() {
+            Some(bytes) => {
+                let token = Token::from(u64::from_le_bytes(*bytes));
                 tracing::info!(
                     CVM_ALLOWED,
                     %token,
@@ -128,7 +128,7 @@ pub async fn read_token(vmgs_client: &vmgs_broker::VmgsClient) -> Option<Token> 
                 );
                 Some(token)
             }
-            Err(_) => {
+            None => {
                 tracing::warn!(
                     CVM_ALLOWED,
                     "hibernation enabled: corrupt hibernation token found"
@@ -161,6 +161,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Task;
+    use test_with_tracing::test;
     use vmgs::Vmgs;
     use vmgs_broker::VmgsClient;
     use vmgs_broker::spawn_vmgs_broker;
@@ -175,6 +176,18 @@ mod tests {
     async fn read_absent_is_none(driver: DefaultDriver) {
         let (client, _task) = new_client(&driver).await;
         assert_eq!(read_token(&client).await, None);
+    }
+
+    #[async_test]
+    async fn read_invalid_length_is_none(driver: DefaultDriver) {
+        let (client, _task) = new_client(&driver).await;
+        for len in [7, 9] {
+            client
+                .write_file(vmgs::FileId::HIBERNATION_TOKEN, vec![0; len])
+                .await
+                .unwrap();
+            assert_eq!(read_token(&client).await, None);
+        }
     }
 
     #[async_test]

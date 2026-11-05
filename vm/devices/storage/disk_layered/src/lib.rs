@@ -1068,17 +1068,9 @@ mod tests {
                 return Ok(());
             }
             let mut sectors = self.sectors.lock();
-            let mut next_sector = sector;
             let end = sector + count;
-            while next_sector < end {
-                let Some((&sector, _)) = sectors.range_mut(next_sector..).next() else {
-                    break;
-                };
-                if sector >= end {
-                    break;
-                }
-                sectors.remove(&sector);
-                next_sector = sector + 1;
+            if sector < end {
+                sectors.extract_if(sector..end, |_, _| true).for_each(drop);
             }
             Ok(())
         }
@@ -1113,6 +1105,39 @@ mod tests {
                 entry.insert(data);
             }
             Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn test_unmap_sparse_range() {
+        for (offset, count, expected) in [
+            (1, 0, &[0, 2, 4, 7][..]),
+            (1, 1, &[0, 2, 4, 7][..]),
+            (2, 2, &[0, 4, 7][..]),
+            (1, 6, &[0, 7][..]),
+            (0, 8, &[][..]),
+            (8, 0, &[0, 2, 4, 7][..]),
+        ] {
+            let layer = Arc::new(TestLayer::new(8));
+            layer.sectors.lock().extend(
+                [0, 2, 4, 7]
+                    .into_iter()
+                    .map(|sector| (sector, Data(vec![0x5a; 512].into()))),
+            );
+
+            layer.unmap(offset, count, false, false).await.unwrap();
+            assert_eq!(
+                layer.sectors.lock().keys().copied().collect::<Vec<_>>(),
+                [0, 2, 4, 7],
+            );
+
+            layer.unmap(offset, count, false, true).await.unwrap();
+            assert_eq!(
+                layer.sectors.lock().keys().copied().collect::<Vec<_>>(),
+                expected,
+                "unmap {offset}..{}",
+                offset + count,
+            );
         }
     }
 

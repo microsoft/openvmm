@@ -18,6 +18,7 @@ use crate::vm_controller::ServiceVtl2Params;
 use crate::vm_controller::VmControllerEvent;
 use crate::vm_controller::VmControllerRpc;
 use anyhow::Context;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
@@ -28,6 +29,7 @@ use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::executor::block_on;
+use futures::future::Either;
 use futures_concurrency::stream::Merge;
 use inspect::InspectionBuilder;
 use mesh::CancelContext;
@@ -259,6 +261,9 @@ enum InteractiveCommand {
         /// Tell the guest to force the power state transition.
         #[clap(long, short = 'f')]
         force: bool,
+        /// Inject an ACPI power-button event instead of using Hyper-V shutdown IC.
+        #[clap(long, short = 'a', conflicts_with_all = ["reboot", "hibernate", "force"])]
+        acpi: bool,
     },
 
     /// Clears the current halt condition, resuming the VPs if the VM is
@@ -434,6 +439,7 @@ pub(crate) struct ReplResources {
     pub nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     pub consomme_rpc: Option<mesh::Sender<ConsommeRequest>>,
     pub shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    pub acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     pub kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     pub console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     pub has_vtl2: bool,
@@ -471,37 +477,6 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Cursor;
-    use test_with_tracing::test;
-
-    #[test]
-    fn console_input_stops_at_eof() {
-        let mut stdin = Cursor::new(b"guest input");
-        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
-
-        assert_eq!(
-            forward_console_input(&mut stdin, &mut output).unwrap(),
-            ConsoleInputEnd::Eof
-        );
-        assert_eq!(output.into_inner().into_inner(), b"guest input");
-    }
-
-    #[test]
-    fn console_input_stops_at_ctrl_q() {
-        let mut stdin = Cursor::new(b"guest input\x11ignored");
-        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
-
-        assert_eq!(
-            forward_console_input(&mut stdin, &mut output).unwrap(),
-            ConsoleInputEnd::InputMode
-        );
-        assert_eq!(output.into_inner().into_inner(), b"guest input");
-    }
-}
-
 /// Run the interactive REPL.
 pub(crate) async fn run_repl(
     driver: &DefaultDriver,
@@ -515,6 +490,7 @@ pub(crate) async fn run_repl(
         mut nvme_vtl2_rpc,
         consomme_rpc,
         shutdown_ic,
+        acpi_power_button,
         kvp_ic,
         console_in,
         has_vtl2,
@@ -679,6 +655,7 @@ pub(crate) async fn run_repl(
         PulseSaveRestore,
         StateChange(Result<StateChange, RpcError>),
         ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
+        AcpiShutdownResult(Result<(), RpcError>),
         Controller(VmControllerEvent),
     }
 
@@ -709,7 +686,10 @@ pub(crate) async fn run_repl(
                 .map(Event::StateChange);
             let shutdown = pin!(async {
                 if let Some(s) = &mut pending_shutdown {
-                    Event::ShutdownResult(s.await)
+                    match s {
+                        Either::Left(s) => Event::ShutdownResult(s.await),
+                        Either::Right(s) => Event::AcpiShutdownResult(s.await),
+                    }
                 } else {
                     pending().await
                 }
@@ -832,6 +812,17 @@ pub(crate) async fn run_repl(
                             "communication failure during shutdown"
                         );
                     }
+                }
+                pending_shutdown = None;
+                continue;
+            }
+            Event::AcpiShutdownResult(r) => {
+                match r {
+                    Ok(()) => tracing::info!("ACPI power-button event injected"),
+                    Err(err) => tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "communication failure during ACPI shutdown"
+                    ),
                 }
                 pending_shutdown = None;
                 continue;
@@ -987,9 +978,17 @@ pub(crate) async fn run_repl(
                 reboot,
                 hibernate,
                 force,
+                acpi,
             } => {
                 if pending_shutdown.is_some() {
                     println!("shutdown already in progress");
+                } else if acpi {
+                    if let Some(button) = &acpi_power_button {
+                        pending_shutdown =
+                            Some(Either::Right(button.call(PowerButtonRpc::Press, ())));
+                    } else {
+                        eprintln!("error: ACPI shutdown requires direct ACPI, UEFI, or PCAT boot");
+                    }
                 } else if let Some(ic) = &shutdown_ic {
                     let params = hyperv_ic_resources::shutdown::ShutdownParams {
                         shutdown_type: if hibernate {
@@ -1001,8 +1000,9 @@ pub(crate) async fn run_repl(
                         },
                         force,
                     };
-                    pending_shutdown =
-                        Some(ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params));
+                    pending_shutdown = Some(Either::Left(
+                        ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params),
+                    ));
                 } else {
                     println!("no shutdown ic configured");
                 }
@@ -1778,5 +1778,36 @@ impl clap_dyn_complete::CustomCompleter for OpenvmmComplete {
             }
             _ => Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use test_with_tracing::test;
+
+    #[test]
+    fn console_input_stops_at_eof() {
+        let mut stdin = Cursor::new(b"guest input");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::Eof
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
+    }
+
+    #[test]
+    fn console_input_stops_at_ctrl_q() {
+        let mut stdin = Cursor::new(b"guest input\x11ignored");
+        let mut output = futures::io::AllowStdIo::new(Cursor::new(Vec::new()));
+
+        assert_eq!(
+            forward_console_input(&mut stdin, &mut output).unwrap(),
+            ConsoleInputEnd::InputMode
+        );
+        assert_eq!(output.into_inner().into_inner(), b"guest input");
     }
 }

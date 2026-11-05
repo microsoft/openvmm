@@ -146,6 +146,50 @@ cross-compilation. See `Guide/src/dev_guide/tests/vmm.md` for details.
 - **CI failures** — to investigate failing CI checks on a PR, load the
   `openvmm-ci-investigation` skill.
 
+### Unit-test coverage: evidence, not a goal
+
+When changing unit-testable Rust behavior or assessing its tests on Linux x64
+or ARM64, use focused local coverage to check which production paths the
+selected tests exercise. Setup, scope, and diagnostics are documented in
+`Guide/src/dev_guide/tests/unit.md#local-coverage`.
+
+```bash
+cargo xflowey unit-test-coverage -p <package> --base <review-base> --install-missing-deps
+python3 repo_support/unit_test_coverage.py query --changed
+```
+
+Choose affected packages explicitly and the base appropriate to the review.
+For tasks that seek existing test gaps, collect those packages and use
+`query --gaps`; its ranking measures missing-line count, not behavioral risk.
+Use file/range queries to inspect covering tests and prioritize important
+requirements, regressions, boundaries, and realistic error paths.
+
+- **Test behavior, not execution counts.** Add meaningful assertions about
+  observable results or invariants. A bug-fix regression should detect the
+  original bug where feasible. Executing a line does not prove its behavior
+  was checked; line coverage is not branch coverage.
+- **Do not optimize for 100%.** There is no percentage target or coverage
+  gate. Do not add tests that merely execute lines, weaken assertions, hide
+  code through exclusions or configuration changes, or alter sound production
+  code solely to improve the score. Do not expose internals, remove defensive
+  checks, or add artificial production seams merely to manufacture coverage.
+  Legitimate refactoring must have an independent design or correctness reason.
+- **Accept and explain useful limits.** Leave justified gaps in defensive,
+  platform-specific, or VM-dependent paths rather than creating unnatural
+  tests. Stop when the relevant behavioral risks are adequately tested, not
+  when the counters reach a target. Coverage supplements, not replaces,
+  appropriate integration/VM tests, review, and reasoning.
+- **Report the actual evidence.** State package/filter and target scope,
+  collection completeness, test outcome, and remaining production gaps.
+  Passing-attempt evidence is distinct from failed-test execution; unmeasured
+  or unclassified code is not proven covered or uncovered. Do not narrow the
+  selection merely to present a better score or claim a focused run covers
+  other platforms or the workspace.
+- **Keep results current.** Recollect after edits. `--allow-stale` is for
+  labeled historical inspection, not validation of the current change.
+  If collection is unavailable or unrepresentative, report that limitation
+  and use suitable tests instead of claiming coverage.
+
 ## Rust Edition
 
 This project uses the **Rust 2024 edition** (`edition = "2024"` in root

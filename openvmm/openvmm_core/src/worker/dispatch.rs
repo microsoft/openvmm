@@ -22,7 +22,6 @@ use crate::worker::memory_layout::resolve_memory_layout;
 use crate::worker::rom::RomBuilder;
 use acpi::dsdt;
 use anyhow::Context;
-use cfg_if::cfg_if;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
@@ -30,6 +29,7 @@ use chipset_device::pci::PciConfigAccessType;
 use chipset_device::pci::PciConfigAddress;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::acpi_power_button::ACPI_POWER_BUTTON_MMIO_BASE;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use cxl_spec::CXL_COMPONENT_REGISTERS_SIZE_BYTES;
 use debug_ptr::DebugPtr;
@@ -1172,13 +1172,10 @@ impl InitializedVm {
         }
 
         let hv_config = if cfg.hypervisor.with_hv {
-            cfg_if::cfg_if! {
-                if #[cfg(all(windows, feature = "virt_whp"))] {
-                    let allow_device_assignment = !cfg.vpci_resources.is_empty();
-                } else {
-                    let allow_device_assignment = false;
-                }
-            }
+            let allow_device_assignment = cfg_select! {
+                all(windows, feature = "virt_whp") => !cfg.vpci_resources.is_empty(),
+                _ => false,
+            };
 
             Some(virt::HvConfig {
                 allow_device_assignment,
@@ -1355,6 +1352,7 @@ impl InitializedVm {
         let resolved_iommu = match &resolved_layout.iommu_ranges {
             ResolvedIommuRanges::Smmu(ranges) => {
                 ResolvedIommu::Smmu(smmu_wiring::resolve_smmu_resources(
+                    &cfg.pcie_root_complexes,
                     ranges,
                     &spi_layout,
                     device_assignment_msi_iova_range,
@@ -1494,20 +1492,19 @@ impl InitializedVm {
             memory_builder = memory_builder.pin_mappings(true);
         }
 
-        cfg_if! {
-            if #[cfg(windows)] {
-                let vtl2_memory_process = if cfg.hypervisor.with_vtl2.is_some() {
+        let vtl2_memory_process = cfg_select! {
+            windows => {
+                if cfg.hypervisor.with_vtl2.is_some() {
                     // VTL2 needs a separate memory hosting process.
                     let process = pal::windows::process::empty_process()
                         .context("could not launch a memory process for VTL2")?;
                     Some(Box::new(process) as _)
                 } else {
                     None
-                };
-            } else {
-                let vtl2_memory_process = None;
+                }
             }
-        }
+            _ => None,
+        };
 
         let max_addr = mem_layout
             .end_of_layout()
@@ -3280,6 +3277,11 @@ impl LoadedVmInner {
     }
 
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
+        #[cfg(guest_arch = "aarch64")]
+        let smmu_configs = match &self.iommu_devices {
+            IommuDevices::Smmu(devices) => devices.firmware_configs(),
+            IommuDevices::None => Vec::new(),
+        };
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
                 cache_topology::CacheTopology::from_host()
@@ -3353,10 +3355,7 @@ impl LoadedVmInner {
                     0
                 },
                 virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
-                smmu: match &self.iommu_devices {
-                    IommuDevices::Smmu(devices) => devices.configs.clone(),
-                    IommuDevices::None => Vec::new(),
-                },
+                smmu: smmu_configs.clone(),
             },
         };
 
@@ -3477,6 +3476,7 @@ impl LoadedVmInner {
                         acpi_builder.build_acpi_tables(rsdp_gpa, |dsdt| {
                             add_devices_to_dsdt_arm64(
                                 dsdt,
+                                &self.chipset_capabilities,
                                 enable_serial,
                                 self.vmbus_server.is_some(),
                                 &self.chipset_mmio,
@@ -3488,11 +3488,6 @@ impl LoadedVmInner {
                     None
                 };
 
-                let smmu_configs: &[vmm_core::acpi_builder::AcpiSmmuConfig] =
-                    match &self.iommu_devices {
-                        IommuDevices::Smmu(devices) => &devices.configs,
-                        IommuDevices::None => &[],
-                    };
                 super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
@@ -3500,7 +3495,7 @@ impl LoadedVmInner {
                     linux_arm64_console(&self.dt_uarts, enable_serial),
                     &self.processor_topology,
                     &self.pcie_host_bridges,
-                    smmu_configs,
+                    &smmu_configs,
                     &self.chipset_mmio,
                     build_acpi,
                 )?
@@ -3540,6 +3535,9 @@ impl LoadedVmInner {
                     acpi_builder.build_ivrs(),
                     // DMAR (Intel VT-d)
                     acpi_builder.build_dmar(),
+                    // UEFI supplies its own DSDT, which lacks our power button.
+                    // Linux direct boot adds the button to its generated DSDT.
+                    build_ssdt(&self.chipset_capabilities),
                 ];
                 let acpi_tables: Vec<_> =
                     acpi_tables.iter().flatten().map(|t| t.as_ref()).collect();
@@ -3737,7 +3735,8 @@ impl LoadedVm {
         // partition unit.
         let stop_guard = self.inner.partition_unit.temporarily_stop_vps().await;
 
-        // Start state units so device config space is accessible.
+        // Start state units so device config space is accessible. This also
+        // freezes SMMU capabilities before firmware reads them.
         self.state_units.start().await;
 
         let result = ecam_config_access::assign_pci_resources_for_root_complexes(
@@ -3916,6 +3915,26 @@ impl LoadedVm {
                                 "hvsock is not available"
                             ))));
                         }
+                    }
+                    VmRpc::AddHvsockListener(rpc) => {
+                        rpc.handle_failable_sync(|(vtl, service_id, listener)| {
+                            self.hvsock_relay_mut(vtl)
+                                .context("hvsock is not available")?
+                                .add_service_listener(service_id, listener)
+                        })
+                    }
+                    VmRpc::RemoveHvsockListener(rpc) => {
+                        rpc.handle(async |(vtl, service_id)| {
+                            let relay = self
+                                .hvsock_relay_mut(vtl)
+                                .context("hvsock is not available")
+                                .map_err(RemoteError::new)?;
+                            relay
+                                .remove_service_listener(service_id)
+                                .await
+                                .map_err(RemoteError::new)
+                        })
+                        .await
                     }
                     VmRpc::PulseSaveRestore(rpc) => {
                         rpc.handle(async |()| {
@@ -4301,6 +4320,14 @@ impl LoadedVm {
         }
     }
 
+    fn hvsock_relay_mut(&mut self, vtl: DeviceVtl) -> Option<&mut HvsockRelay> {
+        match vtl {
+            DeviceVtl::Vtl0 => self.inner.vtl0_hvsock_relay.as_mut(),
+            DeviceVtl::Vtl1 => None,
+            DeviceVtl::Vtl2 => self.inner.vtl2_hvsock_relay.as_mut(),
+        }
+    }
+
     /// Saves the VM's processor, partition, and device state.
     ///
     /// TODO: virtio & vmbus unsupported.
@@ -4412,6 +4439,14 @@ impl LoadedVm {
     }
 }
 
+fn build_ssdt(capabilities: &VmChipsetCapabilities) -> Option<Vec<u8>> {
+    capabilities.acpi_power_button_gsi.map(|gsi| {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        ssdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+        ssdt.to_bytes()
+    })
+}
+
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn add_devices_to_dsdt_x64(
     dsdt: &mut dsdt::Dsdt,
@@ -4425,6 +4460,9 @@ fn add_devices_to_dsdt_x64(
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
 ) {
     dsdt.add_apic();
+    if let Some(gsi) = capabilities.acpi_power_button_gsi {
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+    }
 
     // Any serial port configured means all are enabled.
     if serial_uarts {
@@ -4479,11 +4517,15 @@ fn add_devices_to_dsdt_x64(
 #[cfg(guest_arch = "aarch64")]
 fn add_devices_to_dsdt_arm64(
     dsdt: &mut dsdt::Dsdt,
+    capabilities: &VmChipsetCapabilities,
     enable_serial: bool,
     with_vmbus: bool,
     chipset_mmio: &ChipsetMmioRanges,
     with_hv: bool,
 ) {
+    if let Some(gsi) = capabilities.acpi_power_button_gsi {
+        dsdt.add_power_button(gsi, ACPI_POWER_BUTTON_MMIO_BASE);
+    }
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
     const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
     use serial_pl011_resources::PL011_SERIAL_SIZE;
@@ -4568,6 +4610,7 @@ mod uart_tests {
             with_generic_isa_dma: false,
             with_psp: false,
             with_guest_watchdog: false,
+            acpi_power_button_gsi: None,
             with_i440bx_host_pci_bridge: false,
             dt_com_ports: [true, true, false, true],
             dt_pl011_uarts: false,
