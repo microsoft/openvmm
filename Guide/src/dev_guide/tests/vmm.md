@@ -229,7 +229,7 @@ async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 #### mshv root hosts
 
-On x86-64 Linux with KVM and nested virtualization enabled,
+On x86-64 Linux with KVM or Windows with WHP and nested virtualization enabled,
 `openvmm_uefi_x64(mshv)` describes an mshv root host. The host function applies
 `with_mshv_platform`; ordinary native nesting runs the musl L2 test inside it.
 Petri prepares the root's agent initrd, networking, clock, and CA setup without
@@ -238,7 +238,9 @@ boot application, and licensed hypervisor payloads have distinct typed
 artifacts.
 
 Flowey resolves the published `mshv-test` kernel, builds `mshv_host_boot.efi`,
-and provisions the compatible hypervisor payloads. Run the native test with:
+and provisions the compatible hypervisor payloads. Linux provisioning uses
+`rpm2cpio` and `bsdtar`; RPM packages and their scripts are never installed
+or executed. Run the native test with:
 
 ```bash
 filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
@@ -253,9 +255,17 @@ application during preparation. See
 requirements](incubator.md#mshv-boot-artifacts-and-kernel) for the compatible
 kernel/payload contract and development-only trust model.
 
-CI provisions the mshv root artifacts on the x64 Linux KVM runner. MSHV host
-jobs do not acquire them because that backend does not support another level
-of nested virtualization.
+CI extracts the payloads in the x64 Linux build job and publishes them,
+including licenses and source hashes, as `x64-mshv-boot-artifacts`.
+The x64 KVM and standard Windows x64 test jobs consume that artifact and the
+EFI host boot application. MSHV host jobs exclude the root test because that
+backend does not support another level of nested virtualization.
+
+For local Windows runs, download and extract that CI artifact or supply an
+equivalent authorized payload directory with
+`--mshv-boot-artifacts path/to/mshv-boot-artifacts`. No RPM tools are needed on
+Windows. Guest HTTPS access uses the host's root certificates; `SSL_CERT_FILE`
+can select an explicit PEM bundle instead.
 
 ## Running VMM Tests (Flowey)
 

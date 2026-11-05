@@ -72,6 +72,14 @@ pub struct CheckinGatesCli {
     local_run_args: Option<crate::pipelines_shared::cfg_common_params::LocalRunArgs>,
 }
 
+fn filter_mshv_root(filter: String, provisioned: bool) -> String {
+    if provisioned {
+        filter
+    } else {
+        format!("({filter}) & !test(_uefi_x64_mshv_)")
+    }
+}
+
 impl IntoPipeline for CheckinGatesCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         let Self {
@@ -867,6 +875,8 @@ impl IntoPipeline for CheckinGatesCli {
                 .then(|| pipeline.new_typed_artifact("x64-linux-snp-linux-direct-igvm"));
             let mshv_host_boot_artifact = matches!(arch, CommonArch::X86_64)
                 .then(|| pipeline.new_typed_artifact("x64-mshv-host-boot"));
+            let mshv_payload_artifact = matches!(arch, CommonArch::X86_64)
+                .then(|| pipeline.new_typed_artifact("x64-mshv-boot-artifacts"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -899,6 +909,19 @@ impl IntoPipeline for CheckinGatesCli {
                     let (_, use_mshv_host_boot) = mshv_host_boot_artifact.as_ref().unwrap();
                     vmm_tests_artifacts_linux_x86.use_mshv_host_boot_x64 =
                         Some(use_mshv_host_boot.clone());
+                    vmm_tests_artifacts_windows_x86.use_mshv_host_boot_x64 =
+                        Some(use_mshv_host_boot.clone());
+                    let (_, use_mshv_payloads) = mshv_payload_artifact.as_ref().unwrap();
+                    vmm_tests_artifacts_linux_x86.use_mshv_boot_artifacts_x64 =
+                        Some(use_mshv_payloads.clone());
+                    vmm_tests_artifacts_windows_x86.use_mshv_boot_artifacts_x64 =
+                        Some(use_mshv_payloads.clone());
+                    vmm_tests_artifacts_windows_x86.use_nextest_vmm_tests_archive_linux_musl_x64 =
+                        Some(use_vmm_tests_archive_musl.clone());
+                    vmm_tests_artifacts_windows_x86.use_openvmm_linux_musl_x64 =
+                        Some(use_openvmm_musl.clone());
+                    vmm_tests_artifacts_windows_x86.use_prep_steps_linux_musl_x64 =
+                        Some(use_prep_steps_musl.clone());
                     use_vmm_perf_runner_gnu_x64 = Some(use_vmm_perf_gnu);
                     use_vmm_perf_runner_musl_x64 = Some(use_vmm_perf_musl);
                     use_vmm_perf_openvmm_gnu_x64 = Some(use_openvmm.clone());
@@ -1104,6 +1127,16 @@ impl IntoPipeline for CheckinGatesCli {
                     flowey_lib_hvlite::build_mshv_host_boot::Request {
                         profile: CommonProfile::from_release(release),
                         host_boot,
+                    }
+                })
+            } else {
+                job
+            };
+            let job = if let Some((publish, _)) = mshv_payload_artifact {
+                job.publish(publish, |artifacts| {
+                    flowey_lib_hvlite::resolve_mshv_boot_artifacts::Request {
+                        arch: CommonArch::X86_64,
+                        artifacts,
                     }
                 })
             } else {
@@ -1699,7 +1732,7 @@ impl IntoPipeline for CheckinGatesCli {
                 gh_pool: gh_pools::windows_intel_v6_1es(),
                 ado_pool: Some(ado_pools::windows_intel_v6_1es()),
                 label: "x64-windows-intel",
-                mshv_root: false,
+                mshv_root: true,
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_x86,
                 nextest_filter_expr: standard_filter.clone(),
@@ -1758,7 +1791,7 @@ impl IntoPipeline for CheckinGatesCli {
                 gh_pool: gh_pools::windows_amd_v6_1es(),
                 ado_pool: Some(ado_pools::windows_amd_v6_1es()),
                 label: "x64-windows-amd",
-                mshv_root: false,
+                mshv_root: true,
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_amd_x86,
                 nextest_filter_expr: standard_filter.clone(),
@@ -1892,6 +1925,7 @@ impl IntoPipeline for CheckinGatesCli {
                 },
             },
         ] {
+            let nextest_filter_expr = filter_mshv_root(nextest_filter_expr, mshv_root);
             // Skip unsupported jobs on ADO backend
             if matches!(backend_hint, PipelineBackendHint::Ado) && ado_pool.is_none() {
                 continue;
@@ -1917,7 +1951,6 @@ impl IntoPipeline for CheckinGatesCli {
             );
 
             prebuilt_artifacts.mshv_test_kernel_x64 = mshv_root;
-            prebuilt_artifacts.mshv_boot_artifacts_x64 = mshv_root;
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {
                 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
@@ -2163,5 +2196,21 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         Ok(pipeline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn unprovisioned_jobs_exclude_only_the_mshv_root_variant() {
+        let filter = "test(boot) | test(mshv)";
+        assert_eq!(filter_mshv_root(filter.into(), true), filter);
+        assert_eq!(
+            filter_mshv_root(filter.into(), false),
+            "(test(boot) | test(mshv)) & !test(_uefi_x64_mshv_)"
+        );
     }
 }

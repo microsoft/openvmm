@@ -21,8 +21,8 @@ impl PetriVmBuilder<OpenVmmPetriBackend> {
         assert!(
             self.arch() == MachineArch::X86_64
                 && MachineArch::host() == MachineArch::X86_64
-                && cfg!(target_os = "linux"),
-            "mshv platform requires x86-64 Linux"
+                && cfg!(any(windows, target_os = "linux")),
+            "mshv platform requires x86-64 Windows or Linux"
         );
         assert!(
             matches!(self.config.firmware, Firmware::Uefi { .. }),
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn platform_composes_without_replacing_uefi_or_other_roots() -> anyhow::Result<()> {
-        if MachineArch::host() != MachineArch::X86_64 || !cfg!(target_os = "linux") {
+        if MachineArch::host() != MachineArch::X86_64 || !cfg!(any(windows, target_os = "linux")) {
             return Ok(());
         }
         let temp = tempfile::tempdir()?;
