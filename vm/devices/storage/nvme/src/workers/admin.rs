@@ -1187,7 +1187,9 @@ impl AdminHandler {
                 )?;
             }
             spec::LogPageIdentifier::HEALTH_INFORMATION => {
-                if command.nsid != !0 {
+                // Not supported per namespace (LPA.SMARTS is 0): NSID 0h and
+                // FFFFFFFFh both name the controller log page.
+                if command.nsid != 0 && command.nsid != !0 {
                     return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
                 }
                 // Write an empty page.
