@@ -371,8 +371,10 @@ fn read_extracted(root: &Path) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
             );
             let relative = path
                 .strip_prefix(root)?
-                .to_str()
-                .context("non-UTF-8 RPM path")?;
+                .iter()
+                .map(|part| part.to_str().context("non-UTF-8 RPM path"))
+                .collect::<anyhow::Result<Vec<_>>>()?
+                .join("/");
             let name = destination(&format!("/{relative}"))?
                 .with_context(|| format!("unexpected extracted RPM path: {relative}"))?;
             anyhow::ensure!(
@@ -535,6 +537,16 @@ mod tests {
         if fs_err::read_to_string(root.path().join("boot/efi/HvLoader.efi"))? == "loader" {
             assert!(read_extracted(root.path()).is_err());
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extracted_backslashes_are_not_treated_as_separators() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        fs_err::create_dir_all(root.path().join("boot/efi"))?;
+        fs_err::write(root.path().join("boot/efi/a\\b"), b"invalid path")?;
+        assert!(read_extracted(root.path()).is_err());
         Ok(())
     }
 
