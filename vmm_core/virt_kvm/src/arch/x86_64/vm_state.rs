@@ -43,9 +43,9 @@ impl AccessVmState for &'_ KvmPartition {
         // Round up so that restoring this value never moves the kvm clock
         // backwards, since the guest can observe the clock at nanosecond
         // granularity.
-        let clock = self.inner.kvm.get_clock_ns()?;
+        let clock = self.inner.kvm.get_clock()?;
         Ok(vm::ReferenceTime {
-            value: clock.clock.div_ceil(100),
+            value: clock.clock_ns.div_ceil(100),
         })
     }
 
@@ -57,6 +57,26 @@ impl AccessVmState for &'_ KvmPartition {
         self.inner
             .kvm
             .set_clock_ns(value.value.saturating_mul(100))?;
+
+        // Moving the clock leaves the guest counter where it was, so put the counter back
+        // on it. A restore writes this element before any vp's `Tsc`, and each of those
+        // writes then reapplies the offset recorded here (see `set_tsc`). Storing the saved
+        // counters instead would leave the restored pair off by the difference between how
+        // far apart save read and restore wrote the clock and the counter, and each save
+        // would record that error for the next restore to add to. On a machine reset this
+        // runs inside `reset_all`, and `ResetPartition::reset` then aligns again, which it
+        // must also do for a partition with no reference time element.
+        let alignment = self.inner.align_guest_tsc()?;
+        tracelimit::info_ratelimited!(
+            reference_time = value.value,
+            guest_tsc_before = alignment.map(|a| a.before),
+            guest_tsc_after = alignment.map(|a| a.after),
+            tsc_pairing = alignment.map(|a| a.pairing),
+            tsc_pairing_error_ns = alignment.map(|a| a.pairing_error_ns),
+            tsc_requested_lead_ns = alignment.map(|a| a.requested_lead_ns),
+            tsc_achieved_lead_ns = alignment.map(|a| a.achieved_lead_ns),
+            "reference clock set"
+        );
         Ok(())
     }
 
