@@ -2112,17 +2112,6 @@ impl IntoPipeline for CheckinGatesCli {
             //
             // TODO: Add a way for this job to skip flowey setup and become a true
             // no-op.
-            let (condition, any_jobs_failed) = if merge_queue {
-                (
-                    "always()",
-                    "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') }}",
-                )
-            } else {
-                (
-                    "always() && github.event.pull_request.draft == false",
-                    "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}",
-                )
-            };
             let all_good_job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -2131,8 +2120,8 @@ impl IntoPipeline for CheckinGatesCli {
                 )
                 .gh_set_pool(gh_pools::linux_x64_gh())
                 // always run this job, regardless whether or not any previous jobs failed
-                .gh_dangerous_override_if(condition)
-                .gh_dangerous_global_env_var("ANY_JOBS_FAILED", any_jobs_failed)
+                .gh_dangerous_override_if("always() && github.event.pull_request.draft == false")
+                .gh_dangerous_global_env_var("ANY_JOBS_FAILED", "${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}")
                 .side_effect(|done| flowey_lib_hvlite::_jobs::all_good_job::Params {
                     did_fail_env_var: "ANY_JOBS_FAILED".into(),
                     done,
@@ -2176,131 +2165,5 @@ impl IntoPipeline for CheckinGatesCli {
         }
 
         Ok(pipeline)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use flowey_core::pipeline::internal::PipelineFinalized;
-    use test_with_tracing::test;
-
-    fn pipeline(config: PipelineConfig) -> PipelineFinalized {
-        PipelineFinalized::from_pipeline(
-            CheckinGatesCli {
-                config,
-                local_run_args: None,
-            }
-            .into_pipeline(PipelineBackendHint::Github)
-            .unwrap(),
-        )
-    }
-
-    #[test]
-    fn merge_queue_preserves_pr_checks_except_vms_and_size_comparisons() {
-        let pr = pipeline(PipelineConfig::Pr);
-        let queue = pipeline(PipelineConfig::MergeQueue);
-        assert!(queue.gh_pr_triggers.is_none());
-        assert!(queue.gh_ci_triggers.is_none());
-        assert_eq!(
-            queue.gh_merge_group_triggers.as_ref().unwrap().types,
-            ["checks_requested"]
-        );
-        assert!(pr.gh_merge_group_triggers.is_none());
-        assert!(
-            pr.jobs
-                .iter()
-                .any(|job| job.label.starts_with("run vmm-tests"))
-        );
-
-        let expected_jobs = pr
-            .jobs
-            .iter()
-            .filter(|job| {
-                !job.label.starts_with("run vmm-tests")
-                    && !job.label.starts_with("run vmm-perf")
-                    && !job.label.starts_with("verify openhcl binary size")
-            })
-            .map(|job| job.label.as_str())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            queue
-                .jobs
-                .iter()
-                .map(|job| job.label.as_str())
-                .collect::<BTreeSet<_>>(),
-            expected_jobs
-        );
-
-        let unit_tests = |pipeline: &PipelineFinalized| {
-            pipeline
-                .jobs
-                .iter()
-                .filter_map(|job| job.label.split_once("unit tests ["))
-                .map(|(_, target)| target.to_owned())
-                .collect::<BTreeSet<_>>()
-        };
-        assert_eq!(
-            unit_tests(&queue),
-            [
-                "x64-linux]",
-                "x64-linux-musl]",
-                "x64-windows]",
-                "aarch64-linux]",
-                "aarch64-linux-musl]",
-                "aarch64-windows]",
-            ]
-            .map(String::from)
-            .into_iter()
-            .collect()
-        );
-        assert_eq!(unit_tests(&queue), unit_tests(&pr));
-        let quick_check = queue
-            .jobs
-            .iter()
-            .position(|job| job.label == "quick check [fmt, clippy x64-linux]")
-            .unwrap();
-        assert!(
-            queue.jobs[quick_check]
-                .root_nodes
-                .keys()
-                .any(|node| { node.modpath() == "flowey_lib_hvlite::_jobs::check_xtask_fmt" })
-        );
-        for job in 0..queue.jobs.len() {
-            if job != quick_check {
-                assert!(queue.extra_deps.contains(&(quick_check, job)));
-            }
-        }
-
-        let gate = queue
-            .jobs
-            .iter()
-            .position(|job| job.label == "openvmm checkin gates")
-            .unwrap();
-        assert_eq!(queue.jobs[gate].gh_override_if.as_deref(), Some("always()"));
-        let failure_condition = &queue.jobs[gate].gh_global_env["ANY_JOBS_FAILED"];
-        for result in ["'failure'", "'cancelled'", "'skipped'"] {
-            assert!(failure_condition.contains(result));
-        }
-        assert_eq!(
-            queue
-                .extra_deps
-                .iter()
-                .filter_map(|&(from, to)| (to == gate).then_some(from))
-                .collect::<BTreeSet<_>>(),
-            (0..queue.jobs.len()).filter(|&i| i != gate).collect()
-        );
-    }
-
-    #[test]
-    fn merge_queue_requires_github() {
-        for backend in [PipelineBackendHint::Ado, PipelineBackendHint::Local] {
-            let result = CheckinGatesCli {
-                config: PipelineConfig::MergeQueue,
-                local_run_args: None,
-            }
-            .into_pipeline(backend);
-            assert!(result.is_err());
-        }
     }
 }
