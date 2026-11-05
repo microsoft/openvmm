@@ -206,25 +206,31 @@ impl FlowNodeWithConfig for Node {
                                   ctx: &mut NodeCtx<'_>| {
             if write_cargo_bin.is_some() || !ensure_installed.is_empty() {
                 if auto_install || matches!(ctx.backend(), FlowBackend::Github) {
-                    let added_to_path = if matches!(ctx.backend(), FlowBackend::Github) {
-                        Some(ctx.emit_rust_step("add default cargo home to path", |_| {
-                            |_| {
-                                let default_cargo_home = home::home_dir()
-                                    .context("Unable to get home dir")?
-                                    .join(".cargo")
-                                    .join("bin");
-                                let github_path = std::env::var("GITHUB_PATH")?;
-                                let mut github_path =
-                                    fs_err::File::options().append(true).open(github_path)?;
-                                github_path
-                                    .write_all(default_cargo_home.as_os_str().as_encoded_bytes())?;
-                                log::info!("Added {} to PATH", default_cargo_home.display());
-                                Ok(())
-                            }
-                        }))
-                    } else {
-                        None
-                    };
+                    let added_to_path =
+                        if matches!(ctx.backend(), FlowBackend::Github | FlowBackend::Ado) {
+                            // Run in a separate step so the CI agent updates PATH before
+                            // the installer invokes the newly installed tools.
+                            Some(ctx.emit_rust_step("add default cargo home to path", |_| {
+                                |rt| {
+                                    let cargo_bin = home::cargo_home()?.join("bin");
+                                    if matches!(rt.backend(), FlowBackend::Ado) {
+                                        println!("##vso[task.prependpath]{}", cargo_bin.display());
+                                    } else {
+                                        let github_path = std::env::var("GITHUB_PATH")?;
+                                        let mut github_path = fs_err::File::options()
+                                            .append(true)
+                                            .open(github_path)?;
+                                        github_path
+                                            .write_all(cargo_bin.as_os_str().as_encoded_bytes())?;
+                                        github_path.write_all(b"\n")?;
+                                    }
+                                    log::info!("Added {} to PATH", cargo_bin.display());
+                                    Ok(())
+                                }
+                            }))
+                        } else {
+                            None
+                        };
 
                     let rust_toolchain = rust_toolchain.clone();
                     ctx.emit_rust_step("install Rust", |ctx| {
