@@ -36,8 +36,8 @@ jobs:
   - bash: |
       set -x
       i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.95.0 -y
+      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc libc6-dev -y --no-install-recommends
+      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.97.1 -y
       . "$HOME/.cargo/env"
       echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
     condition: eq(variables['Agent.OS'], 'Linux')
@@ -811,7 +811,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -2357,7 +2357,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -2606,7 +2606,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -2794,7 +2794,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -3038,7 +3038,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -3480,7 +3480,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
@@ -4925,7 +4925,7 @@ jobs:
   - bash: |
       set -x
       curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64
-      ./rustup-init.exe -y --default-toolchain=1.95.0
+      ./rustup-init.exe -y --default-toolchain=1.97.1
       echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
     condition: eq(variables['Agent.OS'], 'Windows_NT')
     displayName: rustup (Windows X64)
