@@ -17,7 +17,11 @@ use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiConnection;
+use std::future::poll_fn;
+use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::memory::PAGE_SIZE;
@@ -436,4 +440,87 @@ async fn test_gdma_reset_request_with_revoke(driver: DefaultDriver) {
         Some(true),
         "reset_request_pending should remain revoke_vtl0_vf=true after deregister_device"
     );
+}
+
+/// Polls `fut` once, then yields so the emulated device can make progress.
+async fn poll_step<F: Future>(mut fut: Pin<&mut F>) -> Option<F::Output> {
+    if let Poll::Ready(v) = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await {
+        return Some(v);
+    }
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+    None
+}
+
+/// An HWC request dropped after it was posted must not corrupt the next
+/// one: the device still completes it into the shared request and response
+/// pages, so the next request has to consume that completion first.
+#[async_test]
+async fn a_dropped_hwc_request_is_finished_by_the_next_one(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "dropped hwc request");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        &msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+    let buffer = device
+        .dma_client()
+        .allocate_dma_buffer(6 * PAGE_SIZE)
+        .unwrap();
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    let mut saw_in_flight = false;
+    for steps in 1..1000 {
+        let completed = {
+            let mut fut = pin!(gdma.list_devices());
+            let mut completed = false;
+            for _ in 0..steps {
+                if let Some(r) = poll_step(fut.as_mut()).await {
+                    r.unwrap();
+                    completed = true;
+                    break;
+                }
+            }
+            completed
+        };
+        saw_in_flight |= gdma.hwc_request_in_flight();
+
+        // A request of a different size and type than the dropped one, so a
+        // reused request page or a stale completion shows up as an error.
+        gdma.test_eq()
+            .await
+            .unwrap_or_else(|err| panic!("dropped after {steps} steps: {err:#}"));
+        let devices = gdma
+            .list_devices()
+            .await
+            .unwrap_or_else(|err| panic!("dropped after {steps} steps: {err:#}"));
+        assert!(
+            devices
+                .iter()
+                .any(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
+        );
+        if completed {
+            assert!(saw_in_flight, "no step dropped a posted request");
+            return;
+        }
+    }
+    panic!("list_devices never completed");
 }

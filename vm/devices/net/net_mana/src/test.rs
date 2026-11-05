@@ -26,6 +26,9 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiConnection;
 use std::future::poll_fn;
+use std::pin::Pin;
+use std::pin::pin;
+use std::task::Poll;
 use std::time::Duration;
 use test_with_tracing::test;
 use user_driver_emulated_mock::DeviceTestMemory;
@@ -1113,8 +1116,32 @@ async fn new_test_queue(
     ResourceArena,
     ManaEndpoint<TestEmulatedDevice>,
 ) {
+    let TestEndpoint {
+        mut endpoint,
+        mem: _mem,
+        mana: _mana,
+    } = new_test_endpoint(driver, "test queue").await;
+    let tx_config = endpoint.vport.config_tx().await.unwrap();
+
+    let mut arena = ResourceArena::new();
+    let (queue, _resources) = endpoint.new_queue(&tx_config, &mut arena, 0).await.unwrap();
+
+    (queue, arena, endpoint)
+}
+
+/// An endpoint with no queues, plus the device memory and driver it runs on.
+struct TestEndpoint {
+    endpoint: ManaEndpoint<TestEmulatedDevice>,
+    /// The emulated device's DMA memory; the HWC reads requests from it, so
+    /// it must outlive every call the endpoint makes.
+    mem: DeviceTestMemory,
+    mana: ManaDevice<TestEmulatedDevice>,
+}
+
+/// Sets up the full device stack and returns an endpoint with no queues.
+async fn new_test_endpoint(driver: &DefaultDriver, name: &str) -> TestEndpoint {
     let pages = 256;
-    let mem = DeviceTestMemory::new(pages * 2, true, "test queue");
+    let mem = DeviceTestMemory::new(pages * 2, true, name);
     let msi_conn = MsiConnection::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -1141,13 +1168,134 @@ async fn new_test_queue(
     };
     let thing = ManaDevice::new(driver, device, 1, 1, None).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
-    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
-    let tx_config = endpoint.vport.config_tx().await.unwrap();
+    TestEndpoint {
+        endpoint: ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await,
+        mem,
+        mana: thing,
+    }
+}
 
-    let mut arena = ResourceArena::new();
-    let (queue, _resources) = endpoint.new_queue(&tx_config, &mut arena, 0).await.unwrap();
+/// Polls `fut` once, then yields so the emulated device can make progress.
+async fn poll_step<F: Future>(mut fut: Pin<&mut F>) -> Option<F::Output> {
+    if let Poll::Ready(v) = poll_fn(|cx| Poll::Ready(fut.as_mut().poll(cx))).await {
+        return Some(v);
+    }
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if yielded {
+            Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    })
+    .await;
+    None
+}
 
-    (queue, arena, endpoint)
+fn one_queue_config(driver: &DefaultDriver) -> Vec<QueueConfig> {
+    vec![QueueConfig {
+        driver: Box::new(driver.clone()),
+        enabled_rx_offloads: Default::default(),
+    }]
+}
+
+/// The most poll steps any single `get_queues` or `stop` may need here. It
+/// only bounds the loops below so a hang fails instead of spinning forever.
+const MAX_CANCEL_STEPS: usize = 1000;
+
+// The cancellation tests below build a fresh endpoint for every cancel point.
+// The emulated device does not implement GDMA_DESTROY_DMA_REGION, and the
+// driver treats the failed status as a permanent HWC failure, so an endpoint
+// cannot allocate again after its first `stop`.
+
+/// A `get_queues` dropped at any await point must leave what it allocated
+/// with the endpoint, and the next `stop` must tear all of it down.
+#[async_test]
+async fn cancelled_get_queues_keeps_and_frees_its_resources(driver: DefaultDriver) {
+    let mut kept_orphans = false;
+    for steps in 1..MAX_CANCEL_STEPS {
+        let TestEndpoint {
+            mut endpoint,
+            mem: _mem,
+            mana: _mana,
+        } = new_test_endpoint(&driver, "cancelled get_queues").await;
+        let mut queues = Vec::new();
+        let mut completed = false;
+        {
+            let mut fut = pin!(endpoint.get_queues(one_queue_config(&driver), None, &mut queues));
+            for _ in 0..steps {
+                if let Some(r) = poll_step(fut.as_mut()).await {
+                    r.unwrap();
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        queues.clear();
+        kept_orphans |= !endpoint.orphans.lock().is_empty();
+        endpoint.stop().await;
+        assert!(endpoint.arena.is_empty(), "cancelled after {steps} steps");
+        assert!(
+            endpoint.orphans.lock().is_empty(),
+            "cancelled after {steps} steps"
+        );
+        if completed {
+            assert!(
+                kept_orphans,
+                "no cancel point left allocated resources with the endpoint"
+            );
+            return;
+        }
+    }
+    panic!("get_queues never completed");
+}
+
+/// A `stop` dropped at any await point must keep exactly what it has not yet
+/// torn down, and the next `stop` must finish the teardown.
+#[async_test]
+async fn cancelled_stop_keeps_and_frees_its_resources(driver: DefaultDriver) {
+    let mut saw_partial = false;
+    for steps in 1..MAX_CANCEL_STEPS {
+        let TestEndpoint {
+            mut endpoint,
+            mem: _mem,
+            mana: _mana,
+        } = new_test_endpoint(&driver, "cancelled stop").await;
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(one_queue_config(&driver), None, &mut queues)
+            .await
+            .unwrap();
+        queues.clear();
+        let total = endpoint.arena.len();
+        let mut completed = false;
+        {
+            let mut fut = pin!(endpoint.stop());
+            for _ in 0..steps {
+                if poll_step(fut.as_mut()).await.is_some() {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+        // Teardown pops each resource only once it is gone, so some cancel
+        // point must leave part of the arena. A teardown that took the whole
+        // arena up front would leave all of it or none.
+        let left = endpoint.arena.len();
+        saw_partial |= left > 0 && left < total;
+        endpoint.stop().await;
+        assert!(endpoint.arena.is_empty(), "cancelled after {steps} steps");
+        if completed {
+            assert!(
+                saw_partial,
+                "no cancel point left part of the resources with the endpoint"
+            );
+            return;
+        }
+    }
+    panic!("stop never completed");
 }
 
 #[async_test]

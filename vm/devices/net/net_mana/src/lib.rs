@@ -61,6 +61,7 @@ use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend::VlanMetadata;
 use pal_async::task::Spawn;
+use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -102,11 +103,31 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     vport: Arc<Vport<T>>,
     queues: Vec<QueueResources>,
     arena: ResourceArena,
+    /// Resources a cancelled `get_queues` allocated, destroyed by the next
+    /// `get_queues` or `stop`.
+    orphans: Arc<Mutex<ResourceArena>>,
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
     bounce_buffer: bool,
     #[cfg(test)]
     test_configuration: ManaTestConfiguration,
+}
+
+/// The resources a `get_queues` call has allocated so far.
+///
+/// If the call is dropped before it hands them to the endpoint, they move to
+/// `orphans` instead of leaking.
+struct PendingArena {
+    arena: ResourceArena,
+    orphans: Arc<Mutex<ResourceArena>>,
+}
+
+impl Drop for PendingArena {
+    fn drop(&mut self) {
+        if !self.arena.is_empty() {
+            self.orphans.lock().append(&mut self.arena);
+        }
+    }
 }
 
 struct QueueResources {
@@ -134,6 +155,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             vport: Arc::new(vport),
             queues: Vec::new(),
             arena: ResourceArena::new(),
+            orphans: Arc::new(Mutex::new(ResourceArena::new())),
             receive_update: endpoint_rx,
             queue_tracker: Arc::new((AtomicUsize::new(0), SlimEvent::new())),
             bounce_buffer: match dma_mode {
@@ -469,15 +491,25 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
-        assert!(self.arena.is_empty());
-        let mut arena = ResourceArena::new();
-        match self.get_queues_inner(&mut arena, config, rss, queues).await {
+        // A cancelled `get_queues` or `stop` leaves resources behind; finish
+        // tearing them down before allocating new ones.
+        if !self.arena.is_empty() || !self.orphans.lock().is_empty() {
+            self.stop().await;
+        }
+        let mut pending = PendingArena {
+            arena: ResourceArena::new(),
+            orphans: self.orphans.clone(),
+        };
+        match self
+            .get_queues_inner(&mut pending.arena, config, rss, queues)
+            .await
+        {
             Ok(()) => {
-                self.arena = arena;
+                self.arena.append(&mut pending.arena);
                 Ok(())
             }
             Err(err) => {
-                self.vport.destroy(arena).await;
+                self.vport.destroy_in_place(&mut pending.arena).await;
                 Err(err)
             }
         }
@@ -506,8 +538,10 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         }
 
         self.queues.clear();
+        let mut orphans = std::mem::take(&mut *self.orphans.lock());
+        self.arena.append(&mut orphans);
         self.vport
-            .destroy(std::mem::take(&mut self.arena))
+            .destroy_in_place(&mut self.arena)
             .instrument(tracing::info_span!(
                 "destroying vport resources",
                 vport_id = self.vport.id()

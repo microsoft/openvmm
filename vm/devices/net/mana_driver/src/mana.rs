@@ -593,6 +593,15 @@ impl<T: DeviceBacking> Vport<T> {
         arena.destroy(&mut *gdma).await;
     }
 
+    /// Destroys resources in `arena`, leaving it empty.
+    ///
+    /// If this future is dropped partway, `arena` keeps the resources not yet
+    /// destroyed, so a later call can finish.
+    pub async fn destroy_in_place(&self, arena: &mut ResourceArena) {
+        let mut gdma = self.inner.gdma.lock().await;
+        arena.destroy_in_place(&mut *gdma).await;
+    }
+
     /// Changes the target CPU for the given eq to `cpu`.
     pub async fn retarget_interrupt(
         &self,
