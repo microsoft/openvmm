@@ -25,15 +25,19 @@ paste.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 sha2.workspace = true
+tempfile.workspace = true
 target-lexicon = { workspace = true, features = ["serde_support"] }
 toml_edit.workspace = true
 which.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 crossterm = { workspace = true, features = ["windows"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rpm = { workspace = true, features = ["payload", "zstd-compression"] }
 
 [lints]
 workspace = true

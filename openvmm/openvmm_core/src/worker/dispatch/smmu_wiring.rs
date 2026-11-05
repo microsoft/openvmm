@@ -281,6 +281,7 @@ mod tests {
                 segment: index as u16,
                 start_bus: 0,
                 end_bus: 255,
+                legacy_pci_config_io: false,
                 low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
                 high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
                 ports: Vec::new(),
