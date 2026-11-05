@@ -480,7 +480,7 @@ async fn test_tcp_port_forward_reclaims_time_wait(driver: DefaultDriver) {
         &mut h.consomme.tcp,
         10000,
         TcpState::TimeWait,
-        LifetimeTimer::Close(Instant::now() + Duration::from_secs(60)),
+        LifetimeTimer::Close(Instant::now() + Duration::from_mins(1)),
     );
 
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).unwrap();

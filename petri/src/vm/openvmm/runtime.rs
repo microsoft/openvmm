@@ -16,6 +16,7 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use framebuffer::View;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -290,6 +291,12 @@ impl PetriVmOpenVmm {
         pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Inject an ACPI power-button event without waiting for guest shutdown.
+        ///
+        /// Requires direct ACPI, UEFI, or PCAT boot and a guest power-button handler.
+        pub async fn send_acpi_shutdown(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
         /// Waits for the KVP IC to be ready, returning a sender that can be used
         /// to send requests to it.
         pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
@@ -501,6 +508,18 @@ impl PetriVmInner {
             "Got non-Ok shutdown response"
         );
 
+        Ok(())
+    }
+
+    async fn send_acpi_shutdown(&mut self) -> anyhow::Result<()> {
+        self.resources
+            .acpi_power_button_send
+            .as_ref()
+            .context("ACPI shutdown requires direct ACPI, UEFI, or PCAT boot")?
+            .call(PowerButtonRpc::Press, ())
+            .await
+            .context("failed to inject ACPI power-button event")?;
+        tracing::info!("ACPI power-button event injected");
         Ok(())
     }
 

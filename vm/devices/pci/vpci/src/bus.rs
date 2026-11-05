@@ -503,16 +503,20 @@ impl<'a> PciBusCfgAccessCallbackView<'a> {
 
 impl<'a> PciBusCfgAccessCallbacks for PciBusCfgAccessCallbackView<'a> {
     fn read(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordRead<'_>) -> IoResult {
-        self.device
-            .lock()
+        let Some(mut device) = self.device.lock_if_open() else {
+            return IoResult::Err(IoError::NoResponse);
+        };
+        device
             .supports_pci()
             .unwrap()
             .pci_cfg_read(addr.byte_offset(), value)
     }
 
     fn write(&mut self, addr: PciConfigAddress, value: ByteEnabledDwordWrite) -> IoResult {
-        self.device
-            .lock()
+        let Some(mut device) = self.device.lock_if_open() else {
+            return IoResult::Err(IoError::NoResponse);
+        };
+        device
             .supports_pci()
             .unwrap()
             .pci_cfg_write(addr.byte_offset(), value)
@@ -544,6 +548,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
+    use test_with_tracing::test;
     use vmcore::vpci_msi::VpciInterruptMapper;
 
     const BASE_ADDR: u64 = 0x1000_0000;
@@ -639,6 +644,63 @@ mod tests {
             self.device.lock().poll_device(&mut cx);
             self.bus.lock().poll_device(&mut cx);
         }
+    }
+
+    #[test]
+    fn config_access_to_removed_device_returns_no_response() {
+        let rig = VpciTestRig::new();
+        let closed = rig.device.clone().close_permanently();
+        let mut data = [0; 4];
+        assert!(matches!(
+            rig.bus
+                .lock()
+                .mmio_read(VpciTestRig::config_addr(0), &mut data),
+            IoResult::Err(IoError::NoResponse)
+        ));
+        drop(closed);
+        assert!(matches!(
+            rig.bus
+                .lock()
+                .mmio_write(VpciTestRig::config_addr(0), &[0; 4]),
+            IoResult::Err(IoError::NoResponse)
+        ));
+    }
+
+    #[test]
+    fn pending_config_accesses_finish_when_bus_payload_is_removed() {
+        let rig = VpciTestRig::new();
+        rig.device.lock().start_deferring_reads(0x1234_5678);
+        rig.device.lock().start_deferring();
+        let mut data = [0; 4];
+        let IoResult::Defer(mut read) = rig
+            .bus
+            .lock()
+            .mmio_read(VpciTestRig::config_addr(4), &mut data)
+        else {
+            panic!("config read must defer");
+        };
+        let IoResult::Defer(mut write) = rig
+            .bus
+            .lock()
+            .mmio_write(VpciTestRig::config_addr(8), &[0; 4])
+        else {
+            panic!("config write must defer");
+        };
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(read.poll_read(&mut cx, &mut data).is_pending());
+        assert!(write.poll_write(&mut cx).is_pending());
+
+        drop(rig.bus.clone().close_permanently().take());
+
+        assert!(rig.bus.lock_if_open().is_none());
+        assert!(matches!(
+            read.poll_read(&mut cx, &mut data),
+            Poll::Ready(Err(IoError::NoResponse))
+        ));
+        assert!(matches!(
+            write.poll_write(&mut cx),
+            Poll::Ready(Err(IoError::NoResponse))
+        ));
     }
 
     impl InspectMut for DeferWriteDevice {

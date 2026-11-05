@@ -2504,7 +2504,7 @@ impl std::fmt::Debug for NodeHandle {
 }
 
 impl NodeHandle {
-    pub fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
+    pub const fn from_type<N: FlowNodeBase + 'static>() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<N>())
     }
 
@@ -2533,7 +2533,7 @@ impl NodeHandle {
 
     /// Return a dummy NodeHandle, which will panic if `new_erased_node` is ever
     /// called on it.
-    pub fn dummy() -> NodeHandle {
+    pub const fn dummy() -> NodeHandle {
         NodeHandle(std::any::TypeId::of::<()>())
     }
 }

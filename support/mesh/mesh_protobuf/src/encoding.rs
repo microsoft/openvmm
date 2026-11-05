@@ -11,7 +11,6 @@ use super::DefaultEncoding;
 use super::FieldDecode;
 use super::FieldEncode;
 use super::InplaceOption;
-use super::MaybeUninit;
 use super::MessageDecode;
 use super::MessageEncode;
 use super::PackedDecode;
@@ -257,7 +256,7 @@ impl FromNumber for char {
     fn from_u64(v: u64) -> Result<Self> {
         v.try_into()
             .ok()
-            .and_then(core::char::from_u32)
+            .and_then(char::from_u32)
             .ok_or_else(|| DecodeError::InvalidUtf32.into())
     }
 
@@ -1163,12 +1162,11 @@ impl<'a, T, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Vec<T>, R> for VecField
 
         // Construct the element in the vector in place.
         vec.reserve(1);
-        // SAFETY: at least one value is allocated beyond len() due to the
-        // reserve above and is safe to initialize.
-        let v = unsafe { &mut *vec.as_mut_ptr().add(vec.len()).cast::<MaybeUninit<T>>() };
-        let mut v = InplaceOption::uninit(v);
-        E::read_field_in_sequence(&mut v, reader)?;
-        assert!(v.forget(), "value should be constructed");
+        {
+            let mut v = InplaceOption::uninit(&mut vec.spare_capacity_mut()[0]);
+            E::read_field_in_sequence(&mut v, reader)?;
+            assert!(v.forget(), "value should be constructed");
+        }
         // SAFETY: the element at vec.len() is now initialized.
         unsafe {
             vec.set_len(vec.len() + 1);

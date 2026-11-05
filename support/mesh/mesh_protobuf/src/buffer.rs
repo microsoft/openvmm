@@ -114,15 +114,7 @@ impl Buf<'_> {
     /// data does not fit.
     #[inline(always)]
     pub fn append(&mut self, buf: &[u8]) {
-        assert!(buf.len() <= self.remaining());
-        // SAFETY: copying into self.buf with bounds checked above.
-        unsafe {
-            self.buf
-                .as_mut_ptr()
-                .add(*self.filled)
-                .cast::<u8>()
-                .copy_from_nonoverlapping(buf.as_ptr(), buf.len());
-        }
+        self.buf[*self.filled..][..buf.len()].write_copy_of_slice(buf);
         *self.filled += buf.len();
     }
 
@@ -210,8 +202,12 @@ mod tests {
         v.reserve(3);
 
         write_with(&mut v, |mut buf| {
+            buf.append(&[]);
+            assert_eq!(buf.len(), 0);
             buf.append(&[5, 6]);
             buf.push(7);
+            buf.append(&[]);
+            assert_eq!(buf.len(), 3);
         });
         assert_eq!(&v, &[1, 2, 3, 4, 5, 6, 7]);
     }
@@ -230,10 +226,13 @@ mod tests {
         // Second write: must continue at position 3, not overwrite from 0.
         write_with(&mut cursor, |mut buf| {
             buf.append(&[4, 5]);
+            buf.append(&[6, 7, 8]);
+            assert_eq!(buf.remaining(), 0);
+            buf.append(&[]);
         });
 
-        assert_eq!(cursor.position(), 5);
-        assert_eq!(&backing[..5], &[1, 2, 3, 4, 5]);
+        assert_eq!(cursor.position(), 8);
+        assert_eq!(backing, [1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
     #[test]
@@ -244,8 +243,11 @@ mod tests {
         cursor.set_position(100); // way past the end
 
         // Should get an empty unwritten region, not panic.
-        write_with(&mut cursor, |buf| {
+        write_with(&mut cursor, |mut buf| {
             assert_eq!(buf.remaining(), 0);
+            buf.append(&[]);
         });
+        assert_eq!(cursor.position(), 100);
+        assert_eq!(backing, [0; 4]);
     }
 }
