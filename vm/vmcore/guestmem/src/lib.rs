@@ -3140,3 +3140,168 @@ mod tests {
         assert!(!gm.supports_kernel_lock());
     }
 }
+
+#[cfg(test)]
+mod lock_mode_tests {
+    use super::*;
+    use sparse_mmap::SparseMapping;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+    use test_with_tracing::test;
+
+    struct LockMapping {
+        mapping: SparseMapping,
+        user_lockable: bool,
+        kernel_lockable: bool,
+        user_locks: AtomicUsize,
+        kernel_locks: AtomicUsize,
+        exposures: AtomicUsize,
+        unlocks: AtomicUsize,
+    }
+
+    impl LockMapping {
+        fn new(user_lockable: bool, kernel_lockable: bool) -> Self {
+            let mapping = SparseMapping::new(PAGE_SIZE).unwrap();
+            mapping.alloc(0, PAGE_SIZE).unwrap();
+            Self {
+                mapping,
+                user_lockable,
+                kernel_lockable,
+                user_locks: AtomicUsize::new(0),
+                kernel_locks: AtomicUsize::new(0),
+                exposures: AtomicUsize::new(0),
+                unlocks: AtomicUsize::new(0),
+            }
+        }
+
+        fn counts(&self) -> [usize; 4] {
+            [
+                self.user_locks.load(Ordering::Relaxed),
+                self.kernel_locks.load(Ordering::Relaxed),
+                self.exposures.load(Ordering::Relaxed),
+                self.unlocks.load(Ordering::Relaxed),
+            ]
+        }
+    }
+
+    // SAFETY: the mapping remains allocated for the full reported range.
+    unsafe impl GuestMemoryAccess for LockMapping {
+        fn mapping(&self) -> Option<NonNull<u8>> {
+            NonNull::new(self.mapping.as_ptr().cast())
+        }
+
+        fn max_address(&self) -> u64 {
+            PAGE_SIZE64
+        }
+
+        fn supports_user_lock(&self) -> bool {
+            self.user_lockable
+        }
+
+        fn supports_kernel_lock(&self) -> bool {
+            self.kernel_lockable
+        }
+
+        fn lock_user_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.user_locks.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn lock_kernel_gpns(&self, _gpns: &[u64]) -> Result<bool, GuestMemoryBackingError> {
+            self.kernel_locks.fetch_add(1, Ordering::Relaxed);
+            Ok(true)
+        }
+
+        fn expose_va(&self, _address: u64, _len: u64) -> Result<(), GuestMemoryBackingError> {
+            self.exposures.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn unlock_gpns(&self, _gpns: &[u64]) {
+            self.unlocks.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn check_lock_modes(memory: &GuestMemory, backings: &[Arc<LockMapping>], gpns: &[u64]) {
+        let user_lockable = backings.iter().all(|backing| backing.user_lockable);
+        let kernel_lockable = backings.iter().all(|backing| backing.kernel_lockable);
+        assert_eq!(memory.supports_user_lock(), user_lockable);
+        assert_eq!(memory.supports_kernel_lock(), kernel_lockable);
+
+        for access in [AccessType::Read, AccessType::Write] {
+            for kernel in [false, true] {
+                let before: Vec<_> = backings.iter().map(|backing| backing.counts()).collect();
+                let supported = if kernel {
+                    kernel_lockable
+                } else {
+                    user_lockable
+                };
+                let result = if kernel {
+                    memory.lock_kernel_gpns(access, gpns).map(drop)
+                } else {
+                    memory.lock_user_gpns(access, gpns).map(drop)
+                };
+                assert_eq!(result.is_ok(), supported, "{access:?}, kernel={kernel}");
+                for (backing, [user, kernel_count, exposures, unlocks]) in
+                    backings.iter().zip(before)
+                {
+                    assert_eq!(
+                        backing.counts(),
+                        [
+                            user + usize::from(supported && !kernel),
+                            kernel_count + usize::from(supported && kernel),
+                            exposures + usize::from(supported && kernel),
+                            unlocks + usize::from(supported),
+                        ],
+                        "{access:?}, kernel={kernel}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn arc_preserves_independent_lock_modes() {
+        for user in [false, true] {
+            for kernel in [false, true] {
+                let backing = Arc::new(LockMapping::new(user, kernel));
+                let memory = GuestMemory::new("lock-modes", backing.clone());
+                check_lock_modes(&memory, &[backing], &[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn subranges_preserve_independent_lock_modes() {
+        for user in [false, true] {
+            for kernel in [false, true] {
+                let backing = Arc::new(LockMapping::new(user, kernel));
+                let memory = GuestMemory::new("subrange-lock-modes", backing.clone());
+                let range = memory.subrange(0, PAGE_SIZE64, false).unwrap();
+                check_lock_modes(&range, std::slice::from_ref(&backing), &[0]);
+                let nested = range.subrange(0, PAGE_SIZE64, false).unwrap();
+                check_lock_modes(&nested, &[backing], &[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn multi_region_aggregates_lock_modes_independently() {
+        let modes = [(false, false), (true, false), (false, true), (true, true)];
+        for (first_user, first_kernel) in modes {
+            for (second_user, second_kernel) in modes {
+                let backings = [
+                    Arc::new(LockMapping::new(first_user, first_kernel)),
+                    Arc::new(LockMapping::new(second_user, second_kernel)),
+                ];
+                let memory = GuestMemory::new_multi_region(
+                    "multi-lock-modes",
+                    PAGE_SIZE64 * 2,
+                    backings.iter().cloned().map(Some).collect(),
+                )
+                .unwrap();
+                check_lock_modes(&memory, &backings, &[0, 2]);
+            }
+        }
+    }
+}
