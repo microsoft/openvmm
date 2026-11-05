@@ -1145,9 +1145,13 @@ impl AmdIommuDevice {
     }
 
     /// Write a 64-bit MMIO register. Returns true if the write was handled.
+    ///
+    /// Stopped command and event buffers can be reprogrammed while IOMMU
+    /// translation remains enabled.
     fn write_register(&mut self, offset: u64, value: u64) {
         let mut state = self.shared.state.write();
         let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
+        let status = IommuStatus::from_bits(state.iommu_status);
 
         tracing::trace!(offset, value, "mmio_write");
 
@@ -1164,20 +1168,20 @@ impl AmdIommuDevice {
                 }
             }
             MmioRegister::CMD_BUF_BASE => {
-                if !ctrl.iommu_en() {
+                if !status.cmd_buf_run() {
                     state.cmd_buf_base = value;
                 } else {
                     tracelimit::warn_ratelimited!(
-                        "write to CmdBufBase while IOMMU enabled, ignored"
+                        "write to CmdBufBase while command buffer running, ignored"
                     );
                 }
             }
             MmioRegister::EVT_LOG_BASE => {
-                if !ctrl.iommu_en() {
+                if !status.evt_log_run() {
                     state.evt_log_base = value;
                 } else {
                     tracelimit::warn_ratelimited!(
-                        "write to EvtLogBase while IOMMU enabled, ignored"
+                        "write to EvtLogBase while event log running, ignored"
                     );
                 }
             }
@@ -1202,7 +1206,7 @@ impl AmdIommuDevice {
                 // Read-only registers, ignore writes.
             }
             MmioRegister::CMD_BUF_HEAD => {
-                if !ctrl.iommu_en() {
+                if !status.cmd_buf_run() {
                     state.cmd_buf_head = value;
                 }
             }
@@ -1214,7 +1218,7 @@ impl AmdIommuDevice {
                 state.evt_log_head = value;
             }
             MmioRegister::EVT_LOG_TAIL => {
-                if !ctrl.iommu_en() {
+                if !status.evt_log_run() {
                     state.evt_log_tail = value;
                 }
             }
@@ -2428,6 +2432,149 @@ mod tests {
     fn poke_tail(dev: &mut AmdIommuDevice, entry_index: u64) {
         let tail = CmdBufTail::new().with_tail_ptr(entry_index as u32);
         mmio_write64(dev, MmioRegister::CMD_BUF_TAIL.0 as u64, tail.into_bits());
+    }
+
+    #[test]
+    fn test_cmdbuf_relocation_while_iommu_enabled() {
+        let mut dev = create_test_device_with_memory();
+        setup_iommu_enabled(&mut dev);
+        write_cmd(&dev, 0, &completion_wait_store(0x2000, 0x1111));
+        poke_tail(&mut dev, 1);
+        dev.shared.guest_memory.write_plain(0x2000, &0u64).unwrap();
+
+        let mut ctrl =
+            IommuCtrl::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_CTRL.0 as u64));
+        ctrl.set_cmd_buf_en(false);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+        assert!(dev.is_enabled());
+        let status =
+            IommuStatus::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_STATUS.0 as u64));
+        assert!(!status.cmd_buf_run());
+        assert!(status.evt_log_run());
+
+        let new_base = CmdBufBase::new()
+            .with_base_addr(0x3000 >> 12)
+            .with_length(8)
+            .into_bits();
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64, new_base);
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64),
+            new_base
+        );
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64, 0);
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_TAIL.0 as u64, 0);
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64),
+            0
+        );
+        dev.shared
+            .guest_memory
+            .write_plain(0x3000, &completion_wait_store(0x2008, 0x2222))
+            .unwrap();
+
+        ctrl.set_cmd_buf_en(true);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+        poke_tail(&mut dev, 1);
+        assert_eq!(
+            dev.shared.guest_memory.read_plain::<u64>(0x2008).unwrap(),
+            0x2222
+        );
+        assert_eq!(
+            dev.shared.guest_memory.read_plain::<u64>(0x2000).unwrap(),
+            0,
+            "commands from the old buffer must not be replayed"
+        );
+    }
+
+    #[test]
+    fn test_buffer_registers_locked_only_while_buffer_running() {
+        let mut dev = create_test_device_with_memory();
+        setup_iommu_enabled(&mut dev);
+        let old_cmd_base = mmio_read64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64);
+        let old_evt_base = mmio_read64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64);
+        let new_cmd_base = CmdBufBase::new()
+            .with_base_addr(0x3000 >> 12)
+            .with_length(8)
+            .into_bits();
+        let new_evt_base = EvtLogBase::new()
+            .with_base_addr(0x4000 >> 12)
+            .with_length(8)
+            .into_bits();
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64, new_cmd_base);
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64, new_evt_base);
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64, 0x10);
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64, 0x10);
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64),
+            old_cmd_base
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64),
+            old_evt_base
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64),
+            0
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64),
+            0
+        );
+
+        let mut ctrl =
+            IommuCtrl::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_CTRL.0 as u64));
+        ctrl.set_cmd_buf_en(false);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64, new_cmd_base);
+        mmio_write64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64, 0x10);
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64, new_evt_base);
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64, 0x10);
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64),
+            new_cmd_base
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64),
+            0x10
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64),
+            old_evt_base
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64),
+            0
+        );
+
+        ctrl.set_evt_log_en(false);
+        mmio_write64(
+            &mut dev,
+            MmioRegister::IOMMU_CTRL.0 as u64,
+            ctrl.into_bits(),
+        );
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64, new_evt_base);
+        mmio_write64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64, 0x10);
+        assert!(dev.is_enabled());
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_BASE.0 as u64),
+            new_evt_base
+        );
+        assert_eq!(
+            mmio_read64(&mut dev, MmioRegister::EVT_LOG_TAIL.0 as u64),
+            0x10
+        );
     }
 
     #[test]
