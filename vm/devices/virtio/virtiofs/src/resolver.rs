@@ -292,4 +292,67 @@ mod tests {
             "section fs not supported on this platform"
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn open_fs_uses_user_token() {
+        use crate::integration_tests::user_token::restricted_token;
+        use crate::integration_tests::user_token::thread_token;
+        use pal::windows::security::LocalSecurityDescriptor;
+        use pal::windows::security::create_directory_with_security;
+        use virtio_resources::fs::VirtioFsWindowsOptions;
+        use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
+
+        fn assert_no_thread_token() {
+            assert_eq!(
+                thread_token().unwrap_err().raw_os_error(),
+                Some(ERROR_NO_TOKEN as i32)
+            );
+        }
+
+        fn open(root: &std::path::Path, user_token: bool) -> anyhow::Result<()> {
+            let mut resource = host_fs("tag", root.to_str().unwrap(), "");
+            let VirtioFsBackend::HostFs {
+                windows_options, ..
+            } = &mut resource.fs
+            else {
+                unreachable!();
+            };
+            *windows_options = Some(VirtioFsWindowsOptions {
+                user_token: user_token.then(restricted_token),
+            });
+            let parsed = ParsedVirtioFs::parse(resource)?;
+            let ParsedVirtioFsBackend::HostFs {
+                root_path,
+                mount_options,
+                platform,
+            } = parsed.backend
+            else {
+                panic!("expected host filesystem backend");
+            };
+            platform.open_fs(&root_path, &mount_options)?;
+            Ok(())
+        }
+
+        // The restricted token passes an access check only if it is granted
+        // to Everyone, so it can open `public` but not `private`, which this
+        // process can open.
+        let dir = tempfile::tempdir().unwrap();
+        let public = dir.path().join("public");
+        let private = dir.path().join("private");
+        for (path, sddl) in [
+            (&public, "D:P(A;OICI;FA;;;WD)"),
+            (&private, "D:P(A;OICI;FA;;;AU)"),
+        ] {
+            let sd: LocalSecurityDescriptor = sddl.parse().unwrap();
+            create_directory_with_security(path, &sd).unwrap();
+        }
+
+        open(&private, false).unwrap();
+        assert_no_thread_token();
+        open(&public, true).unwrap();
+        assert_no_thread_token();
+        open(&private, true).unwrap_err();
+        assert_no_thread_token();
+    }
 }

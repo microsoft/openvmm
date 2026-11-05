@@ -964,7 +964,7 @@ fn stale_directory_paths_do_not_follow_native_links() {
 
 /// Tests for serving a file system under a user token on Windows.
 #[cfg(windows)]
-mod user_token {
+pub(crate) mod user_token {
     // UNSAFETY: Calling Win32 APIs and constructing owned handles from their
     // outputs.
     #![expect(unsafe_code)]
@@ -1001,7 +1001,7 @@ mod user_token {
         duplicate_impersonation_token(token.as_handle()).unwrap()
     }
 
-    fn thread_token() -> io::Result<OwnedHandle> {
+    pub(crate) fn thread_token() -> io::Result<OwnedHandle> {
         let mut token = ptr::null_mut();
         // SAFETY: Calling Win32 API as documented.
         unsafe {
@@ -1031,7 +1031,9 @@ mod user_token {
         assert_eq!(err.raw_os_error(), Some(ERROR_NO_TOKEN as i32));
     }
 
-    fn restricted_token() -> OwnedHandle {
+    /// Returns an impersonation token for this process restricted to the
+    /// Everyone SID.
+    pub(crate) fn restricted_token() -> OwnedHandle {
         let token = process_token();
         let mut world_sid = [0u32; Security::SECURITY_MAX_SID_SIZE as usize / size_of::<u32>()];
         let mut sid_size = size_of_val(&world_sid) as u32;
@@ -1169,5 +1171,38 @@ mod user_token {
             );
         }
         assert_eq!(calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn session_dispatch_fails_closed_when_impersonation_fails() {
+        // A non-token handle makes impersonation fail.
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let session = VirtioFsSession::new(TokenCheckingFs {
+            token_id: (0, 0),
+            calls: calls.clone(),
+        })
+        .with_user_token(Some(file.into()));
+        let getattr = fuse_getattr_in::new_zeroed();
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of_val(&getattr)) as u32,
+            opcode: FUSE_GETATTR,
+            unique: 7,
+            nodeid: 1,
+            ..FromZeros::new_zeroed()
+        };
+        let mut request = header.as_bytes().to_vec();
+        request.extend_from_slice(getattr.as_bytes());
+        let mut sender = TestSender::default();
+        session.dispatch(Request::new(request.as_slice()).unwrap(), &mut sender, None);
+
+        let (reply, _) = fuse_out_header::read_from_prefix(&sender.0).unwrap();
+        assert_eq!(reply.unique, 7);
+        assert_eq!(reply.error, -lx::Error::EIO.value());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            thread_token().unwrap_err().raw_os_error(),
+            Some(ERROR_NO_TOKEN as i32)
+        );
     }
 }
