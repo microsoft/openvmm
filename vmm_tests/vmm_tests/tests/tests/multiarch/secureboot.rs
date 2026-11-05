@@ -332,7 +332,7 @@ async fn custom_uefi_append_sha256_dbx<T: PetriVmmBackend>(
     assert!(
         output
             .stdout
-            .windows(APPENDED_DBX_SHA256.len())
+            .array_windows::<{ APPENDED_DBX_SHA256.len() }>()
             .any(|bytes| bytes == APPENDED_DBX_SHA256),
         "appended SHA-256 digest should be present in dbx"
     );

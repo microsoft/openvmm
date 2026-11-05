@@ -58,13 +58,8 @@ impl X509CertificateInner {
         let spki = self.0.tbs_certificate().subject_public_key_info();
 
         if spki.algorithm.oid == pkcs1::ALGORITHM_OID {
-            let key = pkcs1::RsaPublicKey::from_der(spki.subject_public_key.raw_bytes())
-                .map_err(|e| der_err(e, "parsing the PKCS#1 RSA public key"))?;
-            let rsa = crate::rsa::RsaPublicKey::from_components(
-                key.modulus.as_bytes(),
-                key.public_exponent.as_bytes(),
-            )
-            .map_err(rsa_to_x509)?;
+            let rsa = crate::rsa::RsaPublicKey::from_pkcs1_der(spki.subject_public_key.raw_bytes())
+                .map_err(rsa_to_x509)?;
             return Ok(X509PublicKey::Rsa(rsa));
         }
 
