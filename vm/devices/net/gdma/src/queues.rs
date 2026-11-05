@@ -421,13 +421,22 @@ impl Queues {
 
     /// Frees all queues.
     pub fn reset(&self) {
-        for wq in self.sqs.iter().chain(&self.rqs) {
+        let Self {
+            gm: _,
+            driver: _,
+            sqs,
+            rqs,
+            cqs,
+            eqs,
+            msis: _,
+        } = self;
+        for wq in sqs.iter().chain(rqs) {
             *wq.lock() = None;
         }
-        for cq in &self.cqs {
+        for cq in cqs {
             *cq.lock() = None;
         }
-        for eq in &self.eqs {
+        for eq in eqs {
             *eq.lock() = None;
         }
     }

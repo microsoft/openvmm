@@ -188,6 +188,8 @@ impl InspectMut for BasicNic {
 struct Vport {
     mac_address: MacAddress,
     endpoint: Box<dyn Endpoint>,
+    /// The endpoint has handed out queues that `stop` has not taken back yet.
+    endpoint_has_queues: bool,
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
     serial_no: u32,
@@ -207,10 +209,17 @@ impl InspectMut for Vport {
 }
 
 impl Vport {
+    /// Stops the data path. Each step is undone only after it completes, so a
+    /// call cancelled partway is finished by the next one.
     async fn stop_data_path(&mut self) {
-        self.task.stop().await;
-        self.task.remove();
-        self.endpoint.stop().await;
+        if self.task.has_state() {
+            self.task.stop().await;
+            self.task.remove();
+        }
+        if self.endpoint_has_queues {
+            self.endpoint.stop().await;
+            self.endpoint_has_queues = false;
+        }
     }
 }
 
@@ -234,6 +243,7 @@ impl BasicNic {
                     Vport {
                         mac_address,
                         endpoint,
+                        endpoint_has_queues: false,
                         task: TaskControl::new(TxRxState),
                         queue_cfg: QueueCfg { tx: None, rx: None },
                         serial_no: 0,
@@ -247,12 +257,19 @@ impl BasicNic {
 
     /// Stops the data path of each vport and forgets its queues.
     pub async fn reset(&mut self) {
-        for vport in &mut self.vports {
-            if vport.task.is_running() {
-                vport.stop_data_path().await;
-            }
-            vport.queue_cfg = QueueCfg { tx: None, rx: None };
-            vport.serial_no = 0;
+        let Self { vports, config: _ } = self;
+        for vport in vports {
+            vport.stop_data_path().await;
+            let Vport {
+                mac_address: _,
+                endpoint: _,
+                endpoint_has_queues: _,
+                task: _,
+                queue_cfg,
+                serial_no,
+            } = vport;
+            *queue_cfg = QueueCfg { tx: None, rx: None };
+            *serial_no = 0;
         }
     }
 
@@ -396,13 +413,15 @@ impl BasicNic {
                     .context("invalid vport")?;
 
                 match req.rx_enable {
-                    Tristate::FALSE if vport.task.is_running() => {
+                    Tristate::FALSE => {
                         vport.stop_data_path().await;
                     }
                     Tristate::TRUE if !vport.task.is_running() => {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
                             (vport.queue_cfg.tx, vport.queue_cfg.rx)
                         {
+                            // Finishes a disable that was cancelled partway.
+                            vport.stop_data_path().await;
                             let mut queues = vec![];
                             vport
                                 .endpoint
@@ -415,6 +434,7 @@ impl BasicNic {
                                     &mut queues,
                                 )
                                 .await?;
+                            vport.endpoint_has_queues = true;
 
                             vport.task.insert(
                                 &state.queues.driver,
@@ -1068,12 +1088,61 @@ mod reset_tests {
     use pal_async::async_test;
     use pci_core::capabilities::msix::MsixEmulator;
     use pci_core::msi::MsiTarget;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 
-    #[async_test]
-    async fn device_reset_stops_the_data_path(driver: DefaultDriver) {
+    /// A null endpoint whose first `stop` never finishes. Counts the stops begun and finished.
+    struct HangsFirstStop {
+        inner: NullEndpoint,
+        hang: bool,
+        entered: Arc<AtomicUsize>,
+        stopped: Arc<AtomicUsize>,
+    }
+
+    impl InspectMut for HangsFirstStop {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Endpoint for HangsFirstStop {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        async fn get_queues(
+            &mut self,
+            config: Vec<QueueConfig>,
+            rss: Option<&net_backend::RssConfig<'_>>,
+            queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            self.inner.get_queues(config, rss, queues).await
+        }
+
+        async fn stop(&mut self) {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            if std::mem::take(&mut self.hang) {
+                std::future::pending::<()>().await;
+            }
+            self.inner.stop().await;
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn is_ordered(&self) -> bool {
+            true
+        }
+    }
+
+    /// A device whose only vport has a running data path on `endpoint`.
+    async fn device_with_data_path(
+        driver: DefaultDriver,
+        endpoint: Box<dyn Endpoint>,
+    ) -> crate::GdmaDevice {
         let gm = GuestMemory::allocate(0x1000);
         let (msix, _capability) = MsixEmulator::new(4, 64, &MsiTarget::disconnected());
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -1083,7 +1152,7 @@ mod reset_tests {
             &MsiTarget::disconnected(),
             vec![VportConfig {
                 mac_address: [0, 1, 2, 3, 4, 5].into(),
-                endpoint: Box::new(NullEndpoint::new()),
+                endpoint,
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
@@ -1101,6 +1170,7 @@ mod reset_tests {
             )
             .await
             .unwrap();
+        vport.endpoint_has_queues = true;
         vport.task.insert(
             driver_source.simple(),
             "gdma-bnic",
@@ -1120,6 +1190,13 @@ mod reset_tests {
             },
         );
         vport.task.start();
+        device
+    }
+
+    #[async_test]
+    async fn device_reset_stops_the_data_path(driver: DefaultDriver) {
+        let mut device = device_with_data_path(driver, Box::new(NullEndpoint::new())).await;
+        let vport = &mut device.hwc.task_mut().bnic.vports[0];
         vport.queue_cfg.tx = Some((1, 1));
         vport.queue_cfg.rx = Some((1, 1));
         vport.serial_no = 1;
@@ -1128,8 +1205,48 @@ mod reset_tests {
 
         let vport = &device.hwc.task_mut().bnic.vports[0];
         assert!(!vport.task.has_state());
+        assert!(!vport.endpoint_has_queues);
         assert!(vport.queue_cfg.tx.is_none());
         assert!(vport.queue_cfg.rx.is_none());
         assert_eq!(vport.serial_no, 0);
+    }
+
+    /// A disable cancelled while the endpoint stops has already removed the task. The reset
+    /// still has to stop the endpoint, or its next `get_queues` finds the old queues out.
+    #[async_test]
+    async fn reset_finishes_a_cancelled_endpoint_stop(driver: DefaultDriver) {
+        let entered = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let endpoint = HangsFirstStop {
+            inner: NullEndpoint::new(),
+            hang: true,
+            entered: entered.clone(),
+            stopped: stopped.clone(),
+        };
+        let mut device = device_with_data_path(driver, Box::new(endpoint)).await;
+        {
+            // Dropping the future at the endpoint's stop is the cancellation.
+            let mut stop = std::pin::pin!(device.hwc.task_mut().bnic.vports[0].stop_data_path());
+            poll_fn(|cx| {
+                let _ = stop.as_mut().poll(cx);
+                if entered.load(Ordering::SeqCst) == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+        let vport = &device.hwc.task_mut().bnic.vports[0];
+        assert!(
+            !vport.task.has_state(),
+            "cancelled after the task was removed"
+        );
+        assert_eq!(stopped.load(Ordering::SeqCst), 0);
+
+        device.reset().await;
+
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+        assert!(!device.hwc.task_mut().bnic.vports[0].endpoint_has_queues);
     }
 }

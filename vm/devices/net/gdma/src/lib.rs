@@ -385,15 +385,25 @@ impl ChangeDeviceState for GdmaDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        self.hwc.stop().await;
-        self.hwc.task_mut().bnic.reset().await;
-        if self.hwc.has_state() {
-            self.hwc.remove();
+        let Self {
+            config,
+            msix: _,
+            regmap: _,
+            shmem,
+            destroying_hwc,
+            queues,
+            hwc,
+        } = self;
+        hwc.stop().await;
+        let Devices { bnic } = hwc.task_mut();
+        bnic.reset().await;
+        if hwc.has_state() {
+            hwc.remove();
         }
-        self.queues.reset();
-        self.shmem = Shmem(FromZeros::new_zeroed());
-        self.destroying_hwc = false;
-        self.config.reset();
+        queues.reset();
+        *shmem = Shmem(FromZeros::new_zeroed());
+        *destroying_hwc = false;
+        config.reset();
     }
 }
 
