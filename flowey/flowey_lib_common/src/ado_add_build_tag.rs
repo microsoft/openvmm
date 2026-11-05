@@ -4,11 +4,12 @@
 //! Add a single tag to the pipeline running in an ADO environment.
 //!
 //! `az` is resolved via [`install_azure_cli`](crate::install_azure_cli), which
-//! on ADO only locates an existing install, so the job fails if `az` is
-//! missing. The `azure-devops` extension is assumed to be installed.
+//! on ADO only locates an existing install, and the `azure-devops` extension
+//! via [`install_azure_cli_extension`](crate::install_azure_cli_extension).
+//! The job fails if either is unavailable.
 //!
-//! Once `az` is found, tagging is best-effort: failures are reported as ADO
-//! warnings, and the step still succeeds.
+//! Once both are available, tagging is best-effort: failures are reported as
+//! ADO warnings, and the step still succeeds.
 
 use flowey::node::prelude::*;
 
@@ -26,6 +27,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_azure_cli::Node>();
+        ctx.import::<crate::install_azure_cli_extension::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -37,6 +39,10 @@ impl SimpleFlowNode for Node {
         }
 
         let az_cli_bin = ctx.reqv(crate::install_azure_cli::Request::GetAzureCli);
+        let az_devops_installed = ctx.reqv(|done| crate::install_azure_cli_extension::Request {
+            name: "azure-devops".into(),
+            done,
+        });
         let access_token = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_ACCESS_TOKEN);
         let collection_uri = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_COLLECTION_URI);
         let project_id = ctx.get_ado_variable(AdoRuntimeVar::SYSTEM_TEAM_PROJECT_ID);
@@ -44,6 +50,7 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("add build tag", |ctx| {
             let az_cli_bin = az_cli_bin.claim(ctx);
+            az_devops_installed.claim(ctx);
             let build_tag = build_tag.claim(ctx);
             let access_token = access_token.claim(ctx);
             let collection_uri = collection_uri.claim(ctx);

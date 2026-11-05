@@ -38,6 +38,7 @@ pub mod gh_workflow_id;
 pub mod git_checkout;
 pub mod git_merge_commit;
 pub mod install_azure_cli;
+pub mod install_azure_cli_extension;
 pub mod install_cargo_hack;
 pub mod install_cargo_llvm_cov;
 pub mod install_cargo_nextest;
