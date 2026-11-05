@@ -887,6 +887,8 @@ async fn test_admin_completion_waits_for_free_cq_slot(driver: DefaultDriver) {
 #[async_test]
 async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
     let (ns_change_send, ns_change_recv) = mesh::channel();
+    let (entered_send, entered_recv) = mesh::oneshot();
+    let (release_send, release_recv) = mesh::oneshot();
     let fault_configuration = FaultConfiguration::new(CellUpdater::new(true).cell())
         .with_namespace_fault(NamespaceFaultConfig::new(ns_change_recv))
         .with_admin_queue_fault(
@@ -894,7 +896,10 @@ async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(spec::AdminOpcode::ASYNCHRONOUS_EVENT_REQUEST.0)
                     .build(),
-                AdminQueueFaultBehavior::Delay(Duration::from_millis(500)),
+                AdminQueueFaultBehavior::Hold {
+                    entered: Some(entered_send),
+                    release: Some(release_recv),
+                },
             ),
         );
 
@@ -925,11 +930,15 @@ async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
     // Completes once the AER completion has been written.
     let notified = ns_change_send.call(NamespaceChange::ChangeNotification, 1);
 
-    // Let the admin worker take the AER and enter the completion delay, then
-    // stop and restart it.
-    PolledTimer::new(&driver)
-        .sleep(Duration::from_millis(100))
-        .await;
+    // Stop and restart the admin worker while it holds the AER completion.
+    // The hold is never released, so only the stop ends it, and the restarted
+    // worker's match on the AER passes it through.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(entered_recv)
+        .await
+        .expect("the AER completion was never held")
+        .unwrap();
     assert!(!nvmec.client().remove_namespace(1).await);
 
     CancelContext::new()
@@ -943,6 +952,7 @@ async fn test_aer_survives_stop_during_completion_delay(driver: DefaultDriver) {
     assert!(cqe.status.phase());
     assert_eq!(cqe.cid, 7);
     assert_eq!(cqe.status.status(), spec::Status::SUCCESS.0);
+    drop(release_send);
 }
 
 #[async_test]
