@@ -9,6 +9,7 @@ use super::State;
 use super::StateRequest;
 use super::StateUnits;
 use super::state_change;
+use super::stop::StopResult;
 use futures::future::join_all;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -153,41 +154,8 @@ impl StateUnits {
     /// blocked or not confirmed is left in a terminal state.
     async fn stop_after_failed_start(&self, started_ids: &[u64]) -> Vec<String> {
         const OP: &str = "failed_start_rollback";
-        let mut operations = Vec::new();
-        let ready_set;
-        {
-            let mut inner = self.inner.lock();
-            let started_ids = started_ids.iter().copied().collect::<BTreeSet<_>>();
-            ready_set = inner.ready_set(None);
-            for (&id, unit) in &inner.units {
-                if !started_ids.contains(&id) {
-                    ready_set.done(id, unit.state == State::Stopped);
-                }
-            }
-            for (&id, unit) in inner
-                .units
-                .iter_mut()
-                .filter(|(id, _)| started_ids.contains(id))
-            {
-                assert_eq!(unit.state, State::Running);
-                let name = unit.name.clone();
-                let dependents = unit.dependents.iter().copied().collect::<Vec<_>>();
-                let ready_set = ready_set.clone();
-                let stop = state_change(name.clone(), unit, StateRequest::Stop, Some(()));
-                operations.push(async move {
-                    if !ready_set.wait(OP, id, &dependents).await {
-                        ready_set.done(id, false);
-                        return (name, id, None);
-                    }
-                    let result = stop.await;
-                    ready_set.done(id, matches!(&result, Ok(Some(()))));
-                    (name, id, Some(result))
-                });
-                unit.state = State::Stopping;
-            }
-        }
-
-        let results = join_all(operations).await;
+        let started_ids = started_ids.iter().copied().collect::<BTreeSet<_>>();
+        let results = self.stop_units(OP, &started_ids).await;
         let mut failures = Vec::new();
         let mut inner = self.inner.lock();
         for (name, id, result) in results {
@@ -196,16 +164,12 @@ impl StateUnits {
             };
             assert_eq!(unit.state, State::Stopping);
             match result {
-                Some(Ok(Some(()))) => unit.state = State::Stopped,
-                Some(Ok(None)) => {
-                    unit.state = State::StartUncertain;
-                    failures.push(format!("{name}: {OP} stop request was not sent"));
-                }
-                Some(Err(error)) => {
+                StopResult::Stopped => unit.state = State::Stopped,
+                StopResult::Uncertain(error) => {
                     unit.state = State::StartUncertain;
                     failures.push(format!("{name}: {OP} stop failed: {error:#}"));
                 }
-                None => {
+                StopResult::Blocked => {
                     unit.state = State::StartUncertain;
                     failures.push(format!(
                         "{name}: {OP} stop skipped because a dependent was not stopped"

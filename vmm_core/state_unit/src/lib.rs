@@ -31,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 mod start;
+mod stop;
 
 use futures::FutureExt;
 use futures::StreamExt;
