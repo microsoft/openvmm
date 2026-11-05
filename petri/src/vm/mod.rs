@@ -113,8 +113,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         nested_test: Option<NestedTestDeps>,
     ) -> Option<Self> {
         // Cross-OS nesting needs shared artifacts because the host cannot query
-        // the nested binary. Windows CI does not yet provision those artifacts.
-        // TODO: enable cross-OS nesting on Windows once provisioning is available.
+        // the nested binary.
         let different_nested_target = nested_test
             .as_ref()
             .map(|t| t.archive.target_triple().unwrap())
@@ -125,7 +124,7 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
 
         if !(T::SUPPORTS_CPU_EMULATION || arch == MachineArch::host())
             || !T::check_compat(&firmware, arch)
-            || different_nested_target && (cfg!(windows) || !T::supports_file_sharing(&firmware))
+            || different_nested_target && !T::supports_file_sharing(&firmware)
         {
             return None;
         }
