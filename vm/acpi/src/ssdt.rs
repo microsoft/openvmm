@@ -510,7 +510,7 @@ mod tests {
     }
 
     fn contains_name(bytes: &[u8], name: &[u8; 4]) -> bool {
-        bytes.windows(4).any(|w| w == name)
+        bytes.array_windows::<4>().any(|w| w == name)
     }
 
     fn contains_bytes(bytes: &[u8], needle: &[u8]) -> bool {
@@ -545,8 +545,8 @@ mod tests {
             assert!(contains_bytes(&bytes, &ecam_resource));
             assert_eq!(
                 bytes
-                    .windows(5)
-                    .filter(|w| *w == [0x8a, 0x2b, 0, 0, 0xc])
+                    .array_windows::<5>()
+                    .filter(|w| **w == [0x8a, 0x2b, 0, 0, 0xc])
                     .count(),
                 1 + usize::from(include_low) + usize::from(include_high)
             );
@@ -562,8 +562,8 @@ mod tests {
         verify_header(&bytes);
         assert!(
             bytes
-                .windows(6)
-                .any(|window| window == [8, b'_', b'C', b'C', b'A', 1,])
+                .array_windows::<6>()
+                .any(|window| window == &[8, b'_', b'C', b'C', b'A', 1,])
         );
     }
 
@@ -576,7 +576,7 @@ mod tests {
         verify_header(&bytes);
         // _PXM should NOT be present when vnode is None.
         assert!(
-            !bytes.windows(4).any(|window| window == *b"_PXM"),
+            !bytes.array_windows::<4>().any(|window| window == b"_PXM"),
             "_PXM should not be emitted when vnode is None"
         );
     }
@@ -591,8 +591,8 @@ mod tests {
         // _PXM with value 0
         assert!(
             bytes
-                .windows(6)
-                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0,])
+                .array_windows::<6>()
+                .any(|window| window == &[8, b'_', b'P', b'X', b'M', 0,])
         );
     }
 
@@ -606,8 +606,8 @@ mod tests {
         // _PXM with value 3: Name op (0x08) + "_PXM" + BytePrefix (0x0a) + 3
         assert!(
             bytes
-                .windows(7)
-                .any(|window| window == [8, b'_', b'P', b'X', b'M', 0x0a, 3,])
+                .array_windows::<7>()
+                .any(|window| window == &[8, b'_', b'P', b'X', b'M', 0x0a, 3,])
         );
     }
 
