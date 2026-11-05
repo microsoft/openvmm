@@ -21,6 +21,7 @@ use crate::build_vmfirmwareigvm_dll::VmfirmwareigvmDllOutput;
 use crate::build_vmgstool::VmgstoolOutput;
 use crate::common::CommonArch;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
+use crate::resolve_mshv_boot_artifacts::MshvBootArtifactsOutput;
 use flowey::node::prelude::*;
 use petri_artifacts_common::artifacts::*;
 use petri_artifacts_core::ArtifactId;
@@ -318,6 +319,12 @@ define_vmm_tests_built_artifacts!(
             loadable::MSHV_HOST_BOOT_X64
         ),
     ) => MshvHostBootOutput,
+    mshv_boot_artifacts(
+        x64(
+            (MshvBootArtifactsOutput { directory }, directory),
+            loadable::MSHV_BOOT_ARTIFACTS_X64
+        ),
+    ) => MshvBootArtifactsOutput,
     // Artifacts used internally by petri.
     openvmm(
         windows_x64(
@@ -581,9 +588,6 @@ define_vmm_tests_built_artifacts!(
     mshv_test_kernel(
         x64((src, src), loadable::MSHV_TEST_KERNEL_X64),
     ) => PathBuf,
-    mshv_boot_artifacts(
-        x64((src, src), loadable::MSHV_BOOT_ARTIFACTS_X64),
-    ) => PathBuf,
     uefi(
         x64(
             (src, src),
@@ -640,7 +644,6 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::resolve_openvmm_test_initrd::Node>();
         ctx.import::<crate::resolve_openvmm_test_linux_kernel::Node>();
-        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::resolve_openvmm_test_virtio_win::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
@@ -724,13 +727,6 @@ impl SimpleFlowNode for Node {
                 )
             })
         });
-        let mshv_boot_artifacts_x64 = prebuilt_artifacts.mshv_boot_artifacts_x64.then(|| {
-            ctx.reqv(|artifacts| crate::resolve_mshv_boot_artifacts::Request {
-                arch: CommonArch::X86_64,
-                artifacts,
-            })
-        });
-
         let uefi_x64 = prebuilt_artifacts.uefi_x64.then(|| {
             ctx.reqv(|msvm_fd| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
                 arch: CommonArch::X86_64,
@@ -759,7 +755,6 @@ impl SimpleFlowNode for Node {
 
         let prebuilt_artifacts = VmmTestsPreBuiltArtifacts {
             mshv_test_kernel_x64,
-            mshv_boot_artifacts_x64,
             test_linux_kernel_x64,
             test_linux_kernel_aarch64,
             test_linux_kernel_cca_aarch64,
@@ -931,6 +926,7 @@ pub mod vmm_tests_artifact_builders {
             pipette_windows_x64 => PipetteOutput,
             // linux build machine
             mshv_host_boot_x64 => MshvHostBootOutput,
+            mshv_boot_artifacts_x64 => MshvBootArtifactsOutput,
             nextest_vmm_tests_archive_linux_x64 => NextestVmmTestsArchive,
             nextest_vmm_tests_archive_linux_musl_x64 => NextestVmmTestsArchive,
             openvmm_linux_x64 => OpenvmmOutput,
@@ -984,6 +980,11 @@ pub mod vmm_tests_artifact_builders {
             test_igvm_agent_rpc_server_windows_x64 => TestIgvmAgentRpcServerOutput,
             vmfirmwareigvm_cvm_x64 => VmfirmwareigvmDllOutput,
             // linux build machine
+            mshv_host_boot_x64 => MshvHostBootOutput,
+            mshv_boot_artifacts_x64 => MshvBootArtifactsOutput,
+            nextest_vmm_tests_archive_linux_musl_x64 => NextestVmmTestsArchive,
+            openvmm_linux_musl_x64 => OpenvmmOutput,
+            prep_steps_linux_musl_x64 => PrepStepsOutput,
             openhcl_standard_x64 => OpenhclIgvmOutput,
             openhcl_cvm_x64 => OpenhclIgvmOutput,
             openhcl_linux_direct_x64 => OpenhclIgvmOutput,

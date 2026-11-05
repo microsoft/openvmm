@@ -102,6 +102,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::build_guest_test_uefi::Node>();
         ctx.import::<crate::build_mshv_host_boot::Node>();
+        ctx.import::<crate::resolve_mshv_boot_artifacts::Node>();
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
@@ -427,6 +428,12 @@ impl SimpleFlowNode for Node {
                 host_boot,
             })
         });
+        let mshv_boot_artifacts_x64 = build.mshv_boot_artifacts_x64.then(|| {
+            ctx.reqv(|artifacts| crate::resolve_mshv_boot_artifacts::Request {
+                arch: CommonArch::X86_64,
+                artifacts,
+            })
+        });
 
         let mut build_tmks = |arch| {
             let output = ctx.reqv(|v| crate::build_tmks::Request {
@@ -702,6 +709,7 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl_aarch64,
             guest_test_uefi_x64,
             mshv_host_boot_x64,
+            mshv_boot_artifacts_x64,
             guest_test_uefi_aarch64,
             openhcl_standard_x64,
             openhcl_standard_aarch64,
