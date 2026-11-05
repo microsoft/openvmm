@@ -4,9 +4,7 @@
 //! CPIO newc archive builder and merger.
 //!
 //! Provides tools to inject files into an existing gzip-compressed CPIO
-//! initrd. Instead of concatenating separate CPIO archives (which can be
-//! unreliable), this module decompresses the original, inserts new entries
-//! before the TRAILER!!!, and recompresses as a single archive.
+//! initrd, or append files as a separate gzip-compressed CPIO layer.
 
 use anyhow::Context;
 
@@ -15,6 +13,22 @@ const CPIO_NEWC_MAGIC: &[u8] = b"070701";
 
 /// The CPIO trailer filename.
 const CPIO_TRAILER: &[u8] = b"TRAILER!!!";
+
+/// Append a file as a gzip-compressed CPIO layer without modifying existing
+/// initrd layers. Linux extracts the appended layer after the existing layers.
+pub fn append_to_initrd(
+    initrd: &mut Vec<u8>,
+    file_name: &str,
+    file_data: &[u8],
+    mode: u32,
+) -> anyhow::Result<()> {
+    let mut layer = Vec::new();
+    write_cpio_entry(&mut layer, file_name, file_data, mode);
+    write_cpio_entry(&mut layer, "TRAILER!!!", &[], 0);
+    let compressed = compress_gz(&layer).context("failed to compress appended initrd layer")?;
+    initrd.extend_from_slice(&compressed);
+    Ok(())
+}
 
 /// Inject a file into a gzip-compressed CPIO initrd.
 ///

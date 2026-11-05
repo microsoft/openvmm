@@ -1,0 +1,26 @@
+{
+    "guest_arch": "x64",
+    "guest_configs": [
+        {
+            "guest_svn": 1,
+            "max_vtl": 2,
+            "isolation_type": "none",
+            "image": {
+                "openhcl": {
+                    "command_line": "OPENHCL_BOOT_LOG=com3 OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=debug",
+                    "memory_page_count": 131072,
+                    "uefi": true,
+                    "product_policy": {
+                        "sivm": {
+                            "require_ephemeral_vmgs": true,
+                            "require_secure_boot": true,
+                            "require_secure_boot_vars": false,
+                            "require_bcd_integrity": false,
+                            "custom_uefi_json": "e30="
+                        }
+                    }
+                }
+            }
+        }
+    ]
+}

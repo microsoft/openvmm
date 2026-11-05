@@ -418,6 +418,12 @@ define_vmm_tests_built_artifacts!(
             openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64
         ),
     ) => OpenhclIgvmOutput,
+    openhcl_sivm(
+        x64(
+            (OpenhclIgvmOutput::X64TestSivm { igvm_bin }, igvm_bin),
+            openhcl_igvm::LATEST_SIVM_TEST_X64
+        ),
+    ) => OpenhclIgvmOutput,
     snp_linux_direct_igvm(
         x64(
             (SnpLinuxDirectIgvmOutput { igvm_bin, igvm_map }, igvm_bin, igvm_map),
@@ -953,6 +959,7 @@ pub mod vmm_tests_artifact_builders {
             openhcl_standard_x64 => OpenhclIgvmOutput,
             openhcl_cvm_x64 => OpenhclIgvmOutput,
             openhcl_linux_direct_x64 => OpenhclIgvmOutput,
+            openhcl_sivm_x64 => OpenhclIgvmOutput,
             pipette_linux_musl_x64 => PipetteOutput,
             tmk_vmm_linux_musl_x64 => TmkVmmOutput,
             tpm_guest_tests_linux_x64 => TpmGuestTestsOutput,

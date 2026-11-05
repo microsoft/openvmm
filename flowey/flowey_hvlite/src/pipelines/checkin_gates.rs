@@ -1132,6 +1132,7 @@ impl IntoPipeline for CheckinGatesCli {
                     OpenhclIgvmRecipe::X64,
                     OpenhclIgvmRecipe::X64Devkern,
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
+                    OpenhclIgvmRecipe::X64TestSivm,
                     OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
                     OpenhclIgvmRecipe::X64Cvm,
                 ],
@@ -1175,6 +1176,9 @@ impl IntoPipeline for CheckinGatesCli {
                         use_openhcl_igvms
                             .get(&OpenhclIgvmRecipe::X64TestLinuxDirect)
                             .cloned();
+                    vmm_tests_artifacts_windows_x86.use_openhcl_sivm_x64 = use_openhcl_igvms
+                        .get(&OpenhclIgvmRecipe::X64TestSivm)
+                        .cloned();
                 }
                 (CommonArch::X86_64, true) => {
                     // we'll skim these off later so we can reuse most of the

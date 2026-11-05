@@ -524,6 +524,8 @@ pub mod artifacts {
             LATEST_CVM_X64("openhcl-x64-cvm.bin", X64),
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64("openhcl-x64-test-linux-direct.bin", X64),
+            /// OpenHCL IGVM with a measured SIVM policy requiring secure boot.
+            LATEST_SIVM_TEST_X64("openhcl-x64-test-sivm.bin", X64),
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
             LATEST_RELEASE_LINUX_DIRECT_X64("release-2511-x64-direct-openhcl.bin", X64),
             /// OpenHCL IGVM (standard AARCH64)
@@ -537,6 +539,11 @@ pub mod artifacts {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
+
+        impl IsLoadable for LATEST_SIVM_TEST_X64 {
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+        impl IsOpenhclIgvm for LATEST_SIVM_TEST_X64 {}
 
         impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
