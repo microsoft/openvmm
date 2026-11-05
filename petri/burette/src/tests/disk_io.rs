@@ -398,13 +398,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             let bw_name = format!("fio_{label}_{prefix}_{phase}_bw");
             metrics.push(parse_fio_bw(&json, &bw_name, field)?);
             for percentile in ["50.000000", "99.000000", "99.900000"] {
-                let latency_ns = output["jobs"][0][field]["clat_ns"]["percentile"][percentile]
-                    .as_f64()
-                    .with_context(|| format!("missing {field} latency percentile {percentile}"))?;
                 metrics.push(MetricResult {
                     name: format!("fio_{label}_{prefix}_{phase}_p{percentile}_latency"),
                     unit: "us".into(),
-                    value: latency_ns / 1000.0,
+                    value: parse_fio_latency(&output, field, percentile)?,
                 });
             }
 
@@ -525,7 +522,7 @@ async fn run_fio_job(
     let depth = config.io_depth.to_string();
     let mut command = cmd!(
         sh,
-        "fio --name=test --filename={device} --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=1 --time_based=1 --runtime={runtime} --ramp_time={ramp} --iodepth={depth} --numjobs=1 --output-format=json"
+        "fio --name=test --filename={device} --rw={rw_mode} --bs={bs} --ioengine=io_uring --direct=1 --time_based=1 --runtime={runtime} --ramp_time={ramp} --iodepth={depth} --numjobs=1 --lat_percentiles=1 --output-format=json"
     );
     if let Some(cpu) = config.cpu {
         command = command.arg(format!("--cpus_allowed={cpu}"));
@@ -548,6 +545,17 @@ fn parse_fio_output(json: &str) -> anyhow::Result<serde_json::Value> {
         anyhow::ensure!(error == 0, "fio job failed with error {error}: {job}");
     }
     Ok(output)
+}
+
+fn parse_fio_latency(
+    output: &serde_json::Value,
+    field: &str,
+    percentile: &str,
+) -> anyhow::Result<f64> {
+    let latency_ns = output["jobs"][0][field]["lat_ns"]["percentile"][percentile]
+        .as_f64()
+        .with_context(|| format!("missing {field} total latency percentile {percentile}"))?;
+    Ok(latency_ns / 1000.0)
 }
 
 /// Parse bandwidth (MiB/s) from fio JSON output.
@@ -587,6 +595,30 @@ fn parse_fio_iops(json: &str, metric_name: &str, field: &str) -> anyhow::Result<
 mod tests {
     use super::*;
     use test_with_tracing::test;
+
+    #[test]
+    fn latency_percentiles_include_submission_time() -> anyhow::Result<()> {
+        let output = parse_fio_output(
+            r#"{"jobs":[{"error":0,
+                "read":{
+                    "clat_ns":{"percentile":{"99.000000":1000}},
+                    "lat_ns":{"percentile":{"99.000000":3000}}
+                },
+                "write":{
+                    "clat_ns":{"percentile":{"99.000000":2000}},
+                    "lat_ns":{"percentile":{"99.000000":5000}}
+                }
+            }]}"#,
+        )?;
+        assert_eq!(parse_fio_latency(&output, "read", "99.000000")?, 3.0);
+        assert_eq!(parse_fio_latency(&output, "write", "99.000000")?, 5.0);
+        assert!(parse_fio_latency(&output, "read", "99.900000").is_err());
+        let completion_only = parse_fio_output(
+            r#"{"jobs":[{"error":0,"read":{"clat_ns":{"percentile":{"99.000000":1000}}}}]}"#,
+        )?;
+        assert!(parse_fio_latency(&completion_only, "read", "99.000000").is_err());
+        Ok(())
+    }
 
     #[test]
     fn duplicate_workloads_are_rejected() {

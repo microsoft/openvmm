@@ -174,8 +174,10 @@ Use `--disk-block-size-kib` (default 4), `--disk-io-depth` (default 32),
 `--disk-runtime-secs` (default 10), and `--disk-ramp-secs` (default 5) to
 control the workload. Jobs are time-based. Raw fio JSON is retained in
 `<LOG_DIR>/fio/`, including initialization, warmup, achieved queue depth, and
-latency distributions. Reports also include p50, p99, and p99.9 completion
-latency in microseconds.
+latency distributions. Reports also include p50, p99, and p99.9 total latency
+in microseconds, including both submission and completion latency as measured
+by fio. The summary averages each percentile across measured iterations; these
+are means of per-run percentiles, not percentiles pooled across all I/Os.
 
 Use `--disk-workloads randread` to isolate a workload, or pass a comma-separated
 list of `read,write,randread,randwrite` to choose their order. Each workload may
