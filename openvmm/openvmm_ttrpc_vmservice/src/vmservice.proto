@@ -33,13 +33,13 @@ service VM {
     // the guest memory backing file into the snapshot, so after a successful
     // save the VM can't be resumed and should be torn down. Cancelling the
     // call only stops the caller from waiting; the save may still complete.
-    rpc SaveVM(SaveVMRequest) returns (SaveVmResult);
+    rpc SaveVM(SaveVMRequest) returns (SaveVMResponse);
 
     // RestoreVM creates a VM from a snapshot directory and the supplied device
     // configuration. The service must not already contain a VM. The VM stays
     // paused unless resume is set. The snapshot's memory.bin is used in place,
     // so a snapshot can be restored only once.
-    rpc RestoreVM(RestoreVMRequest) returns (RestoreVmResult);
+    rpc RestoreVM(RestoreVMRequest) returns (RestoreVMResponse);
 
     // ShutdownVM requests a cooperative guest power-off.
     // Success does not mean the guest has halted. Use WaitVM to observe a halt
@@ -894,7 +894,7 @@ message SaveVMRequest {
     string destination_dir = 1;
 }
 
-message SaveVmResult {
+message SaveVMResponse {
     // OpenVMM-generated GUID for the snapshot.
     string snapshot_id = 1;
 }
@@ -911,7 +911,7 @@ message RestoreVMRequest {
     bool resume = 4;
 }
 
-message RestoreVmResult {
+message RestoreVMResponse {
     // Snapshot ID read from the snapshot manifest.
     string snapshot_id = 1;
 }

@@ -1067,7 +1067,7 @@ impl VmService {
     async fn restore_vm(
         &mut self,
         request: vmservice::RestoreVmRequest,
-    ) -> anyhow::Result<vmservice::RestoreVmResult> {
+    ) -> anyhow::Result<vmservice::RestoreVmResponse> {
         let source_dir = PathBuf::from(request.source_dir);
         if source_dir.as_os_str().is_empty() {
             return Err(code_error(
@@ -1116,7 +1116,7 @@ impl VmService {
             )
             .await?
             .context("restore did not produce a snapshot ID")?;
-        Ok(vmservice::RestoreVmResult {
+        Ok(vmservice::RestoreVmResponse {
             snapshot_id: snapshot_id.to_string(),
         })
     }
@@ -1884,7 +1884,7 @@ impl VmService {
     async fn save_vm(
         &mut self,
         request: vmservice::SaveVmRequest,
-    ) -> anyhow::Result<vmservice::SaveVmResult> {
+    ) -> anyhow::Result<vmservice::SaveVmResponse> {
         if request.destination_dir.is_empty() {
             return Err(code_error(
                 Code::InvalidArgument,
@@ -1935,7 +1935,7 @@ impl VmService {
             .map_err(anyhow::Error::from)
             .and_then(|r| r.map_err(anyhow::Error::from));
         match result {
-            Ok(snapshot_id) => Ok(vmservice::SaveVmResult {
+            Ok(snapshot_id) => Ok(vmservice::SaveVmResponse {
                 snapshot_id: snapshot_id.to_string(),
             }),
             Err(err) => {

@@ -51,7 +51,7 @@ before their implementation is connected end to end.
 implementation hard-links that backing file into the snapshot, so after a
 successful save the VM can't be resumed and should be torn down. Each save
 generates a unique snapshot ID (a GUID string) that is stored in
-`manifest.bin` and returned in `SaveVmResult.snapshot_id`.
+`manifest.bin` and returned in `SaveVMResponse.snapshot_id`.
 Cancelling `SaveVM` only stops the caller from waiting; the save may still
 complete.
 
@@ -62,7 +62,7 @@ so `MemoryConfig.backing_file_path` must not be set, and a snapshot can be
 restored only once. If `expected_snapshot_id` is provided, the restore fails
 unless it matches the snapshot ID in `manifest.bin`. An empty value is treated
 as not provided, so the ID isn't checked. The restored snapshot's
-ID is returned in `RestoreVmResult.snapshot_id`. Set `resume` to start the
+ID is returned in `RestoreVMResponse.snapshot_id`. Set `resume` to start the
 restored VM immediately; otherwise it is created paused.
 
 ## Virtio-console file output
