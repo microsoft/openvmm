@@ -228,7 +228,7 @@ mod gicd {
 
     #[derive(Debug, Inspect)]
     pub struct DistributorState {
-        /// Level-triggered SPI input lines currently asserted by devices.
+        /// SPI input lines currently asserted by devices.
         #[inspect(iter_by_index)]
         asserted: Vec<u32>,
         /// Software and edge requests not yet transferred to a list register.
@@ -1033,12 +1033,19 @@ mod gicd {
                     || GicdRegister::ISPENDR.contains(&r.0) =>
                 {
                     let n = (r.0 & 0x7f) / 4;
-                    self.state
-                        .lock()
-                        .pending
-                        .get(n as usize)
-                        .copied()
-                        .unwrap_or(0)
+                    let state = self.state.lock();
+                    let mut pending = state.pending.get(n as usize).copied().unwrap_or(0);
+                    let mut asserted = state.asserted.get(n as usize).copied().unwrap_or(0);
+                    // Pending readback includes live level-sensitive lines,
+                    // independently of whether interrupt delivery is enabled.
+                    while asserted != 0 {
+                        let bit = asserted.trailing_zeros();
+                        asserted &= asserted - 1;
+                        if !Self::edge_triggered(&state, n as u32 * 32 + bit) {
+                            pending |= 1 << bit;
+                        }
+                    }
+                    pending
                 }
                 r if GicdRegister::IGRPMODR.contains(&r.0) => 0,
                 _ => return None,
@@ -1308,6 +1315,16 @@ mod gicd {
                 GicdRegister(register.0 + (intid / 32 * 4) as u16),
                 1 << (intid & 31),
             ));
+        }
+
+        fn assert_spi_pending_word(distributor: &Distributor, word: u16, expected: u32) {
+            for register in [GicdRegister::ISPENDR0, GicdRegister::ICPENDR0] {
+                assert_eq!(
+                    distributor.read32(GicdRegister(register.0 + word * 4)),
+                    Some(expected),
+                    "pending readback at {register:?}, word {word}"
+                );
+            }
         }
 
         #[test]
@@ -1748,6 +1765,84 @@ mod gicd {
             distributor
                 .reserve_pending_spi_interrupts(vp, u8::MAX)?
                 .remove(&u64::from(TEST_SPI))
+        }
+
+        #[test]
+        fn level_spi_pending_readback_combines_latch_and_line() {
+            for enabled in [false, true] {
+                let distributor = test_distributor();
+                let mask = 1 << (TEST_SPI & 31);
+                if !enabled {
+                    assert!(
+                        distributor.write32(GicdRegister(GicdRegister::ICENABLER0.0 + 4), mask,)
+                    );
+                }
+                assert_spi_pending_word(&distributor, 1, 0);
+
+                // A level-only request is pending even when delivery is disabled.
+                distributor.set_spi_irq(TEST_SPI, true);
+                assert_eq!(distributor.state.lock().pending[1], 0);
+                assert_spi_pending_word(&distributor, 1, mask);
+                if !enabled {
+                    assert!(reserve_pending_spi(&distributor, VpIndex::new(0)).is_none());
+                }
+
+                // Clearing the latch cannot clear a request from a high line.
+                set_software_pending_spi(&distributor, TEST_SPI, false);
+                assert_spi_pending_word(&distributor, 1, mask);
+                distributor.set_spi_irq(TEST_SPI, false);
+                assert_spi_pending_word(&distributor, 1, 0);
+
+                // A software request remains pending independently of the line.
+                set_software_pending_spi(&distributor, TEST_SPI, true);
+                assert_spi_pending_word(&distributor, 1, mask);
+                distributor.set_spi_irq(TEST_SPI, true);
+                distributor.set_spi_irq(TEST_SPI, false);
+                assert_spi_pending_word(&distributor, 1, mask);
+                set_software_pending_spi(&distributor, TEST_SPI, false);
+                assert_spi_pending_word(&distributor, 1, 0);
+            }
+        }
+
+        #[test]
+        fn spi_pending_readback_excludes_asserted_edge_lines() {
+            let distributor = empty_test_distributor();
+            let level_mask = (1 << (32 & 31)) | (1 << (63 & 31));
+            let edge_mask = (1 << (47 & 31)) | (1 << (48 & 31));
+
+            // Mix level and edge SPIs across both ICFGR words in a pending word.
+            assert!(distributor.write32(GicdRegister(GicdRegister::ICFGR0.0 + 2 * 4), 1 << 31,));
+            assert!(distributor.write32(GicdRegister(GicdRegister::ICFGR0.0 + 3 * 4), 1 << 1,));
+            for intid in [32, 47, 48, 63] {
+                distributor.set_spi_irq(intid, true);
+            }
+            assert_spi_pending_word(&distributor, 1, level_mask | edge_mask);
+
+            // A high edge input must not recreate a cleared edge latch.
+            assert!(distributor.write32(GicdRegister(GicdRegister::ICPENDR0.0 + 4), u32::MAX,));
+            assert_spi_pending_word(&distributor, 1, level_mask);
+            for intid in [47, 48] {
+                distributor.set_spi_irq(intid, true);
+            }
+            assert_spi_pending_word(&distributor, 1, level_mask);
+
+            // New edges latch requests that survive a subsequent falling line.
+            for intid in [47, 48] {
+                distributor.set_spi_irq(intid, false);
+                distributor.set_spi_irq(intid, true);
+                distributor.set_spi_irq(intid, false);
+            }
+            assert_spi_pending_word(&distributor, 1, level_mask | edge_mask);
+            for intid in [32, 63] {
+                distributor.set_spi_irq(intid, false);
+            }
+            assert_spi_pending_word(&distributor, 1, edge_mask);
+            assert!(distributor.write32(GicdRegister(GicdRegister::ICPENDR0.0 + 4), u32::MAX,));
+            assert_spi_pending_word(&distributor, 1, 0);
+
+            // Private and unimplemented distributor pending words remain RAZ.
+            assert_spi_pending_word(&distributor, 0, 0);
+            assert_spi_pending_word(&distributor, 2, 0);
         }
 
         #[test]
