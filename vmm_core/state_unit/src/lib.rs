@@ -231,6 +231,7 @@ enum State {
     Saving,
     Restoring,
     StartUncertain,
+    StopUncertain,
 }
 
 #[derive(Debug)]
@@ -502,7 +503,7 @@ impl StateUnits {
             inner
                 .units
                 .values()
-                .filter(|unit| matches!(unit.state, State::StartUncertain))
+                .filter(|unit| matches!(unit.state, State::StartUncertain | State::StopUncertain))
                 .map(|unit| {
                     (
                         unit.name.clone(),
@@ -538,43 +539,16 @@ impl StateUnits {
     }
 
     /// Stops all the state units.
-    pub async fn stop(&mut self) {
+    ///
+    /// Stops the units in reverse dependency order. A unit in a terminal state
+    /// may be running, so it is sent a stop request too, and keeps its terminal
+    /// marker. If a unit's task does not answer its stop request, the stop
+    /// fails, the unit is left in a terminal state, and the units that it
+    /// depends on keep running, since it may still use them. The units then
+    /// stay running, so that a later stop can stop them.
+    pub async fn stop(&mut self) -> anyhow::Result<()> {
         assert!(self.running);
-        // Make units whose start is uncertain receive Stop, then restore their
-        // terminal markers after the ordered operation.
-        let terminal_states = {
-            let mut inner = self.inner.lock();
-            inner
-                .units
-                .iter_mut()
-                .filter(|(_, unit)| unit.state == State::StartUncertain)
-                .map(|(&id, unit)| {
-                    unit.state = State::Running;
-                    (id, State::StartUncertain)
-                })
-                .collect::<Vec<_>>()
-        };
-        // Stop units in reverse dependency order so that a dependency is not
-        // stopped before its dependant.
-        self.run_op(
-            "stop",
-            None,
-            State::Running,
-            State::Stopping,
-            State::Stopped,
-            StateRequest::Stop,
-            |_, _| Some(()),
-            |unit| Some(&unit.dependents),
-        )
-        .await;
-        let mut inner = self.inner.lock();
-        for (id, state) in terminal_states {
-            if let Some(unit) = inner.units.get_mut(&id) {
-                assert_eq!(unit.state, State::Stopped);
-                unit.state = state;
-            }
-        }
-        self.running = false;
+        self.stop_in_order().await
     }
 
     /// Resets all the state units.
@@ -1096,6 +1070,7 @@ impl Ready {
 #[cfg(test)]
 mod tests {
     mod start;
+    mod stop;
 
     use super::StateTransitionErrorKind;
     use super::StateUnit;
@@ -1270,7 +1245,7 @@ mod tests {
         units.restore(state).await.unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
         let state = units.save().await.unwrap();
         assert!(units.restore(state).await.is_err());
         assert_eq!(calls.load(Ordering::Relaxed), 2);
@@ -1348,10 +1323,10 @@ mod tests {
         let _c = units
             .add("c")
             .spawn(&driver, |recv| run_unit(TestUnit::default(), recv));
-        units.stop().await;
+        units.stop().await.unwrap();
         units.start().await.unwrap();
 
-        units.stop().await;
+        units.stop().await.unwrap();
 
         let state = units.save().await.unwrap();
 
@@ -1398,7 +1373,7 @@ mod tests {
             })
             .unwrap();
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         let state = units.save().await.unwrap();
 
@@ -1508,7 +1483,7 @@ mod tests {
         }
 
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         a.remove().await;
         {
@@ -1518,7 +1493,7 @@ mod tests {
         }
 
         units.start().await.unwrap();
-        units.stop().await;
+        units.stop().await.unwrap();
 
         // Removing the remaining unit leaves the set empty.
         c.remove().await;

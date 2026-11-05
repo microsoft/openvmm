@@ -22,7 +22,7 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 
-struct RecordingUnit {
+pub(super) struct RecordingUnit {
     started: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
 }
@@ -74,14 +74,17 @@ async fn run_unanswering_start(
     unit
 }
 
-fn recording_unit(started: &Arc<AtomicBool>, stopped: &Arc<AtomicBool>) -> RecordingUnit {
+pub(super) fn recording_unit(
+    started: &Arc<AtomicBool>,
+    stopped: &Arc<AtomicBool>,
+) -> RecordingUnit {
     RecordingUnit {
         started: started.clone(),
         stopped: stopped.clone(),
     }
 }
 
-fn unit_state(units: &StateUnits, name: &str) -> State {
+pub(super) fn unit_state(units: &StateUnits, name: &str) -> State {
     units
         .inner
         .lock()
@@ -183,7 +186,7 @@ async fn test_uncertain_start_keeps_units_running_until_stopped(driver: DefaultD
     assert!(units.is_running());
     assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
     assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
@@ -245,7 +248,7 @@ async fn test_failed_hot_add_does_not_stop_dependency_of_running_unit(driver: De
     assert_eq!(unit_state(&units, "new-dependency"), State::StartUncertain);
     assert_eq!(unit_state(&units, "unanswered"), State::StartUncertain);
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(running_dependent_stopped.load(Ordering::Relaxed));
     assert!(unanswered_stopped.load(Ordering::Relaxed));
@@ -309,7 +312,7 @@ async fn test_started_unit_exit_during_rollback_returns_error(driver: DefaultDri
     assert!(units.is_running());
 
     exited.remove().await;
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
@@ -358,7 +361,7 @@ async fn test_uncertain_start_blocks_dependency_rollback(driver: DefaultDriver) 
     assert!(units.is_running());
     assert_eq!(unit_state(&units, "dependency"), State::StartUncertain);
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(unanswered_stopped.load(Ordering::Relaxed));
     assert!(dependency_stopped.load(Ordering::Relaxed));
     assert!(!units.is_running());
@@ -417,7 +420,7 @@ async fn test_initial_start_rollback_can_be_retried(driver: DefaultDriver) {
     assert_eq!(stop_requests.load(Ordering::Relaxed), 1);
     assert!(units.is_running());
 
-    units.stop().await;
+    units.stop().await.unwrap();
     assert!(stopped.load(Ordering::Relaxed));
     assert_eq!(stop_requests.load(Ordering::Relaxed), 2);
     assert!(unanswered_stopped.load(Ordering::Relaxed));

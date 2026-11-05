@@ -16,7 +16,7 @@ impl LoadedVm {
     /// Pauses the VM if running, collects VP state and streams memory,
     /// then restores the prior running state.
     pub(super) async fn dump_state(&mut self, file: File) -> anyhow::Result<()> {
-        let was_running = self.pause().await;
+        let was_running = self.pause().await?;
         let result = self.dump_state_inner(file).await;
         if was_running {
             self.resume().await;

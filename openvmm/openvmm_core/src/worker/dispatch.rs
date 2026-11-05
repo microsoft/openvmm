@@ -3707,13 +3707,24 @@ impl LoadedVm {
         true
     }
 
-    async fn pause(&mut self) -> bool {
+    /// Pauses the VM, returning true if it was running.
+    ///
+    /// If a state unit does not stop, the VM no longer runs but state units
+    /// still may, which [`Self::units_left_running`] reports.
+    async fn pause(&mut self) -> anyhow::Result<bool> {
         if !self.running {
-            return false;
+            return Ok(false);
         }
-        self.state_units.stop().await;
         self.running = false;
-        true
+        self.state_units.stop().await?;
+        Ok(true)
+    }
+
+    /// Returns true if state units run while the VM does not, as a failed stop
+    /// or start leaves them. They can never start again, so the VM must be torn
+    /// down.
+    fn units_left_running(&self) -> bool {
+        self.state_units.is_running() && !self.running
     }
 
     /// Assign PCI bus numbers and BAR addresses for all boot modes.
@@ -3756,10 +3767,16 @@ impl LoadedVm {
         .context("PCI resource assignment failed");
 
         // Stop state units again; the caller will resume normally.
-        self.state_units.stop().await;
+        let stopped = self
+            .state_units
+            .stop()
+            .await
+            .context("failed to stop devices after PCI resource assignment");
         drop(stop_guard);
 
-        result
+        // Devices that did not stop can never start again, which outweighs a
+        // failed assignment.
+        stopped.and(result)
     }
 
     pub async fn run(
@@ -3808,6 +3825,7 @@ impl LoadedVm {
                     WorkerRpc::Stop => break,
                     WorkerRpc::Restart(rpc) => {
                         let mut stopped = false;
+                        let mut stop_failed = false;
                         // First run the non-destructive operations.
                         let r = async {
                             let shared_memory = self.inner.memory_manager.shared_memory_backing();
@@ -3815,7 +3833,10 @@ impl LoadedVm {
                                 anyhow::bail!("restart is not supported with --private-memory");
                             }
                             if self.running {
-                                self.state_units.stop().await;
+                                if let Err(error) = self.state_units.stop().await {
+                                    stop_failed = true;
+                                    return Err(error);
+                                }
                                 stopped = true;
                             }
                             let saved_state = self.save().await?;
@@ -3831,6 +3852,15 @@ impl LoadedVm {
                                 return;
                             }
                             Err(err) => {
+                                if stop_failed {
+                                    // The state units that did not stop can
+                                    // never start again, so tear the VM down,
+                                    // as when it cannot resume.
+                                    rpc.complete(Err(RemoteError::new(err.context(
+                                        "worker restart failed and the VM could not stop",
+                                    ))));
+                                    break;
+                                }
                                 if stopped {
                                     if let Err(start_error) = self.state_units.start().await {
                                         rpc.complete(Err(RemoteError::new(start_error.context(
@@ -3858,12 +3888,12 @@ impl LoadedVm {
                     VmRpc::Reset(rpc) => {
                         let result = self.reset(true).await;
                         // The reset pauses the VM, so state units that still
-                        // run after it fails were left by a failed start, and
-                        // can never start again. Tear the VM down, as after a
-                        // failed restart.
-                        let start_failed = result.is_err() && self.state_units.is_running();
+                        // run after it fails were left by a failed stop or
+                        // start, and can never start again. Tear the VM down,
+                        // as after a failed restart.
+                        let unrecoverable = self.units_left_running();
                         rpc.complete(result.map_err(RemoteError::new));
-                        if start_failed {
+                        if unrecoverable {
                             break;
                         }
                     }
@@ -3872,7 +3902,15 @@ impl LoadedVm {
                             .await
                     }
                     VmRpc::Resume(rpc) => rpc.handle(async |()| self.resume().await).await,
-                    VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
+                    VmRpc::Pause(rpc) => {
+                        rpc.handle(async |()| {
+                            // Pause cannot report a failure to its callers, so
+                            // treat a unit that fails to stop like any other
+                            // unrecoverable state unit failure.
+                            self.pause().await.expect("state units failed to stop")
+                        })
+                        .await
+                    }
                     VmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
                             .await
@@ -3948,7 +3986,7 @@ impl LoadedVm {
                             if !self.inner.partition.supports_reset() {
                                 return Err(PulseSaveRestoreError::ResetNotSupported);
                             }
-                            let paused = self.pause().await;
+                            let paused = self.pause().await?;
                             self.save_reset_restore().await?;
 
                             if paused {
@@ -3956,7 +3994,12 @@ impl LoadedVm {
                             }
                             Ok(())
                         })
-                        .await
+                        .await;
+                        // Tear the VM down if a failed pause left state units
+                        // running, as after a failed reset.
+                        if self.units_left_running() {
+                            break;
+                        }
                     }
                     VmRpc::StartReloadIgvm(rpc) => {
                         rpc.handle_failable_sync(|file| self.start_reload_igvm(&file))
@@ -4232,7 +4275,12 @@ impl LoadedVm {
                     }
                     VmRpc::DumpState(rpc) => {
                         rpc.handle_failable(async |file| self.dump_state(file).await)
-                            .await
+                            .await;
+                        // Tear the VM down if a failed pause left state units
+                        // running, as after a failed reset.
+                        if self.units_left_running() {
+                            break;
+                        }
                     }
                 },
                 Event::Halt(Err(_)) => break,
@@ -4425,7 +4473,7 @@ impl LoadedVm {
     }
 
     async fn reset(&mut self, reload_firmware: bool) -> anyhow::Result<()> {
-        let resume = self.pause().await;
+        let resume = self.pause().await?;
 
         self.state_units.reset().await?;
         // TODO: _vmnic

@@ -78,7 +78,7 @@ use vtl2_settings_worker::handle_vtl2_config_rpc;
 
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
-    Pause(Rpc<(), bool>),
+    Pause(FailableRpc<(), bool>),
     Resume(FailableRpc<(), bool>),
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
@@ -232,8 +232,8 @@ enum RestartOutcome<T> {
     /// The restart failed, but the VM is back in its previous state, so the
     /// worker can keep serving.
     Recovered,
-    /// The restart failed and the VM could not be resumed, so the worker
-    /// cannot serve any more.
+    /// The restart failed and the VM could not be stopped or resumed, so the
+    /// worker cannot serve any more.
     Unrecoverable,
 }
 
@@ -340,7 +340,15 @@ impl LoadedVm {
                     WorkerRpc::Stop => break None,
                     WorkerRpc::Restart(rpc) => {
                         let outcome = async {
-                            let running = self.stop().await;
+                            let running = match self.stop().await {
+                                Ok(running) => running,
+                                Err(error) => {
+                                    rpc.complete(Err(RemoteError::new(error.context(
+                                        "worker restart failed and the VM could not stop",
+                                    ))));
+                                    return RestartOutcome::Unrecoverable;
+                                }
+                            };
                             match self
                                 .save(
                                     SaveReason::WorkerRestart,
@@ -446,9 +454,31 @@ impl LoadedVm {
                             rpc.complete(Ok(true));
                         }
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
+                    UhVmRpc::Pause(rpc) => match self.stop().await {
+                        Ok(running) => rpc.complete(Ok(running)),
+                        Err(error) => {
+                            rpc.complete(Err(RemoteError::new(
+                                error.context("failed to pause VM"),
+                            )));
+                            // The state units that did not stop can never
+                            // start again, so tear down rather than keep this
+                            // worker.
+                            break None;
+                        }
+                    },
                     UhVmRpc::Save(rpc) => {
-                        let running = self.stop().await;
+                        let running = match self.stop().await {
+                            Ok(running) => running,
+                            Err(error) => {
+                                rpc.complete(Err(RemoteError::new(
+                                    error.context("failed to pause VM for save"),
+                                )));
+                                // The state units that did not stop can never
+                                // start again, so tear down rather than keep
+                                // this worker.
+                                break None;
+                            }
+                        };
                         let result = self
                             .save(
                                 SaveReason::Diagnostic,
@@ -763,7 +793,7 @@ impl LoadedVm {
 
         // Do everything before the log flush under a span.
         let r = async {
-            if !self.stop().await {
+            if !self.stop().await? {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
                 // via `ohcldiag-dev`.
@@ -954,14 +984,17 @@ impl LoadedVm {
     }
 
     /// Returns true if the VM was previously running.
-    async fn stop(&mut self) -> bool {
+    ///
+    /// Fails if a state unit's task does not answer its stop request; the
+    /// state units then can never start again.
+    async fn stop(&mut self) -> anyhow::Result<bool> {
         if self.state_units.is_running() {
             self.last_state_unit_stop = Some(ReferenceTime::new(self.partition.reference_time()));
             tracing::info!(CVM_ALLOWED, "stopping VM");
-            self.state_units.stop().await;
-            true
+            self.state_units.stop().await?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
