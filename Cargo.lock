@@ -10620,7 +10620,6 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "cfg-if",
  "fuse",
  "futures",
  "guestmem",

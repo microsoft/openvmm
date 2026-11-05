@@ -22,7 +22,6 @@ task_control.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
-cfg-if.workspace = true
 futures.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true

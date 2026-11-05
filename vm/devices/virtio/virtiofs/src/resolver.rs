@@ -7,7 +7,6 @@ use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
 use crate::virtio::VirtioFsDeviceOptions;
 use anyhow::Context as _;
-use cfg_if::cfg_if;
 use lxutil::LxVolumeOptions;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
@@ -159,8 +158,8 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
     }
 }
 
-cfg_if! {
-    if #[cfg(windows)] {
+cfg_select! {
+    windows => {
         use pal::windows::security::duplicate_impersonation_token;
         use pal::windows::security::RevertToSelfGuard;
         use std::os::windows::io::AsHandle;
@@ -202,7 +201,8 @@ cfg_if! {
                 }
             }
         }
-    } else {
+    }
+    _ => {
         struct ParsedHostFsPlatform;
 
         impl ParsedHostFsPlatform {
