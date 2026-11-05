@@ -1,10 +1,42 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Injection of PIC (ExtINT) interrupts through a VP's injected-interrupt
-//! slot.
+//! Delivery of PIC (ExtINT) interrupts.
 
 use crate::KvmRunVpError;
+
+/// Delivers an extint interrupt through the VP's injected-interrupt slot,
+/// unless the VP is running a nested guest.
+///
+/// KVM cannot turn an interrupt in the slot into an exit from a nested guest,
+/// so while the VP runs one, the interrupt is queued with
+/// [`kvm::VpRunner::queue_extint_interrupt`] and KVM decides. KVM does not
+/// report a queued interrupt, so the VP state cannot be saved until KVM has
+/// delivered it (see [`kvm::VpRunner::extint_may_be_queued`]).
+///
+/// The caller must meet the requirements of both [`inject`] and
+/// [`kvm::VpRunner::queue_extint_interrupt`]. Returns whether an interrupt was
+/// injected through the slot.
+pub(super) fn deliver(
+    vp: &kvm::Processor<'_>,
+    runner: &mut kvm::VpRunner<'_>,
+    nested_virt: bool,
+    acknowledge: impl FnOnce() -> Option<u8>,
+) -> Result<bool, KvmRunVpError> {
+    if nested_virt
+        && vp
+            .is_in_nested_guest()
+            .map_err(KvmRunVpError::ExtintInterrupt)?
+    {
+        if let Some(vector) = acknowledge() {
+            runner
+                .queue_extint_interrupt(vector)
+                .map_err(KvmRunVpError::ExtintInterrupt)?;
+        }
+        return Ok(false);
+    }
+    inject(vp, acknowledge)
+}
 
 /// Injects an extint interrupt through the VP's injected-interrupt slot.
 ///
@@ -24,8 +56,7 @@ use crate::KvmRunVpError;
 /// KVM delivers an interrupt in this slot without checking whether the guest
 /// can take it, so the caller must ensure that KVM has reported an open
 /// interrupt window for the current VP state. KVM also cannot turn this
-/// interrupt into an exit from a nested guest, so queue the interrupt instead
-/// if the VP may be running one.
+/// interrupt into an exit from a nested guest; see [`deliver`].
 pub(super) fn inject(
     vp: &kvm::Processor<'_>,
     acknowledge: impl FnOnce() -> Option<u8>,
@@ -75,6 +106,7 @@ pub(super) fn inject(
 /// Tests for extint delivery, which run a real-mode guest in a KVM VM.
 #[cfg(test)]
 mod tests {
+    use super::deliver;
     use super::inject;
     use crate::KvmRunVpError;
     use kvm::Exit;
@@ -253,6 +285,7 @@ mod tests {
             assert_eq!(next_out_port(&mut runner, timed_out), HANDLER_PORT.into());
             assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
             assert_eq!(next_out_port(&mut runner, timed_out), RESUMED_PORT.into());
+            assert!(!runner.extint_may_be_queued());
             drop(runner);
             drop(done);
         });
@@ -272,6 +305,21 @@ mod tests {
             assert_eq!(events.interrupt.injected, 1);
             assert_eq!(events.interrupt.nr, VECTOR);
             assert_eq!(vp.get_mp_state().unwrap(), KVM_MP_STATE_RUNNABLE);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn extint_outside_nested_guest_is_saved() {
+        check_extint(KVM_MP_STATE_RUNNABLE, |runner, vp| {
+            refresh_interrupt_window(runner);
+            assert!(runner.check_or_request_interrupt_window());
+            assert!(!vp.is_in_nested_guest().unwrap());
+            assert!(deliver(vp, runner, true, || Some(VECTOR)).unwrap());
+
+            let events = vp.get_vcpu_events().unwrap();
+            assert_eq!(events.interrupt.injected, 1);
+            assert_eq!(events.interrupt.nr, VECTOR);
         });
     }
 
@@ -327,6 +375,23 @@ mod tests {
 
             // KVM does not report a queued extint.
             assert_eq!(vp.get_vcpu_events().unwrap().interrupt.injected, 0);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires access to /dev/kvm"]
+    fn queued_extint_is_tracked_across_a_stop() {
+        check_extint(KVM_MP_STATE_RUNNABLE, |runner, _vp| {
+            refresh_interrupt_window(runner);
+            assert!(runner.check_or_request_interrupt_window());
+            assert!(!runner.extint_may_be_queued());
+            runner.queue_extint_interrupt(VECTOR).unwrap();
+            assert!(runner.extint_may_be_queued());
+
+            // A stop completes the exit without running the VP, so KVM still
+            // holds the interrupt.
+            refresh_interrupt_window(runner);
+            assert!(runner.extint_may_be_queued());
         });
     }
 
