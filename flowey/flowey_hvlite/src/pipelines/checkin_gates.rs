@@ -1609,6 +1609,7 @@ impl IntoPipeline for CheckinGatesCli {
         let linux_x64_host_test_artifacts = vec![
             test_vhd::ALPINE_3_23_X64.into(),
             test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.into(),
+            test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.into(),
             test_vhd::UBUNTU_2404_SERVER_X64.into(),
             test_vhd::UBUNTU_2504_SERVER_X64.into(),
             test_vmgs::VMGS_WITH_BOOT_ENTRY.into(),
