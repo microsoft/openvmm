@@ -307,11 +307,9 @@ impl<'a> WhpProcessor<'a> {
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
-                                const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                                 let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                                let ref_duration = std::time::Duration::new(
-                                    ref_diff / NUM_100NS_IN_SEC,
-                                    (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                                let ref_duration = std::time::Duration::from_nanos_u128(
+                                    u128::from(ref_diff) * 100,
                                 );
                                 let timeout = self.state.vmtime.now().wrapping_add(ref_duration);
                                 self.state.vmtime.set_timeout_if_before(timeout);

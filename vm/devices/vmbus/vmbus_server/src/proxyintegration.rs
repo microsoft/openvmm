@@ -612,7 +612,9 @@ impl ProxyTask {
             mnf_interrupt_latency: offer
                 .ChannelFlags
                 .request_monitored_notification()
-                .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
+                .then(|| {
+                    Duration::from_nanos_u128(u128::from(offer.InterruptLatencyIn100nsUnits) * 100)
+                }),
             offer_order,
             allow_confidential_external_memory: false,
         };

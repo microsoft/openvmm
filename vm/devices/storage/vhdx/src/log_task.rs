@@ -293,13 +293,11 @@ impl<F: AsyncFile> LogTask<F> {
     fn advance_tails(&mut self) {
         let flushed_fsn = self.flush_sequencer.completed_fsn();
         let (applied, applied_fsn) = self.applied_lsn.get_with_fsn();
-        while let Some(front) = self.pending_tails.front() {
-            if front.lsn <= applied && applied_fsn <= flushed_fsn {
-                self.log_writer.advance_tail(front.new_tail);
-                self.pending_tails.pop_front();
-            } else {
-                break;
-            }
+        while let Some(front) = self
+            .pending_tails
+            .pop_front_if(|front| front.lsn <= applied && applied_fsn <= flushed_fsn)
+        {
+            self.log_writer.advance_tail(front.new_tail);
         }
     }
 

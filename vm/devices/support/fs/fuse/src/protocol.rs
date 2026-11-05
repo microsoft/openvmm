@@ -502,6 +502,7 @@ pub struct fuse_setattr_in {
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_open_in {
+    /// Linux `O_*` flags from [`lx`], using the platform's Linux ABI.
     pub flags: u32,
     pub unused: u32,
 }
@@ -509,6 +510,7 @@ pub struct fuse_open_in {
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_create_in {
+    /// Linux `O_*` flags from [`lx`], using the platform's Linux ABI.
     pub flags: u32,
     pub mode: u32,
     pub umask: u32,
@@ -527,6 +529,7 @@ pub struct fuse_open_out {
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_release_in {
     pub fh: u64,
+    /// Linux `O_*` flags from [`lx`], using the platform's Linux ABI.
     pub flags: u32,
     pub release_flags: u32,
     pub lock_owner: u64,

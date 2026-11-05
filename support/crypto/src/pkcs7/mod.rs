@@ -221,6 +221,7 @@ fn verify_inner(
 mod tests {
     use super::*;
     use crate::rsa::RsaKeyPair;
+    use crate::x509::X509SelfSignedOptions;
 
     /// The detached content used by the cross-backend verification tests.
     const SIGNED_CONTENT: &[u8] = b"openvmm pkcs7 cross-backend test data";
@@ -230,15 +231,7 @@ mod tests {
     /// rather than reading them from disk.
     fn make_fixture() -> (X509Certificate, Pkcs7SignedData) {
         let key = RsaKeyPair::generate(2048).unwrap();
-        let cert = X509Certificate::build_self_signed(
-            (&key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "OpenVMM Test",
-            "pkcs7.test.openvmm",
-        )
-        .unwrap();
+        let cert = X509Certificate::build_self_signed((&key).into(), &Default::default()).unwrap();
         let p7 = Pkcs7SignedData::sign(&cert, &key, SIGNED_CONTENT).unwrap();
         (cert, p7)
     }
@@ -307,11 +300,10 @@ mod tests {
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
             (&key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         let certs = vec![other, cert];
@@ -327,11 +319,10 @@ mod tests {
         let key = RsaKeyPair::generate(2048).unwrap();
         let other = X509Certificate::build_self_signed(
             (&key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_verify_rejected(p7.verify_uefi(&[other], SIGNED_CONTENT));
@@ -341,15 +332,7 @@ mod tests {
     #[test]
     fn sign_verify_roundtrip() {
         let key = RsaKeyPair::generate(2048).unwrap();
-        let cert = X509Certificate::build_self_signed(
-            (&key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "Roundtrip",
-            "roundtrip.test.openvmm",
-        )
-        .unwrap();
+        let cert = X509Certificate::build_self_signed((&key).into(), &Default::default()).unwrap();
         let content = b"hello pkcs7 roundtrip";
         let p7 = Pkcs7SignedData::sign(&cert, &key, content).unwrap();
         assert!(p7.verify_uefi(&[cert], content).unwrap());
@@ -360,23 +343,15 @@ mod tests {
     #[test]
     fn sign_verify_rejects_wrong_store() {
         let signer_key = RsaKeyPair::generate(2048).unwrap();
-        let signer_cert = X509Certificate::build_self_signed(
-            (&signer_key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "Signer",
-            "signer.test.openvmm",
-        )
-        .unwrap();
+        let signer_cert =
+            X509Certificate::build_self_signed((&signer_key).into(), &Default::default()).unwrap();
         let other_key = RsaKeyPair::generate(2048).unwrap();
         let other_cert = X509Certificate::build_self_signed(
             (&other_key).into(),
-            "US",
-            "WA",
-            "Redmond",
-            "Other",
-            "other.test.openvmm",
+            &X509SelfSignedOptions {
+                common_name: "other.test.openvmm",
+                ..Default::default()
+            },
         )
         .unwrap();
         let content = b"wrong-store content";

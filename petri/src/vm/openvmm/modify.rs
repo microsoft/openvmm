@@ -36,6 +36,12 @@ use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
 
 impl PetriVmConfigOpenVmm {
+    /// Skip automatic save/restore verification for devices that do not support it.
+    pub fn without_save_restore(mut self) -> Self {
+        self.skip_save_restore = true;
+        self
+    }
+
     /// Enable the VTL0 alias map.
     // TODO: Remove once #912 is fixed.
     pub fn with_vtl0_alias_map(mut self) -> Self {
@@ -116,7 +122,9 @@ impl PetriVmConfigOpenVmm {
     pub fn with_nic(mut self) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -181,7 +189,9 @@ impl PetriVmConfigOpenVmm {
                 mac_address,
                 endpoint: net_backend_resources::consomme::ConsommeHandle {
                     cidr: None,
+                    params: Default::default(),
                     ports: Vec::new(),
+                    internal_dns: true,
                     recv: None,
                 }
                 .into_resource(),
@@ -211,7 +221,9 @@ impl PetriVmConfigOpenVmm {
     pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -258,10 +270,22 @@ impl PetriVmConfigOpenVmm {
     ///
     /// This exposes a virtio-net device on a PCIe root port, suitable for
     /// guests running virtio drivers (e.g. Linux with UEFI boot).
-    pub fn with_virtio_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
+    pub fn with_virtio_nic(self, port_name: &str, mac_address: MacAddress) -> Self {
+        self.with_virtio_nic_rx_gso(port_name, mac_address, false)
+    }
+
+    /// Enable a Consomme-backed virtio-net NIC with configurable receive GSO.
+    pub fn with_virtio_nic_rx_gso(
+        mut self,
+        port_name: &str,
+        mac_address: MacAddress,
+        enable_rx_gso: bool,
+    ) -> Self {
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: Vec::new(),
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -271,6 +295,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso,
                     mac_address,
                     endpoint,
                 }
@@ -293,6 +318,7 @@ impl PetriVmConfigOpenVmm {
         let (port_send, port_recv) = mesh::oneshot();
         let endpoint = net_backend_resources::consomme::ConsommeHandle {
             cidr: None,
+            params: Default::default(),
             ports: vec![net_backend_resources::consomme::HostPortConfig {
                 protocol: net_backend_resources::consomme::HostPortProtocol::Tcp,
                 host_address: Some(net_backend_resources::consomme::HostIpAddress::Ipv4(
@@ -301,6 +327,7 @@ impl PetriVmConfigOpenVmm {
                 host_port: net_backend_resources::consomme::HostPort::Dynamic(port_send),
                 guest_port: pipette_client::PIPETTE_PORT as u16,
             }],
+            internal_dns: true,
             recv: None,
         }
         .into_resource();
@@ -309,6 +336,7 @@ impl PetriVmConfigOpenVmm {
             resource: virtio_resources::VirtioPciDeviceHandle(
                 virtio_resources::net::VirtioNetHandle {
                     max_queues: None,
+                    enable_rx_gso: false,
                     mac_address,
                     endpoint,
                 }
@@ -553,6 +581,7 @@ impl PetriVmConfigOpenVmm {
                     segment: segment.try_into().unwrap(),
                     start_bus: start_bus.try_into().unwrap(),
                     end_bus: end_bus.try_into().unwrap(),
+                    legacy_pci_config_io: false,
                     low_mmio: PcieMmioRangeConfig::Dynamic {
                         size: LOW_MMIO_SIZE,
                     },
@@ -571,8 +600,8 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    pub(super) fn with_guest_shares(mut self) -> Self {
-        if self.guest_shares.is_empty() {
+    pub(super) fn with_private_virtio_devices(mut self) -> Self {
+        if self.guest_shares.is_empty() && self.private_virtio_devices.is_empty() {
             return self;
         }
         if self.config.pcie_root_complexes.is_empty() {
@@ -599,15 +628,26 @@ impl PetriVmConfigOpenVmm {
             .collect::<Vec<_>>();
         shares.sort_by(|a, b| a.0.cmp(&b.0));
         for (tag, share) in shares {
-            let port_name = (0..)
-                .map(|i| format!("petri-share-{i}"))
-                .find(|name| port_names.insert(name.clone()))
-                .unwrap();
             let root_path = share
                 .host_path
                 .into_os_string()
                 .into_string()
                 .expect("guest share path must be UTF-8");
+            self.private_virtio_devices.push((
+                "petri-share-",
+                virtio_resources::p9::VirtioPlan9Handle {
+                    tag,
+                    root_path,
+                    debug: false,
+                }
+                .into_resource(),
+            ));
+        }
+        for (prefix, resource) in std::mem::take(&mut self.private_virtio_devices) {
+            let port_name = (0..)
+                .map(|i| format!("{prefix}{i}"))
+                .find(|name| port_names.insert(name.clone()))
+                .unwrap();
             self.config.pcie_root_complexes[root_index]
                 .ports
                 .push(PciePortConfig {
@@ -620,15 +660,7 @@ impl PetriVmConfigOpenVmm {
                 });
             self.config.pcie_devices.push(PcieDeviceConfig {
                 port_name,
-                resource: virtio_resources::VirtioPciDeviceHandle(
-                    virtio_resources::p9::VirtioPlan9Handle {
-                        tag,
-                        root_path,
-                        debug: false,
-                    }
-                    .into_resource(),
-                )
-                .into_resource(),
+                resource: virtio_resources::VirtioPciDeviceHandle(resource).into_resource(),
             });
         }
         self
@@ -672,6 +704,7 @@ impl PetriVmConfigOpenVmm {
                 PcieIommuConfig::Smmu {
                     accel: false,
                     oas: openvmm_defs::config::SmmuOas::Auto,
+                    ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
                 },
             ));
         }
@@ -693,6 +726,7 @@ impl PetriVmConfigOpenVmm {
                 PcieIommuConfig::Smmu {
                     accel: true,
                     oas: openvmm_defs::config::SmmuOas::Auto,
+                    ssidsize: openvmm_defs::config::SmmuSsidSize::Auto,
                 },
             ));
         }

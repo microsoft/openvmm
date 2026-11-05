@@ -1078,6 +1078,7 @@ mod tests {
             base: 0x7000_0000,
             event_gsiv: 35,
             gerr_gsiv: 36,
+            ats_supported: false,
             reserved_iova_ranges: vec![],
         }
     }

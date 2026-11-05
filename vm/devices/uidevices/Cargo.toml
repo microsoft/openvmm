@@ -33,6 +33,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 pal_async.workspace = true
+vmbus_channel = { workspace = true, features = ["test_helpers"] }
 tracing_helpers.workspace = true
 
 test_with_tracing.workspace = true

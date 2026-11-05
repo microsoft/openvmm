@@ -277,6 +277,7 @@ mod tests {
 
     use crate::test_helpers::CIPHERTEXT;
     use crypto::rsa::RsaKeyPair;
+    use crypto::x509::X509SelfSignedOptions;
     use openhcl_attestation_protocol::igvm_attest::akv;
 
     /// Empty JWT body type to use for parsing invalid JWTs.
@@ -458,11 +459,10 @@ mod tests {
         // Build root cert with different subject name
         let root = X509Certificate::build_self_signed(
             (&rsa_key).into(),
-            "US",
-            "Washington",
-            "Redmond",
-            "ACME INC",
-            "acme.com",
+            &X509SelfSignedOptions {
+                common_name: "acme.com",
+                ..Default::default()
+            },
         )
         .unwrap();
 

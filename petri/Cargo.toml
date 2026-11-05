@@ -86,6 +86,7 @@ parking_lot.workspace = true
 prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
+sha2.workspace = true
 target-lexicon.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true

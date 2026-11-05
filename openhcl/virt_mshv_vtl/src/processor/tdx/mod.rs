@@ -4289,9 +4289,7 @@ fn top_vector(reg: &[ApicRegisterValue; 8]) -> u8 {
     reg.iter()
         .enumerate()
         .rev()
-        .find_map(|(i, r)| {
-            (r.value != 0).then(|| (i as u32 * 32 + (31 - r.value.leading_zeros())) as u8)
-        })
+        .find_map(|(i, r)| r.value.highest_one().map(|bit| (i as u32 * 32 + bit) as u8))
         .unwrap_or(0)
 }
 

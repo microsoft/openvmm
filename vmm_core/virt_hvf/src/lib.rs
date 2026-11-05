@@ -854,7 +854,7 @@ impl Drop for HvfVcpu {
     }
 }
 
-const MAX_HOST_TIMER_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
+const MAX_HOST_TIMER_WAIT: Duration = Duration::from_hours(24);
 
 /// Converts an architected counter comparison into a bounded host wait.
 ///
@@ -871,11 +871,8 @@ fn vtimer_wait_duration(counter: u64, compare: u64, frequency: NonZeroU64) -> Op
     let ticks = compare - counter;
     let frequency = frequency.get();
     Some(
-        Duration::new(
-            ticks / frequency,
-            ((ticks % frequency) as u128 * 1_000_000_000 / frequency as u128) as u32,
-        )
-        .min(MAX_HOST_TIMER_WAIT),
+        Duration::from_nanos_u128(u128::from(ticks) * 1_000_000_000 / u128::from(frequency))
+            .min(MAX_HOST_TIMER_WAIT),
     )
 }
 
@@ -1165,12 +1162,8 @@ impl<'p> Processor for HvfProcessor<'p> {
                     if let Some(next_ref_time) = next_ref_time {
                         // Convert from reference timer basis to vmtime basis via
                         // difference of programmed timer and current reference time.
-                        const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
                         let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                        let ref_duration = Duration::new(
-                            ref_diff / NUM_100NS_IN_SEC,
-                            (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
-                        );
+                        let ref_duration = Duration::from_nanos_u128(u128::from(ref_diff) * 100);
                         let timeout = self.vmtime.now().wrapping_add(ref_duration);
                         self.vmtime.set_timeout_if_before(timeout);
                     }

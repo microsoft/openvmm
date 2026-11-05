@@ -127,13 +127,17 @@ fn build_init_script(
         }
     };
     let pipette = format!("'{}'", pipette.replace('\'', "'\\''"));
+    let transport = match network {
+        GuestNetwork::QemuUser => "tcp",
+        GuestNetwork::Consomme => "vsock",
+    };
     script.push_str(&format!(
         "ip link set eth0 up\nip addr add {address}/24 dev eth0\n\
          ip route add default via {gateway}\n\
          echo 'nameserver {dns}' > /etc/resolv.conf\n\
          export HOME=/root\n\
          export SSL_CERT_FILE=/{CA_CERTIFICATES_NAME}\n\
-         exec {pipette} --transport tcp\n"
+         exec {pipette} --transport {transport}\n"
     ));
     script
 }
@@ -189,7 +193,11 @@ mod tests {
             assert!(script.contains("date -u -s @123456789\n"));
             assert_eq!(script.contains("test -c /dev/mshv\n"), mshv);
             if matches!(agent, AgentLocation::Initrd) {
-                assert!(script.contains("exec '/pipette' --transport tcp"));
+                let transport = match network {
+                    GuestNetwork::QemuUser => "tcp",
+                    GuestNetwork::Consomme => "vsock",
+                };
+                assert!(script.contains(&format!("exec '/pipette' --transport {transport}")));
                 assert!(!script.contains("mount -t 9p"));
             } else {
                 assert!(script.contains("exec '/share/agent'\\''s pipette' --transport tcp"));

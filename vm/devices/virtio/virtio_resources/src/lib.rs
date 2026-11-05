@@ -155,6 +155,8 @@ pub mod net {
     #[derive(MeshPayload)]
     pub struct VirtioNetHandle {
         pub max_queues: Option<u16>,
+        /// Advertise guest TCP segmentation offload when the backend supports it.
+        pub enable_rx_gso: bool,
         pub mac_address: MacAddress,
         pub endpoint: Resource<NetEndpointHandleKind>,
     }

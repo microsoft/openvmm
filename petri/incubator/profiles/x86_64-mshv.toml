@@ -16,5 +16,5 @@ host-boot = "/path/to/mshv_host_boot.efi"
 firmware = "/path/to/MSVM.fd"
 boot-artifacts = "/path/to/public-artifacts"
 # These options are written to text files on the ESP, not compiled into the app.
-kernel-cmdline = "console=ttyS0 panic=-1"
+kernel-cmdline = "console=hvc0 panic=-1 8250.nr_uarts=0"
 hypervisor-cmdline = 'MSHV_ROOT=\Windows MSHV_ENABLE=TRUE MSHV_SCHEDULER_TYPE=ROOT MSHV_X2APIC_POLICY=ENABLE MSHV_FORCE_NESTED=TRUE'

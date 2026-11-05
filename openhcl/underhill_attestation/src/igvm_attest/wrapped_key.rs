@@ -5,7 +5,7 @@
 //! response in JSON format defined by Azure CVM Provisioning Service (CPS).
 
 use crate::igvm_attest::Error as CommonError;
-use crate::igvm_attest::parse_response_header;
+use crate::igvm_attest::parse_response_header_for_request;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
@@ -39,6 +39,7 @@ pub struct IgvmWrappedKeyParsedResponse {
 /// key from `response`, otherwise returns an error.
 pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, WrappedKeyError> {
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestCommonResponseHeader;
+    use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestResponseVersion;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestWrappedKeyResponseHeader;
 
@@ -48,7 +49,11 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
     const MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE: usize = MINIMUM_WRAPPED_KEY_SIZE / 3 * 4;
     const MINIMUM_PAYLOAD_SIZE: usize = CIPHER_TEXT_KEY.len() + MINIMUM_WRAPPED_KEY_BASE64_URL_SIZE;
 
-    let header = parse_response_header(response).map_err(WrappedKeyError::ParseHeader)?;
+    let header = parse_response_header_for_request(
+        response,
+        Some(IgvmAttestRequestType::WRAPPED_KEY_REQUEST),
+    )
+    .map_err(WrappedKeyError::ParseHeader)?;
 
     // Extract payload as per header version
     let header_size = match header.version {

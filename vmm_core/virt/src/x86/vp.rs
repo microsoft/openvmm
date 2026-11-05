@@ -800,19 +800,16 @@ impl Xsave {
 
         header.xcomp_bv = caps.xsave.features | caps.xsave.supervisor_features | XCOMP_COMPRESSED;
         let mut cur = 0;
-        for i in 2..63 {
-            if header.xcomp_bv & (1 << i) != 0 {
-                let feature = &caps.xsave.feature_info[i];
-                let offset = feature.offset as usize;
-                let len = feature.len as usize;
-                if feature.align {
-                    cur = (cur + 63) & !63;
-                }
-                if header.xstate_bv & (1 << i) != 0 {
-                    data[cur..cur + len].copy_from_slice(&src[offset..offset + len]);
-                }
-                cur += len;
+        for (i, feature) in caps.xsave.variable_features(header.xcomp_bv) {
+            let offset = feature.offset as usize;
+            let len = feature.len as usize;
+            if feature.align {
+                cur = (cur + 63) & !63;
             }
+            if header.xstate_bv & (1 << i) != 0 {
+                data[cur..cur + len].copy_from_slice(&src[offset..offset + len]);
+            }
+            cur += len;
         }
         this.normalize();
         this
@@ -835,20 +832,16 @@ impl Xsave {
 
         // Copy the features.
         let mut cur = XSAVE_VARIABLE_OFFSET;
-        for i in 2..63 {
-            if header.xcomp_bv & (1 << i) != 0 {
-                let feature = &caps.xsave.feature_info[i];
-                let offset = feature.offset as usize;
-                let len = feature.len as usize;
-                if feature.align {
-                    cur = (cur + 63) & !63;
-                }
-                if header.xstate_bv & (1 << i) != 0 {
-                    data[offset..offset + len]
-                        .copy_from_slice(&self.data.as_bytes()[cur..cur + len]);
-                }
-                cur += len;
+        for (i, feature) in caps.xsave.variable_features(header.xcomp_bv) {
+            let offset = feature.offset as usize;
+            let len = feature.len as usize;
+            if feature.align {
+                cur = (cur + 63) & !63;
             }
+            if header.xstate_bv & (1 << i) != 0 {
+                data[offset..offset + len].copy_from_slice(&self.data.as_bytes()[cur..cur + len]);
+            }
+            cur += len;
         }
     }
 
