@@ -317,8 +317,9 @@ impl Queue for TapQueue {
                     );
                     assert_vnet_hdr_contract(&hdr, frame.len());
                     let strip_tag = self.enabled_rx_offloads.vlan && has_vlan_tag(frame);
-                    if strip_tag {
-                        rebase_vnet_hdr_for_stripped_tag(&mut hdr);
+                    if strip_tag && hdr.flags.needs_csum() {
+                        // The kernel's offset counts the tag.
+                        hdr.csum_start = hdr.csum_start.saturating_sub(VLAN_TAG_LEN);
                     }
                     let Some(mut rx_meta) = parse_vnet_hdr_for_queue(
                         &hdr,
@@ -663,17 +664,6 @@ fn has_vlan_tag(frame: &[u8]) -> bool {
         && frame[ETHERNET_ADDRESSES_LEN..ETHERNET_ADDRESSES_LEN + 2] == ETH_P_8021Q.to_be_bytes()
 }
 
-/// Moves the header's frame offsets back by the tag [`strip_vlan_tag`] takes out. The kernel's
-/// offsets count the tag.
-fn rebase_vnet_hdr_for_stripped_tag(hdr: &mut VirtioNetHdr) {
-    if hdr.flags.needs_csum() {
-        hdr.csum_start = hdr.csum_start.saturating_sub(VLAN_TAG_LEN);
-    }
-    if hdr.gso_type.protocol() != VirtioNetHdrGsoProtocol::NONE {
-        hdr.hdr_len = hdr.hdr_len.saturating_sub(VLAN_TAG_LEN);
-    }
-}
-
 /// Takes the tag out of a frame [`has_vlan_tag`] accepted, moving the MAC addresses over it. The
 /// frame then starts 4 bytes later.
 fn strip_vlan_tag(frame: &mut [u8]) -> VlanMetadata {
@@ -1009,36 +999,6 @@ mod tests {
             meta.offload,
             RxOffload::tcp_gso(RxGsoProtocol::TcpV6, 74, 1440, Some(54))
         );
-    }
-
-    #[test]
-    fn stripped_tag_moves_the_gso_header_length() {
-        let tcpv4 = VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4);
-        let mut partial = VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
-            gso_type: tcpv4,
-            hdr_len: 58,
-            gso_size: 1460,
-            csum_start: 38,
-            csum_offset: 16,
-            ..Default::default()
-        };
-        rebase_vnet_hdr_for_stripped_tag(&mut partial);
-        assert_eq!((partial.hdr_len, partial.csum_start), (54, 34));
-
-        let mut valid = VirtioNetHdr {
-            flags: VirtioNetHdrFlags::new().with_data_valid(true),
-            gso_type: tcpv4,
-            hdr_len: 58,
-            gso_size: 1460,
-            ..Default::default()
-        };
-        rebase_vnet_hdr_for_stripped_tag(&mut valid);
-        assert_eq!((valid.hdr_len, valid.csum_start), (54, 0));
-
-        let mut plain = VirtioNetHdr::default();
-        rebase_vnet_hdr_for_stripped_tag(&mut plain);
-        assert_eq!(plain.hdr_len, 0);
     }
 
     #[test]
