@@ -96,7 +96,6 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
-use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
@@ -258,6 +257,20 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
         BaseChipsetType::HyperVGen2LinuxDirect
     } else {
         BaseChipsetType::UnenlightenedLinuxDirect
+    }
+}
+
+/// Whether the VM gets an ACPI power button.
+///
+/// This reads the boot flags rather than the load mode, which is
+/// `LoadMode::None` when restoring a snapshot.
+fn acpi_power_button_enabled(opt: &Options) -> bool {
+    if opt.igvm.is_some() {
+        false
+    } else if opt.pcat || opt.uefi.is_some() {
+        true
+    } else {
+        !opt.device_tree
     }
 }
 
@@ -1535,7 +1548,7 @@ async fn vm_config_from_command_line(
         };
     }
 
-    if supports_acpi_power_button(&load_mode) {
+    if acpi_power_button_enabled(opt) {
         let (send, recv) = mesh::channel();
         let irq = match arch {
             MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
@@ -3246,6 +3259,52 @@ mod tests {
     use std::fs::File;
     use test_with_tracing::test;
     use vm_resource::ResourceId;
+
+    /// The same boot flags give the same ACPI power button with and without
+    /// `--restore-snapshot`.
+    #[test]
+    fn restore_builds_the_acpi_power_button_of_its_boot_command_line() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let file = |name: &str| {
+                let path = temp_dir.path().join(name);
+                File::create(&path).unwrap();
+                path.to_str().unwrap().to_owned()
+            };
+            let kernel = file("kernel");
+            let initrd = file("initrd");
+            let uefi = format!("--uefi=firmware={}", file("firmware"));
+            // The config build does not read the snapshot directory.
+            let snapshot = temp_dir.path().join("snapshot");
+            let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
+
+            for (boot, has_button) in [
+                (linux.to_vec(), true),
+                ([&linux[..], &["--device-tree"]].concat(), false),
+                (vec![uefi.as_str()], true),
+            ] {
+                for restore in [false, true] {
+                    let mut args = vec!["openvmm", "--single-process"];
+                    args.extend(&boot);
+                    if restore {
+                        args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                    }
+                    let opt = Options::try_parse_from(&args).unwrap();
+                    let mesh = VmmMesh::new(&driver, true).unwrap();
+                    let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                        .await
+                        .unwrap();
+                    mesh.shutdown().await;
+
+                    let built = config
+                        .chipset_devices
+                        .iter()
+                        .any(|device| device.name == "acpi-power-button");
+                    assert_eq!(built, has_button, "{args:?}");
+                }
+            }
+        });
+    }
 
     #[test]
     fn selects_non_volatile_store_backing() {
