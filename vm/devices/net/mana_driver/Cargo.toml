@@ -33,7 +33,6 @@ chipset_device.workspace = true
 gdma.workspace = true
 net_backend.workspace = true
 pci_core.workspace = true
-rstest.workspace = true
 test_with_tracing.workspace = true
 user_driver_emulated_mock.workspace = true
 

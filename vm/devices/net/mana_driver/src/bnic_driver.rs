@@ -353,21 +353,13 @@ mod tests {
     use super::*;
     use CreateWqResponseValidationError::InvalidWqObjectHandle;
     use CreateWqResponseValidationError::QueueIdOutOfRange;
-    use rstest::rstest;
+    use test_with_tracing::test;
 
-    #[rstest]
-    #[case::zero_valid(0, 0, 0, Ok(()))]
-    #[case::max_valid(0x00ff_ffff, 0x00ff_ffff, 0, Ok(()))]
-    #[case::first_invalid_cq(0, 0x0100_0000, 0, Err(QueueIdOutOfRange { cq_id: 0x0100_0000, wq_id: 0 }))]
-    #[case::first_invalid_wq(0x0100_0000, 0, 0, Err(QueueIdOutOfRange { cq_id: 0, wq_id: 0x0100_0000 }))]
-    #[case::last_valid_handle(0, 0, u64::MAX - 1, Ok(()))]
-    #[case::invalid_handle_rejected(0, 0, u64::MAX, Err(InvalidWqObjectHandle))]
-    #[test_with_tracing::test]
-    fn test_create_wq_response(
-        #[case] wq_id: u32,
-        #[case] cq_id: u32,
-        #[case] wq_obj: u64,
-        #[case] expected: Result<(), CreateWqResponseValidationError>,
+    fn check_create_wq_response(
+        wq_id: u32,
+        cq_id: u32,
+        wq_obj: u64,
+        expected: Result<(), CreateWqResponseValidationError>,
     ) {
         let resp = ManaCreateWqobjResp {
             wq_id,
@@ -376,5 +368,51 @@ mod tests {
         };
 
         assert_eq!(validate_create_wq_response(&resp), expected);
+    }
+
+    #[test]
+    fn test_create_wq_response_zero_valid() {
+        check_create_wq_response(0, 0, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_max_valid() {
+        check_create_wq_response(0x00ff_ffff, 0x00ff_ffff, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_first_invalid_cq() {
+        check_create_wq_response(
+            0,
+            0x0100_0000,
+            0,
+            Err(QueueIdOutOfRange {
+                cq_id: 0x0100_0000,
+                wq_id: 0,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_first_invalid_wq() {
+        check_create_wq_response(
+            0x0100_0000,
+            0,
+            0,
+            Err(QueueIdOutOfRange {
+                cq_id: 0,
+                wq_id: 0x0100_0000,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_last_valid_handle() {
+        check_create_wq_response(0, 0, u64::MAX - 1, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_invalid_handle_rejected() {
+        check_create_wq_response(0, 0, u64::MAX, Err(InvalidWqObjectHandle));
     }
 }

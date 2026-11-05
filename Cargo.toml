@@ -691,7 +691,6 @@ expect-test = "1.5"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
 loom = "0.7.2"
-rstest = { version = "0.28", default-features = false }
 
 # --- Linux process sandboxing ---
 caps = "0.5"

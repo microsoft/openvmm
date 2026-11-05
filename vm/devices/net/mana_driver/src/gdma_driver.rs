@@ -1670,20 +1670,12 @@ mod tests {
     use ResponseValidationError::Truncated;
     use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
     use gdma_defs::bnic::ManaCreateWqobjResp;
-    use rstest::rstest;
+    use test_with_tracing::test;
 
-    #[rstest]
-    #[case::send_then_receive((true, 3), (false, 5), Ok(Some(48)))]
-    #[case::receive_then_send((false, 5), (true, 3), Ok(Some(48)))]
-    #[case::two_send((true, 3), (true, 3), Ok(None))]
-    #[case::two_receive((false, 5), (false, 5), Ok(Some(48)))]
-    #[case::wrong_send_queue((true, 4), (false, 5), Ok(Some(48)))]
-    #[case::wrong_receive_queue((true, 3), (false, 6), Err(QueueIdMismatch { expected: 5, received: 6 }))]
-    #[test_with_tracing::test]
-    fn test_validate_completions(
-        #[case] first: (bool, u32),
-        #[case] second: (bool, u32),
-        #[case] expected: Result<Option<u32>, CompletionValidationError>,
+    fn check_validate_completions(
+        first: (bool, u32),
+        second: (bool, u32),
+        expected: Result<Option<u32>, CompletionValidationError>,
     ) {
         let cqes = [first, second].map(|(is_send, queue_id)| {
             let oob = HwcRxOob {
@@ -1702,17 +1694,48 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case::matching_response(2, 7, 0, Ok(()))]
-    #[case::message_type_mismatch(3, 7, 0, Err(MessageTypeMismatch { expected: 2, received: 3 }))]
-    #[case::activity_id_mismatch(2, 8, 0, Err(ActivityIdMismatch { expected: 7, received: 8 }))]
-    #[case::failed_status(2, 7, 1, Err(FailedStatus(1)))]
-    #[test_with_tracing::test]
-    fn test_validate_response(
-        #[case] msg_type: u32,
-        #[case] activity_id: u32,
-        #[case] status: u32,
-        #[case] expected: Result<(), ResponseValidationError>,
+    #[test]
+    fn test_validate_completions_send_then_receive() {
+        check_validate_completions((true, 3), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_receive_then_send() {
+        check_validate_completions((false, 5), (true, 3), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_two_send() {
+        check_validate_completions((true, 3), (true, 3), Ok(None));
+    }
+
+    #[test]
+    fn test_validate_completions_two_receive() {
+        check_validate_completions((false, 5), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_wrong_send_queue() {
+        check_validate_completions((true, 4), (false, 5), Ok(Some(48)));
+    }
+
+    #[test]
+    fn test_validate_completions_wrong_receive_queue() {
+        check_validate_completions(
+            (true, 3),
+            (false, 6),
+            Err(QueueIdMismatch {
+                expected: 5,
+                received: 6,
+            }),
+        );
+    }
+
+    fn check_validate_response(
+        msg_type: u32,
+        activity_id: u32,
+        status: u32,
+        expected: Result<(), ResponseValidationError>,
     ) {
         let mut hdr = GdmaReqHdr::new_zeroed();
         hdr.req.msg_type = 1;
@@ -1730,24 +1753,47 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case::header_only(32, Some(48), 0, Err(TooSmall { received: 32, minimum: 48 }))]
-    #[case::truncated_payload(47, Some(48), 0, Err(TooSmall { received: 47, minimum: 48 }))]
-    #[case::complete(48, Some(48), 0, Ok(()))]
-    #[case::failed_header_only(32, Some(32), 1, Err(FailedStatus(1)))]
-    #[case::truncated_received_header(48, Some(31), 0, Err(Truncated { received: 31, minimum: 32 }))]
-    #[case::truncated_failed_header(48, Some(31), 1, Err(Truncated { received: 31, minimum: 32 }))]
-    #[case::truncated_received_payload(48, Some(47), 0, Err(Truncated { received: 47, minimum: 48 }))]
-    #[case::failed_header_unset_size(0, Some(32), 1, Err(FailedStatus(1)))]
-    #[case::failed_header_success_size(48, Some(32), 1, Err(FailedStatus(1)))]
-    #[case::unknown_received_size(48, None, 0, Ok(()))]
-    #[case::unknown_received_size_short_declared(47, None, 0, Err(TooSmall { received: 47, minimum: 48 }))]
-    #[test_with_tracing::test]
-    fn test_create_wq_response_size(
-        #[case] msg_size: u32,
-        #[case] received_size: Option<u32>,
-        #[case] status: u32,
-        #[case] expected: Result<(), ResponseValidationError>,
+    #[test]
+    fn test_validate_response_matching_response() {
+        check_validate_response(2, 7, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_validate_response_message_type_mismatch() {
+        check_validate_response(
+            3,
+            7,
+            0,
+            Err(MessageTypeMismatch {
+                expected: 2,
+                received: 3,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_validate_response_activity_id_mismatch() {
+        check_validate_response(
+            2,
+            8,
+            0,
+            Err(ActivityIdMismatch {
+                expected: 7,
+                received: 8,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_validate_response_failed_status() {
+        check_validate_response(2, 7, 1, Err(FailedStatus(1)));
+    }
+
+    fn check_create_wq_response_size(
+        msg_size: u32,
+        received_size: Option<u32>,
+        status: u32,
+        expected: Result<(), ResponseValidationError>,
     ) {
         let mut hdr = GdmaReqHdr::new_zeroed();
         hdr.req.msg_type = ManaCommandCode::MANA_CREATE_WQ_OBJ.0;
@@ -1768,17 +1814,113 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case::truncated_v1(71, 72, Err(TooSmall { received: 71, minimum: 72 }))]
-    #[case::v1_compatible(72, 72, Ok(()))]
-    #[case::v4(80, 80, Ok(()))]
-    #[case::v1_received_with_v4_size(80, 72, Ok(()))]
-    #[case::truncated_received_v1(80, 71, Err(Truncated { received: 71, minimum: 72 }))]
-    #[test_with_tracing::test]
-    fn test_query_dev_config_response_size(
-        #[case] msg_size: u32,
-        #[case] received_size: u32,
-        #[case] expected: Result<(), ResponseValidationError>,
+    #[test]
+    fn test_create_wq_response_size_header_only() {
+        check_create_wq_response_size(
+            32,
+            Some(48),
+            0,
+            Err(TooSmall {
+                received: 32,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_payload() {
+        check_create_wq_response_size(
+            47,
+            Some(48),
+            0,
+            Err(TooSmall {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_complete() {
+        check_create_wq_response_size(48, Some(48), 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_only() {
+        check_create_wq_response_size(32, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_received_header() {
+        check_create_wq_response_size(
+            48,
+            Some(31),
+            0,
+            Err(Truncated {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_failed_header() {
+        check_create_wq_response_size(
+            48,
+            Some(31),
+            1,
+            Err(Truncated {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_truncated_received_payload() {
+        check_create_wq_response_size(
+            48,
+            Some(47),
+            0,
+            Err(Truncated {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_unset_size() {
+        check_create_wq_response_size(0, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_failed_header_success_size() {
+        check_create_wq_response_size(48, Some(32), 1, Err(FailedStatus(1)));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_unknown_received_size() {
+        check_create_wq_response_size(48, None, 0, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_size_unknown_received_size_short_declared() {
+        check_create_wq_response_size(
+            47,
+            None,
+            0,
+            Err(TooSmall {
+                received: 47,
+                minimum: 48,
+            }),
+        );
+    }
+
+    fn check_query_dev_config_response_size(
+        msg_size: u32,
+        received_size: u32,
+        expected: Result<(), ResponseValidationError>,
     ) {
         let mut hdr = GdmaReqHdr::new_zeroed();
         hdr.req.msg_type = ManaCommandCode::MANA_QUERY_DEV_CONFIG.0;
@@ -1799,14 +1941,46 @@ mod tests {
         );
     }
 
-    #[rstest]
-    #[case::truncated_header(31, Err(TooSmall { received: 31, minimum: 32 }))]
-    #[case::complete_header(32, Ok(()))]
-    #[test_with_tracing::test]
-    fn test_empty_response_size(
-        #[case] msg_size: u32,
-        #[case] expected: Result<(), ResponseValidationError>,
-    ) {
+    #[test]
+    fn test_query_dev_config_response_size_truncated_v1() {
+        check_query_dev_config_response_size(
+            71,
+            72,
+            Err(TooSmall {
+                received: 71,
+                minimum: 72,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v1_compatible() {
+        check_query_dev_config_response_size(72, 72, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v4() {
+        check_query_dev_config_response_size(80, 80, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_v1_received_with_v4_size() {
+        check_query_dev_config_response_size(80, 72, Ok(()));
+    }
+
+    #[test]
+    fn test_query_dev_config_response_size_truncated_received_v1() {
+        check_query_dev_config_response_size(
+            80,
+            71,
+            Err(Truncated {
+                received: 71,
+                minimum: 72,
+            }),
+        );
+    }
+
+    fn check_empty_response_size(msg_size: u32, expected: Result<(), ResponseValidationError>) {
         let hdr = GdmaReqHdr::new_zeroed();
         let mut resp_hdr = GdmaRespHdr::new_zeroed();
         resp_hdr.response.msg_size = msg_size;
@@ -1815,5 +1989,21 @@ mod tests {
             validate_response(&hdr, &resp_hdr, size_of::<()>(), Some(32)),
             expected
         );
+    }
+
+    #[test]
+    fn test_empty_response_size_truncated_header() {
+        check_empty_response_size(
+            31,
+            Err(TooSmall {
+                received: 31,
+                minimum: 32,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_empty_response_size_complete_header() {
+        check_empty_response_size(32, Ok(()));
     }
 }
