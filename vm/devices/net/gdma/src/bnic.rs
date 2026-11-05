@@ -188,7 +188,8 @@ impl InspectMut for BasicNic {
 struct Vport {
     mac_address: MacAddress,
     endpoint: Box<dyn Endpoint>,
-    /// The endpoint has handed out queues that `stop` has not taken back yet.
+    /// The endpoint has been asked for queues, and `stop` has not taken back
+    /// what it handed out or allocated since.
     endpoint_has_queues: bool,
     task: TaskControl<TxRxState, TxRxTask>,
     queue_cfg: QueueCfg,
@@ -209,6 +210,21 @@ impl InspectMut for Vport {
 }
 
 impl Vport {
+    /// Asks the endpoint for queues. The endpoint can allocate before this
+    /// returns, is cancelled or fails, so it is marked as needing a `stop`
+    /// before the call starts.
+    async fn endpoint_queues(
+        &mut self,
+        config: QueueConfig,
+    ) -> anyhow::Result<Vec<Box<dyn Queue>>> {
+        self.endpoint_has_queues = true;
+        let mut queues = vec![];
+        self.endpoint
+            .get_queues(vec![config], None, &mut queues)
+            .await?;
+        Ok(queues)
+    }
+
     /// Stops the data path. Each step is undone only after it completes, so a
     /// call cancelled partway is finished by the next one.
     async fn stop_data_path(&mut self) {
@@ -422,19 +438,12 @@ impl BasicNic {
                         {
                             // Finishes a disable that was cancelled partway.
                             vport.stop_data_path().await;
-                            let mut queues = vec![];
-                            vport
-                                .endpoint
-                                .get_queues(
-                                    vec![QueueConfig {
-                                        driver: Box::new(state.queues.driver.clone()),
-                                        enabled_rx_offloads: Default::default(),
-                                    }],
-                                    None,
-                                    &mut queues,
-                                )
+                            let mut queues = vport
+                                .endpoint_queues(QueueConfig {
+                                    driver: Box::new(state.queues.driver.clone()),
+                                    enabled_rx_offloads: Default::default(),
+                                })
                                 .await?;
-                            vport.endpoint_has_queues = true;
 
                             vport.task.insert(
                                 &state.queues.driver,
@@ -1242,6 +1251,98 @@ mod reset_tests {
             !vport.task.has_state(),
             "cancelled after the task was removed"
         );
+        assert_eq!(stopped.load(Ordering::SeqCst), 0);
+
+        device.reset().await;
+
+        assert_eq!(stopped.load(Ordering::SeqCst), 1);
+        assert!(!device.hwc.task_mut().bnic.vports[0].endpoint_has_queues);
+    }
+
+    /// A null endpoint whose first `get_queues` never finishes. Counts the calls begun and
+    /// the stops finished.
+    struct HangsFirstGetQueues {
+        inner: NullEndpoint,
+        hang: bool,
+        entered: Arc<AtomicUsize>,
+        stopped: Arc<AtomicUsize>,
+    }
+
+    impl InspectMut for HangsFirstGetQueues {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Endpoint for HangsFirstGetQueues {
+        fn endpoint_type(&self) -> &'static str {
+            "test"
+        }
+
+        async fn get_queues(
+            &mut self,
+            config: Vec<QueueConfig>,
+            rss: Option<&net_backend::RssConfig<'_>>,
+            queues: &mut Vec<Box<dyn Queue>>,
+        ) -> anyhow::Result<()> {
+            self.entered.fetch_add(1, Ordering::SeqCst);
+            if std::mem::take(&mut self.hang) {
+                std::future::pending::<()>().await;
+            }
+            self.inner.get_queues(config, rss, queues).await
+        }
+
+        async fn stop(&mut self) {
+            self.inner.stop().await;
+            self.stopped.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn is_ordered(&self) -> bool {
+            true
+        }
+    }
+
+    /// An enable cancelled while the endpoint allocates its queues leaves the endpoint
+    /// holding whatever it allocated. The reset still has to stop it.
+    #[async_test]
+    async fn reset_stops_an_endpoint_whose_get_queues_was_cancelled(driver: DefaultDriver) {
+        let entered = Arc::new(AtomicUsize::new(0));
+        let stopped = Arc::new(AtomicUsize::new(0));
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let mut device = crate::GdmaDevice::new(
+            &driver_source,
+            GuestMemory::allocate(0x1000),
+            &MsiTarget::disconnected(),
+            vec![VportConfig {
+                mac_address: [0, 1, 2, 3, 4, 5].into(),
+                endpoint: Box::new(HangsFirstGetQueues {
+                    inner: NullEndpoint::new(),
+                    hang: true,
+                    entered: entered.clone(),
+                    stopped: stopped.clone(),
+                }),
+            }],
+            &mut ExternallyManagedMmioIntercepts,
+        );
+        {
+            // Dropping the future inside the endpoint's get_queues is the cancellation.
+            let mut start = std::pin::pin!(device.hwc.task_mut().bnic.vports[0].endpoint_queues(
+                QueueConfig {
+                    driver: Box::new(driver_source.simple()),
+                    enabled_rx_offloads: Default::default(),
+                }
+            ));
+            poll_fn(|cx| {
+                let _ = start.as_mut().poll(cx);
+                if entered.load(Ordering::SeqCst) == 1 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
         assert_eq!(stopped.load(Ordering::SeqCst), 0);
 
         device.reset().await;
