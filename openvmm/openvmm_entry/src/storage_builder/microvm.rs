@@ -184,13 +184,16 @@ pub(crate) fn capture_snapshot_block_contract(
 /// Returns the block contract that a restore of `sources` must match, which
 /// the restore compares with `saved_blocks`, the snapshot's.
 ///
-/// Each block that the snapshot binds keeps the storage generation that its
-/// capture recorded, and unbound layers and fresh scratch have no identity.
-/// The restore never reads a block to identify it.
+/// The identity of each block that the snapshot binds is `generation`, the
+/// storage generation of the restore's blocks, so that a snapshot that binds
+/// other storage fails the comparison; a restore of such a snapshot requires
+/// it. Unbound layers and fresh scratch have no identity. The restore never
+/// reads a block to identify it.
 pub(crate) fn restore_snapshot_block_contract(
     sources: &[MicrovmSandboxBlockSource],
     scratch_policy: chipset_resources::microvm::MicrovmSnapshotScratchPolicy,
     saved_blocks: &[openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock],
+    generation: Option<[u8; 16]>,
 ) -> anyhow::Result<Vec<openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock>> {
     sources
         .iter()
@@ -205,9 +208,14 @@ pub(crate) fn restore_snapshot_block_contract(
                     )
                 })?;
             let identity = match saved.identity_kind.as_str() {
-                openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
-                    saved.identity.clone()
-                }
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION => generation
+                    .with_context(|| {
+                        format!(
+                            "snapshot binds the microVM {} block to a storage generation, which the restore requires",
+                            source.role.as_str()
+                        )
+                    })?
+                    .to_vec(),
                 "unbound" | "fresh" => Vec::new(),
                 other => anyhow::bail!(
                     "snapshot microVM {} block identity kind '{other}' is unsupported",
@@ -648,6 +656,7 @@ mod tests {
                 sources,
                 chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh,
                 std::slice::from_ref(&saved),
+                None,
             )
             .unwrap(),
             [saved]
@@ -744,26 +753,33 @@ mod tests {
             "microVM paired scratch requires a storage generation"
         );
 
-        // A restore expects the bound blocks to keep the generation that the
-        // snapshot recorded, without reading them either.
+        // A restore expects the bound blocks to have its own generation, so a
+        // snapshot of the same storage matches, and one of other storage does
+        // not.
         let restore_sources = [
             block_source(MicrovmSandboxBlockRole::Distro, None),
             block_source(MicrovmSandboxBlockRole::Scratch, None),
         ];
-        assert_eq!(
+        let restore = |generation| {
             restore_snapshot_block_contract(
                 &restore_sources,
                 MicrovmSnapshotScratchPolicy::Paired,
                 &bound,
+                generation,
             )
-            .unwrap(),
-            bound
+        };
+        assert_eq!(restore(Some(GENERATION)).unwrap(), bound);
+        assert_ne!(restore(Some([0x24; 16])).unwrap(), bound);
+        assert_eq!(
+            restore(None).unwrap_err().to_string(),
+            "snapshot binds the microVM distro block to a storage generation, which the restore requires"
         );
         assert_eq!(
             restore_snapshot_block_contract(
                 &restore_sources,
                 MicrovmSnapshotScratchPolicy::Fresh,
                 &unbound,
+                None,
             )
             .unwrap(),
             unbound

@@ -300,6 +300,14 @@ pub struct MicrovmCli {
     #[clap(long, requires = "restore_snapshot")]
     pub restore_network_policy: bool,
 
+    /// Immutable storage generation of the sandbox blocks of this restore.
+    ///
+    /// Required to restore a `workload-start` or `instance-checkpoint`
+    /// snapshot, whose recorded generation it must match. A `platform`
+    /// snapshot binds no block and checks none.
+    #[clap(long, value_name = "HEX", requires = "restore_snapshot")]
+    pub restore_generation_id: Option<SnapshotGenerationIdCli>,
+
     /// Maximum time allowed for a microVM guest to complete post-restore repair.
     #[clap(long, value_name = "MILLISECONDS", default_value_t = 60000)]
     pub restore_gate_timeout_ms: u64,
@@ -801,12 +809,13 @@ impl Options {
                     && self.microvm.restore_memory.is_none()
                     && !self.microvm.restore_absent_scratch
                     && !self.microvm.restore_network_policy
+                    && self.microvm.restore_generation_id.is_none()
                     && self.microvm.memory_capacity.is_none()
                     && self.microvm.snapshot_generation_id.is_none()
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
                     && !self.microvm.microvm_control_auth_stdin,
-                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --restore-network-policy, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
+                "--network-profile, --net-tap, --mount, --mount-aggregate, --microvm-sandbox-block, --microvm-workload-identity, --microvm-lifecycle, --microvm-control-console, --microvm-control-auth-stdin, --restore-processors, --restore-memory, --restore-absent-scratch, --restore-network-policy, --restore-generation-id, --memory-capacity, snapshot block policy, and microVM network policy require a microVM machine"
             );
             return Ok(());
         }
@@ -929,6 +938,10 @@ impl Options {
         anyhow::ensure!(
             self.restore_snapshot.is_some() || !self.microvm.restore_network_policy,
             "--restore-network-policy requires --restore-snapshot"
+        );
+        anyhow::ensure!(
+            self.restore_snapshot.is_some() || self.microvm.restore_generation_id.is_none(),
+            "--restore-generation-id requires --restore-snapshot"
         );
         if self.restore_snapshot.is_some() {
             anyhow::ensure!(
@@ -2192,6 +2205,69 @@ mod tests {
         ))
         .unwrap();
         resume.validate_microvm_options().unwrap();
+    }
+
+    #[cfg(guest_arch = "x86_64")]
+    #[test]
+    fn test_microvm_restore_generation_id_requires_a_microvm_restore() {
+        const GENERATION: &str = "00112233445566778899aabbccddeeff";
+        let restore = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-generation-id",
+            GENERATION,
+        ])
+        .unwrap();
+        restore.validate_microvm_options().unwrap();
+        assert_eq!(
+            restore.microvm.restore_generation_id,
+            GENERATION.parse::<SnapshotGenerationIdCli>().ok()
+        );
+
+        // A cold boot has no snapshot whose generation to check.
+        assert!(
+            Options::try_parse_from([
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--restore-generation-id",
+                GENERATION,
+            ])
+            .is_err()
+        );
+        // Clap accepts it when --snapshot-destination, which conflicts with
+        // --restore-snapshot, lifts the requirement, so the validation refuses
+        // it.
+        let cold_boot = Options::try_parse_from([
+            "openvmm",
+            "--machine",
+            "microvm",
+            "--snapshot-destination",
+            "snapshot",
+            "--restore-generation-id",
+            GENERATION,
+        ])
+        .unwrap();
+        assert_eq!(
+            cold_boot
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string(),
+            "--restore-generation-id requires --restore-snapshot"
+        );
+        // Nor does a standard machine.
+        let standard = Options::try_parse_from([
+            "openvmm",
+            "--restore-snapshot",
+            "snapshot",
+            "--restore-generation-id",
+            GENERATION,
+        ])
+        .unwrap();
+        assert!(standard.validate_microvm_options().is_err());
     }
 
     #[test]

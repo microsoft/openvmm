@@ -496,11 +496,12 @@ describes the source definitions.
 
   For sandbox-block snapshots, restore repeats the read-only `distro`
   `--microvm-sandbox-block` argument. Its role, access, and geometry must
-  match the manifest, and OpenVMM never reads a block to identify it: a
-  `workload-start` or `instance-checkpoint` snapshot binds its blocks to the
-  storage generation that its capture recorded. A platform snapshot has two
-  exceptions: its `distro` layer is unbound, and it keeps the captured
-  capacity over an image that may be shorter. Such an image must have the
+  match the manifest, and a `workload-start` or `instance-checkpoint`
+  snapshot, which binds its blocks to a storage generation, also requires that
+  generation through `--restore-generation-id`; OpenVMM never reads a block to
+  identify it. A platform snapshot has two exceptions: its `distro` layer is
+  unbound, and it keeps the captured capacity over an image that may be
+  shorter. Such an image must have the
   captured logical and physical block sizes, reads past its end return zeros,
   and OpenVMM never resizes, pads, or writes it; a longer image is rejected.
   A paired snapshot supplies scratch internally from
@@ -593,6 +594,14 @@ describes the source definitions.
   clone from its host, and the guest of a snapshot without a tier from the
   restore packet, which carries them, and whose restore gates host input until
   the guest acknowledges that it applied them.
+* `--restore-generation-id <32-HEX-DIGITS>`: State the immutable storage
+  generation of this restore's sandbox blocks. A `workload-start` or
+  `instance-checkpoint` snapshot binds its read-only layers and paired scratch
+  to the generation that its capture recorded, and its restore requires the
+  same one: OpenVMM rejects a missing or different generation before it
+  materializes scratch or starts a vCPU. A platform snapshot binds no block, so
+  its restore checks no generation. OpenVMM rejects the option for a cold boot
+  and for a snapshot without sandbox blocks.
 * `--restore-gate-timeout-ms <MILLISECONDS>`: Bound microVM guest repair and
   gate acknowledgement after restore. The default is 60000 milliseconds.
 * `--cpu-profile <ID>`: Select the microVM's pinned CPU profile, `auto`
@@ -624,10 +633,10 @@ describes the source definitions.
 * `--snapshot-generation-id <32-HEX-DIGITS>`: Supply the immutable storage
   generation of the capture's sandbox blocks. A `workload-start` or
   `instance-checkpoint` capture requires it and records it as the identity of
-  every read-only layer and of the paired scratch, instead of reading them. A
-  platform capture binds no block and records none. The storage owner must
-  keep the generation bound to the exact immutable artifacts supplied at
-  restore.
+  every read-only layer and of the paired scratch, instead of reading them; a
+  restore must state it again with `--restore-generation-id`. A platform
+  capture binds no block and records none. The storage owner must keep the
+  generation bound to the exact immutable artifacts supplied at restore.
 * `--snapshot-scratch-restore-mode <MODE>`: Record `private-copy`,
   `copy-on-write`, or `direct-claimed` for paired scratch. Private copy is the
   default and may fall back to sparse copying. Copy-on-write is available only
@@ -638,9 +647,9 @@ describes the source definitions.
 
 A committed snapshot contains `manifest.bin`, `state.bin`, `memory.bin`, and
 optionally the manifest-declared `scratch.img`. Restore rejects unknown files,
-symlinks, malformed or oversized data, length mismatches, the `sha256` block
-identity of earlier releases, and incompatible machine contracts before
-starting a vCPU.
+symlinks, malformed or oversized data, length mismatches, a missing or
+different storage generation, the `sha256` block identity of earlier releases,
+and incompatible machine contracts before starting a vCPU.
 `memory.bin` uses a private writable copy-on-write mapping. Paired scratch uses
 the materialization policy recorded at capture; clone-policy snapshots never
 attach the source artifact writable, while direct attachment requires an

@@ -292,6 +292,12 @@ pub(crate) fn prepare_restore(
             "restore-time memory overrides are not allowed"
         );
         opt.memory.size = Some(vmm_cli::MemorySize(restore_memory_size));
+        validate_restore_generation(
+            &contract.microvm_sandbox_blocks,
+            opt.microvm
+                .restore_generation_id
+                .map(|generation| generation.0),
+        )?;
         let blocks = plan_sandbox_block_restore(
             &manifest.snapshot_tier,
             &contract.microvm_sandbox_blocks,
@@ -473,6 +479,47 @@ fn validate_filesystem_aggregate_restore(
             || !aggregate
             || snapshot_tier == openvmm_helpers::snapshot::format::SNAPSHOT_TIER_PLATFORM,
         "--mount-aggregate on a dormant filesystem slot requires a platform snapshot"
+    );
+    Ok(())
+}
+
+/// Checks `generation`, the storage generation of a restore's sandbox blocks
+/// that `--restore-generation-id` states, against `blocks`, the sandbox
+/// blocks of the snapshot.
+///
+/// A snapshot that binds its blocks, of the `workload-start` or
+/// `instance-checkpoint` tier, requires the generation that it recorded, so
+/// that a restore of other storage fails before it materializes the paired
+/// scratch. A platform snapshot binds none and takes any generation, and a
+/// snapshot without sandbox blocks takes none.
+fn validate_restore_generation(
+    blocks: &[SnapshotMicrovmSandboxBlock],
+    generation: Option<[u8; 16]>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !blocks.is_empty() || generation.is_none(),
+        "--restore-generation-id requires a snapshot with sandbox blocks"
+    );
+    let Some(recorded) = blocks.iter().find(|block| {
+        block.identity_kind
+            == openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION
+    }) else {
+        return Ok(());
+    };
+    let generation = generation.context(
+        "the snapshot binds its sandbox blocks to a storage generation; pass it with --restore-generation-id",
+    )?;
+    let hex = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    anyhow::ensure!(
+        recorded.identity == generation,
+        "the snapshot binds its sandbox blocks to storage generation {}, not {}",
+        hex(&recorded.identity),
+        hex(&generation)
     );
     Ok(())
 }
@@ -808,6 +855,53 @@ pub(crate) mod tests {
             physical_block_size: 4096,
             restore_mode: String::new(),
         }
+    }
+
+    #[test]
+    fn only_a_snapshot_that_binds_its_blocks_checks_the_restore_generation() {
+        const GENERATION: [u8; 16] = [0x42; 16];
+        let bound = |role: &str| SnapshotMicrovmSandboxBlock {
+            identity_kind: openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION
+                .to_owned(),
+            identity: GENERATION.to_vec(),
+            ..sandbox_block(role, 1 << 20)
+        };
+        let paired = [bound("distro"), bound("scratch")];
+        validate_restore_generation(&paired, Some(GENERATION)).unwrap();
+        assert_eq!(
+            validate_restore_generation(&paired, Some([0x24; 16]))
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "the snapshot binds its sandbox blocks to storage generation {}, not {}",
+                "42".repeat(16),
+                "24".repeat(16)
+            )
+        );
+        assert_eq!(
+            validate_restore_generation(&paired, None)
+                .unwrap_err()
+                .to_string(),
+            "the snapshot binds its sandbox blocks to a storage generation; pass it with --restore-generation-id"
+        );
+
+        // A platform snapshot binds no block, so it takes any generation.
+        let platform = [
+            sandbox_block("distro", 1 << 30),
+            sandbox_block("scratch", 1 << 20),
+        ];
+        for generation in [None, Some(GENERATION)] {
+            validate_restore_generation(&platform, generation).unwrap();
+        }
+
+        // A snapshot without sandbox blocks has no block to bind.
+        validate_restore_generation(&[], None).unwrap();
+        assert_eq!(
+            validate_restore_generation(&[], Some(GENERATION))
+                .unwrap_err()
+                .to_string(),
+            "--restore-generation-id requires a snapshot with sandbox blocks"
+        );
     }
 
     #[test]
