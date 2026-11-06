@@ -3,42 +3,10 @@
 
 //! Nested vm host definitions
 
-use anyhow::Context;
 use petri::PetriVmBuilder;
 #[cfg(target_os = "linux")]
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
-use petri::pipette::process::Stdio;
-use petri_artifacts_vmm_test::env::VMM_TESTS_CONTENT_DIR;
-
-const GUEST_PROCESS_SNAPSHOT: &str = r#"
-exec >>"$1" 2>&1
-printf 'Snapshot scheduled, collector PID %s\n' "$$"
-sleep 60
-printf '\nSnapshot started\n'
-date -u
-for process in /proc/[0-9]*; do
-    printf '\n=== %s ===\n' "$process"
-    if [ ! -r "$process/status" ]; then
-        printf 'Process disappeared or status is unavailable\n'
-        continue
-    fi
-    cat "$process/status"
-    printf 'Command: '
-    tr '\000' ' ' <"$process/cmdline"
-    printf '\nFile descriptors:\n'
-    ls -l "$process/fd"
-    for thread in "$process"/task/[0-9]*; do
-        printf '\n--- %s ---\n' "$thread"
-        for field in comm status wchan syscall stack; do
-            printf '\n%s:\n' "$field"
-            cat "$thread/$field"
-        done
-    done
-done
-printf '\nSnapshot complete\n'
-date -u
-"#;
 
 pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -57,22 +25,6 @@ pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
 pub(crate) async fn vm_host_mshv(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> anyhow::Result<()> {
-    let diagnostic_file = config
-        .log_source()
-        .create_attachment("guest-process-state.log")?;
-    let content_dir = fs_err::canonicalize(
-        std::env::var_os(VMM_TESTS_CONTENT_DIR).context("test content dir not set")?,
-    )?;
-    let relative = diagnostic_file
-        .path()
-        .strip_prefix(&content_dir)
-        .context("diagnostic file should be under the shared test content dir")?
-        .iter()
-        .map(|part| part.to_str().context("non-UTF-8 diagnostic path"))
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .join("/");
-    let guest_path = format!("/cidata/vmm_tests/{relative}");
-    drop(diagnostic_file);
     let (vm, agent) = config
         .with_mshv_platform()
         .with_memory(petri::MemoryConfig {
@@ -85,38 +37,6 @@ pub(crate) async fn vm_host_mshv(
         })
         .run()
         .await?;
-    let prepared = agent
-        .command("sh")
-        .args([
-            "-c",
-            "printf 'Guest process diagnostic scheduled\\n' >>\"$1\"",
-            "snapshot",
-            &guest_path,
-        ])
-        .output()
-        .await?;
-    anyhow::ensure!(
-        prepared.status.success(),
-        "preparing guest diagnostic file failed: {}",
-        String::from_utf8_lossy(&prepared.stderr)
-    );
-    // Collect independently of Pipette's result/output delivery, with a bounded lifetime.
-    let diagnostic = agent
-        .command("timeout")
-        .args([
-            "90",
-            "sh",
-            "-c",
-            GUEST_PROCESS_SNAPSHOT,
-            "snapshot",
-            &guest_path,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .await?;
-    drop(diagnostic);
     vm.run_nested_test(&agent, Default::default()).await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
