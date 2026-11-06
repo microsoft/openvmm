@@ -5,8 +5,6 @@
 
 use super::SnapshotManifest;
 use super::format::SCRATCH_FILE_NAME;
-#[cfg(test)]
-use super::format::SHA256_SIZE;
 use super::format::SNAPSHOT_CONFIG_ALL;
 use super::format::SNAPSHOT_CONFIG_INVARIANTS;
 use super::format::SNAPSHOT_RESTORE_POLICY_CLONE;
@@ -35,10 +33,11 @@ pub const MICROVM_MEMORY_BLOCK_SIZE_BYTES: u64 =
 pub const MICROVM_SHARED_STATUS_INTERRUPT_MODE: &str = "edge-shared-status";
 /// Clock policy applied when a snapshot is restored.
 pub const ADVANCE_BY_HOST_DOWNTIME: &str = "advance_by_host_downtime";
-/// Whole-file SHA-256 sandbox-block identity.
-pub const SNAPSHOT_BLOCK_IDENTITY_SHA256: &str = "sha256";
-/// Caller-authenticated immutable storage generation.
+/// Identity of a bound sandbox block: the caller-authenticated immutable
+/// storage generation that every bound block of a snapshot shares.
 pub const SNAPSHOT_BLOCK_IDENTITY_GENERATION: &str = "generation";
+/// The retired identity of a bound sandbox block, the SHA-256 of its content.
+const RETIRED_BLOCK_IDENTITY_SHA256: &str = "sha256";
 /// Independent private scratch materialization.
 pub const SNAPSHOT_SCRATCH_RESTORE_PRIVATE_COPY: &str = "private-copy";
 /// Filesystem copy-on-write scratch materialization.
@@ -1956,43 +1955,29 @@ pub(super) fn validate_machine_contract_shape(
                         "snapshot fresh scratch policy is invalid"
                     );
                 } else {
+                    reject_retired_block_identity(block)?;
                     anyhow::ensure!(
-                        matches!(
-                            block.identity_kind.as_str(),
-                            SNAPSHOT_BLOCK_IDENTITY_SHA256 | SNAPSHOT_BLOCK_IDENTITY_GENERATION
-                        ),
+                        block.identity_kind == SNAPSHOT_BLOCK_IDENTITY_GENERATION,
                         "snapshot paired scratch has an unsupported identity kind"
                     );
-                    match block.identity_kind.as_str() {
-                        SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
-                            validate_sha256(&block.identity, "scratch block")?;
-                        }
-                        SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
-                            anyhow::ensure!(
-                                block.identity.len() == SNAPSHOT_GENERATION_ID_SIZE
-                                    && block.identity.iter().any(|byte| *byte != 0),
-                                "snapshot scratch generation identity is invalid"
-                            );
-                        }
-                        _ => unreachable!(),
-                    }
+                    anyhow::ensure!(
+                        block.identity.len() == SNAPSHOT_GENERATION_ID_SIZE
+                            && block.identity.iter().any(|byte| *byte != 0),
+                        "snapshot scratch generation identity is invalid"
+                    );
                 }
             } else {
+                reject_retired_block_identity(block)?;
                 anyhow::ensure!(
                     block.artifact.is_empty()
                         && matches!(
                             block.identity_kind.as_str(),
-                            SNAPSHOT_BLOCK_IDENTITY_SHA256
-                                | SNAPSHOT_BLOCK_IDENTITY_GENERATION
-                                | "unbound"
+                            SNAPSHOT_BLOCK_IDENTITY_GENERATION | "unbound"
                         ),
                     "snapshot read-only layer '{}' has an invalid identity policy",
                     block.role
                 );
                 match block.identity_kind.as_str() {
-                    SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
-                        validate_sha256(&block.identity, &format!("{} block", block.role))?;
-                    }
                     SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
                         anyhow::ensure!(
                             block.identity.len() == SNAPSHOT_GENERATION_ID_SIZE
@@ -2036,31 +2021,16 @@ pub(super) fn validate_machine_contract_shape(
             previous_role == Some(openvmm_defs::microvm::MicrovmSandboxBlockRole::Scratch),
             "microVM snapshot is missing its scratch role"
         );
-        let bound_blocks = contract
+        let mut generations = contract
             .microvm_sandbox_blocks
             .iter()
-            .filter(|block| {
-                matches!(
-                    block.identity_kind.as_str(),
-                    SNAPSHOT_BLOCK_IDENTITY_SHA256 | SNAPSHOT_BLOCK_IDENTITY_GENERATION
-                )
-            })
-            .collect::<Vec<_>>();
-        if let Some(first) = bound_blocks.first() {
+            .filter(|block| block.identity_kind == SNAPSHOT_BLOCK_IDENTITY_GENERATION)
+            .map(|block| &block.identity);
+        if let Some(first) = generations.next() {
             anyhow::ensure!(
-                bound_blocks
-                    .iter()
-                    .all(|block| block.identity_kind == first.identity_kind),
-                "snapshot sandbox blocks use mixed identity policies"
+                generations.all(|generation| generation == first),
+                "snapshot sandbox blocks do not share one storage generation"
             );
-            if first.identity_kind == SNAPSHOT_BLOCK_IDENTITY_GENERATION {
-                anyhow::ensure!(
-                    bound_blocks
-                        .iter()
-                        .all(|block| block.identity == first.identity),
-                    "snapshot sandbox blocks do not share one storage generation"
-                );
-            }
         }
     }
 
@@ -2376,8 +2346,22 @@ where
     Ok(())
 }
 
+/// Rejects `block` when it has the identity that earlier releases recorded by
+/// default, the SHA-256 of the block's content, which no restore reads to
+/// verify: such a snapshot must be recaptured with a storage generation.
+fn reject_retired_block_identity(block: &SnapshotMicrovmSandboxBlock) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        block.identity_kind != RETIRED_BLOCK_IDENTITY_SHA256,
+        "snapshot sandbox block '{}' is identified by the SHA-256 of its content, which OpenVMM no longer verifies; recapture the snapshot with a storage generation",
+        block.role
+    );
+    Ok(())
+}
+
+/// The storage generation of the test snapshots that bind their blocks.
 #[cfg(test)]
-const TEST_DISTRO_IDENTITY_BYTE: u8 = 0x11;
+const TEST_STORAGE_GENERATION: [u8; SNAPSHOT_GENERATION_ID_SIZE] =
+    [0x11; SNAPSHOT_GENERATION_ID_SIZE];
 
 #[cfg(test)]
 pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
@@ -2388,8 +2372,8 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
             role: "distro".to_owned(),
             read_only: true,
             length: 512,
-            identity_kind: "sha256".to_owned(),
-            identity: vec![TEST_DISTRO_IDENTITY_BYTE; SHA256_SIZE],
+            identity_kind: SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned(),
+            identity: TEST_STORAGE_GENERATION.to_vec(),
             artifact: String::new(),
             logical_block_size: 512,
             physical_block_size: 4096,
@@ -2399,8 +2383,8 @@ pub(super) fn paired_scratch_manifest(scratch: &[u8]) -> SnapshotManifest {
             role: "scratch".to_owned(),
             read_only: false,
             length: scratch.len() as u64,
-            identity_kind: "sha256".to_owned(),
-            identity: sha2::Sha256::digest(scratch).to_vec(),
+            identity_kind: SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned(),
+            identity: TEST_STORAGE_GENERATION.to_vec(),
             artifact: SCRATCH_FILE_NAME.to_owned(),
             logical_block_size: 512,
             physical_block_size: 4096,
@@ -2504,8 +2488,6 @@ mod tests {
     use super::super::format::validate_manifest_contents;
     use super::super::tests::test_manifest;
     use super::*;
-
-    const TEST_SCRATCH_IDENTITY_BYTE: u8 = 0x22;
 
     fn virtio_state_unit_name(kind: &str, mmio_base: u64) -> String {
         format!("{kind}-{mmio_base}")
@@ -2761,8 +2743,8 @@ mod tests {
                     role: "distro".to_owned(),
                     read_only: true,
                     length: 512,
-                    identity_kind: "sha256".to_owned(),
-                    identity: vec![0x11; SHA256_SIZE],
+                    identity_kind: SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned(),
+                    identity: TEST_STORAGE_GENERATION.to_vec(),
                     artifact: String::new(),
                     logical_block_size: 512,
                     physical_block_size: 4096,
@@ -2772,8 +2754,8 @@ mod tests {
                     role: "scratch".to_owned(),
                     read_only: false,
                     length: 512,
-                    identity_kind: "sha256".to_owned(),
-                    identity: vec![TEST_SCRATCH_IDENTITY_BYTE; SHA256_SIZE],
+                    identity_kind: SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned(),
+                    identity: TEST_STORAGE_GENERATION.to_vec(),
                     artifact: SCRATCH_FILE_NAME.to_owned(),
                     logical_block_size: 512,
                     physical_block_size: 4096,
@@ -4334,6 +4316,33 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn sha256_block_identities_ask_for_a_recapture() {
+        // An earlier OpenVMM identified the bound blocks of a snapshot by the
+        // SHA-256 of their content by default; one block is enough.
+        for (retired, role) in [(&[0, 1][..], "distro"), (&[1][..], "scratch")] {
+            let mut manifest = paired_scratch_manifest(&[0x5a; 512]);
+            let contract = manifest.machine_contract.as_mut().unwrap();
+            for &index in retired {
+                let block = &mut contract.microvm_sandbox_blocks[index];
+                block.identity_kind = "sha256".to_owned();
+                block.identity = vec![0x22; 32];
+            }
+            let error = validate_machine_contract_shape(
+                manifest.machine_contract.as_ref().unwrap(),
+                manifest.memory_size_bytes,
+                manifest.vp_count,
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "snapshot sandbox block '{role}' is identified by the SHA-256 of its content, which OpenVMM no longer verifies; recapture the snapshot with a storage generation"
+                )
+            );
+        }
     }
 
     #[test]
