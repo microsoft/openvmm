@@ -90,8 +90,9 @@ pub trait VirtioDevice: InspectMut + Send {
     /// (indices at 0).
     ///
     /// An error fails the start. When the guest sets DRIVER_OK, the
-    /// transport fails DRIVER_OK; when the VM resumes, which does not wait
-    /// for queues to start, the transport marks the device as needing reset.
+    /// transport fails DRIVER_OK; when the VM starts, the transport fails the
+    /// confirmation of the start, and the VM stops the device again before
+    /// any vCPU runs, which keeps the progress of the queues that did start.
     /// Acquire the host resources that restored state refers to in
     /// [`restore_device`](Self::restore_device) instead, so that a missing
     /// one fails the restore.

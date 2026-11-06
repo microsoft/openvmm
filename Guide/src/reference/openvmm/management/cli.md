@@ -482,9 +482,9 @@ describes the source definitions.
   Restore completes the restoration of every device while the VM is stopped,
   before any vCPU starts, even when the VM stays paused: invalid
   device-private state, or a saved virtio-fs object that OpenVMM cannot
-  reopen, fails the restore itself rather than a later resume. The resume does
-  not wait for the devices to start their queues: a queue that fails to start
-  sets `DEVICE_NEEDS_RESET` on its device instead of failing the resume, as
+  reopen, fails the restore itself rather than a later resume. The resume
+  waits for the devices to start their queues before any vCPU runs: a queue
+  that fails to start fails the resume, as
   [Snapshots](../../../user_guide/openvmm/snapshots.md#restoring-a-snapshot)
   describes.
 

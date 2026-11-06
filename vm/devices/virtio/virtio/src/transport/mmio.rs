@@ -418,6 +418,10 @@ impl ChangeDeviceState for VirtioMmioDevice {
         self.core.start(&mut self.mmio);
     }
 
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        self.core.confirm_start().await
+    }
+
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         self.core.quiesce_input().await
     }
