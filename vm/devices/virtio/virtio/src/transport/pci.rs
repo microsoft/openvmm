@@ -836,6 +836,10 @@ impl ChangeDeviceState for VirtioPciDevice {
         self.core.start(&mut self.pci);
     }
 
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        self.core.confirm_start().await
+    }
+
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         self.core.quiesce_input().await
     }

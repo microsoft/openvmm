@@ -185,12 +185,12 @@ Restore completes the restoration of every device before any vCPU runs, even
 when the VM stays paused: invalid device state, or a host resource that a
 device's state refers to and that OpenVMM cannot reacquire, fails the restore
 itself. Restoring starts no virtqueue. Each device starts its queues when the
-VM first runs, and neither the resume nor the readiness event waits for them.
-A queue that fails to start then, such as one whose network backend cannot
-create its queues, fails neither: its transport sets `DEVICE_NEEDS_RESET`
-instead, with a configuration-change notification if the driver has set
-`DRIVER_OK`, and OpenVMM logs the failure. Once the guest resets the device,
-setting `DRIVER_OK` starts its queues again.
+VM first runs, and the resume waits for them before any vCPU runs. A queue that
+fails to start then, such as one whose network backend cannot create its
+queues, fails the resume: OpenVMM stops the devices that started again and
+logs the failure, no vCPU runs, and the restore publishes no readiness event.
+The devices keep their restored state, so a later resume starts their queues
+again.
 
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
