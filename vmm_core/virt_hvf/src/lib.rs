@@ -186,7 +186,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                             * self.config.processor_topology.vp_count() as u64,
             ),
             256,
-        );
+        )
+        .context("failed to create software GIC distributor")?;
         let gicrs = self
             .config
             .processor_topology
