@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// Pass this recipe to [`crate::UefiGuest::Mshv`]. Petri composes and owns the
 /// boot disk when preparing the VM. The caller supplies UEFI firmware and
 /// configures nested virtualization, storage, networking, and file shares.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MshvBoot {
     /// Development-only x64 UEFI host boot application executable.
     pub host_boot: ResolvedArtifact,
