@@ -377,28 +377,27 @@ impl Rtc {
             self.state.cmos[CmosReg::MINUTE],
             self.state.cmos[CmosReg::SECOND],
         );
-        let [alarm_hour, alarm_min, alarm_sec] = [
+        let [
+            (hour_wildcard, hour),
+            (min_wildcard, min),
+            (sec_wildcard, sec),
+        ] = [
             self.state.cmos[CmosReg::HOUR_ALARM],
             self.state.cmos[CmosReg::MINUTE_ALARM],
             self.state.cmos[CmosReg::SECOND_ALARM],
         ]
         .map(|value| {
             if value & 0xC0 == 0xC0 {
-                None
+                (true, 0)
             } else {
-                Some(value)
+                (false, value)
             }
         });
-        let (hour, min, sec) = canonical_hms(
-            status_b,
-            alarm_hour.unwrap_or(0),
-            alarm_min.unwrap_or(0),
-            alarm_sec.unwrap_or(0),
-        );
+        let (hour, min, sec) = canonical_hms(status_b, hour, min, sec);
         let (alarm_hour, alarm_min, alarm_sec) = (
-            alarm_hour.map_or(ALARM_WILDCARD, |_| hour),
-            alarm_min.map_or(ALARM_WILDCARD, |_| min),
-            alarm_sec.map_or(ALARM_WILDCARD, |_| sec),
+            if hour_wildcard { ALARM_WILDCARD } else { hour },
+            if min_wildcard { ALARM_WILDCARD } else { min },
+            if sec_wildcard { ALARM_WILDCARD } else { sec },
         );
 
         let mut delta_hour: u8 = 0;
