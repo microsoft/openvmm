@@ -11,6 +11,7 @@ use futures::io::BufReader;
 use jiff::Timestamp;
 use kmsg::KmsgParsedEntry;
 use parking_lot::Mutex;
+use petri_artifacts_vmm_test::env::PETRI_NESTED_TEST_PARENT;
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write as _;
@@ -51,7 +52,8 @@ impl PetriLogSource {
             log_files: Default::default(),
             attachments: Default::default(),
             prefix,
-            echo: true,
+            // Diagnostic: keep shared nested logs off the forwarded stdout pipe.
+            echo: std::env::var_os(PETRI_NESTED_TEST_PARENT).is_none(),
         })))
     }
 }
@@ -373,6 +375,9 @@ macro_rules! log {
 /// - a log file, in human readable format. This file is `petri.log`, except
 ///   for events whose target ends in `.log`, which go to separate files named by
 ///   the target.
+///
+/// Shared-directory nested tests suppress stdout echo while diagnosing
+/// nested shutdown hangs; their log files are still written.
 pub fn try_init_tracing(
     root_path: &Path,
     default_level: LevelFilter,
