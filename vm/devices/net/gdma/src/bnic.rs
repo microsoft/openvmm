@@ -564,20 +564,18 @@ impl TxRxTask {
 
         let sge0 = sqe.sgl().first().context("no sgl")?;
         let total_len: usize = sqe.sgl().iter().map(|sge| sge.size as usize).sum();
-        let (l2_len, vlan) =
-            if oob.s_oob.pkt_fmt() == MANA_LONG_PKT_FMT && oob.l_oob.inject_vlan_pri_tag() {
-                (
-                    net_backend::ETHERNET_VLAN_HEADER_LEN,
-                    Some(
-                        net_backend::VlanMetadata::new()
-                            .with_priority(oob.l_oob.pcp())
-                            .with_drop_eligible_indicator(oob.l_oob.dei())
-                            .with_vlan_id(oob.l_oob.vlan_id()),
-                    ),
-                )
-            } else {
-                (net_backend::ETHERNET_HEADER_LEN, None)
-            };
+        let vlan = if oob.s_oob.pkt_fmt() == MANA_LONG_PKT_FMT && oob.l_oob.inject_vlan_pri_tag() {
+            Some(
+                net_backend::VlanMetadata::new()
+                    .with_priority(oob.l_oob.pcp())
+                    .with_drop_eligible_indicator(oob.l_oob.dei())
+                    .with_vlan_id(oob.l_oob.vlan_id()),
+            )
+        } else {
+            None
+        };
+        // An injected tag is out of band: `trans_off` counts only the bytes in the SGL.
+        let l2_len = net_backend::ETHERNET_HEADER_LEN;
 
         let lso = sqe.header.params.client_oob_in_sgl();
         let mut meta = TxMetadata {
@@ -1039,5 +1037,156 @@ mod tests {
         assert!(flags.offload_udp_checksum());
         assert!(!flags.offload_tcp_checksum());
         assert!(!flags.offload_tcp_segmentation());
+    }
+}
+
+#[cfg(test)]
+mod vlan_tag_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use gdma_defs::CLIENT_OOB_24;
+    use gdma_defs::Sge;
+    use gdma_defs::WqeParams;
+    use gdma_defs::bnic::ManaTxLongOob;
+    use net_backend::TxError;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use parking_lot::Mutex;
+    use pci_core::capabilities::msix::MsixEmulator;
+    use pci_core::msi::MsiTarget;
+    use std::task::Context;
+    use vmcore::vm_task::SingleDriverBackend;
+    use vmcore::vm_task::VmTaskDriverSource;
+
+    /// A backend that keeps the metadata of each send.
+    #[derive(InspectMut)]
+    struct RecordingQueue {
+        #[inspect(skip)]
+        sent: Arc<Mutex<Vec<TxMetadata>>>,
+    }
+
+    #[async_trait]
+    impl Queue for RecordingQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
+            Poll::Pending
+        }
+
+        fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
+
+        fn rx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _packets: &mut [RxId],
+        ) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+
+        fn tx_avail(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            segments: &[TxSegment],
+        ) -> anyhow::Result<(bool, usize)> {
+            let TxSegmentType::Head(meta) = &segments[0].ty else {
+                panic!("the first segment is the head");
+            };
+            self.sent.lock().push(meta.clone());
+            Ok((true, segments.len()))
+        }
+
+        fn tx_poll(
+            &mut self,
+            _pool: &mut dyn BufferAccess,
+            _done: &mut [TxId],
+        ) -> Result<usize, TxError> {
+            Ok(0)
+        }
+    }
+
+    /// The metadata `process_sqe` hands the backend for an IPv4/TCP send whose first SGE is the
+    /// 54 bytes of Ethernet, IP and TCP header.
+    async fn sent_metadata(driver: DefaultDriver, l_oob: ManaTxLongOob, lso: bool) -> TxMetadata {
+        let gm = GuestMemory::allocate(0x4000);
+        let (msix, _capability) = MsixEmulator::new(4, 64, &MsiTarget::disconnected());
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut task = TxRxTask {
+            queues: Arc::new(Queues::new(gm.clone(), driver_source.simple(), &msix)),
+            epqueue: Box::new(RecordingQueue { sent: sent.clone() }),
+            pool: GuestBuffers {
+                gm,
+                rx_packets: Default::default(),
+            },
+            sq_id: 0,
+            sq_cq_id: 0,
+            rq_id: 0,
+            rq_cq_id: 0,
+            tx_segment_buffer: Vec::new(),
+            rx_buf_count: 0,
+        };
+
+        let mut sqe = Wqe::new_zeroed();
+        sqe.header.params = WqeParams::new()
+            .with_num_sgl_entries(2)
+            .with_inline_client_oob_size(CLIENT_OOB_24)
+            .with_client_oob_in_sgl(lso)
+            .with_gd_client_unit_data(if lso { 1448 } else { 0 });
+        let oob = ManaTxOob {
+            s_oob: ManaTxShortOob::new()
+                .with_pkt_fmt(MANA_LONG_PKT_FMT)
+                .with_is_outer_ipv4(true)
+                .with_comp_tcp_csum(true)
+                .with_trans_off(34),
+            l_oob,
+            reserved3: 0,
+            reserved4: 0,
+        };
+        oob.write_to_prefix(&mut sqe.data[..]).unwrap();
+        let sgl_offset = sqe.header.sgl_offset();
+        let sgl = [
+            Sge {
+                address: 0,
+                mem_key: 0,
+                size: 54,
+            },
+            Sge {
+                address: 0x1000,
+                mem_key: 0,
+                size: 0x1000,
+            },
+        ];
+        sgl.write_to_prefix(&mut sqe.data[sgl_offset..]).unwrap();
+
+        task.process_sqe(sqe).unwrap();
+        let mut sent = sent.lock();
+        assert_eq!(sent.len(), 1);
+        sent.pop().unwrap()
+    }
+
+    /// A distinct value in each tag field, so a swapped pair fails.
+    fn injected_tag() -> ManaTxLongOob {
+        ManaTxLongOob::new()
+            .with_inject_vlan_pri_tag(true)
+            .with_pcp(5)
+            .with_dei(true)
+            .with_vlan_id(0x123)
+    }
+
+    #[async_test]
+    async fn injected_tag_is_not_part_of_the_l2_header(driver: DefaultDriver) {
+        for lso in [false, true] {
+            let tagged = sent_metadata(driver.clone(), injected_tag(), lso).await;
+            let untagged = sent_metadata(driver.clone(), ManaTxLongOob::new(), lso).await;
+            for meta in [&tagged, &untagged] {
+                assert_eq!(meta.l2_len, 14, "lso={lso}");
+                assert_eq!(meta.l3_len, 20, "lso={lso}");
+                assert_eq!(meta.transport_header_offset, 34, "lso={lso}");
+                assert_eq!(meta.l4_len, if lso { 20 } else { 0 }, "lso={lso}");
+            }
+            let vlan = tagged.vlan.unwrap();
+            assert_eq!(vlan.priority(), 5);
+            assert!(vlan.drop_eligible_indicator());
+            assert_eq!(vlan.vlan_id(), 0x123);
+            assert!(untagged.vlan.is_none());
+        }
     }
 }
