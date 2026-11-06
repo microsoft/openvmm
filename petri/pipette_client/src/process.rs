@@ -333,6 +333,7 @@ impl Child {
     pub async fn wait(&mut self) -> Result<ExitStatus, mesh::RecvError> {
         match &mut self.result {
             Ok(recv) => {
+                tracing::debug!(pid = self.pid, "waiting for process exit status");
                 let status = ExitStatus(recv.await?);
                 self.result = Err(status.clone());
                 Ok(status)
