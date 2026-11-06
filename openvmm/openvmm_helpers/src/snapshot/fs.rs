@@ -4,12 +4,10 @@
 //! File-system helpers for snapshot artifacts, including their
 //! platform-specific implementations: private files and directories,
 //! no-replace renames and directory flushes, directory-relative artifact
-//! access and file generations, exact-file hard links, sparse-aware clone and
-//! copy with allocation accounting, and SHA-256 over file handles.
+//! access and file generations, exact-file hard links, and sparse-aware clone
+//! and copy with allocation accounting.
 
-use super::format::validate_sha256;
 use anyhow::Context;
-use sha2::Digest;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
@@ -1123,65 +1121,6 @@ pub(super) fn read_bounded_open_file(
         "{description} changed while it was being read",
     );
     Ok(bytes)
-}
-
-/// Computes SHA-256 over an exact-length regular file handle.
-pub fn file_sha256(
-    file: &std::fs::File,
-    expected_length: u64,
-    description: &str,
-) -> anyhow::Result<Vec<u8>> {
-    let mut file = file
-        .try_clone()
-        .with_context(|| format!("failed to duplicate {description} handle"))?;
-    file.seek(SeekFrom::Start(0))
-        .with_context(|| format!("failed to rewind {description}"))?;
-    let actual_length = file
-        .metadata()
-        .with_context(|| format!("failed to inspect {description}"))?
-        .len();
-    anyhow::ensure!(
-        actual_length == expected_length,
-        "{description} size ({actual_length} bytes) doesn't match expected ({expected_length} bytes)"
-    );
-    let mut digest = sha2::Sha256::new();
-    let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
-    let mut total = 0_u64;
-    loop {
-        let count = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read {description}"))?;
-        if count == 0 {
-            break;
-        }
-        digest.update(&buffer[..count]);
-        total = total
-            .checked_add(count as u64)
-            .context("file length overflowed u64 while hashing")?;
-        anyhow::ensure!(
-            total <= expected_length,
-            "{description} grew while it was being hashed"
-        );
-    }
-    anyhow::ensure!(
-        total == expected_length,
-        "{description} changed while it was being hashed"
-    );
-    Ok(digest.finalize().to_vec())
-}
-
-pub(super) fn verify_file_digest(
-    file: &std::fs::File,
-    expected_length: u64,
-    expected_digest: &[u8],
-    description: &str,
-) -> anyhow::Result<()> {
-    validate_sha256(expected_digest, description)?;
-    anyhow::ensure!(
-        file_sha256(file, expected_length, description)? == expected_digest,
-        "{description} SHA-256 digest mismatch"
-    );
-    Ok(())
 }
 
 pub(super) fn open_file_with_length(
