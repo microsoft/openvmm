@@ -6,16 +6,45 @@
 use super::Builder;
 use super::Child;
 use super::FdOp;
-use super::SandboxFailureMode;
 use crate::unix::SyscallResult;
 use crate::unix::errno;
-use caps::CapsHashSet;
-use landlock::RulesetCreated;
-use seccompiler::SeccompFilter;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::prelude::*;
+
+const ID_MAP_CAPACITY: usize = 32;
+
+#[derive(Clone, Copy)]
+struct IdMap {
+    bytes: [u8; ID_MAP_CAPACITY],
+    len: usize,
+}
+
+impl IdMap {
+    fn new(outer_id: u32) -> Self {
+        let mut bytes = [0; ID_MAP_CAPACITY];
+        bytes[0] = b'0';
+        bytes[1] = b' ';
+        let mut index = 2;
+        let mut divisor = 1_000_000_000;
+        let mut started = false;
+        while divisor != 0 {
+            let digit = (outer_id / divisor) % 10;
+            if digit != 0 || started || divisor == 1 {
+                bytes[index] = b'0' + digit as u8;
+                index += 1;
+                started = true;
+            }
+            divisor /= 10;
+        }
+        bytes[index..index + 3].copy_from_slice(b" 1\n");
+        Self {
+            bytes,
+            len: index + 3,
+        }
+    }
+}
 
 struct CloneContext<'a> {
     executable: &'a CStr,
@@ -24,18 +53,12 @@ struct CloneContext<'a> {
     result: Option<i32>,
     // TODO: refactor this to contain BorrowedFds
     fd_ops: &'a mut [(i32, FdOp)],
-    sandbox_failure_mode: SandboxFailureMode,
     setsid: bool,
     controlling_terminal: Option<BorrowedFd<'a>>,
+    user_namespace_maps: Option<(IdMap, IdMap)>,
+    fd_close_ranges: &'a [(u32, u32)],
     uid: Option<libc::uid_t>,
     gid: Option<libc::uid_t>,
-    permitted_capabilities: Option<CapsHashSet>,
-    effective_capabilities: Option<CapsHashSet>,
-    ambient_capabilities: Option<CapsHashSet>,
-    inheritable_capabilities: Option<CapsHashSet>,
-    bounding_capabilities: Option<CapsHashSet>,
-    landlock_rules: Option<RulesetCreated>,
-    seccomp_filter: Option<SeccompFilter>,
 }
 
 impl Builder<'_> {
@@ -44,14 +67,41 @@ impl Builder<'_> {
         envp: &[CString],
         fd_ops: &mut [(i32, FdOp)],
     ) -> io::Result<Child> {
-        let mut landlock_rules = None;
-        if let Some(lr) = &self.linux_builder.landlock_rules {
-            landlock_rules = Some(lr.try_clone()?);
+        let sandbox = self.linux_builder.sandbox.as_ref();
+        let clone_flags: libc::c_int = sandbox
+            .map(|config| {
+                config.clone_flags.try_into().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "sandbox clone flags do not fit in Linux clone flags",
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let map_current_user = sandbox.is_some_and(|config| config.map_current_user);
+        if map_current_user && clone_flags & libc::CLONE_NEWUSER == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "user namespace self-mapping requires CLONE_NEWUSER",
+            ));
+        }
+        if map_current_user && (self.uid.is_some() || self.gid.is_some()) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "explicit UID/GID changes are not supported with user namespace self-mapping",
+            ));
         }
 
         // Build the null-terminated arrays for exec.
         let argv = super::c_slice_to_pointers(&self.argv);
         let envp = super::c_slice_to_pointers(envp);
+        let inherited_fds = sandbox.map(inherited_fds).transpose()?;
+        let fd_close_ranges = inherited_fds
+            .as_deref()
+            .map(fd_close_ranges)
+            .transpose()?
+            .unwrap_or_default();
 
         let mut context = CloneContext {
             executable: &self.executable,
@@ -59,18 +109,16 @@ impl Builder<'_> {
             envp: &envp,
             result: None,
             fd_ops: &mut *fd_ops,
-            sandbox_failure_mode: self.linux_builder.sandbox_failure_mode,
             setsid: self.linux_builder.setsid,
             controlling_terminal: self.linux_builder.controlling_terminal,
+            user_namespace_maps: map_current_user.then(|| {
+                // SAFETY: geteuid and getegid have no safety requirements.
+                let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+                (IdMap::new(uid), IdMap::new(gid))
+            }),
+            fd_close_ranges: &fd_close_ranges,
             uid: self.uid,
             gid: self.gid,
-            permitted_capabilities: self.linux_builder.permitted_capabilities.clone(),
-            effective_capabilities: self.linux_builder.effective_capabilities.clone(),
-            inheritable_capabilities: self.linux_builder.inheritable_capabilities.clone(),
-            ambient_capabilities: self.linux_builder.ambient_capabilities.clone(),
-            bounding_capabilities: self.linux_builder.bounding_capabilities.clone(),
-            landlock_rules,
-            seccomp_filter: self.linux_builder.seccomp_filter.clone(),
         };
 
         // Use CLONE_VM and CLONE_VFORK so that the new process will share the
@@ -78,7 +126,7 @@ impl Builder<'_> {
         // exits or calls exec.
         //
         // Use CLONE_PIDFD to get an fd back to use for polling.
-        let mut flags = self.linux_builder.clone_flags | libc::CLONE_PIDFD | libc::SIGCHLD;
+        let mut flags = clone_flags | libc::CLONE_PIDFD | libc::SIGCHLD;
 
         if self.linux_builder.vfork {
             flags |= libc::CLONE_VM | libc::CLONE_VFORK;
@@ -157,6 +205,21 @@ impl Builder<'_> {
     }
 }
 
+fn inherited_fds(config: &sandbox::SandboxProcessConfig) -> io::Result<Vec<i32>> {
+    let mut fds = vec![0, 1, 2];
+    for (_, raw_handle) in &config.inherit_handles {
+        fds.push(raw_handle.0.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sandbox inherited handle does not fit in a Linux file descriptor",
+            )
+        })?);
+    }
+    fds.sort_unstable();
+    fds.dedup();
+    Ok(fds)
+}
+
 struct ChildStackGuard(*mut libc::c_void, usize);
 
 impl Drop for ChildStackGuard {
@@ -187,6 +250,18 @@ extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
     // SAFETY: Context is temporarily owned by this function, and we know
     // we were passed a valid pointer.
     let context = unsafe { &mut *(context.cast::<CloneContext<'_>>()) };
+
+    if let Some((uid_map, gid_map)) = context.user_namespace_maps {
+        if write_proc_file(c"/proc/self/setgroups", b"deny\n") < 0 {
+            return errno().0;
+        }
+        if write_proc_file(c"/proc/self/uid_map", &uid_map.bytes[..uid_map.len]) < 0 {
+            return errno().0;
+        }
+        if write_proc_file(c"/proc/self/gid_map", &gid_map.bytes[..gid_map.len]) < 0 {
+            return errno().0;
+        }
+    }
 
     if context.setsid {
         // SAFETY: setsid has no safety requirements.
@@ -258,65 +333,25 @@ extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
         }
     }
 
-    macro_rules! handle_sandbox_failure {
-        ($m:expr, $r:expr) => {
-            match context.sandbox_failure_mode {
-                SandboxFailureMode::Silent => {}
-                SandboxFailureMode::Warn => {
-                    tracing::warn!($m);
-                }
-                SandboxFailureMode::Error => {
-                    tracing::error!($m);
-                    return $r;
-                }
-            }
-        };
-    }
-
-    if let Some(landlock_rules) = context.landlock_rules.take() {
-        if landlock_rules.restrict_self().is_err() {
-            handle_sandbox_failure!("failed to apply landlock ruleset", libc::ENOTSUP);
+    for &(first, last) in context.fd_close_ranges {
+        // SAFETY: close_range takes integer bounds and affects only the
+        // calling process's file descriptor table.
+        if unsafe { libc::syscall(libc::SYS_close_range, first, last, 0) } < 0 {
+            return errno().0;
         }
     }
 
     if let Some(gid) = context.gid {
         // SAFETY: setresgid has no safety requirements.
         if unsafe { libc::setresgid(gid, gid, gid) } < 0 {
-            handle_sandbox_failure!("failed to change group id", libc::ENOTSUP);
+            return errno().0;
         }
     }
 
     if let Some(uid) = context.uid {
         // SAFETY: setresuid has no safety requirements.
         if unsafe { libc::setresuid(uid, uid, uid) } < 0 {
-            handle_sandbox_failure!("failed to change user id", libc::ENOTSUP);
-        }
-    }
-
-    macro_rules! set_capabilities {
-        ($t:expr, $v:ident) => {
-            if let Some($v) = &context.$v {
-                if caps::set(None, $t, &$v).is_err() {
-                    handle_sandbox_failure!(
-                        std::concat!("failed to apply ", stringify!($t), " capabilities"),
-                        libc::ENOTSUP
-                    );
-                }
-            }
-        };
-    }
-
-    set_capabilities!(caps::CapSet::Bounding, bounding_capabilities);
-    set_capabilities!(caps::CapSet::Permitted, permitted_capabilities);
-    set_capabilities!(caps::CapSet::Ambient, ambient_capabilities);
-    set_capabilities!(caps::CapSet::Inheritable, inheritable_capabilities);
-    set_capabilities!(caps::CapSet::Effective, effective_capabilities);
-
-    if let Some(seccomp_filter) = context.seccomp_filter.take() {
-        if let Ok(bpf_program) = TryInto::<seccompiler::BpfProgram>::try_into(seccomp_filter) {
-            if seccompiler::apply_filter(&bpf_program).is_err() {
-                handle_sandbox_failure!("failed to apply seccomp profile", libc::ENOTSUP);
-            }
+            return errno().0;
         }
     }
 
@@ -337,8 +372,119 @@ extern "C" fn clone_cb(context: *mut libc::c_void) -> libc::c_int {
     255
 }
 
+fn fd_close_ranges(allowlist: &[i32]) -> io::Result<Vec<(u32, u32)>> {
+    let mut allowlist = allowlist.to_vec();
+    allowlist.sort_unstable();
+
+    let mut ranges = Vec::new();
+    let mut first = 0;
+    let mut previous = None;
+    for fd in allowlist {
+        if fd < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "inherited file descriptor allowlist contains a negative descriptor",
+            ));
+        }
+        if previous == Some(fd) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "inherited file descriptor allowlist contains a duplicate descriptor",
+            ));
+        }
+
+        let fd = fd as u32;
+        if first < fd {
+            ranges.push((first, fd - 1));
+        }
+        first = fd + 1;
+        previous = Some(fd as i32);
+    }
+    ranges.push((first, u32::MAX));
+    Ok(ranges)
+}
+
+fn write_proc_file(path: &CStr, value: &[u8]) -> libc::c_int {
+    // SAFETY: path is NUL-terminated and points to a procfs control file.
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return -1;
+    }
+
+    let mut written = 0;
+    while written < value.len() {
+        // SAFETY: fd is open and the remaining slice is valid for reads.
+        let result =
+            unsafe { libc::write(fd, value[written..].as_ptr().cast(), value.len() - written) };
+        if result <= 0 {
+            let saved_errno = if result == 0 { libc::EIO } else { errno().0 };
+            // SAFETY: fd is open and owned by this function.
+            unsafe { libc::close(fd) };
+            // SAFETY: assigning errno restores the write failure for the caller.
+            unsafe { *libc::__errno_location() = saved_errno };
+            return -1;
+        }
+        written += result as usize;
+    }
+
+    // SAFETY: fd is open and owned by this function.
+    unsafe { libc::close(fd) }
+}
+
 impl AsFd for Child {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.pidfd.as_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IdMap;
+    use super::fd_close_ranges;
+    use super::inherited_fds;
+    #[test]
+    fn computes_fd_close_ranges() {
+        assert_eq!(fd_close_ranges(&[]).unwrap(), [(0, u32::MAX)]);
+        assert_eq!(fd_close_ranges(&[0, 1, 2, 3]).unwrap(), [(4, u32::MAX)]);
+        assert_eq!(
+            fd_close_ranges(&[3, 0, 7]).unwrap(),
+            [(1, 2), (4, 6), (8, u32::MAX)]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_fd_allowlists() {
+        assert_eq!(
+            fd_close_ranges(&[-1]).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            fd_close_ranges(&[3, 3]).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn sandbox_handles_become_inherited_fds() {
+        let config = sandbox::SandboxProcessConfig {
+            inherit_handles: vec![
+                (sandbox::HandleTag(1), sandbox::RawHandle(7)),
+                (sandbox::HandleTag(2), sandbox::RawHandle(3)),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(inherited_fds(&config).unwrap(), [0, 1, 2, 3, 7]);
+    }
+
+    #[test]
+    fn formats_single_id_map() {
+        for (id, expected) in [
+            (0, "0 0 1\n"),
+            (1000, "0 1000 1\n"),
+            (u32::MAX, "0 4294967295 1\n"),
+        ] {
+            let map = IdMap::new(id);
+            assert_eq!(&map.bytes[..map.len], expected.as_bytes());
+        }
     }
 }
