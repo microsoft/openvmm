@@ -212,6 +212,127 @@ struct ConsoleState<'a> {
     input: Box<dyn AsyncWrite + Unpin + Send>,
 }
 
+/// Normalize CLI selections, reserving explicit connectors before assigning defaults.
+/// The linked resolver still validates the controller's actual connector capacity.
+fn usb_controller_configs(
+    pcie_ports: &[cli_args::UsbXhciCli],
+    devices: &[cli_args::UsbDeviceCli],
+) -> anyhow::Result<Vec<(String, usb_config_resources::UsbControllerConfig)>> {
+    use usb_config_resources::UsbDeviceConfig;
+
+    let mut controllers = Vec::new();
+    let mut pcie_port_names = HashSet::new();
+    for pcie_port in pcie_ports {
+        anyhow::ensure!(
+            !pcie_port.port_name.is_empty(),
+            "--usb-xhci requires a PCIe port name"
+        );
+        anyhow::ensure!(
+            pcie_port_names.insert(pcie_port.port_name.as_str()),
+            "duplicate USB controller on PCIe port {:?}",
+            pcie_port.port_name
+        );
+        controllers.push((
+            pcie_port.port_name.clone(),
+            usb_config_resources::UsbControllerConfig::default(),
+        ));
+    }
+    let default_pcie_port = if pcie_ports.len() == 1 {
+        Some(pcie_ports[0].port_name.as_str())
+    } else {
+        None
+    };
+    // Reserve all explicit connector numbers before assigning defaults, so an
+    // earlier default cannot take a connector explicitly requested later.
+    let mut selected_devices = Vec::new();
+    let mut occupied_connectors = HashSet::new();
+    for device in devices {
+        let pcie_port_name = device
+            .controller_pcie_port()
+            .or(default_pcie_port)
+            .context("on=PCIE_PORT is required unless exactly one xHCI controller is declared")?;
+        anyhow::ensure!(
+            pcie_port_names.contains(pcie_port_name),
+            "USB device references undeclared controller on PCIe port {pcie_port_name:?}"
+        );
+        if let cli_args::UsbDeviceCli::Device { location, .. } = device {
+            if let Some(connector) = location.connector {
+                let connector = connector.number();
+                anyhow::ensure!(
+                    occupied_connectors.insert((pcie_port_name, connector)),
+                    "USB connector {connector} is selected more than once on PCIe port {pcie_port_name:?}"
+                );
+            }
+        }
+        selected_devices.push((pcie_port_name, device));
+    }
+    let mut instance_ids = HashSet::new();
+    let mut automatic_pcie_port = None;
+    for (pcie_port_name, device) in selected_devices {
+        // The first pass validated every controller name; this lookup cannot fail.
+        let (_, controller) = controllers
+            .iter_mut()
+            .find(|(name, _)| name == pcie_port_name)
+            .unwrap();
+        match device {
+            cli_args::UsbDeviceCli::Device { location, backend } => {
+                let connector = match location.connector {
+                    Some(connector) => connector.number(),
+                    None => {
+                        // This bounds the config representation, not controller capacity.
+                        let connector = (1..=u8::MAX)
+                            .find(|connector| {
+                                !occupied_connectors.contains(&(pcie_port_name, *connector))
+                            })
+                            .with_context(|| {
+                                format!(
+                                    "no free USB connector numbers on PCIe port {pcie_port_name:?}"
+                                )
+                            })?;
+                        occupied_connectors.insert((pcie_port_name, connector));
+                        connector
+                    }
+                };
+                if let cli_args::UsbBackendCli::WinUsb(handle) = backend {
+                    // Windows instance IDs are case-insensitive and unique across the VM.
+                    anyhow::ensure!(
+                        instance_ids.insert(handle.instance_id.to_ascii_uppercase()),
+                        "WinUSB instance selected more than once: {}",
+                        handle.instance_id
+                    );
+                }
+                controller.devices.push(UsbDeviceConfig::Device {
+                    connector,
+                    device: backend.clone().into_resource(),
+                });
+            }
+            cli_args::UsbDeviceCli::WinUsbAll { .. } => {
+                anyhow::ensure!(
+                    automatic_pcie_port.replace(pcie_port_name).is_none(),
+                    "winusb-all may be selected only once per VM"
+                );
+            }
+        }
+    }
+    if let Some(pcie_port_name) = automatic_pcie_port {
+        // Build discovery only after collecting explicit IDs from every controller,
+        // including selections that appeared after winusb-all on the command line.
+        let mut excluded_instance_ids: Vec<_> = instance_ids.into_iter().collect();
+        excluded_instance_ids.sort();
+        let (_, controller) = controllers
+            .iter_mut()
+            .find(|(name, _)| name == pcie_port_name)
+            .unwrap();
+        controller.devices.push(UsbDeviceConfig::Discover(
+            usb_config_resources::WinUsbAllConfig {
+                excluded_instance_ids,
+            }
+            .into_resource(),
+        ));
+    }
+    Ok(controllers)
+}
+
 /// Build a flat list of switches with their parent port assignments.
 ///
 /// This function converts hierarchical CLI switch definitions into a flat list
@@ -838,6 +959,12 @@ async fn vm_config_from_command_line(
     // Build initial PCIe devices list from CLI options. Storage devices
     // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
     let mut pcie_devices = Vec::new();
+    for (pcie_port_name, config) in usb_controller_configs(&opt.usb_xhci, &opt.usb_device)? {
+        pcie_devices.push(PcieDeviceConfig {
+            port_name: pcie_port_name,
+            resource: config.into_resource(),
+        });
+    }
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
@@ -3368,6 +3495,430 @@ mod tests {
                 }
             }
         });
+    }
+
+    /// Declaring controllers alone must not create implicit device attachments.
+    #[test]
+    fn usb_cli_empty_controllers() {
+        let opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb1"])
+            .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        assert_eq!(controllers.len(), 2);
+        assert!(
+            controllers
+                .iter()
+                .all(|(_, config)| config.devices.is_empty())
+        );
+    }
+
+    /// A sole controller supplies omitted on values and consecutive connector defaults.
+    #[test]
+    fn usb_cli_infers_single_controller_and_connector_defaults() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid",
+            "--usb-device",
+            "mock-loopback",
+            "--usb-device",
+            "mock-storage",
+            "--usb-device",
+            "mock-mutt",
+            "--usb-device",
+            "mock-supermutt",
+            "--usb-device",
+            r"winusb,instance_id=USB\A",
+            "--usb-device",
+            "winusb-all",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        assert_eq!(controllers[0].0, "usb0");
+        assert_eq!(controllers[0].1.devices.len(), 7);
+        for (index, config) in controllers[0].1.devices.iter().take(6).enumerate() {
+            let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config else {
+                panic!("expected a device attachment");
+            };
+            assert_eq!(usize::from(*connector), index + 1);
+        }
+        assert!(matches!(
+            controllers[0].1.devices[6],
+            usb_config_resources::UsbDeviceConfig::Discover(_)
+        ));
+    }
+
+    /// Explicit connectors take precedence even when they follow devices using defaults.
+    #[test]
+    fn usb_cli_reserves_explicit_connectors_before_assigning_defaults() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid",
+            "--usb-device",
+            "mock-storage,connector=1",
+            "--usb-device",
+            "mock-loopback",
+            "--usb-device",
+            "mock-mutt,connector=3",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        let connectors: Vec<_> = controllers[0]
+            .1
+            .devices
+            .iter()
+            .map(|config| {
+                let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config else {
+                    panic!("expected a device attachment");
+                };
+                *connector
+            })
+            .collect();
+        assert_eq!(connectors, [2, 1, 4, 3]);
+    }
+
+    /// An omitted on value is ambiguous when more than one controller is declared.
+    #[test]
+    fn usb_cli_requires_explicit_controller_when_ambiguous() {
+        for selection in [
+            "mock-hid",
+            "mock-hid,connector=1",
+            r"winusb,instance_id=USB\A",
+            "winusb-all",
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--usb-xhci",
+                "usb0",
+                "--usb-xhci",
+                "usb1",
+                "--usb-device",
+                selection,
+            ])
+            .unwrap();
+            let error = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap_err();
+            assert!(error.to_string().contains("on=PCIE_PORT is required"));
+        }
+    }
+
+    /// Each controller has an independent set of occupied connector numbers.
+    #[test]
+    fn usb_cli_allocates_connector_defaults_per_controller() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-xhci",
+            "usb1",
+            "--usb-device",
+            "mock-hid,on=usb1",
+            "--usb-device",
+            "mock-hid,on=usb0",
+            "--usb-device",
+            "mock-storage,on=usb1",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=1",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        for ((_, config), expected) in controllers.iter().zip([[2, 1], [1, 2]]) {
+            let connectors: Vec<_> = config
+                .devices
+                .iter()
+                .map(|config| {
+                    let usb_config_resources::UsbDeviceConfig::Device { connector, .. } = config
+                    else {
+                        panic!("expected a device attachment");
+                    };
+                    *connector
+                })
+                .collect();
+            assert_eq!(connectors, expected);
+        }
+    }
+
+    /// Exhausting the public connector-number representation must produce an error.
+    #[test]
+    fn usb_cli_reports_exhausted_connector_numbers() {
+        let mut opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0"]).unwrap();
+        opt.usb_device = vec!["mock-hid".parse().unwrap(); usize::from(u8::MAX)];
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_ok());
+        opt.usb_device.push("mock-hid".parse().unwrap());
+        let error = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap_err();
+        assert!(error.to_string().contains("no free USB connector numbers"));
+    }
+
+    /// Normalization preserves one-based connector numbers and explicit mock overrides.
+    #[test]
+    fn usb_cli_preserves_one_based_connectors_and_mock_overrides() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-xhci",
+            "usb1",
+            "--usb-device",
+            "mock-hid,on=usb0,connector=1,vid=0x1234,pid=65535,serial=HID001",
+            "--usb-device",
+            "mock-storage,on=usb1,connector=15,blocks=4096",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        let usb_config_resources::UsbDeviceConfig::Device { connector, device } =
+            &controllers[0].1.devices[0]
+        else {
+            panic!("expected fixed HID attachment");
+        };
+        assert_eq!(*connector, 1);
+        assert_eq!(device.id(), "mock_hid_config");
+        let usb_config_resources::UsbDeviceConfig::Device { connector, .. } =
+            &controllers[1].1.devices[0]
+        else {
+            panic!("expected fixed storage attachment");
+        };
+        assert_eq!(*connector, 15);
+        let cli_args::UsbDeviceCli::Device {
+            backend: cli_args::UsbBackendCli::Hid(handle),
+            ..
+        } = &opt.usb_device[0]
+        else {
+            panic!("expected HID");
+        };
+        assert_eq!(
+            (handle.identity.vendor_id, handle.identity.product_id),
+            (Some(0x1234), Some(65535))
+        );
+        assert_eq!(handle.identity.serial_number.as_deref(), Some("HID001"));
+        let cli_args::UsbDeviceCli::Device {
+            backend: cli_args::UsbBackendCli::Storage(handle),
+            ..
+        } = &opt.usb_device[1]
+        else {
+            panic!("expected storage");
+        };
+        assert_eq!(handle.block_count, Some(4096));
+    }
+
+    /// Explicit host IDs are preserved and automatic discovery remains a separate request.
+    #[test]
+    fn usb_cli_preserves_winusb_ids_and_automatic_selection() {
+        let instance_id = r"USB\MS_COMP_WINUSB\A&B C";
+        let selection = format!("winusb,on=usb0,connector=3,instance_id={instance_id}");
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            &selection,
+            "--usb-device",
+            "winusb-all,on=usb0",
+        ])
+        .unwrap();
+        let controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+        let cli_args::UsbDeviceCli::Device {
+            backend: cli_args::UsbBackendCli::WinUsb(handle),
+            ..
+        } = &opt.usb_device[0]
+        else {
+            panic!("expected WinUSB");
+        };
+        assert_eq!(handle.instance_id, instance_id);
+        let usb_config_resources::UsbDeviceConfig::Device { connector, device } =
+            &controllers[0].1.devices[0]
+        else {
+            panic!("expected fixed WinUSB attachment");
+        };
+        assert_eq!(*connector, 3);
+        assert_eq!(device.id(), "winusb_config");
+        let usb_config_resources::UsbDeviceConfig::Discover(discovery) =
+            &controllers[0].1.devices[1]
+        else {
+            panic!("expected WinUSB discovery");
+        };
+        assert_eq!(discovery.id(), "winusb_all_config");
+    }
+
+    /// Reject malformed backend options and missing, duplicate, or unknown controllers.
+    #[test]
+    fn usb_cli_rejects_bad_syntax_and_unknown_controllers() {
+        for selection in [
+            "usb0:hid",
+            "winusb",
+            "mock-hid,on=usb0,connector=0",
+            "mock-hid,on=usb0,connector=256",
+            "mock-hid,on=usb0,connector=1,vid=0x10000",
+            "mock-hid,on=usb0,connector=1,pid=bad",
+            "mock-hid,on=usb0,connector=1,unknown=1",
+            "mock-hid,on=usb0,connector=1,instance_id=USB",
+            "mock-hid,on=usb0,connector=1,blocks=1",
+            "mock-supermutt,on=usb0,connector=1,vid=1",
+            "mock-storage,on=usb0,connector=1,blocks=0",
+            "winusb,on=usb0,connector=1,instance_id=USB,vid=1",
+            "winusb-all,on=usb0,connector=1",
+        ] {
+            assert!(
+                Options::try_parse_from([
+                    "openvmm",
+                    "--usb-xhci",
+                    "usb0",
+                    "--usb-device",
+                    selection
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            Options::try_parse_from(["openvmm", "--usb-device", "mock-hid,on=usb0,connector=1"])
+                .is_err()
+        );
+        assert!(Options::try_parse_from(["openvmm", "--usb-xhci", "usb0,unknown=1"]).is_err());
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid,on=missing,connector=1",
+        ])
+        .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+        let opt = Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb0"])
+            .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+    }
+
+    /// Backend defaults and capacity limits must not be baked into the shared CLI.
+    #[test]
+    fn usb_cli_leaves_defaults_and_implementation_limits_to_resolvers() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=16,blocks=524289",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=1",
+        ])
+        .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_ok());
+        let cli_args::UsbDeviceCli::Device {
+            backend: cli_args::UsbBackendCli::Storage(config),
+            ..
+        } = &opt.usb_device[1]
+        else {
+            panic!("expected storage");
+        };
+        assert_eq!(config.block_count, None);
+        assert_eq!(config.identity, Default::default());
+    }
+
+    /// Discovery excludes explicit host IDs across controllers regardless of option order.
+    /// Resource resolution is async even when the test only decodes configuration.
+    #[pal_async::async_test]
+    async fn usb_cli_excludes_explicit_winusb_across_controllers() {
+        use usb_config_resources::UsbDeviceDiscoveryConfigKind;
+        use usb_config_resources::WinUsbAllConfig;
+        use vm_resource::CanResolveTo;
+        use vm_resource::ResolveResource;
+        use vm_resource::ResourceResolver;
+
+        /// Discovery settings decoded for assertions without host enumeration.
+        struct CapturedDiscoveryConfig {
+            /// The actual configuration emitted by the CLI.
+            config: WinUsbAllConfig,
+        }
+        /// Reads an opaque discovery resource without constructing USB devices.
+        struct CaptureDiscoveryConfig;
+
+        impl CanResolveTo<CapturedDiscoveryConfig> for UsbDeviceDiscoveryConfigKind {
+            type Input<'a> = ();
+        }
+
+        impl ResolveResource<UsbDeviceDiscoveryConfigKind, WinUsbAllConfig> for CaptureDiscoveryConfig {
+            type Output = CapturedDiscoveryConfig;
+            type Error = std::convert::Infallible;
+
+            fn resolve(&self, config: WinUsbAllConfig, _: ()) -> Result<Self::Output, Self::Error> {
+                Ok(CapturedDiscoveryConfig { config })
+            }
+        }
+
+        let mut resolver = ResourceResolver::new();
+        resolver.add_resolver(CaptureDiscoveryConfig);
+        for selections in [
+            [
+                "winusb-all,on=usb0",
+                r"winusb,on=usb1,instance_id=usb\z",
+                r"winusb,on=usb1,instance_id=USB\a",
+            ],
+            [
+                r"winusb,on=usb1,instance_id=usb\z",
+                r"winusb,on=usb1,instance_id=USB\a",
+                "winusb-all,on=usb0",
+            ],
+        ] {
+            let mut opt =
+                Options::try_parse_from(["openvmm", "--usb-xhci", "usb0", "--usb-xhci", "usb1"])
+                    .unwrap();
+            opt.usb_device = selections
+                .into_iter()
+                .map(|selection| selection.parse().unwrap())
+                .collect();
+            let mut controllers = usb_controller_configs(&opt.usb_xhci, &opt.usb_device).unwrap();
+            assert_eq!(controllers[1].1.devices.len(), 2);
+            let usb_config_resources::UsbDeviceConfig::Discover(discovery) =
+                controllers[0].1.devices.pop().unwrap()
+            else {
+                panic!("expected discovery on usb0");
+            };
+            let captured: CapturedDiscoveryConfig = resolver.resolve(discovery, ()).await.unwrap();
+            assert_eq!(captured.config.excluded_instance_ids, [r"USB\A", r"USB\Z"]);
+        }
+    }
+
+    /// Reject duplicate host IDs and multiple automatic discovery requests across the VM.
+    #[test]
+    fn usb_cli_rejects_overlapping_host_selections() {
+        for (first, second) in [
+            (
+                "winusb,on=usb0,connector=1,instance_id=USB\\A",
+                "winusb,on=usb1,connector=1,instance_id=usb\\a",
+            ),
+            ("winusb-all,on=usb0", "winusb-all,on=usb1"),
+        ] {
+            let opt = Options::try_parse_from([
+                "openvmm",
+                "--usb-xhci",
+                "usb0",
+                "--usb-xhci",
+                "usb1",
+                "--usb-device",
+                first,
+                "--usb-device",
+                second,
+            ])
+            .unwrap();
+            assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
+        }
+    }
+
+    /// Two devices cannot explicitly claim the same connector on one controller.
+    #[test]
+    fn usb_cli_rejects_duplicate_connectors() {
+        let opt = Options::try_parse_from([
+            "openvmm",
+            "--usb-xhci",
+            "usb0",
+            "--usb-device",
+            "mock-hid,on=usb0,connector=1",
+            "--usb-device",
+            "mock-storage,on=usb0,connector=1",
+        ])
+        .unwrap();
+        assert!(usb_controller_configs(&opt.usb_xhci, &opt.usb_device).is_err());
     }
 
     #[test]
