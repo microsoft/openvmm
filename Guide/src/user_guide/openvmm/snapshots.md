@@ -175,6 +175,8 @@ OpenVMM snapshots:
 | virtio-pmem | Virtio (PCI/MMIO) | Yes |
 | virtio-rng | Virtio (PCI/MMIO) | Yes |
 | virtio-rtc | Virtio (PCI/MMIO) | Yes |
+| virtio-vsock (userspace relay) | Virtio (PCI/MMIO) | Yes; applications reconnect after restore |
+| virtio-vsock (kernel vhost) | Virtio (PCI/MMIO) | **No** |
 | NVMe | PCI | **No** |
 | VGA | PCI | **No** (`todo!()`) |
 | GDMA (MANA network) | PCI | **No** (`todo!()`) |

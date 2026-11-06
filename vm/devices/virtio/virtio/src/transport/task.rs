@@ -26,6 +26,9 @@ use mesh::rpc::RpcSend;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 
 /// Commands sent from the transport to the device task.
 pub enum DeviceCommand {
@@ -43,6 +46,10 @@ pub enum DeviceCommand {
     Reset(Rpc<(), ()>),
     /// Drop the stopped backend and exit, acknowledging after destruction.
     Teardown(Rpc<(), ()>),
+    /// Save device-specific state with queues stopped.
+    Save(Rpc<(), Result<Option<SavedStateBlob>, SaveError>>),
+    /// Restore device-specific state before queues are restarted.
+    Restore(Rpc<Option<SavedStateBlob>, Result<(), RestoreError>>),
     /// Config register read at byte offset with byte length.
     ReadConfig {
         offset: u16,
@@ -290,6 +297,14 @@ pub async fn run_device_task(
                 drop(task);
                 rpc.complete(());
                 return;
+            }
+            DeviceCommand::Save(rpc) => {
+                rpc.handle(async |()| task.device.save_device_state().await)
+                    .await;
+            }
+            DeviceCommand::Restore(rpc) => {
+                rpc.handle(async |state| task.device.restore_device_state(state).await)
+                    .await;
             }
             DeviceCommand::ReadConfig {
                 offset,

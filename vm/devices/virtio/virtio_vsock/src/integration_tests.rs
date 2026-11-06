@@ -9,8 +9,11 @@
 //! driver would.
 
 use crate::VirtioVsockDevice;
+use crate::saved_state::SavedConnection;
+use crate::saved_state::SavedState;
 use crate::spec::*;
 use core::panic;
+use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use guestmem::GuestMemory;
 use mesh::CancelContext;
@@ -34,6 +37,7 @@ use unix_socket::UnixListener;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
 use virtio::test_helpers::init_avail_ring;
@@ -43,6 +47,7 @@ use virtio::test_helpers::read_used;
 use virtio::test_helpers::wait_for_used;
 use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
+use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -117,6 +122,7 @@ struct TestHarness {
     // Temporary directory for socket files
     _tmp_dir: tempfile::TempDir,
     host_listener_path: PathBuf,
+    generation: usize,
 }
 
 impl TestHarness {
@@ -168,11 +174,16 @@ impl TestHarness {
             next_data_offset: DATA_BASE,
             _tmp_dir: tmp_dir,
             host_listener_path,
+            generation: 0,
         }
     }
 
     /// Enable the device by starting all three queues.
     async fn enable(&mut self) {
+        self.start_queues([None; 3]).await;
+    }
+
+    async fn start_queues(&mut self, states: [Option<QueueState>; 3]) {
         let features = VirtioDeviceFeatures::new();
 
         // Start rx queue (index 0)
@@ -193,7 +204,7 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &features,
-                None,
+                states[0],
             )
             .await
             .unwrap();
@@ -216,7 +227,7 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &features,
-                None,
+                states[1],
             )
             .await
             .unwrap();
@@ -240,10 +251,94 @@ impl TestHarness {
                     guest_memory: self.mem.clone(),
                 },
                 &features,
-                None,
+                states[2],
             )
             .await
             .unwrap();
+    }
+
+    async fn stop_queues(&mut self) -> [Option<QueueState>; 3] {
+        let mut states = [None; 3];
+        for (index, state) in states.iter_mut().enumerate() {
+            *state = self.device.stop_queue(index as u16).await;
+        }
+        states
+    }
+
+    async fn snapshot(&mut self) -> (SavedStateBlob, [Option<QueueState>; 3]) {
+        let queues = self.stop_queues().await;
+        let state = self.device.save_device_state().await.unwrap().unwrap();
+        let encoded = mesh::payload::encode(state);
+        (mesh::payload::decode(&encoded).unwrap(), queues)
+    }
+
+    fn recreate_device(&mut self) {
+        assert!(self.device.queues_stopped());
+        self.generation += 1;
+        self.host_listener_path = self
+            ._tmp_dir
+            .path()
+            .join(format!("host_listener_{}.sock", self.generation));
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(self.driver.clone()));
+        self.device = VirtioVsockDevice::new(
+            &driver_source,
+            GUEST_CID,
+            self._tmp_dir.path().join("vsock"),
+            UnixListener::bind(&self.host_listener_path).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn assert_reset(&self, gpa: u64, host_port: u32, guest_port: u32) {
+        let header = self.read_header(gpa);
+        assert_eq!(header.operation(), Operation::RST);
+        assert_eq!({ header.src_cid }, VSOCK_CID_HOST);
+        assert_eq!({ header.dst_cid }, GUEST_CID);
+        assert_eq!({ header.src_port }, host_port);
+        assert_eq!({ header.dst_port }, guest_port);
+        assert_eq!(header.socket_type(), SocketType::STREAM);
+        assert_eq!({ header.len }, 0);
+        assert_eq!({ header.buf_alloc }, 0);
+        assert_eq!({ header.fwd_cnt }, 0);
+    }
+
+    async fn exchange(
+        &mut self,
+        stream: &mut PolledSocket<unix_socket::UnixStream>,
+        guest_port: u32,
+        host_port: u32,
+        payload: &[u8],
+    ) {
+        CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(async {
+                let header = self.guest_header(
+                    guest_port,
+                    host_port,
+                    Operation::RW,
+                    payload.len() as u32,
+                    0,
+                );
+                self.post_tx_packet(&header, payload);
+                self.wait_for_tx_used().await;
+                let mut received = vec![0; payload.len()];
+                stream.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, payload);
+
+                stream.write_all(payload).await.unwrap();
+                loop {
+                    let (_, gpa) = self.post_rx_buffer(HDR_SIZE + payload.len() as u32);
+                    self.wait_for_rx_used().await;
+                    let header = self.read_header(gpa);
+                    if header.operation() == Operation::RW {
+                        assert_eq!(self.read_rx_data(gpa, header.len), payload);
+                        break;
+                    }
+                    assert_eq!(header.operation(), Operation::CREDIT_UPDATE);
+                }
+            })
+            .await
+            .expect("timed out exchanging data");
     }
 
     /// Allocate a data region in guest memory and return its GPA.
@@ -286,7 +381,7 @@ impl TestHarness {
     /// followed by optional data payload. Returns the descriptor index used.
     fn post_tx_packet(&mut self, header: &VsockHeader, data: &[u8]) -> u16 {
         let desc_idx = self.next_tx_desc;
-        self.next_tx_desc += 1;
+        self.next_tx_desc = (self.next_tx_desc + 1) % QUEUE_SIZE;
 
         let total_len = HDR_SIZE + data.len() as u32;
         let gpa = self.alloc_data(total_len);
@@ -320,7 +415,7 @@ impl TestHarness {
     /// Returns (descriptor index, GPA of the buffer).
     fn post_rx_buffer(&mut self, buf_size: u32) -> (u16, u64) {
         let desc_idx = self.next_rx_desc;
-        self.next_rx_desc += 1;
+        self.next_rx_desc = (self.next_rx_desc + 1) % QUEUE_SIZE;
 
         let gpa = self.alloc_data(buf_size);
         // Zero the buffer
@@ -464,6 +559,386 @@ impl TestHarness {
 }
 
 // --- Tests ---
+
+#[async_test]
+async fn vsock_pause_resume_and_save_continue_preserve_streams(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    harness.enable().await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+
+    assert!(harness.device.save_device_state().await.is_err());
+    harness
+        .exchange(&mut stream, 1024, 5000, b"before pause")
+        .await;
+    for capture in [false, true] {
+        let queues = harness.stop_queues().await;
+        assert!(queues.iter().all(Option::is_some));
+        assert_eq!(harness.stop_queues().await, [None; 3]);
+        if capture {
+            let state = harness.device.save_device_state().await.unwrap().unwrap();
+            let state = state.parse::<SavedState>().unwrap();
+            assert_eq!(state.connections_to_reset.len(), 1);
+        }
+        harness.start_queues(queues).await;
+        harness
+            .exchange(&mut stream, 1024, 5000, b"same live stream")
+            .await;
+    }
+}
+
+#[async_test]
+async fn vsock_save_restore_idle_connections_and_reconnect(driver: DefaultDriver) {
+    for fresh in [false, true] {
+        let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+        let mut listener = harness.create_port_listener(5000);
+        harness.enable().await;
+        let stream = harness
+            .connect_guest_to_host(&mut listener, 1024, 5000)
+            .await;
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        harness
+            .exchange(&mut stream, 1024, 5000, b"before restore")
+            .await;
+
+        // Supply RX before capture: restore must make progress without a new kick.
+        let (descriptor, gpa) = harness.post_rx_buffer(HDR_SIZE);
+        let (state, queues) = harness.snapshot().await;
+        assert!(queues[0].unwrap().used_index != 0);
+        if fresh {
+            harness.recreate_device();
+        }
+        harness
+            .device
+            .restore_device_state(Some(state))
+            .await
+            .unwrap();
+        harness.start_queues(queues).await;
+        assert_eq!(harness.wait_for_rx_used().await, (descriptor, HDR_SIZE));
+        harness.assert_reset(gpa, 5000, 1024);
+        let mut byte = [0];
+        let closed = CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(stream.read(&mut byte))
+            .await
+            .expect("old host stream did not close");
+        assert!(matches!(closed, Ok(0) | Err(_)));
+
+        let stream = harness
+            .connect_guest_to_host(&mut listener, 1024, 5000)
+            .await;
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        harness
+            .exchange(&mut stream, 1024, 5000, b"new stream")
+            .await;
+    }
+}
+
+#[async_test]
+async fn vsock_save_restore_empty(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    let (state, queues) = harness.snapshot().await;
+    assert!(
+        state
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .is_empty()
+    );
+    harness.recreate_device();
+    harness
+        .device
+        .restore_device_state(Some(state))
+        .await
+        .unwrap();
+    harness.start_queues(queues).await;
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness
+        .exchange(&mut stream, 1024, 5000, b"first connection")
+        .await;
+}
+
+fn reset_state(count: usize) -> SavedStateBlob {
+    SavedStateBlob::new(SavedState {
+        guest_cid: GUEST_CID,
+        connections_to_reset: (0..count)
+            .map(|index| SavedConnection {
+                local_port: 5000,
+                peer_port: 10000 + index as u32,
+            })
+            .collect(),
+    })
+}
+
+#[async_test]
+async fn vsock_save_restore_capacity_backpressure_and_repeated_snapshot(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let count = crate::connections::MAX_ACTIVE_CONNECTIONS;
+    harness
+        .device
+        .restore_device_state(Some(reset_state(count)))
+        .await
+        .unwrap();
+    harness.enable().await;
+
+    // Capture once with no RX descriptors, and again after partial delivery.
+    for delivered in (0..count).step_by(8) {
+        if delivered == 0 || delivered == 8 {
+            let (state, queues) = harness.snapshot().await;
+            assert_eq!(
+                state
+                    .parse::<SavedState>()
+                    .unwrap()
+                    .connections_to_reset
+                    .len(),
+                count - delivered
+            );
+            harness.recreate_device();
+            harness
+                .device
+                .restore_device_state(Some(state))
+                .await
+                .unwrap();
+            harness.start_queues(queues).await;
+        }
+        let buffers: Vec<_> = (0..8).map(|_| harness.post_rx_buffer(HDR_SIZE)).collect();
+        for (index, (descriptor, gpa)) in buffers.into_iter().enumerate() {
+            assert_eq!(harness.wait_for_rx_used().await, (descriptor, HDR_SIZE));
+            harness.assert_reset(gpa, 5000, 10000 + (delivered + index) as u32);
+        }
+    }
+    let (state, _) = harness.snapshot().await;
+    assert!(
+        state
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .is_empty()
+    );
+    assert_eq!(usize::from(harness.rx_used_idx), count);
+}
+
+#[async_test]
+async fn vsock_reset_delivery_processes_one_descriptor_per_step(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    harness
+        .device
+        .restore_device_state(Some(reset_state(2)))
+        .await
+        .unwrap();
+    harness.enable().await;
+    harness.device.worker.stop().await;
+    let mut queues = harness.device.worker.remove();
+    let buffers = [
+        harness.post_rx_buffer(HDR_SIZE),
+        harness.post_rx_buffer(HDR_SIZE),
+    ];
+
+    for (index, (descriptor, gpa)) in buffers.into_iter().enumerate() {
+        assert!(
+            harness
+                .device
+                .worker
+                .task_mut()
+                .flush_one_reset(&mut queues)
+                .await
+                .unwrap()
+        );
+        assert_eq!(harness.device.worker.task().pending_resets.len(), 1 - index);
+        assert_eq!(harness.wait_for_rx_used().await, (descriptor, HDR_SIZE));
+        harness.assert_reset(gpa, 5000, 10000 + index as u32);
+    }
+    assert!(
+        !harness
+            .device
+            .worker
+            .task_mut()
+            .flush_one_reset(&mut queues)
+            .await
+            .unwrap()
+    );
+    assert_eq!(harness.rx_used_idx, 2);
+}
+
+#[async_test]
+async fn vsock_save_restore_bad_rx_retains_reset(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    harness
+        .device
+        .restore_device_state(Some(reset_state(1)))
+        .await
+        .unwrap();
+    harness.enable().await;
+    let (bad_descriptor, _) = harness.post_rx_buffer(HDR_SIZE - 1);
+    assert_eq!(harness.wait_for_rx_used().await, (bad_descriptor, 0));
+    let (state, queues) = harness.snapshot().await;
+    assert_eq!(
+        state
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .len(),
+        1
+    );
+    harness
+        .device
+        .restore_device_state(Some(state))
+        .await
+        .unwrap();
+    harness.start_queues(queues).await;
+    let (descriptor, gpa) = harness.post_rx_buffer(HDR_SIZE);
+    assert_eq!(harness.wait_for_rx_used().await, (descriptor, HDR_SIZE));
+    harness.assert_reset(gpa, 5000, 10000);
+}
+
+#[async_test]
+async fn vsock_save_restore_port_reuse_orders_reset_before_response(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    let mut listener = harness.create_port_listener(5000);
+    harness
+        .device
+        .restore_device_state(Some(reset_state(1)))
+        .await
+        .unwrap();
+    harness.enable().await;
+    let header = harness.guest_header(10000, 5000, Operation::REQUEST, 0, 0);
+    harness.post_tx_packet(&header, &[]);
+    let (reset_descriptor, reset_gpa) = harness.post_rx_buffer(HDR_SIZE);
+    let (response_descriptor, response_gpa) = harness.post_rx_buffer(HDR_SIZE);
+    assert_eq!(
+        harness.wait_for_rx_used().await,
+        (reset_descriptor, HDR_SIZE)
+    );
+    harness.assert_reset(reset_gpa, 5000, 10000);
+    let (stream, _) = CancelContext::new()
+        .with_timeout(Duration::from_secs(5))
+        .until_cancelled(listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    harness.wait_for_tx_used().await;
+    assert_eq!(
+        harness.wait_for_rx_used().await,
+        (response_descriptor, HDR_SIZE)
+    );
+    assert_eq!(
+        harness.read_header(response_gpa).operation(),
+        Operation::RESPONSE
+    );
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
+    harness
+        .exchange(&mut stream, 10000, 5000, b"reused ports")
+        .await;
+}
+
+#[async_test]
+async fn vsock_save_restore_host_initiated_and_half_open(driver: DefaultDriver) {
+    for complete_handshake in [false, true] {
+        let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+        harness.enable().await;
+        let (_, request_gpa) = harness.post_rx_buffer(HDR_SIZE);
+        let stream = unix_socket::UnixStream::connect(&harness.host_listener_path).unwrap();
+        let mut stream = PolledSocket::new(&driver, stream).unwrap();
+        stream.write_all(b"CONNECT 8080\n").await.unwrap();
+        harness.wait_for_rx_used().await;
+        let request = harness.read_header(request_gpa);
+        assert_eq!(request.operation(), Operation::REQUEST);
+        let local_port = request.src_port;
+        if complete_handshake {
+            let response = harness.guest_header(8080, local_port, Operation::RESPONSE, 0, 0);
+            harness.post_tx_packet(&response, &[]);
+            harness.wait_for_tx_used().await;
+            let expected = format!("OK {local_port}\n");
+            let mut response = vec![0; expected.len()];
+            CancelContext::new()
+                .with_timeout(Duration::from_secs(5))
+                .until_cancelled(stream.read_exact(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response, expected.as_bytes());
+        }
+        let (state, queues) = harness.snapshot().await;
+        let saved = state.parse::<SavedState>().unwrap();
+        assert_eq!(saved.connections_to_reset.len(), 1);
+        assert_eq!(saved.connections_to_reset[0].local_port, local_port);
+        assert_eq!(saved.connections_to_reset[0].peer_port, 8080);
+        harness.recreate_device();
+        harness
+            .device
+            .restore_device_state(Some(state))
+            .await
+            .unwrap();
+        harness.start_queues(queues).await;
+        let (_, gpa) = harness.post_rx_buffer(HDR_SIZE);
+        harness.wait_for_rx_used().await;
+        harness.assert_reset(gpa, local_port, 8080);
+    }
+}
+
+#[async_test]
+async fn vsock_save_restore_invalid_state_and_reset(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver, tempfile::tempdir().unwrap());
+    assert!(harness.device.supports_save_restore());
+    assert!(harness.device.restore_device_state(None).await.is_err());
+    assert!(
+        harness
+            .device
+            .restore_device_state(Some(SavedStateBlob::new(
+                vmcore::save_restore::NoSavedState
+            )))
+            .await
+            .is_err()
+    );
+    let wrong_cid = SavedStateBlob::new(SavedState {
+        guest_cid: GUEST_CID + 1,
+        connections_to_reset: Vec::new(),
+    });
+    assert!(
+        harness
+            .device
+            .restore_device_state(Some(wrong_cid))
+            .await
+            .is_err()
+    );
+    assert!(
+        harness
+            .device
+            .restore_device_state(Some(reset_state(crate::MAX_SAVED_CONNECTIONS + 1)))
+            .await
+            .is_err()
+    );
+    harness
+        .device
+        .restore_device_state(Some(reset_state(1)))
+        .await
+        .unwrap();
+    harness.enable().await;
+    assert!(
+        harness
+            .device
+            .restore_device_state(Some(reset_state(0)))
+            .await
+            .is_err()
+    );
+    harness.stop_queues().await;
+    harness.device.reset().await;
+    let (state, _) = harness.snapshot().await;
+    assert!(
+        state
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .is_empty()
+    );
+}
 
 /// Test that the device can be constructed and its config space returns the
 /// correct guest CID.
@@ -1260,6 +1735,18 @@ async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
         hdr.fwd_cnt < TOTAL_BYTES as u32,
         "some data should have been buffered"
     );
+
+    let queues = harness.stop_queues().await;
+    let saved = harness.device.save_device_state().await.unwrap().unwrap();
+    assert_eq!(
+        saved
+            .parse::<SavedState>()
+            .unwrap()
+            .connections_to_reset
+            .len(),
+        1
+    );
+    harness.start_queues(queues).await;
 
     // Host begins reading — this unblocks the device's socket writes and
     // triggers ring buffer flushes + credit updates.

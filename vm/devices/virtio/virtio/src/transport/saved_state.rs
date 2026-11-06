@@ -11,6 +11,7 @@
 pub mod state {
     use crate::queue::QueueState;
     use mesh::payload::Protobuf;
+    use vmcore::save_restore::SavedStateBlob;
 
     /// Transport-agnostic per-queue saved state.
     #[derive(Protobuf)]
@@ -50,6 +51,8 @@ pub mod state {
         pub queue_select: u32,
         #[mesh(6)]
         pub config_generation: u32,
+        #[mesh(7)]
+        pub device_state: Option<SavedStateBlob>,
     }
 }
 

@@ -43,6 +43,7 @@ use pal_async::wait::PolledWait;
 use smallvec::SmallVec;
 use spec::VsockConfig;
 use spec::VsockHeader;
+use std::collections::BTreeSet;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::path::PathBuf;
@@ -61,6 +62,10 @@ use virtio::regions::data_regions;
 use virtio::regions::try_build_gpn_list;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::VirtioDeviceType;
+use vmcore::save_restore::AsyncSaveRestore;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
@@ -70,6 +75,8 @@ const QUEUE_COUNT: usize = 3;
 const RX_QUEUE_INDEX: usize = 0;
 const TX_QUEUE_INDEX: usize = 1;
 const EVENT_QUEUE_INDEX: usize = 2;
+// Include both live connections and resets awaiting guest receive buffers.
+const MAX_SAVED_CONNECTIONS: usize = 2 * connections::MAX_ACTIVE_CONNECTIONS;
 
 /// Virtio vsock device.
 #[derive(InspectMut)]
@@ -111,10 +118,31 @@ impl VirtioVsockDevice {
         Ok(Self {
             guest_cid,
             driver: driver.clone(),
-            worker: TaskControl::new(VsockWorker { driver, listener }),
+            worker: TaskControl::new(VsockWorker {
+                driver,
+                listener,
+                connections: ConnectionManager::new(guest_cid, base_path.clone()),
+                rx_ready: FuturesUnordered::new(),
+                write_ready: FuturesUnordered::new(),
+                pending_resets: BTreeSet::new(),
+                failed: false,
+            }),
             started_queues: [const { None }; QUEUE_COUNT],
             base_path,
         })
+    }
+
+    fn queues_stopped(&self) -> bool {
+        !self.worker.has_state() && self.started_queues.iter().all(Option::is_none)
+    }
+
+    fn reset_connections(&mut self) {
+        let worker = self.worker.task_mut();
+        worker.connections = ConnectionManager::new(self.guest_cid, self.base_path.clone());
+        worker.rx_ready = FuturesUnordered::new();
+        worker.write_ready = FuturesUnordered::new();
+        worker.pending_resets.clear();
+        worker.failed = false;
     }
 }
 
@@ -159,6 +187,10 @@ impl VirtioDevice for VirtioVsockDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<virtio::queue::QueueState>,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.worker.has_state(),
+            "virtio-vsock worker already started"
+        );
         if self
             .started_queues
             .get(idx as usize)
@@ -201,9 +233,6 @@ impl VirtioDevice for VirtioVsockDevice {
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
                 _event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
                 memory: resources.guest_memory.clone(),
-                connections: ConnectionManager::new(self.guest_cid, self.base_path.clone()),
-                rx_ready: FuturesUnordered::new(),
-                write_ready: FuturesUnordered::new(),
             };
 
             self.worker
@@ -216,7 +245,8 @@ impl VirtioDevice for VirtioVsockDevice {
 
     async fn stop_queue(&mut self, idx: u16) -> Option<virtio::queue::QueueState> {
         // Stop the worker task (cancels the run loop via until_stopped).
-        if self.worker.stop().await {
+        self.worker.stop().await;
+        if self.worker.has_state() {
             let state = self.worker.remove();
 
             // Transfer the queues back, so we can return the state as each one is stopped
@@ -231,6 +261,137 @@ impl VirtioDevice for VirtioVsockDevice {
             .take()
             .map(|queue| queue.queue_state())
     }
+
+    async fn reset(&mut self) {
+        self.worker.stop().await;
+        if self.worker.has_state() {
+            self.worker.remove();
+        }
+        self.started_queues = [const { None }; QUEUE_COUNT];
+        self.reset_connections();
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
+
+    async fn save_device_state(&mut self) -> Result<Option<SavedStateBlob>, SaveError> {
+        AsyncSaveRestore::save(self)
+            .await
+            .map(SavedStateBlob::new)
+            .map(Some)
+    }
+
+    async fn restore_device_state(
+        &mut self,
+        state: Option<SavedStateBlob>,
+    ) -> Result<(), RestoreError> {
+        let state = state
+            .ok_or_else(|| RestoreError::InvalidSavedState(VsockStateError::MissingState.into()))?;
+        AsyncSaveRestore::restore(self, state.parse()?).await
+    }
+}
+
+mod saved_state {
+    use mesh::payload::Protobuf;
+    use vmcore::save_restore::SavedStateRoot;
+
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "virtio.vsock")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub guest_cid: u64,
+        #[mesh(2)]
+        pub connections_to_reset: Vec<SavedConnection>,
+    }
+
+    #[derive(Protobuf)]
+    #[mesh(package = "virtio.vsock")]
+    pub struct SavedConnection {
+        #[mesh(1)]
+        pub local_port: u32,
+        #[mesh(2)]
+        pub peer_port: u32,
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum VsockStateError {
+    #[error("virtio-vsock queues must be stopped before saving or restoring")]
+    QueuesActive,
+    #[error("virtio-vsock worker stopped with a queue error")]
+    QueueFailed,
+    #[error("missing virtio-vsock device state")]
+    MissingState,
+    #[error("saved guest CID {saved} does not match configured CID {configured}")]
+    GuestCid { saved: u64, configured: u64 },
+    #[error("too many saved vsock connections: {0} (maximum {MAX_SAVED_CONNECTIONS})")]
+    TooManyConnections(usize),
+}
+
+impl AsyncSaveRestore for VirtioVsockDevice {
+    type SavedState = saved_state::SavedState;
+
+    async fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+        if !self.queues_stopped() {
+            return Err(SaveError::Other(VsockStateError::QueuesActive.into()));
+        }
+        let worker = self.worker.task();
+        if worker.failed {
+            return Err(SaveError::Other(VsockStateError::QueueFailed.into()));
+        }
+        let connections: BTreeSet<_> = worker
+            .connections
+            .keys()
+            .chain(worker.pending_resets.iter().copied())
+            .collect();
+        if connections.len() > MAX_SAVED_CONNECTIONS {
+            return Err(SaveError::Other(
+                VsockStateError::TooManyConnections(connections.len()).into(),
+            ));
+        }
+        Ok(saved_state::SavedState {
+            guest_cid: self.guest_cid,
+            connections_to_reset: connections
+                .into_iter()
+                .map(|key| saved_state::SavedConnection {
+                    local_port: key.local_port,
+                    peer_port: key.peer_port,
+                })
+                .collect(),
+        })
+    }
+
+    async fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+        if !self.queues_stopped() {
+            return Err(RestoreError::Other(VsockStateError::QueuesActive.into()));
+        }
+        if state.guest_cid != self.guest_cid {
+            return Err(RestoreError::InvalidSavedState(
+                VsockStateError::GuestCid {
+                    saved: state.guest_cid,
+                    configured: self.guest_cid,
+                }
+                .into(),
+            ));
+        }
+        if state.connections_to_reset.len() > MAX_SAVED_CONNECTIONS {
+            return Err(RestoreError::InvalidSavedState(
+                VsockStateError::TooManyConnections(state.connections_to_reset.len()).into(),
+            ));
+        }
+        let pending_resets = state
+            .connections_to_reset
+            .into_iter()
+            .map(|connection| ConnectionKey {
+                local_port: connection.local_port,
+                peer_port: connection.peer_port,
+            })
+            .collect();
+        self.reset_connections();
+        self.worker.task_mut().pending_resets = pending_resets;
+        Ok(())
+    }
 }
 
 /// Indicates a connection that is read to put data on the rx queue to send to the guest.
@@ -242,8 +403,6 @@ pub enum RxReady {
     Connection(ConnectionInstanceId),
     /// A pending connection has data.
     PendingConnection(u64),
-    /// A RST packet should be sent for a connection that was removed or invalid.
-    SendReset(ConnectionKey),
 }
 
 /// A pinned future that resolves to an `RxReady` item.
@@ -257,6 +416,7 @@ type WriteReadyItem = Pin<Box<dyn Future<Output = ConnectionInstanceId> + Send>>
 struct PendingFutures {
     rx_ready: Option<RxReadyItem>,
     write_ready: Option<WriteReadyItem>,
+    reset: Option<ConnectionKey>,
 }
 
 impl PendingFutures {
@@ -264,6 +424,7 @@ impl PendingFutures {
     const NONE: Self = Self {
         rx_ready: None,
         write_ready: None,
+        reset: None,
     };
 
     /// Create a new `PendingFutures` with the given RxReady future, and no WriteReady future.
@@ -271,6 +432,7 @@ impl PendingFutures {
         Self {
             rx_ready: future,
             write_ready: None,
+            reset: None,
         }
     }
 
@@ -280,6 +442,7 @@ impl PendingFutures {
         Self {
             rx_ready: Some(Box::pin(async move { work })),
             write_ready: None,
+            reset: None,
         }
     }
 
@@ -288,23 +451,39 @@ impl PendingFutures {
         Self {
             rx_ready: rx_work.map(|w| -> RxReadyItem { Box::pin(async move { w }) }),
             write_ready: work,
+            reset: None,
+        }
+    }
+
+    fn reset(key: ConnectionKey) -> Self {
+        Self {
+            reset: Some(key),
+            ..Self::NONE
         }
     }
 }
 
 /// Transient worker state for all three queues.
 struct VsockWorkerState {
-    connections: ConnectionManager,
     rx_queue: VirtioQueue,
     tx_queue: Fuse<VirtioQueue>,
     // The event queue is not used by this implementation.
     _event_queue: VirtioQueue,
     memory: GuestMemory,
-    rx_ready: FuturesUnordered<RxReadyItem>,
-    write_ready: FuturesUnordered<WriteReadyItem>,
 }
 
-impl VsockWorkerState {
+/// Connection runtime survives queue stop/start, but is discarded on reset or restore.
+struct VsockWorker {
+    driver: VmTaskDriver,
+    listener: PolledSocket<UnixListener>,
+    connections: ConnectionManager,
+    rx_ready: FuturesUnordered<RxReadyItem>,
+    write_ready: FuturesUnordered<WriteReadyItem>,
+    pending_resets: BTreeSet<ConnectionKey>,
+    failed: bool,
+}
+
+impl VsockWorker {
     /// Queue pending futures returned from the connection manager to be processed by the worker run
     /// loop.
     fn queue_pending(&mut self, pending: PendingFutures) {
@@ -314,16 +493,12 @@ impl VsockWorkerState {
         if let Some(work) = pending.write_ready {
             self.write_ready.push(work);
         }
+        if let Some(key) = pending.reset {
+            self.connections.remove(&key);
+            self.pending_resets.insert(key);
+        }
     }
-}
 
-/// The main worker for the virtio-vsock device.
-struct VsockWorker {
-    driver: VmTaskDriver,
-    listener: PolledSocket<UnixListener>,
-}
-
-impl VsockWorker {
     /// Handle a work item from the tx virtqueue (guest -> host).
     fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
         if let Err(err) = self.handle_guest_tx_inner(state, &work) {
@@ -366,8 +541,7 @@ impl VsockWorker {
         let pending = {
             if rw_len == 0 {
                 // No payload, so handle the packet immediately.
-                state
-                    .connections
+                self.connections
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &[]))
             } else if let Some(locked) = lock_payload_data(
                 &state.memory,
@@ -378,8 +552,7 @@ impl VsockWorker {
                 LockedIoSlice::new(),
             )? {
                 // We can read the payload directly from guest memory.
-                state
-                    .connections
+                self.connections
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
             } else {
                 // Use a temp bounce buffer if the payload couldn't be locked.
@@ -393,14 +566,14 @@ impl VsockWorker {
                         read_bytes
                     );
                 }
-                state.connections.handle_guest_tx(
+                self.connections.handle_guest_tx(
                     &self.driver,
                     VsockPacket::new(header, &[IoSlice::new(&temp_buf)]),
                 )
             }
         };
 
-        state.queue_pending(pending);
+        self.queue_pending(pending);
         Ok(())
     }
 
@@ -438,7 +611,7 @@ impl VsockWorker {
             .expect("peek already succeeded before")
             .expect("queue was already checked to have items");
 
-        let (packet, pending) = state.connections.get_rx_packet(
+        let (packet, pending) = self.connections.get_rx_packet(
             &state.memory,
             &self.driver,
             peeked_work.payload(),
@@ -447,27 +620,54 @@ impl VsockWorker {
 
         // If there's a packet to send, write it to the guest.
         if let Some(packet) = packet {
-            let queue_work = peeked_work.consume();
-            let bytes = match Self::write_packet(state, &queue_work, &packet) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    tracelimit::error_ratelimited!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        "failed to write vsock packet"
-                    );
-
-                    // We can't recover from this. Remove the connection so any future attempts to use
-                    // it will fail.
-                    state
-                        .connections
-                        .remove(&ConnectionKey::from_rx_packet(&packet.header));
-                    0
-                }
-            };
-            state.rx_queue.complete(queue_work, bytes);
+            if packet.header.operation() == Operation::RST {
+                self.queue_pending(PendingFutures::reset(ConnectionKey::from_rx_packet(
+                    &packet.header,
+                )));
+            } else {
+                let queue_work = peeked_work.consume();
+                let bytes = match Self::write_packet(state, &queue_work, &packet) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        tracelimit::error_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to write vsock packet"
+                        );
+                        self.queue_pending(PendingFutures::reset(ConnectionKey::from_rx_packet(
+                            &packet.header,
+                        )));
+                        0
+                    }
+                };
+                state.rx_queue.complete(queue_work, bytes);
+            }
         }
 
-        state.queue_pending(pending);
+        self.queue_pending(pending);
+    }
+
+    /// Attempt one reset so the caller can check cancellation between descriptors.
+    /// Returns whether reset work was pending, even if its RX buffer was unusable.
+    async fn flush_one_reset(&mut self, state: &mut VsockWorkerState) -> anyhow::Result<bool> {
+        let Some(key) = self.pending_resets.first().copied() else {
+            return Ok(false);
+        };
+        let work = state.rx_queue.peek().await?.consume();
+        let packet = self.connections.reset_packet(key);
+        let bytes = match Self::write_packet(state, &work, &packet) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to write vsock reset"
+                );
+                state.rx_queue.try_complete(work, 0)?;
+                return Ok(true);
+            }
+        };
+        state.rx_queue.try_complete(work, bytes)?;
+        self.pending_resets.remove(&key);
+        Ok(true)
     }
 }
 
@@ -482,9 +682,22 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop.until_stopped(async {
             loop {
                 check.check()?;
+                match self.flush_one_reset(state).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(err) => {
+                        self.failed = true;
+                        tracelimit::error_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            "failed to deliver vsock resets, stopping worker"
+                        );
+                        return Ok(());
+                    }
+                }
                 let peeked = match state.rx_queue.try_peek() {
                     Ok(p) => p,
                     Err(err) => {
+                        self.failed = true;
                         tracing::error!(
                             error = &err as &dyn std::error::Error,
                             "error peeking virtio rx queue"
@@ -495,7 +708,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
 
                 let has_rx_work = peeked.is_some();
                 let mut rx_ready =
-                    OptionFuture::from(has_rx_work.then(|| state.rx_ready.select_next_some()));
+                    OptionFuture::from(has_rx_work.then(|| self.rx_ready.select_next_some()));
 
                 // This future unfortunately borrows state.rx_queue, which means peeked cannot be
                 // used below.
@@ -505,14 +718,15 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
 
                 // Wait for work to do from either host or guest.
                 futures::select! {
-                    id = state.write_ready.select_next_some() => {
-                        let pending = state.connections.handle_write_ready(id);
-                        state.queue_pending(pending);
+                    id = self.write_ready.select_next_some() => {
+                        let pending = self.connections.handle_write_ready(id);
+                        self.queue_pending(pending);
                     }
                     r = state.tx_queue.select_next_some() => {
                         match r {
                             Ok(work) => self.handle_guest_tx(state, work),
                             Err(err) => {
+                                self.failed = true;
                                 // The queue is retired: the rejected chain is
                                 // never consumed, so retrying would fail
                                 // identically forever.
@@ -535,7 +749,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                         match r {
                             Ok((stream, _)) => {
                                 tracing::trace!("host unix socket accepted");
-                                match state.connections.handle_host_connect(&self.driver, stream) {
+                                match self.connections.handle_host_connect(&self.driver, stream) {
                                     Err(err) => {
                                         tracing::error!(
                                             error = err.as_ref() as &dyn std::error::Error,
@@ -543,8 +757,8 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                         );
                                     }
                                     Ok((read_work, timeout_work)) => {
-                                        state.queue_pending(read_work);
-                                        state.queue_pending(timeout_work);
+                                        self.queue_pending(read_work);
+                                        self.queue_pending(timeout_work);
                                     }
                                 }
                             }

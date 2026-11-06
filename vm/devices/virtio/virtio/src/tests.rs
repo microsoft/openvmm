@@ -51,6 +51,7 @@ use std::future::poll_fn;
 use std::io;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -4807,6 +4808,272 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
 // ==================== Save/Restore Tests ====================
 
 #[async_test]
+async fn queue_completion_failure_is_returned(driver: DefaultDriver) {
+    let access = VirtioTestMemoryAccess::new();
+    access.modify_memory_map(0, &vec![0; 0x9000], true);
+    let mem = GuestMemory::new("completion failure", access.clone());
+    crate::test_helpers::init_avail_ring(&mem, 0x1000);
+    crate::test_helpers::write_descriptor(
+        &mem,
+        0,
+        0,
+        0x2000,
+        44,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    crate::test_helpers::make_available(&mem, 0x1000, 8, 0, &mut 0);
+    let mut queue = VirtioQueue::new(
+        VirtioDeviceFeatures::new(),
+        QueueParams {
+            size: 8,
+            enable: true,
+            desc_addr: 0,
+            avail_addr: 0x1000,
+            used_addr: 0x8000,
+        },
+        mem,
+        Interrupt::from_event(Event::new()),
+        PolledWait::new(&driver, Event::new()).unwrap(),
+        None,
+    )
+    .unwrap();
+    let work = queue.try_next().unwrap().unwrap();
+    *access.failed_write_range.lock() = Some(0x8000..0x9000);
+    assert!(queue.try_complete(work, 44).is_err());
+}
+
+#[derive(mesh::payload::Protobuf, vmcore::save_restore::SavedStateRoot)]
+#[mesh(package = "virtio.tests")]
+struct TestDeviceSavedState {
+    #[mesh(1)]
+    value: u64,
+}
+
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct SavedStateTestDevice {
+    value: Arc<AtomicU64>,
+    fail: bool,
+    restore_entered: Option<mesh::OneshotSender<()>>,
+    restore_release: Option<mesh::OneshotReceiver<()>>,
+}
+
+impl SavedStateTestDevice {
+    fn new(value: Arc<AtomicU64>) -> Self {
+        Self {
+            value,
+            fail: false,
+            restore_entered: None,
+            restore_release: None,
+        }
+    }
+}
+
+impl VirtioDevice for SavedStateTestDevice {
+    fn traits(&self) -> DeviceTraits {
+        DeviceTraits {
+            device_id: VirtioDeviceType::CONSOLE,
+            max_queues: 1,
+            ..Default::default()
+        }
+    }
+
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+        0
+    }
+
+    async fn write_registers_u32(&mut self, _offset: u16, _value: u32) {}
+
+    async fn start_queue(
+        &mut self,
+        _idx: u16,
+        _resources: QueueResources,
+        _features: &VirtioDeviceFeatures,
+        _initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("snapshot must not start queues")
+    }
+
+    async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+        None
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
+
+    async fn save_device_state(
+        &mut self,
+    ) -> Result<Option<vmcore::save_restore::SavedStateBlob>, vmcore::save_restore::SaveError> {
+        if self.fail {
+            return Err(vmcore::save_restore::SaveError::Other(anyhow::anyhow!(
+                "test device save failure"
+            )));
+        }
+        Ok(Some(vmcore::save_restore::SavedStateBlob::new(
+            TestDeviceSavedState {
+                value: self.value.load(Ordering::Relaxed),
+            },
+        )))
+    }
+
+    async fn restore_device_state(
+        &mut self,
+        state: Option<vmcore::save_restore::SavedStateBlob>,
+    ) -> Result<(), vmcore::save_restore::RestoreError> {
+        use vmcore::save_restore::RestoreError;
+        if self.fail {
+            return Err(RestoreError::Other(anyhow::anyhow!(
+                "test device restore failure"
+            )));
+        }
+        let state = state
+            .ok_or(RestoreError::SavedStateNotSupported)?
+            .parse::<TestDeviceSavedState>()?;
+        if let Some(entered) = self.restore_entered.take() {
+            entered.send(());
+        }
+        if let Some(release) = self.restore_release.take() {
+            release
+                .await
+                .map_err(|err| RestoreError::Other(err.into()))?;
+        }
+        self.value.store(state.value, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+fn saved_state_test_transport(
+    driver: &DefaultDriver,
+    pci: bool,
+    device: Box<dyn DynVirtioDevice>,
+) -> Box<dyn vmcore::save_restore::AsyncProtobufSaveRestore> {
+    if pci {
+        let msi = MsiConnection::new();
+        Box::new(
+            VirtioPciDevice::new(
+                device,
+                driver,
+                GuestMemory::empty(),
+                PciInterruptModel::Msix(&msi.target()),
+                None,
+                &mut ExternallyManagedMmioIntercepts,
+                None,
+            )
+            .unwrap(),
+        )
+    } else {
+        Box::new(
+            VirtioMmioDevice::new(
+                device,
+                driver,
+                GuestMemory::empty(),
+                LineInterrupt::detached(),
+                None,
+                0,
+                1,
+            )
+            .unwrap(),
+        )
+    }
+}
+
+#[async_test]
+async fn device_state_save_restore_round_trip_waits_for_device(driver: DefaultDriver) {
+    for pci in [false, true] {
+        let original = Arc::new(AtomicU64::new(42));
+        let mut source = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(SavedStateTestDevice::new(original.clone())),
+        );
+        let bytes = mesh::payload::encode(source.save().await.unwrap());
+        let state = mesh::payload::decode(&bytes).unwrap();
+        assert_eq!(original.load(Ordering::Relaxed), 42);
+
+        let restored = Arc::new(AtomicU64::new(0));
+        let (entered_send, entered_recv) = mesh::oneshot();
+        let (release_send, release_recv) = mesh::oneshot();
+        let mut target = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(SavedStateTestDevice {
+                restore_entered: Some(entered_send),
+                restore_release: Some(release_recv),
+                ..SavedStateTestDevice::new(restored.clone())
+            }),
+        );
+        let (result, ()) = futures::future::join(target.restore(state), async {
+            entered_recv.await.unwrap();
+            assert_eq!(restored.load(Ordering::Relaxed), 0);
+            release_send.send(());
+        })
+        .await;
+        result.unwrap();
+        assert_eq!(restored.load(Ordering::Relaxed), 42);
+    }
+}
+
+#[async_test]
+async fn device_state_save_restore_propagates_errors(driver: DefaultDriver) {
+    for pci in [false, true] {
+        let mut failing = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(SavedStateTestDevice {
+                fail: true,
+                ..SavedStateTestDevice::new(Arc::new(AtomicU64::new(0)))
+            }),
+        );
+        assert!(failing.save().await.is_err());
+        let mut source = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(SavedStateTestDevice::new(Arc::new(AtomicU64::new(42)))),
+        );
+        assert!(failing.restore(source.save().await.unwrap()).await.is_err());
+    }
+}
+
+#[async_test]
+async fn device_state_save_restore_transport_only_compatibility(driver: DefaultDriver) {
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    for pci in [false, true] {
+        let mut stateless = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: VirtioDeviceType::CONSOLE,
+                    max_queues: 1,
+                    ..Default::default()
+                },
+                None,
+            )),
+        );
+        let bytes = mesh::payload::encode(stateless.save().await.unwrap());
+        stateless
+            .restore(mesh::payload::decode(&bytes).unwrap())
+            .await
+            .unwrap();
+
+        let mut stateful = saved_state_test_transport(
+            &driver,
+            pci,
+            Box::new(SavedStateTestDevice::new(Arc::new(AtomicU64::new(42)))),
+        );
+        assert!(
+            stateless
+                .restore(stateful.save().await.unwrap())
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[async_test]
 async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     use vmcore::device_state::ChangeDeviceState;
     use vmcore::save_restore::AsyncSaveRestore;
@@ -4855,7 +5122,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
 async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     use crate::spec::mmio::VirtioMmioRegister;
     use vmcore::device_state::ChangeDeviceState;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
@@ -4895,7 +5162,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     dev.stop().await;
 
     // Save state.
-    let saved = dev.save().expect("save should succeed");
+    let saved = dev.save().await.expect("save should succeed");
     assert_eq!(saved.queues.len(), 1);
     assert!(saved.queues[0].common.enable);
 
@@ -4923,7 +5190,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     )
     .unwrap();
 
-    dev2.restore(saved).expect("restore should succeed");
+    dev2.restore(saved).await.expect("restore should succeed");
     // Verify device is active after restore — read STATUS register.
     assert_ne!(
         dev2.read_u32(VirtioMmioRegister::STATUS.0 as u64) & VIRTIO_DRIVER_OK,
@@ -5019,7 +5286,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
 
 #[async_test]
 async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let interrupt = LineInterrupt::detached();
 
@@ -5042,7 +5309,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
     )
     .unwrap();
 
-    let result = dev.save();
+    let result = dev.save().await;
     assert!(result.is_err(), "save should fail for unsupported device");
 }
 
@@ -5118,7 +5385,7 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
 #[async_test]
 async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
     let test_mem = VirtioTestMemoryAccess::new();
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
@@ -5163,7 +5430,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
     // Stop, save, restore into a new device.
     dev.stop().await;
-    let saved = dev.save().expect("save should succeed");
+    let saved = dev.save().await.expect("save should succeed");
 
     let interrupt2 = LineInterrupt::detached();
     let mut dev2 = VirtioMmioDevice::new(
@@ -5190,7 +5457,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
 
     // Reset counter to isolate restore behavior.
     test_mem.doorbell_count.store(0, Ordering::Relaxed);
-    dev2.restore(saved).expect("restore should succeed");
+    dev2.restore(saved).await.expect("restore should succeed");
 
     // Doorbells must be reinstalled during restore.
     let doorbells_after_restore = test_mem.doorbell_count.load(Ordering::Relaxed);

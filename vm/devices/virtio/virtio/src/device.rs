@@ -14,6 +14,9 @@ use inspect::InspectMut;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use vmcore::save_restore::RestoreError;
+use vmcore::save_restore::SaveError;
+use vmcore::save_restore::SavedStateBlob;
 
 /// Per-queue virtio device trait. Ergonomic async fn — not object-safe.
 ///
@@ -114,6 +117,32 @@ pub trait VirtioDevice: InspectMut + Send {
     fn supports_save_restore(&self) -> bool {
         false
     }
+
+    /// Save device-specific state after all queues have been stopped.
+    ///
+    /// Queue and transport state are saved separately. The default is suitable
+    /// for devices with no additional state.
+    fn save_device_state(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<SavedStateBlob>, SaveError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Restore device-specific state while stopped, before restarting queues.
+    ///
+    /// This is not called for ordinary stop/start. The default accepts only
+    /// an absent payload, including snapshots from before this hook existed.
+    fn restore_device_state(
+        &mut self,
+        state: Option<SavedStateBlob>,
+    ) -> impl Future<Output = Result<(), RestoreError>> + Send {
+        async move {
+            if state.is_some() {
+                return Err(RestoreError::SavedStateNotSupported);
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Object-safe wrapper for [`VirtioDevice`].
@@ -166,6 +195,17 @@ pub trait DynVirtioDevice: InspectMut + Send {
 
     /// Whether the device supports save/restore.
     fn supports_save_restore(&self) -> bool;
+
+    /// Save device-specific state with all queues stopped.
+    fn save_device_state(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<SavedStateBlob>, SaveError>> + Send + '_>>;
+
+    /// Restore device-specific state before restarting queues.
+    fn restore_device_state(
+        &mut self,
+        state: Option<SavedStateBlob>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RestoreError>> + Send + '_>>;
 }
 
 impl<T: VirtioDevice> DynVirtioDevice for T {
@@ -228,5 +268,18 @@ impl<T: VirtioDevice> DynVirtioDevice for T {
 
     fn supports_save_restore(&self) -> bool {
         VirtioDevice::supports_save_restore(self)
+    }
+
+    fn save_device_state(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<SavedStateBlob>, SaveError>> + Send + '_>> {
+        Box::pin(VirtioDevice::save_device_state(self))
+    }
+
+    fn restore_device_state(
+        &mut self,
+        state: Option<SavedStateBlob>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RestoreError>> + Send + '_>> {
+        Box::pin(VirtioDevice::restore_device_state(self, state))
     }
 }

@@ -40,13 +40,13 @@ use vmcore::vm_task::VmTaskDriver;
 pub const TX_BUF_SIZE: u32 = 65536;
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
-const MAX_ACTIVE_CONNECTIONS: usize = 1024;
+pub(crate) const MAX_ACTIVE_CONNECTIONS: usize = 1024;
 
 /// A key that uniquely identifies a vsock connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConnectionKey {
-    local_port: u32,
-    peer_port: u32,
+    pub(crate) local_port: u32,
+    pub(crate) peer_port: u32,
 }
 
 impl ConnectionKey {
@@ -725,6 +725,15 @@ impl ConnectionManager {
         self.remove_connection(key);
     }
 
+    /// Connections already visible to the guest, excluding host-only handshakes.
+    pub fn keys(&self) -> impl Iterator<Item = ConnectionKey> + '_ {
+        self.conns.keys().copied()
+    }
+
+    pub fn reset_packet(&self, key: ConnectionKey) -> VsockPacketBuf {
+        new_rst_packet(self.guest_cid, key)
+    }
+
     /// Handle a new connection initiated by the host.
     pub fn handle_host_connect(
         &mut self,
@@ -771,7 +780,7 @@ impl ConnectionManager {
                 if err.remove {
                     self.remove_connection(&err.key);
                 }
-                PendingFutures::simple_rx(RxReady::SendReset(err.key))
+                PendingFutures::reset(err.key)
             }
         }
     }
@@ -866,13 +875,13 @@ impl ConnectionManager {
                     "failed to shutdown connection"
                 );
 
-                PendingFutures::simple_rx(RxReady::SendReset(key))
+                PendingFutures::reset(key)
             } else if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
                 // Both sides have shutdown and all buffered data has been forwarded, so we can
                 // reset immediately.
                 tracing::debug!(?key, "connection fully shutdown, removing");
                 self.remove_connection(&key);
-                PendingFutures::simple_rx(RxReady::SendReset(key))
+                PendingFutures::reset(key)
             } else {
                 PendingFutures::NONE
             },
@@ -964,7 +973,7 @@ impl ConnectionManager {
                         "failed to complete connection from host"
                     );
                     self.remove_connection(&id.key);
-                    PendingFutures::simple_rx(RxReady::SendReset(id.key))
+                    PendingFutures::reset(id.key)
                 }
             };
         }
@@ -974,7 +983,7 @@ impl ConnectionManager {
                 if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
                     tracing::debug!(?id, "connection fully shutdown after write, removing");
                     self.remove_connection(&id.key);
-                    return PendingFutures::simple_rx(RxReady::SendReset(id.key));
+                    return PendingFutures::reset(id.key);
                 }
 
                 PendingFutures::new(
@@ -989,7 +998,7 @@ impl ConnectionManager {
                     ?id,
                     "failed to write buffered data to host socket on write ready"
                 );
-                PendingFutures::simple_rx(RxReady::SendReset(id.key))
+                PendingFutures::reset(id.key)
             }
         }
     }
@@ -1088,17 +1097,6 @@ impl ConnectionManager {
                         ),
                     )
                 }
-            }
-            RxReady::SendReset(key) => {
-                assert!(
-                    !self.conns.contains_key(&key),
-                    "connection should have been removed"
-                );
-
-                (
-                    Some(new_rst_packet(self.guest_cid, key)),
-                    PendingFutures::NONE,
-                )
             }
         }
     }

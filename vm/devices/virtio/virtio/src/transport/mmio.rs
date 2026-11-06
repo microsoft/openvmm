@@ -423,14 +423,14 @@ mod saved_state {
     }
 
     use super::*;
-    use vmcore::save_restore::SaveRestore;
+    use vmcore::save_restore::AsyncSaveRestore;
 
-    impl SaveRestore for VirtioMmioDevice {
+    impl AsyncSaveRestore for VirtioMmioDevice {
         type SavedState = state::SavedState;
 
-        fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
+        async fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
             Ok(state::SavedState {
-                common: self.core.save_common()?,
+                common: self.core.save_common().await?,
                 queues: (0..self.core.queues.len())
                     .map(|i| state::SavedQueueState {
                         common: self.core.save_queue_common(i),
@@ -440,17 +440,19 @@ mod saved_state {
             })
         }
 
-        fn restore(
+        async fn restore(
             &mut self,
             state: Self::SavedState,
         ) -> Result<(), vmcore::save_restore::RestoreError> {
             let saved_queue_count = state.queues.len();
-            self.core.restore_common(
-                &mut self.mmio,
-                &state.common,
-                state.queues.into_iter().map(|sq| (sq.common, 0)),
-                saved_queue_count,
-            )?;
+            self.core
+                .restore_common(
+                    &mut self.mmio,
+                    state.common,
+                    state.queues.into_iter().map(|sq| (sq.common, 0)),
+                    saved_queue_count,
+                )
+                .await?;
 
             // Restore MMIO-specific interrupt state.
             {

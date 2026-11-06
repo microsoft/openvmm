@@ -379,6 +379,10 @@ impl PetriVmOpenVmm {
         /// survives a save/restore round-trip.
         pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
     );
+    petri_vm_fn!(
+        /// Perform one save/reset/restore pulse, failing if reset is unsupported.
+        pub async fn pulse_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt
@@ -836,6 +840,13 @@ impl PetriVmInner {
     async fn resume(&self) -> anyhow::Result<()> {
         self.worker.resume().await?;
         Ok(())
+    }
+
+    async fn pulse_save_restore(&self) -> anyhow::Result<()> {
+        self.worker
+            .pulse_save_restore()
+            .await
+            .context("save/restore pulse failed")
     }
 
     async fn verify_save_restore(&self) -> anyhow::Result<()> {

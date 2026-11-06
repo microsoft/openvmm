@@ -76,6 +76,8 @@ mod vmbus_relay;
 mod vmdk;
 /// Tests involving VMGS functionality
 mod vmgs;
+/// Virtio-vsock save/restore and reconnect behavior.
+mod vsock;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
 #[vmm_test_with(

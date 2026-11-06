@@ -292,7 +292,14 @@ describes the source definitions.
   unless the option is supplied. For example, use
   `--virtio-rtc bus=pcie:rp0` to attach it to the named PCIe port `rp0`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
-  hybrid Unix socket relay.
+  hybrid Unix socket relay. This backend supports save/restore through the
+  PCI and MMIO transports on Windows and Linux hosts. Restore resets old
+  guest connections; applications must reconnect. Live host sockets and
+  device-side buffered data are not restored. Ordinary pause/resume preserves
+  connection state, although external peers may time out during a pause.
+  A fresh VM restore needs a usable relay endpoint and the same guest CID;
+  release the source endpoint before reusing its path. This does not change
+  the file-backed snapshot workflow's requirement to leave the source paused.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
   virtio-vsock device created by `--virtio-vsock-path` or
   `--virtio-vsock-vhost-cid`. When omitted, OpenVMM selects the bus
@@ -306,7 +313,7 @@ describes the source definitions.
   `/dev/vhost-vsock`, the `vhost_vsock` kernel module, and shared file-backed
   guest RAM (the default memory backing). It uses identity-mapped DMA and
   does not support a non-identity virtual IOMMU. It conflicts with
-  `--virtio-vsock-path`.
+  `--virtio-vsock-path`. This kernel backend does not support save/restore.
 * `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
   vhost-user device backed by an external process over a Unix socket (Linux
   only). The backend process must already be listening on `SOCKET_PATH`.
