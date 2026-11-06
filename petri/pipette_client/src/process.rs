@@ -333,7 +333,6 @@ impl Child {
     pub async fn wait(&mut self) -> Result<ExitStatus, mesh::RecvError> {
         match &mut self.result {
             Ok(recv) => {
-                tracing::debug!(pid = self.pid, "waiting for process exit status");
                 let status = ExitStatus(recv.await?);
                 self.result = Err(status.clone());
                 Ok(status)
@@ -346,28 +345,21 @@ impl Child {
     /// remaining data from standard output and standard error.
     pub async fn wait_with_output(mut self) -> anyhow::Result<Output> {
         self.stdin = None;
-        let pid = self.pid;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let stdout_pipe = self.stdout.take();
         let stderr_pipe = self.stderr.take();
         let stdout_task = async {
             if let Some(mut pipe) = stdout_pipe {
-                let result = pipe.read_to_end(&mut stdout).await;
-                tracing::debug!(pid, ?result, "stdout drain completed");
+                let _ = pipe.read_to_end(&mut stdout).await;
             }
         };
         let stderr_task = async {
             if let Some(mut pipe) = stderr_pipe {
-                let result = pipe.read_to_end(&mut stderr).await;
-                tracing::debug!(pid, ?result, "stderr drain completed");
+                let _ = pipe.read_to_end(&mut stderr).await;
             }
         };
-        let wait_task = async {
-            let result = self.wait().await;
-            tracing::debug!(pid, ?result, "process wait completed");
-            result
-        };
+        let wait_task = self.wait();
         let (status, (), ()) = (wait_task, stdout_task, stderr_task).join().await;
         let status = status?;
         Ok(Output {

@@ -174,7 +174,6 @@ pub fn handle_execute(
             let status = convert_exit_status(exit_status);
             tracing::debug!(pid, ?status, "process exited");
             send.send(status);
-            tracing::debug!(pid, "process exit status send returned");
         })
         .detach();
     Ok(pipette_protocol::ExecuteResponse { pid, result: recv })
