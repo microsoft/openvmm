@@ -100,6 +100,10 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
         (vm_host, openvmm_linux_direct_x64),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
     ),
+    nested(
+        (vm_host_mshv, openvmm_uefi_x64(mshv)),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
+    ),
     openvmm_linux_direct_aarch64,
     qemu_linux_direct_aarch64,
     openvmm_openhcl_linux_direct_x64,
@@ -135,16 +139,6 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
-}
-
-/// Boot an L2 Linux guest through an mshv root.
-#[vmm_test(nested(
-    (vm_host_mshv, openvmm_uefi_x64(mshv)),
-    (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
-))]
-async fn boot_mshv(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    // TODO: Debug the L2 startup save/restore hang under the nested mshv root.
-    boot(config.modify_backend(|b| b.without_save_restore())).await
 }
 
 /// Basic boot test using virtio vsock instead of vmbus hvsocket.
