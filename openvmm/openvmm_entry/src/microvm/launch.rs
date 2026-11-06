@@ -243,6 +243,9 @@ impl MicrovmLaunch {
             &self.resources.sandbox_block_sources,
             scratch_policy,
             saved_blocks,
+            opt.microvm
+                .restore_generation_id
+                .map(|generation| generation.0),
         )?;
         let resources = &self.resources;
         Ok(Some((
