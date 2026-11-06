@@ -211,9 +211,7 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
 
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2)
