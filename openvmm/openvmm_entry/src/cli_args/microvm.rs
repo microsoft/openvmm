@@ -155,16 +155,6 @@ pub enum SnapshotTierCli {
     InstanceCheckpoint,
 }
 
-/// Identity policy for sandbox blocks captured in a microVM snapshot.
-#[derive(Debug, Copy, Clone, Default, ValueEnum, PartialEq, Eq)]
-pub enum SnapshotBlockIdentityCli {
-    /// Compute and verify whole-file SHA-256 identities.
-    #[default]
-    Sha256,
-    /// Trust the caller-supplied immutable storage generation.
-    Generation,
-}
-
 /// Restore-time materialization policy for paired scratch.
 #[derive(Debug, Copy, Clone, Default, ValueEnum, PartialEq, Eq)]
 pub enum SnapshotScratchRestoreModeCli {
@@ -193,7 +183,7 @@ impl SnapshotScratchRestoreModeCli {
     }
 }
 
-/// Caller-supplied immutable storage generation.
+/// Caller-supplied immutable storage generation of microVM sandbox blocks.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct SnapshotGenerationIdCli(pub(crate) [u8; 16]);
 
@@ -241,6 +231,13 @@ impl SnapshotTierCli {
     }
 
     pub(crate) fn requires_paired_scratch(self) -> bool {
+        !matches!(self, Self::Platform)
+    }
+
+    /// Returns whether a snapshot of this tier binds its sandbox blocks to a
+    /// storage generation: every tier but the platform tier, whose layers are
+    /// unbound and whose scratch is fresh.
+    pub(crate) fn binds_blocks(self) -> bool {
         !matches!(self, Self::Platform)
     }
 }
@@ -324,19 +321,13 @@ pub struct MicrovmCli {
     )]
     pub snapshot_tier: Option<SnapshotTierCli>,
 
-    /// Sandbox-block identity policy for this capture.
+    /// Immutable storage generation of the sandbox blocks of this capture.
     ///
-    /// `sha256` is the default. `generation` avoids whole-file hashing and
-    /// requires an immutable generation supplied by the storage owner.
-    #[clap(
-        long,
-        value_enum,
-        value_name = "MODE",
-        requires = "snapshot_destination"
-    )]
-    pub snapshot_block_identity: Option<SnapshotBlockIdentityCli>,
-
-    /// Immutable storage generation used by `--snapshot-block-identity generation`.
+    /// Required for a `workload-start` or `instance-checkpoint` capture,
+    /// which binds its read-only layers and paired scratch to the generation.
+    /// A `platform` capture binds no block and records none. OpenVMM never
+    /// reads a block to identify it, so the storage owner must keep the
+    /// generation bound to the exact files.
     #[clap(long, value_name = "HEX", requires = "snapshot_destination")]
     pub snapshot_generation_id: Option<SnapshotGenerationIdCli>,
 
@@ -811,7 +802,6 @@ impl Options {
                     && !self.microvm.restore_absent_scratch
                     && !self.microvm.restore_network_policy
                     && self.microvm.memory_capacity.is_none()
-                    && self.microvm.snapshot_block_identity.is_none()
                     && self.microvm.snapshot_generation_id.is_none()
                     && self.microvm.snapshot_scratch_restore_mode.is_none()
                     && self.microvm.microvm_control_console.is_none()
@@ -873,26 +863,20 @@ impl Options {
                     != self.microvm.microvm_sandbox_block.is_empty(),
                 "--snapshot-tier is required exactly for microVM snapshot capture with sandbox blocks"
             );
-            let identity = self
-                .microvm
-                .snapshot_block_identity
-                .unwrap_or(SnapshotBlockIdentityCli::Sha256);
             anyhow::ensure!(
                 !self.microvm.microvm_sandbox_block.is_empty()
-                    || self.microvm.snapshot_block_identity.is_none(),
-                "--snapshot-block-identity requires microVM sandbox blocks"
+                    || self.microvm.snapshot_generation_id.is_none(),
+                "--snapshot-generation-id requires microVM sandbox blocks"
             );
-            anyhow::ensure!(
-                matches!(
-                    (identity, self.microvm.snapshot_generation_id),
-                    (SnapshotBlockIdentityCli::Sha256, None)
-                        | (
-                            SnapshotBlockIdentityCli::Generation,
-                            Some(SnapshotGenerationIdCli(_))
-                        )
-                ),
-                "--snapshot-generation-id is required exactly for --snapshot-block-identity generation"
-            );
+            if let Some(tier) = self.microvm.snapshot_tier
+                && tier.binds_blocks()
+            {
+                anyhow::ensure!(
+                    self.microvm.snapshot_generation_id.is_some(),
+                    "--snapshot-tier {} binds the sandbox blocks and requires --snapshot-generation-id",
+                    tier.manifest_name()
+                );
+            }
             if let Some(mode) = self.microvm.snapshot_scratch_restore_mode {
                 let tier = self
                     .microvm
@@ -1997,7 +1981,7 @@ mod tests {
     #[test]
     fn test_microvm_snapshot_tier_is_explicit() {
         for tier in ["platform", "workload-start", "instance-checkpoint"] {
-            let options = Options::try_parse_from([
+            let mut args = vec![
                 "openvmm",
                 "--machine",
                 "microvm",
@@ -2009,8 +1993,14 @@ mod tests {
                 "distro:mem:1M,ro",
                 "--microvm-sandbox-block",
                 "scratch:mem:1M",
-            ])
-            .unwrap();
+            ];
+            if tier != "platform" {
+                args.extend([
+                    "--snapshot-generation-id",
+                    "00112233445566778899aabbccddeeff",
+                ]);
+            }
+            let options = Options::try_parse_from(args).unwrap();
             assert_eq!(options.microvm.restore_gate_timeout_ms, 60_000);
             options.validate_microvm_options().unwrap();
         }
@@ -2067,27 +2057,43 @@ mod tests {
 
     #[cfg(guest_arch = "x86_64")]
     #[test]
-    fn test_microvm_snapshot_identity_and_scratch_restore_modes_are_explicit() {
-        let generation = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--snapshot-destination",
-            "snapshot",
-            "--snapshot-tier",
+    fn test_microvm_snapshot_generation_and_scratch_restore_modes_are_explicit() {
+        const GENERATION: &str = "00112233445566778899aabbccddeeff";
+        fn capture(tier: &'static str, extra: &[&'static str]) -> Vec<&'static str> {
+            let mut args = vec![
+                "openvmm",
+                "--machine",
+                "microvm",
+                "--snapshot-destination",
+                "snapshot",
+                "--snapshot-tier",
+                tier,
+                "--microvm-sandbox-block",
+                "distro:mem:1M,ro",
+                "--microvm-sandbox-block",
+                "scratch:mem:1M",
+            ];
+            args.extend_from_slice(extra);
+            args
+        }
+
+        let generation = Options::try_parse_from(capture(
             "workload-start",
-            "--snapshot-block-identity",
-            "generation",
-            "--snapshot-generation-id",
-            "00112233445566778899aabbccddeeff",
-            "--snapshot-scratch-restore-mode",
-            "copy-on-write",
-            "--microvm-sandbox-block",
-            "distro:mem:1M,ro",
-            "--microvm-sandbox-block",
-            "scratch:mem:1M",
-        ])
+            &[
+                "--snapshot-generation-id",
+                GENERATION,
+                "--snapshot-scratch-restore-mode",
+                "copy-on-write",
+            ],
+        ))
         .unwrap();
+        assert_eq!(
+            generation.microvm.snapshot_generation_id,
+            Some(SnapshotGenerationIdCli([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ]))
+        );
         #[cfg(target_os = "linux")]
         generation.validate_microvm_options().unwrap();
         #[cfg(not(target_os = "linux"))]
@@ -2099,57 +2105,91 @@ mod tests {
                 .contains("copy-on-write is unsupported on this platform")
         );
 
-        let missing_generation = Options::try_parse_from([
+        // A tier that binds the blocks records a storage generation, which only
+        // the caller can supply: OpenVMM never reads a block to identify it.
+        for tier in ["workload-start", "instance-checkpoint"] {
+            let missing_generation = Options::try_parse_from(capture(tier, &[])).unwrap();
+            assert_eq!(
+                missing_generation
+                    .validate_microvm_options()
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "--snapshot-tier {tier} binds the sandbox blocks and requires --snapshot-generation-id"
+                )
+            );
+        }
+        // A platform capture binds no block, so it needs no generation, and
+        // records none when the caller supplies one anyway.
+        for extra in [&[][..], &["--snapshot-generation-id", GENERATION][..]] {
+            Options::try_parse_from(capture("platform", extra))
+                .unwrap()
+                .validate_microvm_options()
+                .unwrap();
+        }
+        // A blockless capture has no block to bind.
+        let blockless = Options::try_parse_from([
             "openvmm",
             "--machine",
             "microvm",
             "--snapshot-destination",
             "snapshot",
-            "--snapshot-tier",
-            "workload-start",
-            "--snapshot-block-identity",
-            "generation",
-            "--microvm-sandbox-block",
-            "distro:mem:1M,ro",
-            "--microvm-sandbox-block",
-            "scratch:mem:1M",
+            "--snapshot-generation-id",
+            GENERATION,
         ])
         .unwrap();
-        assert!(missing_generation.validate_microvm_options().is_err());
+        assert_eq!(
+            blockless
+                .validate_microvm_options()
+                .unwrap_err()
+                .to_string(),
+            "--snapshot-generation-id requires microVM sandbox blocks"
+        );
+        // Neither a block identity other than the generation, nor a malformed
+        // or zero generation, parses.
+        for extra in [
+            &["--snapshot-block-identity", "sha256"][..],
+            &["--snapshot-generation-id", "00112233445566778899aabbccddee"],
+            &[
+                "--snapshot-generation-id",
+                "00112233445566778899aabbccddeeffaa",
+            ],
+            &[
+                "--snapshot-generation-id",
+                "0011223344556677889g9aabbccddeef",
+            ],
+            &[
+                "--snapshot-generation-id",
+                "00000000000000000000000000000000",
+            ],
+        ] {
+            assert!(
+                Options::try_parse_from(capture("workload-start", extra)).is_err(),
+                "{extra:?}"
+            );
+        }
 
-        let direct_clone = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--snapshot-destination",
-            "snapshot",
-            "--snapshot-tier",
+        let direct_clone = Options::try_parse_from(capture(
             "workload-start",
-            "--snapshot-scratch-restore-mode",
-            "direct-claimed",
-            "--microvm-sandbox-block",
-            "distro:mem:1M,ro",
-            "--microvm-sandbox-block",
-            "scratch:mem:1M",
-        ])
+            &[
+                "--snapshot-generation-id",
+                GENERATION,
+                "--snapshot-scratch-restore-mode",
+                "direct-claimed",
+            ],
+        ))
         .unwrap();
         assert!(direct_clone.validate_microvm_options().is_err());
 
-        let resume = Options::try_parse_from([
-            "openvmm",
-            "--machine",
-            "microvm",
-            "--snapshot-destination",
-            "snapshot",
-            "--snapshot-tier",
+        let resume = Options::try_parse_from(capture(
             "instance-checkpoint",
-            "--snapshot-scratch-restore-mode",
-            "direct-claimed",
-            "--microvm-sandbox-block",
-            "distro:mem:1M,ro",
-            "--microvm-sandbox-block",
-            "scratch:mem:1M",
-        ])
+            &[
+                "--snapshot-generation-id",
+                GENERATION,
+                "--snapshot-scratch-restore-mode",
+                "direct-claimed",
+            ],
+        ))
         .unwrap();
         resume.validate_microvm_options().unwrap();
     }

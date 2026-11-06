@@ -22,7 +22,6 @@ use super::fs::create_hard_link_from_handle;
 use super::fs::create_private_directory;
 use super::fs::ensure_path_absent;
 use super::fs::hard_link_is_unsupported;
-use super::fs::open_file_with_length;
 use super::fs::open_regular_file;
 use super::fs::path_exists;
 use super::fs::rename_no_replace;
@@ -286,11 +285,6 @@ fn stage_snapshot(
                     "scratch backing file",
                     "snapshot scratch",
                 )?;
-                super::restore::verify_sandbox_block_identity(
-                    &open_file_with_length(&scratch_path, scratch.length, SCRATCH_FILE_NAME)?,
-                    scratch,
-                    "scratch.img",
-                )?;
                 scratch_publish.complete(
                     "capture",
                     "publication_scratch",
@@ -553,8 +547,6 @@ fn publish_owned_memory_file(
 
 #[cfg(test)]
 mod tests {
-    use super::super::format::SHA256_SIZE;
-    use super::super::fs::file_sha256;
     #[cfg(any(target_os = "linux", windows))]
     use super::super::fs::initialize_snapshot_memory_backing_file;
     use super::super::microvm::paired_scratch_manifest;
@@ -570,7 +562,7 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn paired_scratch_is_published_and_verified() {
+    fn paired_scratch_is_published_exactly() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let memory_path = dir.path().join("memory.bin");
@@ -592,31 +584,22 @@ mod tests {
         .unwrap();
 
         let read_manifest = read_snapshot_manifest(&snap_dir).unwrap();
-        let verified = open_paired_scratch_file(&snap_dir, &read_manifest)
+        let published = snap_dir.join(SCRATCH_FILE_NAME);
+        assert_eq!(std::fs::read(&published).unwrap(), scratch);
+        open_paired_scratch_file(&snap_dir, &read_manifest)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            file_sha256(&verified, 1024, SCRATCH_FILE_NAME).unwrap(),
-            manifest.machine_contract.unwrap().microvm_sandbox_blocks[1].identity
-        );
-        drop(verified);
 
-        let published = snap_dir.join(SCRATCH_FILE_NAME);
-        std::fs::write(&published, vec![0xa5_u8; 1024]).unwrap();
-        assert!(
-            open_paired_scratch_file(&snap_dir, &read_manifest)
-                .unwrap_err()
-                .to_string()
-                .contains("digest mismatch")
-        );
-
-        std::fs::write(&published, vec![0_u8; 512]).unwrap();
-        assert!(
-            open_paired_scratch_file(&snap_dir, &read_manifest)
-                .unwrap_err()
-                .to_string()
-                .contains("doesn't match manifest")
-        );
+        // A scratch.img of another length, shorter or longer, is refused.
+        for length in [512, 1536] {
+            std::fs::write(&published, vec![0_u8; length]).unwrap();
+            assert!(
+                open_paired_scratch_file(&snap_dir, &read_manifest)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("doesn't match manifest")
+            );
+        }
 
         std::fs::remove_file(&published).unwrap();
         let error = match read_snapshot_manifest(&snap_dir) {
@@ -665,17 +648,12 @@ mod tests {
         /// whose manifest, state, memory, and paired scratch read back intact.
         fn check_published(&self, snap_dir: &Path) {
             let read_manifest = read_snapshot_manifest(snap_dir).unwrap();
-            let verified = open_paired_scratch_file(snap_dir, &read_manifest)
+            open_paired_scratch_file(snap_dir, &read_manifest)
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                file_sha256(&verified, 1024, SCRATCH_FILE_NAME).unwrap(),
-                self.manifest
-                    .machine_contract
-                    .as_ref()
-                    .unwrap()
-                    .microvm_sandbox_blocks[1]
-                    .identity
+                std::fs::read(snap_dir.join(SCRATCH_FILE_NAME)).unwrap(),
+                vec![0x5a_u8; 1024]
             );
             assert_eq!(
                 std::fs::read(snap_dir.join(MEMORY_FILE_NAME)).unwrap(),
@@ -741,16 +719,7 @@ mod tests {
         std::fs::write(&scratch_path, vec![0x5a_u8; 1024]).unwrap();
         let memory_file = std::fs::File::open(memory_path).unwrap();
         let scratch_file = std::fs::File::open(scratch_path).unwrap();
-        let mut manifest = paired_scratch_manifest(&[0x5a; 1024]);
-        for block in &mut manifest
-            .machine_contract
-            .as_mut()
-            .unwrap()
-            .microvm_sandbox_blocks
-        {
-            block.identity_kind = microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION.to_owned();
-            block.identity = vec![0x42; microvm::SNAPSHOT_GENERATION_ID_SIZE];
-        }
+        let manifest = paired_scratch_manifest(&[0x5a; 1024]);
 
         write_snapshot_from_memory_and_scratch_files(
             &snap_dir,
@@ -761,6 +730,9 @@ mod tests {
         )
         .unwrap();
 
+        // The storage generation alone vouches for the content of scratch.img,
+        // which the restore never reads to verify, so a same-length change goes
+        // undetected.
         let read_manifest = read_snapshot_manifest(&snap_dir).unwrap();
         std::fs::write(snap_dir.join(SCRATCH_FILE_NAME), vec![0xa5_u8; 1024]).unwrap();
         open_paired_scratch_file(&snap_dir, &read_manifest)
@@ -769,23 +741,16 @@ mod tests {
     }
 
     #[test]
-    fn paired_scratch_digest_mismatch_is_not_published() {
+    fn paired_scratch_of_another_length_is_not_published() {
         let dir = tempfile::tempdir().unwrap();
         let snap_dir = dir.path().join("snap");
         let memory_path = dir.path().join("memory.bin");
         let scratch_path = dir.path().join("scratch.img");
-        let scratch = vec![0x5a_u8; 1024];
         std::fs::write(&memory_path, vec![0_u8; 1024]).unwrap();
-        std::fs::write(&scratch_path, &scratch).unwrap();
+        std::fs::write(&scratch_path, vec![0x5a_u8; 1536]).unwrap();
         let memory_file = std::fs::File::open(memory_path).unwrap();
         let scratch_file = std::fs::File::open(scratch_path).unwrap();
-        let mut manifest = paired_scratch_manifest(&scratch);
-        manifest
-            .machine_contract
-            .as_mut()
-            .unwrap()
-            .microvm_sandbox_blocks[1]
-            .identity = vec![0xff; SHA256_SIZE];
+        let manifest = paired_scratch_manifest(&[0x5a; 1024]);
 
         let error = write_snapshot_from_memory_and_scratch_files(
             &snap_dir,
@@ -795,7 +760,12 @@ mod tests {
             Some(&scratch_file),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("digest mismatch"));
+        assert!(
+            format!("{error:#}").contains(
+                "scratch backing file size (1536 bytes) doesn't match manifest (1024 bytes)"
+            ),
+            "{error:#}"
+        );
         assert!(!snap_dir.exists());
     }
 
