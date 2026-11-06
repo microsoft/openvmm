@@ -92,15 +92,14 @@ impl<S: AsRef<str>> From<S> for Vtl2GpaPoolConfig {
 #[derive(Debug, PartialEq)]
 pub enum SidecarOptions {
     /// Sidecar is enabled (either via command line or by default),
-    /// but should be ignored if this is a restore and the host has
-    /// devices and the number of VPs below the threshold.
+    /// subject to platform support and servicing per-CPU state capacity.
     Enabled {
         enable_logging: bool,
         cpu_threshold: Option<u32>,
     },
-    /// Sidecar is disabled because this is a restore from save state (during servicing),
-    /// and sidecar will not benefit this specific scenario.
-    DisabledServicing,
+    /// Sidecar is disabled because the per-CPU overrides required during
+    /// servicing restore exceed the per-CPU state array capacity.
+    DisabledPerCpuStateCapacity,
     /// Sidecar is explicitly disabled via command line.
     DisabledCommandLine,
 }
