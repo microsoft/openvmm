@@ -9,10 +9,20 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 nvme_spec.workspace = true
+static_assertions.workspace = true
+thiserror.workspace = true
+vmcore.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+pal_async.workspace = true
 tdisp.workspace = true
+test_with_tracing.workspace = true
+
+[target.'cfg(any(target_os = "linux", windows))'.dev-dependencies]
+disklayer_ram.workspace = true
+vmgs = { workspace = true, features = ["encryption"] }
+vmgs_broker = { workspace = true, features = ["encryption"] }
 
 [lints]
 workspace = true
