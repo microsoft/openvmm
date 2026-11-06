@@ -10,6 +10,7 @@ rust-version.workspace = true
 user_driver.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
+vmbus_client_core.workspace = true
 vmbus_core.workspace = true
 vmbus_ring.workspace = true
 vmcore.workspace = true
