@@ -22,6 +22,7 @@ socket2 = { workspace = true, features = [ "all" ] }
 
 [dev-dependencies]
 parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

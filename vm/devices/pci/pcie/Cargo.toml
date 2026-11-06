@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bitfield-struct.workspace = true
 chipset_device.workspace = true
 cxl.workspace = true
 cxl_spec.workspace = true
@@ -27,6 +28,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 pal_async.workspace = true
 parking_lot.workspace = true
+test_with_tracing.workspace = true
 
 [features]
 fuzz = []

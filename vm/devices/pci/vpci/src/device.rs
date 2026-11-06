@@ -544,6 +544,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
 
 #[derive(Debug, Error)]
 enum WorkerError {
+    #[error("cancelled")]
+    Cancelled(Cancelled),
     #[error("unexpected packet order")]
     UnexpectedPacketOrder,
     #[error("queue error")]
@@ -556,6 +558,12 @@ enum WorkerError {
     Packet(#[from] PacketError),
     #[error("eject control channel closed")]
     EjectControl(#[source] mesh::RecvError),
+}
+
+impl From<Cancelled> for WorkerError {
+    fn from(value: Cancelled) -> Self {
+        Self::Cancelled(value)
+    }
 }
 
 impl<T: RingMem> Connection<T> {
@@ -652,11 +660,18 @@ struct ReadyState {
 }
 
 impl<T: RingMem> VpciChannelState<T> {
-    async fn run(&mut self, dev: &mut VpciChannel) -> Result<(), WorkerError> {
+    async fn run(
+        &mut self,
+        dev: &mut VpciChannel,
+        check: &task_control::StopCheck<'_>,
+    ) -> Result<(), WorkerError> {
         loop {
+            check.check()?;
             match &mut self.state {
                 ProtocolState::Ready(state) => {
-                    break state.run(&mut self.conn, &mut self.eject_recv, dev).await;
+                    break state
+                        .run(&mut self.conn, &mut self.eject_recv, dev, check)
+                        .await;
                 }
                 ProtocolState::Init => {
                     self.conn.wait_for_completion_space().await?;
@@ -784,8 +799,10 @@ impl ReadyState {
         conn: &mut Connection<impl RingMem>,
         eject_recv: &mut mesh::Receiver<FailableRpc<(), ()>>,
         dev: &mut VpciChannel,
+        check: &task_control::StopCheck<'_>,
     ) -> Result<(), WorkerError> {
         loop {
+            check.check()?;
             if self.send_device {
                 let span =
                     tracing::trace_span!("vpci_send_child_device", instance_id = ?dev.instance_id);
@@ -1644,8 +1661,12 @@ impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
         stop: &mut StopTask<'_>,
         worker: &mut Self::Runner,
     ) -> Result<(), Cancelled> {
-        let r = stop.until_stopped(worker.run(self)).await?;
+        let check = stop.check_handle()?;
+        let r = stop.until_stopped(worker.run(self, &check)).await?;
         if let Err(err) = r {
+            if let WorkerError::Cancelled(cancelled) = err {
+                return Err(cancelled);
+            }
             tracing::error!(error = &err as &dyn std::error::Error, "vpci error");
         }
         Ok(())
@@ -1800,7 +1821,13 @@ mod tests {
             eject_recv: eject.connect(),
         };
         driver
-            .spawn("worker", async move { worker.run(&mut state).await })
+            .spawn("worker", async move {
+                task_control::StopTask::run_unstoppable(async |stop| {
+                    let check = stop.check_handle().unwrap();
+                    worker.run(&mut state, &check).await
+                })
+                .await
+            })
             .detach();
         MockVpciGuestDevice::new(guest, 0, hardware_ids, eject)
     }

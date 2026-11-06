@@ -294,8 +294,7 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use disk_backend::Disk;
-    use disklayer_ram::ram_disk;
+    use disk_hook::HookDisk;
     use openhcl_attestation_protocol::vmgs::AES_CBC_IV_LENGTH;
     use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
@@ -315,14 +314,10 @@ mod tests {
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    fn new_test_file() -> Disk {
-        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
-    }
-
     async fn new_formatted_vmgs() -> Vmgs {
-        let disk = new_test_file();
-
-        Vmgs::format_new(disk, None).await.unwrap()
+        Vmgs::format_new(HookDisk::new(4 * ONE_MEGA_BYTE, 512).into_disk(), None)
+            .await
+            .unwrap()
     }
 
     fn new_hardware_key_protector() -> HardwareKeyProtectorV3 {

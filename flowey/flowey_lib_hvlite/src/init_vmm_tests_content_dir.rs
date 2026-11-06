@@ -158,7 +158,7 @@ macro_rules! define_vmm_tests_built_artifacts {
                 }
             }
 
-            #[derive(Serialize, Deserialize, Default, Debug)]
+            #[derive(Serialize, Deserialize, Default, Debug, Clone)]
             pub struct [<$name Selections>] {$($(
                 pub [<$artifact _ $variant>]: bool,
             )*)*}
@@ -260,8 +260,12 @@ define_vmm_tests_built_artifacts!(
             host_tools::FLOWEY_HVLITE_WINDOWS_AARCH64
         ),
         linux_x64(
-            (FloweyHvliteOutput::LinuxBin { bin, dbg}, bin, dbg),
+            (FloweyHvliteOutput::LinuxBin { bin, dbg }, bin, dbg),
             host_tools::FLOWEY_HVLITE_LINUX_X64
+        ),
+        linux_musl_x64(
+            (FloweyHvliteOutput::LinuxBin { bin, dbg }, bin, dbg),
+            host_tools::FLOWEY_HVLITE_LINUX_X64_MUSL
         ),
     ) => FloweyHvliteOutput,
     nextest_vmm_tests_archive(
@@ -924,10 +928,6 @@ pub mod vmm_tests_artifact_builders {
             // any machine
             guest_test_uefi_x64 => GuestTestUefiOutput,
             tmks_x64 => TmksOutput,
-            // aarch64 emulated binaries
-            nextest_vmm_tests_archive_linux_musl_aarch64 => NextestVmmTestsArchive,
-            openvmm_linux_musl_aarch64 => OpenvmmOutput,
-            pipette_linux_musl_aarch64 => PipetteOutput,
         )
     );
 

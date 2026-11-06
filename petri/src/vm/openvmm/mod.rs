@@ -12,6 +12,7 @@ mod construct;
 #[cfg(target_os = "linux")]
 mod hugetlb;
 mod modify;
+mod mshv;
 mod runtime;
 mod start;
 
@@ -41,6 +42,7 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -71,6 +73,7 @@ use unix_socket::UnixListener;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
 
@@ -86,11 +89,41 @@ pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
 
+impl crate::PetriVmBuilder<OpenVmmPetriBackend> {
+    /// Add a single-port Linux virtio console, captured in `hvc0.log`.
+    ///
+    /// Linux-direct boot selects `console=hvc0` and requires initrd-owned agent
+    /// startup. UEFI guests select their console through their boot configuration.
+    /// The firmware UART is unchanged.
+    pub fn with_virtio_console(mut self) -> Self {
+        assert!(
+            matches!(
+                self.config.firmware,
+                Firmware::LinuxDirect { .. } | Firmware::Uefi { .. }
+            ) && self.config.firmware.os_flavor() == petri_artifacts_common::tags::OsFlavor::Linux
+                && self.config.firmware.isolation().is_none(),
+            "virtio-console requires Linux-direct or non-isolated Linux UEFI"
+        );
+        self.use_virtio_console = true;
+        self
+    }
+}
+
+impl OpenVmmPetriBackend {
+    /// Launch a separately supplied, protocol-compatible native executable.
+    pub fn from_binary(path: PathBuf) -> Self {
+        Self {
+            openvmm_path: ResolvedArtifact::from_local_path(path),
+        }
+    }
+}
+
 #[async_trait]
 impl PetriVmmBackend for OpenVmmPetriBackend {
     type VmmConfig = PetriVmConfigOpenVmm;
     type VmRuntime = PetriVmOpenVmm;
     const SUPPORTS_VMBUS: bool = true;
+    const SUPPORTS_FILE_SHARING: bool = cfg!(any(windows, target_os = "linux"));
 
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool {
         !(firmware.is_openhcl() && (!cfg!(windows) || arch == MachineArch::Aarch64))
@@ -124,10 +157,7 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         Ok(None) // TODO #2403
     }
 
-    fn build_custom_init_script(
-        _pipette_path: &str,
-        _mount_shares: Vec<(String, String)>,
-    ) -> Option<String> {
+    fn build_custom_init_script(_pipette_path: &str) -> Option<String> {
         None
     }
 
@@ -161,11 +191,14 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
+    guest_shares: std::collections::HashMap<String, crate::GuestShare>,
+    private_virtio_devices: Vec<(&'static str, Resource<VirtioDeviceHandle>)>,
     // Direct configuration related information.
     runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
     host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
+    skip_save_restore: bool,
 
     // Mesh host
     mesh: mesh_process::Mesh,
@@ -200,6 +233,7 @@ struct PetriVmResourcesOpenVmm {
     firmware_event_recv: Receiver<FirmwareEvent>,
     ipmi_sel_event_recv: Receiver<get_resources::ged::IpmiSelEvent>,
     shutdown_ic_send: Option<Sender<ShutdownRpc>>,
+    acpi_power_button_send: Option<Sender<PowerButtonRpc>>,
     kvp_ic_send: Option<Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
@@ -371,8 +405,8 @@ async fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> 
         PetriVmgsResource::ReprovisionOnFailure(disk) => {
             VmgsResource::ReprovisionOnFailure(convert_disk(disk).await?)
         }
-        PetriVmgsResource::Reprovision(disk) => {
-            VmgsResource::Reprovision(convert_disk(disk).await?)
+        PetriVmgsResource::ReprovisionSingle(disk) => {
+            VmgsResource::ReprovisionSingle(convert_disk(disk).await?)
         }
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
     })

@@ -172,7 +172,7 @@ fn serve(mut stream: TcpStream, content: &[u8], behavior: Behavior) -> std::io::
 fn read_headers(stream: &mut TcpStream) -> std::io::Result<String> {
     let mut request = Vec::new();
     let mut buf = [0; 512];
-    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+    while !request.array_windows::<4>().any(|w| w == b"\r\n\r\n") {
         let n = stream.read(&mut buf)?;
         if n == 0 {
             break;

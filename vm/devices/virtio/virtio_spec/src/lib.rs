@@ -116,6 +116,7 @@ open_enum::open_enum! {
         CONSOLE = 3,
         RNG = 4,
         P9 = 9,
+        RTC = 17,
         VSOCK = 19,
         FS = 26,
         PMEM = 27,

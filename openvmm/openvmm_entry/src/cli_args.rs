@@ -23,6 +23,7 @@ use clap::Parser;
 use clap::ValueEnum;
 use cxl_spec::CfmwsWindowRestrictions;
 use guid::Guid;
+use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::PcatBootDevice;
@@ -609,6 +610,10 @@ options:
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
+    /// Prefix a virtio NIC with `rx_gso:` to advertise guest TCP segmentation
+    /// offload. This is disabled by default until mergeable receive buffers are
+    /// supported.
     ///
     /// For consomme, forward host ports into the guest with `hostfwd=`:
     ///   --net consomme:hostfwd=tcp::3389-:3389
@@ -661,7 +666,7 @@ options:
 
     /// configure SMMUv3 IOMMU for an aarch64 PCIe root complex (repeatable).
     ///
-    /// Syntax: `rc=<name>[,accel][,oas=auto|N]`.
+    /// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
     #[cfg(guest_arch = "aarch64")]
     #[clap(long, value_name = "SMMU_CONFIG")]
     pub smmu: Vec<SmmuCli>,
@@ -835,6 +840,16 @@ The openhcl personality requires explicit --hv --vtl2."#
     #[clap(long, value_name = "PORT", requires("virtio_rng"))]
     pub virtio_rng_pcie_port: Option<String>,
 
+    /// add a virtio real-time clock device, optionally configured with
+    /// comma-separated options (bus=auto|mmio|pci|pcie:PORT|vpci)
+    #[clap(
+        long,
+        value_name = "OPTIONS",
+        num_args = 0..=1,
+        default_missing_value = ""
+    )]
+    pub virtio_rtc: Option<VirtioRtcCli>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
@@ -872,6 +887,7 @@ The openhcl personality requires explicit --hv --vtl2."#
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
     /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
     /// expose the NIC over emulated PCIe at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
@@ -1025,6 +1041,7 @@ flags:
     ///
     /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
     /// at the specified port.
+    /// Prefix with `mac=<XX-XX-XX-XX-XX-XX>:` to set the guest MAC address.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -1049,7 +1066,7 @@ flags:
     /// own hypervisor.
     ///
     /// Only supported on x86_64, and only by backends that support nested
-    /// virtualization (currently WHP and KVM). Requires host support.
+    /// virtualization (currently WHP, KVM, and MSHV). Requires host support.
     #[clap(long)]
     pub nested_virt: bool,
 
@@ -1586,6 +1603,14 @@ pub struct UefiCli {
     pub diagnostics: Option<EfiDiagnosticsLogLevelCli>,
     #[kv(flag)]
     pub default_boot_always_attempt: bool,
+}
+
+/// Options for `--virtio-rtc`.
+#[derive(Clone, Debug, PartialEq, Eq, vmm_cli::KeyValueArgs)]
+pub struct VirtioRtcCli {
+    /// Bus to attach the device to (auto | mmio | pci | pcie:PORT | vpci).
+    #[kv(default = VirtioBusCli::Auto)]
+    pub bus: VirtioBusCli,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2401,14 +2426,14 @@ impl FromStr for RpcCli {
 #[derive(Clone)]
 pub struct VmgsCli {
     pub kind: DiskCliKind,
-    pub provision: ProvisionVmgs,
+    pub provision: ProvisionCondition,
 }
 
 #[derive(Copy, Clone)]
-pub enum ProvisionVmgs {
+pub enum ProvisionCondition {
     OnEmpty,
     OnFailure,
-    True,
+    Single,
 }
 
 impl FromStr for VmgsCli {
@@ -2422,9 +2447,9 @@ impl FromStr for VmgsCli {
         let kind = kind.parse()?;
 
         let provision = match opt {
-            None => ProvisionVmgs::OnEmpty,
-            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
-            Some("fmt") => ProvisionVmgs::True,
+            None => ProvisionCondition::OnEmpty,
+            Some("fmt-on-fail") => ProvisionCondition::OnFailure,
+            Some("fmt") => ProvisionCondition::Single,
             Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
         };
 
@@ -2891,16 +2916,13 @@ impl FromStr for SerialConfigCli {
                 SerialConfigCli::NewConsole(first_value.map(|p| p.into()), window_name)
             }
             "listen" => match first_value {
-                Some(path) => {
-                    if let Some(tcp) = path.strip_prefix("tcp:") {
-                        let addr = tcp
-                            .parse()
-                            .map_err(|err| format!("invalid tcp address: {err}"))?;
-                        SerialConfigCli::Tcp(addr)
-                    } else {
-                        SerialConfigCli::Pipe(path.into())
-                    }
+                Some(path) if let Some(tcp) = path.strip_prefix("tcp:") => {
+                    let addr = tcp
+                        .parse()
+                        .map_err(|err| format!("invalid tcp address: {err}"))?;
+                    SerialConfigCli::Tcp(addr)
                 }
+                Some(path) => SerialConfigCli::Pipe(path.into()),
                 None => Err(
                     "invalid serial configuration: listen requires a value of tcp:addr or pipe",
                 )?,
@@ -3086,7 +3108,10 @@ impl FromStr for EndpointConfigCli {
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
+    /// MAC address to expose to the guest. A random address is used if omitted.
+    pub mac_address: Option<MacAddress>,
     pub max_queues: Option<u16>,
+    pub enable_rx_gso: bool,
     pub underhill: bool,
     pub pcie_port: Option<String>,
 }
@@ -3096,7 +3121,9 @@ impl FromStr for NicConfigCli {
 
     fn from_str(mut s: &str) -> Result<Self, Self::Err> {
         let mut vtl = DeviceVtl::Vtl0;
+        let mut mac_address = None;
         let mut max_queues = None;
+        let mut enable_rx_gso = false;
         let mut underhill = false;
         let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
@@ -3104,6 +3131,9 @@ impl FromStr for NicConfigCli {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "mac" => {
+                        mac_address = Some(val.parse().map_err(|_| "failed to parse MAC address")?);
                     }
                     "pcie_port" => {
                         if val.is_empty() {
@@ -3119,6 +3149,7 @@ impl FromStr for NicConfigCli {
                         vtl = DeviceVtl::Vtl2;
                     }
                     "uh" => underhill = true,
+                    "rx_gso" => enable_rx_gso = true,
                     _ => break,
                 }
             }
@@ -3137,7 +3168,9 @@ impl FromStr for NicConfigCli {
         Ok(NicConfigCli {
             vtl,
             endpoint,
+            mac_address,
             max_queues,
+            enable_rx_gso,
             underhill,
             pcie_port,
         })
@@ -3739,7 +3772,8 @@ impl FromStr for VfioDeviceCli {
 
 /// CLI configuration for an SMMUv3 instance.
 ///
-/// Syntax: `rc=<name>[,accel][,oas=auto|N]`. `oas` defaults to `auto`.
+/// Syntax: `rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]`.
+/// Both `oas` and `ssidsize` default to `auto`.
 #[cfg(guest_arch = "aarch64")]
 #[derive(Clone, Debug, vmm_cli::KeyValueArgs)]
 pub struct SmmuCli {
@@ -3752,6 +3786,9 @@ pub struct SmmuCli {
     /// Output address size policy.
     #[kv(default)]
     pub oas: SmmuOasCli,
+    /// SubstreamID width policy.
+    #[kv(default)]
+    pub ssidsize: SmmuSsidSizeCli,
 }
 
 /// Output address size (OAS) policy parsed from `--smmu`.
@@ -3775,6 +3812,31 @@ impl FromStr for SmmuOasCli {
             SmmuOasCli::Auto
         } else {
             SmmuOasCli::Fixed(s.parse().context("oas must be 'auto' or a number")?)
+        })
+    }
+}
+
+/// SubstreamID width (SSIDSIZE) policy parsed from `--smmu`.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum SmmuSsidSizeCli {
+    /// Disable substreams in software mode; under acceleration, adopt the
+    /// host's width before device start freezes the capabilities.
+    #[default]
+    Auto,
+    /// Fixed width in bits (0..=20). Zero disables substreams.
+    Fixed(u8),
+}
+
+#[cfg(guest_arch = "aarch64")]
+impl FromStr for SmmuSsidSizeCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(if s == "auto" {
+            Self::Auto
+        } else {
+            Self::Fixed(s.parse().context("ssidsize must be 'auto' or a number")?)
         })
     }
 }
@@ -3936,6 +3998,23 @@ mod tests {
 
     use std::path::Path;
     use test_with_tracing::test;
+
+    #[test]
+    fn vmgs_provision_conditions() {
+        for (option, expected) in [
+            ("", ProvisionCondition::OnEmpty),
+            (",fmt-on-fail", ProvisionCondition::OnFailure),
+            (",fmt", ProvisionCondition::Single),
+        ] {
+            let vmgs: VmgsCli = format!("mem:VMGS_DEFAULT{option}").parse().unwrap();
+            assert!(matches!(
+                (vmgs.provision, expected),
+                (ProvisionCondition::OnEmpty, ProvisionCondition::OnEmpty)
+                    | (ProvisionCondition::OnFailure, ProvisionCondition::OnFailure)
+                    | (ProvisionCondition::Single, ProvisionCondition::Single)
+            ));
+        }
+    }
 
     /// `--version` reports the resolved build identity rather than clap's
     /// default, which would be the parser crate's own name and version.
@@ -4362,6 +4441,8 @@ mod tests {
         assert!(SerialConfigCli::from_str("unknown").is_err());
         assert!(SerialConfigCli::from_str("file").is_err());
         assert!(SerialConfigCli::from_str("listen").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:").is_err());
+        assert!(SerialConfigCli::from_str("listen=tcp:invalid").is_err());
     }
 
     #[test]
@@ -4521,10 +4602,19 @@ mod tests {
         // Test basic endpoint
         let config = NicConfigCli::from_str("none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.mac_address.is_none());
         assert!(config.max_queues.is_none());
+        assert!(!config.enable_rx_gso);
         assert!(!config.underhill);
         assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        let config = NicConfigCli::from_str("rx_gso:tap:tap0").unwrap();
+        assert!(config.enable_rx_gso);
+        assert!(matches!(
+            config.endpoint,
+            EndpointConfigCli::Tap { ref name } if name == "tap0"
+        ));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
@@ -4536,6 +4626,14 @@ mod tests {
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
         assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with explicit MAC address
+        let config = NicConfigCli::from_str("mac=00-15-5d-12-12-13:none").unwrap();
+        assert_eq!(
+            config.mac_address,
+            Some(MacAddress::new([0x00, 0x15, 0x5d, 0x12, 0x12, 0x13]))
+        );
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
@@ -4551,6 +4649,7 @@ mod tests {
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("mac=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
         assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
         assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
@@ -6229,6 +6328,33 @@ mod tests {
     }
 
     #[test]
+    fn test_virtio_rtc_cli() {
+        let opt = Options::try_parse_from(["openvmm"]).unwrap();
+        assert!(opt.virtio_rtc.is_none());
+
+        let opt =
+            Options::try_parse_from(["openvmm", "--virtio-rtc", "--processors", "2"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Auto
+            })
+        );
+
+        let opt = Options::try_parse_from(["openvmm", "--virtio-rtc", "bus=pcie:rp0"]).unwrap();
+        assert_eq!(
+            opt.virtio_rtc,
+            Some(VirtioRtcCli {
+                bus: VirtioBusCli::Pcie("rp0".to_string())
+            })
+        );
+
+        for value in ["mmio", "bus", "bus=", "bus=pcie:", "bus=pcie:rp0,bus=mmio"] {
+            assert!(Options::try_parse_from(["openvmm", "--virtio-rtc", value]).is_err());
+        }
+    }
+
+    #[test]
     fn test_nvme_controller_cli_pcie() {
         let c = NvmeControllerCli::from_str("id=nvme0,pcie_port=p0").unwrap();
         assert_eq!(c.id, "nvme0");
@@ -6523,17 +6649,19 @@ mod tests {
     #[cfg(guest_arch = "aarch64")]
     #[test]
     fn test_smmu_cli_from_str() {
-        // Minimal: only rc=, oas defaults to auto, accel off.
+        // Minimal: only rc=, sizing policies default to auto, accel off.
         let s = SmmuCli::from_str("rc=pcie0").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(!s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // accel flag.
         let s = SmmuCli::from_str("rc=pcie0,accel").unwrap();
         assert_eq!(s.rc_name, "pcie0");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Auto));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
 
         // Explicit oas=auto.
         let s = SmmuCli::from_str("rc=pcie0,oas=auto").unwrap();
@@ -6544,10 +6672,11 @@ mod tests {
         assert!(matches!(s.oas, SmmuOasCli::Fixed(52)));
 
         // All keys/flags together, order independent.
-        let s = SmmuCli::from_str("oas=48,accel,rc=pcie1").unwrap();
+        let s = SmmuCli::from_str("ssidsize=12,oas=48,accel,rc=pcie1").unwrap();
         assert_eq!(s.rc_name, "pcie1");
         assert!(s.accel);
         assert!(matches!(s.oas, SmmuOasCli::Fixed(48)));
+        assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(12)));
 
         // Missing required rc=.
         assert!(SmmuCli::from_str("accel").is_err());
@@ -6567,5 +6696,29 @@ mod tests {
 
         // Unknown flag.
         assert!(SmmuCli::from_str("rc=pcie0,turbo").is_err());
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    #[test]
+    fn test_smmu_cli_ssidsize() {
+        for accel in ["", ",accel"] {
+            let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize=auto{accel}")).unwrap();
+            assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Auto));
+
+            // Device configuration validates supported widths, not the parser.
+            for bits in [0, 14, 20, 21, 255] {
+                let s = SmmuCli::from_str(&format!("rc=pcie0,ssidsize={bits}{accel}")).unwrap();
+                assert!(matches!(s.ssidsize, SmmuSsidSizeCli::Fixed(n) if n == bits));
+            }
+        }
+
+        for value in ["256", "-1", "1.5", "", "big", "AUTO"] {
+            assert!(
+                SmmuCli::from_str(&format!("rc=pcie0,ssidsize={value}")).is_err(),
+                "accepted invalid ssidsize={value}"
+            );
+        }
+        assert!(SmmuCli::from_str("ssidsize=12").is_err());
+        assert!(SmmuCli::from_str("rc=pcie0,ssidsize=auto,ssidsize=12").is_err());
     }
 }

@@ -192,7 +192,7 @@ impl<T: RangeKey> FromStr for AddressFilter<T> {
                 }
             }
             v.sort();
-            for ((_, end1), (start2, _)) in v.iter().zip(v.iter().skip(1)) {
+            for [(_, end1), (start2, _)] in v.array_windows() {
                 if end1 >= start2 {
                     return Err(InvalidRangeSet::Overlapping);
                 }

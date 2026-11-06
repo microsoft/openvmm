@@ -161,6 +161,19 @@ impl RsaPublicKey {
         sys::RsaPublicKeyInner::from_components(n, e).map(Self)
     }
 
+    /// Parse an RSA public key from PKCS#1 DER-encoded bytes.
+    ///
+    /// This expects an `RSAPublicKey`, not a SubjectPublicKeyInfo wrapper.
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        sys::RsaPublicKeyInner::from_pkcs1_der(der).map(Self)
+    }
+
+    /// Convert the RSA public key to a PKCS#1 DER-encoded `RSAPublicKey`,
+    /// without a SubjectPublicKeyInfo wrapper.
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        self.0.to_pkcs1_der()
+    }
+
     /// Encrypt `input` using RSA-OAEP with the specified hash algorithm.
     pub fn oaep_encrypt(
         &self,
@@ -222,6 +235,65 @@ impl std::ops::Deref for RsaKeyPair {
 mod tests {
     use super::*;
     use der::Decode;
+    use der::Encode;
+
+    #[test]
+    fn public_pkcs1_der_roundtrip() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let components = key.to_components().unwrap();
+        let der = key.to_pkcs1_der().unwrap();
+
+        let decoded = pkcs1::RsaPublicKey::from_der(&der).unwrap();
+        assert_eq!(decoded.modulus.as_bytes(), components.modulus);
+        assert_eq!(
+            decoded.public_exponent.as_bytes(),
+            components.public_exponent
+        );
+        assert_eq!(decoded.to_der().unwrap(), der);
+
+        let imported = RsaPublicKey::from_pkcs1_der(&der).unwrap();
+        assert_eq!(imported.to_components().unwrap(), components);
+        assert_eq!(imported.to_pkcs1_der().unwrap(), der);
+        let message = b"PKCS#1 public key roundtrip";
+        let signature = key.pkcs1_sign(message, HashAlgorithm::Sha256).unwrap();
+        assert!(
+            imported
+                .pkcs1_verify(message, &signature, HashAlgorithm::Sha256)
+                .unwrap()
+        );
+        assert!(RsaPublicKey::from_pkcs1_der(&der[..der.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn public_pkcs1_der_rejects_malformed_input() {
+        for der in [
+            &b""[..],
+            &b"\x30\x00"[..],
+            &b"\x04\x00"[..],
+            &b"\x30\x03\x02\x01\x03"[..],
+        ] {
+            assert!(RsaPublicKey::from_pkcs1_der(der).is_err(), "{der:x?}");
+        }
+    }
+
+    #[test]
+    fn public_pkcs1_der_rejects_other_key_formats() {
+        let key = RsaKeyPair::generate(2048).unwrap();
+        let private_der = key.to_pkcs8_der().unwrap();
+        assert!(RsaPublicKey::from_pkcs1_der(&private_der).is_err());
+        let private_key = pkcs8::PrivateKeyInfoRef::from_der(&private_der).unwrap();
+        assert!(RsaPublicKey::from_pkcs1_der(private_key.private_key.as_bytes()).is_err());
+
+        let spki = x509_cert::spki::SubjectPublicKeyInfoOwned {
+            algorithm: x509_cert::spki::AlgorithmIdentifierOwned {
+                oid: pkcs1::ALGORITHM_OID,
+                parameters: Some(der::Any::null()),
+            },
+            subject_public_key: der::asn1::BitString::from_bytes(&key.to_pkcs1_der().unwrap())
+                .unwrap(),
+        };
+        assert!(RsaPublicKey::from_pkcs1_der(&spki.to_der().unwrap()).is_err());
+    }
 
     /// Sign and verify a message of arbitrary (i.e. not pre-hashed) length.
     /// Both backends must hash the message internally before applying the

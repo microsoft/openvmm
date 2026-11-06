@@ -3,8 +3,8 @@ resource file and run `igvmfilegen manifest` directly.
 
 ## SNP Linux-direct profile
 
-Flowey builds `snp-linux-direct-pipette.json` for the `snp_linux_direct_x64`
-VMM test. It injects the statically linked Linux pipette into the shared test
+Flowey builds `snp-linux-direct-pipette.json` for the `linux_direct_x64[snp]`
+VMM test configuration. It injects the statically linked Linux pipette into the shared test
 initrd from `openvmm-deps`, then runs it as PID 1 with `rdinit=/pipette`. The
 test also uses the SNP guest kernel from `openvmm-deps` and the in-tree
 `snp_bootshim`. The manual `snp-linux-direct.json` bring-up profile instead

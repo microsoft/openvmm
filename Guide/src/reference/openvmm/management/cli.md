@@ -124,12 +124,14 @@ describes the source definitions.
   `--isolation snp`.
 * `--nested-virt`: Expose hardware virtualization (VMX/SVM) to the guest so it
   can run its own hypervisor (Hyper-V, KVM, etc.). Only supported on `x86_64`,
-  and only by backends that support nested virtualization (currently WHP and
-  KVM); requesting it with a backend that does not support it fails early. The
-  host must expose virtualization extensions to the VM running OpenVMM. When
-  enabled, a guest may detect nested virtualization and turn on features such
-  as Virtual Secure Mode (VSM), which can hurt performance and interfere with
-  VMBus devices; nested virt cannot currently be combined with `--hv`/VMBus or
+  and only by backends that support nested virtualization (currently WHP,
+  KVM, and MSHV); requesting it with a backend that does not support it fails
+  early.
+  The host must expose virtualization extensions to the VM running OpenVMM.
+  When enabled, a guest may detect nested virtualization and turn on features
+  such as Virtual Secure Mode (VSM), which can hurt performance and interfere
+  with VMBus devices; nested virt cannot currently be combined with
+  `--hv`/VMBus or
   `--hypervisor whp:user_mode_apic`.
 * `--uefi [OPTIONS]`: Boot using `mu_msvm` UEFI. Options are comma-separated:
   * `firmware=<FILE>`: Path to the UEFI firmware file (`MSVM.fd`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE`, then from `X86_64_OPENVMM_UEFI_FIRMWARE` or `AARCH64_OPENVMM_UEFI_FIRMWARE`.
@@ -188,12 +190,16 @@ describes the source definitions.
 * `--disk file:<DISK>,on=<name>`: Attaches a disk to the named
   controller. The `DISK` argument can be:
   * A flat binary disk image
-  * A VHD file with an extension of .vhd (Windows host only)
-  * A VHDX file with an extension of .vhdx
+  * A fixed VHD1 file with a `.vhd` extension on any supported host
+  * A dynamic or differencing VHD1 file with a `.vhd` extension on Windows
+  * A VHDX file with a `.vhdx` extension
 
   On Linux, raw files and block devices use the `disk_blockdevice` backend
   (io_uring-based async I/O) by default. Append `;direct` to the path to
   bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct,on=scsi0`.
+  OpenVMM selects VHD handling from the file extension. Fixed VHD1 disks
+  require the default cached I/O mode on every host. VHDX disks also require
+  cached I/O on Linux.
 * `--numa <PARAMS>`: Configure a guest NUMA node (repeatable, one per
   node). Mutually exclusive with `--memory`. Each `--numa` specifies one
   guest NUMA node with its own memory backing and optional VP assignment.
@@ -275,6 +281,13 @@ describes the source definitions.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device. Accepted
   values are `auto`, `mmio`, `pci`, `pcie:PORT`, and `vpci`. Defaults to
   `auto`. `--virtio-rng-pcie-port` overrides this option.
+* `--virtio-rtc [bus=BUS]`: Add a Virtio 1.4 RTC device with one read-only
+  `UTC_MAYBE_SMEARED` clock backed by host wall time. Readings use nanosecond
+  units; cross-timestamping and alarms are not supported. The guest needs a
+  Virtio RTC driver. The optional `bus` accepts `auto`, `mmio`, `pci`,
+  `pcie:PORT`, or `vpci`; bare `--virtio-rtc` uses `auto`. No device is added
+  unless the option is supplied. For example, use
+  `--virtio-rtc bus=pcie:rp0` to attach it to the named PCIe port `rp0`.
 * `--virtio-vsock-path <PATH>`: Add a virtio-vsock device using the OpenVMM
   hybrid Unix socket relay.
 * `--virtio-vsock-bus <mmio|pci|pcie[:PORT]>`: Select the bus for a
@@ -523,10 +536,15 @@ The `mem:<len>` value sets the emulated HDM size and allocates backing memory.
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
+--net mac=00-15-5d-12-12-13:consomme
 --virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
+
+Use `mac=<XX-XX-XX-XX-XX-XX>:` to set the MAC address exposed to the guest.
+If it is omitted, OpenVMM generates a random MAC address. This prefix can be
+combined with the other NIC prefixes.
 
 **Filesystems and other virtio devices** (colon-prefixed):
 `--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
@@ -543,6 +561,12 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+For `--virtio-rtc`, select the named PCIe port in its options:
+
+```sh
+--virtio-rtc bus=pcie:rp0
 ```
 
 **vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
@@ -575,8 +599,8 @@ translation for DMA and MSI addresses. See
 
 The syntax is a comma-separated key/value list:
 
-```sh
---smmu rc=<name>[,accel][,oas=auto|N]
+```bash
+--smmu rc=<name>[,accel][,oas=auto|N][,ssidsize=auto|N]
 ```
 
 - `rc=<name>` (required): the PCIe root complex this SMMU covers.
@@ -587,15 +611,20 @@ The syntax is a comma-separated key/value list:
   Without it, assigning a VFIO device behind an SMMU is rejected.
 - `oas=auto|N` (optional): the SMMU's output address size (OAS) in bits.
   `auto` (the default) starts at 48 bits, which covers typical configurations.
-  Under `accel`, a device attached before VM start changes it to the physical
-  SMMU's OAS. VM start freezes the advertised value, so later hotplug validates
-  against it rather than changing it. Very large RAM or an explicitly pinned
+  Under `accel`, a cold-plug device changes it to the physical SMMU's OAS.
+  Device start freezes the value, so later hotplug validates against it rather
+  than changing it. Very large RAM or an explicitly pinned
   high MMIO/ECAM base can exceed 48 bits, requiring an explicit larger `oas=`
   (e.g. `oas=52`). A fixed `N` must be one of the SMMUv3-legal encodings: `32`,
   `36`, `40`, `42`, `44`, `48`, or `52`, and cannot exceed the physical
   SMMU's OAS under `accel`.
+- `ssidsize=auto|N` (optional): the SMMU's SubstreamID width in bits,
+  advertised in `IDR1.SSIDSIZE`. `auto` (the default) uses 0 in software mode
+  or the cold-plug host SMMU's width under `accel`. A fixed `N` is 0–20,
+  where 0 disables substreams, and must not exceed the host's width under
+  `accel`. The advertised width is fixed at device start.
 
-```sh
+```bash
 # Enable an emulated SMMU on root complex rc0
 --smmu rc=rc0
 
@@ -604,6 +633,9 @@ The syntax is a comma-separated key/value list:
 
 # Pin the output address size to 48 bits
 --smmu rc=rc0,oas=48
+
+# Disable substreams even when the host supports them
+--smmu rc=rc0,accel,ssidsize=0
 
 # Assign a VFIO device behind an accelerated SMMU
 --smmu rc=rc0,accel --iommu id=iommu0 \

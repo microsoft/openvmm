@@ -338,6 +338,8 @@ pub mod artifacts {
             FLOWEY_HVLITE_WINDOWS_X64("flowey_hvlite.exe", WINDOWS_X64),
             /// Linux x86_64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_LINUX_X64("flowey_hvlite", LINUX_X64),
+            /// Linux musl x86_64 build of `flowey_hvlite`.
+            FLOWEY_HVLITE_LINUX_X64_MUSL("flowey_hvlite", LINUX_X64_MUSL),
             /// Windows aarch64 build of `flowey_hvlite`.
             FLOWEY_HVLITE_WINDOWS_AARCH64("flowey_hvlite.exe", WINDOWS_AARCH64),
             /// Windows x86_64 build of the `prep_steps` binary.
@@ -832,11 +834,10 @@ pub mod artifacts {
         declare_vmm_test_images! {
             /// Windows 11 Enterprise ARM64 24H2
             WINDOWS_11_ENTERPRISE_AARCH64(
-                "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx",
-                24398266368,
+                "windows11preview-arm64-win11-24h2-ent-26100.9725.261024.vhd",
+                136367309312,
                 "Windows11EnterpriseAarch64Vhdx",
-                // blob disk does not support VHDX files
-                DOES_NOT_SUPPORT_BLOB_DISK,
+                SUPPORTS_BLOB_DISK,
             )
         }
 

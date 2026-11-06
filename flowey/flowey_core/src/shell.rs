@@ -257,6 +257,26 @@ impl<'a> FloweyCmd<'a> {
         self.into_resolved().run()
     }
 
+    /// Run with inherited standard input, allowing interactive terminal use.
+    pub fn run_interactive(self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.stdin_contents.is_none(),
+            "interactive commands cannot also supply stdin contents"
+        );
+        if !self.quiet {
+            eprintln!("$ {self}");
+        }
+        let ignore_status = self.ignore_status;
+        let description = self.to_string();
+        let mut command: std::process::Command = self.into_resolved().into();
+        let status = command.status()?;
+        anyhow::ensure!(
+            status.success() || ignore_status,
+            "command {description} exited with {status}"
+        );
+        Ok(())
+    }
+
     /// Run the command and return its stdout as a string, with leading
     /// and trailing whitespace trimmed.
     pub fn read(self) -> xshell::Result<String> {
@@ -391,6 +411,28 @@ mod tests {
         let cmd = sh.wrap(xshell::cmd!(sh.xshell(), "my-program --flag"));
         let output = cmd.read().unwrap();
         assert_eq!(output, "WRAPPED: my-program --flag");
+    }
+
+    #[test]
+    fn interactive_commands_preserve_wrapping_and_status_handling() {
+        let mut sh = FloweyShell::new().unwrap();
+        assert!(sh.wrap(fail_cmd(&sh)).run_interactive().is_err());
+        assert!(
+            sh.wrap(fail_cmd(&sh))
+                .ignore_status()
+                .run_interactive()
+                .is_ok()
+        );
+        sh.set_wrapper(Some(CommandWrapperKind::Prefix));
+        sh.wrap(xshell::cmd!(sh.xshell(), "nonexistent-program --flag"))
+            .run_interactive()
+            .unwrap();
+        assert!(
+            sh.wrap(xshell::cmd!(sh.xshell(), "echo"))
+                .stdin("incompatible input")
+                .run_interactive()
+                .is_err()
+        );
     }
 
     #[test]

@@ -110,6 +110,14 @@ pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
 /// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
 pub const DEFAULT_VMBUS_PPI: u32 = 18;
 
+/// Default IOAPIC interrupt for the ACPI power button on x86_64.
+pub const DEFAULT_ACPI_POWER_BUTTON_IRQ_X64: u32 = 10;
+/// Default GIC SPI index (INTID 39) for the ACPI power button on AArch64.
+///
+/// Firmware reserves INTIDs 35-38 for generation ID, battery, PMEM, and
+/// processor-idle events.
+pub const DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64: u32 = 7;
+
 /// How firmware tables are presented to the guest in Linux direct boot.
 ///
 /// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
@@ -258,6 +266,8 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+    /// Whether this root complex owns legacy PCI configuration I/O ports.
+    pub legacy_pci_config_io: bool,
     pub low_mmio: PcieMmioRangeConfig,
     pub high_mmio: PcieMmioRangeConfig,
     pub ports: Vec<PciePortConfig>,
@@ -414,6 +424,8 @@ pub enum PcieIommuConfig {
         accel: bool,
         /// Output address size (OAS) resolution policy.
         oas: SmmuOas,
+        /// SubstreamID width (SSIDSIZE) resolution policy.
+        ssidsize: SmmuSsidSize,
     },
     /// Intel VT-d for x86_64 guests.
     IntelVtd,
@@ -426,6 +438,17 @@ pub enum SmmuOas {
     /// sizing policy and its limits.
     Auto,
     /// Use a fixed OAS in bits (one of 32, 36, 40, 42, 44, 48, 52).
+    Fixed(u8),
+}
+
+/// SubstreamID width (SSIDSIZE) policy for an emulated SMMUv3.
+#[derive(Debug, MeshPayload, Clone, Copy)]
+pub enum SmmuSsidSize {
+    /// Disable substreams in software mode; under acceleration, adopt the
+    /// host's width before device start freezes the capabilities.
+    Auto,
+    /// Use a fixed width in bits (0..=20). Zero disables substreams.
+    /// Under acceleration, this cannot exceed the host's width.
     Fixed(u8),
 }
 

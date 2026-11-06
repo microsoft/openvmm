@@ -155,18 +155,23 @@ pub fn change_page_visibility(range: MemoryRange, host_visible: bool) {
     }
 }
 
-/// Tdcall based io port access.
+/// Tdcall based port I/O for a serial device at the given base port.
 #[cfg(feature = "cvm_boot_log")]
-pub struct TdxIoAccess;
+pub struct TdxSerialBackend(pub u16);
 
 #[cfg(feature = "cvm_boot_log")]
-impl minimal_rt::arch::IoAccess for TdxIoAccess {
-    unsafe fn inb(&self, port: u16) -> u8 {
-        tdcall::tdcall_io_in(&mut TdcallInstruction, port, 1).unwrap() as u8
+impl uart_16550::backend::Backend for TdxSerialBackend {
+    unsafe fn read(&mut self, register_offset: u8) -> u8 {
+        let port = self.0 + u16::from(register_offset);
+        // Best effort. The host controls the result, so don't panic. An
+        // all-ones read lets the driver treat the device as absent.
+        tdcall::tdcall_io_in(&mut TdcallInstruction, port, 1).unwrap_or(!0) as u8
     }
 
-    unsafe fn outb(&self, port: u16, data: u8) {
-        let _ = tdcall::tdcall_io_out(&mut TdcallInstruction, port, data as u32, 1);
+    unsafe fn write(&mut self, register_offset: u8, value: u8) {
+        let port = self.0 + u16::from(register_offset);
+        // Best effort
+        let _ = tdcall::tdcall_io_out(&mut TdcallInstruction, port, value as u32, 1);
     }
 }
 

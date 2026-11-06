@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use super::*;
-use disk_backend::Disk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::UnmapBehavior;
+use disk_hook::Disk;
+use disk_hook::DiskError;
+use disk_hook::DiskOperation;
+use disk_hook::HookDisk;
 use mesh::rpc::RpcSend;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationTpmVersion;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
@@ -16,7 +16,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
-use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::Pin;
 use std::pin::pin;
@@ -333,7 +332,7 @@ struct HardwareGateState {
     released: bool,
 }
 
-// Unlike GatedDisk, this blocks a synchronous hardware call, not an async
+// Unlike the disk hook, this blocks a synchronous hardware call, not an async
 // future. Only call-site metadata is recorded here, never key material.
 struct HardwareGate {
     executor_thread: std::thread::ThreadId,
@@ -532,80 +531,6 @@ impl IoControl {
     }
 }
 
-#[derive(Inspect)]
-struct GatedDisk {
-    disk: Disk,
-    #[inspect(skip)]
-    io: Arc<IoControl>,
-}
-
-impl DiskIo for GatedDisk {
-    fn disk_type(&self) -> &str {
-        "hardware-reseal-test"
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.disk.sector_count()
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.disk.sector_size()
-    }
-
-    fn disk_id(&self) -> Option<[u8; 16]> {
-        self.disk.disk_id()
-    }
-
-    fn physical_sector_size(&self) -> u32 {
-        self.disk.physical_sector_size()
-    }
-
-    fn is_fua_respected(&self) -> bool {
-        self.disk.is_fua_respected()
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.disk.is_read_only()
-    }
-
-    fn unmap_behavior(&self) -> UnmapBehavior {
-        self.disk.unmap_behavior()
-    }
-
-    async fn unmap(
-        &self,
-        sector: u64,
-        count: u64,
-        block_level_only: bool,
-    ) -> Result<(), DiskError> {
-        self.disk.unmap(sector, count, block_level_only).await
-    }
-
-    async fn read_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-    ) -> Result<(), DiskError> {
-        self.io.before(Operation::Read).await?;
-        self.disk.read_vectored(buffers, sector).await
-    }
-
-    async fn write_vectored(
-        &self,
-        buffers: &RequestBuffers<'_>,
-        sector: u64,
-        fua: bool,
-    ) -> Result<(), DiskError> {
-        self.io.before(Operation::Write).await?;
-        self.disk.write_vectored(buffers, sector, fua).await
-    }
-
-    async fn sync_cache(&self) -> Result<(), DiskError> {
-        self.io.before(Operation::Flush).await?;
-        self.disk.sync_cache().await
-    }
-}
-
 struct Fixture {
     worker: HardwareReseal,
     hardware: Arc<Hardware>,
@@ -618,11 +543,21 @@ impl Fixture {
     async fn new(driver: &DefaultDriver, existing: bool) -> Self {
         let hardware = Hardware::new();
         let io = Arc::new(IoControl::default());
-        let disk = Disk::new(GatedDisk {
-            disk: disklayer_ram::ram_disk(4 * 1024 * 1024, false).unwrap(),
-            io: io.clone(),
-        })
-        .unwrap();
+        let hook_io = io.clone();
+        let disk = HookDisk::new(4 * 1024 * 1024, 512)
+            .with_async_hook(move |operation| {
+                let io = hook_io.clone();
+                async move {
+                    let operation = match operation {
+                        DiskOperation::Read { .. } => Operation::Read,
+                        DiskOperation::Write { .. } => Operation::Write,
+                        DiskOperation::SyncCache => Operation::Flush,
+                        _ => return Ok(()),
+                    };
+                    io.before(operation).await
+                }
+            })
+            .into_disk();
         let mut vmgs = Vmgs::format_new(disk.clone(), None).await.unwrap();
         vmgs.update_encryption_key(&DEK, EncryptionAlgorithm::AES_GCM)
             .await
@@ -758,7 +693,7 @@ async fn explicit_notification_reseals_even_matching_hardware_with_same_dek(driv
     // Only the notification makes the distant deadline due.
     fixture.worker.schedule.running = true;
     fixture.worker.schedule.not_before = Instant::now();
-    fixture.worker.schedule.deadline = Instant::now() + Duration::from_secs(86400);
+    fixture.worker.schedule.deadline = Instant::now() + Duration::from_hours(24);
     fixture.worker.notification.notify();
     fixture.worker.notification.notify();
     fixture.worker = finish_attempt(fixture.worker, fixture.hardware.reached(3, 3)).await;
@@ -843,7 +778,7 @@ async fn reset_preserves_latched_notification_and_backoff(driver: DefaultDriver)
     for retry in [false, true] {
         let mut fixture = Fixture::new(&driver, true).await;
         // A distant gate makes polling deterministic without timer delays.
-        let deadline = Instant::now() + Duration::from_secs(86400);
+        let deadline = Instant::now() + Duration::from_hours(24);
         if retry {
             fixture.worker.schedule.completed(deadline, false, 0);
         } else {
@@ -891,7 +826,7 @@ async fn stopped_worker_keeps_notification_and_start_honors_not_before(driver: D
     let mut fixture = Fixture::new(&driver, true).await;
     let notification = fixture.worker.notification.clone();
     // Far in the future solely to prove that Start/notify do not bypass the gate.
-    let not_before = Instant::now() + Duration::from_secs(86400);
+    let not_before = Instant::now() + Duration::from_hours(24);
     fixture.worker.schedule.not_before = not_before;
     let (send, recv) = mesh::mpsc_channel();
     let mut run = pin!(fixture.worker.run(recv));
@@ -1922,7 +1857,7 @@ async fn save_restore_rebases_bounded_relative_timers_and_preserves_backoff(driv
 
     // Saving clamps obsolete or excessively distant process-local deadlines.
     fixture.worker.schedule.deadline = Instant::from_nanos(0);
-    fixture.worker.schedule.not_before = Instant::now() + Duration::from_secs(86400);
+    fixture.worker.schedule.not_before = Instant::now() + Duration::from_hours(24);
     let bounded: SavedHardwareResealState = fixture
         .worker
         .save()

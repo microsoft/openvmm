@@ -45,6 +45,7 @@ use hardware_key_sealing::HardwareDerivedKeys;
 use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::VmgsProvisioner;
@@ -410,14 +411,13 @@ async fn try_unlock_vmgs(
     let skip_hw_unsealing = matches!(
         &skr_response,
         Err((
-            secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
-                igvm_attest::key_release::KeyReleaseError::ParseHeader(
-                    igvm_attest::Error::Attestation {
-                        skip_hw_unsealing_signal: true,
-                        ..
-                    },
-                ),
-            ),
+            secure_key_release::RequestVmgsEncryptionKeysError::IgvmAgentRejected {
+                request_type: IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                error: igvm_attest::Error::Attestation {
+                    skip_hw_unsealing_signal: true,
+                    ..
+                },
+            },
             _,
         ))
     );
@@ -2118,8 +2118,8 @@ mod tests {
 
     use super::*;
     use crate::test_utils::MockTeeCallNoGetDerivedKey;
-    use disk_backend::Disk;
-    use disklayer_ram::ram_disk;
+    use disk_hook::Disk;
+    use disk_hook::HookDisk;
     use get_protocol::GSP_CLEARTEXT_MAX;
     use get_protocol::GspExtendedStatusFlags;
     use guest_emulation_device::IgvmAgentAction;
@@ -2305,7 +2305,7 @@ mod tests {
     }
 
     fn new_test_file() -> Disk {
-        ram_disk(4 * ONE_MEGA_BYTE, false).unwrap()
+        HookDisk::new(4 * ONE_MEGA_BYTE, 512).into_disk()
     }
 
     /// Supplies exactly one trusted report per unlock attempt, while retaining

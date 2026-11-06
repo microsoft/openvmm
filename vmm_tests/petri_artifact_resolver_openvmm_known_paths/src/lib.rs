@@ -67,19 +67,6 @@ pub fn resolve_artifact(handle: ErasedArtifactHandle) -> anyhow::Result<PathBuf>
         return test_content_dir_path;
     }
 
-    if handle.global_unique_id() == snp_igvm::SNP_LINUX_DIRECT_IGVM_X64::GLOBAL_UNIQUE_ID {
-        let path = get_repo_root()
-            .join("target/vmm_tests")
-            .join(handle.relative_path());
-        if path.exists() {
-            return Ok(path);
-        }
-        anyhow::bail!(
-            "SNP Linux-direct IGVM not found at {}; build with cargo xflowey vmm-tests-run --filter 'test(snp_linux_direct)'",
-            path.display()
-        );
-    }
-
     let magic_path = resolve_magic_path_artifact(handle);
 
     if magic_path.is_ok() {

@@ -125,7 +125,7 @@ impl ErasedVecDeque {
     /// Creates a new empty `ErasedVecDeque` with the given element vtable.
     pub fn new(vtable: &'static ElementVtable) -> Self {
         Self {
-            buf: NonNull::dangling(),
+            buf: vtable.layout.dangling_ptr(),
             cap: if vtable.layout.size() == 0 {
                 isize::MAX as usize
             } else {
@@ -135,6 +135,11 @@ impl ErasedVecDeque {
             len: 0,
             vtable,
         }
+    }
+
+    /// Takes the queue's contents and allocation, leaving an empty queue.
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::new(self.vtable))
     }
 
     /// Returns whether the queue is empty.
@@ -265,7 +270,7 @@ impl ErasedVecDeque {
         } else {
             // Double the capacity (geometric growth) to ensure amortized O(1)
             // push_back.
-            let new_cap = self.cap.checked_mul(2).unwrap();
+            let new_cap = self.cap.strict_mul(2);
             // SAFETY: `buf` is a valid allocation with the given layout, and
             // `new_cap` is non-zero.
             let buf = unsafe {
@@ -307,7 +312,65 @@ impl Drop for ErasedVecDeque {
 mod tests {
     use super::ElementVtable;
     use super::ErasedVecDeque;
+    use std::fmt::Debug;
     use std::mem::MaybeUninit;
+    use std::ptr::from_ref;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_allocation_layout_and_growth() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(align(64))]
+        struct Aligned(u8);
+
+        fn check<T: Copy + Debug + Eq>(values: [T; 6], initial_capacity: usize) {
+            let mut deque = ErasedVecDeque::new(const { &ElementVtable::new::<T>() });
+            for value in &values[..initial_capacity] {
+                // SAFETY: copying a valid value of the vtable's Copy type.
+                unsafe { deque.push_back(from_ref(value).cast()) };
+            }
+            assert_eq!(deque.cap, initial_capacity * size_of::<T>());
+            assert!(deque.buf.as_ptr().addr().is_multiple_of(align_of::<T>()));
+            // SAFETY: the queue contains initialized values of type T.
+            let first = unsafe {
+                deque
+                    .pop_front_in_place()
+                    .unwrap()
+                    .as_ptr()
+                    .cast::<T>()
+                    .read()
+            };
+            assert_eq!(first, values[0]);
+
+            for value in &values[initial_capacity..initial_capacity + 2] {
+                // SAFETY: copying a valid value of the vtable's Copy type.
+                unsafe { deque.push_back(from_ref(value).cast()) };
+            }
+            assert_eq!(deque.cap, initial_capacity * 2 * size_of::<T>());
+            assert!(deque.buf.as_ptr().addr().is_multiple_of(align_of::<T>()));
+            for expected in &values[1..initial_capacity + 2] {
+                // SAFETY: the queue contains initialized values of type T.
+                let value = unsafe {
+                    deque
+                        .pop_front_in_place()
+                        .unwrap()
+                        .as_ptr()
+                        .cast::<T>()
+                        .read()
+                };
+                assert_eq!(&value, expected);
+            }
+            assert!(deque.is_empty());
+            deque.clear_and_shrink();
+            assert_eq!(deque.cap, 0);
+        }
+
+        let values = [0u8, 1, 2, 3, 4, 5];
+        check(values.map(|value| [value; 255]), 4);
+        check(values.map(|value| [value; 256]), 1);
+        check(values.map(|value| [value; 257]), 1);
+        check(values.map(Aligned), 4);
+    }
 
     #[test]
     fn test_erased_vecdeque() {
@@ -353,5 +416,42 @@ mod tests {
             }
         }
         drop(deque);
+    }
+
+    #[test]
+    fn test_aligned_zst() {
+        #[repr(align(4096))]
+        struct AlignedZst;
+
+        assert_eq!(size_of::<AlignedZst>(), 0);
+        let mut deque = ErasedVecDeque::new(const { &ElementVtable::new::<AlignedZst>() });
+        for _ in 0..3 {
+            let reserved = deque.reserve_one();
+            let ptr = reserved.as_ptr().cast::<AlignedZst>();
+            assert!(ptr.is_aligned());
+            // SAFETY: the reserved pointer is aligned and valid for this zero-sized type.
+            unsafe {
+                ptr.write(AlignedZst);
+                reserved.commit();
+            }
+        }
+
+        let mut taken = deque.take();
+        assert!(deque.is_empty());
+        assert!(
+            deque
+                .reserve_one()
+                .as_ptr()
+                .cast::<AlignedZst>()
+                .is_aligned()
+        );
+        for _ in 0..3 {
+            let element = taken.pop_front_in_place().unwrap();
+            let ptr = element.as_ptr().cast::<AlignedZst>();
+            assert!(ptr.is_aligned());
+            // SAFETY: the element is an initialized, aligned AlignedZst.
+            let _ = unsafe { ptr.read() };
+        }
+        assert!(taken.is_empty());
     }
 }

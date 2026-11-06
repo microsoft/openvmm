@@ -90,7 +90,6 @@ pub(super) fn validate_pcie_root_complexes(
 mod tests {
     use super::*;
     use openvmm_defs::config::PcieMmioRangeConfig;
-
     fn rc(name: &str, segment: u16, start_bus: u8, end_bus: u8) -> PcieRootComplexConfig {
         PcieRootComplexConfig {
             index: 0,
@@ -98,6 +97,7 @@ mod tests {
             segment,
             start_bus,
             end_bus,
+            legacy_pci_config_io: false,
             low_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             high_mmio: PcieMmioRangeConfig::Dynamic { size: 0 },
             ports: Vec::new(),
