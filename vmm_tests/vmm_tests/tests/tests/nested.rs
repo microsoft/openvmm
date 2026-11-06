@@ -85,12 +85,21 @@ pub(crate) async fn vm_host_mshv(
         })
         .run()
         .await?;
-    agent
-        .write_file(
+    let prepared = agent
+        .command("sh")
+        .args([
+            "-c",
+            "printf 'Guest process diagnostic scheduled\\n' >>\"$1\"",
+            "snapshot",
             &guest_path,
-            b"Guest process diagnostic scheduled\n".as_slice(),
-        )
+        ])
+        .output()
         .await?;
+    anyhow::ensure!(
+        prepared.status.success(),
+        "preparing guest diagnostic file failed: {}",
+        String::from_utf8_lossy(&prepared.stderr)
+    );
     // Collect independently of Pipette's result/output delivery, with a bounded lifetime.
     let diagnostic = agent
         .command("timeout")
