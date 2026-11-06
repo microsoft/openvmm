@@ -32,7 +32,7 @@ const fn varint_size(n: u64) -> usize {
     if n == 0 {
         1
     } else {
-        let bits = 64 - n.leading_zeros() as usize;
+        let bits = n.bit_width() as usize;
         (((bits - 1) / 7) + 1) & 0xff
     }
 }
@@ -979,6 +979,7 @@ mod tests {
     use crate::buffer;
     use core::error::Error as _;
     use std::eprintln;
+    use test_with_tracing::test;
 
     fn assert_decode_error<T>(result: Result<T>, expected: &DecodeError) {
         let error = result.err().expect("invalid wire data must fail");
@@ -1031,6 +1032,19 @@ mod tests {
             assert_eq!(&v, b);
             assert_eq!(a, read_varint(&mut b).unwrap());
             assert!(b.is_empty());
+        }
+    }
+
+    #[test]
+    fn varint_size_bit_boundaries() {
+        assert_eq!(varint_size(0), 1);
+        for bit in 0..u64::BITS {
+            let value = 1u64 << bit;
+            for value in [value - 1, value, value.saturating_add(1), u64::MAX] {
+                let mut encoded = Vec::with_capacity(10);
+                buffer::write_with(&mut encoded, |mut buf| write_varint(&mut buf, value));
+                assert_eq!(varint_size(value), encoded.len(), "{value:#x}");
+            }
         }
     }
 

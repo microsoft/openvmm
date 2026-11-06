@@ -1854,8 +1854,8 @@ impl<'p> Processor for KvmProcessor<'p> {
                         dr6,
                         dr7,
                     } => {
-                        if dr6 & x86defs::DR6_BREAKPOINT_MASK != 0 {
-                            let i = dr6.trailing_zeros() as usize;
+                        if let Some(i) = (dr6 & x86defs::DR6_BREAKPOINT_MASK).lowest_one() {
+                            let i = i as usize;
                             let bp = HardwareBreakpoint::from_dr7(dr7, self.guest_debug_db[i], i);
                             return Err(VpHaltReason::HwBreak(bp));
                         } else if dr6 & x86defs::DR6_SINGLE_STEP != 0 {

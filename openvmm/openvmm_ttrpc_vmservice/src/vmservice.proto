@@ -672,6 +672,11 @@ message SmmuConfig {
     // freezes the advertised value; later hot-add must be compatible.
     // A fixed value cannot exceed the physical SMMU's OAS with acceleration.
     optional uint32 oas_bits = 2;
+    // Fixed SubstreamID width in bits (0..=20). Zero disables substreams.
+    // Absent => CLI ssidsize=auto: zero in software mode; with acceleration,
+    // adopt the host SMMU's width before device start freezes capabilities.
+    // A fixed width must not exceed the host's width with acceleration.
+    optional uint32 ssid_bits = 3;
 }
 
 // A PCIe port: a root-complex root port or a switch downstream port. Hosts at
@@ -1103,6 +1108,22 @@ message ModifyProcessorConfigRequest {
     uint32 processor_limit = 2;
 }
 
+message HVSocketListener {
+    // Unix socket path to bind on ADD. ADD fails if the path already exists;
+    // it does not replace an existing socket or file. The caller owns the
+    // socket file and removes it after REMOVE (or a failed ADD that bound it).
+    // Ignored on REMOVE, which stops listening but preserves established
+    // connections.
+    string path = 1;
+    // Required on ADD and REMOVE. Only one listener per service is supported.
+    oneof service {
+        // Guest hvsocket service ID (GUID).
+        string service_id = 2;
+        // Guest vsock port, mapped to the equivalent hvsocket service ID.
+        uint32 vsock_port = 3;
+    }
+}
+
 message ModifyResourceRequest {
     ModifyType type = 1;
     oneof resource {
@@ -1113,6 +1134,7 @@ message ModifyResourceRequest {
         VPMEMDisk vpmem_disk = 6;
         NICConfig nic_config = 7;
         WindowsPCIDevice windows_device = 8;
+        HVSocketListener hvsocket_listener = 9;
     }
 }
 

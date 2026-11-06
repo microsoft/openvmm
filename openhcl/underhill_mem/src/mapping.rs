@@ -684,7 +684,7 @@ impl GuestMemoryMappingBuilder {
                 continue;
             }
             let base_addr = entry.range.start();
-            let file_offset = file_starting_offset.checked_add(base_addr).unwrap();
+            let file_offset = file_starting_offset.strict_add(base_addr);
 
             tracing::trace!(base_addr, file_offset, "mapping lower ram");
 

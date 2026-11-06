@@ -58,7 +58,6 @@ use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::net::IpAddr;
-use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::net::SocketAddrV4;
 use std::net::SocketAddrV6;
@@ -347,9 +346,9 @@ struct TcpConnectionInner {
 
 const INITIAL_RTO: Duration = Duration::from_secs(1);
 const MIN_RTO: Duration = Duration::from_secs(1);
-const MAX_RTO: Duration = Duration::from_secs(60);
+const MAX_RTO: Duration = Duration::from_mins(1);
 const CLOCK_GRANULARITY: Duration = Duration::from_millis(1);
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Copy, Default, Inspect)]
 #[inspect(tag = "kind")]
@@ -1423,8 +1422,7 @@ impl TcpConnection {
         ));
 
         let rx_bounds = params.rx_buffer;
-        let rx_window_scale =
-            (usize::BITS - rx_bounds.max.leading_zeros()).saturating_sub(16) as u8;
+        let rx_window_scale = rx_bounds.max.bit_width().saturating_sub(16) as u8;
 
         let tx_bounds = params.tx_buffer;
 
@@ -1862,7 +1860,7 @@ impl TcpConnectionInner {
         &mut self,
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
-        socket: &mut PolledSocket<Socket>,
+        socket: &mut (impl AsyncWrite + Unpin),
         static_dns: &mut Option<StaticDnsTcpInspection>,
         dns: &DnsResolver,
     ) -> bool {
@@ -1958,19 +1956,22 @@ impl TcpConnectionInner {
             .is_none_or(StaticDnsTcpInspection::is_empty);
         if self.rx_buffer.is_empty() && static_dns_empty && self.state.rx_fin() && !self.is_shutdown
         {
-            if let Err(err) = socket.get().shutdown(Shutdown::Write) {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    src = %sender.ft.src,
-                    dst = %sender.ft.dst,
-                    "shutdown error"
-                );
-                if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
-                    self.stats.rsts_tx.increment();
+            match Pin::new(socket).poll_close(cx) {
+                Poll::Ready(Ok(())) => self.is_shutdown = true,
+                Poll::Pending => {}
+                Poll::Ready(Err(err)) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        src = %sender.ft.src,
+                        dst = %sender.ft.dst,
+                        "shutdown error"
+                    );
+                    if sender.try_rst(self.tx_send, Some(self.rx_seq)) {
+                        self.stats.rsts_tx.increment();
+                    }
+                    return false;
                 }
-                return false;
             }
-            self.is_shutdown = true;
         }
 
         true

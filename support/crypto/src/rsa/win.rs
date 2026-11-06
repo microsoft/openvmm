@@ -8,7 +8,6 @@ use super::RsaPublicKeyComponents;
 use crate::HashAlgorithm;
 use crate::win::KeyHandle;
 use crate::win::decode_object;
-#[cfg(any(test, feature = "export_private"))]
 use crate::win::encode_object;
 use std::ffi::CStr;
 use std::ffi::c_void;
@@ -29,6 +28,7 @@ use windows::Win32::Security::Cryptography::BCRYPT_RSAPRIVATE_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
 use windows::Win32::Security::Cryptography::CNG_RSA_PRIVATE_KEY_BLOB;
+use windows::Win32::Security::Cryptography::CNG_RSA_PUBLIC_KEY_BLOB;
 #[cfg(any(test, feature = "export_private"))]
 use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
 #[cfg(any(test, feature = "export_private"))]
@@ -478,6 +478,19 @@ fn parse_public_components(blob: &[u8]) -> Result<PublicComponents<'_>, RsaError
 }
 
 impl RsaPublicKeyInner {
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaError> {
+        let blob =
+            decode_object::<BCRYPT_RSAKEY_BLOB>(CNG_RSA_PUBLIC_KEY_BLOB, der).map_err(RsaError)?;
+        parse_public_components(blob.as_bytes())?;
+        import_key(blob.as_bytes(), BCRYPT_RSAPUBLIC_BLOB).map(Self)
+    }
+
+    pub fn to_pkcs1_der(&self) -> Result<Vec<u8>, RsaError> {
+        let blob = export_key(&self.0, BCRYPT_RSAPUBLIC_BLOB)?;
+        encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_slice())
+            .map_err(|e| err(e, "encoding the public key as PKCS#1 DER"))
+    }
+
     pub fn from_components(n: &[u8], e: &[u8]) -> Result<Self, RsaError> {
         let cb_n = n.len();
         let cb_e = e.len();

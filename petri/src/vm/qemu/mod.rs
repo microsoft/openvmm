@@ -699,7 +699,10 @@ mod tests {
             ["-initrd", "patched initrd"],
             ["-append", "console=ttyAMA0 debug rdinit=/tcg-init.sh"],
         ] {
-            assert!(args.windows(2).any(|args| args == pair), "{pair:?}");
+            assert!(
+                args.array_windows::<2>().any(|args| args == &pair),
+                "{pair:?}"
+            );
         }
         let default_cmd = build_qemu_command(
             Path::new("qemu"),
