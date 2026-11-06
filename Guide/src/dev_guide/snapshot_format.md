@@ -40,9 +40,10 @@ the read-only layers and the paired `scratch.img`, which guest RAM and a
 mounted writable filesystem must restore as one exact pair, to one
 `generation` identity: a caller-authenticated immutable storage generation,
 not a byte digest. Neither capture nor restore reads a block to identify it:
-OpenVMM validates role, size, geometry, and the shared generation. Restore
-rejects the `sha256` block identity of earlier releases, whose snapshots must
-be recaptured. Export or transport layers must provide broader integrity and
+OpenVMM validates role, size, geometry, and the shared generation, and a
+restore requires the generation that the snapshot recorded. Restore rejects
+the `sha256` block identity of earlier releases, whose snapshots must be
+recaptured. Export or transport layers must provide broader integrity and
 authentication outside this format.
 
 The optional microVM network contract stores the SHA-256 digest of its bound
