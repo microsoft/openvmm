@@ -1148,7 +1148,7 @@ impl AmdIommuDevice {
     ///
     /// Stopped command and event buffers can be reprogrammed while IOMMU
     /// translation remains enabled.
-    fn write_register(&mut self, offset: u64, value: u64) {
+    fn write_register(&mut self, offset: u64, value: u64, write_mask: u64) {
         let mut state = self.shared.state.write();
         let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
         let status = IommuStatus::from_bits(state.iommu_status);
@@ -1186,13 +1186,15 @@ impl AmdIommuDevice {
                 }
             }
             MmioRegister::IOMMU_CTRL => {
-                let old_ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
+                let was_running = status.cmd_buf_run();
                 state.iommu_ctrl = value;
-                Self::update_status_from_ctrl(&mut state);
-                // If CmdBufEn transitions from 0→1 while IOMMU is enabled
-                // and there are pending commands, process them now.
-                let new_ctrl = IommuCtrl::from_bits(value);
-                if new_ctrl.iommu_en() && new_ctrl.cmd_buf_en() && !old_ctrl.cmd_buf_en() {
+                Self::update_status_from_ctrl(
+                    &mut state,
+                    IommuCtrl::from_bits(write_mask).cmd_buf_en(),
+                );
+                // A write of CmdBufEn=1 restarts a halted engine even if the
+                // enable bit was already set (AMD IOMMU §3.4.1).
+                if !was_running && IommuStatus::from_bits(state.iommu_status).cmd_buf_run() {
                     pending_invalidation = Self::process_commands(&self.shared, &mut state);
                 }
             }
@@ -1269,13 +1271,17 @@ impl AmdIommuDevice {
     ///
     /// `CmdBufRun` and `EvtLogRun` are only set when the respective buffer
     /// has a valid (spec-minimum) length. §3.4.1: values below 1000b (256
-    /// entries) are reserved.
-    fn update_status_from_ctrl(state: &mut AmdIommuState) {
+    /// entries) are reserved. Preserve a command error halt when the write
+    /// does not include CmdBufEn, such as an upper-DWORD control write.
+    fn update_status_from_ctrl(state: &mut AmdIommuState, cmd_buf_en_written: bool) {
         let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
         let mut status = IommuStatus::from_bits(state.iommu_status);
 
         status.set_cmd_buf_run(
-            ctrl.iommu_en() && ctrl.cmd_buf_en() && cmd_buf_size_bytes(state).is_some(),
+            ctrl.iommu_en()
+                && ctrl.cmd_buf_en()
+                && cmd_buf_size_bytes(state).is_some()
+                && (status.cmd_buf_run() || cmd_buf_en_written),
         );
         status.set_evt_log_run(
             ctrl.iommu_en() && ctrl.evt_log_en() && evt_log_size_bytes(state).is_some(),
@@ -1314,7 +1320,9 @@ impl AmdIommuDevice {
         state: &mut AmdIommuState,
     ) -> PendingInvalidation {
         let ctrl = IommuCtrl::from_bits(state.iommu_ctrl);
-        if !ctrl.iommu_en() || !ctrl.cmd_buf_en() {
+        let status = IommuStatus::from_bits(state.iommu_status);
+        // §3.4.16: Run=0 forbids fetching until software restarts CmdBufEn.
+        if !ctrl.iommu_en() || !ctrl.cmd_buf_en() || !status.cmd_buf_run() {
             return PendingInvalidation::None;
         }
 
@@ -1725,7 +1733,7 @@ impl MmioIntercept for AmdIommuDevice {
                 // 64-bit aligned write of a full register.
                 let reg_offset = offset & !7;
                 let val = u64::from_le_bytes(data.try_into().unwrap());
-                self.write_register(reg_offset, val);
+                self.write_register(reg_offset, val, u64::MAX);
             }
             4 => {
                 // 32-bit write to lower or upper half.
@@ -1736,7 +1744,7 @@ impl MmioIntercept for AmdIommuDevice {
                 let mut bytes = val.to_le_bytes();
                 bytes[half_offset..half_offset + 4].copy_from_slice(data);
                 val = u64::from_le_bytes(bytes);
-                self.write_register(reg_offset, val);
+                self.write_register(reg_offset, val, (u32::MAX as u64) << (half_offset * 8));
             }
             _ => {
                 tracelimit::warn_ratelimited!(
@@ -2492,6 +2500,174 @@ mod tests {
             0,
             "commands from the old buffer must not be replayed"
         );
+    }
+
+    #[test]
+    fn test_cmdbuf_relocation_after_error_requires_restart() {
+        enum Restart {
+            ToggleEnable,
+            RewriteEnable64,
+            RewriteEnable32,
+        }
+
+        for read_error in [false, true] {
+            for restart in [
+                Restart::ToggleEnable,
+                Restart::RewriteEnable64,
+                Restart::RewriteEnable32,
+            ] {
+                let mut dev = create_test_device_with_memory();
+                setup_iommu_enabled(&mut dev);
+                let mut ctrl =
+                    IommuCtrl::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_CTRL.0 as u64));
+                if read_error {
+                    ctrl.set_cmd_buf_en(false);
+                    mmio_write64(
+                        &mut dev,
+                        MmioRegister::IOMMU_CTRL.0 as u64,
+                        ctrl.into_bits(),
+                    );
+                    let base = CmdBufBase::new()
+                        .with_base_addr(0x20000 >> 12)
+                        .with_length(8);
+                    mmio_write64(
+                        &mut dev,
+                        MmioRegister::CMD_BUF_BASE.0 as u64,
+                        base.into_bits(),
+                    );
+                    ctrl.set_cmd_buf_en(true);
+                    mmio_write64(
+                        &mut dev,
+                        MmioRegister::IOMMU_CTRL.0 as u64,
+                        ctrl.into_bits(),
+                    );
+                } else {
+                    write_cmd(
+                        &dev,
+                        0,
+                        &CommandEntry {
+                            dw0: 0,
+                            dw1: 0xF000_0000,
+                            dw2: 0,
+                            dw3: 0,
+                        },
+                    );
+                }
+                poke_tail(&mut dev, 1);
+                let event: EventEntry = dev.shared.guest_memory.read_plain(0x1000).unwrap();
+                assert_eq!(
+                    event.event_code(),
+                    if read_error {
+                        EventCode::COMMAND_HARDWARE_ERROR
+                    } else {
+                        EventCode::ILLEGAL_COMMAND_ERROR
+                    }
+                );
+                assert!(
+                    IommuCtrl::from_bits(mmio_read64(&mut dev, MmioRegister::IOMMU_CTRL.0 as u64))
+                        .cmd_buf_en()
+                );
+                assert!(
+                    !IommuStatus::from_bits(mmio_read64(
+                        &mut dev,
+                        MmioRegister::IOMMU_STATUS.0 as u64
+                    ))
+                    .cmd_buf_run()
+                );
+
+                let new_base = CmdBufBase::new()
+                    .with_base_addr(0x3000 >> 12)
+                    .with_length(8);
+                dev.shared
+                    .guest_memory
+                    .write_plain(0x3000, &completion_wait_store(0x2000, 0xBEEF))
+                    .unwrap();
+                mmio_write64(
+                    &mut dev,
+                    MmioRegister::CMD_BUF_BASE.0 as u64,
+                    new_base.into_bits(),
+                );
+                assert_eq!(
+                    mmio_read64(&mut dev, MmioRegister::CMD_BUF_BASE.0 as u64),
+                    new_base.into_bits()
+                );
+                mmio_write64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64, 0);
+
+                // Neither a tail write nor a control write excluding CmdBufEn
+                // may restart the engine after its error halt.
+                for upper_control_write in [false, true] {
+                    if upper_control_write {
+                        mmio_write32(
+                            &mut dev,
+                            MmioRegister::IOMMU_CTRL.0 as u64 + 4,
+                            (ctrl.into_bits() >> 32) as u32,
+                        );
+                    }
+                    poke_tail(&mut dev, 1);
+                    assert_eq!(
+                        dev.shared.guest_memory.read_plain::<u64>(0x2000).unwrap(),
+                        0
+                    );
+                    assert_eq!(
+                        mmio_read64(&mut dev, MmioRegister::CMD_BUF_HEAD.0 as u64),
+                        0
+                    );
+                    let status = IommuStatus::from_bits(mmio_read64(
+                        &mut dev,
+                        MmioRegister::IOMMU_STATUS.0 as u64,
+                    ));
+                    assert!(!status.cmd_buf_run());
+                    assert!(status.evt_log_run());
+                    assert!(dev.is_enabled());
+                }
+
+                match restart {
+                    Restart::ToggleEnable => {
+                        ctrl.set_cmd_buf_en(false);
+                        mmio_write64(
+                            &mut dev,
+                            MmioRegister::IOMMU_CTRL.0 as u64,
+                            ctrl.into_bits(),
+                        );
+                        ctrl.set_cmd_buf_en(true);
+                        mmio_write64(
+                            &mut dev,
+                            MmioRegister::IOMMU_CTRL.0 as u64,
+                            ctrl.into_bits(),
+                        );
+                    }
+                    Restart::RewriteEnable64 => mmio_write64(
+                        &mut dev,
+                        MmioRegister::IOMMU_CTRL.0 as u64,
+                        ctrl.into_bits(),
+                    ),
+                    Restart::RewriteEnable32 => mmio_write32(
+                        &mut dev,
+                        MmioRegister::IOMMU_CTRL.0 as u64,
+                        ctrl.into_bits() as u32,
+                    ),
+                }
+                assert_eq!(
+                    dev.shared.guest_memory.read_plain::<u64>(0x2000).unwrap(),
+                    0xBEEF
+                );
+                assert_eq!(
+                    CmdBufHead::from_bits(mmio_read64(
+                        &mut dev,
+                        MmioRegister::CMD_BUF_HEAD.0 as u64
+                    ))
+                    .head_ptr(),
+                    1
+                );
+                assert!(
+                    IommuStatus::from_bits(mmio_read64(
+                        &mut dev,
+                        MmioRegister::IOMMU_STATUS.0 as u64
+                    ))
+                    .cmd_buf_run()
+                );
+            }
+        }
     }
 
     #[test]
