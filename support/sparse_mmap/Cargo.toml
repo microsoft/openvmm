@@ -35,6 +35,7 @@ windows-sys = { workspace = true, features = [
 [dev-dependencies]
 test_with_tracing.workspace = true
 tempfile.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
