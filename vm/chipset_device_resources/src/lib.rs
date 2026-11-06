@@ -92,6 +92,7 @@ pub trait ConfigureChipsetDevice: Send {
 #[async_trait]
 trait DynChipsetDevice: ChipsetDevice + AsyncProtobufSaveRestore + InspectMut {
     fn start(&mut self);
+    async fn confirm_start(&mut self) -> anyhow::Result<()>;
     async fn quiesce_input(&mut self) -> anyhow::Result<()>;
     async fn resume_input(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
@@ -107,6 +108,9 @@ impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMu
 {
     fn start(&mut self) {
         self.start()
+    }
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        ChangeDeviceState::confirm_start(self).await
     }
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         ChangeDeviceState::quiesce_input(self).await
@@ -150,6 +154,10 @@ impl<T: ChangeDeviceState + ChipsetDevice + AsyncProtobufSaveRestore + InspectMu
 impl ChangeDeviceState for ErasedChipsetDevice {
     fn start(&mut self) {
         self.0.start()
+    }
+
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        self.0.confirm_start().await
     }
 
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {

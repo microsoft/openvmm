@@ -78,6 +78,9 @@ pub enum StateRequest {
     /// Start asynchronous operations.
     Start(Rpc<(), ()>),
 
+    /// Confirm that the start of a just-started unit succeeded.
+    ConfirmStart(FailableRpc<(), ()>),
+
     /// Stop asynchronous operations.
     Stop(Rpc<(), ()>),
 
@@ -112,6 +115,14 @@ pub enum StateRequest {
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
     async fn start(&mut self);
+
+    /// Waits for the start that [`Self::start`] began to finish, and fails if
+    /// the unit did not start. [`StateUnits::start`] sends this request right
+    /// after each start, starts the unit's dependents only once it succeeds,
+    /// and stops the started units again when it fails.
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 
     /// Stop asynchronous processing.
     async fn stop(&mut self);
@@ -197,6 +208,7 @@ impl StateRequest {
             }
 
             StateRequest::Start(_)
+            | StateRequest::ConfirmStart(_)
             | StateRequest::Stop(_)
             | StateRequest::QuiesceInput(_)
             | StateRequest::ResumeInput(_)
@@ -228,6 +240,10 @@ impl StateRequest {
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
             StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::ConfirmStart(rpc) => {
+                rpc.handle_failable(async |()| unit.confirm_start().await)
+                    .await
+            }
             StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
             StateRequest::QuiesceInput(rpc) => {
                 rpc.handle_failable(async |()| unit.quiesce_input().await)

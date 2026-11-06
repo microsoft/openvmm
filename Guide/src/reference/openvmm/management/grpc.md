@@ -335,9 +335,9 @@ state, or a saved virtio-fs object that OpenVMM cannot reopen, fails the
 restore rather than `ResumeVM`.
 The readiness endpoint is a process-local orchestration attachment and is not
 part of saved state. Each successful restore publishes one event; validation,
-attachment, or worker-start failure publishes none. Neither `ResumeVM` nor the
-event waits for the devices to start their queues: a queue that fails to start
-sets `DEVICE_NEEDS_RESET` on its device instead of failing either, as
+attachment, or worker-start failure publishes none. `ResumeVM` waits for the
+devices to start their queues before any vCPU runs: a queue that fails to start
+fails it, and the restore then publishes no event, as
 [Snapshots](../../../user_guide/openvmm/snapshots.md#restoring-a-snapshot)
 describes.
 
