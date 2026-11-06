@@ -10,7 +10,6 @@ use super::restore::ExpectedRestoreContract;
 use super::validate_microvm_filesystem_private_storage;
 use crate::Options;
 use crate::cli_args::microvm::MachineProfileCli;
-use crate::cli_args::microvm::SnapshotBlockIdentityCli;
 use crate::cli_args::microvm::SnapshotScratchRestoreModeCli;
 use crate::vm_controller::MicrovmController;
 use anyhow::Context;
@@ -37,7 +36,6 @@ pub(crate) struct MicrovmLaunch {
     network: Option<MicrovmNetworkConfig>,
     filesystems: Vec<MicrovmFilesystemConfig>,
     snapshot_destination: Option<PathBuf>,
-    snapshot_block_identity: SnapshotBlockIdentityCli,
     snapshot_generation_id: Option<[u8; 16]>,
     snapshot_scratch_restore_mode: SnapshotScratchRestoreModeCli,
     snapshot_memory_file: Option<tempfile::NamedTempFile>,
@@ -142,10 +140,6 @@ impl MicrovmLaunch {
             network: vm_config.microvm.network.clone(),
             filesystems: vm_config.microvm.filesystems.clone(),
             snapshot_destination,
-            snapshot_block_identity: opt
-                .microvm
-                .snapshot_block_identity
-                .unwrap_or(SnapshotBlockIdentityCli::Sha256),
             snapshot_generation_id: opt
                 .microvm
                 .snapshot_generation_id
@@ -304,7 +298,6 @@ impl MicrovmLaunch {
             snapshot_requests,
             snapshot_destination: self.snapshot_destination,
             snapshot_tier: opt.microvm.snapshot_tier,
-            snapshot_block_identity: self.snapshot_block_identity,
             snapshot_generation_id: self.snapshot_generation_id,
             snapshot_scratch_restore_mode: self.snapshot_scratch_restore_mode,
             source_hypervisor,
