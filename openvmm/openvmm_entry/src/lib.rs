@@ -825,7 +825,6 @@ async fn vm_config_from_command_line(
                 },
                 mac_address: None,
                 max_queues: None,
-                enable_rx_gso: false,
                 underhill: false,
                 pcie_port: None,
             },
@@ -1912,7 +1911,6 @@ async fn vm_config_from_command_line(
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         let resource = virtio_resources::net::VirtioNetHandle {
             max_queues: vport.max_queues,
-            enable_rx_gso: vport.enable_rx_gso,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
         }
@@ -2467,7 +2465,6 @@ fn parse_endpoint(
         endpoint,
         mac_address,
         max_queues: cli_cfg.max_queues,
-        enable_rx_gso: cli_cfg.enable_rx_gso,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
@@ -2479,7 +2476,6 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
-    enable_rx_gso: bool,
     pcie_port: Option<String>,
 }
 

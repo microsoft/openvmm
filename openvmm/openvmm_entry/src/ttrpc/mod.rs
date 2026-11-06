@@ -2226,7 +2226,6 @@ fn parse_nic_config(
                 max_queues: None,
                 mac_address,
                 endpoint,
-                enable_rx_gso: false,
             }
             .into_resource(),
         },
@@ -2765,14 +2764,12 @@ async fn build_virtio_device(
             max_queues,
             backend,
             mac_address,
-            enable_rx_gso,
         }) => {
             let endpoint = build_nic_backend(backend.context("missing net backend")?, registry)?;
             virtio_resources::net::VirtioNetHandle {
                 max_queues: max_queues
                     .map(|q| q.try_into().context("max_queues out of range"))
                     .transpose()?,
-                enable_rx_gso,
                 mac_address: mac_address
                     .parse::<MacAddress>()
                     .context("invalid mac address")?,

@@ -33,6 +33,7 @@ mod tap_tests {
     use net_tap::TapEndpoint;
     use net_tap::tap;
     use pal_async::DefaultDriver;
+    use pal_async::timer::PolledTimer;
     use std::future::poll_fn;
     use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
@@ -355,7 +356,11 @@ mod tap_tests {
         poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
 
         let mut packets = [RxId(0); 128];
-        let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        let completions = queue.rx_poll(&mut pool, &mut packets).unwrap();
+        let n = completions
+            .iter()
+            .map(|completion| completion.buffer_count.get() as usize)
+            .sum::<usize>();
         assert!(n >= 1, "should have received at least one packet");
 
         let mut found_arp = false;
@@ -416,7 +421,7 @@ mod tap_tests {
 
         let mut packets = [RxId(0); 2];
         let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n.len(), 1);
         assert_eq!(packets[0].0, undersized.0);
         assert_eq!(
             pool.rx_metadata(undersized).map(|metadata| metadata.len),
@@ -432,8 +437,99 @@ mod tap_tests {
         send_ethernet_frame("tap0", &fitting_frame);
         poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
         let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n.len(), 1);
         assert_eq!(packets[0].0, usable.0);
+    }
+
+    async fn test_tap_rx_mergeable_buffers(driver: DefaultDriver) {
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        disable_ipv6("tap0");
+        configure_tap("tap0", "10.0.0.1/24");
+        let (pool, mem) = make_pool();
+        let mut pool = pool.with_mergeable_buffers();
+        for id in [7, 1, 3, 5] {
+            pool.set_capacity(RxId(id), 64);
+        }
+        let mut timer = PolledTimer::new(&driver);
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(
+                vec![QueueConfig {
+                    driver: Box::new(driver),
+                    enabled_rx_offloads: Default::default(),
+                }],
+                None,
+                &mut queues,
+            )
+            .await
+            .unwrap();
+        let queue = &mut queues[0];
+        queue.rx_avail(&mut pool, &[RxId(7), RxId(1), RxId(3)]);
+        let mut frame = vec![0x5a; 128];
+        frame[..14].copy_from_slice(&[
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 1, 0x88, 0xb5,
+        ]);
+        let mut oversized_frame = frame.clone();
+        oversized_frame.resize(256, 0x5a);
+        send_ethernet_frame("tap0", &oversized_frame);
+        send_ethernet_frame("tap0", &frame);
+        send_ethernet_frame("tap0", &frame);
+        send_ethernet_frame("tap0", &frame[..60]);
+        let deadline = pal_async::timer::Instant::now() + std::time::Duration::from_secs(5);
+        poll_fn(|cx| {
+            let ready = queue.poll_ready(cx, &mut pool);
+            assert!(
+                ready.is_ready() || timer.poll_until(cx, deadline).is_pending(),
+                "oversized frame stalled TAP reception"
+            );
+            ready
+        })
+        .await;
+        assert!(
+            queue
+                .rx_poll(&mut pool, &mut [RxId(0); 1])
+                .unwrap()
+                .is_empty()
+        );
+        let mut ids = [RxId(0); 3];
+        let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
+        assert_eq!(completions.len(), 2);
+        assert_eq!(completions[0].buffer_count.get(), 2);
+        assert_eq!(completions[0].id.0, 7);
+        assert_eq!([ids[0].0, ids[1].0], [7, 1]);
+        assert_eq!(completions[1].buffer_count.get(), 1);
+        assert_eq!(completions[1].id.0, 3);
+        assert_eq!(ids[2].0, 3);
+        let mut readback = [0; 128];
+        mem.read_at(7 * 2048, &mut readback[..64]).unwrap();
+        mem.read_at(2048, &mut readback[64..]).unwrap();
+        assert_eq!(readback.as_slice(), frame);
+        assert_eq!(pool.rx_metadata(RxId(3)).unwrap().len, 60);
+        mem.read_at(3 * 2048, &mut readback[..60]).unwrap();
+        assert_eq!(&readback[..60], &frame[..60]);
+
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(queue.poll_ready(&mut cx, &mut pool).is_pending());
+        assert!(queue.rx_poll(&mut pool, &mut ids).unwrap().is_empty());
+        queue.rx_avail(&mut pool, &[RxId(3), RxId(5)]);
+        send_ethernet_frame("tap0", &frame);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].buffer_count.get(), 2);
+        assert_eq!([ids[0].0, ids[1].0], [3, 5]);
+        mem.read_at(3 * 2048, &mut readback[..64]).unwrap();
+        mem.read_at(5 * 2048, &mut readback[64..]).unwrap();
+        assert_eq!(readback.as_slice(), frame);
+
+        queue.rx_avail(&mut pool, &[RxId(9)]);
+        send_ethernet_frame("tap0", &frame[..60]);
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
+        let completions = queue.rx_poll(&mut pool, &mut ids).unwrap();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].buffer_count.get(), 1);
+        assert_eq!(ids[0].0, 9);
+        assert_eq!(pool.rx_metadata(RxId(9)).unwrap().len, 60);
     }
 
     /// Validates that flooding tx_avail doesn't panic or error — packets are
@@ -758,6 +854,7 @@ mod tap_tests {
                 "tap_rx_reuses_undersized_buffer",
                 test_tap_rx_reuses_undersized_buffer,
             ),
+            async_trial("tap_rx_mergeable_buffers", test_tap_rx_mergeable_buffers),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
             async_trial("tap_tso_ipv4_checksum", test_tap_tso_ipv4_checksum),
