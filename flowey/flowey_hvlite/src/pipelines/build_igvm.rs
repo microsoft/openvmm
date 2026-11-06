@@ -22,6 +22,8 @@ pub enum OpenhclRecipeCli {
     X64Cvm,
     /// X64 OpenHCL, with CVM support using the dev kernel in VTL2
     X64CvmDevkern,
+    /// X64 OpenHCL, with CVM support and a SIVM product policy for VBS VMs.
+    X64CvmSivm,
     /// X64 OpenHCL booting VTL0 using a test linux-direct kernel + initrd (no
     /// UEFI).
     X64TestLinuxDirect,
@@ -353,6 +355,7 @@ impl IntoPipeline for BuildIgvmCli {
             | OpenhclRecipeCli::X64Devkern
             | OpenhclRecipeCli::X64Cvm
             | OpenhclRecipeCli::X64CvmDevkern
+            | OpenhclRecipeCli::X64CvmSivm
             | OpenhclRecipeCli::X64TestLinuxDirect
             | OpenhclRecipeCli::X64TestLinuxDirectDevkern => CommonArch::X86_64,
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
@@ -443,6 +446,7 @@ impl IntoPipeline for BuildIgvmCli {
                 }
                 OpenhclRecipeCli::X64Cvm => OpenhclIgvmRecipe::X64Cvm,
                 OpenhclRecipeCli::X64CvmDevkern => OpenhclIgvmRecipe::X64CvmDevkern,
+                OpenhclRecipeCli::X64CvmSivm => OpenhclIgvmRecipe::X64CvmSivm,
                 OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
                 OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
             },

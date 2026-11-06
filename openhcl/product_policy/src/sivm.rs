@@ -47,6 +47,40 @@ pub struct SivmPolicy {
     )]
     #[cfg_attr(feature = "inspect", inspect(with = "Vec::<u8>::len"))]
     pub custom_uefi_json: Vec<u8>,
+
+    /// PCI devices that the VPCI relay may expose to VTL0, in addition to the
+    /// devices OpenHCL always allows. Optional in manifests; an empty list is
+    /// not encoded, so existing policies keep their measurement.
+    #[mesh(6)]
+    #[cfg_attr(feature = "manifest", serde(default))]
+    #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
+    pub allowed_pci_devices: Vec<AllowedPciDevice>,
+}
+
+/// A PCI device that a [`SivmPolicy`] allows the VPCI relay to expose to VTL0.
+/// Unset IDs match any value. Manifest JSON has no hex literals, so IDs are
+/// decimal, e.g. `{ "vendor_id": 4318, "device_id": 9988 }` for `10de:2704`.
+#[derive(mesh_protobuf::Protobuf, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "manifest", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "manifest",
+    serde(rename_all = "snake_case", deny_unknown_fields)
+)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+#[mesh(package = "openhcl.product_policy")]
+pub struct AllowedPciDevice {
+    /// Vendor ID. Required, so an entry can never match every device.
+    #[mesh(1)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub vendor_id: u16,
+    /// Device ID.
+    #[mesh(2)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub device_id: Option<u16>,
+    /// Revision ID.
+    #[mesh(3)]
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub revision_id: Option<u8>,
 }
 
 impl crate::uefi_security_policy::UefiSecurityPolicyParams for SivmPolicy {

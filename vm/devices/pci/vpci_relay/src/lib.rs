@@ -75,6 +75,13 @@ pub trait CreateMemoryAccess: 'static + Send + Sync {
 /// The size of the MMIO region required for each VPCI device.
 pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
 
+/// The maximum number of devices the relay supports; size its MMIO range for
+/// this many.
+pub const VPCI_RELAY_MAX_DEVICES: u64 = 64;
+
+/// The number of pages in the VMBus ring the relay allocates for each device.
+pub const VPCI_RELAY_RING_PAGES: u16 = 20;
+
 /// Size and alignment of the window the mocked TDISP flow programs into a
 /// device BAR so that it can reach the device's registers. Only reserved when
 /// that flow is enabled, and large enough for the BARs the emulated test
@@ -324,14 +331,8 @@ impl VpciRelay {
         chipset: &ChipsetDevices,
         units: &mut StateUnits,
     ) -> anyhow::Result<()> {
-        let mut i = 0;
-        while i < self.devices.len() {
-            if self.devices[i].ready_to_remove {
-                let dev = self.devices.remove(i);
-                dev.remove().await;
-            } else {
-                i += 1;
-            }
+        for dev in remove_matching(&mut self.devices, |dev| dev.ready_to_remove) {
+            dev.remove().await;
         }
         while let Some(bus) = self.new_buses.pop() {
             self.relay_vpci_bus(chipset, units, bus).await?;
@@ -345,12 +346,15 @@ impl VpciRelay {
         state_units: &mut StateUnits,
         offer_info: vmbus_client::OfferInfo,
     ) -> anyhow::Result<()> {
+        let instance_id = offer_info.offer.instance_id;
         let entry = self.devices.vacant_entry();
         if (entry.key() as u64 + 1) * vpci_client::MMIO_SIZE > self.mmio_range.len() {
-            anyhow::bail!("not enough MMIO space left");
+            tracelimit::warn_ratelimited!(
+                %instance_id,
+                "no relay MMIO space left, rejecting VPCI device"
+            );
+            return Ok(());
         }
-
-        let instance_id = offer_info.offer.instance_id;
 
         let mmio = self.mmio_access.create_memory_access(
             self.mmio_range.start() + (entry.key() as u64) * vpci_client::MMIO_SIZE,
@@ -360,8 +364,8 @@ impl VpciRelay {
             self.driver_source.simple(),
             offer_info,
             OpenParams {
-                ring_pages: 20,
-                ring_offset_in_pages: 10,
+                ring_pages: VPCI_RELAY_RING_PAGES,
+                ring_offset_in_pages: VPCI_RELAY_RING_PAGES / 2,
             },
             self.dma_client.as_ref(),
         )
@@ -503,6 +507,17 @@ impl VpciRelay {
         state_units.start_stopped_units().await;
         Ok(())
     }
+}
+
+/// Removes and returns the entries for which `f` returns true. Slab keys can be
+/// sparse (and select each device's MMIO window), so this walks the occupied
+/// entries rather than indexing `0..len()`.
+fn remove_matching<T>(slab: &mut slab::Slab<T>, f: impl Fn(&T) -> bool) -> Vec<T> {
+    let keys: Vec<usize> = slab
+        .iter()
+        .filter_map(|(key, value)| f(value).then_some(key))
+        .collect();
+    keys.into_iter().map(|key| slab.remove(key)).collect()
 }
 
 #[derive(InspectMut)]
@@ -791,5 +806,35 @@ impl SaveRestore for RelayedVpciDevice {
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
         match state {}
+    }
+}
+
+#[cfg(test)]
+mod remove_matching_tests {
+    use super::remove_matching;
+    use test_with_tracing::test;
+
+    /// Regression test: the relay used to index `0..len()`, which panicked when
+    /// slot 0 was removed while other devices remained.
+    #[test]
+    fn removes_matching_entries_with_sparse_keys() {
+        let mut slab = slab::Slab::new();
+        for name in ["a", "b", "c", "d"] {
+            slab.insert(name);
+        }
+
+        let removed = remove_matching(&mut slab, |&name| name == "a" || name == "c");
+        assert_eq!(removed, ["a", "c"]);
+        // Remaining entries keep their keys, and so their MMIO windows.
+        assert_eq!(slab.iter().map(|(key, _)| key).collect::<Vec<_>>(), [1, 3]);
+
+        // Slot 0 is now vacant; later entries must still be found.
+        assert_eq!(remove_matching(&mut slab, |&name| name == "d"), ["d"]);
+        assert_eq!(
+            slab.iter()
+                .map(|(key, &name)| (key, name))
+                .collect::<Vec<_>>(),
+            [(1, "b")]
+        );
     }
 }

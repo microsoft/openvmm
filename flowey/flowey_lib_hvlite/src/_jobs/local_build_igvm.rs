@@ -182,6 +182,11 @@ impl SimpleFlowNode for Node {
                 *openhcl_kernel_package = override_kernel_pkg;
             }
 
+            // OpenHCL refuses to boot an image whose manifest carries a product
+            // policy without this feature, so feature overrides must not drop it.
+            let product_policy = enable_product_policy
+                || openvmm_hcl_features.contains(&OpenvmmHclFeature::ProductPolicy);
+
             if !override_openvmm_hcl_feature.is_empty() {
                 *openvmm_hcl_features = override_openvmm_hcl_feature
                     .into_iter()
@@ -193,7 +198,7 @@ impl SimpleFlowNode for Node {
                 openvmm_hcl_features.insert(OpenvmmHclFeature::MiSecure);
             }
 
-            if enable_product_policy {
+            if product_policy {
                 openvmm_hcl_features.insert(OpenvmmHclFeature::ProductPolicy);
             }
 

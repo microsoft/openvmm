@@ -1652,6 +1652,7 @@ mod product_policy_tests {
             require_secure_boot_vars: true,
             require_bcd_integrity: true,
             custom_uefi_json: vec![],
+            allowed_pci_devices: vec![],
         });
         let _ = encode_product_policy_bytes(&policy);
     }
