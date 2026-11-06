@@ -227,6 +227,8 @@ struct VtdState {
     iqh: IqhReg,
     /// Invalidation Queue Tail.
     iqt: IqtReg,
+    /// Whether the last consumed descriptor was an invalidation wait.
+    invalidation_queue_last_wait: bool,
     /// Invalidation Completion Status Register (IWC bit).
     ics: IcsReg,
     /// Invalidation Event Control Register.
@@ -274,6 +276,7 @@ impl VtdState {
             iqa: IqaReg::new(),
             iqh: IqhReg::new(),
             iqt: IqtReg::new(),
+            invalidation_queue_last_wait: false,
             ics: IcsReg::new(),
             iedata: 0,
             ieaddr: 0,
@@ -1976,13 +1979,28 @@ impl IntelVtdDevice {
                 gsts.set_qies(true);
                 // Reset head on enable.
                 state.iqh = IqhReg::new();
+                state.invalidation_queue_last_wait = false;
             } else {
-                // Disable QI — reject if TE or IRE is still enabled.
-                if gsts.tes() || gsts.ires() {
+                // VT-d 6.5.2 requires a drained queue ending in a wait, not TE/IRE off.
+                if state.iqh.head_offset() != state.iqt.tail_offset()
+                    || !state.invalidation_queue_last_wait
+                    || state.fsts.iqe()
+                {
                     tracelimit::warn_ratelimited!(
-                        "vtd: cannot disable QIE while TE or IRE is enabled"
+                        head = state.iqh.head_offset(),
+                        tail = state.iqt.tail_offset(),
+                        last_wait = state.invalidation_queue_last_wait,
+                        iqe = state.fsts.iqe(),
+                        "vtd: cannot disable QIE before invalidation queue is quiescent"
                     );
                 } else {
+                    tracelimit::info_ratelimited!(
+                        te = gsts.tes(),
+                        ire = gsts.ires(),
+                        head = state.iqh.head_offset(),
+                        tail = state.iqt.tail_offset(),
+                        "vtd: disabling QIE after completed invalidation wait"
+                    );
                     gsts.set_qies(false);
                     state.iqh = IqhReg::new();
                 }
@@ -2151,6 +2169,9 @@ impl IntelVtdDevice {
                     break;
                 }
             }
+
+            state.invalidation_queue_last_wait =
+                desc.lower.descriptor_type() == DescriptorType::INVALIDATION_WAIT;
 
             // Advance head with wrap-around.
             queue.head = (queue.head + queue.width.bytes() as u64) % queue.size;
@@ -2579,20 +2600,114 @@ mod tests {
 
     #[test]
     fn test_qie_enable_disable() {
-        let mut dev = create_test_device();
+        for (te, ire) in [(true, true), (true, false), (false, true), (false, false)] {
+            let gm = GuestMemory::allocate(0x4000);
+            let (mut dev, _) = IntelVtdDevice::new(
+                gm.clone(),
+                IntelVtdConfig {
+                    mmio_base: TEST_MMIO_BASE,
+                },
+                Arc::new(TestSignalMsi),
+            );
+            write64(&mut dev, 0x090, 0x1000);
+            let enabled = GcmdReg::new().with_qie(true).with_te(te).with_ire(ire);
+            write32(
+                &mut dev,
+                0x018,
+                enabled.with_srtp(true).with_sirtp(true).into_bits(),
+            );
+            assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
 
-        // Write IQA.
-        write64(&mut dev, 0x090, 0x3000_0000u64);
+            let wait = spec::invalidation::InvalidationDescriptor {
+                dw0: DescriptorType::INVALIDATION_WAIT.0 as u32,
+                dw1: 0,
+                dw2: 0,
+                dw3: 0,
+            };
+            gm.write_at(0x1000, wait.as_bytes()).unwrap();
+            write64(&mut dev, 0x088, IqtReg::new().with_qt(1).into_bits());
+            assert_eq!(IqhReg::from(read64(&mut dev, 0x080)).head_offset(), 16);
+            write32(&mut dev, 0x018, enabled.with_qie(false).into_bits());
+            let gsts = GstsReg::from(read32(&mut dev, 0x01C));
+            assert!(!gsts.qies(), "QI disable rejected with TE={te}, IRE={ire}");
+            assert_eq!(gsts.tes(), te);
+            assert_eq!(gsts.ires(), ire);
+            assert_eq!(read64(&mut dev, 0x080), 0);
+        }
+    }
 
-        // Enable QIE.
-        write32(&mut dev, 0x018, GcmdReg::new().with_qie(true).into_bits());
-        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
-        assert!(gsts.qies());
+    #[test]
+    fn test_qie_disable_requires_quiescent_queue() {
+        let gm = GuestMemory::allocate(0x4000);
+        let (mut dev, _) = IntelVtdDevice::new(
+            gm.clone(),
+            IntelVtdConfig {
+                mmio_base: TEST_MMIO_BASE,
+            },
+            Arc::new(TestSignalMsi),
+        );
+        write64(&mut dev, 0x090, 0x1000);
+        let enabled = GcmdReg::new().with_qie(true).into_bits();
+        write32(&mut dev, 0x018, enabled);
+        write32(&mut dev, 0x018, 0);
+        assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
 
-        // Disable QIE (no TE or IRE active).
-        write32(&mut dev, 0x018, GcmdReg::new().with_qie(false).into_bits());
-        let gsts = GstsReg::from(read32(&mut dev, 0x01C));
-        assert!(!gsts.qies());
+        for (index, kind) in [
+            DescriptorType::INVALIDATION_WAIT,
+            DescriptorType::IOTLB_INVALIDATE,
+            DescriptorType::INVALIDATION_WAIT,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let descriptor = spec::invalidation::InvalidationDescriptor {
+                dw0: kind.0 as u32
+                    | if kind == DescriptorType::IOTLB_INVALIDATE {
+                        1 << 4
+                    } else {
+                        0
+                    },
+                dw1: 0,
+                dw2: 0,
+                dw3: 0,
+            };
+            gm.write_at(0x1000 + index as u64 * 16, descriptor.as_bytes())
+                .unwrap();
+        }
+        write64(&mut dev, 0x088, IqtReg::new().with_qt(2).into_bits());
+        assert_eq!(IqhReg::from(read64(&mut dev, 0x080)).head_offset(), 32);
+        assert!(!FstsReg::from(read32(&mut dev, 0x034)).iqe());
+        write32(&mut dev, 0x018, 0);
+        assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
+
+        write64(&mut dev, 0x088, IqtReg::new().with_qt(3).into_bits());
+        for (head, iqe) in [(2, false), (3, true)] {
+            {
+                let mut state = dev.shared.state.write();
+                state.iqh = IqhReg::new().with_qh(head);
+                state.fsts.set_iqe(iqe);
+            }
+            write32(&mut dev, 0x018, 0);
+            assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
+        }
+        {
+            let mut state = dev.shared.state.write();
+            state.fsts.set_iqe(false);
+        }
+        write32(&mut dev, 0x018, 0);
+        assert!(!GstsReg::from(read32(&mut dev, 0x01C)).qies());
+        assert_eq!(read64(&mut dev, 0x080), 0);
+
+        // Empty the queue before enabling so replay or a queue error cannot
+        // mask a failure to reset completion tracking.
+        write64(&mut dev, 0x088, 0);
+        write32(&mut dev, 0x018, enabled);
+        assert_eq!(read64(&mut dev, 0x080), 0);
+        assert_eq!(read64(&mut dev, 0x088), 0);
+        assert!(!FstsReg::from(read32(&mut dev, 0x034)).iqe());
+        write32(&mut dev, 0x018, 0);
+        assert!(GstsReg::from(read32(&mut dev, 0x01C)).qies());
+        assert!(!FstsReg::from(read32(&mut dev, 0x034)).iqe());
     }
 
     #[test]
