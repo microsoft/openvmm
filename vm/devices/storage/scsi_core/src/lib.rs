@@ -47,7 +47,7 @@ pub struct ResolveScsiDeviceHandleParams<'a> {
 
 /// The amount of space reserved for an AsyncScsiDisk-returned future
 ///
-/// This was chosen by running `cargo test --package scsidisk --lib -- --exact --nocapture` and looking at the required
+/// This was chosen by running `cargo test --package scsidisk --lib -- --exact --no-capture` and looking at the required
 /// size that was given in the failure message
 pub const ASYNC_SCSI_DISK_STACK_SIZE: usize = 1256 + 336;
 
