@@ -179,6 +179,17 @@ releasing gated input. The peer must accept and read while resume is in
 progress; on Windows, flush completion waits until the named-pipe peer consumes
 the complete frame.
 
+Restore completes the restoration of every device before any vCPU runs, even
+when the VM stays paused: invalid device state, or a host resource that a
+device's state refers to and that OpenVMM cannot reacquire, fails the restore
+itself. Restoring starts no virtqueue. Each device starts its queues when the
+VM first runs, and neither the resume nor the readiness event waits for them.
+A queue that fails to start then, such as one whose network backend cannot
+create its queues, fails neither: its transport sets `DEVICE_NEEDS_RESET`
+instead, with a configuration-change notification if the driver has set
+`DRIVER_OK`, and OpenVMM logs the failure. Once the guest resets the device,
+setting `DRIVER_OK` starts its queues again.
+
 For a tiered microVM restore, and for a restore that replaces the network
 policy of a snapshot without a tier, OpenVMM starts device workers with
 network, control, and filesystem input gated. The guest performs post-restore
