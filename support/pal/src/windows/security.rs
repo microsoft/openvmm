@@ -11,6 +11,7 @@ use std::ops::Deref;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::ptr::null;
 use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
@@ -26,15 +27,23 @@ use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptor
 use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
 use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
+use windows_sys::Win32::Security::DuplicateTokenEx;
 use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
+use windows_sys::Win32::Security::ImpersonateSelf;
 use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows_sys::Win32::Security::PSID;
+use windows_sys::Win32::Security::RevertToSelf;
 use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+use windows_sys::Win32::Security::SecurityImpersonation;
+use windows_sys::Win32::Security::TOKEN_DUPLICATE;
+use windows_sys::Win32::Security::TOKEN_IMPERSONATE;
+use windows_sys::Win32::Security::TOKEN_QUERY;
+use windows_sys::Win32::Security::TokenImpersonation;
 use windows_sys::Win32::Storage::FileSystem::CREATE_NEW;
 use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows_sys::Win32::Storage::FileSystem::CreateFileW;
@@ -43,8 +52,66 @@ use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_DELETE;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
 use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
 use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::OpenProcessToken;
+use windows_sys::Win32::System::Threading::SetThreadToken;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
+
+/// Reverts the current thread to its process security context when dropped.
+///
+/// The guard is thread-bound and must remain within a synchronous scope. It
+/// does not restore a previous impersonation token, so impersonation scopes
+/// must not be nested.
+///
+/// # Panics
+///
+/// Panics if reverting impersonation fails, since continuing under the wrong
+/// security context is unsafe.
+#[must_use = "dropping the guard immediately reverts impersonation"]
+pub struct RevertToSelfGuard {
+    _not_send: PhantomData<*const ()>,
+}
+
+impl RevertToSelfGuard {
+    /// Impersonates `token` on the current thread until the guard is dropped.
+    pub fn impersonate(token: impl AsHandle) -> std::io::Result<Self> {
+        // SAFETY: A null thread selects the current thread, and the borrowed
+        // token handle remains valid for the duration of the call.
+        if unsafe { SetThreadToken(null_mut(), token.as_handle().as_raw_handle()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            _not_send: PhantomData,
+        })
+    }
+
+    /// Impersonates a private copy of the process token on the current thread.
+    ///
+    /// This allows adjusting thread-local privileges without changing the
+    /// process token.
+    pub fn impersonate_self() -> std::io::Result<Self> {
+        // SAFETY: Calling Win32 API as documented.
+        if unsafe { ImpersonateSelf(SecurityImpersonation) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self {
+            _not_send: PhantomData,
+        })
+    }
+}
+
+impl Drop for RevertToSelfGuard {
+    fn drop(&mut self) {
+        // SAFETY: Calling Win32 API as documented.
+        if unsafe { RevertToSelf() } == 0 {
+            panic!(
+                "failed to revert thread impersonation: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
 
 /// A Windows SID.
 #[derive(Clone, Copy)]
@@ -354,6 +421,44 @@ impl<'a> SidAndAttributes<'a> {
     }
 }
 
+/// Opens the current process's primary token with `access` (a combination of
+/// `TOKEN_*` access rights).
+pub fn open_process_token(access: u32) -> std::io::Result<OwnedHandle> {
+    let mut token = null_mut();
+    // SAFETY: The output pointer is valid, and a successful call returns a new
+    // handle owned by this process.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), access, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(token))
+    }
+}
+
+/// Creates an impersonation token, owned by this process, from `token`, with
+/// `TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE` access.
+///
+/// Fails if `token` is not an access token or lacks `TOKEN_DUPLICATE` access.
+pub fn duplicate_impersonation_token(token: BorrowedHandle<'_>) -> std::io::Result<OwnedHandle> {
+    let mut duplicate = null_mut();
+    // SAFETY: DuplicateTokenEx does not take ownership of `token`. On success,
+    // `duplicate` is a new handle owned by this process.
+    unsafe {
+        if DuplicateTokenEx(
+            token.as_raw_handle(),
+            TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE,
+            null(),
+            SecurityImpersonation,
+            TokenImpersonation,
+            &mut duplicate,
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(OwnedHandle::from_raw_handle(duplicate))
+    }
+}
+
 /// Creates an app container token for `sid` with `capabilities`.
 pub fn create_app_container_token<'a, I, T>(
     sid: &Sid,
@@ -453,11 +558,54 @@ mod tests {
     use std::path::PathBuf;
     use test_with_tracing::test;
     use widestring::U16CStr;
+    use windows_sys::Win32::Foundation::ERROR_NO_TOKEN;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
     use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
     use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
     use windows_sys::Win32::Security::GetFileSecurityW;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::GetCurrentThread;
+    use windows_sys::Win32::System::Threading::OpenThreadToken;
+
+    fn thread_token() -> io::Result<OwnedHandle> {
+        let mut token = null_mut();
+        // SAFETY: The output pointer is valid, and a successful call returns a
+        // new handle owned by this process.
+        unsafe {
+            if OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(OwnedHandle::from_raw_handle(token))
+        }
+    }
+
+    #[test]
+    fn impersonate_self_reverts_on_success_and_error() {
+        for fail in [false, true] {
+            assert_eq!(
+                thread_token().unwrap_err().raw_os_error(),
+                Some(ERROR_NO_TOKEN as i32)
+            );
+            let result = (|| -> io::Result<()> {
+                let _guard = RevertToSelfGuard::impersonate_self().unwrap();
+                thread_token().unwrap();
+                if fail {
+                    return Err(io::Error::from(ErrorKind::PermissionDenied));
+                }
+                Ok(())
+            })();
+            if fail {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::PermissionDenied);
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                thread_token().unwrap_err().raw_os_error(),
+                Some(ERROR_NO_TOKEN as i32)
+            );
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

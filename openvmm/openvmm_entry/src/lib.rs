@@ -1933,6 +1933,7 @@ async fn vm_config_from_command_line(
             fs: virtio_resources::fs::VirtioFsBackend::HostFs {
                 root_path: args.path.clone(),
                 mount_options: args.options.clone(),
+                windows_options: None,
             },
         }
         .into_resource();

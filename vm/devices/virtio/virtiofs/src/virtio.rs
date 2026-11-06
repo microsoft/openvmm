@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::session::VirtioFsSession;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use anyhow::Context as _;
@@ -38,8 +39,8 @@ use zerocopy::KnownLayout;
 ///
 /// Callers that know the appropriate concurrency for their environment
 /// (e.g., guest vCPU count for an in-VMM device, or host parallelism for
-/// a host service like `wsldevicehost`) should pass an explicit value via
-/// [`VirtioFsDevice::with_num_request_queues`].
+/// a host service like `wsldevicehost`) can set it in
+/// [`VirtioFsDeviceOptions::num_request_queues`].
 const DEFAULT_NUM_REQUEST_QUEUES: u32 = 2;
 
 /// Upper bound for the request queue count. Past this, virtio-fs's
@@ -55,6 +56,21 @@ struct VirtioFsDeviceConfig {
     num_request_queues: u32,
 }
 
+/// Optional configuration for a [`VirtioFsDevice`].
+#[derive(Default)]
+pub struct VirtioFsDeviceOptions {
+    /// Shared-memory size exposed by the device.
+    pub shared_memory_size: u64,
+    /// Callback invoked when a guest corrupts a FUSE request.
+    pub notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+    /// Number of FUSE request queues. Defaults to two and is clamped to the
+    /// device-supported range.
+    pub num_request_queues: Option<u32>,
+    /// Token used for host filesystem access. `None` uses the process token.
+    #[cfg(windows)]
+    pub user_token: Option<std::os::windows::io::OwnedHandle>,
+}
+
 /// A virtio-fs PCI device.
 #[derive(InspectMut)]
 pub struct VirtioFsDevice {
@@ -63,7 +79,7 @@ pub struct VirtioFsDevice {
     #[inspect(skip)]
     config: VirtioFsDeviceConfig,
     #[inspect(skip)]
-    fs: Arc<fuse::Session>,
+    fs: Arc<VirtioFsSession>,
     #[inspect(skip)]
     workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
     shmem_size: u64,
@@ -75,58 +91,34 @@ pub struct VirtioFsDevice {
 }
 
 impl VirtioFsDevice {
-    /// Creates a new `VirtioFsDevice` with the specified mount tag.
-    ///
-    /// The number of FUSE request queues defaults to
-    /// `DEFAULT_NUM_REQUEST_QUEUES`. Callers that know the appropriate
-    /// concurrency for their environment (e.g., guest vCPU count for an
-    /// in-VMM device, or host parallelism for a host service) should use
-    /// [`Self::with_num_request_queues`] instead.
+    /// Creates a new `VirtioFsDevice` with the specified mount tag and options.
     pub fn new<Fs>(
         driver_source: &VmTaskDriverSource,
         tag: &str,
         fs: Fs,
-        shmem_size: u64,
-        notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
+        options: VirtioFsDeviceOptions,
     ) -> Self
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
-        Self::with_num_request_queues(
-            driver_source,
-            tag,
-            fs,
-            shmem_size,
-            notify_corruption,
-            DEFAULT_NUM_REQUEST_QUEUES,
-        )
-    }
-
-    /// Creates a new `VirtioFsDevice` with an explicit number of FUSE
-    /// request queues. The value is clamped to `[1, MAX_REQUEST_QUEUES]`.
-    pub fn with_num_request_queues<Fs>(
-        driver_source: &VmTaskDriverSource,
-        tag: &str,
-        fs: Fs,
-        shmem_size: u64,
-        notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
-        num_request_queues: u32,
-    ) -> Self
-    where
-        Fs: 'static + fuse::Fuse + Send + Sync,
-    {
-        let num_request_queues = num_request_queues.clamp(1, MAX_REQUEST_QUEUES);
-
+        let num_request_queues = options
+            .num_request_queues
+            .unwrap_or(DEFAULT_NUM_REQUEST_QUEUES)
+            .clamp(1, MAX_REQUEST_QUEUES);
         let mut config = VirtioFsDeviceConfig {
             tag: [0; 36],
             num_request_queues,
         };
 
-        let notify_corruption = if let Some(notify) = notify_corruption {
+        let notify_corruption = if let Some(notify) = options.notify_corruption {
             notify
         } else {
             Arc::new(|| {})
         };
+        #[cfg(windows)]
+        let fs = VirtioFsSession::new(fs).with_user_token(options.user_token);
+        #[cfg(not(windows))]
+        let fs = VirtioFsSession::new(fs);
 
         // Copy the tag into the config space (truncate it for now if too long).
         let length = std::cmp::min(tag.len(), config.tag.len());
@@ -136,9 +128,9 @@ impl VirtioFsDevice {
             task_name: format!("virtiofs-{}", tag).into(),
             driver: driver_source.simple(),
             config,
-            fs: Arc::new(fuse::Session::new(fs)),
+            fs: Arc::new(fs),
             workers: Vec::new(),
-            shmem_size,
+            shmem_size: options.shared_memory_size,
             shared_memory_region: None,
             notify_corruption,
             num_request_queues,
@@ -266,7 +258,7 @@ impl VirtioDevice for VirtioFsDevice {
 }
 
 struct VirtioFsWorker {
-    fs: Arc<fuse::Session>,
+    fs: Arc<VirtioFsSession>,
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
@@ -336,6 +328,7 @@ fn process_virtiofs_request(
         mem,
         bytes_written: 0,
     };
+
     let mapper = worker
         .shared_memory_region
         .as_ref()
@@ -430,12 +423,15 @@ mod tests {
         let tmpdir = tempfile::tempdir().unwrap();
         let fs = VirtioFs::new(tmpdir.path(), None).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = match num_request_queues {
-            Some(n) => {
-                VirtioFsDevice::with_num_request_queues(&driver_source, "testfs", fs, 0, None, n)
-            }
-            None => VirtioFsDevice::new(&driver_source, "testfs", fs, 0, None),
-        };
+        let device = VirtioFsDevice::new(
+            &driver_source,
+            "testfs",
+            fs,
+            VirtioFsDeviceOptions {
+                num_request_queues,
+                ..Default::default()
+            },
+        );
         (device, tmpdir)
     }
 
