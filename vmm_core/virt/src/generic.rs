@@ -338,6 +338,114 @@ impl ProtoPartitionIsolation {
     }
 }
 
+/// Partition-wide hypervisor CPU scheduling settings, in the same units as
+/// Hyper-V/HCS.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, mesh_protobuf::Protobuf)]
+pub struct ProcessorQos {
+    /// Maximum CPU time each VP may use, `0..=100000` (100000 = one full LP).
+    pub limit: Option<u32>,
+    /// Relative scheduling weight, `1..=10000` (hypervisor default is 100).
+    pub weight: Option<u32>,
+    /// CPU time reserved for each VP, `0..=100000`; must not exceed `limit`.
+    pub reserve: Option<u32>,
+}
+
+impl ProcessorQos {
+    /// Returns true if no setting is specified.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Checks the ranges documented on each field.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let max = |name, v: Option<u32>| match v {
+            Some(v) if v > 100000 => {
+                anyhow::bail!("processor {name} {v} is out of range 0..=100000")
+            }
+            _ => Ok(()),
+        };
+        max("limit", self.limit)?;
+        max("reserve", self.reserve)?;
+        if let Some(w) = self.weight.filter(|w| !(1..=10000).contains(w)) {
+            anyhow::bail!("processor weight {w} is out of range 1..=10000");
+        }
+        if let (Some(l), Some(r)) = (self.limit, self.reserve) {
+            anyhow::ensure!(r <= l, "processor reserve {r} exceeds limit {l}");
+        }
+        Ok(())
+    }
+}
+
+/// Which [`ProcessorQos`] settings the host can enforce.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub struct ProcessorQosSupport {
+    /// [`ProcessorQos::limit`] is enforced.
+    pub limit: bool,
+    /// [`ProcessorQos::weight`] is enforced.
+    pub weight: bool,
+    /// [`ProcessorQos::reserve`] is enforced.
+    pub reserve: bool,
+}
+
+/// Converts an HCS CPU fraction (`0..=100000`) to hypervisor units (`0..=65536`).
+pub fn hv_cpu_fraction(v: u32) -> u32 {
+    (u64::from(v) * 65536 / 100000) as u32
+}
+
+/// Hypervisor CPU scheduler partition properties, in hypervisor units.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct HvCpuProps {
+    /// CPU cap, `0..=65536`.
+    pub cap: u32,
+    /// CPU reserve, `0..=65536`; the hypervisor rejects reserve above cap.
+    pub reserve: u32,
+    /// Relative weight, `1..=10000`.
+    pub weight: u32,
+}
+
+/// One hypervisor CPU scheduler property write.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum HvCpuProp {
+    /// Set the CPU cap.
+    Cap(u32),
+    /// Set the CPU reserve.
+    Reserve(u32),
+    /// Set the relative weight.
+    Weight(u32),
+}
+
+impl HvCpuProps {
+    /// Returns these properties with `qos` applied. Unset fields keep their
+    /// current value.
+    pub fn target(self, qos: &ProcessorQos) -> anyhow::Result<Self> {
+        let new = Self {
+            cap: qos.limit.map_or(self.cap, hv_cpu_fraction),
+            reserve: qos.reserve.map_or(self.reserve, hv_cpu_fraction),
+            weight: qos.weight.unwrap_or(self.weight),
+        };
+        anyhow::ensure!(
+            new.reserve <= new.cap,
+            "processor reserve would exceed the processor limit"
+        );
+        Ok(new)
+    }
+
+    /// Returns the writes that move `self` to `to`, ordered so reserve never
+    /// exceeds cap in between, since the hypervisor rejects any write that
+    /// breaks it.
+    pub fn writes_to(self, to: Self) -> Vec<HvCpuProp> {
+        let cap = (self.cap != to.cap).then_some(HvCpuProp::Cap(to.cap));
+        let reserve = (self.reserve != to.reserve).then_some(HvCpuProp::Reserve(to.reserve));
+        let weight = (self.weight != to.weight).then_some(HvCpuProp::Weight(to.weight));
+        let (first, second) = if to.cap < self.reserve {
+            (reserve, cap)
+        } else {
+            (cap, reserve)
+        };
+        [first, second, weight].into_iter().flatten().collect()
+    }
+}
+
 /// Prototype partition creation configuration.
 pub struct ProtoPartitionConfig<'a> {
     /// The set of VPs to create.
@@ -549,6 +657,13 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Returns a trait object to reset VTL state, if supported.
     fn supports_vtl_scrub(&self) -> Option<&dyn ScrubVtl<Error = <Self as Hv1>::Error>> {
         None
+    }
+
+    /// Applies CPU scheduling settings. The VPs must not be running.
+    ///
+    /// Backends that can't enforce them fail rather than ignore them.
+    fn set_processor_qos(&self, _qos: &ProcessorQos) -> anyhow::Result<()> {
+        anyhow::bail!("processor limit/weight/reserve are not supported by this hypervisor")
     }
 
     /// Returns an interface for registering MMIO doorbells for this partition.
@@ -1000,4 +1115,99 @@ pub trait EmulatorMonitorSupport {
     /// if it is.
     #[must_use]
     fn check_read(&self, gpa: u64, bytes: &mut [u8]) -> bool;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HvCpuProp;
+    use super::HvCpuProps;
+    use super::ProcessorQos;
+    use super::hv_cpu_fraction;
+
+    #[test]
+    fn hv_cpu_fraction_scales_hcs_units() {
+        assert_eq!(hv_cpu_fraction(100000), 65536);
+        assert_eq!(hv_cpu_fraction(50000), 32768);
+        assert_eq!(hv_cpu_fraction(1), 0);
+        assert_eq!(hv_cpu_fraction(0), 0);
+    }
+
+    #[test]
+    fn hv_cpu_props_writes_keep_reserve_within_cap() {
+        let props = |cap, reserve| HvCpuProps {
+            cap,
+            reserve,
+            weight: 100,
+        };
+        let cases = [
+            (props(65536, 0), props(16384, 8192)),
+            (props(65536, 32768), props(16384, 8192)),
+            (props(16384, 8192), props(65536, 32768)),
+            (props(32768, 16384), props(65536, 0)),
+            (props(65536, 32768), props(32768, 32768)),
+        ];
+        for (from, to) in cases {
+            let mut cur = from;
+            for prop in from.writes_to(to) {
+                match prop {
+                    HvCpuProp::Cap(v) => cur.cap = v,
+                    HvCpuProp::Reserve(v) => cur.reserve = v,
+                    HvCpuProp::Weight(v) => cur.weight = v,
+                }
+                assert!(cur.reserve <= cur.cap, "{from:?} -> {to:?} passed {cur:?}");
+            }
+            assert_eq!(cur, to);
+        }
+        assert!(props(65536, 0).writes_to(props(65536, 0)).is_empty());
+    }
+
+    #[test]
+    fn hv_cpu_props_target_rejects_cap_below_reserve() {
+        let cur = HvCpuProps {
+            cap: 65536,
+            reserve: 32768,
+            weight: 100,
+        };
+        assert!(
+            cur.target(&ProcessorQos {
+                limit: Some(10000),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert_eq!(
+            cur.target(&ProcessorQos {
+                limit: Some(10000),
+                reserve: Some(0),
+                ..Default::default()
+            })
+            .unwrap(),
+            HvCpuProps {
+                cap: 6553,
+                reserve: 0,
+                weight: 100,
+            }
+        );
+    }
+
+    #[test]
+    fn processor_qos_validate() {
+        let q = |limit, weight, reserve| ProcessorQos {
+            limit,
+            weight,
+            reserve,
+        };
+        assert!(q(None, None, None).validate().is_ok());
+        assert!(
+            q(Some(100000), Some(10000), Some(100000))
+                .validate()
+                .is_ok()
+        );
+        assert!(q(Some(0), Some(1), Some(0)).validate().is_ok());
+        assert!(q(Some(100001), None, None).validate().is_err());
+        assert!(q(None, Some(0), None).validate().is_err());
+        assert!(q(None, Some(10001), None).validate().is_err());
+        assert!(q(None, None, Some(100001)).validate().is_err());
+        assert!(q(Some(1000), None, Some(1001)).validate().is_err());
+    }
 }

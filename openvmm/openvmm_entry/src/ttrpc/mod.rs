@@ -83,6 +83,7 @@ use openvmm_defs::config::PcieMmioRangeConfig;
 use openvmm_defs::config::PciePortConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
+use openvmm_defs::config::ProcessorQos;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::UefiConsoleMode;
 use openvmm_defs::config::VirtioBus;
@@ -144,6 +145,135 @@ fn parse_aarch64_topology_overrides(
         }
     }
     Ok(ArchTopologyConfig::Aarch64(topology_config))
+}
+
+/// Maps vmservice processor limit/weight/reservation. Proto3 can't tell unset
+/// from 0, so 0 means unset for limit and weight, matching HCS defaults.
+/// Reservation is `None` when unset; `Some(0)` clears it.
+fn processor_qos(limit: u32, weight: u32, reserve: Option<u32>) -> anyhow::Result<ProcessorQos> {
+    let set = |v| (v != 0).then_some(v);
+    let qos = ProcessorQos {
+        limit: set(limit),
+        weight: set(weight),
+        reserve,
+    };
+    qos.validate()?;
+    Ok(qos)
+}
+
+/// Returns which processor controls the chosen hypervisor backend enforces.
+fn host_processor_qos_support() -> vmservice::capabilities_vm_response::ProcessorQosSupport {
+    let (limit, weight, reservation) = match openvmm_helpers::hypervisor::chosen_hypervisor_name() {
+        #[cfg(windows)]
+        Some("whp") => {
+            let s = virt_whp::processor_qos_support();
+            (s.limit, s.weight, s.reserve)
+        }
+        #[cfg(target_os = "linux")]
+        Some("mshv") => {
+            let s = virt_mshv::processor_qos::processor_qos_support();
+            (s.limit, s.weight, s.reserve)
+        }
+        _ => (false, false, false),
+    };
+    vmservice::capabilities_vm_response::ProcessorQosSupport {
+        limit,
+        weight,
+        reservation,
+    }
+}
+
+fn capabilities_response(
+    processor_qos: vmservice::capabilities_vm_response::ProcessorQosSupport,
+) -> vmservice::CapabilitiesVmResponse {
+    use vmservice::capabilities_vm_response::Resource;
+    use vmservice::capabilities_vm_response::SupportedGuestOs;
+    use vmservice::capabilities_vm_response::SupportedResource;
+
+    let mut supported_resources = vec![
+        SupportedResource {
+            resource: Resource::Scsi as i32,
+            add: true,
+            remove: true,
+            update: false,
+        },
+        SupportedResource {
+            resource: Resource::Vpci as i32,
+            add: true,
+            remove: true,
+            update: false,
+        },
+        SupportedResource {
+            resource: Resource::VmNic as i32,
+            add: true,
+            remove: true,
+            update: true,
+        },
+    ];
+    if processor_qos.limit || processor_qos.weight || processor_qos.reservation {
+        supported_resources.push(SupportedResource {
+            resource: Resource::Processor as i32,
+            add: false,
+            remove: false,
+            update: true,
+        });
+    }
+    vmservice::CapabilitiesVmResponse {
+        supported_resources,
+        supported_guest_os: vec![SupportedGuestOs::Linux as i32],
+        processor_qos: Some(processor_qos),
+    }
+}
+
+#[cfg(test)]
+mod processor_qos_tests {
+    use super::*;
+
+    #[test]
+    fn processor_qos_mapping() {
+        assert!(processor_qos(0, 0, None).unwrap().is_empty());
+        assert_eq!(
+            processor_qos(50000, 200, Some(10000)).unwrap(),
+            ProcessorQos {
+                limit: Some(50000),
+                weight: Some(200),
+                reserve: Some(10000),
+            }
+        );
+        // An explicit zero reservation is kept so an update can clear it.
+        assert_eq!(processor_qos(0, 0, Some(0)).unwrap().reserve, Some(0));
+        assert!(processor_qos(100001, 0, None).is_err());
+        assert!(processor_qos(1000, 0, Some(2000)).is_err());
+    }
+
+    #[test]
+    fn capabilities_report_processor_qos() {
+        use vmservice::capabilities_vm_response::ProcessorQosSupport;
+        use vmservice::capabilities_vm_response::Resource;
+
+        let all = ProcessorQosSupport {
+            limit: true,
+            weight: true,
+            reservation: true,
+        };
+        let r = capabilities_response(all.clone());
+        assert_eq!(r.processor_qos, Some(all));
+        let p = r
+            .supported_resources
+            .iter()
+            .find(|s| s.resource == Resource::Processor as i32)
+            .unwrap();
+        assert!(p.update && !p.add && !p.remove);
+
+        let none = capabilities_response(ProcessorQosSupport::default());
+        assert_eq!(none.processor_qos, Some(ProcessorQosSupport::default()));
+        assert!(
+            !none
+                .supported_resources
+                .iter()
+                .any(|s| s.resource == Resource::Processor as i32)
+        );
+    }
 }
 
 fn parse_arch_topology_overrides(
@@ -1201,6 +1331,17 @@ impl VmService {
             .map(|c| c.processor_count)
             .unwrap_or(1);
         let arch = parse_arch_topology_overrides(req_config.processor_config.as_ref())?;
+        let processor_qos =
+            req_config
+                .processor_config
+                .as_ref()
+                .map_or(Ok(ProcessorQos::default()), |c| {
+                    processor_qos(
+                        c.processor_limit,
+                        c.processor_weight,
+                        (c.processor_reservation != 0).then_some(c.processor_reservation),
+                    )
+                })?;
 
         let mut config = Config {
             // TODO: devices, other stuff
@@ -1225,6 +1366,7 @@ impl VmService {
                 with_hv: !req_config.disable_hv,
                 with_isolation: isolation,
                 nested_virt: req_config.nested_virt,
+                processor_qos,
                 ..Default::default()
             },
             #[cfg(windows)]
@@ -1490,33 +1632,7 @@ impl VmService {
     }
 
     fn build_capabilities(&self) -> vmservice::CapabilitiesVmResponse {
-        use vmservice::capabilities_vm_response::Resource;
-        use vmservice::capabilities_vm_response::SupportedGuestOs;
-        use vmservice::capabilities_vm_response::SupportedResource;
-
-        vmservice::CapabilitiesVmResponse {
-            supported_resources: vec![
-                SupportedResource {
-                    resource: Resource::Scsi as i32,
-                    add: true,
-                    remove: true,
-                    update: false,
-                },
-                SupportedResource {
-                    resource: Resource::Vpci as i32,
-                    add: true,
-                    remove: true,
-                    update: false,
-                },
-                SupportedResource {
-                    resource: Resource::VmNic as i32,
-                    add: true,
-                    remove: true,
-                    update: true,
-                },
-            ],
-            supported_guest_os: vec![SupportedGuestOs::Linux as i32],
-        }
+        capabilities_response(host_processor_qos_support())
     }
 
     fn shutdown_vm(
@@ -1871,7 +1987,20 @@ impl VmService {
             }
             Resource::VpmemDisk(_) => anyhow::bail!("vpmem not supported"),
             Resource::WindowsDevice(_) => anyhow::bail!("device assignment not supported"),
-            Resource::Processor(_) | Resource::ProcessorConfig(_) | Resource::Memory(_) => {
+            Resource::ProcessorConfig(cfg) => {
+                anyhow::ensure!(
+                    request.r#type == vmservice::ModifyType::Update as i32,
+                    "processor config only supports update"
+                );
+                let qos = processor_qos(
+                    cfg.processor_limit,
+                    cfg.processor_weight,
+                    cfg.processor_reservation,
+                )?;
+                let recv = vm.worker_rpc.call_failable(VmRpc::SetProcessorQos, qos);
+                Ok(async move { recv.await.map_err(anyhow::Error::from) }.boxed())
+            }
+            Resource::Processor(_) | Resource::Memory(_) => {
                 anyhow::bail!("processor and memory resources not supported")
             }
         }

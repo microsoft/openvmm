@@ -618,6 +618,42 @@ impl virt::AcceptInitialPages for WhpPartition {
     }
 }
 
+/// Which processor settings the host scheduler lets WHP enforce. Only the
+/// hypervisor core scheduler reports them; the root scheduler reports none.
+pub fn processor_qos_support() -> virt::ProcessorQosSupport {
+    use whp::abi::WHV_SCHEDULER_FEATURES as F;
+    let f = whp::capabilities::scheduler_features().unwrap_or(F(0));
+    virt::ProcessorQosSupport {
+        limit: f.is_set(F::CpuCap),
+        weight: f.is_set(F::CpuWeight),
+        reserve: f.is_set(F::CpuReserve),
+    }
+}
+
+fn read_cpu_props(whp: &whp::Partition) -> Result<virt::HvCpuProps, whp::WHvError> {
+    Ok(virt::HvCpuProps {
+        cap: whp.cpu_cap()?,
+        reserve: whp.cpu_reserve()?,
+        weight: whp.cpu_weight()?,
+    })
+}
+
+fn write_cpu_props(
+    whp: &whp::Partition,
+    from: virt::HvCpuProps,
+    to: virt::HvCpuProps,
+) -> Result<(), whp::WHvError> {
+    use whp::PartitionProperty as P;
+    for prop in from.writes_to(to) {
+        whp.set_property(match prop {
+            virt::HvCpuProp::Cap(v) => P::CpuCap(v),
+            virt::HvCpuProp::Reserve(v) => P::CpuReserve(v),
+            virt::HvCpuProp::Weight(v) => P::CpuWeight(v),
+        })?;
+    }
+    Ok(())
+}
+
 impl virt::Partition for WhpPartition {
     fn initial_vp_state_source(&self) -> virt::InitialVpStateSource {
         virt::InitialVpStateSource::Registers
@@ -639,6 +675,62 @@ impl virt::Partition for WhpPartition {
         &self,
     ) -> Option<&dyn virt::ScrubVtl<Error = <Self as virt::Hv1>::Error>> {
         (!self.inner.isolation.is_isolated()).then_some(self)
+    }
+
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+        qos.validate()?;
+        let support = processor_qos_support();
+        for (set, ok, name) in [
+            (qos.limit.is_some(), support.limit, "limit"),
+            (qos.weight.is_some(), support.weight, "weight"),
+            (qos.reserve.is_some(), support.reserve, "reserve"),
+        ] {
+            anyhow::ensure!(
+                !set || ok,
+                "processor {name} requires the hypervisor core scheduler"
+            );
+        }
+        let partitions: Vec<&whp::Partition> = std::iter::once(&self.inner.vtl0)
+            .chain(&self.inner.vtl2)
+            .map(|vtlp| &vtlp.whp)
+            .collect();
+        let old = partitions
+            .iter()
+            .map(|whp| read_cpu_props(whp))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new = old
+            .iter()
+            .map(|old| old.target(qos))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        for (i, whp) in partitions.iter().enumerate() {
+            if let Err(err) = write_cpu_props(whp, old[i], new[i]) {
+                let err = anyhow::Error::from(err).context("failed to set processor settings");
+                // Put back what was written so every partition keeps its old settings.
+                for (whp, &old) in partitions[..=i].iter().zip(&old) {
+                    if let Err(restore) =
+                        read_cpu_props(whp).and_then(|cur| write_cpu_props(whp, cur, old))
+                    {
+                        return Err(err.context(format!(
+                            "processor settings are inconsistent, restore failed: {restore}"
+                        )));
+                    }
+                }
+                return Err(err);
+            }
+        }
+        match read_cpu_props(partitions[0]) {
+            Ok(p) => tracing::info!(
+                cap = p.cap,
+                reserve = p.reserve,
+                weight = p.weight,
+                "processor scheduler properties applied"
+            ),
+            Err(err) => tracing::warn!(
+                error = &err as &dyn std::error::Error,
+                "failed to read back processor scheduler properties"
+            ),
+        }
+        Ok(())
     }
 
     fn supports_initial_page_acceptance(
@@ -2168,5 +2260,25 @@ mod aarch64 {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn processor_qos_support_matches_scheduler_features() {
+        use whp::abi::WHV_SCHEDULER_FEATURES as F;
+        if !whp::capabilities::hypervisor_present().unwrap_or(false) {
+            return;
+        }
+        let f = whp::capabilities::scheduler_features().unwrap_or(F(0));
+        assert_eq!(
+            super::processor_qos_support(),
+            virt::ProcessorQosSupport {
+                limit: f.is_set(F::CpuCap),
+                weight: f.is_set(F::CpuWeight),
+                reserve: f.is_set(F::CpuReserve),
+            }
+        );
     }
 }

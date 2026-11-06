@@ -113,6 +113,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// backend cannot support synic in its current configuration.
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>>;
 
+    /// Applies processor limit/weight/reserve. The VPs must not be running.
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()>;
+
     /// Gets an interface to support downcasting to specific partition types.
     ///
     /// TODO: remove this.
@@ -278,6 +281,10 @@ where
 
     fn synic(&self) -> anyhow::Result<Arc<dyn vmcore::synic::SynicPortAccess>> {
         self.synic()
+    }
+
+    fn set_processor_qos(&self, qos: &virt::ProcessorQos) -> anyhow::Result<()> {
+        Partition::set_processor_qos(self, qos)
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]

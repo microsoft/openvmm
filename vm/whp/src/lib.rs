@@ -741,6 +741,18 @@ impl Partition {
         self.get_property(partition_prop::PhysicalAddressWidth)
     }
 
+    pub fn cpu_cap(&self) -> Result<u32> {
+        self.get_property(partition_prop::CpuCap)
+    }
+
+    pub fn cpu_reserve(&self) -> Result<u32> {
+        self.get_property(partition_prop::CpuReserve)
+    }
+
+    pub fn cpu_weight(&self) -> Result<u32> {
+        self.get_property(partition_prop::CpuWeight)
+    }
+
     #[expect(clippy::missing_safety_doc)]
     pub unsafe fn register_doorbell(&self, m: &DoorbellMatch, event: RawHandle) -> Result<()> {
         unsafe {
@@ -1944,4 +1956,47 @@ macro_rules! get_registers {
         }
     };
     (@def $_:expr) => { Default::default() };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capabilities;
+
+    #[test]
+    fn scheduler_features_query_succeeds() {
+        if !capabilities::hypervisor_present().unwrap_or(false) {
+            return;
+        }
+        capabilities::scheduler_features().unwrap();
+    }
+
+    #[test]
+    fn cpu_scheduler_properties_round_trip() {
+        use super::Partition;
+        use super::PartitionConfig;
+        use super::PartitionProperty as P;
+        use super::abi::WHV_SCHEDULER_FEATURES as F;
+
+        // Only the hypervisor core scheduler supports these properties.
+        let bits = F::CpuCap | F::CpuWeight | F::CpuReserve;
+        if !capabilities::hypervisor_present().unwrap_or(false)
+            || !capabilities::scheduler_features().is_ok_and(|f| f.is_set(bits))
+        {
+            return;
+        }
+        let check = |p: &Partition, cap, weight, reserve| {
+            p.set_property(P::CpuCap(cap)).unwrap();
+            p.set_property(P::CpuWeight(weight)).unwrap();
+            p.set_property(P::CpuReserve(reserve)).unwrap();
+            assert_eq!(p.cpu_cap().unwrap(), cap);
+            assert_eq!(p.cpu_weight().unwrap(), weight);
+            assert_eq!(p.cpu_reserve().unwrap(), reserve);
+        };
+        let mut config = PartitionConfig::new().unwrap();
+        config.set_property(P::ProcessorCount(1)).unwrap();
+        check(&config.partition, 32768, 200, 16384);
+        // Also settable after setup while no VP is running, which runtime updates rely on.
+        let partition = config.create().unwrap();
+        check(&partition, 16384, 100, 8192);
+    }
 }
