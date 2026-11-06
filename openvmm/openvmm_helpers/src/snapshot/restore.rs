@@ -3,7 +3,7 @@
 
 //! Restore-side snapshot access: opening one published generation through a
 //! retained directory handle, structural validation against its manifest,
-//! paired scratch verification, and single-use resume claims.
+//! paired scratch materialization, and single-use resume claims.
 
 use super::SnapshotManifest;
 use super::format::MANIFEST_FILE_NAME;
@@ -25,7 +25,6 @@ use super::fs::open_file_with_length;
 use super::fs::opened_file_generation;
 use super::fs::read_bounded_open_file;
 use super::fs::reflink_exact;
-use super::fs::verify_file_digest;
 use super::fs::verify_hard_link_identity;
 use super::microvm;
 use anyhow::Context;
@@ -248,7 +247,9 @@ pub fn read_snapshot_with_memory(
     Ok((manifest, state_bytes, memory))
 }
 
-/// Opens and verifies the scratch image paired to a snapshot, if present.
+/// Opens the scratch image paired to a snapshot, if present, which must have
+/// its recorded length. Its storage generation vouches for its content, which
+/// the restore never reads to verify.
 pub fn open_paired_scratch_file(
     dir: &Path,
     manifest: &SnapshotManifest,
@@ -266,47 +267,7 @@ fn open_paired_scratch_file_in_directory(
     };
     let file =
         directory.open_file_with_length(SCRATCH_FILE_NAME, scratch.length, SCRATCH_FILE_NAME)?;
-    verify_sandbox_block_identity(&file, scratch, SCRATCH_FILE_NAME)?;
     Ok(Some(file))
-}
-
-pub(super) fn verify_sandbox_block_identity(
-    file: &std::fs::File,
-    block: &microvm::SnapshotMicrovmSandboxBlock,
-    description: &str,
-) -> anyhow::Result<()> {
-    match block.identity_kind.as_str() {
-        microvm::SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
-            verify_file_digest(file, block.length, &block.identity, description)
-        }
-        microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION => Ok(()),
-        other => anyhow::bail!("{description} has unsupported identity kind '{other}'"),
-    }
-}
-
-/// Copies a verified immutable artifact to a new private path.
-pub fn copy_verified_file(
-    source: &std::fs::File,
-    destination: &Path,
-    expected_length: u64,
-    expected_digest: &[u8],
-    description: &str,
-) -> anyhow::Result<()> {
-    verify_file_digest(source, expected_length, expected_digest, description)?;
-    copy_exact(
-        source,
-        destination,
-        expected_length,
-        description,
-        "private scratch copy",
-    )?;
-    let copy = open_file_with_length(destination, expected_length, "private scratch copy")?;
-    verify_file_digest(
-        &copy,
-        expected_length,
-        expected_digest,
-        "private scratch copy",
-    )
 }
 
 /// Materializes paired scratch as an independent private file.
@@ -315,16 +276,13 @@ pub fn copy_paired_scratch_file(
     destination: &Path,
     block: &microvm::SnapshotMicrovmSandboxBlock,
 ) -> anyhow::Result<()> {
-    verify_sandbox_block_identity(source, block, SCRATCH_FILE_NAME)?;
     copy_exact(
         source,
         destination,
         block.length,
         SCRATCH_FILE_NAME,
         "private scratch copy",
-    )?;
-    let copy = open_file_with_length(destination, block.length, "private scratch copy")?;
-    verify_sandbox_block_identity(&copy, block, "private scratch copy")
+    )
 }
 
 /// Materializes paired scratch with a required filesystem copy-on-write clone.
@@ -333,16 +291,13 @@ pub fn clone_paired_scratch_file(
     destination: &Path,
     block: &microvm::SnapshotMicrovmSandboxBlock,
 ) -> anyhow::Result<()> {
-    verify_sandbox_block_identity(source, block, SCRATCH_FILE_NAME)?;
     reflink_exact(
         source,
         destination,
         block.length,
         SCRATCH_FILE_NAME,
         "copy-on-write scratch clone",
-    )?;
-    let clone = open_file_with_length(destination, block.length, "copy-on-write scratch clone")?;
-    verify_sandbox_block_identity(&clone, block, "copy-on-write scratch clone")
+    )
 }
 
 /// Creates a private path to the exact claimed paired-scratch generation.
@@ -351,7 +306,6 @@ pub fn link_claimed_paired_scratch_file(
     destination: &Path,
     block: &microvm::SnapshotMicrovmSandboxBlock,
 ) -> anyhow::Result<()> {
-    verify_sandbox_block_identity(source, block, SCRATCH_FILE_NAME)?;
     let parent = destination
         .parent()
         .context("claimed scratch destination has no parent")?;
@@ -363,8 +317,7 @@ pub fn link_claimed_paired_scratch_file(
     create_hard_link_from_handle(source, &directory.file, name)
         .context("failed to link claimed scratch generation")?;
     let linked = open_file_with_length(destination, block.length, "claimed scratch link")?;
-    verify_hard_link_identity(source, &linked, block.length)?;
-    verify_sandbox_block_identity(&linked, block, "claimed scratch link")
+    verify_hard_link_identity(source, &linked, block.length)
 }
 
 /// Atomically consumes a single-use resume snapshot.
@@ -465,6 +418,38 @@ mod tests {
     use std::io::SeekFrom;
     #[cfg(any(target_os = "linux", windows))]
     use std::io::Write;
+
+    #[test]
+    fn private_scratch_copy_is_exact_and_independent() {
+        let manifest = paired_scratch_manifest(&[0x5a; 512]);
+        let block = microvm::paired_scratch_block(&manifest).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source-scratch.img");
+        let destination_path = dir.path().join("private-scratch.img");
+        // The storage generation vouches for the content, which the copy takes
+        // as it is, without reading it to verify it.
+        std::fs::write(&source_path, vec![0xa5; 512]).unwrap();
+        let source = std::fs::File::open(&source_path).unwrap();
+
+        copy_paired_scratch_file(&source, &destination_path, block).unwrap();
+        assert_eq!(std::fs::read(&destination_path).unwrap(), vec![0xa5; 512]);
+        std::fs::write(&destination_path, vec![0x3c; 512]).unwrap();
+        assert_eq!(std::fs::read(&source_path).unwrap(), vec![0xa5; 512]);
+
+        // A source of another length is refused.
+        let longer_path = dir.path().join("longer-scratch.img");
+        std::fs::write(&longer_path, vec![0xa5; 1024]).unwrap();
+        let error = copy_paired_scratch_file(
+            &std::fs::File::open(&longer_path).unwrap(),
+            &dir.path().join("refused-scratch.img"),
+            block,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("doesn't match manifest"),
+            "{error:#}"
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

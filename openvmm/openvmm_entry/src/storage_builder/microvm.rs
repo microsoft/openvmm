@@ -7,7 +7,6 @@ use super::StorageBuilder;
 use super::VirtioBlkDisk;
 use crate::VmResources;
 use crate::cli_args::DiskCliKind;
-use crate::cli_args::microvm::SnapshotBlockIdentityCli;
 use crate::disk_open;
 use anyhow::Context;
 use mesh::CellUpdater;
@@ -111,11 +110,17 @@ fn zero_fill_disk(
     })
 }
 
+/// Returns the block contract that a capture records for `sources`.
+///
+/// A capture whose tier binds the blocks passes their storage `generation`,
+/// which it records as the identity of each read-only layer and of a paired
+/// scratch. A platform capture passes none, and records its layers as
+/// unbound. A fresh scratch has no identity. The capture never reads a block
+/// to identify it: it only flushes a paired scratch, which publication copies.
 pub(crate) fn capture_snapshot_block_contract(
     sources: &[MicrovmSandboxBlockSource],
     scratch_policy: chipset_resources::microvm::MicrovmSnapshotScratchPolicy,
-    identity_mode: SnapshotBlockIdentityCli,
-    generation_id: Option<[u8; 16]>,
+    generation: Option<[u8; 16]>,
     scratch_restore_mode: &str,
 ) -> anyhow::Result<Vec<openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock>> {
     sources
@@ -134,29 +139,23 @@ pub(crate) fn capture_snapshot_block_contract(
                 && scratch_policy == chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Fresh
             {
                 ("fresh", Vec::new(), String::new())
-            } else {
-                let (identity_kind, identity) = match identity_mode {
-                    SnapshotBlockIdentityCli::Sha256 => (
-                        openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_SHA256,
-                        openvmm_helpers::snapshot::fs::file_sha256(
-                            source.file()?,
-                            source.length,
-                            &format!("microVM {} block", source.role.as_str()),
-                        )?,
-                    ),
-                    SnapshotBlockIdentityCli::Generation => (
-                        openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION,
-                        generation_id
-                            .context("generation identity requires a snapshot generation ID")?
-                            .to_vec(),
-                    ),
-                };
+            } else if let Some(generation) = generation {
                 let artifact = if source.role == MicrovmSandboxBlockRole::Scratch {
                     openvmm_helpers::snapshot::format::SCRATCH_FILE_NAME.to_owned()
                 } else {
                     String::new()
                 };
-                (identity_kind, identity, artifact)
+                (
+                    openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION,
+                    generation.to_vec(),
+                    artifact,
+                )
+            } else {
+                anyhow::ensure!(
+                    source.read_only,
+                    "microVM paired scratch requires a storage generation"
+                );
+                ("unbound", Vec::new(), String::new())
             };
             Ok(
                 openvmm_helpers::snapshot::microvm::SnapshotMicrovmSandboxBlock {
@@ -182,6 +181,12 @@ pub(crate) fn capture_snapshot_block_contract(
         .collect()
 }
 
+/// Returns the block contract that a restore of `sources` must match, which
+/// the restore compares with `saved_blocks`, the snapshot's.
+///
+/// Each block that the snapshot binds keeps the storage generation that its
+/// capture recorded, and unbound layers and fresh scratch have no identity.
+/// The restore never reads a block to identify it.
 pub(crate) fn restore_snapshot_block_contract(
     sources: &[MicrovmSandboxBlockSource],
     scratch_policy: chipset_resources::microvm::MicrovmSnapshotScratchPolicy,
@@ -200,16 +205,10 @@ pub(crate) fn restore_snapshot_block_contract(
                     )
                 })?;
             let identity = match saved.identity_kind.as_str() {
-                openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_SHA256 => {
-                    openvmm_helpers::snapshot::fs::file_sha256(
-                        source.file()?,
-                        source.length,
-                        &format!("microVM {} block", source.role.as_str()),
-                    )?
+                openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION => {
+                    saved.identity.clone()
                 }
-                openvmm_helpers::snapshot::microvm::SNAPSHOT_BLOCK_IDENTITY_GENERATION
-                | "unbound"
-                | "fresh" => saved.identity.clone(),
+                "unbound" | "fresh" => Vec::new(),
                 other => anyhow::bail!(
                     "snapshot microVM {} block identity kind '{other}' is unsupported",
                     source.role.as_str()
@@ -654,15 +653,120 @@ mod tests {
             [saved]
         );
         // A paired capture, which no restored microVM can take, fails instead
-        // of reading a file that it does not have.
+        // of flushing a file that it does not have.
         let err = capture_snapshot_block_contract(
             sources,
             chipset_resources::microvm::MicrovmSnapshotScratchPolicy::Paired,
-            SnapshotBlockIdentityCli::Sha256,
-            None,
+            Some([0x42; 16]),
             "",
         )
         .unwrap_err();
         assert_eq!(err.to_string(), "microVM scratch block has no file");
+    }
+
+    /// Returns the source of a 1-MiB block of `role` with `file`.
+    fn block_source(
+        role: MicrovmSandboxBlockRole,
+        file: Option<std::fs::File>,
+    ) -> MicrovmSandboxBlockSource {
+        MicrovmSandboxBlockSource {
+            role,
+            read_only: role.is_read_only(),
+            length: MIB,
+            logical_block_size: 512,
+            physical_block_size: 4096,
+            file,
+        }
+    }
+
+    #[test]
+    fn block_contracts_carry_the_storage_generation_without_reading_blocks() {
+        use chipset_resources::microvm::MicrovmSnapshotScratchPolicy;
+        const GENERATION: [u8; 16] = [0x42; 16];
+        // The layer has no file, so neither contract can read it; the paired
+        // scratch has one only for its capture to flush.
+        let directory = tempfile::tempdir().unwrap();
+        let scratch = std::fs::File::create_new(directory.path().join("scratch.img")).unwrap();
+        scratch.set_len(MIB).unwrap();
+        let capture_sources = [
+            block_source(MicrovmSandboxBlockRole::Distro, None),
+            block_source(MicrovmSandboxBlockRole::Scratch, Some(scratch)),
+        ];
+
+        // A tier that binds the blocks records the generation as the identity
+        // of the layer and of the paired scratch.
+        let bound = capture_snapshot_block_contract(
+            &capture_sources,
+            MicrovmSnapshotScratchPolicy::Paired,
+            Some(GENERATION),
+            "private-copy",
+        )
+        .unwrap();
+        for block in &bound {
+            assert_eq!(block.identity_kind, "generation");
+            assert_eq!(block.identity, GENERATION);
+        }
+        assert_eq!(
+            (bound[0].artifact.as_str(), bound[0].restore_mode.as_str()),
+            ("", "")
+        );
+        assert_eq!(
+            (bound[1].artifact.as_str(), bound[1].restore_mode.as_str()),
+            ("scratch.img", "private-copy")
+        );
+
+        // The platform tier binds none: its layer is unbound, and its scratch
+        // fresh.
+        let unbound = capture_snapshot_block_contract(
+            &capture_sources,
+            MicrovmSnapshotScratchPolicy::Fresh,
+            None,
+            "private-copy",
+        )
+        .unwrap();
+        assert_eq!(
+            unbound
+                .iter()
+                .map(|block| (block.identity_kind.as_str(), block.identity.as_slice()))
+                .collect::<Vec<_>>(),
+            [("unbound", &[][..]), ("fresh", &[][..])]
+        );
+        assert!(unbound[1].artifact.is_empty() && unbound[1].restore_mode.is_empty());
+        let err = capture_snapshot_block_contract(
+            &capture_sources,
+            MicrovmSnapshotScratchPolicy::Paired,
+            None,
+            "",
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "microVM paired scratch requires a storage generation"
+        );
+
+        // A restore expects the bound blocks to keep the generation that the
+        // snapshot recorded, without reading them either.
+        let restore_sources = [
+            block_source(MicrovmSandboxBlockRole::Distro, None),
+            block_source(MicrovmSandboxBlockRole::Scratch, None),
+        ];
+        assert_eq!(
+            restore_snapshot_block_contract(
+                &restore_sources,
+                MicrovmSnapshotScratchPolicy::Paired,
+                &bound,
+            )
+            .unwrap(),
+            bound
+        );
+        assert_eq!(
+            restore_snapshot_block_contract(
+                &restore_sources,
+                MicrovmSnapshotScratchPolicy::Fresh,
+                &unbound,
+            )
+            .unwrap(),
+            unbound
+        );
     }
 }

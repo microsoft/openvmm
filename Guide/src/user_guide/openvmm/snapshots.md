@@ -42,14 +42,15 @@ with sandbox blocks additionally requires
 workload-start snapshots are reusable clones; instance checkpoints are
 single-use resumes.
 
-Sandbox-block capture defaults to whole-file SHA-256 identity and private
-scratch copying. Storage owners may opt into
-`--snapshot-block-identity generation --snapshot-generation-id <32-HEX-DIGITS>`
-when an authenticated immutable generation already binds the supplied files.
-This avoids capture- and restore-time block scans; it does not authenticate
-bytes by itself. `--snapshot-scratch-restore-mode` records `private-copy`,
-reflink-only `copy-on-write` for workload-start clones, or `direct-claimed`
-for instance checkpoints.
+A workload-start or instance-checkpoint capture binds its read-only layers and
+paired scratch to the storage generation that
+`--snapshot-generation-id <32-HEX-DIGITS>` supplies. OpenVMM never reads a
+block to identify it, and the generation does not authenticate bytes by
+itself: the storage owner must keep it immutable and bound to the exact files.
+A platform capture binds no block and needs no generation.
+Paired scratch defaults to private copying; `--snapshot-scratch-restore-mode`
+records `private-copy`, reflink-only `copy-on-write` for workload-start clones,
+or `direct-claimed` for instance checkpoints.
 
 ```admonish warning
 Automatically allocated microVM RAM and the snapshot destination are on the
@@ -197,8 +198,9 @@ repair must not wait for a virtio-fs reply. The acknowledgement is bounded by
 host can connect while input is gated, but OpenVMM reads its authentication
 only after the release, so its `--microvm-control-auth-timeout-ms` deadline
 starts over when the gate releases. Platform manifests
-leave read-only layer identities unbound, while later tiers require exact image
-identities. A platform restore also presents the captured capacity of its
+leave read-only layer identities unbound, while later tiers bind every block
+to the storage generation of their capture. A platform restore also presents
+the captured capacity of its
 `distro` block before any vCPU runs, so one platform snapshot serves images of
 any length up to that capacity. An image with the captured logical and
 physical block sizes may be shorter, and reads past its end, including the tail
@@ -325,16 +327,16 @@ target. This is not a post-readiness hotplug API and cannot add VPs absent
 from the saved topology.
 
 ```admonish warning
-Snapshots do not contain or validate embedded checksums for
-`state.bin` or `memory.bin`. Restore still requires regular files, bounded
-manifest and state decoding, exact artifact lengths, and a compatible machine
-contract, but same-length payload changes are not detected. Paired `scratch.img` always
-has an exact length and uses either the default SHA-256 identity or an explicit
-caller-authenticated storage generation. Generation mode avoids reading the
-file solely for verification and therefore relies on the storage owner to keep
-that generation immutable and correctly bound. Protect snapshot directories
-with host access controls. Integrity or authentication for export and
-transport must be supplied outside the default snapshot format.
+Snapshots do not contain or validate checksums of `state.bin`, `memory.bin`,
+`scratch.img`, or the read-only layers. Restore still requires regular files,
+bounded manifest and state decoding, exact artifact and block lengths, and a
+compatible machine contract, but same-length payload changes are not detected.
+The layers and paired `scratch.img` that a snapshot binds share one
+caller-authenticated storage generation, which OpenVMM never reads a block to
+verify, so it relies on the storage owner to keep that generation immutable and
+correctly bound. Protect snapshot directories with host access controls.
+Integrity or authentication for export and transport must be supplied outside
+the snapshot format.
 ```
 
 ```admonish note

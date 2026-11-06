@@ -28,9 +28,8 @@ pub(crate) struct MicrovmController {
     pub(crate) snapshot_destination: Option<PathBuf>,
     /// Sandbox capture tier of a guest-requested snapshot.
     pub(crate) snapshot_tier: Option<crate::cli_args::microvm::SnapshotTierCli>,
-    /// Sandbox-block identity policy recorded in a captured snapshot.
-    pub(crate) snapshot_block_identity: crate::cli_args::microvm::SnapshotBlockIdentityCli,
-    /// Caller-authenticated immutable storage generation.
+    /// Caller-supplied immutable storage generation of the sandbox blocks,
+    /// which a capture of a tier that binds them records.
     pub(crate) snapshot_generation_id: Option<[u8; 16]>,
     /// Restore-time materialization policy recorded for paired scratch.
     pub(crate) snapshot_scratch_restore_mode:
@@ -283,21 +282,18 @@ impl VmController {
                             .collect(),
                     }
                 });
-            let mut blocks = crate::storage_builder::microvm::capture_snapshot_block_contract(
+            // A platform capture binds no block, whatever generation it took.
+            let generation = self
+                .microvm
+                .snapshot_tier
+                .filter(|tier| tier.binds_blocks())
+                .and(self.microvm.snapshot_generation_id);
+            let blocks = crate::storage_builder::microvm::capture_snapshot_block_contract(
                 &self.microvm.resources.sandbox_block_sources,
                 scratch_policy,
-                self.microvm.snapshot_block_identity,
-                self.microvm.snapshot_generation_id,
+                generation,
                 self.microvm.snapshot_scratch_restore_mode.manifest_name(),
             )?;
-            if self.microvm.snapshot_tier
-                == Some(crate::cli_args::microvm::SnapshotTierCli::Platform)
-            {
-                for block in blocks.iter_mut().filter(|block| block.read_only) {
-                    block.identity_kind = "unbound".to_owned();
-                    block.identity.clear();
-                }
-            }
             let machine_contract = openvmm_helpers::snapshot::microvm::microvm_machine_contract(
                 &self.microvm.source_hypervisor,
                 openvmm_helpers::snapshot::microvm::MICROVM_BOOT_LAYOUT_VERSION,
