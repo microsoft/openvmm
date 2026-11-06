@@ -265,6 +265,10 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                             self.device.start();
                             self.running = true;
                         }
+                        DeviceRequest::ConfirmStart(rpc) => {
+                            rpc.handle_failable(async |()| self.device.confirm_start().await)
+                                .await
+                        }
                         DeviceRequest::Teardown(rpc) => {
                             assert!(
                                 !self.running,

@@ -4335,6 +4335,8 @@ trait TestTransport {
     fn stop(&mut self) -> impl Future<Output = ()>;
     /// Drive ChangeDeviceState::start().
     fn start(&mut self);
+    /// Drive ChangeDeviceState::confirm_start().
+    fn confirm_start(&mut self) -> impl Future<Output = anyhow::Result<()>>;
     fn teardown(self) -> impl Future<Output = ()>;
 }
 
@@ -4409,6 +4411,9 @@ impl TestTransport for MmioTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        ChangeDeviceState::confirm_start(&mut self.dev).await
     }
     async fn teardown(self) {
         self.dev.teardown().await;
@@ -4550,6 +4555,9 @@ impl TestTransport for PciTestTransport {
     }
     fn start(&mut self) {
         ChangeDeviceState::start(&mut self.dev);
+    }
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        ChangeDeviceState::confirm_start(&mut self.dev).await
     }
     async fn teardown(self) {
         self.dev.teardown().await;

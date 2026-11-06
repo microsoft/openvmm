@@ -96,6 +96,7 @@ impl InspectMut for ArcMutexChipsetDeviceUnit {
 #[async_trait]
 trait DynDevice: InspectMut + Send {
     fn start(&mut self);
+    async fn confirm_start(&mut self) -> anyhow::Result<()>;
     async fn stop(&mut self);
     async fn quiesce_input(&mut self) -> anyhow::Result<()>;
     async fn resume_input(&mut self) -> anyhow::Result<()>;
@@ -110,6 +111,10 @@ trait DynDevice: InspectMut + Send {
 impl<T: VmmChipsetDevice> DynDevice for T {
     fn start(&mut self) {
         self.start()
+    }
+
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        vmcore::device_state::ChangeDeviceState::confirm_start(self).await
     }
 
     async fn stop(&mut self) {
@@ -231,6 +236,10 @@ impl StateUnit for ArcMutexChipsetDeviceUnit {
         let mut device = self.device.lock();
         device.start();
         device.poll_device(&mut Context::from_waker(&waker_ref(&self.poll_event)));
+    }
+
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        self.device.clone().close().confirm_start().await
     }
 
     async fn stop(&mut self) {
@@ -413,6 +422,57 @@ mod tests {
                 .is_err()
         );
         assert!(!device.lock().restored);
+    }
+
+    /// A device whose start fails once `gate` opens.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct StartFailingDevice {
+        gate: Option<mesh::OneshotReceiver<()>>,
+    }
+
+    impl ChipsetDevice for StartFailingDevice {}
+
+    impl ChangeDeviceState for StartFailingDevice {
+        fn start(&mut self) {}
+        async fn confirm_start(&mut self) -> anyhow::Result<()> {
+            if let Some(gate) = self.gate.take() {
+                gate.await?;
+            }
+            anyhow::bail!("the device did not start")
+        }
+        async fn stop(&mut self) {}
+        async fn reset(&mut self) {}
+    }
+
+    impl AsyncSaveRestore for StartFailingDevice {
+        type SavedState = NoSavedState;
+
+        async fn save(&mut self) -> Result<NoSavedState, SaveError> {
+            Ok(NoSavedState)
+        }
+
+        async fn restore(&mut self, _: NoSavedState) -> Result<(), RestoreError> {
+            Ok(())
+        }
+    }
+
+    #[async_test]
+    async fn start_confirmation_waits_with_exclusive_device_access() {
+        let (send, recv) = mesh::oneshot();
+        let device = Arc::new(CloseableMutex::new(StartFailingDevice { gate: Some(recv) }));
+        let mut unit = ArcMutexChipsetDeviceUnit::new(device.clone(), false);
+        unit.start().await;
+        {
+            let mut confirm = std::pin::pin!(unit.confirm_start());
+            assert!(poll!(&mut confirm).is_pending());
+            assert!(device.lock_if_open().is_none());
+            send.send(());
+            let error = confirm.await.unwrap_err();
+            assert!(error.to_string().contains("did not start"), "{error:#}");
+        }
+        assert!(device.lock_if_open().is_some());
+        unit.stop().await;
     }
 
     struct DropMarker(Arc<AtomicBool>);
