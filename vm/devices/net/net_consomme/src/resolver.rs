@@ -39,7 +39,12 @@ pub enum ResolveConsommeError {
     ConflictingIpv4Configuration,
     #[error("Consomme exact static IPv6 configuration requires exact static IPv4 configuration")]
     StaticIpv6WithoutStaticIpv4,
-    #[error("failed to create socket for port forward ({details})")]
+    /// The host socket of a port forward cannot be created or bound, as when
+    /// another socket holds its port. The message leads with the stable code
+    /// `[E_PORT_FORWARD_BIND]`, which survives conversion to a string across
+    /// the worker boundary and error wrapping: callers match it, so its
+    /// spelling is part of OpenVMM's interface.
+    #[error("[E_PORT_FORWARD_BIND] failed to create socket for port forward ({details})")]
     SocketCreation {
         #[source]
         source: std::io::Error,
@@ -122,5 +127,57 @@ impl ResolveResource<NetEndpointHandleKind, ConsommeHandle> for ConsommeResolver
             None => endpoint,
         };
         Ok(endpoint.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use net_backend_resources::consomme::HostIpAddress;
+    use net_backend_resources::consomme::HostPortConfig;
+    use net_backend_resources::mac_address::MacAddress;
+    use std::net::Ipv4Addr;
+    use std::net::TcpListener;
+    use test_with_tracing::test;
+
+    #[test]
+    fn a_port_forward_that_cannot_bind_leads_with_its_stable_code() {
+        // Another socket holds the port that the forward binds.
+        let held = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let resource = ConsommeHandle {
+            cidr: None,
+            static_ipv4: None,
+            static_ipv6: None,
+            ports: vec![HostPortConfig {
+                protocol: HostPortProtocol::Tcp,
+                host_address: Some(HostIpAddress::Ipv4(Ipv4Addr::LOCALHOST)),
+                host_port: HostPort::Fixed(port),
+                guest_port: 80,
+            }],
+            recv: None,
+            allow_host_local_access: None,
+            map_gateway_to_host_loopback: None,
+            gateway_loopback_proxy_port: None,
+            private_network_ingress: None,
+            host_loopback_ingress: false,
+        };
+        let input = ResolveEndpointParams {
+            mac_address: MacAddress::new([0x52, 0x54, 0, 0, 0, 2]),
+        };
+        let Err(error) = ConsommeResolver.resolve(resource, input) else {
+            panic!("bound port {port}, which another socket holds");
+        };
+        assert!(
+            matches!(error, ResolveConsommeError::SocketCreation { .. }),
+            "{error}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "[E_PORT_FORWARD_BIND] failed to create socket for port forward \
+                 (Tcp 127.0.0.1:{port})"
+            )
+        );
     }
 }
