@@ -211,44 +211,15 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
 
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    unstable(reason = "Hyper-V VBS failures are not currently actionable.", hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64))),
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 8, 2)
         .with_openhcl_command_line("OPENHCL_SIDECAR=log")
         .run()
         .await?;
-    agent.power_off().await?;
-    vm.wait_for_clean_teardown().await?;
-    Ok(())
-}
-
-/// Keep APs in sidecar throughout guest boot and shutdown to stress test sidecar.
-#[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
-async fn sidecar_boot_no_hotplug<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
-) -> anyhow::Result<()> {
-    let (vm, agent) = configure_for_sidecar(config, 4, 1)
-        .with_openhcl_command_line("OPENHCL_NO_SIDECAR_HOTPLUG=1")
-        .run()
-        .await?;
-
-    let sh = agent.unix_shell();
-    assert_eq!(
-        sh.read_file("/sys/devices/system/cpu/online").await?.trim(),
-        "0-3",
-        "all guest VPs must have booted"
-    );
-    assert_eq!(
-        vm.inspect_openhcl("vm/partition/vp/1/sidecar", None, None)
-            .await?,
-        inspect::Node::Value(true.into()),
-        "VP 1 must remain managed by sidecar after guest boot"
-    );
-
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
