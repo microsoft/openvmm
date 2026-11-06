@@ -344,9 +344,9 @@ impl Rtc {
     ///
     /// The alarm works like an alarm clock. So if you set it for 5:02:03, it
     /// will go off every day at 5:02:03. But if any of the time elements are
-    /// 0xFF, that acts as a wildcard. So 5:FF:03 would go off at 5:00:03 and
-    /// 5:01:03 and 5:02:03, etc. An alarm set for FF:FF:FF goes off every
-    /// second.
+    /// in 0xC0..=0xFF, that acts as a wildcard. So 5:FF:03 would go off at
+    /// 5:00:03 and 5:01:03 and 5:02:03, etc. An alarm set for FF:FF:FF goes
+    /// off every second.
     ///
     /// The problem is, what happens if, when we compute when the timer should
     /// go off, that it should go off NOW?
@@ -377,11 +377,27 @@ impl Rtc {
             self.state.cmos[CmosReg::MINUTE],
             self.state.cmos[CmosReg::SECOND],
         );
-        let (alarm_hour, alarm_min, alarm_sec) = canonical_hms(
-            status_b,
+        let [
+            (hour_wildcard, hour),
+            (min_wildcard, min),
+            (sec_wildcard, sec),
+        ] = [
             self.state.cmos[CmosReg::HOUR_ALARM],
             self.state.cmos[CmosReg::MINUTE_ALARM],
             self.state.cmos[CmosReg::SECOND_ALARM],
+        ]
+        .map(|value| {
+            if value & 0xC0 == 0xC0 {
+                (true, 0)
+            } else {
+                (false, value)
+            }
+        });
+        let (hour, min, sec) = canonical_hms(status_b, hour, min, sec);
+        let (alarm_hour, alarm_min, alarm_sec) = (
+            if hour_wildcard { ALARM_WILDCARD } else { hour },
+            if min_wildcard { ALARM_WILDCARD } else { min },
+            if sec_wildcard { ALARM_WILDCARD } else { sec },
         );
 
         let mut delta_hour: u8 = 0;
@@ -1672,6 +1688,52 @@ mod tests {
         test_day_of_week(false, true);
         println!("----Testing BCD mode...");
         test_day_of_week(true, true);
+    }
+
+    #[test]
+    fn test_alarm_wildcards() {
+        let (_, _, _, mut rtc) = new_test_rtc();
+
+        for (status, hour, minute, second) in [
+            (0x00, 0x82, 0x01, 0x01),
+            (0x02, 0x14, 0x01, 0x01),
+            (0x04, 0x82, 1, 1),
+            (0x06, 14, 1, 1),
+        ] {
+            set_cmos_data(&mut rtc, CmosReg::STATUS_B, status);
+            let timestamp: jiff::Timestamp = "2026-01-01T13:00:00Z".parse().unwrap();
+            rtc.real_time_source.set_time(timestamp.into());
+            rtc.sync_clock_to_cmos();
+
+            for wildcard in 0xC0..=0xFF {
+                for (mask, expected_seconds) in [
+                    (0, 3661),
+                    (1, 3660),
+                    (2, 3601),
+                    (3, 3600),
+                    (4, 61),
+                    (5, 60),
+                    (6, 1),
+                    (7, 1),
+                ] {
+                    let alarm_hour = if mask & 4 != 0 { wildcard } else { hour };
+                    let alarm_minute = if mask & 2 != 0 { wildcard } else { minute };
+                    let alarm_second = if mask & 1 != 0 { wildcard } else { second };
+                    set_cmos_data(&mut rtc, CmosReg::HOUR_ALARM, alarm_hour);
+                    set_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM, alarm_minute);
+                    set_cmos_data(&mut rtc, CmosReg::SECOND_ALARM, alarm_second);
+
+                    assert_eq!(
+                        rtc.calculate_alarm_duration(),
+                        Duration::from_secs(expected_seconds),
+                        "status B {status:#04x}, wildcard {wildcard:#04x}, mask {mask:#05b}"
+                    );
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::HOUR_ALARM), alarm_hour);
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::MINUTE_ALARM), alarm_minute);
+                    assert_eq!(get_cmos_data(&mut rtc, CmosReg::SECOND_ALARM), alarm_second);
+                }
+            }
+        }
     }
 
     #[test]
