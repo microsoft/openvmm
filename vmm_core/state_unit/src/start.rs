@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Start with rollback. A unit's start cannot fail, but its task can stop
-//! answering: then its dependents do not start, and the units that did start
-//! are stopped again, rather than the whole process panicking.
+//! Start with rollback. A unit's start cannot fail, but its confirmation can,
+//! and its task can stop answering: then its dependents do not start, and the
+//! units that did start are stopped again, rather than the whole process
+//! panicking.
 
 use super::State;
 use super::StateRequest;
@@ -15,14 +16,21 @@ use std::time::Instant;
 impl StateUnits {
     /// Starts all stopped units in dependency order.
     ///
-    /// Fails without starting any unit if one is in a terminal state. A unit
-    /// does not start if one of its dependencies
-    /// did not start. If a unit's task does not answer its start request, the
-    /// units that did start are stopped again, and the unit is left in a
-    /// terminal state that fails later starts.
+    /// Fails without starting any unit if one is in a terminal state. Each
+    /// unit confirms its start, with [`StateUnit::confirm_start`], before its
+    /// dependents start. A unit does not start if one of its dependencies did
+    /// not start or did not confirm its start. If a unit fails to confirm its
+    /// start, or its task does not answer its start or confirmation request,
+    /// the units that did start, the failed unit among them, are stopped
+    /// again. A unit whose task does not answer is left in a terminal state
+    /// that fails later starts; a unit that failed to confirm its start can
+    /// start again.
+    ///
+    /// [`StateUnit::confirm_start`]: crate::StateUnit::confirm_start
     pub(super) async fn start_with_rollback(&mut self) -> anyhow::Result<()> {
         enum StartResult {
             Started,
+            NotConfirmed(anyhow::Error),
             DependencyFailed,
             Uncertain(anyhow::Error),
         }
@@ -59,6 +67,8 @@ impl StateUnits {
                 let dependencies = unit.dependencies.iter().copied().collect::<Vec<_>>();
                 let ready_set = ready_set.clone();
                 let start = state_change(name.clone(), unit, StateRequest::Start, Some(()));
+                let confirm =
+                    state_change(name.clone(), unit, StateRequest::ConfirmStart, Some(()));
                 operations.push(async move {
                     if !ready_set.wait("start", id, &dependencies).await {
                         ready_set.done(id, false);
@@ -66,7 +76,14 @@ impl StateUnits {
                     }
 
                     let result = match start.await {
-                        Ok(Some(())) => StartResult::Started,
+                        Ok(Some(())) => match confirm.await {
+                            Ok(Some(Ok(()))) => StartResult::Started,
+                            Ok(Some(Err(error))) => StartResult::NotConfirmed(error.into()),
+                            Ok(None) => StartResult::Uncertain(anyhow::anyhow!(
+                                "confirmation request was not sent"
+                            )),
+                            Err(error) => StartResult::Uncertain(error.into()),
+                        },
                         Ok(None) => {
                             StartResult::Uncertain(anyhow::anyhow!("start request was not sent"))
                         }
@@ -95,6 +112,11 @@ impl StateUnits {
                     StartResult::Started => {
                         unit.state = State::Running;
                         started_ids.push(id);
+                    }
+                    StartResult::NotConfirmed(error) => {
+                        unit.state = State::Running;
+                        started_ids.push(id);
+                        failures.push(format!("{name}: {error:#}"));
                     }
                     StartResult::DependencyFailed => {
                         unit.state = State::Stopped;

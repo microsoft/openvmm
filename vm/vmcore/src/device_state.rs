@@ -19,14 +19,28 @@ pub trait ChangeDeviceState {
     /// this method.
     ///
     /// This is a synchronous method instead of an asynchronous one because it
-    /// is a notification only--callers do not need to wait for the device to
-    /// finish starting to consider the VM started. Devices should kick off any
-    /// tasks that need to run any return, without waiting.
+    /// is a notification only: devices should kick off any tasks that need to
+    /// run and return, without waiting. A device whose start can still fail
+    /// once it returns reports that failure from [`Self::confirm_start`],
+    /// which callers await before they consider the device started.
     ///
     // FUTURE: make this asynchronous if any device has a good reason to need
     // it. This may also require changing state units to wait for device start
     // to finish, which may require a bunch of other changes.
     fn start(&mut self);
+
+    /// Waits for the start that [`Self::start`] began to finish, and fails if
+    /// the device did not start.
+    ///
+    /// Callers call this after each [`Self::start`], before any other state
+    /// change, and stop the device again if it fails. A device that fails
+    /// keeps the state that it had before the start, so that stopping it
+    /// leaves it as it was and a later start can try again.
+    ///
+    /// The default reports success, for devices whose start cannot fail.
+    fn confirm_start(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {
+        async { Ok(()) }
+    }
 
     /// Stops accepting new host input before a snapshot vCPU boundary.
     fn quiesce_input(&mut self) -> impl Send + Future<Output = anyhow::Result<()>> {

@@ -877,29 +877,36 @@ async fn fail_resume(transport: &mut impl TestTransport, probe: &PrivateStatePro
     transport.start();
 }
 
-async fn verify_failed_resume_marks_device_needs_reset(
+/// A resume whose second queue fails to start fails its confirmation and
+/// leaves the device as it was: the queue that started is stopped again, and
+/// the device is not marked as needing reset, since the guest does not run
+/// until a start succeeds. The VM's next start then starts both queues.
+async fn verify_failed_resume_fails_its_confirmation(
     transport: &mut impl TestTransport,
     probe: &PrivateStateProbe,
 ) {
     fail_resume(transport, probe).await;
-    yield_and_poll(transport).await;
-    let status = transport.read_status();
-    assert_ne!(
-        status & VIRTIO_DEVICE_NEEDS_RESET,
-        0,
-        "a failed start must mark the device as needing reset"
+    let error = transport.confirm_start().await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("intentional queue start failure"),
+        "{error:#}"
     );
+    let status = transport.read_status();
+    assert_eq!(status & VIRTIO_DEVICE_NEEDS_RESET, 0);
     assert_ne!(status & VIRTIO_DRIVER_OK, 0);
-    // The queue that started before the failure is stopped again.
     assert_eq!(probe.running_count.load(Ordering::Relaxed), 0);
 
-    // The guest's reset recovers the device.
+    // The VM stops the device again, and its next start succeeds.
+    transport.stop().await;
+    assert_eq!(transport.read_status() & VIRTIO_DEVICE_NEEDS_RESET, 0);
     probe.fail_start_at.store(usize::MAX, Ordering::Relaxed);
-    transport.write_status_zero();
-    yield_and_poll(transport).await;
-    assert_eq!(transport.read_status(), 0);
+    transport.start();
+    transport.confirm_start().await.unwrap();
+    assert_eq!(probe.running_count.load(Ordering::Relaxed), 2);
 }
 
+/// A resume that nothing confirms leaves the failure to the next stop, which
+/// marks the device as needing reset.
 async fn verify_stop_applies_failed_start(
     transport: &mut impl TestTransport,
     probe: &PrivateStateProbe,
@@ -911,17 +918,17 @@ async fn verify_stop_applies_failed_start(
 }
 
 #[async_test]
-async fn failed_resume_marks_device_needs_reset_mmio(driver: DefaultDriver) {
+async fn failed_resume_fails_its_confirmation_mmio(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 2, false);
     let mut transport = MmioTestTransport::new(Box::new(device), &driver, 2);
-    verify_failed_resume_marks_device_needs_reset(&mut transport, &probe).await;
+    verify_failed_resume_fails_its_confirmation(&mut transport, &probe).await;
 }
 
 #[async_test]
-async fn failed_resume_marks_device_needs_reset_pci(driver: DefaultDriver) {
+async fn failed_resume_fails_its_confirmation_pci(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 2, false);
     let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
-    verify_failed_resume_marks_device_needs_reset(&mut transport, &probe).await;
+    verify_failed_resume_fails_its_confirmation(&mut transport, &probe).await;
 }
 
 #[async_test]
