@@ -655,7 +655,9 @@ impl VirtioFs {
 
     /// Insert a new file object, and return the assigned file handle.
     fn insert_file(&self, file: VirtioFsFile) -> u64 {
-        self.inner.files.write().insert(Arc::new(file))
+        let file = Arc::new(file);
+        file.inode().register_open_file(&file);
+        self.inner.files.write().insert(file)
     }
 
     /// Remove the file with the specified node ID.
@@ -822,5 +824,132 @@ impl InodeMap {
         self.inodes_by_key.clear();
         let key = root_inode.dedup_key();
         self.inodes_by_key.insert(key, (root_inode, FUSE_ROOT_ID));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
+
+    fn request(node_id: u64) -> Request {
+        let header = fuse_in_header {
+            len: (size_of::<fuse_in_header>() + size_of::<fuse_getattr_in>()) as u32,
+            opcode: FUSE_GETATTR,
+            nodeid: node_id,
+            ..fuse_in_header::new_zeroed()
+        };
+        let mut bytes = header.as_bytes().to_vec();
+        bytes.extend_from_slice(fuse_getattr_in::new_zeroed().as_bytes());
+        Request::new(bytes.as_slice()).unwrap()
+    }
+
+    fn check_unlinked_open_inode_attributes(statx: bool) {
+        for aggregate in [false, true] {
+            for directory in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let path = root.path().join("entry");
+                let create = |directory: bool| {
+                    if directory {
+                        std::fs::create_dir(&path).unwrap();
+                    } else {
+                        std::fs::write(&path, b"contents").unwrap();
+                    }
+                };
+                create(directory);
+                let fs = if aggregate {
+                    VirtioFs::new_aggregate()
+                } else {
+                    VirtioFs::new(root.path(), None).unwrap()
+                };
+                let root_id = if aggregate {
+                    fs.add_child("share", root.path(), None).unwrap();
+                    fs.lookup(&request(FUSE_ROOT_ID), "share".as_ref())
+                        .unwrap()
+                        .nodeid
+                } else {
+                    FUSE_ROOT_ID
+                };
+                let entry = fs.lookup(&request(root_id), "entry".as_ref()).unwrap();
+                let node = request(entry.nodeid);
+                let flags = (lx::O_RDONLY | if directory { lx::O_DIRECTORY } else { 0 }) as u32;
+                let first = fs.open(&node, flags).unwrap();
+                let second = fs.open(&node, flags).unwrap();
+                let third = fs.open(&node, flags).unwrap();
+                if directory {
+                    fs.rmdir(&request(root_id), "entry".as_ref()).unwrap();
+                } else {
+                    fs.unlink(&request(root_id), "entry".as_ref()).unwrap();
+                }
+
+                let check = || {
+                    let (ino, mode) = if statx {
+                        let attr = fs
+                            .get_statx(&node, 0, 0, StatxFlags::new(), lx::StatExMask::new())
+                            .unwrap()
+                            .statx;
+                        (attr.ino, u32::from(attr.mode))
+                    } else {
+                        let attr = fs.get_attr(&node, 0, 0).unwrap().attr;
+                        (attr.ino, attr.mode)
+                    };
+                    assert_eq!(ino, entry.attr.ino);
+                    assert_eq!(mode & lx::S_IFMT, entry.attr.mode & lx::S_IFMT);
+                };
+                check();
+                create(!directory);
+                check();
+                fs.release(
+                    &node,
+                    &fuse_release_in {
+                        fh: first.fh,
+                        ..fuse_release_in::new_zeroed()
+                    },
+                )
+                .unwrap();
+                check();
+                fs.release(
+                    &node,
+                    &fuse_release_in {
+                        fh: third.fh,
+                        ..fuse_release_in::new_zeroed()
+                    },
+                )
+                .unwrap();
+                check();
+                fs.release(
+                    &node,
+                    &fuse_release_in {
+                        fh: second.fh,
+                        ..fuse_release_in::new_zeroed()
+                    },
+                )
+                .unwrap();
+                if !directory {
+                    fs.rmdir(&request(root_id), "entry".as_ref()).unwrap();
+                } else {
+                    fs.unlink(&request(root_id), "entry".as_ref()).unwrap();
+                }
+                let error = if statx {
+                    fs.get_statx(&node, 0, 0, StatxFlags::new(), lx::StatExMask::new())
+                        .unwrap_err()
+                } else {
+                    fs.get_attr(&node, 0, 0).unwrap_err()
+                };
+                assert_eq!(error, lx::Error::ENOENT);
+            }
+        }
+    }
+
+    #[test]
+    fn unlinked_open_inode_getattr() {
+        check_unlinked_open_inode_attributes(false);
+    }
+
+    #[test]
+    fn unlinked_open_inode_statx() {
+        check_unlinked_open_inode_attributes(true);
     }
 }

@@ -13,6 +13,7 @@ use parking_lot::RwLock;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -93,6 +94,7 @@ pub(crate) enum DedupKey {
 pub struct VirtioFsInode {
     pub(crate) volume: Arc<VirtioFsVolume>,
     path: RwLock<PathBuf>,
+    open_files: RwLock<Vec<Weak<VirtioFsFile>>>,
     lookup_count: AtomicU64,
     inode_nr: lx::ino_t,
     /// This inode's number as reported to the guest: its namespaced inode
@@ -114,6 +116,7 @@ impl VirtioFsInode {
         Self {
             volume,
             path: RwLock::new(path),
+            open_files: RwLock::new(Vec::new()),
             lookup_count: AtomicU64::new(1),
             inode_nr: stat.inode_nr,
             guest_inode_nr,
@@ -217,14 +220,32 @@ impl VirtioFsInode {
 
     /// Retrieves the attributes of this inode.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
+        if let Some(file) = self.open_file() {
+            return file.get_attr();
+        }
         let stat = self.volume.lstat(&*self.get_path())?;
         Ok(self.attr_from_stat(&stat))
     }
 
     /// Retrieves the extended attributes of this inode.
     pub fn get_statx(&self) -> lx::Result<fuse_statx> {
+        if let Some(file) = self.open_file() {
+            return file.get_statx();
+        }
         let statx = self.volume.statx(&*self.get_path())?;
         Ok(self.statx_from(&statx))
+    }
+
+    pub(crate) fn register_open_file(&self, file: &Arc<VirtioFsFile>) {
+        let mut files = self.open_files.write();
+        files.retain(|file| file.strong_count() != 0);
+        files.push(Arc::downgrade(file));
+    }
+
+    fn open_file(&self) -> Option<Arc<VirtioFsFile>> {
+        // Directory GETATTR requests can omit FUSE_GETATTR_FH even while the directory is open.
+        // Use the open object rather than its possibly deleted or replaced pathname.
+        self.open_files.read().iter().find_map(Weak::upgrade)
     }
 
     /// Sets the attributes of this inode.
