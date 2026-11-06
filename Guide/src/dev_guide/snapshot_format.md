@@ -31,17 +31,19 @@ profile record), and a host-driven standard-machine snapshot has no machine
 contract. Tiered microVM snapshots record capture tier, clone/resume policy,
 and consumed configuration sections.
 
-The default format is a local machine-state contract, not an authenticated
-container. Every snapshot receives the same regular-file, no-follow/no-reparse,
-bounded decoding, exact-length, inventory, and machine-contract validation,
-but the on-disk format does not authenticate same-length payload changes.
-By default, paired capture records SHA-256 and exact length for `scratch.img`,
-because guest RAM and a mounted writable filesystem must be restored as one
-exact pair. The format also permits an explicit `generation` identity for all
-bound sandbox blocks. Generation identity is a caller-authenticated immutable
-storage version, not a byte digest; OpenVMM validates role, size, geometry, and
-the shared generation without scanning block contents. Export or transport
-layers must provide broader integrity and authentication outside this format.
+The format is a local machine-state contract, not an authenticated container.
+Every snapshot receives the same regular-file, no-follow/no-reparse, bounded
+decoding, exact-length, inventory, and machine-contract validation, but the
+on-disk format does not authenticate same-length payload changes. A
+`workload-start` or `instance-checkpoint` snapshot binds its sandbox blocks,
+the read-only layers and the paired `scratch.img`, which guest RAM and a
+mounted writable filesystem must restore as one exact pair, to one
+`generation` identity: a caller-authenticated immutable storage generation,
+not a byte digest. Neither capture nor restore reads a block to identify it:
+OpenVMM validates role, size, geometry, and the shared generation. Restore
+rejects the `sha256` block identity of earlier releases, whose snapshots must
+be recaptured. Export or transport layers must provide broader integrity and
+authentication outside this format.
 
 The optional microVM network contract stores the SHA-256 digest of its bound
 egress policy in encoding version 1, which covers the static IPv4 and IPv6
@@ -98,10 +100,10 @@ The microVM block contract records every fixed role, access mode, geometry,
 identity kind, identity, and paired-scratch restore mode. A paired capture
 copies the exact opened writable scratch handle into the same staging
 directory after device queues drain and publishes it atomically with VM state.
-`sha256` identity verifies bytes before publication and restore. `generation`
-identity instead requires every bound block to carry the same nonzero
-caller-authenticated storage generation and performs structural and exact-size
-validation without whole-file rehashing.
+Every bound block carries the same nonzero caller-authenticated storage
+generation, and publication and restore check `scratch.img` structurally and
+by exact size, without reading it to verify its content. A platform capture
+binds no block, so its read-only layers are `unbound`.
 
 Paired scratch defaults to `private-copy`, which preserves existing behavior
 and may use a reflink or sparse copy. `copy-on-write` requires a filesystem
