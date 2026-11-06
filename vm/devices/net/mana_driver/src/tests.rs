@@ -186,19 +186,24 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
     let dma_client = device.dma_client();
     let gdma_buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
-    let saved_state = {
+    let (saved_state, queue_limits) = {
         let mut gdma = GdmaDriver::new(&driver, device, 1, Some(gdma_buffer.clone()))
             .await
             .unwrap();
 
         gdma.test_eq().await.unwrap();
         gdma.verify_vf_driver_version().await.unwrap();
-        gdma.save().await.unwrap()
+        let limits = gdma.max_vf_resources();
+        let queue_limits = (limits.max_sq, limits.max_rq, limits.max_cq);
+        assert!(queue_limits.0 > 0 && queue_limits.1 > 0 && queue_limits.2 > 0);
+        (gdma.save().await.unwrap(), queue_limits)
     };
 
     let mut new_gdma = GdmaDriver::restore(saved_state, cloned_device, gdma_buffer)
         .await
         .unwrap();
+    let limits = new_gdma.max_vf_resources();
+    assert_eq!((limits.max_sq, limits.max_rq, limits.max_cq), queue_limits);
 
     // Validate that the new driver still works after restoration.
     new_gdma.test_eq().await.unwrap();

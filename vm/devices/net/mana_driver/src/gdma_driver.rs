@@ -61,6 +61,7 @@ use gdma_defs::HWC_DATA_TYPE_HW_VPORT_LINK_DISCONNECT;
 use gdma_defs::HWC_DEV_ID;
 use gdma_defs::HWC_INIT_DATA_CQID;
 use gdma_defs::HWC_INIT_DATA_GPA_MKEY;
+use gdma_defs::HWC_INIT_DATA_MAX_NUM_CQS;
 use gdma_defs::HWC_INIT_DATA_PDID;
 use gdma_defs::HWC_INIT_DATA_RQID;
 use gdma_defs::HWC_INIT_DATA_SQID;
@@ -161,6 +162,8 @@ pub struct GdmaDriver<T: DeviceBacking> {
     eq_id_msix: HashMap<u32, u32>,
     num_msix: u32,
     min_queue_avail: u32,
+    #[inspect(debug)]
+    max_vf_resources: GdmaQueryMaxResourcesResp,
     hwc_activity_id: u32,
     #[inspect(skip)]
     link_toggle: Vec<(u32, bool)>,
@@ -294,6 +297,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.bar0.clone() as _
     }
 
+    pub fn max_vf_resources(&self) -> &GdmaQueryMaxResourcesResp {
+        &self.max_vf_resources
+    }
+
     pub async fn new(
         driver: &impl Driver,
         mut device: T,
@@ -385,6 +392,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let mut eq = Eq::new_eq(dma_buffer.subblock(0, PAGE_SIZE), DoorbellPage::null(), 0);
 
         let mut cq_id = None;
+        let mut max_num_cqs = None;
         let mut rq_id = None;
         let mut sq_id = None;
         let mut db_id = None;
@@ -424,6 +432,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match data.ty() {
                         HWC_INIT_DATA_CQID => cq_id = Some(data.value()),
+                        HWC_INIT_DATA_MAX_NUM_CQS => max_num_cqs = Some(data.value()),
                         HWC_INIT_DATA_RQID => rq_id = Some(data.value()),
                         HWC_INIT_DATA_SQID => sq_id = Some(data.value()),
                         HWC_INIT_DATA_GPA_MKEY => gpa_mkey = Some(data.value()),
@@ -499,6 +508,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             eq_id_msix,
             num_msix,
             min_queue_avail: 0,
+            max_vf_resources: GdmaQueryMaxResourcesResp::new_zeroed(),
             hwc_activity_id,
             link_toggle: Vec::new(),
             hwc_subscribed: false,
@@ -509,6 +519,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             db_id,
             reset_request_pending: None,
         };
+
+        let max_num_cqs = max_num_cqs.context("max number of CQs not provided")?;
+        anyhow::ensure!(
+            this.cq.id() < max_num_cqs,
+            "HWC CQ ID {:#x} exceeds advertised CQ limit {max_num_cqs:#x}",
+            this.cq.id(),
+        );
 
         this.push_rqe();
 
@@ -528,6 +545,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .max_eq
             .min(max_vf_resources.max_sq)
             .min(max_vf_resources.max_rq);
+        this.max_vf_resources = max_vf_resources;
 
         Ok(this)
     }
@@ -678,6 +696,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             _pdid: saved_state.pdid,
             num_msix: saved_state.num_msix,
             min_queue_avail: saved_state.min_queue_avail,
+            max_vf_resources: GdmaQueryMaxResourcesResp::new_zeroed(),
             hwc_activity_id: saved_state.hwc_activity_id,
             link_toggle: saved_state.link_toggle,
             hwc_subscribed: false,
@@ -691,6 +710,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
         this.eq.arm();
         this.cq.arm();
+
+        this.max_vf_resources = this
+            .query_max_resources()
+            .await
+            .context("query_max_resources after restore")?;
 
         Ok(this)
     }

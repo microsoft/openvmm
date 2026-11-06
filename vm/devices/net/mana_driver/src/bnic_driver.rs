@@ -7,6 +7,7 @@ use crate::gdma_driver::GdmaDriver;
 use crate::mana::ResourceArena;
 use crate::resources::Resource;
 use gdma_defs::GdmaDevId;
+use gdma_defs::GdmaQueryMaxResourcesResp;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
 use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_REQUEST_V1;
@@ -134,7 +135,8 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
         });
         // The request succeeded, and WQ resources have been moved to the arena.
         // The caller should make a best-effort attempt to cleanup.
-        if let Err(err) = validate_create_wq_response(&resp) {
+        if let Err(err) = validate_create_wq_response(&resp, wq_type, self.gdma.max_vf_resources())
+        {
             tracelimit::error_ratelimited!(
                 error = &err as &dyn std::error::Error,
                 cq_id = resp.cq_id,
@@ -329,20 +331,42 @@ pub struct WqConfig {
 enum CreateWqResponseValidationError {
     #[error("MANA create WQ returned an invalid WQ object handle")]
     InvalidWqObjectHandle,
-    #[error("MANA create WQ returned an out-of-range queue ID, cq_id={cq_id:#x}, wq_id={wq_id:#x}")]
-    QueueIdOutOfRange { cq_id: u32, wq_id: u32 },
+    #[error("MANA create WQ used an unsupported queue type {wq_type:?}")]
+    InvalidWqType { wq_type: GdmaQueueType },
+    #[error(
+        "MANA create WQ returned an out-of-range queue ID, cq_id={cq_id:#x}, wq_id={wq_id:#x}, max_num_cqs={max_num_cqs:#x}, max_num_wqs={max_num_wqs:#x}"
+    )]
+    QueueIdOutOfRange {
+        cq_id: u32,
+        wq_id: u32,
+        max_num_cqs: u32,
+        max_num_wqs: u32,
+    },
 }
 
 fn validate_create_wq_response(
     resp: &ManaCreateWqobjResp,
+    wq_type: GdmaQueueType,
+    max_vf_resources: &GdmaQueryMaxResourcesResp,
 ) -> Result<(), CreateWqResponseValidationError> {
     if resp.wq_obj == u64::MAX {
         return Err(CreateWqResponseValidationError::InvalidWqObjectHandle);
     }
-    if resp.cq_id > 0x00ff_ffff || resp.wq_id > 0x00ff_ffff {
+    let max_num_wqs = match wq_type {
+        GdmaQueueType::GDMA_SQ => max_vf_resources.max_sq,
+        GdmaQueueType::GDMA_RQ => max_vf_resources.max_rq,
+        _ => return Err(CreateWqResponseValidationError::InvalidWqType { wq_type }),
+    };
+    if resp.cq_id >= max_vf_resources.max_cq
+        || resp.wq_id >= max_num_wqs
+        || resp.cq_id > 0x00ff_ffff
+        || resp.wq_id > 0x00ff_ffff
+    {
         return Err(CreateWqResponseValidationError::QueueIdOutOfRange {
             cq_id: resp.cq_id,
             wq_id: resp.wq_id,
+            max_num_cqs: max_vf_resources.max_cq,
+            max_num_wqs,
         });
     }
     Ok(())
@@ -359,6 +383,7 @@ mod tests {
         wq_id: u32,
         cq_id: u32,
         wq_obj: u64,
+        max_num_cqs: u32,
         expected: Result<(), CreateWqResponseValidationError>,
     ) {
         let resp = ManaCreateWqobjResp {
@@ -367,17 +392,26 @@ mod tests {
             wq_obj,
         };
 
-        assert_eq!(validate_create_wq_response(&resp), expected);
+        let limits = GdmaQueryMaxResourcesResp {
+            max_cq: max_num_cqs,
+            max_sq: 1 << 24,
+            max_rq: 1 << 24,
+            ..GdmaQueryMaxResourcesResp::new_zeroed()
+        };
+        assert_eq!(
+            validate_create_wq_response(&resp, GdmaQueueType::GDMA_SQ, &limits),
+            expected
+        );
     }
 
     #[test]
     fn test_create_wq_response_zero_valid() {
-        check_create_wq_response(0, 0, 0, Ok(()));
+        check_create_wq_response(0, 0, 0, 1, Ok(()));
     }
 
     #[test]
     fn test_create_wq_response_max_valid() {
-        check_create_wq_response(0x00ff_ffff, 0x00ff_ffff, 0, Ok(()));
+        check_create_wq_response(0x00ff_ffff, 0x00ff_ffff, 0, 1 << 24, Ok(()));
     }
 
     #[test]
@@ -386,9 +420,12 @@ mod tests {
             0,
             0x0100_0000,
             0,
+            1 << 24,
             Err(QueueIdOutOfRange {
                 cq_id: 0x0100_0000,
                 wq_id: 0,
+                max_num_cqs: 1 << 24,
+                max_num_wqs: 1 << 24,
             }),
         );
     }
@@ -399,20 +436,94 @@ mod tests {
             0x0100_0000,
             0,
             0,
+            1 << 24,
             Err(QueueIdOutOfRange {
                 cq_id: 0,
                 wq_id: 0x0100_0000,
+                max_num_cqs: 1 << 24,
+                max_num_wqs: 1 << 24,
             }),
         );
     }
 
     #[test]
     fn test_create_wq_response_last_valid_handle() {
-        check_create_wq_response(0, 0, u64::MAX - 1, Ok(()));
+        check_create_wq_response(0, 0, u64::MAX - 1, 1, Ok(()));
     }
 
     #[test]
     fn test_create_wq_response_invalid_handle_rejected() {
-        check_create_wq_response(0, 0, u64::MAX, Err(InvalidWqObjectHandle));
+        check_create_wq_response(0, 0, u64::MAX, 1, Err(InvalidWqObjectHandle));
+    }
+
+    #[test]
+    fn test_create_wq_response_last_advertised_cq_valid() {
+        check_create_wq_response(0x00ff_ffff, 127, 0, 128, Ok(()));
+    }
+
+    #[test]
+    fn test_create_wq_response_advertised_cq_limit_rejected() {
+        check_create_wq_response(
+            0,
+            128,
+            0,
+            128,
+            Err(QueueIdOutOfRange {
+                cq_id: 128,
+                wq_id: 0,
+                max_num_cqs: 128,
+                max_num_wqs: 1 << 24,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_create_wq_response_advertised_wq_limits() {
+        let limits = GdmaQueryMaxResourcesResp {
+            max_cq: 256,
+            max_sq: 64,
+            max_rq: 128,
+            ..GdmaQueryMaxResourcesResp::new_zeroed()
+        };
+        for (wq_type, limit) in [
+            (GdmaQueueType::GDMA_SQ, limits.max_sq),
+            (GdmaQueueType::GDMA_RQ, limits.max_rq),
+        ] {
+            let mut resp = ManaCreateWqobjResp {
+                wq_id: limit - 1,
+                cq_id: 0,
+                wq_obj: 0,
+            };
+            assert_eq!(validate_create_wq_response(&resp, wq_type, &limits), Ok(()));
+            resp.wq_id = limit;
+            assert_eq!(
+                validate_create_wq_response(&resp, wq_type, &limits),
+                Err(QueueIdOutOfRange {
+                    cq_id: 0,
+                    wq_id: limit,
+                    max_num_cqs: limits.max_cq,
+                    max_num_wqs: limit,
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn test_create_wq_response_invalid_queue_type_rejected() {
+        let resp = ManaCreateWqobjResp {
+            wq_id: 0,
+            cq_id: 0,
+            wq_obj: 0,
+        };
+        assert_eq!(
+            validate_create_wq_response(
+                &resp,
+                GdmaQueueType::GDMA_CQ,
+                &GdmaQueryMaxResourcesResp::new_zeroed(),
+            ),
+            Err(CreateWqResponseValidationError::InvalidWqType {
+                wq_type: GdmaQueueType::GDMA_CQ,
+            }),
+        );
     }
 }
