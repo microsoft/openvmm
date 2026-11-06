@@ -283,7 +283,8 @@ pub struct TxMetadata {
     pub max_segment_size: u16,
     /// Information about 802.1Q VLAN tagging. When a vlan is in use, this structure
     /// is populated. Only applies when traffic is being sent over an L2 connection,
-    /// so L3-only or above traffic will not use this option.
+    /// so L3-only or above traffic will not use this option. A backend with no
+    /// out-of-band channel for it has to write it into the frame.
     pub vlan: Option<VlanMetadata>,
 }
 
