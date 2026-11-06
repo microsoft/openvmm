@@ -1332,7 +1332,6 @@ impl CreateVm {
                 snapshot_requests: self.snapshot_requests,
                 snapshot_destination: self.snapshot_destination,
                 snapshot_tier: None,
-                snapshot_block_identity: Default::default(),
                 snapshot_generation_id: None,
                 snapshot_scratch_restore_mode: Default::default(),
                 source_hypervisor: self.source_hypervisor,

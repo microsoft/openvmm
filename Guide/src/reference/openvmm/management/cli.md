@@ -495,14 +495,16 @@ describes the source definitions.
   a snapshot without a tier.
 
   For sandbox-block snapshots, restore repeats the read-only `distro`
-  `--microvm-sandbox-block` argument. Its role, access, geometry, and SHA-256
-  must match the manifest, with two exceptions for a platform snapshot: its
-  `distro` layer is unbound, and it keeps the captured capacity over an image
-  that may be shorter. Such an image must have the
+  `--microvm-sandbox-block` argument. Its role, access, and geometry must
+  match the manifest, and OpenVMM never reads a block to identify it: a
+  `workload-start` or `instance-checkpoint` snapshot binds its blocks to the
+  storage generation that its capture recorded. A platform snapshot has two
+  exceptions: its `distro` layer is unbound, and it keeps the captured
+  capacity over an image that may be shorter. Such an image must have the
   captured logical and physical block sizes, reads past its end return zeros,
   and OpenVMM never resizes, pads, or writes it; a longer image is rejected.
   A paired snapshot supplies scratch internally from
-  a verified process-private copy of `scratch.img`; passing another scratch is
+  a process-private copy of `scratch.img`; passing another scratch is
   rejected. A fresh-scratch snapshot instead requires a writable scratch
   argument with matching geometry, or `--restore-absent-scratch`.
 
@@ -619,12 +621,13 @@ describes the source definitions.
 * `--snapshot-tier <TIER>`: Required for snapshot capture with sandbox blocks. Choose
   `platform`, `workload-start`, or `instance-checkpoint`. The first two are
   reusable clone policies; instance checkpoints use single-use resume policy.
-* `--snapshot-block-identity <MODE>`: Select `sha256` (the default) or
-  `generation`. SHA-256 computes and verifies every bound block. Generation
-  mode requires `--snapshot-generation-id <32-HEX-DIGITS>` and records that
-  caller-authenticated immutable storage generation instead of scanning block
-  bytes. The caller must keep the generation bound to the exact immutable
-  artifacts supplied at restore.
+* `--snapshot-generation-id <32-HEX-DIGITS>`: Supply the immutable storage
+  generation of the capture's sandbox blocks. A `workload-start` or
+  `instance-checkpoint` capture requires it and records it as the identity of
+  every read-only layer and of the paired scratch, instead of reading them. A
+  platform capture binds no block and records none. The storage owner must
+  keep the generation bound to the exact immutable artifacts supplied at
+  restore.
 * `--snapshot-scratch-restore-mode <MODE>`: Record `private-copy`,
   `copy-on-write`, or `direct-claimed` for paired scratch. Private copy is the
   default and may fall back to sparse copying. Copy-on-write is available only
@@ -635,16 +638,17 @@ describes the source definitions.
 
 A committed snapshot contains `manifest.bin`, `state.bin`, `memory.bin`, and
 optionally the manifest-declared `scratch.img`. Restore rejects unknown files,
-symlinks, malformed or oversized data, length or applicable scratch-digest
-mismatches, and incompatible machine contracts before starting a vCPU.
+symlinks, malformed or oversized data, length mismatches, the `sha256` block
+identity of earlier releases, and incompatible machine contracts before
+starting a vCPU.
 `memory.bin` uses a private writable copy-on-write mapping. Paired scratch uses
 the materialization policy recorded at capture; clone-policy snapshots never
 attach the source artifact writable, while direct attachment requires an
 atomic single-use resume claim.
 
-Versions 3 through 6 do not embed or validate checksums for `state.bin` or `memory.bin`;
-legacy version 2 checksum fields are accepted without re-hashing their
-payloads. This format does not detect same-length payload changes,
+The format embeds no checksums of `state.bin`, `memory.bin`, `scratch.img`, or
+the read-only layers, and OpenVMM never reads them to verify their contents.
+This format does not detect same-length payload changes,
 authenticate, or encrypt a snapshot. Treat all three artifacts as sensitive
 guest state and protect the directory with host access controls.
 * `--memory <SPEC>`: Configure guest RAM. Defaults to `size=1G`.
