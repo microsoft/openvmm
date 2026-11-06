@@ -200,8 +200,12 @@ struct DeviceTask {
     max_queues: u16,
     /// The device type reported by restore lifecycle traces.
     device_type: u16,
-    /// Per queue, whether it is started.
+    /// Per queue, whether it started since the last stop, and so has progress
+    /// for the next stop to report.
     started: Vec<bool>,
+    /// Per queue, the progress of a started queue that a failed start stopped
+    /// again, which the next stop reports instead of stopping the queue.
+    stopped_progress: Vec<Option<QueueState>>,
 }
 
 impl DeviceTask {
@@ -262,14 +266,18 @@ impl DeviceTask {
     async fn stop(&mut self) -> restore::StopResult {
         let mut states = vec![None; self.max_queues as usize];
         for idx in 0..self.max_queues {
-            states[idx as usize] = self.device.stop_queue(idx).await;
+            states[idx as usize] = match self.stopped_progress[idx as usize].take() {
+                Some(progress) => Some(progress),
+                None => self.device.stop_queue(idx).await,
+            };
         }
         self.stop_result(states)
     }
 
     /// Restarts the queues of a running device. If one fails to start, stops
-    /// the queues that did, so that the device processes nothing until the
-    /// guest resets it.
+    /// the queues that did, so that the device processes nothing, and keeps
+    /// their progress for the next stop, so that a later start resumes them
+    /// where they stopped rather than repeating their work.
     async fn start(&mut self, params: StartParams) -> anyhow::Result<()> {
         for (idx, resources, initial_state) in params.queues {
             if let Err(err) = self
@@ -287,7 +295,18 @@ impl DeviceTask {
                     idx,
                     "virtio device start_queue failed on resume"
                 );
-                self.stop_all_queues().await;
+                for queue in 0..self.max_queues {
+                    if self.started[queue as usize] {
+                        match self.device.stop_queue(queue).await {
+                            Some(progress) => {
+                                self.stopped_progress[queue as usize] = Some(progress);
+                            }
+                            // A queue without progress to report keeps the
+                            // progress that the transport saved.
+                            None => self.started[queue as usize] = false,
+                        }
+                    }
+                }
                 return Err(err);
             }
         }
@@ -303,6 +322,7 @@ impl DeviceTask {
         for idx in 0..self.max_queues {
             self.device.stop_queue(idx).await;
             self.started[idx as usize] = false;
+            self.stopped_progress[idx as usize] = None;
         }
     }
 }
@@ -317,6 +337,7 @@ pub async fn run_device_task(
         max_queues: traits.max_queues,
         device_type: traits.device_id.0,
         started: vec![false; traits.max_queues as usize],
+        stopped_progress: vec![None; traits.max_queues as usize],
         device,
     };
 
