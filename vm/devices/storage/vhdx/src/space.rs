@@ -989,21 +989,18 @@ impl DeferredReleases {
     /// promotion to the FreeSpaceTracker.
     pub fn drain_committed(&self, up_to_gen: u64) -> Vec<(u32, u64, u32, bool)> {
         let mut inner = self.inner.lock();
-        let mut drained = Vec::new();
-        inner.entries.retain(|&block, entry| {
-            if entry.committed_gen.is_some_and(|g| g <= up_to_gen) {
-                drained.push((
+        inner
+            .entries
+            .extract_if(|_, entry| entry.committed_gen.is_some_and(|g| g <= up_to_gen))
+            .map(|(block, entry)| {
+                (
                     block,
                     entry.release.file_offset,
                     entry.release.size,
                     entry.release.anchor,
-                ));
-                false // remove from map
-            } else {
-                true // keep
-            }
-        });
-        drained
+                )
+            })
+            .collect()
     }
 }
 
@@ -1202,6 +1199,38 @@ mod tests {
     use super::*;
     use crate::bat::BlockMapping;
     use crate::format::BatEntryState;
+
+    #[test]
+    fn deferred_releases_drain_committed_generations() {
+        let releases = DeferredReleases::new();
+        assert!(releases.drain_committed(u64::MAX).is_empty());
+
+        releases.insert(1, MB1, MB1 as u32, false);
+        releases.insert(2, 2 * MB1, 2 * MB1 as u32, true);
+        let first_gen = releases.stamp_uncommitted();
+        releases.insert(3, 4 * MB1, MB1 as u32, true);
+        let second_gen = releases.stamp_uncommitted();
+        releases.insert(4, 5 * MB1, MB1 as u32, false);
+
+        assert!(releases.drain_committed(first_gen - 1).is_empty());
+        let mut drained = releases.drain_committed(first_gen);
+        drained.sort_unstable();
+        assert_eq!(
+            drained,
+            vec![
+                (1, MB1, MB1 as u32, false),
+                (2, 2 * MB1, 2 * MB1 as u32, true)
+            ]
+        );
+        assert!(releases.drain_committed(first_gen).is_empty());
+        assert_eq!(
+            releases.drain_committed(second_gen + 1),
+            vec![(3, 4 * MB1, MB1 as u32, true)]
+        );
+        assert!(releases.drain_committed(u64::MAX).is_empty());
+        assert_eq!(releases.remove(4), Some(5 * MB1));
+        assert_eq!(releases.remove(4), None);
+    }
 
     // -- Bitmap unit tests --
 

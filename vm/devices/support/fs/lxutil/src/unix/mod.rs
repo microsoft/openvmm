@@ -500,7 +500,7 @@ mod tests {
                 .args([
                     "--exact",
                     "unix::tests::opens_do_not_acquire_a_controlling_terminal",
-                    "--nocapture",
+                    "--no-capture",
                 ])
                 .env(CHILD, "1")
                 .status()
@@ -690,7 +690,7 @@ mod tests {
                 .args([
                     "--exact",
                     "unix::tests::volume_creation_checks_openat2",
-                    "--nocapture",
+                    "--no-capture",
                 ])
                 .env(CHILD_ERRNO, errno.to_string())
                 .status()
