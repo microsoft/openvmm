@@ -2888,6 +2888,10 @@ impl InitializedVm {
                 kernel_vmnics.push(nic);
             }
 
+            anyhow::ensure!(
+                cfg.vpci_devices.is_empty() || partition.supports_virtual_devices(),
+                "partition does not support VPCI devices"
+            );
             if partition.supports_virtual_devices() {
                 for dev_cfg in cfg.vpci_devices {
                     let vmbus = match dev_cfg.vtl {
