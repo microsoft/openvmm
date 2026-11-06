@@ -134,7 +134,23 @@ pub enum Image {
         memory_page_count: u64,
         /// The page-table address bit used as the SNP encryption bit.
         c_bit_position: u8,
+        /// When the guest's RAM is accepted.
+        #[serde(default)]
+        memory_acceptance: SnpMemoryAcceptance,
     },
+}
+
+/// When the SNP Linux-direct bootshim accepts the guest's RAM.
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SnpMemoryAcceptance {
+    /// The bootshim accepts only the memory that it and the Linux EFI stub
+    /// need. It reports all other RAM as unaccepted, and Linux accepts it when
+    /// it first uses it. The kernel needs `CONFIG_UNACCEPTED_MEMORY`.
+    #[default]
+    Lazy,
+    /// The bootshim accepts all RAM before it calls the Linux EFI stub.
+    Eager,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -422,6 +438,7 @@ mod test {
             },
             memory_page_count,
             c_bit_position,
+            memory_acceptance: SnpMemoryAcceptance::Lazy,
         }
     }
 
@@ -458,8 +475,10 @@ mod test {
                 linux,
                 memory_page_count,
                 c_bit_position,
+                memory_acceptance,
             } => {
                 assert!(linux.use_initrd);
+                assert_eq!(*memory_acceptance, SnpMemoryAcceptance::Lazy);
                 assert_eq!(
                     linux.command_line.as_bytes(),
                     b"console=ttyS0 earlyprintk=serial earlycon panic=-1"

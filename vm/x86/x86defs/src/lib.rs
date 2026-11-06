@@ -414,6 +414,11 @@ pub struct IdtEntry64 {
     pub reserved: u32,
 }
 
+/// The [`IdtAttributes::gate_type`] of a 64-bit interrupt gate.
+pub const X64_IDT_GATE_TYPE_INTERRUPT: u8 = 0xe;
+/// The [`IdtAttributes::gate_type`] of a 64-bit trap gate.
+pub const X64_IDT_GATE_TYPE_TRAP: u8 = 0xf;
+
 #[bitfield(u16)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IdtAttributes {

@@ -3,6 +3,7 @@
 
 //! Nvram types used by linux distros
 
+#[cfg(feature = "std")]
 pub mod vars {
     use guid::Guid;
 
