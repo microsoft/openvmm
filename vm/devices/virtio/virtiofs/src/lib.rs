@@ -517,7 +517,13 @@ impl Fuse for VirtioFs {
 
     fn destroy(&self) {
         // To get the file system ready for re-mount, clean out any open files and leaked inodes.
-        self.inner.files.write().clear();
+        {
+            let mut files = self.inner.files.write();
+            for (&fh, file) in &files.values {
+                file.inode().unregister_open_handle(fh);
+            }
+            files.clear();
+        }
         self.inner.inodes.write().clear();
     }
 }
@@ -656,13 +662,19 @@ impl VirtioFs {
     /// Insert a new file object, and return the assigned file handle.
     fn insert_file(&self, file: VirtioFsFile) -> u64 {
         let file = Arc::new(file);
-        file.inode().register_open_file(&file);
-        self.inner.files.write().insert(file)
+        // Keep registration ordered with RELEASE under the handle-map lock.
+        let mut files = self.inner.files.write();
+        let fh = files.insert(Arc::clone(&file));
+        file.inode().register_open_handle(fh, &file);
+        fh
     }
 
-    /// Remove the file with the specified node ID.
+    /// Remove the file with the specified file handle.
     fn remove_file(&self, fh: u64) {
-        self.inner.files.write().remove(fh);
+        let mut files = self.inner.files.write();
+        if let Some(file) = files.remove(fh) {
+            file.inode().unregister_open_handle(fh);
+        }
     }
 }
 
@@ -919,6 +931,8 @@ mod tests {
                 )
                 .unwrap();
                 check();
+                // A concurrent request may retain an Arc after RELEASE.
+                let in_flight = fs.get_file(second.fh).unwrap();
                 fs.release(
                     &node,
                     &fuse_release_in {
@@ -939,6 +953,7 @@ mod tests {
                     fs.get_attr(&node, 0, 0).unwrap_err()
                 };
                 assert_eq!(error, lx::Error::ENOENT);
+                drop(in_flight);
             }
         }
     }
