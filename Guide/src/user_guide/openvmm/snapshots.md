@@ -458,7 +458,10 @@ timer and a periodically counting PIT channel 0 (`E_LAPIC_PERIODIC`,
 `E_LAPIC_TSC_DEADLINE`, `E_PIT_ACTIVE`).
 
 A time ABI error leads its message with a stable code in brackets, for
-example `[E_TSC_RATE_TOLERANCE]`, and OpenVMM exits with status 1. For host
+example `[E_TSC_RATE_TOLERANCE]`, and OpenVMM exits with status 1. OpenVMM's
+fatal error leads with the first such code of its error chain, which may also
+be `E_PORT_FORWARD_BIND`, the code of a port forward whose host socket OpenVMM
+cannot bind, as at a restore that installs a new network policy. For host
 qualification, `--x-time-abi-verify` builds the partition, runs these checks
 without starting the guest, prints one `NVX-TIME-ABI-VERIFY:` line, and exits
 with status 0 or 1.
