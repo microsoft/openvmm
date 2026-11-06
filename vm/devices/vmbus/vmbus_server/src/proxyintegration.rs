@@ -911,9 +911,24 @@ impl ProxyTask {
         };
 
         let proxy = self.proxy.clone();
+        let response_send = match vtl {
+            0 => self.hvsock_response_send.as_ref(),
+            2 => self.vtl2_hvsock_response_send.as_ref(),
+            _ => panic!("hvsocket request with unsupported VTL {vtl}"),
+        }
+        .expect("got hvsocket request without a response sender")
+        .clone();
         spawner
             .spawn("vmbus-proxy-hvsock-req", async move {
-                proxy.tl_connect_request(&request, vtl).await
+                if let Err(err) = proxy.tl_connect_request(&request, vtl).await {
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        ?request,
+                        vtl,
+                        "hvsock request submission failed"
+                    );
+                    response_send.send(HvsockConnectResult::from_request(&request, false));
+                }
             })
             .detach();
 
