@@ -36,11 +36,13 @@ async fn sivm_product_policy_delivered(
         policy,
         serde_json::json!({
             "sivm": {
-                "require_ephemeral_vmgs": true,
-                "require_secure_boot": true,
-                "require_secure_boot_vars": false,
-                "require_bcd_integrity": false,
-                "custom_uefi_json": 2,
+                "0": {
+                    "require_ephemeral_vmgs": true,
+                    "require_secure_boot": true,
+                    "require_secure_boot_vars": false,
+                    "require_bcd_integrity": false,
+                    "custom_uefi_json": 2,
+                }
             }
         })
     );

@@ -5,6 +5,7 @@
 
 use crate::dispatch::LoadedVm;
 use anyhow::Context as _;
+use cvm_tracing::CVM_ALLOWED;
 use product_policy::MeasuredProductPolicy;
 use product_policy::UefiSecurityPolicy;
 
@@ -16,6 +17,7 @@ fn load_from_path(path: &std::path::Path) -> anyhow::Result<MeasuredProductPolic
     let bytes = match fs_err::read(path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!(CVM_ALLOWED, "no product policy installed");
             return Ok(MeasuredProductPolicy::default());
         }
         Err(err) => return Err(err).context("failed to read product policy from initrd"),
