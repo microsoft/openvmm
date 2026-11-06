@@ -47,6 +47,13 @@ const MAX_TAP_FRAME_LEN: usize =
 // read buffer to that contract rather than adding overflow detection.
 const TAP_READ_BUFFER_LEN: usize = size_of::<VirtioNetHdr>() + MAX_TAP_FRAME_LEN;
 const MAX_RX_PACKETS_PER_POLL: usize = 64;
+/// The destination and source MAC addresses, which an 802.1Q tag follows.
+const ETHERNET_ADDRESSES_LEN: usize = 12;
+const VLAN_TAG_LEN: usize = 4;
+const ETH_P_8021Q: u16 = 0x8100;
+const ETH_P_8021AD: u16 = 0x88a8;
+const ETH_P_IP: u16 = 0x0800;
+const ETH_P_IPV6: u16 = 0x86dd;
 
 // TODO: These virtio net header types duplicate definitions in virtio_net.
 // Consider extracting a shared `virtio_net_header` crate if more consumers
@@ -387,6 +394,22 @@ impl Queue for TapQueue {
     ) -> Result<usize, TxError> {
         self.poll_tx_done(done)
     }
+}
+
+/// The offset of a frame's IP header, past up to two inline tags, or `None` if the frame does
+/// not hold IP behind them.
+fn ip_header_offset(packet: &[u8]) -> Option<usize> {
+    const MAX_INLINE_TAGS: usize = 2;
+    let mut ethertype_offset = ETHERNET_ADDRESSES_LEN;
+    for _ in 0..=MAX_INLINE_TAGS {
+        let ethertype = packet.get(ethertype_offset..ethertype_offset + 2)?;
+        match u16::from_be_bytes([ethertype[0], ethertype[1]]) {
+            ETH_P_8021Q | ETH_P_8021AD => ethertype_offset += VLAN_TAG_LEN,
+            ETH_P_IP | ETH_P_IPV6 => return Some(ethertype_offset + 2),
+            _ => return None,
+        }
+    }
+    None
 }
 
 /// Compute and write the IPv4 header checksum in place.
@@ -842,6 +865,27 @@ mod tests {
             tcpv4_gso: true,
             tcpv6_gso: true,
         }
+    }
+
+    #[test]
+    fn ip_header_offset_walks_at_most_two_tags() {
+        let frame = |ethertypes: &[u16]| {
+            let mut frame = vec![0; ETHERNET_ADDRESSES_LEN];
+            for ethertype in ethertypes {
+                frame.extend_from_slice(&ethertype.to_be_bytes());
+                frame.extend_from_slice(&[0, 100]);
+            }
+            frame
+        };
+        let (q, ad) = (ETH_P_8021Q, ETH_P_8021AD);
+        assert_eq!(ip_header_offset(&frame(&[ETH_P_IP])), Some(14));
+        assert_eq!(ip_header_offset(&frame(&[q, ETH_P_IPV6])), Some(18));
+        assert_eq!(ip_header_offset(&frame(&[ad, ETH_P_IP])), Some(18));
+        assert_eq!(ip_header_offset(&frame(&[ad, q, ETH_P_IP])), Some(22));
+        assert_eq!(ip_header_offset(&frame(&[q, q, q, ETH_P_IP])), None);
+        assert_eq!(ip_header_offset(&frame(&[q, 0x88b5])), None);
+        assert_eq!(ip_header_offset(&frame(&[q])[..14]), None);
+        assert_eq!(ip_header_offset(&[]), None);
     }
 
     #[test]
