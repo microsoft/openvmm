@@ -9,6 +9,7 @@
 mod dma;
 mod interrupt;
 mod saved_state;
+mod start;
 
 use crate::DeviceTraits;
 use crate::DynVirtioDevice;
