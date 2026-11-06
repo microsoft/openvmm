@@ -61,6 +61,7 @@ unsafe extern "C" {
 
 /// # Safety
 /// Must be entered with an interrupt frame and the sidecar page tables active.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 // SAFETY: Assembly saves/restores the interrupted volatile registers and returns
 // through the CPU's interrupt frame with IRETQ.
 #[unsafe(naked)]
@@ -92,6 +93,7 @@ unsafe extern "C" fn irq_entry() -> ! {
 
 /// # Safety
 /// Must be entered with a general-protection fault frame on the stack.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 // SAFETY: Assembly passes the exception code and unchanged CPU stack pointer
 // to the non-returning C ABI exception handler.
 #[unsafe(naked)]
@@ -106,6 +108,7 @@ unsafe extern "C" fn exc_gpf() -> ! {
 
 /// # Safety
 /// Must be entered with a page-fault frame on the stack.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 // SAFETY: Assembly passes the exception code and unchanged CPU stack pointer
 // to the non-returning C ABI exception handler.
 #[unsafe(naked)]

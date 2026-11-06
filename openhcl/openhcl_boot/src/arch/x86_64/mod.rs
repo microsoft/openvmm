@@ -66,6 +66,7 @@ pub fn uninitialize_serial_io(p: &ShimParams) {
 ///
 /// # Safety
 /// Must be entered with the boot shim register state and the image identity mapped.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 #[cfg(minimal_rt)]
 // SAFETY: The minimal_rt boot shim has no CRT entry point; this is its sole `_start`.
 #[unsafe(no_mangle)]

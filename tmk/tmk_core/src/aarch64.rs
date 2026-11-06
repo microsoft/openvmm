@@ -11,6 +11,7 @@ use super::Scope;
 mod entry {
     /// # Safety
     /// Must be entered with the TMK start input in X0 and the image identity mapped.
+    // TODO: Use extern "custom" once supported by the minimum Rust version.
     // SAFETY: This architecture's minimal_rt entry point is the TMK payload's sole `_start`.
     #[unsafe(no_mangle)]
     // SAFETY: Assembly preserves X0 and initializes the stack and FPU before

@@ -16,6 +16,7 @@ use x86defs::RFlags;
 mod entry {
     /// # Safety
     /// Must be entered with the TMK start input in RSI and the image identity mapped.
+    // TODO: Use extern "custom" once supported by the minimum Rust version.
     // SAFETY: This architecture's minimal_rt entry point is the TMK payload's sole `_start`.
     #[unsafe(no_mangle)]
     // SAFETY: Assembly preserves RSI and initializes the stack before calling Rust;
@@ -47,6 +48,7 @@ mod entry {
 
     /// # Safety
     /// Must be entered from an interrupt stub with the vector and CPU frame on the stack.
+    // TODO: Use extern "custom" once supported by the minimum Rust version.
     // SAFETY: Assembly owns the interrupt stack, saves/restores the interrupted
     // registers, and returns through the CPU's interrupt frame with IRETQ.
     #[unsafe(naked)]

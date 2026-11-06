@@ -26,6 +26,7 @@ compile_error!("AVX is not supported by this module");
 
 /// # Safety
 /// Must be entered from an interrupt stub with the vector and CPU frame on the stack.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 // SAFETY: Assembly preserves GPR and x87/SSE state, aligns the SysV call stack,
 // and returns through the CPU's interrupt frame with IRETQ.
 #[unsafe(naked)]

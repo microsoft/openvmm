@@ -607,6 +607,7 @@ extern "C" fn start(params_gpa: u64) -> ! {
 ///
 /// # Safety
 /// Must be entered with RSI pointing to the measured parameter page and identity mappings active.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 #[cfg(minimal_rt)]
 // SAFETY: The minimal_rt SNP bootshim has no CRT entry point; this is its sole `_start`.
 #[unsafe(no_mangle)]

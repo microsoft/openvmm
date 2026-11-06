@@ -339,14 +339,15 @@ extern "C" fn exception_handler(exception: Exception, rsp: u64) -> ! {
 /// Relocates the sidecar, switches to its page tables and stack, and restores the caller on return.
 ///
 /// # Safety
-/// Must be entered with the sidecar parameters, identity mappings, and a valid caller stack.
+/// Must be entered with the sidecar parameter-page GPA in RDI, the output-page GPA in RSI,
+/// identity mappings, and a valid caller stack. Returns the initialization result in AL.
 #[cfg(minimal_rt)]
 // SAFETY: This is the sole `_start` exported by the minimal_rt sidecar image.
 #[unsafe(no_mangle)]
 // SAFETY: Assembly implements the entire C ABI entry and return path, preserving
 // the caller's nonvolatile registers, stack, and address space across initialization.
 #[unsafe(naked)]
-unsafe extern "C" fn _start(_params: u64, _output: u64) -> bool {
+unsafe extern "C" fn _start() -> bool {
     core::arch::naked_asm!(
         "BASE = 0xffffff8000000000",
         "PML4_INDEX = 511",
