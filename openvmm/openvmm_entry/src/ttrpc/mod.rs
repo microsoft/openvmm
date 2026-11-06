@@ -3279,6 +3279,81 @@ mod tests {
         });
     }
 
+    /// A terminal operation cancels a gated operation that is waiting on a
+    /// device reply: the caller gets `CANCELLED`, the operation drops its clone
+    /// of the device sender, the gate is released, and a gated operation started
+    /// afterwards isn't affected by the cancellation.
+    #[test]
+    fn terminal_cancellation_releases_active_gated_task() {
+        DefaultPool::run_with(async |driver| {
+            let mut service = service(driver, None);
+            let dir = tempfile::tempdir().unwrap();
+            let disk_path = dir.path().join("disk.img");
+            std::fs::write(&disk_path, vec![0; 0x100000]).unwrap();
+            let add_disk = || vmservice::ModifyResourceRequest {
+                r#type: vmservice::ModifyType::Add as i32,
+                resource: Some(vmservice::modify_resource_request::Resource::ScsiDisk(
+                    vmservice::ScsiDisk {
+                        controller: 0,
+                        lun: 0,
+                        host_path: disk_path.to_str().unwrap().into(),
+                        ..Default::default()
+                    },
+                )),
+            };
+
+            // Start a gated SCSI disk add and hold the controller's reply.
+            let (scsi_send, mut scsi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = Some(scsi_send);
+            let (send, recv) = mesh::oneshot();
+            service.start_gated_rpc(VmOperation::Topology, send, |this| {
+                this.modify_resource(add_disk())
+            });
+            let ScsiControllerRequest::AddDevice(pending) = scsi_recv.next().await.unwrap() else {
+                panic!("expected a SCSI AddDevice request");
+            };
+            assert!(
+                service
+                    .operation_gate
+                    .try_acquire(VmOperation::Pause)
+                    .is_err(),
+                "the gate is held while the change is in flight"
+            );
+
+            service.cancel_gated_tasks().await;
+            let status = recv.await.unwrap().unwrap_err();
+            assert_eq!(status.code, i32::from(Code::Cancelled));
+            drop(
+                service
+                    .operation_gate
+                    .try_acquire(VmOperation::Pause)
+                    .expect("the gate is released after cancellation"),
+            );
+
+            // The cancelled operation no longer holds a controller sender: once
+            // the VM's own sender is dropped, the controller sees its channel
+            // close.
+            drop(pending);
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = None;
+            assert!(scsi_recv.next().await.is_none());
+
+            // A gated operation started after the cancellation completes
+            // normally.
+            let (scsi_send, mut scsi_recv) = mesh::channel();
+            Arc::get_mut(service.vm.as_mut().unwrap()).unwrap().scsi_rpc = Some(scsi_send);
+            let (send, recv) = mesh::oneshot();
+            service.start_gated_rpc(VmOperation::Topology, send, |this| {
+                this.modify_resource(add_disk())
+            });
+            let ScsiControllerRequest::AddDevice(rpc) = scsi_recv.next().await.unwrap() else {
+                panic!("expected a SCSI AddDevice request");
+            };
+            let (_config, response) = rpc.split();
+            response.complete(Ok(()));
+            recv.await.unwrap().unwrap();
+        });
+    }
+
     fn acpi_shutdown_request() -> vmservice::ShutdownVmRequest {
         vmservice::ShutdownVmRequest {
             mechanism: vmservice::shutdown_vm_request::Mechanism::Acpi as i32,
