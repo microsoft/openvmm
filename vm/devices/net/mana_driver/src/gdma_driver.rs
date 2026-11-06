@@ -162,8 +162,6 @@ pub struct GdmaDriver<T: DeviceBacking> {
     eq_id_msix: HashMap<u32, u32>,
     num_msix: u32,
     min_queue_avail: u32,
-    #[inspect(debug)]
-    max_vf_resources: GdmaQueryMaxResourcesResp,
     hwc_activity_id: u32,
     #[inspect(skip)]
     link_toggle: Vec<(u32, bool)>,
@@ -295,10 +293,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     pub fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.bar0.clone() as _
-    }
-
-    pub fn max_vf_resources(&self) -> &GdmaQueryMaxResourcesResp {
-        &self.max_vf_resources
     }
 
     pub async fn new(
@@ -508,7 +502,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             eq_id_msix,
             num_msix,
             min_queue_avail: 0,
-            max_vf_resources: GdmaQueryMaxResourcesResp::new_zeroed(),
             hwc_activity_id,
             link_toggle: Vec::new(),
             hwc_subscribed: false,
@@ -533,7 +526,19 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .query_max_resources()
             .await
             .context("query_max_resources")?;
-        tracing::info!("Max VF resources: {:?}", max_vf_resources);
+        tracing::info!(
+            max_sq = max_vf_resources.max_sq,
+            max_rq = max_vf_resources.max_rq,
+            max_cq = max_vf_resources.max_cq,
+            max_eq = max_vf_resources.max_eq,
+            max_db = max_vf_resources.max_db,
+            max_mst = max_vf_resources.max_mst,
+            max_cq_mod_ctx = max_vf_resources.max_cq_mod_ctx,
+            max_mod_cq = max_vf_resources.max_mod_cq,
+            max_msix = max_vf_resources.max_msix,
+            hwc_max_num_cqs = max_num_cqs,
+            "Max VF resources"
+        );
 
         let device = this.device.as_mut().expect("device should be present");
         let num_msix = num_vps
@@ -545,7 +550,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .max_eq
             .min(max_vf_resources.max_sq)
             .min(max_vf_resources.max_rq);
-        this.max_vf_resources = max_vf_resources;
 
         Ok(this)
     }
@@ -696,7 +700,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             _pdid: saved_state.pdid,
             num_msix: saved_state.num_msix,
             min_queue_avail: saved_state.min_queue_avail,
-            max_vf_resources: GdmaQueryMaxResourcesResp::new_zeroed(),
             hwc_activity_id: saved_state.hwc_activity_id,
             link_toggle: saved_state.link_toggle,
             hwc_subscribed: false,
@@ -710,11 +713,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
         this.eq.arm();
         this.cq.arm();
-
-        this.max_vf_resources = this
-            .query_max_resources()
-            .await
-            .context("query_max_resources after restore")?;
 
         Ok(this)
     }
