@@ -62,13 +62,47 @@ pub fn uninitialize_serial_io(p: &ShimParams) {
     }
 }
 
-// Entry point.
+/// Zeroes BSS, installs the stack, enables SSE, relocates the image, and enters Rust.
+///
+/// # Safety
+/// Must be entered with the boot shim register state and the image identity mapped.
+// TODO: Use extern "custom" once supported by the minimum Rust version.
 #[cfg(minimal_rt)]
-core::arch::global_asm! {
-    include_str!("entry.S"),
-    relocate = sym minimal_rt::reloc::relocate,
-    start = sym crate::rt::start,
-    stack = sym crate::rt::STACK,
-    STACK_COOKIE = const crate::rt::STACK_COOKIE,
-    STACK_SIZE = const crate::rt::STACK_SIZE,
+// SAFETY: The minimal_rt boot shim has no CRT entry point; this is its sole `_start`.
+#[unsafe(no_mangle)]
+// SAFETY: Assembly owns stack initialization and preserves the boot arguments
+// until it transfers control to Rust without returning.
+#[unsafe(naked)]
+unsafe extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        "mov rbx, rdi",
+        // BSS is omitted from the IGVM and may be dirty after a reboot. Clear it
+        // before installing the stack, which is itself in BSS.
+        "lea rdi, __bss_start[rip]",
+        "lea rcx, _end[rip]",
+        "sub rcx, rdi",
+        "xor eax, eax",
+        "cld",
+        "rep stosb",
+        "mov rdi, rbx",
+        "lea rsp, {STACK_SIZE} + {stack}[rip]",
+        "mov dword ptr {stack}[rip], {STACK_COOKIE}",
+        "mov rax, cr4",
+        "or rax, 0x600", // OSFXSR and OSXMMEXCPT
+        "mov cr4, rax",
+        "push rsi",
+        "push rdi",
+        "lea rdx, _DYNAMIC[rip]",
+        "lea rdi, __ehdr_start[rip]",
+        "mov rsi, rdi",
+        "call {relocate}",
+        "pop rdi",
+        "mov rsi, [rsp]", // leave the saved argument on the stack for alignment
+        "jmp {start}",
+        relocate = sym minimal_rt::reloc::relocate,
+        start = sym crate::rt::start,
+        stack = sym crate::rt::STACK,
+        STACK_COOKIE = const crate::rt::STACK_COOKIE,
+        STACK_SIZE = const crate::rt::STACK_SIZE,
+    );
 }
