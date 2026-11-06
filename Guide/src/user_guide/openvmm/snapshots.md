@@ -44,10 +44,11 @@ single-use resumes.
 
 A workload-start or instance-checkpoint capture binds its read-only layers and
 paired scratch to the storage generation that
-`--snapshot-generation-id <32-HEX-DIGITS>` supplies. OpenVMM never reads a
-block to identify it, and the generation does not authenticate bytes by
-itself: the storage owner must keep it immutable and bound to the exact files.
-A platform capture binds no block and needs no generation.
+`--snapshot-generation-id <32-HEX-DIGITS>` supplies, and each restore of the
+snapshot states that generation again with `--restore-generation-id`. OpenVMM
+never reads a block to identify it, and the generation does not authenticate
+bytes by itself: the storage owner must keep it immutable and bound to the
+exact files. A platform capture binds no block and needs no generation.
 Paired scratch defaults to private copying; `--snapshot-scratch-restore-mode`
 records `private-copy`, reflink-only `copy-on-write` for workload-start clones,
 or `direct-claimed` for instance checkpoints.
@@ -205,8 +206,9 @@ host can connect while input is gated, but OpenVMM reads its authentication
 only after the release, so its `--microvm-control-auth-timeout-ms` deadline
 starts over when the gate releases. Platform manifests
 leave read-only layer identities unbound, while later tiers bind every block
-to the storage generation of their capture. A platform restore also presents
-the captured capacity of its
+to the storage generation of their capture, which the restore must state with
+`--restore-generation-id`. A platform restore also presents the captured
+capacity of its
 `distro` block before any vCPU runs, so one platform snapshot serves images of
 any length up to that capacity. An image with the captured logical and
 physical block sizes may be shorter, and reads past its end, including the tail
