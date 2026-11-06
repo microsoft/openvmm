@@ -921,7 +921,7 @@ impl ProxyTask {
         spawner
             .spawn("vmbus-proxy-hvsock-req", async move {
                 if let Err(err) = proxy.tl_connect_request(&request, vtl).await {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         error = &err as &dyn std::error::Error,
                         ?request,
                         vtl,
