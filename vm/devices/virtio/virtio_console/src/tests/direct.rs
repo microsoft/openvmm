@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Tests for input gating and read-error handling in the direct worker mode.
+//! Tests for input gating, read-error handling, and output retention in the
+//! direct worker mode.
 
+use super::TX_USED_ADDR;
 use super::TestHarness;
 use super::harness::yield_now;
 use super::harness::yield_until;
@@ -51,4 +53,45 @@ async fn read_error_drives_disconnect_before_reconnect(driver: DefaultDriver) {
     let mut received = vec![0; used_len as usize];
     harness.mem.read_at(gpa, &mut received).unwrap();
     assert_eq!(received, b"after-read-error");
+}
+
+/// The index of the transmit queue's used ring, which follows its flags.
+fn tx_used_idx(harness: &TestHarness) -> u16 {
+    harness.mem.read_plain(TX_USED_ADDR + 2).unwrap()
+}
+
+#[async_test]
+async fn retain_keeps_output_whose_write_fails_for_the_next_peer(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_with_policy(&driver, VirtioConsoleDisconnectPolicy::Retain);
+    harness.enable().await;
+    harness.send_guest_bytes(0, b"before").await;
+    assert_eq!(harness.handle.take_tx_data(), b"before");
+
+    // The peer leaves before the worker notices, so the worker writes the
+    // guest's next output to it.
+    harness.handle.set_peer_departed();
+    harness.post_tx_and_signal(1, b"after");
+    harness.wait_for_connect().await;
+    assert!(harness.handle.take_tx_data().is_empty());
+    assert_eq!(tx_used_idx(&harness), 1);
+
+    harness.handle.reconnect();
+    assert_eq!(harness.wait_for_tx_used().await, (1, 0));
+    assert_eq!(harness.handle.take_tx_data(), b"after");
+}
+
+#[async_test]
+async fn retain_sends_the_rest_of_a_partial_write_to_the_next_peer(driver: DefaultDriver) {
+    let mut harness = TestHarness::new_with_policy(&driver, VirtioConsoleDisconnectPolicy::Retain);
+    harness.enable().await;
+    harness.handle.set_write_limit_then_disconnect(3);
+
+    harness.post_tx_and_signal(0, b"abcdef");
+    harness.wait_for_connect().await;
+    assert_eq!(harness.handle.take_tx_data(), b"abc");
+    assert_eq!(tx_used_idx(&harness), 0);
+
+    harness.handle.reconnect();
+    assert_eq!(harness.wait_for_tx_used().await, (0, 0));
+    assert_eq!(harness.handle.take_tx_data(), b"def");
 }

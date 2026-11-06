@@ -43,6 +43,7 @@ pub(super) struct MockControls {
     write_blocked: bool,
     write_waker: Option<Waker>,
     read_error_then_disconnect: bool,
+    peer_departed: bool,
     connect_error: bool,
     disconnect_error: bool,
     disconnect_current_error: bool,
@@ -56,6 +57,7 @@ impl Default for MockControls {
             write_blocked: false,
             write_waker: None,
             read_error_then_disconnect: false,
+            peer_departed: false,
             connect_error: false,
             disconnect_error: false,
             disconnect_current_error: false,
@@ -151,6 +153,13 @@ impl AsyncWrite for ControlledMockSerialIo {
     ) -> Poll<io::Result<usize>> {
         {
             let mut shared = self.0.shared.lock();
+            if shared.connected && shared.controls.peer_departed {
+                // As the socket backend does, a write to a departed peer fails
+                // and disconnects.
+                shared.controls.peer_departed = false;
+                shared.connected = false;
+                return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
             if shared.connected && shared.controls.write_blocked {
                 shared.controls.write_waker = Some(cx.waker().clone());
                 return Poll::Pending;
@@ -193,6 +202,12 @@ impl MockSerialHandle {
         if let Some(waker) = shared.rx_waker.take() {
             waker.wake();
         }
+    }
+
+    /// Makes the peer leave without waking the worker, which learns of it only
+    /// when its next write fails.
+    pub(super) fn set_peer_departed(&self) {
+        self.shared.lock().controls.peer_departed = true;
     }
 
     pub(super) fn disconnect_poll_count(&self) -> usize {
