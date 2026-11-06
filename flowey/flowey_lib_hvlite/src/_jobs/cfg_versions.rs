@@ -33,7 +33,7 @@ pub const NODEJS: &str = "24.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: Option<&str> = None;
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.18.37.7";
 pub const OPENVMM_DEPS: &str = "0.3.0-185";
-pub const OPENVMM_MSHV_TEST_KERNEL: &str = "0.3.0-161";
+pub const OPENVMM_MSHV_TEST_KERNEL: &str = "0.3.0-185";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {

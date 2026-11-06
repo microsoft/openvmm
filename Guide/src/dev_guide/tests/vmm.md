@@ -243,7 +243,7 @@ and provisions the compatible hypervisor payloads. Linux provisioning uses
 or executed. Run the native test from a Linux or WSL host with:
 
 ```bash
-filter='test(=multiarch::openvmm_linux_x64_boot_mshv_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
+filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
 cargo xflowey vmm-tests-run --filter "$filter"
 ```
 
