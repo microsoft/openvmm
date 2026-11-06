@@ -56,6 +56,7 @@ use thiserror::Error;
 use tpm_protocol::TPM_NV_INDEX_AIK_CERT;
 use tpm_protocol::TPM_NV_INDEX_ATTESTATION_REPORT;
 use tpm_protocol::TPM_NV_INDEX_GUEST_ATTESTATION_INPUT;
+use tpm_protocol::TPM_NV_INDEX_MITIGATED;
 use tpm_protocol::tpm20proto;
 use tpm_protocol::tpm20proto::CommandCodeEnum;
 use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
@@ -787,6 +788,7 @@ impl Tpm {
             force_ak_regen: bool,
             large_vtpm_blob: bool,
             fixup_16k_ak_cert: bool,
+            recovered: bool,
         }
 
         let quirks = {
@@ -798,7 +800,7 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
             if let Some(mut blob) = existing_nvmem_blob {
-                if matches!(
+                let recovered = if matches!(
                     self.tpm_engine_helper.tpm_engine.version(),
                     TpmVersion::V138
                 ) {
@@ -807,8 +809,10 @@ impl Tpm {
                     // that the TPM nvram is consistent - this code can be removed
                     // once the fix for reporting the NVRAM size correctly is
                     // everywhere.
-                    recover::recover_blob(&mut blob);
-                }
+                    recover::recover_blob(&mut blob)
+                } else {
+                    false
+                };
 
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if e.is_mismatched_blob_size() {
@@ -832,6 +836,9 @@ impl Tpm {
                     fixup_16k_ak_cert: blob.len() == LEGACY_VTPM_SIZE,
 
                     large_vtpm_blob: blob.len() >= STANDARD_VTPM_SIZE,
+
+                    // Whether the TPM blob was recovered.
+                    recovered,
                 }
             } else {
                 TpmQuirks {
@@ -842,6 +849,8 @@ impl Tpm {
                     // This is a brand-new vTPM and will get provisioned with at
                     // least 32kB of storage.
                     large_vtpm_blob: true,
+                    // No recovery happened.
+                    recovered: false,
                 }
             }
         };
@@ -850,11 +859,30 @@ impl Tpm {
             force_ak_regen,
             fixup_16k_ak_cert,
             large_vtpm_blob,
+            recovered,
         } = quirks;
 
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .map_err(TpmErrorKind::InitializeTpmEngine)?;
+
+        // Read the mitigation marker before refreshing the TPM seeds. Create a
+        // missing AKCert index if the TPM has a large NVRAM, or if this is a
+        // refresh scenario (where OpenHCL was requested to refresh the TPM
+        // seeds) and there is no mitigation marker.
+        let create_if_missing = large_vtpm_blob
+            || (self.refresh_tpm_seeds
+                && match self.tpm_engine_helper.find_nv_index(TPM_NV_INDEX_MITIGATED) {
+                    Ok(index) => index.is_none(),
+                    Err(e) => {
+                        tracing::error!(
+                            CVM_ALLOWED,
+                            err = &e as &dyn std::error::Error,
+                            "error reading TPM mitigation marker"
+                        );
+                        false
+                    }
+                });
 
         // If necessary, recreate EPS & PPS.
         // The host indicates this when VM identity changes.
@@ -865,6 +893,18 @@ impl Tpm {
                     .await;
 
                 return Err(TpmErrorKind::RefreshTpmSeeds(e).into());
+            }
+
+            // Delete any existing AKCert after refreshing seeds.
+            if let Err(e) = self
+                .tpm_engine_helper
+                .nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
+            {
+                tracing::error!(
+                    CVM_ALLOWED,
+                    err = &e as &dyn std::error::Error,
+                    "error deleting AKCert after refreshing seeds"
+                );
             }
 
             tracing::info!("TPM seeds have been refreshed");
@@ -1012,7 +1052,8 @@ impl Tpm {
                         preserve_ak_cert: !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
                         support_attestation_report: self.ak_cert_type.attested(),
                         mitigate_legacy_akcert: fixup_16k_ak_cert,
-                        create_if_missing: large_vtpm_blob,
+                        create_if_missing,
+                        recovered,
                     },
                 )
             {
@@ -1032,9 +1073,8 @@ impl Tpm {
                 }
                 TpmAkCertType::Trusted(_, _) => {
                     // Otherwise, if the existing AKCert index is platform-
-                    // defined and this appears to be an HCL-provisioned
-                    // vTPM, then handle AKCert renewal from OpenHCL.
-                    self.tpm_engine_helper.has_platform_akcert_index() && large_vtpm_blob
+                    // defined, then handle AKCert renewal from OpenHCL.
+                    self.tpm_engine_helper.has_platform_akcert_index()
                 }
                 // If there's no AKCert, then don't handle renewal.
                 TpmAkCertType::None => false,
@@ -2535,7 +2575,9 @@ mod tests {
         }
 
         for version in [TpmVersion::V138, TpmVersion::V185] {
-            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let mut tpm = new_test_tpm(version, None, None, TpmAkCertType::None, false)
+                .await
+                .unwrap();
             let key = TpmRsa2kPublic {
                 modulus: [0; 256],
                 exponent: [0; 3],
@@ -2591,7 +2633,9 @@ mod tests {
         use tpm_protocol::tpm20proto::TPM20_RH_PLATFORM;
 
         for version in [TpmVersion::V138, TpmVersion::V185] {
-            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let mut tpm = new_test_tpm(version, None, None, TpmAkCertType::None, false)
+                .await
+                .unwrap();
             assert!(tpm.read_ak_cert().unwrap().is_none());
 
             let old_time = std::time::UNIX_EPOCH;
@@ -2673,7 +2717,9 @@ mod tests {
     #[async_test]
     async fn test_ak_cert_write_failure_preserves_renewal_time() {
         for version in [TpmVersion::V138, TpmVersion::V185] {
-            let mut tpm = new_test_tpm(version, None, None).await.unwrap();
+            let mut tpm = new_test_tpm(version, None, None, TpmAkCertType::None, false)
+                .await
+                .unwrap();
             let logger = Arc::new(TestTpmLogger::default());
             tpm.logger = Some(logger.clone());
             tpm.tpm_engine_helper
@@ -2726,7 +2772,15 @@ mod tests {
     /// Each library validates NVRAM against its compiled-in size.
     #[async_test]
     async fn test_legacy_nvram_size_rejected_for_v185() {
-        let Err(err) = new_test_tpm(TpmVersion::V185, Some(LEGACY_VTPM_SIZE), None).await else {
+        let Err(err) = new_test_tpm(
+            TpmVersion::V185,
+            Some(LEGACY_VTPM_SIZE),
+            None,
+            TpmAkCertType::None,
+            false,
+        )
+        .await
+        else {
             panic!("legacy nvram size must be rejected");
         };
 
@@ -2744,6 +2798,8 @@ mod tests {
             TpmVersion::V185,
             Some(default_vtpm_size(TpmVersion::V185)),
             Some(vec![0; LEGACY_VTPM_SIZE]),
+            TpmAkCertType::None,
+            false,
         )
         .await
         else {
@@ -2759,12 +2815,82 @@ mod tests {
     /// The 1.38 implementation must keep accepting legacy state.
     #[async_test]
     async fn test_legacy_nvram_size_allowed_for_v138() {
-        assert!(
-            new_test_tpm(TpmVersion::V138, Some(LEGACY_VTPM_SIZE), None)
+        for refresh_tpm_seeds in [false, true] {
+            let mut tpm = new_test_tpm(
+                TpmVersion::V138,
+                Some(LEGACY_VTPM_SIZE),
+                Some(vec![0; LEGACY_VTPM_SIZE]),
+                TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), None),
+                refresh_tpm_seeds,
+            )
+            .await
+            .expect("legacy nvram size is supported by 1.38");
+
+            let result = tpm
+                .tpm_engine_helper
+                .find_nv_index(TPM_NV_INDEX_AIK_CERT)
+                .expect("find_nv_index should succeed");
+            assert_eq!(result.is_some(), refresh_tpm_seeds);
+            if let Some(result) = result {
+                let nv_bits = TpmaNvBits::from(result.nv_public.nv_public.attributes.0.get());
+                assert!(nv_bits.nv_platformcreate());
+            }
+            assert_eq!(tpm.handle_ak_cert_renewal, refresh_tpm_seeds);
+        }
+    }
+
+    #[async_test]
+    async fn test_ak_cert_creation_from_existing_nvram() {
+        for nvram_size in [LEGACY_VTPM_SIZE, STANDARD_VTPM_SIZE] {
+            for has_mitigation_marker in [false, true] {
+                let mut tpm = new_test_tpm(
+                    TpmVersion::V138,
+                    Some(nvram_size),
+                    Some(vec![0; nvram_size]),
+                    TpmAkCertType::None,
+                    false,
+                )
                 .await
-                .is_ok(),
-            "legacy nvram size is supported by 1.38"
-        );
+                .unwrap();
+                if has_mitigation_marker {
+                    tpm.tpm_engine_helper
+                        .nv_define_space(TPM20_RH_PLATFORM, 0, TPM_NV_INDEX_MITIGATED, 1)
+                        .unwrap();
+                }
+                tpm.flush_pending_nvram().await.unwrap();
+                let blob = tpm.rt.nvram_store.restore().await.unwrap().unwrap();
+                assert_eq!(blob.len(), nvram_size);
+
+                // Drop the TPM instance to uninitialize the underlying
+                // platform. Otherwise the next new_test_tpm will fail.
+                drop(tpm);
+
+                for refresh_tpm_seeds in [false, true] {
+                    let mut tpm = new_test_tpm(
+                        TpmVersion::V138,
+                        Some(nvram_size),
+                        Some(blob.clone()),
+                        TpmAkCertType::Trusted(Arc::new(TestRequestAkCertHelper::default()), None),
+                        refresh_tpm_seeds,
+                    )
+                    .await
+                    .unwrap();
+
+                    let expected = nvram_size != LEGACY_VTPM_SIZE
+                        || (refresh_tpm_seeds && !has_mitigation_marker);
+                    let index = tpm
+                        .tpm_engine_helper
+                        .find_nv_index(TPM_NV_INDEX_AIK_CERT)
+                        .unwrap();
+                    assert_eq!(
+                        index.is_some(),
+                        expected,
+                        "size={nvram_size}, refresh={refresh_tpm_seeds}, marker={has_mitigation_marker}"
+                    );
+                    assert_eq!(tpm.handle_ak_cert_renewal, expected);
+                }
+            }
+        }
     }
 
     /// Each library is compiled for a fixed NVRAM size and cannot be handed a
@@ -2773,7 +2899,9 @@ mod tests {
     async fn test_default_nvram_size_initializes_both_versions() {
         for version in [TpmVersion::V138, TpmVersion::V185] {
             assert!(
-                new_test_tpm(version, None, None).await.is_ok(),
+                new_test_tpm(version, None, None, TpmAkCertType::None, false)
+                    .await
+                    .is_ok(),
                 "default nvram size must initialize {version:?}"
             );
         }
@@ -2783,7 +2911,15 @@ mod tests {
     /// cleanly inside the library, so it must be rejected rather than used.
     #[async_test]
     async fn test_standard_nvram_size_rejected_for_v185() {
-        let Err(err) = new_test_tpm(TpmVersion::V185, Some(STANDARD_VTPM_SIZE), None).await else {
+        let Err(err) = new_test_tpm(
+            TpmVersion::V185,
+            Some(STANDARD_VTPM_SIZE),
+            None,
+            TpmAkCertType::None,
+            false,
+        )
+        .await
+        else {
             panic!("32kB nvram size must be rejected for 1.85");
         };
 
@@ -2797,6 +2933,8 @@ mod tests {
         version: TpmVersion,
         nvram_size: Option<usize>,
         nvram_blob: Option<Vec<u8>>,
+        cert_type: TpmAkCertType,
+        refresh_tpm_seeds: bool,
     ) -> Result<Tpm, TpmError> {
         let mut nvram_store = EphemeralNonVolatileStore::new_boxed();
         if let Some(blob) = nvram_blob {
@@ -2811,9 +2949,9 @@ mod tests {
             nvram_store,
             nvram_size,
             Box::new(|| std::time::Duration::new(0, 0)),
+            refresh_tpm_seeds,
             false,
-            false,
-            TpmAkCertType::None,
+            cert_type,
             None,
             None,
             false,
