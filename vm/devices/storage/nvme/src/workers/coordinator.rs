@@ -82,6 +82,7 @@ impl NvmeWorkers {
             driver: driver.clone(),
             admin: TaskControl::new(handler),
             reset: None,
+            paused: false,
         };
         let (send, recv) = mesh::mpsc_channel();
         let task = driver.spawn("nvme-coord", coordinator.run(recv));
@@ -163,15 +164,27 @@ impl NvmeWorkers {
         }
     }
 
-    // Reset the workers from whatever state they are in.
+    /// Waits for a guest-initiated enable to finish.
+    pub async fn wait_enabled(&mut self) {
+        let EnableState::Enabling(recv) = &mut self.state else {
+            panic!("not enabling: {:?}", self.state)
+        };
+        recv.await.unwrap();
+        self.state = EnableState::Enabled;
+    }
+
+    /// Resets the workers from whatever state they are in. Runs on a stopped
+    /// device and leaves it stopped.
+    ///
+    /// Unlike a stop, this waits for in-flight I/O: a controller reset
+    /// drains it. A controller reset that the stop paused is let run first;
+    /// see `CoordinatorRequest::DeviceReset`.
     pub async fn reset(&mut self) {
+        self.send.send(CoordinatorRequest::DeviceReset);
         loop {
             match &mut self.state {
                 EnableState::Disabled => break,
-                EnableState::Enabling(recv) => {
-                    recv.await.unwrap();
-                    self.state = EnableState::Enabled;
-                }
+                EnableState::Enabling(_) => self.wait_enabled().await,
                 EnableState::Enabled => {
                     self.controller_reset();
                 }
@@ -182,6 +195,18 @@ impl NvmeWorkers {
             }
         }
         self.doorbells.write().reset();
+    }
+
+    /// Suspends the worker tasks without waiting for in-flight I/O, which
+    /// stays in flight and runs on after `start`. A controller reset in
+    /// progress pauses too.
+    pub async fn stop(&mut self) {
+        self.send.call(CoordinatorRequest::Stop, ()).await.unwrap();
+    }
+
+    /// Resumes the worker tasks stopped by `stop`.
+    pub fn start(&mut self) {
+        self.send.send(CoordinatorRequest::Start);
     }
 }
 
@@ -216,6 +241,9 @@ struct Coordinator {
     admin: TaskControl<AdminHandler, AdminState>,
     #[inspect(with = "Option::is_some")]
     reset: Option<Rpc<(), ()>>,
+    /// Set by `Stop`, cleared by `Start` and `DeviceReset`. While set, a
+    /// controller reset in progress makes no progress.
+    paused: bool,
 }
 
 enum CoordinatorRequest {
@@ -224,6 +252,10 @@ enum CoordinatorRequest {
     RemoveNamespace(Rpc<u32, bool>),
     Inspect(inspect::Deferred),
     ControllerReset(Rpc<(), ()>),
+    Stop(Rpc<(), ()>),
+    Start,
+    /// A device reset is about to run on the stopped device.
+    DeviceReset,
 }
 
 struct EnableAdminParams {
@@ -241,8 +273,11 @@ impl Coordinator {
                 ResetComplete,
             }
 
+            // While stopped, a reset in progress waits here instead of
+            // draining, so a stop never waits on the disk. `drain` can be
+            // dropped and reissued, so it picks up again after `Start`.
             let controller_reset = async {
-                if self.reset.is_some() {
+                if self.reset.is_some() && !self.paused {
                     self.admin.stop().await;
                     if let Some(state) = self.admin.state_mut() {
                         state.drain().await;
@@ -306,6 +341,37 @@ impl Coordinator {
                     CoordinatorRequest::ControllerReset(rpc) => {
                         assert!(self.reset.is_none());
                         self.reset = Some(rpc);
+                    }
+                    CoordinatorRequest::Stop(rpc) => {
+                        rpc.handle(async |()| {
+                            // Stop admin first, since admin commands can
+                            // restart I/O tasks. No admin handler waits on
+                            // the disk (`AdminHandler::process_event`).
+                            self.admin.stop().await;
+                            if let Some(state) = self.admin.state_mut() {
+                                state.stop_io().await;
+                            }
+                            self.paused = true;
+                        })
+                        .await
+                    }
+                    CoordinatorRequest::Start => {
+                        assert!(!self.admin.is_running(), "start without stop");
+                        self.paused = false;
+                        // A pending controller reset owns the stopped tasks
+                        // and discards whatever they would do, so only the
+                        // reset resumes.
+                        if self.reset.is_none() {
+                            if let Some(state) = self.admin.state_mut() {
+                                state.resume();
+                            }
+                            self.admin.start();
+                        }
+                    }
+                    CoordinatorRequest::DeviceReset => {
+                        // A device reset discards the controller, so a paused
+                        // controller reset must finish first.
+                        self.paused = false;
                     }
                     CoordinatorRequest::Inspect(req) => req.inspect(&self),
                 },
