@@ -90,7 +90,7 @@ fn success_line(hypervisor: &str, node: &inspect::Node) -> anyhow::Result<String
 /// the error chain, or `none`, and the escaped error chain.
 fn failure_line(hypervisor: &str, err: &anyhow::Error) -> String {
     let detail = format!("{err:#}");
-    let code = time_abi_code(&detail).unwrap_or("none");
+    let code = stable_code(&detail).unwrap_or("none");
     let mut escaped = String::new();
     for c in detail.chars() {
         if escaped.len() >= MAX_DETAIL_LEN {
@@ -109,12 +109,13 @@ fn failure_line(hypervisor: &str, err: &anyhow::Error) -> String {
     format!("{PREFIX} v=1 status=fail backend={hypervisor} code={code} detail=\"{escaped}\"")
 }
 
-/// Formats the process's fatal-error message. A time ABI failure leads with
-/// its stable code wherever the error chain carries it, so callers can match
-/// the start of the message.
+/// Formats the process's fatal-error message. A failure with a stable code,
+/// such as a time ABI failure or a port forward that cannot bind, leads with
+/// its code wherever the error chain carries it, so callers can match the
+/// start of the message.
 pub(crate) fn fatal_error_message(err: &anyhow::Error) -> String {
     let chain = format!("{err:#}");
-    match time_abi_code(&chain) {
+    match stable_code(&chain) {
         Some(code) if !chain.starts_with(&format!("[{code}]")) => {
             format!("fatal error: [{code}] {err:?}")
         }
@@ -122,9 +123,9 @@ pub(crate) fn fatal_error_message(err: &anyhow::Error) -> String {
     }
 }
 
-/// Returns the first bracketed time ABI code, such as `E_TSC_SYNC_UNSUPPORTED`,
-/// in an error chain.
-fn time_abi_code(detail: &str) -> Option<&str> {
+/// Returns the first bracketed stable code, such as `E_TSC_SYNC_UNSUPPORTED`
+/// or `E_PORT_FORWARD_BIND`, in an error chain.
+fn stable_code(detail: &str) -> Option<&str> {
     let mut rest = detail;
     while let Some(start) = rest.find("[E_") {
         let candidate = &rest[start + 1..];
@@ -223,5 +224,25 @@ mod tests {
         let message = fatal_error_message(&err);
         assert_eq!(message, format!("fatal error: {err:?}"));
         assert_eq!(message.lines().next(), Some("fatal error: no code here"));
+    }
+
+    #[test]
+    fn fatal_error_message_leads_with_the_code_of_a_port_forward_that_cannot_bind() {
+        // The resolver of the VM's NIC fails the launch of the VM worker, as
+        // at a restore that installs a new network policy.
+        let err = anyhow::anyhow!(
+            "[E_PORT_FORWARD_BIND] failed to create socket for port forward (Tcp 127.0.0.1:18080)"
+        )
+        .context("failed to resolve the network endpoint")
+        .context("failed to launch vm worker");
+        let message = fatal_error_message(&err);
+        assert_eq!(
+            message,
+            format!("fatal error: [E_PORT_FORWARD_BIND] {err:?}")
+        );
+        assert_eq!(
+            message.lines().next(),
+            Some("fatal error: [E_PORT_FORWARD_BIND] failed to launch vm worker")
+        );
     }
 }
