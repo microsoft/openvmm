@@ -466,6 +466,11 @@ impl VirtioDevice for Device {
                 );
 
                 if first_pair {
+                    if let Err(err) = self.create_endpoint_queues().await {
+                        self.coordinator.remove();
+                        self.pairs[pair_idx] = QueuePairState::Empty;
+                        return Err(err);
+                    }
                     self.coordinator.start();
                 }
             }
@@ -748,9 +753,25 @@ impl Device {
                 num_queues,
                 enabled_rx_offloads: negotiated_rx_offload_support(negotiated_features),
                 restart: true,
+                endpoint_queues_created: false,
                 input_quiesced: self.lifecycle.input_quiesced,
             },
         );
+    }
+
+    /// Creates the endpoint queues of the coordinator that `start_queue` has
+    /// just inserted, before the coordinator starts, so that an endpoint that
+    /// cannot provide them fails the queue start instead of leaving the device
+    /// without endpoint queues.
+    async fn create_endpoint_queues(&mut self) -> anyhow::Result<()> {
+        let (state, coordinator) = self.coordinator.get_mut();
+        let coordinator = coordinator.context("virtio-net coordinator state is unavailable")?;
+        coordinator
+            .restart_queues(state)
+            .await
+            .context("failed to create the network endpoint queues")?;
+        coordinator.endpoint_queues_created = true;
+        Ok(())
     }
 
     /// Allocates and inserts a worker.
@@ -789,6 +810,9 @@ struct Coordinator {
     num_queues: u16,
     enabled_rx_offloads: RxOffloadSupport,
     restart: bool,
+    /// Whether `start_queue` has created the endpoint queues that the first
+    /// restart would otherwise create.
+    endpoint_queues_created: bool,
     input_quiesced: bool,
 }
 
@@ -844,7 +868,9 @@ impl Coordinator {
                 stop.until_stopped(self.stop_workers()).await?;
                 // The queue restart operation is not restartable, so do not
                 // poll on `stop` here.
-                if let Err(err) = self.restart_queues(state).await {
+                if !std::mem::take(&mut self.endpoint_queues_created)
+                    && let Err(err) = self.restart_queues(state).await
+                {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
                         "failed to restart queues"
