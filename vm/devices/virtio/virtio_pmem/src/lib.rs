@@ -331,17 +331,17 @@ async fn process_pmem_request(
                         error = err.as_ref() as &dyn std::error::Error,
                         "flush error"
                     );
-                    1
+                    u32::MAX
                 }
             },
             n => {
                 tracing::error!(n, "unsupported request");
-                1
+                u32::MAX
             }
         },
         Err(err) => {
             tracing::error!(error = &err as &dyn std::error::Error, "invalid descriptor");
-            1
+            u32::MAX
         }
     };
     let _ = work.write(mem, &u32::to_le_bytes(err));
