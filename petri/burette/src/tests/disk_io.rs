@@ -18,6 +18,9 @@ use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 use vm_resource::IntoResource;
 
+pub const GUEST_VPS: u32 = 2;
+pub const GUEST_MEMORY_MIB: u64 = 1024;
+
 /// Which disk backend to use for the fio test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum DiskBackend {
@@ -148,17 +151,20 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     require_petritools_erofs(resolver);
 }
 
+fn build_qemu_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
+    match MachineArch::host() {
+        MachineArch::X86_64 => petri::Firmware::linux_direct_bzimage(resolver),
+        MachineArch::Aarch64 => build_firmware(resolver),
+    }
+}
+
 fn qemu_artifacts(
     resolver: &petri::ArtifactResolver<'_>,
     binary: &std::path::Path,
 ) -> Option<petri::PetriVmArtifacts<petri::qemu::QemuPetriBackend>> {
-    let firmware = match MachineArch::host() {
-        MachineArch::X86_64 => petri::Firmware::linux_direct_bzimage(resolver),
-        MachineArch::Aarch64 => build_firmware(resolver),
-    };
     petri::PetriVmArtifacts::new_with_backend(
         resolver,
-        firmware,
+        build_qemu_firmware(resolver),
         MachineArch::host(),
         true,
         petri::qemu::QemuPetriBackend::from_binary(binary.to_owned()),
@@ -166,8 +172,10 @@ fn qemu_artifacts(
 }
 
 /// Register only guest artifacts; QEMU is supplied by the caller, not downloaded.
-pub fn register_qemu_artifacts(resolver: &petri::ArtifactResolver<'_>, binary: &std::path::Path) {
-    let _ = qemu_artifacts(resolver, binary);
+pub fn register_qemu_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+    build_qemu_firmware(resolver);
+    petri::disk_image::AgentImage::new(petri_artifacts_common::tags::OsFlavor::Linux)
+        .with_pipette(resolver, MachineArch::host());
     require_petritools_erofs(resolver);
 }
 
@@ -284,11 +292,11 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             let builder =
                 petri::PetriVmBuilder::minimal("disk_io", &crate::log_source(), artifacts, driver)?
                     .with_processor_topology(petri::ProcessorTopology {
-                        vp_count: 2,
+                        vp_count: GUEST_VPS,
                         ..Default::default()
                     })
                     .with_memory(petri::MemoryConfig {
-                        startup_bytes: 1024 * 1024 * 1024,
+                        startup_bytes: GUEST_MEMORY_MIB * petri::SIZE_1_MB,
                         ..Default::default()
                     })
                     .without_screenshots()
@@ -328,11 +336,11 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             let mut builder =
                 petri::PetriVmBuilder::minimal("disk_io", &log_source, artifacts, driver)?
                     .with_processor_topology(petri::ProcessorTopology {
-                        vp_count: 2,
+                        vp_count: GUEST_VPS,
                         ..Default::default()
                     })
                     .with_memory(petri::MemoryConfig {
-                        startup_bytes: 1024 * 1024 * 1024, // 1 GB
+                        startup_bytes: GUEST_MEMORY_MIB * petri::SIZE_1_MB,
                         ..Default::default()
                     });
 
@@ -727,10 +735,7 @@ mod tests {
     #[test]
     fn qemu_registers_guest_artifacts_without_a_vmm_executable() {
         let mut requirements = petri::TestArtifactRequirements::new();
-        register_qemu_artifacts(
-            &petri::ArtifactResolver::collector(&mut requirements),
-            std::path::Path::new("/installed/qemu"),
-        );
+        register_qemu_artifacts(&petri::ArtifactResolver::collector(&mut requirements));
         let pipette = match MachineArch::host() {
             MachineArch::X86_64 => {
                 petri_artifacts_common::artifacts::PIPETTE_LINUX_X64_MUSL.erase()

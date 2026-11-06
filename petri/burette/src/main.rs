@@ -214,7 +214,7 @@ struct RunArgs {
     disk_reuse: bool,
 
     /// Pin guest fio to this vCPU (the disk benchmark has two vCPUs).
-    #[arg(long, value_parser = clap::value_parser!(u32).range(..2))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(..i64::from(tests::disk_io::GUEST_VPS)))]
     disk_cpu: Option<u32>,
 
     /// Test file size in MiB for the virtio_fs test.
@@ -425,7 +425,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 };
 
                 let artifacts = resolve_artifacts(|resolver| match &test.qemu {
-                    Some(path) => tests::disk_io::register_qemu_artifacts(resolver, path),
+                    Some(_) => tests::disk_io::register_qemu_artifacts(resolver),
                     None => tests::disk_io::register_artifacts(resolver),
                 })?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
@@ -484,8 +484,8 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .collect(),
             cpu: args.disk_cpu,
             reuse: args.disk_reuse,
-            guest_vps: 2,
-            guest_memory_mib: 1024,
+            guest_vps: tests::disk_io::GUEST_VPS,
+            guest_memory_mib: tests::disk_io::GUEST_MEMORY_MIB,
         });
     }
     report.print_summary();
@@ -595,7 +595,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::virtio_fs::register_artifacts,
         |resolver| {
             if cfg!(target_os = "linux") {
-                tests::disk_io::register_qemu_artifacts(resolver, Path::new("qemu"));
+                tests::disk_io::register_qemu_artifacts(resolver);
             }
         },
     ];
