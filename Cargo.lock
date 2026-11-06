@@ -11869,6 +11869,7 @@ dependencies = [
  "anyhow",
  "chipset_device",
  "closeable_mutex",
+ "cvm_tracing",
  "fs-err",
  "futures",
  "guestmem",
@@ -11899,6 +11900,7 @@ dependencies = [
  "vmotherboard",
  "vpci",
  "vpci_client",
+ "vpci_protocol",
 ]
 
 [[package]]
