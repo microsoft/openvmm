@@ -250,9 +250,12 @@ describes the source definitions.
   `--host-loopback-forward <tcp|udp:HOST-PORT:GUEST-PORT>` binds one localhost
   port and forwards it into the guest, possibly to another guest port. It
   requires explicit `--host-loopback allow`; duplicate bindings and more than
-  64 forwards are rejected before resources are opened. Live forwards are
-  process-local attachments: snapshot capture rejects them, and so does a
-  restore, unless it installs a new policy with `--restore-network-policy`.
+  64 forwards are rejected before resources are opened. A port that OpenVMM
+  cannot bind, such as one that another socket holds, fails the VM's launch
+  with the stable code `E_PORT_FORWARD_BIND`, which leads OpenVMM's fatal
+  error. Live forwards are process-local attachments: snapshot capture rejects
+  them, and so does a restore, unless it installs a new policy with
+  `--restore-network-policy`.
 
   Networked snapshots record the `portable` profile, drain accepted TX and
   endpoint-ready RX at the capture boundary, rewind unused guest RX
@@ -574,9 +577,9 @@ describes the source definitions.
   that it never had. OpenVMM validates the policy as at a cold boot, binds it
   to the captured identity, which the NIC keeps, and installs it, with its
   forwards bound, before any vCPU runs; a policy that fails validation, or a
-  forward that cannot bind its port, fails the restore. A restore that wants
-  no connectivity passes the template's own deny-all. The restore cannot
-  readdress the NIC. OpenVMM rejects the option before any vCPU
+  forward that cannot bind its port (`E_PORT_FORWARD_BIND`), fails the restore.
+  A restore that wants no connectivity passes the template's own deny-all. The
+  restore cannot readdress the NIC. OpenVMM rejects the option before any vCPU
   starts for a cold boot, for a `workload-start` or `instance-checkpoint`
   snapshot, for a snapshot without a NIC, and for a NIC captured with any
   other policy. The guest keeps its captured command line, so it learns its DNS
