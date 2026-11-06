@@ -4,8 +4,8 @@
 //! OpenVMM performance test runner.
 //!
 //! This host-side CLI runs repeatable performance benchmarks against an
-//! OpenVMM executable using the Petri test framework. It boots real test VMs,
-//! measures boot, scaling, memory, network, disk, and virtio-fs behavior, and
+//! OpenVMM executable, or QEMU/KVM for disk I/O, using the Petri test framework.
+//! It boots real test VMs, measures boot, scaling, memory, network, disk, and virtio-fs behavior, and
 //! writes JSON reports that can be compared between builds.
 //!
 //! Burette is intended for direct developer use and can package its binaries
@@ -62,6 +62,12 @@ enum TestName {
     VirtioFs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum Vmm {
+    Openvmm,
+    Qemu,
+}
+
 /// Global log source for petri, initialized once.
 static LOG_SOURCE: OnceLock<petri::PetriLogSource> = OnceLock::new();
 
@@ -74,7 +80,10 @@ fn log_source() -> petri::PetriLogSource {
 }
 
 #[derive(Parser)]
-#[command(name = "burette", about = "OpenVMM performance benchmarks")]
+#[command(
+    name = "burette",
+    about = "OpenVMM and QEMU/KVM performance benchmarks"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -93,6 +102,14 @@ enum Command {
 
 #[derive(clap::Args)]
 struct RunArgs {
+    /// VMM to benchmark. QEMU currently supports file-backed virtio-blk disk I/O only.
+    #[arg(long, default_value = "openvmm")]
+    vmm: Vmm,
+
+    /// Installed QEMU executable. Defaults to `qemu-system-<arch>` on PATH.
+    #[arg(long)]
+    qemu_path: Option<PathBuf>,
+
     /// Output JSON report file.
     #[arg(short, long, default_value = "perf_report.json")]
     output: PathBuf,
@@ -197,7 +214,7 @@ struct RunArgs {
     disk_reuse: bool,
 
     /// Pin guest fio to this vCPU (the disk benchmark has two vCPUs).
-    #[arg(long, value_parser = clap::value_parser!(u32).range(..2))]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(..i64::from(tests::disk_io::GUEST_VPS)))]
     disk_cpu: Option<u32>,
 
     /// Test file size in MiB for the virtio_fs test.
@@ -282,6 +299,8 @@ fn resolve_artifacts(
 }
 
 fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
+    validate_vmm_args(&args)?;
+    let mut vmm_info = resolve_vmm(&args)?;
     // Set up logging.
     std::fs::create_dir_all(&args.log_dir)
         .with_context(|| format!("failed to create log dir: {}", args.log_dir.display()))?;
@@ -388,6 +407,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
             }
             TestName::DiskIo => {
                 let test = tests::disk_io::DiskIoTest {
+                    qemu: (args.vmm == Vmm::Qemu).then(|| vmm_info.executable.clone()),
                     diag: args.diag,
                     backend: args.disk_backend,
                     data_disk: args.data_disk.clone(),
@@ -404,13 +424,24 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     cpu: args.disk_cpu,
                 };
 
-                let artifacts = resolve_artifacts(tests::disk_io::register_artifacts)?;
+                let artifacts = resolve_artifacts(|resolver| match &test.qemu {
+                    Some(_) => tests::disk_io::register_qemu_artifacts(resolver),
+                    None => tests::disk_io::register_artifacts(resolver),
+                })?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                let stats = pal_async::DefaultPool::run_with(async |driver| {
-                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                let (stats, command) = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test_with_metadata(
+                        &test,
+                        &resolver,
+                        &driver,
+                        args.iterations,
+                        tests::disk_io::DiskIoTestState::qemu_command,
+                    )
+                    .await
                 })
                 .context("disk_io test failed")?;
+                vmm_info.command = command;
                 all_stats.extend(stats);
             }
             TestName::VirtioFs => {
@@ -433,7 +464,30 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
     }
 
     // Build and write report.
-    let report = report::PerfReport::new(all_stats)?;
+    let mut report = report::PerfReport::new(all_stats)?;
+    report.vmm = Some(vmm_info);
+    if tests_to_run.contains(&TestName::DiskIo) {
+        report.disk_io = Some(report::DiskIoParameters {
+            backend: args.disk_backend.to_string(),
+            data_disk: args.data_disk,
+            data_disk_size_gib: args.data_disk_size_gib,
+            host_direct: args.disk_direct,
+            guest_direct: true,
+            io_depth: args.disk_io_depth,
+            block_size_kib: args.disk_block_size_kib,
+            runtime_secs: args.disk_runtime_secs,
+            ramp_secs: args.disk_ramp_secs,
+            workloads: args
+                .disk_workloads
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            cpu: args.disk_cpu,
+            reuse: args.disk_reuse,
+            guest_vps: tests::disk_io::GUEST_VPS,
+            guest_memory_mib: tests::disk_io::GUEST_MEMORY_MIB,
+        });
+    }
     report.print_summary();
 
     let json = report.to_json()?;
@@ -442,6 +496,87 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
     println!("\nReport written to {}", args.output.display());
 
     Ok(())
+}
+
+fn validate_vmm_args(args: &RunArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.qemu_path.is_none() || args.vmm == Vmm::Qemu,
+        "--qemu-path requires --vmm qemu"
+    );
+    if args.vmm == Vmm::Qemu {
+        anyhow::ensure!(
+            cfg!(target_os = "linux"),
+            "QEMU benchmarks require Linux/KVM"
+        );
+        anyhow::ensure!(
+            args.test == Some(TestName::DiskIo),
+            "--vmm qemu currently requires --test disk-io"
+        );
+        anyhow::ensure!(
+            args.disk_backend == DiskBackend::VirtioBlk,
+            "--vmm qemu requires --disk-backend virtio-blk"
+        );
+        anyhow::ensure!(
+            args.data_disk.is_some(),
+            "--vmm qemu currently requires --data-disk"
+        );
+    }
+    Ok(())
+}
+
+fn resolve_vmm(args: &RunArgs) -> anyhow::Result<report::VmmInfo> {
+    let (name, executable, version) = match args.vmm {
+        Vmm::Openvmm => {
+            let artifacts = resolve_artifacts(|resolver| {
+                resolver.require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE);
+            })?;
+            let resolver = petri::ArtifactResolver::resolver(&artifacts);
+            let executable = resolver
+                .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
+                .get()
+                .to_owned();
+            ("openvmm", std::path::absolute(executable)?, None)
+        }
+        Vmm::Qemu => {
+            let default = match petri_artifacts_common::tags::MachineArch::host() {
+                petri_artifacts_common::tags::MachineArch::X86_64 => "qemu-system-x86_64",
+                petri_artifacts_common::tags::MachineArch::Aarch64 => "qemu-system-aarch64",
+            };
+            let requested = args
+                .qemu_path
+                .as_deref()
+                .unwrap_or_else(|| Path::new(default));
+            let executable = which::which(requested).with_context(|| {
+                format!(
+                    "QEMU executable '{}' not found; install QEMU or pass --qemu-path",
+                    requested.display()
+                )
+            })?;
+            let executable = std::path::absolute(executable)?;
+            let output = std::process::Command::new(&executable)
+                .arg("--version")
+                .output()
+                .context("failed to query QEMU version")?;
+            anyhow::ensure!(
+                output.status.success(),
+                "QEMU --version failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let version = String::from_utf8(output.stdout).context("QEMU version is not UTF-8")?;
+            let version = version
+                .trim()
+                .lines()
+                .next()
+                .context("QEMU returned an empty version")?;
+            ("qemu", executable, Some(version.to_owned()))
+        }
+    };
+    Ok(report::VmmInfo {
+        name: name.into(),
+        executable,
+        version,
+        command: None,
+    })
 }
 
 fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
@@ -458,6 +593,11 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::network::register_artifacts,
         tests::disk_io::register_artifacts,
         tests::virtio_fs::register_artifacts,
+        |resolver| {
+            if cfg!(target_os = "linux") {
+                tests::disk_io::register_qemu_artifacts(resolver);
+            }
+        },
     ];
 
     let mut requirements = petri::TestArtifactRequirements::new();
@@ -583,4 +723,78 @@ fn cmd_compare(args: CompareArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    fn run_args(args: &[&str]) -> RunArgs {
+        let cli = Cli::try_parse_from(["burette", "run"].into_iter().chain(args.iter().copied()))
+            .unwrap();
+        let Command::Run(args) = cli.command else {
+            unreachable!()
+        };
+        args
+    }
+
+    #[test]
+    fn qemu_rejects_unsupported_benchmarks_and_disks() {
+        for args in [
+            vec!["--vmm", "qemu"],
+            vec!["--vmm", "qemu", "--test", "network"],
+            vec!["--vmm", "qemu", "--test", "disk-io"],
+            vec![
+                "--vmm",
+                "qemu",
+                "--test",
+                "disk-io",
+                "--data-disk",
+                "data.raw",
+                "--disk-backend",
+                "storvsc",
+            ],
+            vec!["--qemu-path", "/installed/qemu"],
+        ] {
+            assert!(validate_vmm_args(&run_args(&args)).is_err(), "{args:?}");
+        }
+        assert!(validate_vmm_args(&run_args(&[])).is_ok());
+        #[cfg(target_os = "linux")]
+        assert!(
+            validate_vmm_args(&run_args(&[
+                "--vmm",
+                "qemu",
+                "--test",
+                "disk-io",
+                "--data-disk",
+                "data.raw"
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn missing_qemu_is_an_error_not_an_artifact_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-qemu");
+        let args = run_args(&[
+            "--vmm",
+            "qemu",
+            "--test",
+            "disk-io",
+            "--data-disk",
+            "data.raw",
+            "--qemu-path",
+            missing.to_str().unwrap(),
+        ]);
+        let error = resolve_vmm(&args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("install QEMU or pass --qemu-path"),
+            "{error:#}"
+        );
+    }
 }

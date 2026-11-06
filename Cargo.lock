@@ -490,6 +490,7 @@ dependencies = [
  "tracing",
  "virtio_resources",
  "vm_resource",
+ "which 8.0.0",
  "windows 0.62.0",
 ]
 
