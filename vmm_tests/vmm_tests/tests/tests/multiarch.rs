@@ -6,6 +6,7 @@
 #[cfg(target_os = "linux")]
 use crate::aarch64_exclusive::vm_host_emu;
 use crate::nested::vm_host;
+use crate::nested::vm_host_mshv;
 use anyhow::Context;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
@@ -97,6 +98,10 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     openvmm_linux_direct_x64,
     nested(
         (vm_host, openvmm_linux_direct_x64),
+        (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
+    ),
+    nested(
+        (vm_host_mshv, openvmm_uefi_x64(mshv)),
         (NEXTEST_VMM_TESTS_ARCHIVE_LINUX_X64_MUSL, "tests", "multiarch", openvmm_linux_direct_x64),
     ),
     openvmm_linux_direct_aarch64,

@@ -22,6 +22,27 @@ pub(crate) async fn vm_host(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyh
     Ok(())
 }
 
+pub(crate) async fn vm_host_mshv(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_mshv_platform()
+        .with_memory(petri::MemoryConfig {
+            startup_bytes: 8 * petri::SIZE_1_GB,
+            ..Default::default()
+        })
+        .with_processor_topology(petri::ProcessorTopology {
+            vp_count: 2,
+            ..Default::default()
+        })
+        .run()
+        .await?;
+    vm.run_nested_test(&agent, Default::default()).await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[vmm_test_macros::vmm_test(
     qemu_linux_direct_aarch64,

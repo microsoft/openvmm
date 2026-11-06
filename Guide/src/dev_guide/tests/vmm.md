@@ -188,8 +188,8 @@ async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Resul
 
 On Linux hosts, OpenVMM and QEMU automatically share nested test artifacts and
 results with Linux guests over 9p. OpenVMM also supports directory sharing with
-Linux guests on Windows, but cross-OS nesting there remains disabled until CI
-provisions the nested artifacts. Other supported nesting configurations
+Linux guests on Windows when the nested artifacts are provisioned, as in CI.
+Other supported nesting configurations
 continue staging artifacts on the agent disk and
 copying results back through Pipette. Tests do not need to allocate PCIe ports
 for the shares. OpenVMM skips its automatic startup save/restore verification
@@ -226,6 +226,51 @@ async fn my_vm_host<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 }
 
 ```
+
+#### mshv root hosts
+
+On x86-64 Linux with KVM or Windows with WHP and nested virtualization enabled,
+`openvmm_uefi_x64(mshv)` describes an mshv root host. The host function applies
+`with_mshv_platform`; ordinary native nesting runs the musl L2 test inside it.
+Petri prepares the root's agent initrd, networking, clock, and CA setup without
+invoking the standalone Incubator CLI. The root kernel, development EFI host
+boot application, and licensed hypervisor payloads have distinct typed
+artifacts.
+
+Flowey resolves the published `mshv-test` kernel, builds `mshv_host_boot.efi`,
+and provisions the compatible hypervisor payloads. Linux provisioning uses
+`rpm2cpio` and `bsdtar`; RPM packages and their scripts are never installed
+or executed. Run the native test from a Linux or WSL host with:
+
+```bash
+filter='test(=multiarch::openvmm_linux_x64_boot_on_openvmm_uefi_x64_mshv_vm_host_mshv)'
+cargo xflowey vmm-tests-run --filter "$filter"
+```
+
+Use `--mshv-kernel path/to/mshv/bzImage` to override only the root kernel,
+independently of child kernels and their release pins. Runtime inputs remain
+offline; the shared Flowey nodes acquire payloads and build the EFI host boot
+application during preparation. See
+[Incubator's boot-artifact
+requirements](incubator.md#mshv-boot-artifacts-and-kernel) for the compatible
+kernel/payload contract and development-only trust model.
+
+CI extracts the payloads in the x64 Linux build job and publishes them,
+including licenses and source hashes, as `x64-mshv-boot-artifacts`.
+The x64 KVM and standard Windows x64 test jobs consume that artifact and the
+EFI host boot application. MSHV host jobs exclude the root test because that
+backend does not support another level of nested virtualization.
+
+Native Windows `vmm-tests-run` does not support discovering Linux child tests.
+Selections that include them, including `all()`, are rejected before building
+or querying the Linux test binary. Use a Linux or WSL host, or exclude those
+nested tests with `--filter`. This restriction does not apply to CI's prebuilt
+artifact path; Windows CI workers need no RPM tools.
+
+Use `--mshv-boot-artifacts path/to/mshv-boot-artifacts` to supply extracted
+payloads instead of preparing them from RPMs. Guest HTTPS access uses the
+host's root certificates; `SSL_CERT_FILE` can select an explicit PEM bundle
+instead.
 
 ## Running VMM Tests (Flowey)
 
