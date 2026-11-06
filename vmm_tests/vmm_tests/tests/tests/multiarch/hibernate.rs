@@ -67,7 +67,9 @@ async fn windows_hibernate_resume(
     let is_aarch64 = config.arch() == MachineArch::Aarch64;
     let (mut vm, agent) = config
         .with_processor_topology(ProcessorTopology {
-            vp_count: 2,
+            // Windows ARM64 has an EFI runtime/sleep race that can deadlock
+            // hibernation entry with multiple VPs. Use one VP until it is fixed.
+            vp_count: if is_aarch64 { 1 } else { 2 },
             ..Default::default()
         })
         .with_hibernation_enabled(true)
