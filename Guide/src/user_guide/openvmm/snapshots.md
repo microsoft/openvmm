@@ -52,8 +52,10 @@ specifying the output directory:
 save-snapshot path/to/snapshot-dir
 ```
 
-OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
-into the specified directory.
+OpenVMM writes `state.bin`, a hard link to `memory.bin`, and finally
+`manifest.bin` into the specified directory. The directory must not already
+exist, so existing data is never overwritten. If the save fails, the files it
+created are removed.
 
 ```admonish warning
 After saving, the VM remains **paused** and resume is blocked. Resuming
@@ -78,6 +80,13 @@ cargo run -- \
 `--restore-snapshot` automatically opens `memory.bin` from the snapshot
 directory, so `file=...` should not be specified in `--memory` (the two
 options are mutually exclusive).
+
+```admonish warning
+`memory.bin` is used in place as the restored VM's memory, so running the
+restored VM modifies the snapshot. A snapshot can be restored only once;
+restoring it again would combine modified memory with the original device
+state.
+```
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in
