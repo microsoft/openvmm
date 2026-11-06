@@ -79,6 +79,7 @@ impl SimpleFlowNode for Node {
                 junit_test_label: test_label,
                 target: target_triple,
                 nextest_profile,
+                collect_resources: true,
                 nextest_filter_expr: Some(filter),
                 test_content_config: TestContentConfig::Initialized {
                     test_content_dir: ReadVar::from_static(test_content_dir),

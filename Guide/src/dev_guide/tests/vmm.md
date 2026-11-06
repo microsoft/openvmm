@@ -102,6 +102,76 @@ engineers' local machines and in CI. Put these special words in your test to opt
 - `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
 - `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
 
+### Measuring CI parallelism
+
+PR CI runs using the `ci` nextest profile sample host resources once per
+second while the nextest command runs. CI publishes one combined
+`<test-label>-resources` artifact containing JUnit results and measurements,
+instead of also uploading a separate JUnit artifact. ADO's native test-results
+integration is unchanged. Burn-in runs do not collect resources and retain
+their existing successful-run log policy. The combined artifact contains:
+
+- `samples.jsonl`: monotonic elapsed time, host CPU utilization, used and
+  available memory, swap usage, and cumulative per-disk I/O counters where
+  supported.
+- `metadata.json` and `nextest.toml`: host capacity, OS/kernel, command,
+  profile, scheduler environment overrides, and a snapshot of the
+  repository's nextest configuration.
+- `junit.xml`: test start times and durations, including failed attempts.
+- `outcome.json`: nextest exit code and whether resource collection finished.
+
+Download and analyze an artifact using Python 3 (no additional packages):
+
+```bash
+gh run download <RUN_ID> --repo microsoft/openvmm \
+    --name <TEST_LABEL>-resources --dir path/to/resources
+python3 repo_support/nextest_resources.py path/to/resources \
+    --html path/to/report.html
+```
+
+The script prints a JSON summary and writes a self-contained HTML report
+with aligned concurrency, CPU, memory, disk-throughput, and per-test
+timelines. Summary metrics include time-weighted CPU utilization, mean and
+peak test concurrency, time spent at each concurrency level, memory
+headroom, and the drain time after the last test attempt starts. Retries
+count as separate attempts. Resource averages cover the JUnit run window,
+not archive extraction or compilation; command duration is reported
+separately. Missing CPU samples are unknown, not zero utilization.
+Windows disk I/O uses PDH `PhysicalDisk` instances instead of mounted-volume
+queries, which can fail on native VHD boot. Metadata identifies the provider;
+each disk is labeled by its PDH instance rather than a separate mount point.
+The aggregate `_Total` instance is excluded. Disk-query failures record
+`disk_io_error` and `disks: null`; individual invalid counters are null rather
+than zero. The report includes these diagnostics while still showing valid
+CPU, memory, timing, and disk measurements.
+
+Compare runs with the same test selection, machine type, and profile.
+Collect a baseline before changing `threads-required` or test thread
+limits. Look for periods with work remaining and both CPU and memory
+headroom, then use the test timeline and saved configuration to distinguish
+heavy-test serialization, group limits, and long-tail tests. Compare both
+elapsed time and failure frequency after each tuning change; higher
+concurrency is not a win if it makes tests unreliable.
+
+```admonish warning
+These are host-wide measurements, not per-test resource attribution or a
+measurement of nextest's reserved scheduling slots. Other processes and VM
+workers contribute. OS CPU counters can omit hypervisor guest execution,
+especially with Hyper-V; low CPU alone does not establish spare capacity.
+Used memory includes OS caches, and swap occupancy alone does not measure
+paging activity. Disk counters can alias across mount points or storage
+layers (for example, a VHD and its backing disk) and must not be summed
+blindly; throughput alone does not measure I/O saturation.
+```
+
+Collection errors produce warnings without changing test results. Sampling
+is approximate and can miss sub-second peaks; concurrency also inherits
+JUnit's timestamp and duration precision. Samples are flushed as they
+are written, but cancellation, runner loss, or a nextest infrastructure
+error can prevent JUnit generation or artifact publication. The analyzer
+rejects missing JUnit data and warns about incomplete resource coverage.
+Local runs using the default profile are unchanged.
+
 ### "unstable" tests
 
 If a test is not yet reliable enough to gate PRs, mark it `unstable`. Every

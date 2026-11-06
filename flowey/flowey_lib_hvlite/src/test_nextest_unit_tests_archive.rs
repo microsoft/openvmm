@@ -57,6 +57,7 @@ impl FlowNode for Node {
                         nextest_bin,
                     },
                 nextest_profile,
+                collect_resources: true,
                 nextest_filter_expr: None,
                 nextest_working_dir: None,
                 nextest_config_file: None,

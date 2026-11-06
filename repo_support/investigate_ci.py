@@ -346,8 +346,18 @@ def list_test_log_artifacts(all_artifacts: list[str]) -> list[str]:
 
 
 def list_junit_artifacts(all_artifacts: list[str]) -> list[str]:
-    """List available *-unit-tests-junit-xml artifact names."""
-    return [n for n in all_artifacts if n.endswith("-unit-tests-junit-xml")]
+    """List unit test artifacts containing JUnit, without duplicating older uploads."""
+    names = set(all_artifacts)
+    return [
+        name for name in all_artifacts
+        if "-unit-tests-" in name and (
+            name.endswith("-junit-xml")
+            or (
+                name.endswith("-resources")
+                and f"{name.removesuffix('-resources')}-junit-xml" not in names
+            )
+        )
+    ]
 
 
 def download_artifacts(run_id: str, artifact_names: list[str], workdir: Path) -> None:

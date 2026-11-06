@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "windows_disk_io"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Performance"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

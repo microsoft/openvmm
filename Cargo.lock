@@ -2516,6 +2516,7 @@ dependencies = [
  "test_with_tracing",
  "toml_edit",
  "which 8.0.0",
+ "windows_disk_io",
  "xshell",
 ]
 
@@ -12542,6 +12543,14 @@ name = "windows_aarch64_msvc"
 version = "0.53.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7651a1f62a11b8cbd5e0d42526e55f2c99886c77e007179efff86c2b137e66c"
+
+[[package]]
+name = "windows_disk_io"
+version = "0.0.0"
+dependencies = [
+ "test_with_tracing",
+ "windows-sys 0.61.0",
+]
 
 [[package]]
 name = "windows_i686_gnu"

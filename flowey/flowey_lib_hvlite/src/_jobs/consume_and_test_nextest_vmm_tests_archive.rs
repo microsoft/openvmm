@@ -50,6 +50,8 @@ flowey_request! {
         pub target: target_lexicon::Triple,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
+        /// Collect host resource measurements when using the CI profile.
+        pub collect_resources: bool,
         /// Nextest test filter expression.
         pub nextest_filter_expr: Option<String>,
         /// Information about the test content directory to use for the tests
@@ -108,6 +110,7 @@ impl SimpleFlowNode for Node {
             junit_test_label,
             target,
             nextest_profile,
+            collect_resources,
             nextest_filter_expr,
             test_content_config,
             downloaded_artifacts,
@@ -326,6 +329,7 @@ impl SimpleFlowNode for Node {
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
                 nextest_archive_file: nextest_vmm_tests_archive.clone(),
                 nextest_profile,
+                collect_resources,
                 nextest_filter_expr: nextest_filter_expr.clone(),
                 nextest_working_dir: Some(openvmm_repo_path.clone()),
                 nextest_config_file: Some(nextest_config_file.clone()),

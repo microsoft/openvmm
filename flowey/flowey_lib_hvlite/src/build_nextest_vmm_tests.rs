@@ -153,6 +153,7 @@ impl FlowNode for Node {
                                 build_params,
                             ),
                         nextest_profile,
+                        collect_resources: true,
                         nextest_filter_expr,
                         nextest_working_dir: None,
                         nextest_config_file: None,

@@ -1891,6 +1891,7 @@ impl IntoPipeline for CheckinGatesCli {
                     junit_test_label: test_label,
                     target: target.as_triple(),
                     nextest_profile: flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                    collect_resources: true,
                     nextest_filter_expr: Some(nextest_filter_expr),
                     test_content_config: TestContentConfig::Uninitialized {
                         test_content_dir: None,

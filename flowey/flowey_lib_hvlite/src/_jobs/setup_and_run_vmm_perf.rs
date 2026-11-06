@@ -142,6 +142,7 @@ impl SimpleFlowNode for Node {
                 flowey_lib_common::run_cargo_nextest_run::TestResults {
                     all_tests_passed: result.success,
                     junit_xml: None,
+                    resources: None,
                 }
             });
             ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {

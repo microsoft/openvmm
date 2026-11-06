@@ -21,6 +21,8 @@ flowey_request! {
         pub nextest_filter_expr: Option<String>,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
+        /// Collect host resource measurements when using the CI profile.
+        pub collect_resources: bool,
         /// Nextest working directory (defaults to repo root)
         pub nextest_working_dir: Option<ReadVar<PathBuf>>,
         /// Nextest configuration file (defaults to config in repo)
@@ -54,6 +56,7 @@ impl SimpleFlowNode for Node {
             nextest_archive_file,
             nextest_filter_expr,
             nextest_profile,
+            collect_resources,
             nextest_working_dir,
             nextest_config_file,
             nextest_bin,
@@ -73,6 +76,7 @@ impl SimpleFlowNode for Node {
                 nextest_bin,
             },
             nextest_profile,
+            collect_resources,
             nextest_filter_expr,
             nextest_working_dir,
             nextest_config_file,

@@ -44,7 +44,6 @@ flowey_request! {
         pub done: WriteVar<SideEffect>,
     }
 }
-
 new_flow_node!(struct Node);
 
 impl FlowNode for Node {
@@ -78,8 +77,9 @@ impl FlowNode for Node {
             let step_name = format!("publish test results: {label} (JUnit XML)");
             let artifact_name = format!("{label}-junit-xml");
 
+            let native_results = matches!(ctx.backend(), FlowBackend::Ado);
             let should_publish_junit_xml = test_results.map(ctx, move |r| {
-                r.junit_xml.is_some() && (upload_logs_on_success || !r.all_tests_passed)
+                should_publish_junit_xml(&r, upload_logs_on_success, native_results)
             });
 
             match ctx.backend() {
@@ -150,14 +150,20 @@ impl FlowNode for Node {
                 }
             }
 
-            for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
+            let resources = test_results.map(ctx, |r| r.resources.unwrap_or_default());
+            let attachments = attachments
+                .into_iter()
+                .map(|(label, (path, ado))| (label, path, ado, false))
+                .chain(std::iter::once(("resources".into(), resources, true, true)));
+            for (attachment_label, attachment_path, publish_on_ado, always_upload) in attachments {
                 let step_name = format!("publish test results: {label} ({attachment_label})");
                 let artifact_name = format!("{label}-{attachment_label}");
                 let should_publish =
                     attachment_path
                         .zip(ctx, test_results.clone())
                         .map(ctx, move |(p, r)| {
-                            (upload_logs_on_success || !r.all_tests_passed)
+                            !p.as_os_str().is_empty()
+                                && (always_upload || upload_logs_on_success || !r.all_tests_passed)
                                 && p.exists()
                                 && (p.is_file()
                                     || p.read_dir()
@@ -165,9 +171,7 @@ impl FlowNode for Node {
                                         .next()
                                         .is_some())
                         });
-                let attachment_path_string = attachment_path.map(ctx, |p| {
-                    p.absolute().expect("invalid path").display().to_string()
-                });
+                let attachment_path_string = attachment_path.map(ctx, attachment_path_to_string);
 
                 match ctx.backend() {
                     FlowBackend::Ado => {
@@ -252,6 +256,103 @@ impl FlowNode for Node {
         }
         ctx.emit_side_effect_step(use_side_effects, resolve_side_effects);
 
+        Ok(())
+    }
+}
+
+fn should_publish_junit_xml(
+    results: &TestResults,
+    upload_logs_on_success: bool,
+    native_results: bool,
+) -> bool {
+    let bundled = results
+        .resources
+        .as_ref()
+        .is_some_and(|dir| dir.join("junit.xml").is_file());
+    results.junit_xml.is_some()
+        && (upload_logs_on_success || !results.all_tests_passed)
+        && (native_results || !bundled)
+}
+
+fn attachment_path_to_string(path: PathBuf) -> String {
+    if path.as_os_str().is_empty() {
+        String::new()
+    } else {
+        path.absolute().expect("invalid path").display().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+
+    #[test]
+    fn bundled_junit_is_not_uploaded_separately() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        fs_err::write(dir.path().join("junit.xml"), "<testsuites/>")?;
+        for all_tests_passed in [false, true] {
+            let results = TestResults {
+                all_tests_passed,
+                junit_xml: Some(dir.path().join("junit.xml")),
+                resources: Some(dir.path().to_owned()),
+            };
+            for upload_logs_on_success in [false, true] {
+                assert!(!should_publish_junit_xml(
+                    &results,
+                    upload_logs_on_success,
+                    false
+                ));
+                assert_eq!(
+                    should_publish_junit_xml(&results, upload_logs_on_success, true),
+                    upload_logs_on_success || !all_tests_passed,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unbundled_junit_preserves_retention_and_copy_failure_fallback() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        for resources in [None, Some(dir.path().to_owned())] {
+            for all_tests_passed in [false, true] {
+                let mut results = TestResults {
+                    all_tests_passed,
+                    junit_xml: Some(dir.path().join("original-junit.xml")),
+                    resources: resources.clone(),
+                };
+                for native_results in [false, true] {
+                    for upload_logs_on_success in [false, true] {
+                        assert_eq!(
+                            should_publish_junit_xml(
+                                &results,
+                                upload_logs_on_success,
+                                native_results
+                            ),
+                            upload_logs_on_success || !all_tests_passed,
+                        );
+                    }
+                }
+                results.junit_xml = None;
+                assert!(!should_publish_junit_xml(&results, true, false));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn absent_attachment_path_stays_empty() {
+        assert_eq!(attachment_path_to_string(PathBuf::new()), "");
+    }
+
+    #[test]
+    fn present_attachment_path_is_absolute() -> anyhow::Result<()> {
+        let expected = std::env::current_dir()?.join("resources");
+        assert_eq!(
+            attachment_path_to_string(PathBuf::from("resources")),
+            expected.display().to_string()
+        );
         Ok(())
     }
 }

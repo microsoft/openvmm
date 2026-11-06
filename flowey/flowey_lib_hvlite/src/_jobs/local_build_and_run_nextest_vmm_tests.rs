@@ -908,6 +908,7 @@ impl SimpleFlowNode for Node {
                     target: target_triple,
                     nextest_profile,
                     nextest_filter_expr: Some(nextest_filter_expr),
+                    collect_resources: true,
                     test_content_config,
                     downloaded_artifacts,
                     prep_steps_variants,

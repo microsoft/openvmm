@@ -129,6 +129,7 @@ impl SimpleFlowNode for Node {
                 junit_test_label: format!("{label}-vmm-tests"),
                 target: target.as_triple(),
                 nextest_profile: NextestProfile::Ci,
+                collect_resources: false,
                 nextest_filter_expr: Some(nextest_filter_expr),
                 test_content_config: TestContentConfig::Uninitialized {
                     test_content_dir: None,

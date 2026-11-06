@@ -80,13 +80,13 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 0 flowey_lib_common::cache 8
-        flowey.exe v 0 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar56
-        flowey.exe v 0 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar57
+        flowey.exe v 0 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar81
+        flowey.exe v 0 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar82
     - id: flowey_lib_common__cache__9
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
-        key: ${{ env.floweyvar56 }}
-        path: ${{ env.floweyvar57 }}
+        key: ${{ env.floweyvar81 }}
+        path: ${{ env.floweyvar82 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -112,13 +112,13 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 0 flowey_lib_common::cache 4
-        flowey.exe v 0 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar54
-        flowey.exe v 0 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar55
+        flowey.exe v 0 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar79
+        flowey.exe v 0 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar80
     - id: flowey_lib_common__cache__5
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
-        key: ${{ env.floweyvar54 }}
-        path: ${{ env.floweyvar55 }}
+        key: ${{ env.floweyvar79 }}
+        path: ${{ env.floweyvar80 }}
       name: 'Restore cache: gh-cli'
     - name: installing gh
       run: |-
@@ -192,13 +192,13 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 0 flowey_lib_common::cache 0
-        flowey.exe v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar52
-        flowey.exe v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar53
+        flowey.exe v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar77
+        flowey.exe v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs' --is-raw-string write-to-env github floweyvar78
     - id: flowey_lib_common__cache__1
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
       with:
-        key: ${{ env.floweyvar52 }}
-        path: ${{ env.floweyvar53 }}
+        key: ${{ env.floweyvar77 }}
+        path: ${{ env.floweyvar78 }}
       name: 'Restore cache: cargo-nextest'
     - name: downloading cargo-nextest
       run: |-
@@ -209,14 +209,14 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 0 flowey_lib_common::git_checkout 0
-        flowey.exe v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar51
+        flowey.exe v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs write-to-env github floweyvar76
         flowey.exe v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar51 }}
+        persist-credentials: ${{ env.floweyvar76 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -487,58 +487,82 @@ jobs:
       run: flowey.exe e 0 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 55
     - name: summarize failing vmm tests
       run: |-
-        flowey.exe e 0 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 56 flowey_lib_common::publish_test_results 56 flowey_lib_common::publish_test_results 57
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:98:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:96:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar17
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:96:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__58
+        flowey.exe e 0 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 56 flowey_lib_common::publish_test_results 51 flowey_lib_common::publish_test_results 56 flowey_lib_common::publish_test_results 57 flowey_lib_common::publish_test_results 58
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:102:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:100:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar15
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:100:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__59
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-0-junit-xml
-        path: ${{ env.floweyvar17 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-0 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-21-resources
+        path: ${{ env.floweyvar15 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-21 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 59 flowey_lib_common::publish_test_results 60 flowey_lib_common::publish_test_results 61
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:105:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:103:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar18
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:103:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 60 flowey_lib_common::publish_test_results 61
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:107:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:105:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar16
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:105:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__62
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-0-logs
+        name: x64-windows-all-snp-vmm-tests-22-junit-xml
+        path: ${{ env.floweyvar16 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-22 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 64 flowey_lib_common::publish_test_results 65 flowey_lib_common::publish_test_results 66
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:116:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:114:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar17
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:114:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__67
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-22-logs
+        path: ${{ env.floweyvar17 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-22 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 63 flowey_lib_common::publish_test_results 68 flowey_lib_common::publish_test_results 69 flowey_lib_common::publish_test_results 70
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:123:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:121:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar18
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:121:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__71
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-22-resources
         path: ${{ env.floweyvar18 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-0 (logs)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-22 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 63 flowey_lib_common::publish_test_results 64
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:110:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:108:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar19
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:108:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__65
+        flowey.exe e 0 flowey_lib_common::publish_test_results 72 flowey_lib_common::publish_test_results 73
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:128:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:126:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar19
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:126:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__74
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-1-junit-xml
+        name: x64-windows-all-snp-vmm-tests-23-junit-xml
         path: ${{ env.floweyvar19 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-1 (JUnit XML)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-23 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 66 flowey_lib_common::publish_test_results 67 flowey_lib_common::publish_test_results 68
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:117:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:115:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar20
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:115:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__69
+        flowey.exe e 0 flowey_lib_common::publish_test_results 76 flowey_lib_common::publish_test_results 77 flowey_lib_common::publish_test_results 78
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:137:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:135:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar20
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:135:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__79
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-1-logs
+        name: x64-windows-all-snp-vmm-tests-23-logs
         path: ${{ env.floweyvar20 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-1 (logs)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-23 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 4 flowey_lib_common::publish_test_results 5
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar2
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__6
+        flowey.exe e 0 flowey_lib_common::publish_test_results 6 flowey_lib_common::publish_test_results 4 flowey_lib_common::publish_test_results 5
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:11:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar2
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:9:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__7
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-all-snp-vmm-tests-17-logs
@@ -547,435 +571,675 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 70 flowey_lib_common::publish_test_results 71
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:122:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:120:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar21
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:120:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__72
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-2-junit-xml
-        path: ${{ env.floweyvar21 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-2 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 73 flowey_lib_common::publish_test_results 74 flowey_lib_common::publish_test_results 75
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:129:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:127:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar22
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:127:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__76
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-2-logs
-        path: ${{ env.floweyvar22 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-2 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 77 flowey_lib_common::publish_test_results 78
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:134:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:132:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar23
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:132:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__79
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-3-junit-xml
-        path: ${{ env.floweyvar23 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-3 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 80 flowey_lib_common::publish_test_results 81 flowey_lib_common::publish_test_results 82
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:141:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:139:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar24
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:139:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 75 flowey_lib_common::publish_test_results 80 flowey_lib_common::publish_test_results 81 flowey_lib_common::publish_test_results 82
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:144:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:142:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar21
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:142:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__83
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-3-logs
-        path: ${{ env.floweyvar24 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-3 (logs)'
+        name: x64-windows-all-snp-vmm-tests-23-resources
+        path: ${{ env.floweyvar21 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-23 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
         flowey.exe e 0 flowey_lib_common::publish_test_results 84 flowey_lib_common::publish_test_results 85
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:146:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:144:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar25
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:144:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:149:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:147:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar22
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:147:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__86
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-4-junit-xml
-        path: ${{ env.floweyvar25 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-4 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-24-junit-xml
+        path: ${{ env.floweyvar22 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-24 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 87 flowey_lib_common::publish_test_results 88 flowey_lib_common::publish_test_results 89
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:153:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:151:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar26
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:151:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__90
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-4-logs
-        path: ${{ env.floweyvar26 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-4 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 91 flowey_lib_common::publish_test_results 92
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:158:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:156:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar27
+        flowey.exe e 0 flowey_lib_common::publish_test_results 88 flowey_lib_common::publish_test_results 89 flowey_lib_common::publish_test_results 90
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:158:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:156:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar23
         flowey.exe v 0 'flowey_lib_common::publish_test_results:156:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__93
+    - id: flowey_lib_common__publish_test_results__91
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-5-junit-xml
-        path: ${{ env.floweyvar27 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-5 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-24-logs
+        path: ${{ env.floweyvar23 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-24 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 94 flowey_lib_common::publish_test_results 95 flowey_lib_common::publish_test_results 96
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:165:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:163:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar28
+        flowey.exe e 0 flowey_lib_common::publish_test_results 87 flowey_lib_common::publish_test_results 92 flowey_lib_common::publish_test_results 93 flowey_lib_common::publish_test_results 94
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:165:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:163:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar24
         flowey.exe v 0 'flowey_lib_common::publish_test_results:163:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__97
+    - id: flowey_lib_common__publish_test_results__95
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-5-logs
-        path: ${{ env.floweyvar28 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-5 (logs)'
+        name: x64-windows-all-snp-vmm-tests-24-resources
+        path: ${{ env.floweyvar24 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-24 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 7 flowey_lib_common::publish_test_results 8
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:14:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:12:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar3
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:12:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__9
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-18-junit-xml
-        path: ${{ env.floweyvar3 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-18 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 98 flowey_lib_common::publish_test_results 99
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:170:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:168:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar29
+        flowey.exe e 0 flowey_lib_common::publish_test_results 96 flowey_lib_common::publish_test_results 97
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:170:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:168:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar25
         flowey.exe v 0 'flowey_lib_common::publish_test_results:168:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__100
+    - id: flowey_lib_common__publish_test_results__98
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-6-junit-xml
-        path: ${{ env.floweyvar29 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-6 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-0-junit-xml
+        path: ${{ env.floweyvar25 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-0 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 101 flowey_lib_common::publish_test_results 102 flowey_lib_common::publish_test_results 103
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:177:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:175:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar30
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:175:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__104
+        flowey.exe e 0 flowey_lib_common::publish_test_results 100 flowey_lib_common::publish_test_results 101 flowey_lib_common::publish_test_results 102
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:179:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:177:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar26
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:177:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__103
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-6-logs
-        path: ${{ env.floweyvar30 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-6 (logs)'
+        name: x64-windows-all-snp-vmm-tests-0-logs
+        path: ${{ env.floweyvar26 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-0 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 105 flowey_lib_common::publish_test_results 106
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:182:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:180:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar31
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:180:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 99 flowey_lib_common::publish_test_results 104 flowey_lib_common::publish_test_results 105 flowey_lib_common::publish_test_results 106
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:186:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:184:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar27
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:184:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__107
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-7-junit-xml
+        name: x64-windows-all-snp-vmm-tests-0-resources
+        path: ${{ env.floweyvar27 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-0 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 108 flowey_lib_common::publish_test_results 109
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:191:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:189:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar28
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:189:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__110
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-1-junit-xml
+        path: ${{ env.floweyvar28 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-1 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 112 flowey_lib_common::publish_test_results 113 flowey_lib_common::publish_test_results 114
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:200:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:198:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar29
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:198:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__115
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-1-logs
+        path: ${{ env.floweyvar29 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-1 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 111 flowey_lib_common::publish_test_results 116 flowey_lib_common::publish_test_results 117 flowey_lib_common::publish_test_results 118
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:207:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:205:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar30
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:205:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__119
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-1-resources
+        path: ${{ env.floweyvar30 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-1 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 3 flowey_lib_common::publish_test_results 8 flowey_lib_common::publish_test_results 9 flowey_lib_common::publish_test_results 10
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:18:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:16:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar3
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:16:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__11
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-17-resources
+        path: ${{ env.floweyvar3 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-17 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 120 flowey_lib_common::publish_test_results 121
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:212:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:210:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar31
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:210:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__122
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-2-junit-xml
         path: ${{ env.floweyvar31 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-7 (JUnit XML)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-2 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 108 flowey_lib_common::publish_test_results 109 flowey_lib_common::publish_test_results 110
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:189:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:187:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar32
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:187:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__111
+        flowey.exe e 0 flowey_lib_common::publish_test_results 124 flowey_lib_common::publish_test_results 125 flowey_lib_common::publish_test_results 126
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:221:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:219:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar32
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:219:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__127
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-7-logs
+        name: x64-windows-all-snp-vmm-tests-2-logs
         path: ${{ env.floweyvar32 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-7 (logs)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-2 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 112 flowey_lib_common::publish_test_results 113
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:194:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:192:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar33
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:192:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__114
+        flowey.exe e 0 flowey_lib_common::publish_test_results 123 flowey_lib_common::publish_test_results 128 flowey_lib_common::publish_test_results 129 flowey_lib_common::publish_test_results 130
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:228:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:226:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar33
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:226:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__131
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-8-junit-xml
+        name: x64-windows-all-snp-vmm-tests-2-resources
         path: ${{ env.floweyvar33 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-8 (JUnit XML)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-2 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 115 flowey_lib_common::publish_test_results 116 flowey_lib_common::publish_test_results 117
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:201:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:199:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar34
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:199:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__118
+        flowey.exe e 0 flowey_lib_common::publish_test_results 132 flowey_lib_common::publish_test_results 133
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:233:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:231:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar34
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:231:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__134
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-8-logs
+        name: x64-windows-all-snp-vmm-tests-3-junit-xml
         path: ${{ env.floweyvar34 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-8 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 119 flowey_lib_common::publish_test_results 120
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:206:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:204:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar35
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:204:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__121
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-9-junit-xml
-        path: ${{ env.floweyvar35 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-9 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 122 flowey_lib_common::publish_test_results 123 flowey_lib_common::publish_test_results 124
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:213:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:211:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar36
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:211:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__125
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-9-logs
-        path: ${{ env.floweyvar36 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-9 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 126 flowey_lib_common::publish_test_results 127
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:218:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:216:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar37
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:216:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__128
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-10-junit-xml
-        path: ${{ env.floweyvar37 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-10 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 129 flowey_lib_common::publish_test_results 130 flowey_lib_common::publish_test_results 131
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:225:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:223:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar38
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:223:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__132
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-10-logs
-        path: ${{ env.floweyvar38 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-10 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 133 flowey_lib_common::publish_test_results 134
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:230:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:228:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar39
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:228:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__135
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-11-junit-xml
-        path: ${{ env.floweyvar39 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-11 (JUnit XML)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-3 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
         flowey.exe e 0 flowey_lib_common::publish_test_results 136 flowey_lib_common::publish_test_results 137 flowey_lib_common::publish_test_results 138
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:237:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:235:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar40
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:235:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:242:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:240:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar35
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:240:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__139
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-11-logs
-        path: ${{ env.floweyvar40 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-11 (logs)'
+        name: x64-windows-all-snp-vmm-tests-3-logs
+        path: ${{ env.floweyvar35 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-3 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 10 flowey_lib_common::publish_test_results 11 flowey_lib_common::publish_test_results 12
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar4
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__13
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-18-logs
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-18 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 140 flowey_lib_common::publish_test_results 141
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:242:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:240:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar41
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:240:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__142
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-12-junit-xml
-        path: ${{ env.floweyvar41 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-12 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 143 flowey_lib_common::publish_test_results 144 flowey_lib_common::publish_test_results 145
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:249:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:247:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar42
+        flowey.exe e 0 flowey_lib_common::publish_test_results 135 flowey_lib_common::publish_test_results 140 flowey_lib_common::publish_test_results 141 flowey_lib_common::publish_test_results 142
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:249:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:247:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar36
         flowey.exe v 0 'flowey_lib_common::publish_test_results:247:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__143
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-3-resources
+        path: ${{ env.floweyvar36 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-3 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 144 flowey_lib_common::publish_test_results 145
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:254:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:252:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar37
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:252:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__146
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-12-logs
-        path: ${{ env.floweyvar42 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-12 (logs)'
+        name: x64-windows-all-snp-vmm-tests-4-junit-xml
+        path: ${{ env.floweyvar37 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-4 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 147 flowey_lib_common::publish_test_results 148
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:254:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:252:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar43
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:252:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__149
+        flowey.exe e 0 flowey_lib_common::publish_test_results 12 flowey_lib_common::publish_test_results 13
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:23:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar4
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:21:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__14
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-13-junit-xml
-        path: ${{ env.floweyvar43 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-13 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-18-junit-xml
+        path: ${{ env.floweyvar4 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-18 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 150 flowey_lib_common::publish_test_results 151 flowey_lib_common::publish_test_results 152
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:261:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:259:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar44
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:259:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__153
+        flowey.exe e 0 flowey_lib_common::publish_test_results 148 flowey_lib_common::publish_test_results 149 flowey_lib_common::publish_test_results 150
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:263:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:261:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar38
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:261:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__151
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-13-logs
-        path: ${{ env.floweyvar44 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-13 (logs)'
+        name: x64-windows-all-snp-vmm-tests-4-logs
+        path: ${{ env.floweyvar38 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-4 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 154 flowey_lib_common::publish_test_results 155
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:266:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:264:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar45
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:264:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__156
+        flowey.exe e 0 flowey_lib_common::publish_test_results 147 flowey_lib_common::publish_test_results 152 flowey_lib_common::publish_test_results 153 flowey_lib_common::publish_test_results 154
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:270:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:268:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar39
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:268:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__155
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-14-junit-xml
-        path: ${{ env.floweyvar45 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-14 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-4-resources
+        path: ${{ env.floweyvar39 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-4 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 157 flowey_lib_common::publish_test_results 158 flowey_lib_common::publish_test_results 159
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:273:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:271:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar46
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:271:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__160
+        flowey.exe e 0 flowey_lib_common::publish_test_results 156 flowey_lib_common::publish_test_results 157
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:275:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:273:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar40
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:273:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__158
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-14-logs
-        path: ${{ env.floweyvar46 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-14 (logs)'
+        name: x64-windows-all-snp-vmm-tests-5-junit-xml
+        path: ${{ env.floweyvar40 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-5 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 161 flowey_lib_common::publish_test_results 162
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:278:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:276:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar47
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:276:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 160 flowey_lib_common::publish_test_results 161 flowey_lib_common::publish_test_results 162
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:284:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:282:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar41
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:282:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__163
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-15-junit-xml
-        path: ${{ env.floweyvar47 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-15 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-5-logs
+        path: ${{ env.floweyvar41 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-5 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 164 flowey_lib_common::publish_test_results 165 flowey_lib_common::publish_test_results 166
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:285:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:283:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar48
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:283:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 159 flowey_lib_common::publish_test_results 164 flowey_lib_common::publish_test_results 165 flowey_lib_common::publish_test_results 166
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:291:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:289:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar42
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:289:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__167
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-15-logs
-        path: ${{ env.floweyvar48 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-15 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 14 flowey_lib_common::publish_test_results 15
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:26:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:24:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar5
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:24:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__16
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-19-junit-xml
-        path: ${{ env.floweyvar5 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-19 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-5-resources
+        path: ${{ env.floweyvar42 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-5 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
         flowey.exe e 0 flowey_lib_common::publish_test_results 168 flowey_lib_common::publish_test_results 169
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:290:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:288:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar49
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:288:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:296:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:294:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar43
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:294:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__170
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-16-junit-xml
+        name: x64-windows-all-snp-vmm-tests-6-junit-xml
+        path: ${{ env.floweyvar43 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-6 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 172 flowey_lib_common::publish_test_results 173 flowey_lib_common::publish_test_results 174
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:305:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:303:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar44
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:303:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__175
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-6-logs
+        path: ${{ env.floweyvar44 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-6 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 171 flowey_lib_common::publish_test_results 176 flowey_lib_common::publish_test_results 177 flowey_lib_common::publish_test_results 178
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:312:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:310:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar45
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:310:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__179
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-6-resources
+        path: ${{ env.floweyvar45 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-6 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 180 flowey_lib_common::publish_test_results 181
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:317:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:315:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar46
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:315:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__182
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-7-junit-xml
+        path: ${{ env.floweyvar46 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-7 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 184 flowey_lib_common::publish_test_results 185 flowey_lib_common::publish_test_results 186
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:326:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:324:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar47
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:324:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__187
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-7-logs
+        path: ${{ env.floweyvar47 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-7 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 183 flowey_lib_common::publish_test_results 188 flowey_lib_common::publish_test_results 189 flowey_lib_common::publish_test_results 190
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:333:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:331:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar48
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:331:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__191
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-7-resources
+        path: ${{ env.floweyvar48 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-7 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 192 flowey_lib_common::publish_test_results 193
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:338:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:336:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar49
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:336:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__194
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-8-junit-xml
         path: ${{ env.floweyvar49 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-16 (JUnit XML)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-8 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 171 flowey_lib_common::publish_test_results 172 flowey_lib_common::publish_test_results 173
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:297:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:295:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar50
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:295:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__174
+        flowey.exe e 0 flowey_lib_common::publish_test_results 196 flowey_lib_common::publish_test_results 197 flowey_lib_common::publish_test_results 198
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:347:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:345:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar50
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:345:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__199
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-16-logs
+        name: x64-windows-all-snp-vmm-tests-8-logs
         path: ${{ env.floweyvar50 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-16 (logs)'
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-8 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 17 flowey_lib_common::publish_test_results 18 flowey_lib_common::publish_test_results 19
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:33:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:31:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar6
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:31:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__20
+        flowey.exe e 0 flowey_lib_common::publish_test_results 16 flowey_lib_common::publish_test_results 17 flowey_lib_common::publish_test_results 18
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:32:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:30:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar5
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:30:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__19
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-19-logs
-        path: ${{ env.floweyvar6 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-19 (logs)'
+        name: x64-windows-all-snp-vmm-tests-18-logs
+        path: ${{ env.floweyvar5 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-18 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 21 flowey_lib_common::publish_test_results 22
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:38:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:36:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar7
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:36:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe e 0 flowey_lib_common::publish_test_results 195 flowey_lib_common::publish_test_results 200 flowey_lib_common::publish_test_results 201 flowey_lib_common::publish_test_results 202
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:354:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:352:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar51
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:352:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__203
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-8-resources
+        path: ${{ env.floweyvar51 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-8 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 204 flowey_lib_common::publish_test_results 205
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:359:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:357:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar52
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:357:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__206
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-9-junit-xml
+        path: ${{ env.floweyvar52 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-9 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 208 flowey_lib_common::publish_test_results 209 flowey_lib_common::publish_test_results 210
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:368:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:366:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar53
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:366:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__211
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-9-logs
+        path: ${{ env.floweyvar53 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-9 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 207 flowey_lib_common::publish_test_results 212 flowey_lib_common::publish_test_results 213 flowey_lib_common::publish_test_results 214
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:375:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:373:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar54
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:373:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__215
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-9-resources
+        path: ${{ env.floweyvar54 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-9 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 216 flowey_lib_common::publish_test_results 217
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:380:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:378:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar55
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:378:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__218
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-10-junit-xml
+        path: ${{ env.floweyvar55 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-10 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 220 flowey_lib_common::publish_test_results 221 flowey_lib_common::publish_test_results 222
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:389:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:387:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar56
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:387:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__223
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-10-logs
+        path: ${{ env.floweyvar56 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-10 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 219 flowey_lib_common::publish_test_results 224 flowey_lib_common::publish_test_results 225 flowey_lib_common::publish_test_results 226
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:396:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:394:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar57
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:394:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__227
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-10-resources
+        path: ${{ env.floweyvar57 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-10 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 228 flowey_lib_common::publish_test_results 229
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:401:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:399:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar58
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:399:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__230
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-11-junit-xml
+        path: ${{ env.floweyvar58 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-11 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 232 flowey_lib_common::publish_test_results 233 flowey_lib_common::publish_test_results 234
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:410:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:408:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar59
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:408:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__235
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-11-logs
+        path: ${{ env.floweyvar59 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-11 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 231 flowey_lib_common::publish_test_results 236 flowey_lib_common::publish_test_results 237 flowey_lib_common::publish_test_results 238
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:417:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:415:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar60
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:415:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__239
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-11-resources
+        path: ${{ env.floweyvar60 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-11 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 15 flowey_lib_common::publish_test_results 20 flowey_lib_common::publish_test_results 21 flowey_lib_common::publish_test_results 22
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:39:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar6
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:37:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__23
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-20-junit-xml
-        path: ${{ env.floweyvar7 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-20 (JUnit XML)'
+        name: x64-windows-all-snp-vmm-tests-18-resources
+        path: ${{ env.floweyvar6 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-18 (resources)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 24 flowey_lib_common::publish_test_results 25 flowey_lib_common::publish_test_results 26
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:45:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:43:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar8
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:43:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__27
+        flowey.exe e 0 flowey_lib_common::publish_test_results 240 flowey_lib_common::publish_test_results 241
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:422:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:420:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar61
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:420:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__242
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-20-logs
-        path: ${{ env.floweyvar8 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-20 (logs)'
+        name: x64-windows-all-snp-vmm-tests-12-junit-xml
+        path: ${{ env.floweyvar61 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-12 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 244 flowey_lib_common::publish_test_results 245 flowey_lib_common::publish_test_results 246
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:431:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:429:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar62
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:429:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__247
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-12-logs
+        path: ${{ env.floweyvar62 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-12 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 243 flowey_lib_common::publish_test_results 248 flowey_lib_common::publish_test_results 249 flowey_lib_common::publish_test_results 250
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:438:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:436:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar63
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:436:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__251
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-12-resources
+        path: ${{ env.floweyvar63 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-12 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 252 flowey_lib_common::publish_test_results 253
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:443:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:441:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar64
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:441:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__254
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-13-junit-xml
+        path: ${{ env.floweyvar64 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-13 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 256 flowey_lib_common::publish_test_results 257 flowey_lib_common::publish_test_results 258
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:452:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:450:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar65
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:450:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__259
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-13-logs
+        path: ${{ env.floweyvar65 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-13 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 255 flowey_lib_common::publish_test_results 260 flowey_lib_common::publish_test_results 261 flowey_lib_common::publish_test_results 262
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:459:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:457:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar66
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:457:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__263
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-13-resources
+        path: ${{ env.floweyvar66 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-13 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 264 flowey_lib_common::publish_test_results 265
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:464:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:462:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar67
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:462:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__266
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-14-junit-xml
+        path: ${{ env.floweyvar67 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-14 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 24 flowey_lib_common::publish_test_results 25
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:44:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar7
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:42:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__26
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-19-junit-xml
+        path: ${{ env.floweyvar7 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-19 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 268 flowey_lib_common::publish_test_results 269 flowey_lib_common::publish_test_results 270
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:473:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:471:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar68
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:471:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__271
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-14-logs
+        path: ${{ env.floweyvar68 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-14 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 267 flowey_lib_common::publish_test_results 272 flowey_lib_common::publish_test_results 273 flowey_lib_common::publish_test_results 274
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:480:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:478:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar69
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:478:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__275
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-14-resources
+        path: ${{ env.floweyvar69 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-14 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 276 flowey_lib_common::publish_test_results 277
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:485:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:483:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar70
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:483:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__278
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-15-junit-xml
+        path: ${{ env.floweyvar70 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-15 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 280 flowey_lib_common::publish_test_results 281 flowey_lib_common::publish_test_results 282
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:494:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:492:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar71
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:492:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__283
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-15-logs
+        path: ${{ env.floweyvar71 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-15 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
@@ -991,99 +1255,135 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 28 flowey_lib_common::publish_test_results 29
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:50:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:48:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar9
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:48:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__30
+        flowey.exe e 0 flowey_lib_common::publish_test_results 279 flowey_lib_common::publish_test_results 284 flowey_lib_common::publish_test_results 285 flowey_lib_common::publish_test_results 286
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:501:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:499:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar72
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:499:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__287
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-15-resources
+        path: ${{ env.floweyvar72 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-15 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 288 flowey_lib_common::publish_test_results 289
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:506:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:504:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar73
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:504:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__290
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-16-junit-xml
+        path: ${{ env.floweyvar73 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-16 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 292 flowey_lib_common::publish_test_results 293 flowey_lib_common::publish_test_results 294
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:515:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:513:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar74
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:513:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__295
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-16-logs
+        path: ${{ env.floweyvar74 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-16 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 291 flowey_lib_common::publish_test_results 296 flowey_lib_common::publish_test_results 297 flowey_lib_common::publish_test_results 298
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:522:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:520:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar75
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:520:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__299
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-16-resources
+        path: ${{ env.floweyvar75 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-16 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 28 flowey_lib_common::publish_test_results 29 flowey_lib_common::publish_test_results 30
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:53:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar8
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:51:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__31
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-19-logs
+        path: ${{ env.floweyvar8 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-19 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 27 flowey_lib_common::publish_test_results 32 flowey_lib_common::publish_test_results 33 flowey_lib_common::publish_test_results 34
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:60:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:58:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar9
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:58:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__35
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-19-resources
+        path: ${{ env.floweyvar9 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-19 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 36 flowey_lib_common::publish_test_results 37
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:65:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:63:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar10
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:63:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__38
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-20-junit-xml
+        path: ${{ env.floweyvar10 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-20 (JUnit XML)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 40 flowey_lib_common::publish_test_results 41 flowey_lib_common::publish_test_results 42
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:74:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:72:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar11
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:72:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__43
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-20-logs
+        path: ${{ env.floweyvar11 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-20 (logs)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 39 flowey_lib_common::publish_test_results 44 flowey_lib_common::publish_test_results 45 flowey_lib_common::publish_test_results 46
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:81:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar12
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__47
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: x64-windows-all-snp-vmm-tests-20-resources
+        path: ${{ env.floweyvar12 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-20 (resources)'
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey.exe e 0 flowey_lib_common::publish_test_results 48 flowey_lib_common::publish_test_results 49
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:86:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:84:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar13
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:84:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+    - id: flowey_lib_common__publish_test_results__50
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: x64-windows-all-snp-vmm-tests-21-junit-xml
-        path: ${{ env.floweyvar9 }}
+        path: ${{ env.floweyvar13 }}
       name: 'publish test results: x64-windows-all-snp-vmm-tests-21 (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 31 flowey_lib_common::publish_test_results 32 flowey_lib_common::publish_test_results 33
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:57:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:55:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar10
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:55:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__34
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-21-logs
-        path: ${{ env.floweyvar10 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-21 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 35 flowey_lib_common::publish_test_results 36
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:62:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:60:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar11
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:60:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__37
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-22-junit-xml
-        path: ${{ env.floweyvar11 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-22 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 38 flowey_lib_common::publish_test_results 39 flowey_lib_common::publish_test_results 40
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:69:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:67:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar12
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:67:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__41
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-22-logs
-        path: ${{ env.floweyvar12 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-22 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 42 flowey_lib_common::publish_test_results 43
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:74:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:72:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar13
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:72:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__44
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-23-junit-xml
-        path: ${{ env.floweyvar13 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-23 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 45 flowey_lib_common::publish_test_results 46 flowey_lib_common::publish_test_results 47
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:81:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar14
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:79:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__48
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-23-logs
-        path: ${{ env.floweyvar14 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-23 (logs)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
-        flowey.exe e 0 flowey_lib_common::publish_test_results 49 flowey_lib_common::publish_test_results 50
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:86:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:84:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar15
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:84:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
-    - id: flowey_lib_common__publish_test_results__51
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: x64-windows-all-snp-vmm-tests-24-junit-xml
-        path: ${{ env.floweyvar15 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-24 (JUnit XML)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🦀 flowey rust steps
-      run: |-
         flowey.exe e 0 flowey_lib_common::publish_test_results 52 flowey_lib_common::publish_test_results 53 flowey_lib_common::publish_test_results 54
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:93:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:91:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar16
-        flowey.exe v 0 'flowey_lib_common::publish_test_results:91:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:95:flowey_lib_common/src/publish_test_results.rs' --is-raw-string --condvar flowey_lib_common::publish_test_results:93:flowey_lib_common/src/publish_test_results.rs write-to-env github floweyvar14
+        flowey.exe v 0 'flowey_lib_common::publish_test_results:93:flowey_lib_common/src/publish_test_results.rs' write-to-env github FLOWEY_CONDITION
     - id: flowey_lib_common__publish_test_results__55
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
-        name: x64-windows-all-snp-vmm-tests-24-logs
-        path: ${{ env.floweyvar16 }}
-      name: 'publish test results: x64-windows-all-snp-vmm-tests-24 (logs)'
+        name: x64-windows-all-snp-vmm-tests-21-logs
+        path: ${{ env.floweyvar14 }}
+      name: 'publish test results: x64-windows-all-snp-vmm-tests-21 (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey.exe e 0 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 57
