@@ -18,8 +18,8 @@ use crate::queue::QueueParams;
 use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::VirtioDeviceStatus;
+use anyhow::Context as _;
 use chipset_device::io::deferred::DeferredWrite;
-use futures::FutureExt;
 use futures::task::AtomicWaker;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
@@ -141,7 +141,7 @@ pub(crate) struct VirtioTransportCore {
     pub pending_status_deferred: Option<DeferredWrite>,
     #[inspect(with = "Vec::len")]
     pub stalled_io: Vec<StalledIo>,
-    /// The device task's answer to the last start, until `poll_device` or
+    /// The device task's answer to the last start, until `confirm_start()` or
     /// `stop()` takes it.
     #[inspect(skip)]
     pending_start: Option<PendingFailableRpc<()>>,
@@ -489,35 +489,43 @@ impl VirtioTransportCore {
                 self.mark_needs_reset(ops);
             }
         }
-
-        if let Some(start) = &mut self.pending_start {
-            if let Poll::Ready(result) = start.poll_unpin(cx) {
-                self.pending_start = None;
-                self.complete_start(ops, result);
-            }
-        }
     }
 
     /// `ChangeDeviceState::start()` implementation.
     ///
-    /// `start()` cannot wait for the device task, so `poll_device` or the next
-    /// `stop()` takes its answer.
+    /// `start()` cannot wait for the device task, so `confirm_start()`, or the
+    /// next `stop()` when nothing confirms the start, takes its answer.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
         if let Some(params) = self.start_params(ops) {
             self.pending_start = Some(
                 self.device_sender
                     .call_failable(DeviceCommand::Start, params),
             );
-            if let Some(waker) = self.poll_waker.take() {
-                waker.wake();
-            }
         }
     }
 
-    /// Applies the device task's answer to a start: a device whose queues
-    /// did not all start processes nothing, so the transport marks it as
-    /// needing reset, as virtio 1.2 section 2.1.2 requires of a device in an
-    /// error state, rather than let the guest wait on it.
+    /// `ChangeDeviceState::confirm_start()` implementation.
+    ///
+    /// Waits for the device task's answer to the last start and fails if a
+    /// queue did not start. The device task has then stopped the queues that
+    /// did and kept their progress, so the caller's stop leaves the device as
+    /// it was before the start. The transport does not mark the device as
+    /// needing reset, since the caller stops it again rather than let the
+    /// guest use it.
+    pub async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        if let Some(start) = self.pending_start.take() {
+            start
+                .await
+                .context("virtio device failed to start its queues")?;
+        }
+        Ok(())
+    }
+
+    /// Applies the device task's answer to a start that nothing confirmed: a
+    /// device whose queues did not all start processes nothing, so the
+    /// transport marks it as needing reset, as virtio 1.2 section 2.1.2
+    /// requires of a device in an error state, rather than let the guest wait
+    /// on it.
     fn complete_start(
         &mut self,
         ops: &mut dyn TransportOps,

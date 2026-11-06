@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 //! Tests for restarting the queues of an active device when the VM starts:
-//! a queue that fails to start, and the progress of the queues that started
-//! before it.
+//! the confirmation of the start, a queue that fails to start, and the
+//! progress of the queues that started before it.
 
 use super::*;
 use test_with_tracing::test;
@@ -197,4 +197,92 @@ async fn failed_start_keeps_queue_progress_pci(driver: DefaultDriver) {
     let (device, probe) = ProgressDevice::new();
     let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
     verify_failed_start_keeps_queue_progress(&mut transport, &probe).await;
+}
+
+/// Confirms the starts of an inactive device, which starts nothing, and of
+/// the same device once its queues are active.
+async fn verify_start_confirmation(transport: &mut impl TestTransport, probe: &ProgressProbe) {
+    transport.start();
+    transport.confirm_start().await.unwrap();
+    transport.stop().await;
+    assert_eq!(probe.last_start(0), None);
+
+    transport.write_driver_ok();
+    yield_and_poll(transport).await;
+    transport.stop().await;
+    transport.start();
+    transport.confirm_start().await.unwrap();
+    assert_eq!(
+        probe.last_start(0),
+        Some(QueueState {
+            avail_index: 1,
+            used_index: 1
+        })
+    );
+    // A confirmed start leaves no answer for the stop to apply.
+    transport.stop().await;
+    assert_eq!(transport.read_status() & VIRTIO_DEVICE_NEEDS_RESET, 0);
+}
+
+#[async_test]
+async fn start_confirmation_mmio(driver: DefaultDriver) {
+    let (device, probe) = ProgressDevice::new();
+    let mut transport = MmioTestTransport::new(Box::new(device), &driver, 2);
+    verify_start_confirmation(&mut transport, &probe).await;
+}
+
+#[async_test]
+async fn start_confirmation_pci(driver: DefaultDriver) {
+    let (device, probe) = ProgressDevice::new();
+    let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
+    verify_start_confirmation(&mut transport, &probe).await;
+}
+
+/// Fails the confirmation of a start whose second queue fails to start, then
+/// stops and starts the device again, as the VM does when it rolls the start
+/// back and later resumes: the device is never marked as needing reset, and
+/// the first queue resumes after the request that it completed.
+async fn verify_failed_confirmation_keeps_queue_progress(
+    transport: &mut impl TestTransport,
+    probe: &ProgressProbe,
+) {
+    transport.write_driver_ok();
+    yield_and_poll(transport).await;
+    transport.stop().await;
+
+    probe.fail_at(Some(1));
+    transport.start();
+    let error = transport.confirm_start().await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("intentional queue start failure"),
+        "{error:#}"
+    );
+    transport.stop().await;
+
+    probe.fail_at(None);
+    transport.start();
+    transport.confirm_start().await.unwrap();
+    assert_eq!(
+        probe.last_start(0),
+        Some(QueueState {
+            avail_index: 2,
+            used_index: 2
+        })
+    );
+    transport.stop().await;
+    assert_eq!(transport.read_status() & VIRTIO_DEVICE_NEEDS_RESET, 0);
+}
+
+#[async_test]
+async fn failed_confirmation_keeps_queue_progress_mmio(driver: DefaultDriver) {
+    let (device, probe) = ProgressDevice::new();
+    let mut transport = MmioTestTransport::new(Box::new(device), &driver, 2);
+    verify_failed_confirmation_keeps_queue_progress(&mut transport, &probe).await;
+}
+
+#[async_test]
+async fn failed_confirmation_keeps_queue_progress_pci(driver: DefaultDriver) {
+    let (device, probe) = ProgressDevice::new();
+    let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
+    verify_failed_confirmation_keeps_queue_progress(&mut transport, &probe).await;
 }

@@ -275,6 +275,13 @@ impl ChangeDeviceState for ChipsetDeviceProxy {
         self.req_send.send(DeviceRequest::Start)
     }
 
+    async fn confirm_start(&mut self) -> anyhow::Result<()> {
+        self.req_send
+            .call_failable(DeviceRequest::ConfirmStart, ())
+            .await?;
+        Ok(())
+    }
+
     async fn quiesce_input(&mut self) -> anyhow::Result<()> {
         self.req_send
             .call_failable(DeviceRequest::QuiesceInput, ())
@@ -402,6 +409,10 @@ mod tests {
 
     impl ChangeDeviceState for TestDevice {
         fn start(&mut self) {}
+        async fn confirm_start(&mut self) -> anyhow::Result<()> {
+            anyhow::ensure!(self.value != 0xbad, "the device did not start");
+            Ok(())
+        }
         async fn stop(&mut self) {
             self.access_memory();
         }
@@ -602,6 +613,25 @@ mod tests {
                 .value,
             42
         );
+        stop_worker(&mut proxy).await;
+    }
+
+    #[async_test]
+    async fn remote_start_confirmations_are_reported(driver: DefaultDriver) {
+        let vmtime = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
+        let mut proxy = new_proxy(&vmtime, &driver).await;
+        proxy.start();
+        proxy.confirm_start().await.unwrap();
+        proxy.stop().await;
+
+        proxy.restore(state(0xbad)).await.unwrap();
+        proxy.start();
+        let error = proxy.confirm_start().await.unwrap_err();
+        assert!(
+            format!("{error:#}").contains("the device did not start"),
+            "{error:#}"
+        );
+        proxy.stop().await;
         stop_worker(&mut proxy).await;
     }
 }
