@@ -496,12 +496,11 @@ static mut LINUX_ENTRY: u64 = 0;
 #[cfg(minimal_rt)]
 static mut LINUX_ZERO_PAGE: u64 = 0;
 
+// Called only after accepting RAM and initializing the single-threaded handoff statics.
 #[cfg(minimal_rt)]
-fn jump_to_linux() -> ! {
-    // SAFETY: The caller accepted all omitted RAM and populated these
-    // single-threaded handoff statics from the measured parameter page.
-    unsafe {
-        core::arch::asm!(
+#[unsafe(naked)]
+extern "C" fn jump_to_linux() -> ! {
+    core::arch::naked_asm!(
             // Clear registers to restore the original direct-boot register state.
             "xor eax, eax",
             "xor ebx, ebx",
@@ -533,9 +532,7 @@ fn jump_to_linux() -> ! {
             "jmp qword ptr [rip + {linux_entry}]",
             linux_entry = sym LINUX_ENTRY,
             linux_zero_page = sym LINUX_ZERO_PAGE,
-            options(noreturn),
-        )
-    }
+    );
 }
 
 #[cfg(minimal_rt)]
@@ -604,13 +601,36 @@ extern "C" fn start(params_gpa: u64) -> ! {
     jump_to_linux()
 }
 
+/// Preserves the parameter-page GPA, clears BSS, installs the stack, and relocates the image.
+///
+/// # Safety
+/// Must be entered with RSI pointing to the measured parameter page and identity mappings active.
 #[cfg(minimal_rt)]
-core::arch::global_asm! {
-    include_str!("entry.S"),
-    relocate = sym minimal_rt::reloc::relocate,
-    start = sym start,
-    stack = sym STACK,
-    STACK_SIZE = const STACK_SIZE,
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+unsafe extern "C" fn _start() -> ! {
+    core::arch::naked_asm!(
+        "mov r12, rsi",
+        "lea rdi, __bss_start[rip]",
+        "lea rcx, _end[rip]",
+        "sub rcx, rdi",
+        "xor eax, eax",
+        "cld",
+        "rep stosb",
+        "lea rsp, {STACK_SIZE} + {stack}[rip]",
+        "and rsp, -16",
+        "lea rdx, _DYNAMIC[rip]",
+        "lea rdi, __ehdr_start[rip]",
+        "mov rsi, rdi",
+        "call {relocate}",
+        "sub rsp, 8", // SysV function-entry stack alignment
+        "mov rdi, r12",
+        "jmp {start}",
+        relocate = sym minimal_rt::reloc::relocate,
+        start = sym start,
+        stack = sym STACK,
+        STACK_SIZE = const STACK_SIZE,
+    );
 }
 
 #[cfg(minimal_rt)]

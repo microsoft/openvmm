@@ -57,9 +57,59 @@ use zerocopy::FromZeros;
 
 unsafe extern "C" {
     static IMAGE_PDE: Pte;
-    fn irq_entry();
-    fn exc_gpf();
-    fn exc_pf();
+}
+
+/// # Safety
+/// Must be entered with an interrupt frame and the sidecar page tables active.
+#[unsafe(naked)]
+unsafe extern "C" fn irq_entry() -> ! {
+    core::arch::naked_asm!(
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "call {irq_handler}",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+        "iretq",
+        irq_handler = sym super::irq_handler,
+    );
+}
+
+/// # Safety
+/// Must be entered with a general-protection fault frame on the stack.
+#[unsafe(naked)]
+unsafe extern "C" fn exc_gpf() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, 0xd",
+        "mov rsi, rsp",
+        "jmp {exception_handler}",
+        exception_handler = sym super::exception_handler,
+    );
+}
+
+/// # Safety
+/// Must be entered with a page-fault frame on the stack.
+#[unsafe(naked)]
+unsafe extern "C" fn exc_pf() -> ! {
+    core::arch::naked_asm!(
+        "mov rdi, 0xe",
+        "mov rsi, rsp",
+        "jmp {exception_handler}",
+        exception_handler = sym super::exception_handler,
+    );
 }
 
 static GDT: [GdtEntry; 4] = {
@@ -146,7 +196,7 @@ impl Display for InitVpError {
     }
 }
 
-/// BSP entry point from entry.S. Called with BSS, stack, and page tables
+/// BSP entry point from the naked startup function. Called with BSS, stack, and page tables
 /// initialized, and relocations applied.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub extern "C" fn start(params: u64, output: u64) -> bool {
