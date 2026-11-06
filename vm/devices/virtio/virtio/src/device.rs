@@ -88,6 +88,13 @@ pub trait VirtioDevice: InspectMut + Send {
     /// `initial_state` provides restored queue indices for save/restore
     /// or vhost-user `SET_VRING_BASE`. If `None`, the queue starts fresh
     /// (indices at 0).
+    ///
+    /// An error fails the start. When the guest sets DRIVER_OK, the
+    /// transport fails DRIVER_OK; when the VM resumes, which does not wait
+    /// for queues to start, the transport marks the device as needing reset.
+    /// Acquire the host resources that restored state refers to in
+    /// [`restore_device`](Self::restore_device) instead, so that a missing
+    /// one fails the restore.
     fn start_queue(
         &mut self,
         idx: u16,
