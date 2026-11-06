@@ -112,6 +112,9 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
         with_vtl0_pipette: bool,
         nested_test: Option<NestedTestDeps>,
     ) -> Option<Self> {
+        if !T::check_default_compat(&firmware, arch) {
+            return None;
+        }
         Self::new_inner(
             resolver,
             firmware,
@@ -481,6 +484,12 @@ pub trait PetriVmmBackend: Debug {
     /// configuration is sometimes valid (for example, OpenVMM + OpenHCL is only
     /// valid on Windows X64 hosts).
     fn check_compat(firmware: &Firmware, arch: MachineArch) -> bool;
+
+    /// Check compatibility with the executable selected by [`Self::new`].
+    /// Caller-supplied backends use [`Self::check_compat`] instead.
+    fn check_default_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        Self::check_compat(firmware, arch)
+    }
 
     /// Select backend specific quirks guest and vmm quirks.
     fn quirks(firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks);

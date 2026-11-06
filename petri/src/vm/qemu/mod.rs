@@ -106,6 +106,12 @@ impl PetriVmmBackend for QemuPetriBackend {
                 || MachineArch::X86_64 == MachineArch::host() && arch == MachineArch::Aarch64)
     }
 
+    fn check_default_compat(firmware: &Firmware, arch: MachineArch) -> bool {
+        MachineArch::host() == MachineArch::X86_64
+            && arch == MachineArch::Aarch64
+            && Self::check_compat(firmware, arch)
+    }
+
     fn quirks(_firmware: &Firmware) -> (GuestQuirksInner, VmmQuirks) {
         (GuestQuirksInner::default(), VmmQuirks::default())
     }
@@ -975,6 +981,55 @@ mod tests {
         assert!(requirements.required_artifacts().any(|id| {
             id == petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase()
         }));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_guests_require_an_explicit_qemu_backend() {
+        let arch = MachineArch::host();
+        let mut requirements = crate::TestArtifactRequirements::new();
+        let resolver = ArtifactResolver::collector(&mut requirements);
+        let default = crate::PetriVmArtifacts::<QemuPetriBackend>::new(
+            &resolver,
+            linux_direct_config(arch).firmware,
+            arch,
+            false,
+        );
+        assert!(default.is_none());
+        let explicit = crate::PetriVmArtifacts::new_with_backend(
+            &resolver,
+            linux_direct_config(arch).firmware,
+            arch,
+            false,
+            QemuPetriBackend::from_binary("/installed/native-qemu".into()),
+        )
+        .expect("explicit native QEMU must remain supported");
+        assert_eq!(
+            explicit.backend.qemu_path.get(),
+            Path::new("/installed/native-qemu")
+        );
+        assert!(requirements.required_artifacts().next().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_emulator_artifacts_are_only_collected_on_x64_hosts() {
+        let mut requirements = crate::TestArtifactRequirements::new();
+        let artifacts = crate::PetriVmArtifacts::<QemuPetriBackend>::new(
+            &ArtifactResolver::collector(&mut requirements),
+            linux_direct_config(MachineArch::Aarch64).firmware,
+            MachineArch::Aarch64,
+            false,
+        );
+        if MachineArch::host() == MachineArch::X86_64 {
+            assert!(artifacts.is_some());
+            assert!(requirements.required_artifacts().any(|id| {
+                id == petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase()
+            }));
+        } else {
+            assert!(artifacts.is_none());
+            assert!(requirements.required_artifacts().next().is_none());
+        }
     }
 
     #[cfg(target_os = "linux")]
