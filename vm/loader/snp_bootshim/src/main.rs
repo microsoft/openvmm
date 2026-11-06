@@ -498,6 +498,8 @@ static mut LINUX_ZERO_PAGE: u64 = 0;
 
 // Called only after accepting RAM and initializing the single-threaded handoff statics.
 #[cfg(minimal_rt)]
+// SAFETY: Assembly implements the entire non-returning handoff, restoring Linux's
+// entry register state and discarding the shim stack before jumping to the kernel.
 #[unsafe(naked)]
 extern "C" fn jump_to_linux() -> ! {
     core::arch::naked_asm!(
@@ -606,7 +608,10 @@ extern "C" fn start(params_gpa: u64) -> ! {
 /// # Safety
 /// Must be entered with RSI pointing to the measured parameter page and identity mappings active.
 #[cfg(minimal_rt)]
+// SAFETY: The minimal_rt SNP bootshim has no CRT entry point; this is its sole `_start`.
 #[unsafe(no_mangle)]
+// SAFETY: Assembly preserves RSI and initializes the stack before calling Rust;
+// it transfers control to the acceptance routine without returning.
 #[unsafe(naked)]
 unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(

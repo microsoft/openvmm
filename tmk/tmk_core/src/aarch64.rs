@@ -11,7 +11,10 @@ use super::Scope;
 mod entry {
     /// # Safety
     /// Must be entered with the TMK start input in X0 and the image identity mapped.
+    // SAFETY: This architecture's minimal_rt entry point is the TMK payload's sole `_start`.
     #[unsafe(no_mangle)]
+    // SAFETY: Assembly preserves X0 and initializes the stack and FPU before
+    // calling Rust; it transfers control to the TMK entry point without returning.
     #[unsafe(naked)]
     unsafe extern "C" fn _start() -> ! {
         core::arch::naked_asm!(

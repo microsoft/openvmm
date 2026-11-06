@@ -67,7 +67,10 @@ pub fn uninitialize_serial_io(p: &ShimParams) {
 /// # Safety
 /// Must be entered with the boot shim register state and the image identity mapped.
 #[cfg(minimal_rt)]
+// SAFETY: The minimal_rt boot shim has no CRT entry point; this is its sole `_start`.
 #[unsafe(no_mangle)]
+// SAFETY: Assembly owns stack initialization and preserves the boot arguments
+// until it transfers control to Rust without returning.
 #[unsafe(naked)]
 unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(

@@ -14,6 +14,8 @@ use tmk_protocol as _;
 
 /// # Safety
 /// The test harness must expect an instruction abort outside the protected address range.
+// SAFETY: Assembly only uses caller-saved X16 to branch to the intended fault
+// address and never returns; the calling test expects the instruction abort.
 #[unsafe(naked)]
 unsafe extern "C" fn instruction_abort_outside_par_entry() -> ! {
     core::arch::naked_asm!(
@@ -38,6 +40,8 @@ fn instruction_abort_outside_par(_: TestContext<'_>) {
 
 /// # Safety
 /// The test harness must expect an instruction abort at a RIPAS-empty address.
+// SAFETY: Assembly only uses caller-saved X16 to branch to the intended fault
+// address and never returns; the calling test expects the instruction abort.
 #[unsafe(naked)]
 unsafe extern "C" fn instruction_abort_ripas_empty_entry() -> ! {
     core::arch::naked_asm!("movz x16, #0x0000", "br x16");
@@ -57,6 +61,8 @@ fn instruction_abort_ripas_empty(_: TestContext<'_>) {
 
 /// # Safety
 /// The test harness must expect an instruction abort caused by execute permissions.
+// SAFETY: Assembly only uses caller-saved X16 to branch to the intended fault
+// address and never returns; the calling test expects the instruction abort.
 #[unsafe(naked)]
 unsafe extern "C" fn instruction_abort_permissions_enabled_entry() -> ! {
     core::arch::naked_asm!("movz x16, #0xf000", "movk x16, #0x847f, lsl #16", "br x16",);
