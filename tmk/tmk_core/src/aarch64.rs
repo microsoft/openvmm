@@ -6,6 +6,7 @@
 #![cfg(target_arch = "aarch64")]
 
 use super::Scope;
+use core::ptr::NonNull;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -33,7 +34,8 @@ const GICD_CTLR_ENABLE_GRP1_AND_ARE: u32 = (1 << 1) | (1 << 4);
 pub const VIRTUAL_TIMER_PPI: u32 = tmk_protocol::aarch64::VIRTUAL_TIMER_PPI;
 
 static ARCH_INITIALIZED: AtomicBool = AtomicBool::new(false);
-static mut IRQ_HANDLER: [usize; 2] = [0; 2];
+type IrqHandler<'a> = NonNull<dyn Send + Fn(&mut IrqContext) + 'a>;
+static mut IRQ_HANDLER: Option<IrqHandler<'static>> = None;
 
 /// A context passed to the IRQ handler.
 pub struct IrqContext {
@@ -223,8 +225,15 @@ unsafe extern "C" {
     safe static EXCEPTION_VECTORS: u8;
 }
 
+#[derive(Default)]
+enum SavedIrqHandler {
+    #[default]
+    NotSaved,
+    Saved(Option<IrqHandler<'static>>),
+}
+
 pub(super) struct ArchScopeState {
-    old_irq_handler: Option<[usize; 2]>,
+    old_irq_handler: SavedIrqHandler,
     interrupts_enabled: bool,
 }
 
@@ -237,14 +246,14 @@ impl<'scope> Scope<'scope, '_> {
         let interrupts_enabled = are_interrupts_enabled();
         arch_init_once();
         ArchScopeState {
-            old_irq_handler: None,
+            old_irq_handler: SavedIrqHandler::NotSaved,
             interrupts_enabled,
         }
     }
 
     /// Restores the IRQ handler and IRQ delivery state saved by this scope.
     pub(super) fn arch_reset(&mut self) {
-        if let Some(handler) = self.arch.old_irq_handler.take() {
+        if let SavedIrqHandler::Saved(handler) = core::mem::take(&mut self.arch.old_irq_handler) {
             let _disable = disable_guarded();
             // SAFETY: IRQ_HANDLER is not concurrently accessed while IRQs are disabled.
             unsafe { IRQ_HANDLER = handler };
@@ -258,12 +267,12 @@ impl<'scope> Scope<'scope, '_> {
 
     /// Saves the currently installed IRQ handler once for later restoration.
     fn save_irq_handler(&mut self) {
-        if self.arch.old_irq_handler.is_some() {
+        if matches!(self.arch.old_irq_handler, SavedIrqHandler::Saved(_)) {
             return;
         }
         let _disable = disable_guarded();
         // SAFETY: IRQ_HANDLER is not concurrently modified while IRQs are disabled.
-        self.arch.old_irq_handler = Some(unsafe { IRQ_HANDLER });
+        self.arch.old_irq_handler = SavedIrqHandler::Saved(unsafe { IRQ_HANDLER });
     }
 
     /// Sets the IRQ handler.
@@ -271,11 +280,16 @@ impl<'scope> Scope<'scope, '_> {
     /// This is reverted when the scope ends.
     pub fn set_irq_handler(&mut self, handler: &'scope (dyn Send + Fn(&mut IrqContext))) {
         self.save_irq_handler();
+        let handler: IrqHandler<'scope> = NonNull::from(handler);
+        // SAFETY: this only erases the trait object's lifetime, preserving the
+        // typed pointer and its metadata. The scope keeps the handler alive and
+        // restores the previous pointer in arch_reset before that lifetime ends.
+        let handler =
+            unsafe { core::mem::transmute::<IrqHandler<'scope>, IrqHandler<'static>>(handler) };
         let _disable = disable_guarded();
         // SAFETY: IRQ_HANDLER is not concurrently modified while IRQs are disabled.
         unsafe {
-            IRQ_HANDLER =
-                core::mem::transmute::<&(dyn Send + Fn(&mut IrqContext)), [usize; 2]>(handler)
+            IRQ_HANDLER = Some(handler);
         };
     }
 
@@ -436,19 +450,17 @@ extern "C" fn irq_handler() {
         return;
     }
 
-    let handler = {
-        // SAFETY: IRQ_HANDLER is changed only while IRQs are disabled.
-        let handler = unsafe { IRQ_HANDLER };
-        // SAFETY: this is the underlying type stored by set_irq_handler.
-        unsafe {
-            core::mem::transmute::<[usize; 2], Option<&(dyn Send + Fn(&mut IrqContext))>>(handler)
-        }
-    };
+    // SAFETY: IRQ_HANDLER is changed only while IRQs are disabled, and IRQ
+    // delivery is masked on exception entry.
+    let handler = unsafe { IRQ_HANDLER };
 
     let Some(handler) = handler else {
         panic!("unhandled IRQ {intid}");
     };
 
+    // SAFETY: set_irq_handler keeps the closure alive until its scope restores
+    // the previous handler, and this shared borrow lasts only for this call.
+    let handler = unsafe { handler.as_ref() };
     handler(&mut IrqContext { intid });
     write_icc_eoir1(intid);
 }
@@ -489,7 +501,7 @@ fn arch_init_once() {
         core::arch::asm!(
             "msr VBAR_EL1, {vectors}",
             "isb",
-            vectors = in(reg) &EXCEPTION_VECTORS as *const u8 as u64,
+            vectors = in(reg) core::ptr::from_ref(&EXCEPTION_VECTORS) as u64,
         );
     }
 }
