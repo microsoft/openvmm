@@ -65,6 +65,8 @@ pub(crate) enum DeviceRequest {
     Stop(Rpc<(), ()>),
     /// Reset the device
     Reset(Rpc<(), ()>),
+    /// Release resources of a stopped device and exit the worker.
+    Teardown(Rpc<(), ()>),
     /// Save the device state
     Save(Rpc<(), Result<SavedStateBlob, RemoteError>>),
     /// Restore the device state

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Globally install a package via `apt` on DEB-based Linux systems,
-//! or `dnf` on RPM-based ones.
+//! `dnf` or `tdnf` on RPM-based systems, `zypper` on openSUSE, or `pacman` on Arch.
 //!
 //! This is a temporary solution, and this file will be split in
 //! two in the future to have two flowey Nodes.
@@ -41,7 +41,9 @@ fn query_installed_packages(
             let fmt = "${binary:Package}\t${db:Status-Status}\n";
             flowey::shell_cmd!(rt, "dpkg-query -W -f={fmt} {packages_to_check...}")
         }
-        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
+        FlowPlatformLinuxDistro::Fedora
+        | FlowPlatformLinuxDistro::AzureLinux
+        | FlowPlatformLinuxDistro::OpenSuse => {
             let fmt = "%{NAME}\n";
             flowey::shell_cmd!(rt, "rpm -q --queryformat={fmt} {packages_to_check...}")
         }
@@ -96,6 +98,9 @@ fn update_packages(
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => flowey::shell_cmd!(rt, "sudo apt-get update").run()?,
         FlowPlatformLinuxDistro::Fedora => flowey::shell_cmd!(rt, "sudo dnf update").run()?,
+        FlowPlatformLinuxDistro::OpenSuse => {
+            flowey::shell_cmd!(rt, "sudo zypper --non-interactive refresh").run()?
+        }
         // tdnf auto-refreshes metadata; no explicit update step needed
         FlowPlatformLinuxDistro::AzureLinux => (),
         // Running `pacman -Sy` without a full system update can break everything; do nothing
@@ -117,7 +122,9 @@ fn install_packages(
 ) -> anyhow::Result<()> {
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => {
-            let mut options = Vec::new();
+            // don't install recommended packages to avoid relying on
+            // dependencies not explicitly listed.
+            let mut options = vec!["--no-install-recommends"];
             if !interactive {
                 // auto accept
                 options.push("-y");
@@ -137,6 +144,14 @@ fn install_packages(
         FlowPlatformLinuxDistro::Arch => {
             let auto_accept = (!interactive).then_some("--noconfirm");
             flowey::shell_cmd!(rt, "sudo pacman -S {auto_accept...} {packages...}").run()?;
+        }
+        FlowPlatformLinuxDistro::OpenSuse => {
+            let auto_accept = (!interactive).then_some("--non-interactive");
+            flowey::shell_cmd!(
+                rt,
+                "sudo zypper {auto_accept...} install --no-recommends {packages...}"
+            )
+            .run()?;
         }
         FlowPlatformLinuxDistro::Nix => {
             anyhow::bail!("Nix environments cannot install packages")
@@ -345,6 +360,7 @@ native-lib:amd64\tinstalled
             FlowPlatformLinuxDistro::Fedora,
             FlowPlatformLinuxDistro::AzureLinux,
             FlowPlatformLinuxDistro::Arch,
+            FlowPlatformLinuxDistro::OpenSuse,
         ] {
             assert_eq!(
                 parse_installed_packages(distro, "compiler\nlibrary\n").unwrap(),

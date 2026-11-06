@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 base64.workspace = true
 crypto = { workspace = true, features = ["test_helpers"] }
-der = { workspace = true, features = ["alloc", "oid"] }
 getrandom.workspace = true
 get_resources.workspace = true
 inspect = { workspace = true, features = ["derive"] }

@@ -9,6 +9,9 @@ use super::X509Error;
 use super::X509PublicKey;
 use super::X509VerifyError;
 use crate::win::KeyHandle;
+use crate::win::decode_object;
+#[cfg(any(test, feature = "test_helpers"))]
+use crate::win::encode_object;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
@@ -19,12 +22,8 @@ use windows::Win32::Security::Cryptography::CERT_INFO;
 use windows::Win32::Security::Cryptography::CERT_KEY_CERT_SIGN_KEY_USAGE;
 use windows::Win32::Security::Cryptography::CERT_NAME_ATTR_TYPE;
 #[cfg(any(test, feature = "test_helpers"))]
-use windows::Win32::Security::Cryptography::CERT_PUBLIC_KEY_INFO;
-#[cfg(any(test, feature = "test_helpers"))]
 use windows::Win32::Security::Cryptography::CRYPT_ALGORITHM_IDENTIFIER;
 use windows::Win32::Security::Cryptography::CRYPT_BIT_BLOB;
-#[cfg(any(test, feature = "test_helpers"))]
-use windows::Win32::Security::Cryptography::CRYPT_ENCODE_OBJECT_FLAGS;
 use windows::Win32::Security::Cryptography::CRYPT_IMPORT_PUBLIC_KEY_FLAGS;
 use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
 use windows::Win32::Security::Cryptography::X509_ASN_ENCODING;
@@ -148,7 +147,7 @@ impl X509CertificateInner {
             // Hand the certificate's already-parsed public-key info directly to
             // the ECDSA backend rather than extracting and re-parsing the point.
             let inner = crate::ecdsa::win::EcdsaPublicKeyInner::from_cert_public_key_info(info)
-                .map_err(|crate::ecdsa::EcdsaError(e)| X509Error(e))?;
+                .map_err(|e| X509Error(e.0))?;
             Ok(X509PublicKey::Ecdsa(crate::ecdsa::EcdsaPublicKey(inner)))
         } else {
             Err(invalid_err(
@@ -163,14 +162,14 @@ impl X509CertificateInner {
         // This avoids constructing a CERT_PUBLIC_KEY_INFO from scratch,
         // which CryptVerifyCertificateSignatureEx is finicky about.
         let ctx = self.0.cert_context();
-        let signed =
-            decode_object::<windows::Win32::Security::Cryptography::CERT_SIGNED_CONTENT_INFO>(
-                X509_CERT,
-                &CRYPT_INTEGER_BLOB {
-                    cbData: ctx.cbCertEncoded,
-                    pbData: ctx.pbCertEncoded,
-                },
-            )?;
+        let signed = decode_object::<
+            windows::Win32::Security::Cryptography::CERT_SIGNED_CONTENT_INFO,
+        >(
+            X509_CERT,
+            // SAFETY: the cert context owns these encoded certificate bytes.
+            unsafe { std::slice::from_raw_parts(ctx.pbCertEncoded, ctx.cbCertEncoded as usize) },
+        )
+        .map_err(X509Error)?;
 
         // Hash algorithm from the signature algorithm OID.
         let oid = signed.value.SignatureAlgorithm.pszObjId;
@@ -204,33 +203,8 @@ impl X509CertificateInner {
         match issuer_public_key {
             X509PublicKey::Rsa(key) => Ok(key.pkcs1_verify(tbs, sig, hash)?),
             X509PublicKey::Ecdsa(key) => {
-                use windows::Win32::Security::Cryptography::CERT_ECC_SIGNATURE;
-                use windows::Win32::Security::Cryptography::X509_ECC_SIGNATURE;
-
-                let components = decode_object::<CERT_ECC_SIGNATURE>(
-                    X509_ECC_SIGNATURE,
-                    &CRYPT_INTEGER_BLOB {
-                        cbData: sig_bits.cbData,
-                        pbData: sig_bits.pbData,
-                    },
-                )?;
-                let size = crate::ecdsa::EcdsaCurve::P384.key_size();
-                let mut signature = vec![0; size * 2];
-                for (component, output) in [&components.value.r, &components.value.s]
-                    .iter()
-                    .zip(signature.chunks_exact_mut(size))
-                {
-                    let bytes = blob_as_slice(component)
-                        .ok_or_else(|| invalid_err("malformed ECDSA signature component"))?;
-                    if bytes.len() > size {
-                        return Ok(false);
-                    }
-                    // CryptoAPI decodes little-endian integers; BCrypt uses
-                    // fixed-width big-endian r || s.
-                    for (output, byte) in output.iter_mut().rev().zip(bytes) {
-                        *output = *byte;
-                    }
-                }
+                let signature =
+                    crate::ecdsa::EcdsaSignature::from_der(crate::ecdsa::EcdsaCurve::P384, sig)?;
                 Ok(key.verify(tbs, &signature, hash)?)
             }
         }
@@ -255,7 +229,12 @@ impl X509CertificateInner {
 
         // KeyUsage on issuer must permit cert signing if present.
         if let Some(ku_ext) = find_extension(issuer_info, szOID_KEY_USAGE) {
-            let bits = decode_object::<CRYPT_BIT_BLOB>(X509_KEY_USAGE, &ku_ext.Value)?;
+            let bits = decode_object::<CRYPT_BIT_BLOB>(
+                X509_KEY_USAGE,
+                blob_as_slice(&ku_ext.Value)
+                    .ok_or_else(|| invalid_err("malformed certificate key usage blob"))?,
+            )
+            .map_err(X509Error)?;
             let mut u32_usage: u32 = 0;
             // SAFETY: bits.pbData points to at least bits.cbData bytes if
             // non-null. Copy up to 4 bytes; default to 0 otherwise.
@@ -278,8 +257,10 @@ impl X509CertificateInner {
         if let Some(akid_ext) = find_extension(subject_info, szOID_AUTHORITY_KEY_IDENTIFIER2) {
             let akid = decode_object::<CERT_AUTHORITY_KEY_ID2_INFO>(
                 X509_AUTHORITY_KEY_ID2,
-                &akid_ext.Value,
-            )?;
+                blob_as_slice(&akid_ext.Value)
+                    .ok_or_else(|| invalid_err("malformed authority key identifier blob"))?,
+            )
+            .map_err(X509Error)?;
 
             if akid.value.KeyId.cbData != 0 {
                 let skid_ext = find_extension(issuer_info, szOID_SUBJECT_KEY_IDENTIFIER);
@@ -288,8 +269,11 @@ impl X509CertificateInner {
                         // X509_OCTET_STRING decodes to CRYPT_INTEGER_BLOB
                         let skid = decode_object::<CRYPT_INTEGER_BLOB>(
                             windows::Win32::Security::Cryptography::X509_OCTET_STRING,
-                            &ext.Value,
-                        )?;
+                            blob_as_slice(&ext.Value).ok_or_else(|| {
+                                invalid_err("malformed subject key identifier blob")
+                            })?,
+                        )
+                        .map_err(X509Error)?;
                         let a = blob_as_slice(&akid.value.KeyId);
                         let b = blob_as_slice(&skid.value);
                         if a.is_none() || b.is_none() || a != b {
@@ -406,6 +390,50 @@ impl X509CertificateInner {
     }
 
     pub fn subject_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.common_name(0)
+    }
+
+    pub fn issuer_common_name(&self) -> Result<Option<String>, X509Error> {
+        self.common_name(windows::Win32::Security::Cryptography::CERT_NAME_ISSUER_FLAG)
+    }
+
+    pub fn validity(
+        &self,
+    ) -> Result<(jiff::civil::DateTime, jiff::civil::DateTime), super::X509ValidityError> {
+        fn time(
+            value: windows::Win32::Foundation::FILETIME,
+        ) -> Result<jiff::civil::DateTime, jiff::Error> {
+            const FILETIME_EPOCH: jiff::civil::DateTime =
+                jiff::civil::date(1601, 1, 1).at(0, 0, 0, 0);
+            const TICKS_PER_DAY: u64 = 864_000_000_000;
+            const NANOS_PER_FILETIME_TICK: u64 = 100;
+
+            let ticks =
+                (u64::from(value.dwHighDateTime) << u32::BITS) | u64::from(value.dwLowDateTime);
+            let days = jiff::Span::new().try_days((ticks / TICKS_PER_DAY) as i64)?;
+            let remainder =
+                std::time::Duration::from_nanos((ticks % TICKS_PER_DAY) * NANOS_PER_FILETIME_TICK);
+            FILETIME_EPOCH.checked_add(days)?.checked_add(remainder)
+        }
+        let info = self.0.cert_info();
+        Ok((time(info.NotBefore)?, time(info.NotAfter)?))
+    }
+
+    pub fn authority_key_identifier(&self) -> Result<Option<Vec<u8>>, X509Error> {
+        let info = self.0.cert_info();
+        let Some(extension) = find_extension(info, szOID_AUTHORITY_KEY_IDENTIFIER2) else {
+            return Ok(None);
+        };
+        let data = blob_as_slice(&extension.Value)
+            .ok_or_else(|| invalid_err("malformed authority key identifier extension"))?;
+        let aki = decode_object::<CERT_AUTHORITY_KEY_ID2_INFO>(X509_AUTHORITY_KEY_ID2, data)
+            .map_err(X509Error)?;
+        let key = blob_as_slice(&aki.value.KeyId)
+            .ok_or_else(|| invalid_err("malformed authority key identifier"))?;
+        Ok((!key.is_empty()).then(|| key.to_vec()))
+    }
+
+    fn common_name(&self, flags: u32) -> Result<Option<String>, X509Error> {
         let oid = szOID_COMMON_NAME.0.cast::<c_void>();
         // SAFETY: ctx is valid; passing None for psznamestring queries the
         // required size.
@@ -413,7 +441,7 @@ impl X509CertificateInner {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
                 self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
-                0,
+                flags,
                 Some(oid),
                 None,
             )
@@ -432,7 +460,7 @@ impl X509CertificateInner {
             windows::Win32::Security::Cryptography::CertGetNameStringW(
                 self.0.0.as_ptr().cast_const(),
                 CERT_NAME_ATTR_TYPE,
-                0,
+                flags,
                 Some(oid),
                 Some(&mut buf),
             )
@@ -448,55 +476,48 @@ impl X509CertificateInner {
     #[cfg(any(test, feature = "test_helpers"))]
     pub fn build_self_signed(
         key: super::X509KeyPair<'_>,
-        country: &str,
-        state: &str,
-        locality: &str,
-        organization: &str,
-        common_name: &str,
+        options: &super::X509SelfSignedOptions<'_>,
     ) -> anyhow::Result<Self> {
+        use crate::win::PublicKeyInfo;
         use anyhow::Context;
-        use windows::Win32::Security::Cryptography::CERT_ECC_SIGNATURE;
         use windows::Win32::Security::Cryptography::CERT_V3;
         use windows::Win32::Security::Cryptography::X509_CERT_TO_BE_SIGNED;
-        use windows::Win32::Security::Cryptography::X509_ECC_SIGNATURE;
-        use windows::Win32::Security::Cryptography::X509_OBJECT_IDENTIFIER;
-        use windows::Win32::Security::Cryptography::szOID_ECC_CURVE_P384;
         use windows::Win32::Security::Cryptography::szOID_ECDSA_SHA384;
 
+        let not_before = parse_time(options.not_before)?;
+        let not_after = parse_time(options.not_after)?;
+        let ticks = |time: windows::Win32::Foundation::FILETIME| {
+            (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+        };
+        anyhow::ensure!(
+            ticks(not_before) <= ticks(not_after),
+            "certificate validity ends before it starts"
+        );
         // 1. Encode the subject (== issuer for self-signed) DN.
-        let name_der = encode_x500_name(country, state, locality, organization, common_name)
-            .context("encoding the X.500 name")?;
+        let name_der = encode_x500_name(
+            options.country,
+            options.state,
+            options.locality,
+            options.organization,
+            options.common_name,
+        )
+        .context("encoding the X.500 name")?;
 
-        // 2. Build the SubjectPublicKeyInfo DER.
-        let (mut pk_buf, key_oid, mut key_params, signature_oid, mut signature_params) = match key {
+        // 2. Build the SubjectPublicKeyInfo.
+        let (public_key_info, signature_oid, mut signature_params) = match key {
             super::X509KeyPair::Rsa(key) => {
-                let components = key
-                    .to_components()
-                    .context("exporting the RSA public key components")?;
-                let public_key =
-                    encode_pkcs1_rsa_pubkey(&components.modulus, &components.public_exponent)
-                        .context("encoding the RSA public key")?;
+                let public_key = key.to_pkcs1_der().context("encoding the RSA public key")?;
                 (
-                    public_key,
-                    szOID_RSA_RSA,
-                    vec![0x05, 0x00],
+                    PublicKeyInfo::new(szOID_RSA_RSA, vec![0x05, 0x00], public_key),
                     szOID_RSA_SHA256RSA,
                     vec![0x05, 0x00],
                 )
             }
-            super::X509KeyPair::Ecdsa(key) => {
-                let mut point = vec![crate::ecdsa::SEC1_UNCOMPRESSED_POINT_TAG];
-                point.extend_from_slice(&key.public_key_bytes()?);
-                let curve = encode_object(X509_OBJECT_IDENTIFIER, &szOID_ECC_CURVE_P384)
-                    .context("encoding the EC named-curve OID")?;
-                (
-                    point,
-                    szOID_ECC_PUBLIC_KEY,
-                    curve,
-                    szOID_ECDSA_SHA384,
-                    Vec::new(),
-                )
-            }
+            super::X509KeyPair::Ecdsa(key) => (
+                key.0.as_pub().to_public_key_info()?,
+                szOID_ECDSA_SHA384,
+                Vec::new(),
+            ),
         };
 
         // 3. Build CERT_INFO and encode TBS.
@@ -509,7 +530,33 @@ impl X509CertificateInner {
                 pbData: signature_params.as_mut_ptr(),
             },
         };
-
+        let mut key_id = options
+            .authority_key_identifier
+            .unwrap_or_default()
+            .to_vec();
+        let mut authority = if options.authority_key_identifier.is_some() {
+            encode_object(
+                X509_AUTHORITY_KEY_ID2,
+                &CERT_AUTHORITY_KEY_ID2_INFO {
+                    KeyId: CRYPT_INTEGER_BLOB {
+                        cbData: key_id.len() as u32,
+                        pbData: key_id.as_mut_ptr(),
+                    },
+                    ..Default::default()
+                },
+            )
+            .context("encoding the authority key identifier")?
+        } else {
+            Vec::new()
+        };
+        let mut extension = CERT_EXTENSION {
+            pszObjId: windows::core::PSTR(szOID_AUTHORITY_KEY_IDENTIFIER2.0.cast_mut()),
+            fCritical: false.into(),
+            Value: CRYPT_INTEGER_BLOB {
+                cbData: authority.len() as u32,
+                pbData: authority.as_mut_ptr(),
+            },
+        };
         let cert_info = CERT_INFO {
             dwVersion: CERT_V3,
             SerialNumber: CRYPT_INTEGER_BLOB {
@@ -521,58 +568,28 @@ impl X509CertificateInner {
                 cbData: name_buf.len() as u32,
                 pbData: name_buf.as_mut_ptr(),
             },
-            NotBefore: unix_to_filetime(0),
-            NotAfter: unix_to_filetime(i32::MAX as i64),
+            NotBefore: not_before,
+            NotAfter: not_after,
             Subject: CRYPT_INTEGER_BLOB {
                 cbData: name_buf.len() as u32,
                 pbData: name_buf.as_mut_ptr(),
             },
-            SubjectPublicKeyInfo: CERT_PUBLIC_KEY_INFO {
-                Algorithm: CRYPT_ALGORITHM_IDENTIFIER {
-                    pszObjId: windows::core::PSTR(key_oid.0.cast_mut()),
-                    Parameters: CRYPT_INTEGER_BLOB {
-                        cbData: key_params.len() as u32,
-                        pbData: key_params.as_mut_ptr(),
-                    },
-                },
-                PublicKey: CRYPT_BIT_BLOB {
-                    cbData: pk_buf.len() as u32,
-                    pbData: pk_buf.as_mut_ptr(),
-                    cUnusedBits: 0,
-                },
-            },
+            SubjectPublicKeyInfo: public_key_info.as_info(),
             IssuerUniqueId: CRYPT_BIT_BLOB::default(),
             SubjectUniqueId: CRYPT_BIT_BLOB::default(),
-            cExtension: 0,
-            rgExtension: std::ptr::null_mut(),
+            cExtension: u32::from(options.authority_key_identifier.is_some()),
+            rgExtension: std::ptr::from_mut(&mut extension),
         };
-
         let tbs = encode_object(X509_CERT_TO_BE_SIGNED, &cert_info)
             .context("encoding the TBS certificate")?;
 
         // 4. Sign the TBS.
         let signature = match key {
             super::X509KeyPair::Rsa(key) => key.pkcs1_sign(&tbs, crate::HashAlgorithm::Sha256)?,
-            super::X509KeyPair::Ecdsa(key) => {
-                let raw = key.sign(&tbs, crate::HashAlgorithm::Sha384)?;
-                let (r, s) = raw.split_at(crate::ecdsa::EcdsaCurve::P384.key_size());
-                let mut r = r.to_vec();
-                let mut s = s.to_vec();
-                r.reverse();
-                s.reverse();
-                let signature = CERT_ECC_SIGNATURE {
-                    r: CRYPT_INTEGER_BLOB {
-                        cbData: r.len() as u32,
-                        pbData: r.as_mut_ptr(),
-                    },
-                    s: CRYPT_INTEGER_BLOB {
-                        cbData: s.len() as u32,
-                        pbData: s.as_mut_ptr(),
-                    },
-                };
-                encode_object(X509_ECC_SIGNATURE, &signature)
-                    .context("encoding the ECDSA certificate signature")?
-            }
+            super::X509KeyPair::Ecdsa(key) => key
+                .sign(&tbs, crate::HashAlgorithm::Sha384)?
+                .to_der()
+                .context("encoding the ECDSA certificate signature")?,
         };
 
         // 5. Build CERT_SIGNED_CONTENT_INFO and encode the whole cert.
@@ -630,146 +647,30 @@ fn find_extension(info: &CERT_INFO, oid: PCSTR) -> Option<&CERT_EXTENSION> {
     }
 }
 
-/// RAII wrapper for a CryptoAPI-allocated decoded structure. Frees with
-/// `LocalFree` when dropped.
-pub(crate) struct Decoded<T> {
-    raw: NonNull<c_void>,
-    /// Layout-compatible reference to the decoded structure inside `raw`.
-    value: T,
-    _phantom: std::marker::PhantomData<*const T>,
-}
-
-impl<T> Decoded<T> {
-    /// Borrow the decoded value. Any pointers inside it reference the
-    /// still-alive CryptoAPI allocation owned by `self`.
-    pub(crate) fn get(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<T> Drop for Decoded<T> {
-    fn drop(&mut self) {
-        // SAFETY: raw was allocated by CryptoAPI via CRYPT_DECODE_ALLOC_FLAG.
-        unsafe {
-            let _ = windows::Win32::Foundation::LocalFree(Some(
-                windows::Win32::Foundation::HLOCAL(self.raw.as_ptr()),
-            ));
-        }
-    }
-}
-
-/// Decode a CryptoAPI-defined object using `CryptDecodeObjectEx` with the
-/// alloc flag. The returned `Decoded<T>` owns the buffer.
-pub(crate) fn decode_object<T: Copy>(
-    struct_type: PCSTR,
-    blob: &CRYPT_INTEGER_BLOB,
-) -> Result<Decoded<T>, X509Error> {
-    use windows::Win32::Security::Cryptography::CRYPT_DECODE_ALLOC_FLAG;
-    use windows::Win32::Security::Cryptography::CRYPT_DECODE_NO_SIGNATURE_BYTE_REVERSAL_FLAG;
-
-    let encoded = blob_as_slice(blob)
-        .ok_or_else(|| invalid_err("input blob has a null pointer with a non-zero length"))?;
-    let mut raw: *mut c_void = std::ptr::null_mut();
-    let mut size: u32 = 0;
-    // SAFETY: We pass CRYPT_DECODE_ALLOC_FLAG so the API allocates the
-    // output buffer. `&mut raw` is the documented form when alloc flag is set.
-    unsafe {
-        windows::Win32::Security::Cryptography::CryptDecodeObjectEx(
-            X509_ASN_ENCODING,
-            struct_type,
-            encoded,
-            CRYPT_DECODE_ALLOC_FLAG
-                | if struct_type == X509_CERT {
-                    // Preserve the DER signature byte order expected by BCrypt.
-                    CRYPT_DECODE_NO_SIGNATURE_BYTE_REVERSAL_FLAG
-                } else {
-                    0
-                },
-            None,
-            Some(std::ptr::from_mut(&mut raw).cast::<c_void>()),
-            &mut size,
-        )
-    }
-    .map_err(|e| err(e, "decoding an ASN.1 object"))?;
-    let raw = NonNull::new(raw)
-        .ok_or_else(|| invalid_err("CryptDecodeObjectEx succeeded but returned no buffer"))?;
-    // Validate the API actually wrote a `T`-sized header before reading
-    // it. A short buffer here would mean `read_unaligned` reads past the
-    // allocation.
-    if (size as usize) < size_of::<T>() {
-        // SAFETY: raw was allocated by CryptoAPI via CRYPT_DECODE_ALLOC_FLAG.
-        unsafe {
-            let _ = windows::Win32::Foundation::LocalFree(Some(
-                windows::Win32::Foundation::HLOCAL(raw.as_ptr()),
-            ));
-        }
-        return Err(invalid_err(
-            "CryptDecodeObjectEx returned a buffer smaller than the decoded structure",
-        ));
-    }
-    // SAFETY: raw points to a `T` written by CryptoAPI (validated above to
-    // be at least size_of::<T>() bytes). We copy it out so that `value`
-    // lives at a stable address.
-    let value = unsafe { std::ptr::read_unaligned(raw.as_ptr().cast::<T>()) };
-    Ok(Decoded {
-        raw,
-        value,
-        _phantom: std::marker::PhantomData,
-    })
-}
-
 #[cfg(any(test, feature = "test_helpers"))]
-fn encode_object<T: ?Sized>(
-    struct_type: PCSTR,
-    value: &T,
-) -> Result<Vec<u8>, windows_result::Error> {
-    let mut size: u32 = 0;
-    let value = std::ptr::from_ref(value).cast();
-    let flags = CRYPT_ENCODE_OBJECT_FLAGS(if struct_type == X509_CERT {
-        windows::Win32::Security::Cryptography::CRYPT_ENCODE_NO_SIGNATURE_BYTE_REVERSAL_FLAG
-    } else {
-        0
-    });
-    // SAFETY: first call queries size.
-    unsafe {
-        windows::Win32::Security::Cryptography::CryptEncodeObjectEx(
-            X509_ASN_ENCODING,
-            struct_type,
-            value,
-            flags,
-            None,
-            None,
-            &mut size,
-        )
-    }?;
-    let mut out = vec![0u8; size as usize];
-    // SAFETY: out sized per query.
-    unsafe {
-        windows::Win32::Security::Cryptography::CryptEncodeObjectEx(
-            X509_ASN_ENCODING,
-            struct_type,
-            value,
-            flags,
-            None,
-            Some(out.as_mut_ptr().cast::<c_void>()),
-            &mut size,
-        )
-    }?;
-    out.truncate(size as usize);
-    Ok(out)
-}
-
-/// Convert a Unix timestamp (seconds since 1970-01-01) to a Windows
-/// `FILETIME` (100-ns intervals since 1601-01-01).
-#[cfg(any(test, feature = "test_helpers"))]
-fn unix_to_filetime(unix_secs: i64) -> windows::Win32::Foundation::FILETIME {
-    // FILETIME counts 100-ns intervals since 1601-01-01; Unix epoch is
-    // 1970-01-01 which is 11_644_473_600 seconds later.
-    let ticks = ((unix_secs + 11_644_473_600) as u64) * 10_000_000;
-    windows::Win32::Foundation::FILETIME {
-        dwLowDateTime: ticks as u32,
-        dwHighDateTime: (ticks >> 32) as u32,
-    }
+fn parse_time(value: &str) -> anyhow::Result<windows::Win32::Foundation::FILETIME> {
+    use anyhow::Context;
+    use windows::Win32::Security::Cryptography::X509_CHOICE_OF_TIME;
+    let tag = match value.len() {
+        13 => 0x17, // UTCTime
+        15 => 0x18, // GeneralizedTime
+        _ => anyhow::bail!("invalid certificate time length"),
+    };
+    anyhow::ensure!(
+        value.ends_with('Z')
+            && value.as_bytes()[..value.len() - 1]
+                .iter()
+                .all(u8::is_ascii_digit),
+        "invalid certificate time format"
+    );
+    // CryptoAPI expects the ASN.1 tag and length as well as the time content.
+    let mut encoded = vec![tag, value.len() as u8];
+    encoded.extend_from_slice(value.as_bytes());
+    Ok(
+        decode_object::<windows::Win32::Foundation::FILETIME>(X509_CHOICE_OF_TIME, &encoded)
+            .context("decoding certificate time")?
+            .value,
+    )
 }
 
 /// Build a single-RDN-per-component DN as `C=…, ST=…, L=…, O=…, CN=…`.
@@ -785,26 +686,26 @@ fn encode_x500_name(
     use windows::Win32::Security::Cryptography::CERT_RDN;
     use windows::Win32::Security::Cryptography::CERT_RDN_ATTR;
     use windows::Win32::Security::Cryptography::CERT_RDN_PRINTABLE_STRING;
+    use windows::Win32::Security::Cryptography::CERT_RDN_UTF8_STRING;
+    use windows::Win32::Security::Cryptography::szOID_COUNTRY_NAME;
 
-    let mut rdn_entries: Vec<(PCSTR, Vec<u8>)> = vec![
-        (
-            windows::Win32::Security::Cryptography::szOID_COUNTRY_NAME,
-            country.as_bytes().to_vec(),
-        ),
+    let mut rdn_entries: Vec<(PCSTR, Vec<u16>)> = vec![
+        (szOID_COUNTRY_NAME, country.encode_utf16().collect()),
         (
             windows::Win32::Security::Cryptography::szOID_STATE_OR_PROVINCE_NAME,
-            state.as_bytes().to_vec(),
+            state.encode_utf16().collect(),
         ),
         (
             windows::Win32::Security::Cryptography::szOID_LOCALITY_NAME,
-            locality.as_bytes().to_vec(),
+            locality.encode_utf16().collect(),
         ),
         (
             windows::Win32::Security::Cryptography::szOID_ORGANIZATION_NAME,
-            organization.as_bytes().to_vec(),
+            organization.encode_utf16().collect(),
         ),
-        (szOID_COMMON_NAME, common_name.as_bytes().to_vec()),
+        (szOID_COMMON_NAME, common_name.encode_utf16().collect()),
     ];
+    rdn_entries.retain(|(_, value)| !value.is_empty());
 
     // Build CERT_RDN_ATTR list and one CERT_RDN per attribute (each in its
     // own RDN so the resulting DN is fully ordered).
@@ -812,10 +713,14 @@ fn encode_x500_name(
     for (oid, bytes) in &mut rdn_entries {
         attrs.push(CERT_RDN_ATTR {
             pszObjId: windows::core::PSTR(oid.0.cast_mut()),
-            dwValueType: CERT_RDN_PRINTABLE_STRING.0 as u32,
+            dwValueType: if *oid == szOID_COUNTRY_NAME {
+                CERT_RDN_PRINTABLE_STRING.0 as u32
+            } else {
+                CERT_RDN_UTF8_STRING.0 as u32
+            },
             Value: CRYPT_INTEGER_BLOB {
-                cbData: bytes.len() as u32,
-                pbData: bytes.as_mut_ptr(),
+                cbData: (bytes.len() * size_of::<u16>()) as u32,
+                pbData: bytes.as_mut_ptr().cast(),
             },
         });
     }
@@ -831,56 +736,11 @@ fn encode_x500_name(
         rgRDN: rdns.as_mut_ptr(),
     };
     let out = encode_object(
-        windows::Win32::Security::Cryptography::X509_NAME,
+        windows::Win32::Security::Cryptography::X509_UNICODE_NAME,
         &name_info,
     )?;
     drop(rdns);
     drop(attrs);
     drop(rdn_entries);
     Ok(out)
-}
-
-/// Encode a PKCS#1 RSAPublicKey (`SEQUENCE { INTEGER n, INTEGER e }`) by
-/// asking CryptoAPI to encode a `BCRYPT_RSAKEY_BLOB` via the
-/// `CNG_RSA_PUBLIC_KEY_BLOB` struct type.
-#[cfg(any(test, feature = "test_helpers"))]
-fn encode_pkcs1_rsa_pubkey(n: &[u8], e: &[u8]) -> Result<Vec<u8>, windows_result::Error> {
-    use windows::Win32::Security::Cryptography::BCRYPT_RSAKEY_BLOB;
-    use windows::Win32::Security::Cryptography::BCRYPT_RSAPUBLIC_MAGIC;
-    use windows::Win32::Security::Cryptography::CNG_RSA_PUBLIC_KEY_BLOB;
-
-    // Compute bit length of the modulus (big-endian, ignoring leading zeros).
-    let bit_length = {
-        let mut bits = 0u32;
-        for (i, &b) in n.iter().enumerate() {
-            if b != 0 {
-                bits = ((n.len() - i) as u32) * 8 - b.leading_zeros();
-                break;
-            }
-        }
-        bits
-    };
-
-    let header = BCRYPT_RSAKEY_BLOB {
-        Magic: BCRYPT_RSAPUBLIC_MAGIC,
-        BitLength: bit_length,
-        cbPublicExp: e.len() as u32,
-        cbModulus: n.len() as u32,
-        cbPrime1: 0,
-        cbPrime2: 0,
-    };
-
-    let mut blob = Vec::with_capacity(size_of::<BCRYPT_RSAKEY_BLOB>() + e.len() + n.len());
-    // SAFETY: BCRYPT_RSAKEY_BLOB is #[repr(C)] with all-integer fields, so
-    // any byte pattern is a valid representation.
-    blob.extend_from_slice(unsafe {
-        std::slice::from_raw_parts(
-            std::ptr::from_ref(&header).cast::<u8>(),
-            size_of::<BCRYPT_RSAKEY_BLOB>(),
-        )
-    });
-    blob.extend_from_slice(e);
-    blob.extend_from_slice(n);
-
-    encode_object(CNG_RSA_PUBLIC_KEY_BLOB, blob.as_slice())
 }

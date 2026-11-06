@@ -130,11 +130,7 @@ impl<'a> Vtl2ParamsMap<'a> {
         zero_on_drop: bool,
     ) -> anyhow::Result<Self> {
         // No overlaps.
-        if let Some((l, r)) = ranges
-            .iter()
-            .zip(ranges.iter().skip(1))
-            .find(|(l, r)| r.start() < l.end())
-        {
+        if let Some([l, r]) = ranges.array_windows().find(|[l, r]| r.start() < l.end()) {
             anyhow::bail!("range {r} overlaps {l}");
         }
 

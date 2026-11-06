@@ -14,11 +14,14 @@ Root Complex (GenericPcieRootComplex)
 └── Root Port N  (PcieDownstreamPort)  → ...
 ```
 
-The root complex owns the ECAM MMIO region. When the guest reads
-or writes a config space address, the root complex decodes the
-bus/device/function from the ECAM offset and routes the access
-to the correct port. Each port has a Type 1 (bridge)
-configuration space with PCIe Express and MSI capabilities.
+The root complex owns the ECAM MMIO region. On x86_64, a segment-zero root
+complex that spans the complete bus range also supports legacy
+configuration access through I/O ports CF8/CFC, unless a PIIX4 PCI bus owns
+those ports. When segment zero is split across multiple root complexes, those
+root complexes use ECAM so that one legacy handler does not hide buses owned
+by another root complex. Root complexes in additional segments are always
+ECAM-only because CF8/CFC can address only segment zero. Each port has a Type 1
+(bridge) configuration space with PCIe Express and MSI capabilities.
 
 Ports may optionally be hotplug-capable. Devices behind
 non-hotplug ports are attached at VM construction time.
@@ -60,6 +63,41 @@ Hot-add and hot-remove are triggered via
 These resolve a device resource, create the device with MMIO
 registration, attach it to the named port, and fire the hotplug
 notification.
+
+Removal waits for the device's teardown hook and payload destruction.
+Before teardown, guest access is permanently revoked so late accesses
+cannot reach the removed device. Background resources are released before
+removal completes only when the device implements the necessary cleanup;
+the default hook does not join background tasks or drain issued I/O.
+
+`stop()` is a save-consistent pause, not a requirement to drain disk I/O
+or a guarantee that DMA has ceased. Devices retaining issued requests
+across pause must account for them in saved state where save/restore is
+supported. Device-specific lifecycle changes are separate from this
+infrastructure.
+
+`ChangeDeviceState::teardown(self)` is a terminal operation with a default
+implementation that drops the stopped device. Removal permanently closes
+the shared wrapper,
+takes ownership of its payload, and stops it if running; paused and
+never-started units are already stopped. Async teardown owns the device
+until cleanup completes and its remaining fields are dropped, even if stale
+references still hold the inaccessible wrapper. Synchronous devices can use
+the default hook to release their resources through ordinary destruction.
+Devices with asynchronous cleanup must override it, retaining and finishing
+cancellation-unsafe I/O before releasing its resources.
+
+Chipset MMIO and PIO mapping controls unregister their active ranges when
+dropped. Devices own remappable controls; the device state unit retains
+fixed-region controls and releases them before acknowledging removal.
+
+Assigned hardware that cannot pause without losing state may quiesce
+during teardown instead. Ordinary stop must not destructively reset it.
+
+A slow backend can keep the removal RPC pending. Inspection, memory
+accesses, and NMI requests remain available; state transitions and further
+hotplug operations wait for removal to finish. Worker shutdown also waits
+for pending cleanup before destroying the partition.
 
 See the
 [`PetriVmRuntime`](https://openvmm.dev/rustdoc/linux/petri/vm/trait.PetriVmRuntime.html)

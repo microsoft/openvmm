@@ -22,6 +22,7 @@ use petri_artifacts_common::tags::MachineArch;
 pub enum BootProfile {
     /// Full device set, serial agent, CIDATA disk, shared memory.
     /// The "standard" configuration that vmm_tests use.
+    /// Includes Petri's startup save/restore verification when supported.
     Standard,
     /// Like Standard but with kernel console output suppressed
     /// (`quiet loglevel=0`). Isolates serial emulation overhead.
@@ -29,6 +30,8 @@ pub enum BootProfile {
     /// Pipette-as-init, minimal devices, no serial, shared memory.
     /// Measures VMM + kernel boot without serial overhead.
     Minimal,
+    /// Minimal devices with serial console output and shared memory.
+    MinimalSerial,
     /// Pipette-as-init, minimal devices, no serial, private memory.
     /// Fastest configuration — eliminates mmap overhead for guest RAM.
     MinimalPrivate,
@@ -42,7 +45,10 @@ impl BootProfile {
 
     /// Whether this profile uses the minimal device set.
     pub fn uses_minimal_builder(&self) -> bool {
-        matches!(self, Self::Minimal | Self::MinimalPrivate)
+        matches!(
+            self,
+            Self::Minimal | Self::MinimalSerial | Self::MinimalPrivate
+        )
     }
 
     /// Whether this profile suppresses kernel console output.
@@ -71,6 +77,9 @@ impl BootProfile {
         } else {
             petri::PetriVmBuilder::new(params, artifacts, driver)?
         };
+        if matches!(self, Self::MinimalSerial) {
+            builder = builder.with_serial_output();
+        }
 
         // Memory backing is selected by the caller via `with_memory`.
         if self.uses_quiet_serial() {
@@ -121,6 +130,8 @@ pub struct BootTimeTest {
     pub diag: bool,
     /// RAM size in MiB (default: 2048).
     pub mem_mb: u64,
+    /// Virtual processors per guest.
+    pub vp_count: u32,
     /// Pre-built initrd (kept alive for the duration of the test).
     initrd: PetriInitrd,
 }
@@ -161,6 +172,7 @@ impl BootTimeTest {
         profile: BootProfile,
         diag: bool,
         mem_mb: u64,
+        vp_count: u32,
         resolver: &petri::ArtifactResolver<'_>,
     ) -> anyhow::Result<Self> {
         // Boot time always uses the initrd (even for standard profiles,
@@ -184,6 +196,7 @@ impl BootTimeTest {
             profile,
             diag,
             mem_mb,
+            vp_count,
             initrd,
         })
     }
@@ -221,7 +234,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             .profile
             .create_builder(params, artifacts, driver)?
             .with_processor_topology(petri::ProcessorTopology {
-                vp_count: 1,
+                vp_count: self.vp_count,
                 ..Default::default()
             })
             .with_memory(petri::MemoryConfig {
@@ -235,6 +248,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
         }
 
         // Measure: start timing right before run(), stop when pipette connects.
+        tracing::info!(vp_count = self.vp_count, "boot measurement starting");
         let start = std::time::Instant::now();
         let (vm, agent) = config.run().await.context("failed to boot VM")?;
         let elapsed = start.elapsed();

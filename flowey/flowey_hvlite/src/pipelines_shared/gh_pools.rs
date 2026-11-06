@@ -46,8 +46,8 @@ pub fn linux_arm_v5_1es() -> GhRunner {
     gh_pool_with_image_1es(ARM_V5_POOL_1ES, LINUX_IMAGE_ARM64)
 }
 
-pub fn linux_intel_v6_1es() -> GhRunner {
-    gh_pool_with_image_1es(INTEL_V6_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
+pub fn linux_amd_v6_1es() -> GhRunner {
+    gh_pool_with_image_1es(AMD_V6_POOL_1ES, LINUX_IMAGE_AMD64_PREPPED)
 }
 
 pub fn linux_amd_v7_1es() -> GhRunner {

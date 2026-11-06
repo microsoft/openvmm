@@ -23,7 +23,7 @@ const PAGE_TABLE_ENTRY_SIZE: usize = 8;
 const X64_PAGE_SHIFT: u64 = 12;
 const X64_PTE_BITS: u64 = 9;
 const X64_PTE_ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
-const X64_PTE_ADDRESS_LAST_BIT: u8 = (u64::BITS - X64_PTE_ADDRESS_MASK.leading_zeros() - 1) as u8;
+const X64_PTE_ADDRESS_LAST_BIT: u8 = (X64_PTE_ADDRESS_MASK.bit_width() - 1) as u8;
 
 /// Inclusive bit positions occupied by the physical address in an x64 page
 /// table entry.
@@ -324,7 +324,7 @@ struct PageTableBuilderInner {
 
 /// A builder for an x64 identity-mapped page table
 pub struct PageTableBuilder<'a> {
-    /// parameters to the page table builder, stored seperately s.t. they can be easily cloned and copied
+    /// parameters to the page table builder, stored separately s.t. they can be easily cloned and copied
     inner: PageTableBuilderInner,
     /// a reference to a mutable slice of PageTables, used as working memory for constructing the page table
     page_table: &'a mut [PageTable],
@@ -419,9 +419,7 @@ impl<'a> PageTableBuilder<'a> {
                 }
             }
 
-            for window in ranges.windows(2) {
-                let (l, r) = (&window[0], &window[1]);
-
+            for [l, r] in ranges.array_windows() {
                 if r.start() < l.start() {
                     return Err(Error::UnsortedMappings);
                 }

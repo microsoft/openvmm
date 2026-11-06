@@ -11,6 +11,7 @@ mod hypervisor_resolvers;
 // Resources.
 vm_resource::register_static_resolvers! {
     // Chipset devices
+    chipset::acpi_power_button::AcpiPowerButtonResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
     #[cfg(guest_arch = "x86_64")]
@@ -76,6 +77,7 @@ vm_resource::register_static_resolvers! {
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
+    disk_vmdk::FlatVmdkResolver,
     #[cfg(windows)]
     disk_vhdmp::VhdmpDiskResolver,
     #[cfg(feature = "disk_blob")]

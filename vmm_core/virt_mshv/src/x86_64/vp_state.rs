@@ -134,9 +134,9 @@ impl PageAlignedBuffer {
 
     fn new(len: usize) -> Self {
         let page_size = Self::page_size();
-        let layout =
-            std::alloc::Layout::from_size_align(len.next_multiple_of(page_size), page_size)
-                .unwrap();
+        let layout = std::alloc::Layout::from_size_align(len, page_size)
+            .unwrap()
+            .pad_to_align();
         // SAFETY: layout has non-zero size and page alignment.
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
         let Some(ptr) = NonNull::new(ptr) else {
@@ -415,10 +415,50 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn nested_state(&mut self) -> Result<vp::NestedState, Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateSaveUnsupported.into())
     }
 
     fn set_nested_state(&mut self, _value: &vp::NestedState) -> Result<(), Self::Error> {
-        Err(ErrorInner::NotSupported.into())
+        Err(ErrorInner::NestedStateRestoreUnsupported.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PageAlignedBuffer;
+    use test_with_tracing::test;
+
+    #[test]
+    fn test_page_aligned_buffer() {
+        let page_size = PageAlignedBuffer::page_size();
+        for (len, aligned_len) in [
+            (1, page_size),
+            (page_size - 1, page_size),
+            (page_size, page_size),
+            (page_size + 1, 2 * page_size),
+            (2 * page_size, 2 * page_size),
+            (2 * page_size + 1, 3 * page_size),
+        ] {
+            let mut buffer = PageAlignedBuffer::new(len);
+            assert_eq!(buffer.aligned_len(), aligned_len);
+            assert_eq!(buffer.layout.align(), page_size);
+            assert!(buffer.as_ptr().addr().is_multiple_of(page_size));
+            assert_eq!(buffer.as_bytes().len(), len);
+            assert!(buffer.as_bytes().iter().all(|&byte| byte == 0));
+            buffer.as_mut_bytes().fill(0xa5);
+            assert!(buffer.as_bytes().iter().all(|&byte| byte == 0xa5));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "LayoutError")]
+    fn test_page_aligned_buffer_size_overflow() {
+        let _ = PageAlignedBuffer::new(usize::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "LayoutError")]
+    fn test_page_aligned_buffer_padding_overflow() {
+        let _ = PageAlignedBuffer::new(isize::MAX as usize);
     }
 }

@@ -7,6 +7,7 @@ use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
 use super::io::IoHandler;
 use super::io::IoState;
+use crate::BROADCAST_NSID;
 use crate::DOORBELL_STRIDE_BITS;
 use crate::MAX_NSID;
 use crate::MAX_QES;
@@ -66,6 +67,18 @@ const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
 const MAX_ASYNC_EVENT_REQUESTS: u8 = 4; // minimum recommended by spec
 const ERROR_LOG_PAGE_ENTRIES: u8 = 1;
+
+/// Panic message for an admin CQ write that finds the queue full.
+///
+/// Every admin CQ write has a free slot: `next_event` waits for one before it
+/// takes an event, and only the admin task writes the admin CQ. A configured
+/// completion-queue fault can delay, replace or drop a completion but never
+/// posts one of its own. A full queue would mean dropping the completion,
+/// which NVMe Base 2.1 section 3.3.1.2.1 does not allow ("the controller
+/// shall not post status to that Completion Queue until slots become
+/// available").
+const ADMIN_CQ_SLOT_RESERVED: &str =
+    "admin completion queue full despite the slot next_event reserved";
 
 #[derive(Inspect)]
 pub struct AdminConfig {
@@ -495,7 +508,8 @@ impl AdminHandler {
                         continue; // Skip notifying if the completion is configured to be dropped
                     };
 
-                    state.admin_cq.write(updated_completion)?;
+                    let posted = state.admin_cq.write(updated_completion)?;
+                    assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
 
                     state.notified_changed_namespaces = true;
 
@@ -707,14 +721,12 @@ impl AdminHandler {
             }
         };
 
-        let status = spec::CompletionStatus::new().with_status(result.status.0);
-
         let mut completion = spec::Completion {
             dw0: result.dw[0],
             dw1: result.dw[1],
             sqid: 0,
             sqhd: state.admin_sq.sqhd(),
-            status,
+            status: result.completion_status(),
             cid,
         };
 
@@ -731,7 +743,8 @@ impl AdminHandler {
             completion = updated_completion;
         }
 
-        state.admin_cq.write(completion)?;
+        let posted = state.admin_cq.write(completion)?;
+        assert!(posted, "{ADMIN_CQ_SLOT_RESERVED}");
         Ok(())
     }
 
@@ -1036,10 +1049,20 @@ impl AdminHandler {
                     .into();
             }
             spec::Feature::NVM_RESERVATION_PERSISTENCE => {
+                // FFFFFFFFh gets Invalid Field in Command (NVMe Base 2.1
+                // section 5.1.25.1.30), which overrides the Invalid Namespace
+                // or Format section 4.4 gives other namespace-scope features.
+                // Other NSIDs follow Figure 92 and section 3.2.1.5.
+                if command.nsid == BROADCAST_NSID {
+                    return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
+                }
+                if command.nsid == 0 || command.nsid > MAX_NSID {
+                    return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
+                }
                 let namespace = self
                     .namespaces
                     .get(&command.nsid)
-                    .ok_or(spec::Status::INVALID_NAMESPACE_OR_FORMAT)?;
+                    .ok_or(spec::Status::INVALID_FIELD_IN_COMMAND)?;
 
                 return namespace.get_feature(command).await;
             }
@@ -1287,6 +1310,7 @@ impl AdminHandler {
         Ok(Some(CommandResult {
             status: spec::Status::SUCCESS,
             dw: [1, 0],
+            dnr: false,
         }))
     }
 
@@ -1329,7 +1353,9 @@ impl AdminHandler {
                 )?;
             }
             spec::LogPageIdentifier::HEALTH_INFORMATION => {
-                if command.nsid != !0 {
+                // Not supported per namespace (LPA.SMARTS is 0): NSID 0h and
+                // FFFFFFFFh both name the controller log page.
+                if command.nsid != 0 && command.nsid != !0 {
                     return Err(spec::Status::INVALID_FIELD_IN_COMMAND.into());
                 }
                 // Write an empty page.

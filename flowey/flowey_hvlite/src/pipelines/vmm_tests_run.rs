@@ -13,6 +13,7 @@ use anyhow::Context as _;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
+use flowey_lib_hvlite::common::CommonArch;
 use flowey_lib_hvlite::common::CommonPlatform;
 use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::init_vmm_tests_content_dir::VmmTestsBuiltArtifactsSelections;
@@ -117,11 +118,15 @@ pub struct VmmTestsRunCli {
     /// `disable_secure_avic` cargo feature and sets `secure_avic` to
     /// `disabled` in the IGVM manifest.
     #[clap(long)]
-    pub disable_secure_avic: bool,
+    disable_secure_avic: bool,
 
     /// How many times to run the tests
     #[clap(long)]
     repetitions: Option<u64>,
+
+    /// Run emulated tests
+    #[clap(long)]
+    include_emulated: bool,
 }
 
 struct CargoNextestListRequest<'a> {
@@ -218,6 +223,7 @@ impl IntoPipeline for VmmTestsRunCli {
             no_reuse_prepped_vhds,
             disable_secure_avic,
             repetitions,
+            include_emulated,
         } = self;
 
         let repetitions =
@@ -244,6 +250,24 @@ impl IntoPipeline for VmmTestsRunCli {
         let repo_root = crate::repo_root();
 
         let include_ignored = build_only;
+
+        // By default, filter out tests that run inside emulators with
+        // different architectures so that you don't need qemu installed
+        let filter = if !include_emulated {
+            // This is kind of a hack, but the macro should always include
+            // the architecture in this format at least once.
+            //
+            // Using target arch here rather than host arch (which is what
+            // matters for requiring qemu), since presumably you really wanted
+            // the native tests for a different architecture if you manually
+            // specified it.
+            match target_architecture {
+                CommonArch::X86_64 => format!("({filter}) & !test(_aarch64_)"),
+                CommonArch::Aarch64 => format!("({filter}) & !test(_x64_)"),
+            }
+        } else {
+            filter
+        };
 
         // Run artifact discovery inline at pipeline construction time since
         // flowey doesn't support conditional requests yet

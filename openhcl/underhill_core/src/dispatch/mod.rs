@@ -55,6 +55,7 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 use tracing::Instrument;
 use tracing::instrument;
@@ -207,6 +208,7 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
+    pub pending_host_mmios: Option<Arc<AtomicUsize>>,
     pub nvme_keep_alive: KeepAliveConfig,
     pub mana_keep_alive: KeepAliveConfig,
     pub test_configuration: Option<TestScenarioConfig>,
@@ -367,6 +369,7 @@ impl LoadedVm {
                         resp.field("vmgs", self.vmgs.as_ref().map(|x| &x.0));
                         resp.field("network", &self.network_settings);
                         resp.field("nvme", &self.nvme_manager);
+                        resp.field("pending_host_mmios", &self.pending_host_mmios);
                         resp.field("resolver", &self.resolver);
                         resp.field(
                             "vtl0_memory_map",

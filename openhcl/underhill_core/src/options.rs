@@ -44,7 +44,7 @@ impl FromStr for TestScenarioConfig {
 pub enum GuestStateLifetimeCli {
     Default,
     ReprovisionOnFailure,
-    Reprovision,
+    ReprovisionSingle,
     Ephemeral,
 }
 
@@ -55,7 +55,9 @@ impl FromStr for GuestStateLifetimeCli {
         match s {
             "DEFAULT" | "0" => Ok(GuestStateLifetimeCli::Default),
             "REPROVISION_ON_FAILURE" | "1" => Ok(GuestStateLifetimeCli::ReprovisionOnFailure),
-            "REPROVISION" | "2" => Ok(GuestStateLifetimeCli::Reprovision),
+            "REPROVISION" | "REPROVISION_SINGLE" | "2" => {
+                Ok(GuestStateLifetimeCli::ReprovisionSingle)
+            }
             "EPHEMERAL" | "3" => Ok(GuestStateLifetimeCli::Ephemeral),
             _ => Err(anyhow::anyhow!("Invalid lifetime: {}", s)),
         }

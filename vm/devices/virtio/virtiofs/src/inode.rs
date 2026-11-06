@@ -200,25 +200,15 @@ impl VirtioFsInode {
 
     /// Decrements the lookup count, and returns the new count.
     pub fn forget(&self, node_id: u64, lookup_count: u64) -> u64 {
-        let mut old_count = self.lookup_count.load(Ordering::Acquire);
-        loop {
-            let new_count = if lookup_count > old_count {
-                tracing::warn!(node_id, "Too many forgets for inode");
-                0
-            } else {
-                old_count - lookup_count
-            };
-
-            match self.lookup_count.compare_exchange_weak(
-                old_count,
-                new_count,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break new_count,
-                Err(value) => old_count = value,
-            }
-        }
+        let old_count =
+            self.lookup_count
+                .update(Ordering::AcqRel, Ordering::Acquire, |old_count| {
+                    if lookup_count > old_count {
+                        tracing::warn!(node_id, "Too many forgets for inode");
+                    }
+                    old_count.saturating_sub(lookup_count)
+                });
+        old_count.saturating_sub(lookup_count)
     }
 
     /// Performs a lookup for a child of this inode.
@@ -233,6 +223,25 @@ impl VirtioFsInode {
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
         let stat = self.volume.lstat(&*self.get_path())?;
         Ok(self.attr_from_stat(&stat))
+    }
+
+    /// Validates directory policy against the object being enumerated.
+    pub(crate) fn check_directory_handle(&self, file: &lxutil::LxFile) -> lx::Result<()> {
+        let path = self.get_path();
+        let stat = self.volume.lstat(&*path)?;
+        // The share root is captured by the volume, not resolved by a mutable pathname.
+        if path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        // Guest inode numbers are cached and cannot establish host object identity.
+        // Fail closed when the volume cannot supply a reliable identity.
+        if !self.volume.supports_stable_file_id()
+            || stat.inode_nr == 0
+            || stat.inode_nr != file.fstat()?.inode_id
+        {
+            return Err(lx::Error::EACCES);
+        }
+        Ok(())
     }
 
     /// Retrieves the extended attributes of this inode.
@@ -253,9 +262,8 @@ impl VirtioFsInode {
     }
 
     /// Opens the inode, creating a file object.
-    pub fn open(self: Arc<VirtioFsInode>, flags: u32) -> lx::Result<VirtioFsFile> {
-        let flags = (flags as i32) | lx::O_NOFOLLOW;
-        let file = self.volume.open(&*self.get_path(), flags, None)?;
+    pub fn open(self: Arc<VirtioFsInode>, options: i32) -> lx::Result<VirtioFsFile> {
+        let file = self.volume.open(&*self.get_path(), options, None)?;
         Ok(VirtioFsFile::new(file, self))
     }
 
@@ -263,15 +271,15 @@ impl VirtioFsInode {
     pub fn create(
         &self,
         name: &LxStr,
-        flags: u32,
+        open_options: i32,
         mode: u32,
         uid: u32,
         gid: u32,
     ) -> lx::Result<(VirtioFsInode, fuse_attr, lxutil::LxFile)> {
         let path = self.child_path(name)?;
         let options = LxCreateOptions::new(mode, uid, gid);
-        let flags = (flags as i32) | lx::O_CREAT | lx::O_NOFOLLOW;
-        let file = self.volume.open(&path, flags, Some(options))?;
+        let open_options = open_options | lx::O_CREAT;
+        let file = self.volume.open(&path, open_options, Some(options))?;
         let stat = file.fstat()?.into();
         let inode = Self::with_attr(Arc::clone(&self.volume), path, &stat);
         let attr = inode.attr_from_stat(&stat);
@@ -468,6 +476,169 @@ mod tests {
     use crate::InodeMap;
     use test_with_tracing::test;
 
+    #[test]
+    fn forget_saturates_and_returns_updated_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let volume = Arc::new(VirtioFsVolume::new(
+            LxVolume::new(tmp.path()).unwrap(),
+            0,
+            false,
+        ));
+        let (inode, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+
+        for (initial, forgotten, expected) in [
+            (0, 0, 0),
+            (0, 1, 0),
+            (1, 0, 1),
+            (1, 1, 0),
+            (1, 2, 0),
+            (5, 2, 3),
+            (u64::MAX, 1, u64::MAX - 1),
+            (u64::MAX, u64::MAX, 0),
+        ] {
+            inode.lookup_count.store(initial, Ordering::Release);
+            assert_eq!(inode.forget(42, forgotten), expected);
+            assert_eq!(inode.lookup_count.load(Ordering::Acquire), expected);
+        }
+    }
+
+    #[test]
+    fn directory_handle_checks_fail_closed_without_stable_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("allowed")).unwrap();
+        let mut options = lxutil::LxVolumeOptions::new();
+        options.sandbox(true);
+        let mut volume = VirtioFsVolume::new(options.new_volume(tmp.path()).unwrap(), 0, false);
+        volume.stable_file_ids = false;
+        let volume = Arc::new(volume);
+        let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
+        let file = volume
+            .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        root.check_directory_handle(&file).unwrap();
+
+        let (child, _) = root.lookup_child("allowed".as_ref()).unwrap();
+        let file = volume
+            .open("allowed", lx::O_RDONLY | lx::O_DIRECTORY, None)
+            .unwrap();
+        assert_eq!(
+            child.check_directory_handle(&file).unwrap_err(),
+            lx::Error::EACCES
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_keyed_sandbox_readdir_preserves_lookup_checks() {
+        use crate::tests::read_directory;
+        use fuse::Fuse;
+        use fuse::protocol::fuse_dirent;
+        use fuse::protocol::fuse_dirent_align;
+        use std::collections::BTreeMap;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN;
+        use zerocopy::FromBytes;
+
+        for hide in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let allowed = root.path().join("allowed");
+            std::fs::create_dir(&allowed).unwrap();
+            for i in 0..16 {
+                std::fs::write(allowed.join(format!("entry{i:02}")), b"data").unwrap();
+            }
+            std::fs::write(allowed.join("blocked.EXE"), b"blocked").unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .attributes(FILE_ATTRIBUTE_HIDDEN)
+                .open(allowed.join("hidden"))
+                .unwrap();
+            let mut options = lxutil::LxVolumeOptions::new();
+            options
+                .sandbox(true)
+                .sandbox_disallowed_extensions(vec!["exe"]);
+            let fs = crate::VirtioFs::new(root.path(), Some(&options)).unwrap();
+            let mut volume =
+                VirtioFsVolume::new(options.new_volume(root.path()).unwrap(), 0, false);
+            // Model FAT/exFAT identity capabilities with native Windows sandbox checks.
+            volume.stable_file_ids = false;
+            let (root_inode, _) = VirtioFsInode::new(Arc::new(volume), PathBuf::new()).unwrap();
+            let mut inodes = InodeMap::new(false);
+            let (root_inode, _) = inodes.insert(root_inode).unwrap();
+            *fs.inner.inodes.write() = inodes;
+            let root_file = Arc::clone(&root_inode)
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap();
+            let entries = read_directory(&fs, &root_file, 0, 256, false);
+            assert_eq!(
+                entries.keys().map(String::as_str).collect::<Vec<_>>(),
+                [".", "..", "allowed"]
+            );
+            assert_eq!(fs.inner.inodes.read().inodes_by_node_id.values.len(), 1);
+            let entry = fs.lookup_helper(&root_inode, "allowed".as_ref()).unwrap();
+            let inode = fs.get_inode(entry.nodeid).unwrap();
+            let file = Arc::clone(&inode)
+                .open(lx::O_RDONLY | lx::O_DIRECTORY)
+                .unwrap();
+            let existing = fs.lookup_helper(&inode, "entry00".as_ref()).unwrap();
+            let mut expected = BTreeMap::from([
+                (".".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+                ("..".to_owned(), (inode.guest_inode_nr(), lx::DT_DIR as u32)),
+            ]);
+            for i in 0..16 {
+                let name = format!("entry{i:02}");
+                let attr = inode.lookup_child(name.as_str().as_ref()).unwrap().1;
+                expected.insert(name, (attr.ino, lx::DT_REG as u32));
+            }
+            let initial_inodes = fs.inner.inodes.read().inodes_by_node_id.values.len();
+            for size in [256, 4096] {
+                for plus in [false, true] {
+                    assert_eq!(read_directory(&fs, &file, 0, size, plus), expected);
+                    assert_eq!(
+                        fs.inner.inodes.read().inodes_by_node_id.values.len(),
+                        initial_inodes
+                    );
+                }
+            }
+            fs.forget(existing.nodeid, 1);
+            assert!(fs.inner.inodes.read().get(existing.nodeid).is_none());
+
+            let data = file.read_dir(&fs, 0, 96, false).unwrap();
+            let mut remaining = data.as_slice();
+            let mut offset = 0;
+            while !remaining.is_empty() {
+                let (entry, rest) = fuse_dirent::read_from_prefix(remaining).unwrap();
+                let name = std::str::from_utf8(&rest[..entry.namelen as usize]).unwrap();
+                assert!(expected.remove(name).is_some());
+                offset = entry.off;
+                remaining = &remaining
+                    [fuse_dirent_align(size_of::<fuse_dirent>() + entry.namelen as usize)..];
+            }
+            assert!(offset > 2);
+            let victim = expected.keys().next().unwrap().clone();
+            std::fs::remove_file(allowed.join(&victim)).unwrap();
+            if hide {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .attributes(FILE_ATTRIBUTE_HIDDEN)
+                    .open(allowed.join(&victim))
+                    .unwrap();
+            }
+            expected.remove(&victim);
+            for plus in [false, true] {
+                assert_eq!(read_directory(&fs, &file, offset, 256, plus), expected);
+            }
+
+            let host = LxVolume::new(root.path()).unwrap();
+            host.rename("allowed", "blocked.EXE", 0).unwrap();
+            std::fs::create_dir(&allowed).unwrap();
+            for plus in [false, true] {
+                assert!(file.read_dir(&fs, offset, 256, plus).unwrap().is_empty());
+            }
+        }
+    }
+
     fn path_keyed_volume(root: &std::path::Path, id: u32) -> Arc<VirtioFsVolume> {
         let mut volume = VirtioFsVolume::new(LxVolume::new(root).unwrap(), id, false);
         volume.stable_file_ids = false;
@@ -488,11 +659,11 @@ mod tests {
             ));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(Arc::clone(&volume), PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
 
             let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(matches!(file.dedup_key(), DedupKey::Ino(..)));
-            let (old, old_id) = inodes.insert(file);
+            let (old, old_id) = inodes.insert(file).unwrap();
 
             let mut replacement_stat = volume.lstat(PathBuf::from("replacement")).unwrap();
             replacement_stat.inode_nr = old.inode_nr();
@@ -503,7 +674,7 @@ mod tests {
                 PathBuf::from("replacement"),
                 &replacement_stat,
             );
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
 
             assert_ne!(current_id, old_id);
             assert!(lx::s_isdir(current.file_type()));
@@ -529,19 +700,19 @@ mod tests {
             let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
             let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(matches!(file.dedup_key(), DedupKey::Path(..)));
-            let (old, old_id) = inodes.insert(file);
+            let (old, old_id) = inodes.insert(file).unwrap();
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, old_id);
+            assert_eq!(inodes.insert(same).unwrap().1, old_id);
 
             std::fs::remove_file(tmp.path().join("entry")).unwrap();
             std::fs::create_dir(tmp.path().join("entry")).unwrap();
             std::fs::write(tmp.path().join("entry").join("child"), b"child").unwrap();
             let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(lx::s_isdir(attr.mode));
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
             let (_, child_attr) = current.lookup_child("child".as_ref()).unwrap();
             assert!(lx::s_isreg(child_attr.mode));
             assert_ne!(current_id, old_id);
@@ -554,7 +725,7 @@ mod tests {
             inodes.remove(old_id);
             assert!(inodes.get(current_id).is_some());
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, current_id);
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
     }
 
@@ -566,15 +737,15 @@ mod tests {
             let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
             let mut inodes = InodeMap::new(aggregate);
             let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
-            let (root, _) = inodes.insert(root);
+            let (root, _) = inodes.insert(root).unwrap();
             let (directory, _) = root.lookup_child("entry".as_ref()).unwrap();
-            let (old, old_id) = inodes.insert(directory);
+            let (old, old_id) = inodes.insert(directory).unwrap();
 
             std::fs::remove_dir(tmp.path().join("entry")).unwrap();
             std::fs::write(tmp.path().join("entry"), b"file").unwrap();
             let (replacement, attr) = root.lookup_child("entry".as_ref()).unwrap();
             assert!(lx::s_isreg(attr.mode));
-            let (current, current_id) = inodes.insert(replacement);
+            let (current, current_id) = inodes.insert(replacement).unwrap();
             assert_ne!(current_id, old_id);
             assert_eq!(
                 current.lookup_child("child".as_ref()).err().unwrap(),
@@ -584,7 +755,41 @@ mod tests {
             inodes.remove(old_id);
             assert!(inodes.get(current_id).is_some());
             let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
-            assert_eq!(inodes.insert(same).1, current_id);
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
+        }
+    }
+
+    #[test]
+    fn path_keyed_reserved_insert_file_to_directory() {
+        for aggregate in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::write(tmp.path().join("entry"), b"file").unwrap();
+            let volume = path_keyed_volume(tmp.path(), u32::from(aggregate));
+            let mut inodes = InodeMap::new(aggregate);
+            let (root, _) = VirtioFsInode::new(volume, PathBuf::new()).unwrap();
+            let (root, _) = inodes.insert(root).unwrap();
+            let (file, _) = root.lookup_child("entry".as_ref()).unwrap();
+            let (old, old_id) = inodes.insert(file).unwrap();
+
+            // The host removes the file without the guest noticing, and the
+            // guest then creates a directory at the same path.
+            std::fs::remove_file(tmp.path().join("entry")).unwrap();
+            let reservation = inodes.reserve().unwrap();
+            let (directory, attr) = root.mkdir("entry".as_ref(), 0o755, 0, 0).unwrap();
+            assert!(lx::s_isdir(attr.mode));
+            let (current, current_id) = inodes.insert_reserved(&reservation, directory).unwrap();
+            assert_eq!(current_id, reservation.handle);
+            assert_ne!(current_id, old_id);
+            assert!(lx::s_isdir(current.file_type()));
+            std::fs::write(tmp.path().join("entry").join("child"), b"child").unwrap();
+            let (_, child_attr) = current.lookup_child("child".as_ref()).unwrap();
+            assert!(lx::s_isreg(child_attr.mode));
+
+            assert_eq!(old.forget(old_id, 1), 0);
+            inodes.remove(old_id);
+            assert!(inodes.get(current_id).is_some());
+            let (same, _) = root.lookup_child("entry".as_ref()).unwrap();
+            assert_eq!(inodes.insert(same).unwrap().1, current_id);
         }
     }
 }

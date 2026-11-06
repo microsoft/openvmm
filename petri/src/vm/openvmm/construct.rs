@@ -47,6 +47,8 @@ use mesh_process::Mesh;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -63,6 +65,7 @@ use openvmm_defs::config::VpAssignment;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::Vtl2Config;
+use openvmm_helpers::config::supports_acpi_power_button;
 use openvmm_pcat_locator::RomFileLocation;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -153,6 +156,14 @@ impl PetriVmConfigOpenVmm {
             log_source,
             prebuilt_initrd,
         } = resources;
+        anyhow::ensure!(
+            !properties.use_virtio_console
+                || !firmware.is_linux_direct()
+                || !properties.using_vtl0_pipette
+                || properties.external_pipette
+                || prebuilt_initrd.is_some(),
+            "virtio-console requires an initrd-owned Linux-direct Pipette"
+        );
         #[cfg(target_os = "linux")]
         let vhost_vsock_guest_cid = properties.vhost_vsock_guest_cid;
         #[cfg(not(target_os = "linux"))]
@@ -174,6 +185,7 @@ impl PetriVmConfigOpenVmm {
             pipette_rdinit_param: prebuilt_initrd.as_ref().map(|x| x.rdinit_param.clone()),
             external_pipette: properties.external_pipette,
             enable_serial: properties.enable_serial,
+            use_virtio_console: properties.use_virtio_console,
             use_virtio_vsock: properties.use_virtio_vsock,
             no_vmbus: properties.no_vmbus,
             no_hv: properties.no_hv,
@@ -216,7 +228,7 @@ impl PetriVmConfigOpenVmm {
             *initrd = Some(file);
         }
 
-        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
+        let (emulated_serial_config, mut log_stream_tasks, linux_direct_serial_agent) =
             if !properties.enable_serial {
                 // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
                 ([None, None, None, None], Vec::new(), None)
@@ -233,6 +245,20 @@ impl PetriVmConfigOpenVmm {
                 )
             };
         let mut emulated_serial_config = emulated_serial_config;
+        let mut private_virtio_devices = Vec::new();
+        if properties.use_virtio_console {
+            let (host, backend) = setup
+                .create_serial_stream()
+                .context("failed to create virtio-console stream")?;
+            log_stream_tasks.push(driver.spawn(
+                "virtio-console",
+                crate::log_task(log_source.log_file("hvc0")?, host, "virtio-console"),
+            ));
+            private_virtio_devices.push((
+                "petri-console-",
+                virtio_resources::console::VirtioConsoleHandle { backend }.into_resource(),
+            ));
+        }
 
         let (video_dev, framebuffer, framebuffer_view) = match setup.config_video()? {
             Some((v, fb, fba)) => {
@@ -483,6 +509,19 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
+        let acpi_power_button_send =
+            if !properties.minimal_mode && supports_acpi_power_button(&load_mode) {
+                let (send, recv) = mesh::channel();
+                let irq = match arch {
+                    MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+                    MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
+                };
+                chipset = chipset.with_acpi_power_button(irq, recv);
+                Some(send)
+            } else {
+                None
+            };
+
         let layout_config = chipset.layout_config();
         let chipset = chipset
             .build()
@@ -625,14 +664,8 @@ impl PetriVmConfigOpenVmm {
             chipset_devices.push(tpm);
         }
 
-        // Set up virtio-vsock if enabled.
-        // Find the first unused PCIe root port to avoid conflicting with
-        // NVMe devices that were already assigned.
+        // Assign private ports after backend modifiers have chosen the topology.
         if properties.use_virtio_vsock {
-            let vsock_port = (0..)
-                .map(|i| format!("s0rc0rp{i}"))
-                .find(|name| !pcie_devices.iter().any(|d| d.port_name == *name))
-                .unwrap();
             let resource: Resource<VirtioDeviceHandle> = match vhost_vsock_guest_cid {
                 #[cfg(target_os = "linux")]
                 Some(guest_cid) => {
@@ -656,10 +689,7 @@ impl PetriVmConfigOpenVmm {
                 }
                 .into_resource(),
             };
-            pcie_devices.push(PcieDeviceConfig {
-                port_name: vsock_port,
-                resource: VirtioPciDeviceHandle(resource).into_resource(),
-            });
+            private_virtio_devices.push(("petri-vsock-", resource));
         }
 
         let config = Config {
@@ -760,10 +790,12 @@ impl PetriVmConfigOpenVmm {
 
         Ok(Self {
             guest_shares,
+            private_virtio_devices,
             runtime_config: firmware.into_runtime_config(vmbus_storage_controllers),
             arch,
             host_log_levels,
             config,
+            skip_save_restore: false,
             mesh,
 
             resources: PetriVmResourcesOpenVmm {
@@ -771,6 +803,7 @@ impl PetriVmConfigOpenVmm {
                 firmware_event_recv,
                 ipmi_sel_event_recv,
                 shutdown_ic_send,
+                acpi_power_button_send,
                 kvp_ic_send,
                 ged_send,
                 pipette_listener,
@@ -814,6 +847,7 @@ struct PetriVmConfigSetupCore<'a> {
     pipette_rdinit_param: Option<String>,
     external_pipette: bool,
     enable_serial: bool,
+    use_virtio_console: bool,
     use_virtio_vsock: bool,
     no_vmbus: bool,
     no_hv: bool,
@@ -861,7 +895,7 @@ impl PetriVmConfigSetupCore<'_> {
                 crate::log_task(logger.log_file("openhcl")?, serial2_host, "serial2-openhcl"),
             );
             serial_tasks.push(serial2_task);
-            serial2
+            Some(serial2)
         } else {
             None
         };
@@ -869,6 +903,7 @@ impl PetriVmConfigSetupCore<'_> {
         if self.firmware.is_linux_direct()
             && !self.firmware.is_isolated_without_paravisor()
             && !self.external_pipette
+            && !self.use_virtio_console
             && self.pipette_rdinit_param.is_none()
         {
             // Non-pipette-as-init Linux direct: create serial1 and a serial
@@ -878,13 +913,13 @@ impl PetriVmConfigSetupCore<'_> {
             let linux_direct_serial_agent =
                 LinuxDirectSerialAgent::new(serial1_read, serial0_write);
             Ok(SerialData {
-                emulated_serial_config: [serial0, serial1, serial2, None],
+                emulated_serial_config: [Some(serial0), Some(serial1), serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: Some(linux_direct_serial_agent),
             })
         } else {
             Ok(SerialData {
-                emulated_serial_config: [serial0, None, serial2, None],
+                emulated_serial_config: [Some(serial0), None, serial2, None],
                 serial_tasks,
                 linux_direct_serial_agent: None,
             })
@@ -893,14 +928,11 @@ impl PetriVmConfigSetupCore<'_> {
 
     fn create_serial_stream(
         &self,
-    ) -> anyhow::Result<(
-        PolledSocket<UnixStream>,
-        Option<Resource<SerialBackendHandle>>,
-    )> {
+    ) -> anyhow::Result<(PolledSocket<UnixStream>, Resource<SerialBackendHandle>)> {
         let (host_side, guest_side) = UnixStream::pair()?;
         let host_side = PolledSocket::new(self.driver, host_side)?;
         let serial = OpenSocketSerialConfig::from(guest_side).into_resource();
-        Ok((host_side, Some(serial)))
+        Ok((host_side, serial))
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
@@ -911,12 +943,7 @@ impl PetriVmConfigSetupCore<'_> {
         // breaking pipette's AF_VSOCK connection. Blacklist either
         // virtio_vsock_init or hv_sock_init depending on which vsock transport
         // is being used.
-        const VIRTIO_VSOCK_BLACKLIST: &str = "initcall_blacklist=virtio_vsock_init";
-        let vsock_blacklist = if self.use_virtio_vsock {
-            "initcall_blacklist=hv_sock_init"
-        } else {
-            VIRTIO_VSOCK_BLACKLIST
-        };
+        let vsock_blacklist = crate::vm::linux_vsock_blacklist(self.use_virtio_vsock);
 
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::IgvmLinuxDirect { igvm_path, .. }) => LoadMode::Igvm {
@@ -929,9 +956,10 @@ impl PetriVmConfigSetupCore<'_> {
                 personality: IgvmPersonality::LinuxDirect,
             },
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
-                let console = match arch {
-                    MachineArch::X86_64 => "console=ttyS0",
-                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
+                let console = match (self.use_virtio_console, arch) {
+                    (true, _) => "console=hvc0",
+                    (false, MachineArch::X86_64) => "console=ttyS0",
+                    (false, MachineArch::Aarch64) => "console=ttyAMA0 earlycon",
                 };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
@@ -946,7 +974,7 @@ impl PetriVmConfigSetupCore<'_> {
                     None => " rdinit=/bin/sh".into(),
                 };
 
-                let serial_args = if self.enable_serial {
+                let serial_args = if self.enable_serial || self.use_virtio_console {
                     format!("{console} debug ")
                 } else {
                     String::new()

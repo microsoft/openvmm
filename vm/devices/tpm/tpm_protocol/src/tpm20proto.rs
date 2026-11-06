@@ -1038,6 +1038,7 @@ pub mod protocol {
             if bytes.len() < end {
                 return None;
             }
+
             let mut buffer = [0u8; MAX_DIGEST_BUFFER_SIZE];
             buffer[..size as usize].copy_from_slice(&bytes[start..end]);
 
@@ -1135,6 +1136,68 @@ pub mod protocol {
             }
 
             payload_size
+        }
+    }
+
+    /// `TPMT_SENSITIVE` payload for an RSA object.
+    #[repr(C)]
+    pub struct TpmtSensitive {
+        /// Algorithm identifying the sensitive data (`TPMI_ALG_PUBLIC`).
+        pub sensitive_type: AlgId,
+        /// Authorization value (`TPM2B_AUTH`).
+        pub auth_value: Tpm2bBuffer,
+        /// Seed value (`TPM2B_DIGEST`).
+        pub seed_value: Tpm2bBuffer,
+        /// RSA private key material (`TPM2B_PRIVATE_KEY_RSA`).
+        pub sensitive: Tpm2bBuffer,
+    }
+
+    impl TpmtSensitive {
+        /// Serializes the structure into a TPM buffer.
+        pub fn serialize(&self) -> Vec<u8> {
+            let mut buffer = Vec::new();
+
+            buffer.extend_from_slice(self.sensitive_type.as_bytes());
+            buffer.extend_from_slice(&self.auth_value.serialize());
+            buffer.extend_from_slice(&self.seed_value.serialize());
+            buffer.extend_from_slice(&self.sensitive.serialize());
+
+            buffer
+        }
+    }
+
+    #[cfg(test)]
+    mod sensitive_tests {
+        use super::Tpm2bBuffer;
+        use super::TpmtSensitive;
+        use crate::tpm20proto::AlgIdEnum;
+        use test_with_tracing::test;
+
+        #[test]
+        fn tpmt_sensitive_has_one_size_prefix_per_buffer() {
+            let sensitive = TpmtSensitive {
+                sensitive_type: AlgIdEnum::RSA.into(),
+                auth_value: Tpm2bBuffer::new(&[]).unwrap(),
+                seed_value: Tpm2bBuffer::new(&[]).unwrap(),
+                sensitive: Tpm2bBuffer::new(&[1, 2, 3]).unwrap(),
+            };
+
+            assert_eq!(sensitive.serialize(), [0, 1, 0, 0, 0, 0, 0, 3, 1, 2, 3]);
+        }
+
+        #[test]
+        fn tpmt_sensitive_serializes_auth_and_seed_values() {
+            let sensitive = TpmtSensitive {
+                sensitive_type: AlgIdEnum::RSA.into(),
+                auth_value: Tpm2bBuffer::new(&[1]).unwrap(),
+                seed_value: Tpm2bBuffer::new(&[2, 3]).unwrap(),
+                sensitive: Tpm2bBuffer::new(&[4, 5, 6]).unwrap(),
+            };
+
+            assert_eq!(
+                sensitive.serialize(),
+                [0, 1, 0, 1, 1, 0, 2, 2, 3, 0, 3, 4, 5, 6]
+            );
         }
     }
 
@@ -1261,6 +1324,9 @@ pub mod protocol {
             let hash_alg = if scheme != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<AlgId>();
+                if bytes.len() < end {
+                    return None;
+                }
                 AlgId::read_from_prefix(&bytes[start..end]).ok()?.0 // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
             } else {
                 AlgId::new(0)
@@ -1287,9 +1353,12 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtSymDefObject {
-        algorithm: AlgId,
-        key_bits: u16_be,
-        mode: AlgId,
+        /// Symmetric algorithm identifier.
+        pub algorithm: AlgId,
+        /// Symmetric key size in bits.
+        pub key_bits: u16_be,
+        /// Symmetric mode identifier.
+        pub mode: AlgId,
     }
 
     impl TpmtSymDefObject {
@@ -1334,10 +1403,16 @@ pub mod protocol {
             let (key_bits, mode) = if algorithm != AlgIdEnum::NULL.into() {
                 start = end;
                 end += size_of::<u16_be>();
+                if bytes.len() < end {
+                    return None;
+                }
                 let key_bits = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
                 start = end;
                 end += size_of::<AlgId>();
+                if bytes.len() < end {
+                    return None;
+                }
                 let mode = AlgId::read_from_prefix(&bytes[start..end]).ok()?.0; // TODO: zerocopy: use-rest-of-range, option-to-error (https://github.com/microsoft/openvmm/issues/759)
 
                 (key_bits, mode)
@@ -1371,9 +1446,12 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
-        symmetric: TpmtSymDefObject,
-        scheme: TpmtRsaScheme,
-        key_bits: u16_be,
+        /// Symmetric algorithm used for a restricted decryption key.
+        pub symmetric: TpmtSymDefObject,
+        /// RSA signing or encryption scheme.
+        pub scheme: TpmtRsaScheme,
+        /// RSA key size in bits.
+        pub key_bits: u16_be,
         /// Public exponent value (`0` encodes $65537$).
         pub exponent: u32_be,
     }
@@ -1461,11 +1539,14 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
-        my_type: AlgId,
-        name_alg: AlgId,
+        /// Object type identifier.
+        pub my_type: AlgId,
+        /// Algorithm used to compute the object name.
+        pub name_alg: AlgId,
         /// Attributes that define object capabilities.
         pub object_attributes: TpmaObject,
-        auth_policy: Tpm2bBuffer,
+        /// Authorization policy digest.
+        pub auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         /// Algorithm-specific parameters associated with the object.
         pub parameters: TpmsRsaParams,
@@ -1615,7 +1696,11 @@ pub mod protocol {
             let size = u16_be::read_from_bytes(&bytes[start..end]).ok()?; // TODO: zerocopy: simplify (https://github.com/microsoft/openvmm/issues/759)
 
             start = end;
-            let public_area = TpmtPublic::deserialize(&bytes[start..])?;
+            let end = start.checked_add(size.get() as usize)?;
+            let public_area = TpmtPublic::deserialize(bytes.get(start..end)?)?;
+            if public_area.payload_size() != size.get() as usize {
+                return None;
+            }
 
             Some(Self { size, public_area })
         }
@@ -3769,6 +3854,42 @@ mod tests {
     use super::protocol::*;
     use super::*;
     use crate::platform_akcert_attributes;
+
+    #[test]
+    fn tpm2b_buffer_rejects_truncated_payload() {
+        assert!(Tpm2bBuffer::deserialize(&[0, 3, 1, 2]).is_none());
+    }
+
+    #[test]
+    fn tpm2b_public_rejects_truncated_symmetric_parameters() {
+        let bytes = [
+            0, 13, // TPM2B_PUBLIC size
+            0, 1, // type: RSA
+            0, 11, // name algorithm: SHA256
+            0, 0, 0, 0, // object attributes
+            0, 0, // empty auth policy
+            0, 6, // symmetric algorithm: AES
+            0, // truncated key bits
+        ];
+
+        assert!(Tpm2bPublic::deserialize(&bytes).is_none());
+    }
+
+    #[test]
+    fn tpm2b_public_rejects_truncated_scheme_parameters() {
+        let bytes = [
+            0, 15, // TPM2B_PUBLIC size
+            0, 1, // type: RSA
+            0, 11, // name algorithm: SHA256
+            0, 0, 0, 0, // object attributes
+            0, 0, // empty auth policy
+            0, 16, // symmetric algorithm: NULL
+            0, 20, // scheme: RSASSA
+            0,  // truncated hash algorithm
+        ];
+
+        assert!(Tpm2bPublic::deserialize(&bytes).is_none());
+    }
 
     #[test]
     fn test_create_primary() {

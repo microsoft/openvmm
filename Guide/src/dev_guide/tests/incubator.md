@@ -36,11 +36,72 @@ Profile devices are provisioned for VFIO before the command runs.
 
 ## OpenVMM commands
 
+### Provision an mshv environment
+
+On an x64 Linux host with KVM and nested virtualization enabled:
+
+```bash
+cargo xflowey incubator \
+  --profile petri/incubator/profiles/x86_64-mshv.toml -- \
+  --timeout 600 --no-pty -- /bin/sh -c 'test -c /dev/mshv && uname -a'
+```
+
+`--profile` is required. Provisioning currently supports only x64 OpenVMM
+profiles with `mshv` boot; other launcher, architecture, or boot combinations
+are rejected. Flowey leaves the source file untouched and prepares a copy,
+preserving its VM settings and boot options while replacing `binary`,
+`host-boot`, `firmware`, and `boot-artifacts` with resolved paths. These source
+paths may be placeholders; use CLI artifact overrides to supply local inputs.
+
+This builds the native OpenVMM/Incubator pair, static x64 Pipette, and EFI host
+boot application; downloads the pinned mshv root kernel, firmware, shared
+test initrd, and verified hypervisor/loader RPMs; then boots and executes the
+command. Everything after Flowey's `--` is passed directly to Incubator:
+execution options such as `--timeout`, `--guest-env`, and `--no-pty`, followed
+by the guest command (optionally separated by a second `--`). Flowey does not
+force `--no-pty`; Incubator uses its normal terminal detection.
+Flowey supplies `--profile`, `--kernel`, `--initrd`, `--share`,
+`--guest-pipette`, and `--output-dir`; do not repeat those in the forwarded
+arguments. Use the Flowey-side overrides for provisioning inputs instead.
+
+Incubator uses the `light` build profile by default.
+`--release` selects release builds for all components; the normal VMM/agent
+build profile remains independent of the optimized launcher. It never checks
+out, configures, patches, or builds a kernel. `--kernel path/to/mshv/bzImage`
+overrides the published `mshv-test` kernel. It selects only the root kernel,
+not a child VM's kernel.
+
+The writable share defaults to this checkout. `--share` selects a different
+workspace; `--dir` defaults to `target/incubator` within that share and must
+remain beneath it so Incubator can read the staged Pipette. Each preparation
+overwrites `profile.toml`, including any manual edits. The directory represents
+the latest preparation, not a saved environment: discard previously printed
+commands after preparing it again, since they may reference old binaries with
+the new profile. Use a separate `--dir` to keep multiple environments.
+Unchanged binaries are reused across kernel edits. Per-run logs remain in
+`results/incubator-*`; do not use the same directory concurrently.
+
+Use `--prepare-only` without a guest command to prepare everything and print
+a direct Incubator command for `/bin/sh`. Run that printed command for an
+interactive shell without going through Flowey again. Copy the generated
+profile before customizing it. `--kernel-cmdline` and `--hypervisor-cmdline`
+override the source profile's boot options without rebuilding EFI code.
+
+`--initrd`, `--firmware`, and `--boot-artifacts` accept explicit local inputs.
+RPMs use Flowey's normal persistent cache; missing RPMs are downloaded as
+needed. Cached RPMs and extracted
+payloads are checked on reuse; corrupt caches fail rather than being trusted.
+Packaged licenses and source URLs/hashes are retained with the extracted
+payloads. No RPM is installed and no package script runs.
+
+### Supply artifacts manually
+
 Build the native launcher and Incubator from the same checkout for protocol
 compatibility, and build a static guest agent:
 
 ```bash
-cargo build -p openvmm -p incubator
+cargo build -p openvmm
+cargo build -p incubator --profile light
 cargo build -p pipette --target x86_64-unknown-linux-musl
 cargo build -p mshv_host_boot --target x86_64-unknown-uefi
 ```
@@ -52,7 +113,7 @@ This environment requires `nested-virt = true`, a compatible mshv root kernel,
 and the [boot artifacts below](#mshv-boot-artifacts-and-kernel).
 
 ```bash
-target/debug/incubator \
+target/light/incubator \
   --profile path/to/mshv-profile.toml \
   --kernel path/to/mshv/bzImage \
   --initrd path/to/test/initrd \
@@ -66,10 +127,26 @@ Omit `--no-pty` and run `/bin/sh` for an interactive session. Pipette must be
 inside the shared directory. Keep the mshv root kernel separate from any
 child VM's kernel, and the native outer OpenVMM separate from guest binaries.
 
+To expose virtual SMT explicitly, set `enable-smt = true` alongside
+`processors` in `[incubator]`. Omission preserves the launcher's default.
+This controls the outer topology, not the child VM's vCPU count. Verify the
+effective hypervisor scheduler in its boot log when comparing ROOT and CORE;
+requesting CORE without SMT can select a classic scheduler instead.
+
 Incubator supplies Petri with a `UefiGuest::Mshv` boot recipe: resolved kernel
 and payload paths plus an owned, prepared initrd. Petri composes and owns the
 temporary boot disk during VM preparation; the separate mshv platform preset
 configures nested virtualization and the required devices.
+
+OpenVMM guests use virtio-console (`console=hvc0`) for Linux output and
+guest-initiated virtio-vsock for Pipette. The host listener exists before boot;
+agent connection does not poll TCP readiness. The network remains available for
+guest workloads. UEFI/host-boot/HvLoader output stays on the 16550 UART. The
+mshv default disables Linux UART initialization with `8250.nr_uarts=0`; this
+does not affect firmware output. For early Linux UART diagnostics, select
+`console=ttyS0` and replace that option with `8250.nr_uarts=2` in the mshv
+kernel options. Selecting both consoles duplicates Linux output. QEMU keeps its
+existing TCP agent transport.
 
 For OpenVMM **without mshv**, use
 `petri/incubator/profiles/x86_64-openvmm.toml` with a native executable path,
@@ -102,13 +179,16 @@ The root kernel needs the mshv EFI-launch patches, `CONFIG_EFI_STUB=y`,
 `CONFIG_MSHV_ROOT=y`, and built-in PCIe, virtio-blk, virtio-net, virtio-9p,
 devtmpfs, and initramfs support. Disable modules and reuse the OpenVMM test
 initrd. A stock upstream test kernel cannot launch this environment.
+Build virtio-console and virtio-vsock into the root kernel as well. Petri
+selects the matching vsock initcall blacklist for both Linux-direct and mshv
+UEFI boot, preventing the competing Hyper-V socket driver from claiming it.
 
-The public `rolling-lts/kata/6.18.34.mshv2` kernel needs corrections for root
-IRQ mapping lifecycle and the build-26100 two-bank `CreatePartition` ABI.
-See the development
-[IRQ fix](https://github.com/jstarks/OHCL-Linux-Kernel/commit/4178badb4e34) and
-[ABI fix](https://github.com/jstarks/OHCL-Linux-Kernel/commit/88ec03f5e6fc);
-these do not guarantee compatibility with other kernel or hypervisor versions.
+The `mshv-test` dependency recipe targets released
+`rolling-lts/kata/6.18.34.mshv4` plus the root
+[IO-APIC IRQ-lifecycle fix](https://github.com/jstarks/OHCL-Linux-Kernel/commit/4178badb4e34).
+That release already restores the two-bank partition-feature ABI; the older
+mshv2 development kernel needed a separate compatibility patch. Kernel build
+and source selection remain independent of OpenVMM provisioning.
 
 To compose an image without launching it:
 
@@ -141,11 +221,11 @@ GRUB code:
 | `hvloader.cmdline` | `\lxhvloader.dll` followed by hypervisor options |
 
 Incubator requires both `kernel-cmdline` and `hypervisor-cmdline` in `[boot]`;
-Petri appends the prepared initrd's required `rdinit`. The standalone image
-composer likewise requires both `--kernel-cmdline` and `--hypervisor-cmdline`.
-Neither path supplies default command lines. Both write these files when
-composing media. You can also edit the files on an existing ESP without
-rebuilding the host boot application, kernel, or hypervisor.
+Petri appends the prepared initrd's required `rdinit` and vsock driver selection.
+The standalone image composer likewise requires both `--kernel-cmdline` and
+`--hypervisor-cmdline`. Neither path supplies default command lines. Both write
+these files when composing media. You can also edit the files on an existing
+ESP without rebuilding the host boot application, kernel, or hypervisor.
 
 Each file is limited to 16 KiB and a single UCS-2-compatible line, with an
 optional final LF or CRLF. Quotes, spaces, backslashes, and shell metacharacters
@@ -175,14 +255,19 @@ disabling verification. Its clock is initialized from the host.
 ## Output and failures
 
 Each invocation creates an `incubator-*` directory beneath `--output-dir`, with
-serial logs (`uefi.log` or `guest.log`), VMM logs (`openvmm.log` or `qemu.log`),
-and `petri.jsonl`. Guest stdout/stderr remain separate from runner diagnostics.
-Use `--guest-env` or `INCUBATOR_ENV` for guest environment overrides.
+console logs (`hvc0.log` for OpenVMM Linux, `uefi.log` for firmware/early UART,
+or `guest.log` for QEMU), VMM logs (`openvmm.log` or `qemu.log`),
+and `petri.jsonl`. Direct Incubator keeps guest stdout/stderr separate from
+runner diagnostics; xflowey also prints provisioning logs. Use the prepared
+direct command when stdout must contain only guest output. Use `--guest-env`
+or `INCUBATOR_ENV` for guest environment overrides.
 
 `--timeout` / `INCUBATOR_TIMEOUT` bounds boot for Linux-direct and boot plus
 command execution for mshv. Graceful shutdown and teardown each have a
 ten-second deadline. OpenVMM cleanup is best-effort: startup cancellation or
 an unresponsive VMM can leave a host process requiring manual termination.
-Guest exit codes propagate; unexpected VM exit/reset and timeouts fail.
+Direct Incubator invocations preserve the guest exit code. Through xflowey,
+a nonzero guest exit fails the pipeline with Flowey's failure status instead.
+Unexpected VM exit/reset and timeouts fail.
 SIGINT/SIGTERM attempt cleanup; SIGKILL cannot. Temporary boot files are removed
 on normal teardown and handled errors; logs remain on the host.

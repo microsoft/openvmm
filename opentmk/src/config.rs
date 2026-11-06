@@ -13,8 +13,8 @@ use opentmk_protocol::OpenTmkConfig;
 /// The embedded config region, patched in place by host tooling to select the
 /// test to run. Layout and parsing live in [`opentmk_protocol`].
 // SAFETY: `OPENTMK_CONFIG` is unique, so `no_mangle` cannot collide.
-// `link_section = ".tmkcfg"` gives it a dedicated section with the patcher layout.
+// The dedicated section is only consumed by the UEFI image patcher.
 #[used]
 #[unsafe(no_mangle)]
-#[unsafe(link_section = ".tmkcfg")]
+#[cfg_attr(target_os = "uefi", unsafe(link_section = ".tmkcfg"))]
 pub static OPENTMK_CONFIG: OpenTmkConfig = OpenTmkConfig::new();

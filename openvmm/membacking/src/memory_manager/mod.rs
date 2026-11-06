@@ -596,9 +596,8 @@ impl GuestMemoryBuilder {
                             0x100000, range_end,
                         ];
                         range_starts
-                            .iter()
-                            .zip(range_starts.iter().skip(1))
-                            .map(|(&s, &e)| MemoryRange::new(s..e))
+                            .array_windows()
+                            .map(|&[s, e]| MemoryRange::new(s..e))
                             .collect::<Vec<_>>()
                     } else {
                         vec![*range]

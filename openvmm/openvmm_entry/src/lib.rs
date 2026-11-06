@@ -27,18 +27,18 @@ use console_relay::ConsoleLaunchOptions;
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
 use anyhow::bail;
+use chipset_resources::acpi_power_button::PowerButtonRpc;
 use chipset_resources::battery::HostBatteryUpdate;
 use cli_args::DiskCliKind;
 use cli_args::EfiDiagnosticsLogLevelCli;
 use cli_args::EndpointConfigCli;
 use cli_args::IgvmPersonalityCli;
 use cli_args::NicConfigCli;
-use cli_args::ProvisionVmgs;
+use cli_args::ProvisionCondition;
 use cli_args::SerialConfigCli;
 use cli_args::TpmVersionCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
-use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
 use cxl::test::CxlTestDeviceHandle;
 use disk_backend_resources::DelayDiskHandle;
@@ -67,6 +67,8 @@ use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
 use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_IRQ_X64;
+use openvmm_defs::config::DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
@@ -138,6 +140,7 @@ use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
@@ -191,6 +194,7 @@ struct VmResources {
     serial_driver: Option<DefaultDriver>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    acpi_power_button: Option<mesh::Sender<PowerButtonRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
@@ -253,6 +257,20 @@ fn base_chipset_type(opt: &Options) -> BaseChipsetType {
         BaseChipsetType::HyperVGen2LinuxDirect
     } else {
         BaseChipsetType::UnenlightenedLinuxDirect
+    }
+}
+
+/// Whether the VM gets an ACPI power button.
+///
+/// This reads the boot flags rather than the load mode, which is
+/// `LoadMode::None` when restoring a snapshot.
+fn acpi_power_button_enabled(opt: &Options) -> bool {
+    if opt.igvm.is_some() {
+        false
+    } else if opt.pcat || opt.uefi.is_some() {
+        true
+    } else {
+        !opt.device_tree
     }
 }
 
@@ -807,6 +825,7 @@ async fn vm_config_from_command_line(
                 },
                 mac_address: None,
                 max_queues: None,
+                enable_rx_gso: false,
                 underhill: false,
                 pcie_port: None,
             },
@@ -973,6 +992,7 @@ async fn vm_config_from_command_line(
     };
 
     let mut pcie_root_complexes = Vec::new();
+    let mut legacy_pci_config_io_for_pcie = false;
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
         let ports: Vec<PciePortConfig> = opt
             .pcie_root_port
@@ -1007,12 +1027,19 @@ async fn vm_config_from_command_line(
         } else {
             None
         };
+        let legacy_pci_config_io = arch == MachineArch::X86_64
+            && !opt.pcat
+            && rc_cli.segment == 0
+            && rc_cli.start_bus == 0
+            && rc_cli.end_bus == u8::MAX;
+        legacy_pci_config_io_for_pcie |= legacy_pci_config_io;
         pcie_root_complexes.push(PcieRootComplexConfig {
             index: i as u32,
             name: rc_cli.name.clone(),
             segment: rc_cli.segment,
             start_bus: rc_cli.start_bus,
             end_bus: rc_cli.end_bus,
+            legacy_pci_config_io,
             low_mmio: if let Some(base) = rc_cli.low_mmio_base {
                 PcieMmioRangeConfig::Fixed(
                     memory_range::MemoryRange::try_new(base..base.wrapping_add(low_mmio_size))
@@ -1043,6 +1070,12 @@ async fn vm_config_from_command_line(
                         cli_args::SmmuOasCli::Auto => openvmm_defs::config::SmmuOas::Auto,
                         cli_args::SmmuOasCli::Fixed(bits) => {
                             openvmm_defs::config::SmmuOas::Fixed(bits)
+                        }
+                    },
+                    ssidsize: match s.ssidsize {
+                        cli_args::SmmuSsidSizeCli::Auto => openvmm_defs::config::SmmuSsidSize::Auto,
+                        cli_args::SmmuSsidSizeCli::Fixed(bits) => {
+                            openvmm_defs::config::SmmuSsidSize::Fixed(bits)
                         }
                     },
                 }
@@ -1234,6 +1267,10 @@ async fn vm_config_from_command_line(
 
     let mut chipset = VmManifestBuilder::new(base_chipset_type(opt), arch);
 
+    if legacy_pci_config_io_for_pcie {
+        chipset = chipset.with_legacy_pci_config_io_for_pcie();
+    }
+
     if framebuffer.is_some() {
         chipset = chipset.with_framebuffer();
     }
@@ -1294,11 +1331,8 @@ async fn vm_config_from_command_line(
             EfiDiagnosticsLogLevelCli::Info => firmware_uefi_resources::LogLevel::make_info(),
             EfiDiagnosticsLogLevelCli::Full => firmware_uefi_resources::LogLevel::make_full(),
         };
-        let nvram_storage = if opt.vmgs.is_some() {
-            VmgsFileHandle::new(vmgs_format::FileId::BIOS_NVRAM, true).into_resource()
-        } else {
-            EphemeralNonVolatileStoreHandle.into_resource()
-        };
+        let nvram_storage =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::BIOS_NVRAM);
         chipset = chipset.with_uefi(vm_manifest_builder::UefiManifest::new(
             arch,
             base_template,
@@ -1322,17 +1356,6 @@ async fn vm_config_from_command_line(
     // the system identity to the paravisor and fails closed on BIOS overrides
     // it cannot honor, so it is delivered as the shared `SmbiosConfig`.
     let ged_smbios = (*smbios).clone();
-
-    let layout_config = chipset.layout_config();
-    let VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-        pci_chipset_devices,
-        isa_dma_controller,
-        capabilities,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
 
     let tpm_version = opt.tpm.map(|cli_ver| match cli_ver {
         TpmVersionCli::V138 => TpmVersion::V138,
@@ -1525,22 +1548,36 @@ async fn vm_config_from_command_line(
         };
     }
 
-    let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
-        let disk = VmgsDisk {
-            disk: disk_open(kind, false)
-                .await
-                .context("failed to open vmgs disk")?,
-            encryption_policy: if opt.test_gsp_by_id {
-                GuestStateEncryptionPolicy::GspById(true)
-            } else {
-                GuestStateEncryptionPolicy::None(true)
-            },
+    if acpi_power_button_enabled(opt) {
+        let (send, recv) = mesh::channel();
+        let irq = match arch {
+            MachineArch::X86_64 => DEFAULT_ACPI_POWER_BUTTON_IRQ_X64,
+            MachineArch::Aarch64 => DEFAULT_ACPI_POWER_BUTTON_SPI_AARCH64,
         };
-        match provision {
-            ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
-            ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
-            ProvisionVmgs::True => VmgsResource::Reprovision(disk),
-        }
+        chipset = chipset.with_acpi_power_button(irq, recv);
+        resources.acpi_power_button = Some(send);
+    }
+
+    let layout_config = chipset.layout_config();
+    let VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+        pci_chipset_devices,
+        isa_dma_controller,
+        capabilities,
+    } = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
+
+    let mut vmgs = Some(if let Some(vmgs) = &opt.vmgs {
+        let encryption_policy = if opt.test_gsp_by_id {
+            GuestStateEncryptionPolicy::GspById(true)
+        } else {
+            GuestStateEncryptionPolicy::None(true)
+        };
+        open_vmgs(&vmgs.kind, vmgs.provision, encryption_policy)
+            .await
+            .context("failed to open vmgs disk")?
     } else {
         VmgsResource::Ephemeral
     });
@@ -1668,17 +1705,12 @@ async fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
-            (
-                VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
-                VmgsFileHandle::new(tpm_vmgs::tpm_nvram_file_id(tpm_version), true).into_resource(),
-            )
-        } else {
-            (
-                EphemeralNonVolatileStoreHandle.into_resource(),
-                EphemeralNonVolatileStoreHandle.into_resource(),
-            )
-        };
+        let ppi_store =
+            non_volatile_store_resource(opt.vmgs.is_some(), vmgs_format::FileId::TPM_PPI);
+        let nvram_store = non_volatile_store_resource(
+            opt.vmgs.is_some(),
+            tpm_vmgs::tpm_nvram_file_id(tpm_version),
+        );
 
         chipset_devices.push(ChipsetDeviceHandle {
             name: "tpm".to_string(),
@@ -1880,6 +1912,7 @@ async fn vm_config_from_command_line(
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         let resource = virtio_resources::net::VirtioNetHandle {
             max_queues: vport.max_queues,
+            enable_rx_gso: vport.enable_rx_gso,
             mac_address: vport.mac_address,
             endpoint: vport.endpoint,
         }
@@ -2370,7 +2403,9 @@ fn parse_endpoint(
             };
             net_backend_resources::consomme::ConsommeHandle {
                 cidr: cidr.clone(),
+                params: Default::default(),
                 ports,
+                internal_dns: true,
                 recv,
             }
             .into_resource()
@@ -2432,6 +2467,7 @@ fn parse_endpoint(
         endpoint,
         mac_address,
         max_queues: cli_cfg.max_queues,
+        enable_rx_gso: cli_cfg.enable_rx_gso,
         pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
@@ -2443,6 +2479,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    enable_rx_gso: bool,
     pcie_port: Option<String>,
 }
 
@@ -2459,6 +2496,33 @@ impl NicConfig {
             .into_resource(),
         )
     }
+}
+
+fn non_volatile_store_resource(
+    with_vmgs: bool,
+    file_id: vmgs_format::FileId,
+) -> Resource<NonVolatileStoreKind> {
+    if with_vmgs {
+        VmgsFileHandle::new(file_id, true).into_resource()
+    } else {
+        EphemeralNonVolatileStoreHandle.into_resource()
+    }
+}
+
+async fn open_vmgs(
+    kind: &DiskCliKind,
+    provision: ProvisionCondition,
+    encryption_policy: GuestStateEncryptionPolicy,
+) -> anyhow::Result<VmgsResource> {
+    let disk = VmgsDisk {
+        disk: disk_open(kind, false).await?,
+        encryption_policy,
+    };
+    Ok(match provision {
+        ProvisionCondition::OnEmpty => VmgsResource::Disk(disk),
+        ProvisionCondition::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+        ProvisionCondition::Single => VmgsResource::ReprovisionSingle(disk),
+    })
 }
 
 enum LayerOrDisk {
@@ -2777,10 +2841,12 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
                     unix_socket::UnixListener::bind(path).context("failed to bind to socket")?;
 
                 // This is a local launch
+                let (exit_code_send, exit_code_recv) = mesh::oneshot();
                 let mut handle =
                     mesh_worker::launch_local_worker::<ttrpc::TtrpcWorker>(ttrpc::Parameters {
                         listener,
                         transport,
+                        exit_code: exit_code_send,
                     })
                     .await?;
 
@@ -2791,7 +2857,9 @@ fn do_main(pidfile_guard: &mut Option<pidfile::Pidfile>) -> anyhow::Result<i32> 
 
                 handle.join().await?;
 
-                Ok(0)
+                exit_code_recv
+                    .await
+                    .context("RPC worker did not report an exit code")
             });
         }
     }
@@ -3057,6 +3125,7 @@ async fn run_control_inner(
             nvme_vtl2_rpc: resources.nvme_vtl2_rpc,
             consomme_rpc: resources.consomme_rpc,
             shutdown_ic: resources.shutdown_ic,
+            acpi_power_button: resources.acpi_power_button,
             kvp_ic: resources.kvp_ic,
             console_in: resources.console_in,
             has_vtl2,
@@ -3189,6 +3258,117 @@ mod tests {
     use clap::Parser;
     use std::fs::File;
     use test_with_tracing::test;
+    use vm_resource::ResourceId;
+
+    /// The same boot flags give the same ACPI power button with and without
+    /// `--restore-snapshot`.
+    #[test]
+    fn restore_builds_the_acpi_power_button_of_its_boot_command_line() {
+        DefaultPool::run_with(async |driver| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let file = |name: &str| {
+                let path = temp_dir.path().join(name);
+                File::create(&path).unwrap();
+                path.to_str().unwrap().to_owned()
+            };
+            let kernel = file("kernel");
+            let initrd = file("initrd");
+            let uefi = format!("--uefi=firmware={}", file("firmware"));
+            // The config build does not read the snapshot directory.
+            let snapshot = temp_dir.path().join("snapshot");
+            let linux = ["--kernel", kernel.as_str(), "--initrd", initrd.as_str()];
+
+            for (boot, has_button) in [
+                (linux.to_vec(), true),
+                ([&linux[..], &["--device-tree"]].concat(), false),
+                (vec![uefi.as_str()], true),
+            ] {
+                for restore in [false, true] {
+                    let mut args = vec!["openvmm", "--single-process"];
+                    args.extend(&boot);
+                    if restore {
+                        args.extend(["--restore-snapshot", snapshot.to_str().unwrap()]);
+                    }
+                    let opt = Options::try_parse_from(&args).unwrap();
+                    let mesh = VmmMesh::new(&driver, true).unwrap();
+                    let (config, _) = vm_config_from_command_line(driver.clone(), &mesh, &opt)
+                        .await
+                        .unwrap();
+                    mesh.shutdown().await;
+
+                    let built = config
+                        .chipset_devices
+                        .iter()
+                        .any(|device| device.name == "acpi-power-button");
+                    assert_eq!(built, has_button, "{args:?}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn selects_non_volatile_store_backing() {
+        for file_id in [
+            vmgs_format::FileId::BIOS_NVRAM,
+            vmgs_format::FileId::TPM_PPI,
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V138),
+            tpm_vmgs::tpm_nvram_file_id(TpmVersion::V185),
+        ] {
+            assert_eq!(
+                non_volatile_store_resource(true, file_id).id(),
+                <VmgsFileHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+            assert_eq!(
+                non_volatile_store_resource(false, file_id).id(),
+                <EphemeralNonVolatileStoreHandle as ResourceId<NonVolatileStoreKind>>::ID
+            );
+        }
+    }
+
+    #[test]
+    fn opens_vmgs_with_provisioning_and_encryption_policy() {
+        block_on(async {
+            for provision in [
+                ProvisionCondition::OnEmpty,
+                ProvisionCondition::OnFailure,
+                ProvisionCondition::Single,
+            ] {
+                for encryption_policy in [
+                    GuestStateEncryptionPolicy::None(true),
+                    GuestStateEncryptionPolicy::GspById(true),
+                ] {
+                    let vmgs = open_vmgs(
+                        &DiskCliKind::Memory(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                        provision,
+                        encryption_policy,
+                    )
+                    .await
+                    .unwrap();
+                    let disk = match (provision, vmgs) {
+                        (ProvisionCondition::OnEmpty, VmgsResource::Disk(disk))
+                        | (
+                            ProvisionCondition::OnFailure,
+                            VmgsResource::ReprovisionOnFailure(disk),
+                        )
+                        | (ProvisionCondition::Single, VmgsResource::ReprovisionSingle(disk)) => {
+                            disk
+                        }
+                        _ => panic!("incorrect VMGS provisioning"),
+                    };
+                    assert!(matches!(
+                        (encryption_policy, disk.encryption_policy),
+                        (
+                            GuestStateEncryptionPolicy::None(true),
+                            GuestStateEncryptionPolicy::None(true)
+                        ) | (
+                            GuestStateEncryptionPolicy::GspById(true),
+                            GuestStateEncryptionPolicy::GspById(true)
+                        )
+                    ));
+                }
+            }
+        });
+    }
 
     #[test]
     fn maps_igvm_personalities_to_chipsets() {
@@ -3318,6 +3498,7 @@ mod tests {
                 assert!(config.vmbus.is_some());
                 assert!(config.vtl2_vmbus.is_some());
                 assert!(resources.ged_rpc.is_some());
+                assert!(resources.acpi_power_button.is_none());
                 for id in ["ged", "gel"] {
                     assert!(
                         config.vmbus_devices.iter().any(|(vtl, resource)| {

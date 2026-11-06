@@ -69,6 +69,7 @@ Available profiles control the VM configuration:
 | `standard` | Full device set, serial agent, shared memory |
 | `quiet-serial` | Like standard but suppresses kernel console |
 | `minimal` | Pipette-as-init, minimal devices, shared memory |
+| `minimal-serial` | Minimal devices with serial console output, shared memory |
 | `minimal-private` | Same as minimal but with private memory (fastest) |
 
 ```bash
@@ -77,7 +78,16 @@ burette run --test boot-time --profile minimal -o report.json
 
 # Custom iteration count and guest RAM
 burette run --test boot-time --iterations 20 --mem-mb 1024
+
+# Boot a 32-vCPU guest, rather than 32 concurrent VMs
+burette run --test boot-time --boot-vps 32 --profile minimal -o boot-32vp.json
 ```
+
+`--boot-vps` defaults to one and applies only to `boot-time`. Keep it, the
+profile, memory size, and guest artifacts fixed when comparing reports.
+The standard profiles include Petri's startup save/restore verification when
+supported. Minimal profiles do not; use `minimal-serial` to measure boot with
+console output but without that verification.
 
 ### Memory overhead
 
@@ -104,6 +114,7 @@ burette run --test network --nic virtio-net -o network.json
 
 The report records TCP throughput and UDP packet-rate metrics. Keep the NIC,
 network backend, host CPU placement, and MTU constant between compared runs.
+Virtio-net benchmarks enable receive GSO with both Consomme and TAP backends.
 
 Compare shared vs. private memory overhead:
 
@@ -149,7 +160,40 @@ burette run --test disk-io --disk-backend storvsc -o disk.json
 
 # File-backed disk for realistic host I/O latency
 burette run --test disk-io --data-disk /tmp/test.raw --data-disk-size-gib 8
+
+# Host direct I/O, 4 KiB random/sequential jobs at queue depth 1
+burette run --test disk-io --data-disk /path/to/test.raw --disk-direct --disk-io-depth 1
 ```
+
+The data file is created or truncated, and the entire data disk is written and
+flushed before measurements to avoid benchmarking sparse holes. Guest fio always
+uses direct I/O; `--disk-direct` additionally bypasses the host page cache on
+Linux with the virtio-blk backend. By default host file I/O is cached.
+
+Use `--disk-block-size-kib` (default 4), `--disk-io-depth` (default 32),
+`--disk-runtime-secs` (default 10), and `--disk-ramp-secs` (default 5) to
+control the workload. Jobs are time-based. Raw fio JSON is retained in
+`<LOG_DIR>/fio/`, including initialization, warmup, achieved queue depth, and
+latency distributions. Reports also include p50, p99, and p99.9 total latency
+in microseconds, including both submission and completion latency as measured
+by fio. The summary averages each percentile across measured iterations; these
+are means of per-run percentiles, not percentiles pooled across all I/Os.
+
+Use `--disk-workloads randread` to isolate a workload, or pass a comma-separated
+list of `read,write,randread,randwrite` to choose their order. Each workload may
+appear only once. By default all four run in that order.
+
+For controlled A/B comparisons, use `--disk-reuse` with an existing,
+fully initialized file of the requested size. This skips truncation and
+initialization, avoiding explicit recreation of the file. Selected write
+workloads still overwrite data and can allocate new extents on copy-on-write
+storage such as Btrfs. Placement-sensitive write comparisons require backing
+storage configured for in-place writes; reuse alone does not guarantee fixed
+physical placement. Use the same backing file for host fio reference
+measurements: separate files on one filesystem can perform differently.
+`--disk-cpu 0` pins guest fio to vCPU 0; without it the guest scheduler chooses
+the CPU. Guest interrupt counters are retained beside the fio JSON so queue IRQ
+locality can be checked. Keep host vCPU/device-thread placement fixed as well.
 
 Reported metrics per backend:
 

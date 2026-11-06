@@ -16,15 +16,7 @@ pub const CIPHERTEXT: &str = "test";
 
 /// Generate a self-signed X.509 certificate for testing.
 pub fn generate_x509(key_pair: &RsaKeyPair) -> X509Certificate {
-    X509Certificate::build_self_signed(
-        key_pair.into(),
-        "US",
-        "Washington",
-        "Redmond",
-        "Example INC",
-        "example.com",
-    )
-    .unwrap()
+    X509Certificate::build_self_signed(key_pair.into(), &Default::default()).unwrap()
 }
 
 /// Generate an X.509 certificate chain for testing.

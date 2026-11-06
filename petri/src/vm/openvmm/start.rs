@@ -30,10 +30,12 @@ impl PetriVmConfigOpenVmm {
         let has_guest_shares = !self.guest_shares.is_empty();
         let Self {
             guest_shares: _,
+            private_virtio_devices: _,
             runtime_config,
             arch,
             host_log_levels,
             mut config,
+            skip_save_restore,
 
             mesh,
 
@@ -48,7 +50,7 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
 
             pending_iommu,
-        } = self.with_guest_shares();
+        } = self.with_private_virtio_devices();
 
         // Resolve deferred IOMMU assignments.
         for (name, iommu_config) in &pending_iommu {
@@ -60,24 +62,44 @@ impl PetriVmConfigOpenVmm {
             rc.iommu = Some(iommu_config.clone());
         }
 
+        let enable_legacy_pci_config_io =
+            arch == MachineArch::X86_64 && !config.chipset.with_piix4_pci_bus;
+        for root_complex in &mut config.pcie_root_complexes {
+            root_complex.legacy_pci_config_io = enable_legacy_pci_config_io
+                && root_complex.segment == 0
+                && root_complex.start_bus == 0
+                && root_complex.end_bus == u8::MAX;
+        }
+        if config
+            .pcie_root_complexes
+            .iter()
+            .any(|root_complex| root_complex.legacy_pci_config_io)
+        {
+            config
+                .chipset_devices
+                .retain(|device| device.name != "missing-pci");
+        }
+
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
         // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
-        // TODO: virtio vsock doesn't support save/restore yet
+        // TODO: virtio vsock and console don't support save/restore yet
         // TODO: 9p shares don't support save/restore yet
         // TODO: nested virt doesn't support save/restore yet
         let has_unsupported_pcie_save_restore_device = config
             .pcie_devices
             .iter()
             .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
-        let supports_save_restore = !resources.properties.is_openhcl
+        let supports_save_restore = !skip_save_restore
+            && !resources.properties.is_openhcl
             && !resources.properties.is_isolated
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
             && !has_unsupported_pcie_save_restore_device
             && !resources.properties.use_virtio_vsock
+            && !resources.properties.use_virtio_console
             && !has_guest_shares
             && !config.hypervisor.nested_virt;
 

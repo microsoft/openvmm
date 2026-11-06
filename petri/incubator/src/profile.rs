@@ -80,6 +80,9 @@ pub struct OpenvmmConfig {
     pub memory: String,
     /// Outer VM processor count.
     pub processors: u32,
+    /// Override SMT exposure in the outer VM's processor topology.
+    #[serde(default)]
+    pub enable_smt: Option<bool>,
     /// Expose nested virtualization. Required for mshv boot.
     #[serde(default)]
     pub nested_virt: bool,
