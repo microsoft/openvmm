@@ -3,7 +3,8 @@
 
 //! Tests for device-private saved state and restore: private-state round trips,
 //! restore validation, the restore of private state into the stopped device,
-//! and the start, reset, and removal that follow it.
+//! and the start, reset, and removal that follow it. Also tests that ordinary
+//! stops and starts, which restore nothing, keep queue progress.
 
 use super::*;
 use std::sync::atomic::AtomicBool;
@@ -782,6 +783,17 @@ async fn pci_reset_discards_restored_queue_progress(driver: DefaultDriver) {
     assert_eq!(probe.initial_used.load(Ordering::Relaxed), usize::MAX);
 }
 
+/// Waits for the device task of a dropped transport to drop its device.
+async fn assert_device_dropped(probe: &PrivateStateProbe) {
+    for _ in 0..10 {
+        if probe.dropped.load(Ordering::Relaxed) {
+            break;
+        }
+        yield_now().await;
+    }
+    assert!(probe.dropped.load(Ordering::Relaxed));
+}
+
 #[async_test]
 async fn mmio_removal_before_first_start_releases_device(driver: DefaultDriver) {
     use vmcore::save_restore::AsyncSaveRestore;
@@ -794,13 +806,24 @@ async fn mmio_removal_before_first_start_releases_device(driver: DefaultDriver) 
     assert!(!probe.dropped.load(Ordering::Relaxed));
 
     drop(destination);
-    for _ in 0..10 {
-        if probe.dropped.load(Ordering::Relaxed) {
-            break;
-        }
-        yield_now().await;
-    }
-    assert!(probe.dropped.load(Ordering::Relaxed));
+    assert_device_dropped(&probe).await;
+    assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
+}
+
+#[async_test]
+async fn pci_removal_before_first_start_releases_device(driver: DefaultDriver) {
+    use vmcore::save_restore::AsyncSaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let saved = save_active_private_pci(&driver, &test_mem).await;
+    let (device, probe) = PrivateStateTestDevice::new(0, 1, false);
+    let mut destination =
+        VirtioPciTestDevice::new_with_device(&driver, &test_mem, Box::new(device));
+    destination.pci_device.restore(saved).await.unwrap();
+    assert!(!probe.dropped.load(Ordering::Relaxed));
+
+    drop(destination);
+    assert_device_dropped(&probe).await;
     assert_eq!(probe.start_count.load(Ordering::Relaxed), 0);
 }
 
@@ -913,6 +936,54 @@ async fn stop_applies_failed_start_pci(driver: DefaultDriver) {
     let (device, probe) = PrivateStateTestDevice::new(0, 2, false);
     let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
     verify_stop_applies_failed_start(&mut transport, &probe).await;
+}
+
+/// Stops and starts an active device twice, as ordinary pauses and resumes
+/// do: each start resumes both queues from the progress of the stop before
+/// it, and nothing restores or resets the device.
+async fn verify_stop_start_keeps_queue_progress(
+    transport: &mut impl TestTransport,
+    probe: &PrivateStateProbe,
+) {
+    transport.write_driver_ok();
+    yield_and_poll(transport).await;
+    assert_eq!(probe.running_count.load(Ordering::Relaxed), 2);
+    probe.value.store(42, Ordering::Relaxed);
+    transport.stop().await;
+    assert_eq!(probe.running_count.load(Ordering::Relaxed), 0);
+
+    for starts in [4, 6] {
+        probe.initial_avail.store(usize::MAX, Ordering::Relaxed);
+        probe.initial_used.store(usize::MAX, Ordering::Relaxed);
+        transport.start();
+        // The stop waits for the start, then stops the queues again.
+        transport.stop().await;
+        assert_eq!(probe.start_count.load(Ordering::Relaxed), starts);
+        assert_eq!(probe.running_count.load(Ordering::Relaxed), 0);
+        assert_eq!(probe.initial_avail.load(Ordering::Relaxed), 3);
+        assert_eq!(probe.initial_used.load(Ordering::Relaxed), 1);
+    }
+
+    assert_eq!(probe.restore_count.load(Ordering::Relaxed), 0);
+    assert_eq!(probe.reset_count.load(Ordering::Relaxed), 0);
+    assert_eq!(probe.value.load(Ordering::Relaxed), 42);
+    let status = transport.read_status();
+    assert_ne!(status & VIRTIO_DRIVER_OK, 0);
+    assert_eq!(status & VIRTIO_DEVICE_NEEDS_RESET, 0);
+}
+
+#[async_test]
+async fn stop_start_keeps_queue_progress_mmio(driver: DefaultDriver) {
+    let (device, probe) = PrivateStateTestDevice::new(0, 2, false);
+    let mut transport = MmioTestTransport::new(Box::new(device), &driver, 2);
+    verify_stop_start_keeps_queue_progress(&mut transport, &probe).await;
+}
+
+#[async_test]
+async fn stop_start_keeps_queue_progress_pci(driver: DefaultDriver) {
+    let (device, probe) = PrivateStateTestDevice::new(0, 2, false);
+    let mut transport = PciTestTransport::new(Box::new(device), &driver, 2);
+    verify_stop_start_keeps_queue_progress(&mut transport, &probe).await;
 }
 
 #[async_test]
