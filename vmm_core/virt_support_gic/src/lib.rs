@@ -53,6 +53,8 @@ pub enum GicV3ModelError {
     RedistributorRangeOverflow,
     #[error("GIC distributor range overflowed")]
     DistributorRangeOverflow,
+    #[error("GIC interrupt count {0} exceeds the supported maximum of 1024")]
+    UnsupportedInterruptCount(u32),
 }
 
 /// Software model of a GICv3 distributor and its per-VP redistributors.
@@ -92,7 +94,7 @@ impl GicV3Model {
             distributor_base,
             redistributor_range,
             topology.gic_nr_irqs(),
-        );
+        )?;
 
         let mut redistributors: Vec<Mutex<Redistributor>> = vec![];
         let vp_count = topology.vp_count() as usize;
@@ -196,6 +198,7 @@ impl GicV3Model {
 }
 
 mod gicd {
+    use super::GicV3ModelError;
     use super::ListRegisterInterrupt;
     use super::PendingInterrupt;
     use super::Redistributor;
@@ -268,10 +271,17 @@ mod gicd {
     }
 
     impl Distributor {
-        pub fn new(gicd_base: u64, gicr_range: MemoryRange, interrupt_count: u32) -> Self {
+        /// Creates a distributor for at most 1024 interrupt IDs.
+        pub fn new(
+            gicd_base: u64,
+            gicr_range: MemoryRange,
+            interrupt_count: u32,
+        ) -> Result<Self, GicV3ModelError> {
             let n = interrupt_count.div_ceil(32) as usize;
-            assert!(n <= u32::BITS as usize);
-            Self {
+            if n > u32::BITS as usize {
+                return Err(GicV3ModelError::UnsupportedInterruptCount(interrupt_count));
+            }
+            Ok(Self {
                 state: Arc::new(Mutex::new(DistributorState {
                     asserted: vec![0; n],
                     pending: vec![0; n],
@@ -295,7 +305,7 @@ mod gicd {
                     gicd_base..gicd_base + aarch64defs::GIC_DISTRIBUTOR_SIZE,
                 ),
                 gicr_range,
-            }
+            })
         }
 
         pub fn add_redistributor(&mut self, mpidr: u64, last: bool) -> Redistributor {
@@ -1191,10 +1201,15 @@ mod gicd {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::GicV3Model;
         use aarch64defs::gic::GicdCtlr;
         use aarch64defs::gic::GicdTyper;
         use aarch64defs::gic::GicrSgi;
         use aarch64defs::gic::GicrSgiRegister;
+        use vm_topology::processor::TopologyBuilder;
+        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+        use vm_topology::processor::aarch64::GicMsiController;
+        use vm_topology::processor::aarch64::GicVersion;
 
         const TEST_PPI: u32 = 20;
         const TEST_SPI: u32 = 32;
@@ -1209,6 +1224,7 @@ mod gicd {
                 ),
                 64,
             )
+            .unwrap()
         }
 
         fn test_distributor() -> Distributor {
@@ -1225,6 +1241,47 @@ mod gicd {
         }
 
         #[test]
+        fn distributor_interrupt_count_capacity_is_checked() {
+            let distributor = Distributor::new(0, MemoryRange::new(0..0), 1024).unwrap();
+            let typer = GicdTyper::from(distributor.read32(GicdRegister::TYPER).unwrap());
+            assert_eq!(typer.it_lines_number(), 31);
+
+            // The highest ordinary SPI uses the final bit of the u32 summary.
+            set_software_pending_spi(&distributor, 1019, true);
+            assert_eq!(distributor.state.lock().pending_word_summary, 1 << 31);
+
+            for interrupt_count in [1025, 2048, u32::MAX] {
+                assert!(matches!(
+                    Distributor::new(0, MemoryRange::new(0..0), interrupt_count),
+                    Err(GicV3ModelError::UnsupportedInterruptCount(count))
+                        if count == interrupt_count
+                ));
+            }
+        }
+
+        #[test]
+        fn model_propagates_unsupported_interrupt_count() {
+            // This construction path does not validate the platform IRQ count.
+            let topology = TopologyBuilder::new_aarch64(Aarch64PlatformConfig {
+                gic_distributor_base: 0,
+                gic_version: GicVersion::V3 {
+                    redistributors_base: aarch64defs::GIC_DISTRIBUTOR_SIZE,
+                },
+                gic_msi: GicMsiController::None,
+                pmu_gsiv: None,
+                virt_timer_ppi: TEST_PPI,
+                gic_nr_irqs: 1025,
+            })
+            .build_with_vp_info([])
+            .unwrap();
+
+            assert!(matches!(
+                GicV3Model::new(&topology),
+                Err(GicV3ModelError::UnsupportedInterruptCount(1025))
+            ));
+        }
+
+        #[test]
         fn typer_matches_the_implemented_interrupts_and_routing_model() {
             const INTERRUPT_COUNT: u32 = 256;
             let mut distributor = Distributor::new(
@@ -1235,7 +1292,8 @@ mod gicd {
                             + 2 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
                 ),
                 INTERRUPT_COUNT,
-            );
+            )
+            .unwrap();
             distributor.add_redistributor(0, false);
             distributor.add_redistributor(1 << 32, true);
 
