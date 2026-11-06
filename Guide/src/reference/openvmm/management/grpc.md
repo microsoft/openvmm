@@ -122,8 +122,9 @@ the server never retries it; the caller decides whether to retry.
 `TeardownVM` and `Quit` are terminal and are never rejected by in-flight
 device or resource changes. They cancel those changes first, and the cancelled
 calls return `CANCELLED`. Cancellation stops the server waiting for the change;
-a change already delivered to the VM is completed or discarded when the VM
-stops.
+a change the VM is already processing still completes, or is discarded, when
+the VM stops. If the VM is blocked on the change itself (for example, on a
+device backend that never responds), stopping the VM waits for it.
 
 | Operation | Class | In-flight device or resource changes |
 |---|---|---|

@@ -630,7 +630,9 @@ impl VmService {
     /// example, a Consomme port change whose NIC is not processing its queue).
     /// The cancelled callers receive `CANCELLED`. Only the service-side wait
     /// is cancelled; a request already delivered to the VM is completed or
-    /// discarded when the VM worker stops.
+    /// discarded when the VM worker stops, and if the worker is blocked on it
+    /// (for example, on an unresponsive device backend), stopping the worker
+    /// waits for it.
     ///
     /// Cancellation drops the operation's future, so gated futures must be
     /// safe to drop at any await point. Today they await only RPC replies and
