@@ -6,29 +6,41 @@
 
 use std::path::PathBuf;
 
-/// A raw file and its virtio-blk PCI device settings.
+/// Backing storage for a virtio-blk device.
 #[derive(Debug, Clone)]
-pub struct VirtioBlkFileConfig {
-    /// Host path to the raw disk image.
-    pub path: PathBuf,
-    /// Whether the disk is read-only.
-    pub read_only: bool,
-    /// Bypass the host page cache.
-    pub direct: bool,
+pub enum VirtioBlkBacking {
+    /// Discard writes and return zeroes on reads, with the specified size.
+    Null(u64),
+    /// A raw file, accessed through io_uring.
+    File {
+        /// Host path to the raw disk image.
+        path: PathBuf,
+        /// Whether the disk is read-only.
+        read_only: bool,
+        /// Bypass the host page cache.
+        direct: bool,
+    },
+}
+
+/// Optional virtio-blk device properties. Unspecified properties use QEMU defaults.
+#[derive(Debug, Clone, Default)]
+pub struct VirtioBlkOptions {
     /// Advertise packed virtqueues.
-    pub packed: bool,
+    pub packed: Option<bool>,
     /// Number of descriptors in each virtqueue.
-    pub queue_size: u16,
+    pub queue_size: Option<u16>,
     /// Number of request virtqueues.
-    pub num_queues: u16,
+    pub num_queues: Option<u16>,
     /// Allow QEMU to merge adjacent requests.
-    pub request_merging: bool,
+    pub request_merging: Option<bool>,
     /// Disable the legacy virtio PCI interface.
-    pub disable_legacy: bool,
+    pub disable_legacy: Option<bool>,
+    /// Require the guest to use platform DMA translation.
+    pub iommu_platform: Option<bool>,
     /// Logical sector size in bytes.
-    pub logical_block_size: u32,
+    pub logical_block_size: Option<u32>,
     /// Physical sector size in bytes.
-    pub physical_block_size: u32,
+    pub physical_block_size: Option<u32>,
 }
 
 /// A device to add to the platform.
@@ -79,8 +91,10 @@ impl DeviceConfig {
 pub struct VirtioBlkDeviceConfig {
     /// Name for this device
     pub name: String,
-    /// Size of the RAM-backed disk in bytes.
-    pub size: u64,
+    /// Storage backing this device.
+    pub backing: VirtioBlkBacking,
+    /// Device properties; unspecified properties use QEMU defaults.
+    pub options: VirtioBlkOptions,
     /// If true, bind the device to vfio-pci after boot, making it available
     /// for passthrough into the L2 guest.
     pub vfio: bool,

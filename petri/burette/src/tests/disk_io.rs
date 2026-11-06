@@ -113,6 +113,15 @@ enum DiskIoVm {
     Qemu(Box<petri::PetriVm<petri::qemu::QemuPetriBackend>>),
 }
 
+impl DiskIoTestState {
+    pub fn qemu_command(&mut self) -> Option<Vec<String>> {
+        match &mut self.vm {
+            DiskIoVm::Qemu(vm) => Some(vm.backend().command().to_vec()),
+            DiskIoVm::OpenVmm(_) => None,
+        }
+    }
+}
+
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
     petri::Firmware::linux_direct(resolver, MachineArch::host(), None)
 }
@@ -163,22 +172,34 @@ pub fn register_qemu_artifacts(resolver: &petri::ArtifactResolver<'_>, binary: &
 }
 
 fn qemu_disk_config(
+    name: &str,
     path: PathBuf,
     read_only: bool,
     direct: bool,
-) -> petri::qemu::devices::VirtioBlkFileConfig {
-    petri::qemu::devices::VirtioBlkFileConfig {
-        path,
-        read_only,
-        direct,
-        packed: true,
-        queue_size: 256,
-        num_queues: 1,
-        request_merging: false,
-        disable_legacy: true,
-        logical_block_size: 512,
-        physical_block_size: 4096,
-    }
+) -> petri::qemu::devices::DeviceConfig {
+    use petri::qemu::devices::DeviceConfig;
+    use petri::qemu::devices::VirtioBlkBacking;
+    use petri::qemu::devices::VirtioBlkDeviceConfig;
+    use petri::qemu::devices::VirtioBlkOptions;
+    DeviceConfig::VirtioBlk(VirtioBlkDeviceConfig {
+        name: name.into(),
+        backing: VirtioBlkBacking::File {
+            path,
+            read_only,
+            direct,
+        },
+        vfio: false,
+        options: VirtioBlkOptions {
+            packed: Some(true),
+            queue_size: Some(256),
+            num_queues: Some(1),
+            request_merging: Some(false),
+            disable_legacy: Some(true),
+            iommu_platform: Some(false),
+            logical_block_size: Some(512),
+            physical_block_size: Some(4096),
+        },
+    })
 }
 
 /// GUID for the data disk SCSI controller (used for storvsc backend).
@@ -275,8 +296,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                         config
                             .with_kvm()
                             .with_kernel_command_line(kernel_args)
-                            .with_virtio_blk_file(qemu_disk_config(tools, true, false))
-                            .with_virtio_blk_file(qemu_disk_config(data, false, direct))
+                            .with_devices([
+                                qemu_disk_config("tools", tools, true, false),
+                                qemu_disk_config("data", data, false, direct),
+                            ])
                     });
             let (mut vm, agent) = builder.run().await.context("failed to boot QEMU VM")?;
             std::fs::write(

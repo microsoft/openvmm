@@ -430,10 +430,18 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 })?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                let stats = pal_async::DefaultPool::run_with(async |driver| {
-                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                let (stats, command) = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test_with_metadata(
+                        &test,
+                        &resolver,
+                        &driver,
+                        args.iterations,
+                        tests::disk_io::DiskIoTestState::qemu_command,
+                    )
+                    .await
                 })
                 .context("disk_io test failed")?;
+                vmm_info.command = command;
                 all_stats.extend(stats);
             }
             TestName::VirtioFs => {
@@ -456,12 +464,6 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
     }
 
     // Build and write report.
-    if args.vmm == Vmm::Qemu {
-        vmm_info.command = Some(serde_json::from_slice(
-            &std::fs::read(args.log_dir.join("fio/qemu-command.json"))
-                .context("failed to read recorded QEMU command")?,
-        )?);
-    }
     let mut report = report::PerfReport::new(all_stats)?;
     report.vmm = Some(vmm_info);
     if tests_to_run.contains(&TestName::DiskIo) {

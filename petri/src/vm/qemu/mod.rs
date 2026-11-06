@@ -28,7 +28,7 @@ use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
 use devices::DeviceConfig;
-use devices::VirtioBlkFileConfig;
+use devices::VirtioBlkBacking;
 use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
@@ -69,7 +69,6 @@ pub struct QemuPetriConfig {
     memory: Option<String>,
     command_line: String,
     kvm: bool,
-    virtio_blk_files: Vec<VirtioBlkFileConfig>,
 }
 
 impl QemuPetriBackend {
@@ -147,15 +146,6 @@ impl PetriVmmBackend for QemuPetriBackend {
     }
 
     fn new(resolver: &ArtifactResolver<'_>, arch: MachineArch) -> Self {
-        if arch == MachineArch::host() {
-            return Self::from_binary(
-                match arch {
-                    MachineArch::X86_64 => "qemu-system-x86_64",
-                    MachineArch::Aarch64 => "qemu-system-aarch64",
-                }
-                .into(),
-            );
-        }
         assert_eq!(arch, MachineArch::Aarch64);
         QemuPetriBackend {
             qemu_path: resolver
@@ -267,13 +257,6 @@ impl QemuPetriConfig {
     /// Set additional kernel command-line arguments.
     pub fn with_kernel_command_line(mut self, command_line: String) -> Self {
         self.command_line = command_line;
-        self
-    }
-
-    /// Attach a raw file with caller-selected virtio-blk device settings.
-    /// File I/O uses io_uring.
-    pub fn with_virtio_blk_file(mut self, disk: VirtioBlkFileConfig) -> Self {
-        self.virtio_blk_files.push(disk);
         self
     }
 
@@ -566,7 +549,6 @@ pub fn build_qemu_command(
         memory,
         command_line,
         kvm,
-        virtio_blk_files,
     } = qemu_config;
 
     anyhow::ensure!(
@@ -680,11 +662,53 @@ pub fn build_qemu_command(
         match device {
             DeviceConfig::VirtioBlk(cfg) => {
                 let node_name = format!("disk{i}");
-                let size_bytes = cfg.size;
-                cmd.arg("-blockdev")
-                    .arg(format!("null-co,node-name={node_name},size={size_bytes}"));
-                cmd.arg("-device")
-                    .arg(format!("virtio-blk-pci,drive={node_name},bus={rp_id},iommu_platform=on,disable-legacy=on,romfile="));
+                let backing = match &cfg.backing {
+                    VirtioBlkBacking::Null(size) => serde_json::json!({
+                        "driver": "null-co", "node-name": node_name, "size": size
+                    }),
+                    VirtioBlkBacking::File {
+                        path,
+                        read_only,
+                        direct,
+                    } => {
+                        let filename = path.to_str().context("QEMU disk path is not UTF-8")?;
+                        serde_json::json!({
+                            "driver": "raw",
+                            "node-name": node_name,
+                            "read-only": read_only,
+                            "file": {
+                                "driver": "file",
+                                "filename": filename,
+                                "aio": "io_uring",
+                                "cache": { "direct": direct, "no-flush": false }
+                            }
+                        })
+                    }
+                };
+                cmd.arg("-blockdev").arg(serde_json::to_string(&backing)?);
+                let options = &cfg.options;
+                let mut dev = format!("virtio-blk-pci,drive={node_name},bus={rp_id},romfile=");
+                for (property, value) in [
+                    ("packed", options.packed),
+                    ("request-merging", options.request_merging),
+                    ("disable-legacy", options.disable_legacy),
+                    ("iommu_platform", options.iommu_platform),
+                ] {
+                    if let Some(value) = value {
+                        dev.push_str(&format!(",{property}={}", if value { "on" } else { "off" }));
+                    }
+                }
+                for (property, value) in [
+                    ("queue-size", options.queue_size.map(u32::from)),
+                    ("num-queues", options.num_queues.map(u32::from)),
+                    ("logical_block_size", options.logical_block_size),
+                    ("physical_block_size", options.physical_block_size),
+                ] {
+                    if let Some(value) = value {
+                        dev.push_str(&format!(",{property}={value}"));
+                    }
+                }
+                cmd.arg("-device").arg(dev);
             }
             DeviceConfig::Edu(cfg) => {
                 // A conventional PCI endpoint with a register-programmed DMA
@@ -710,43 +734,14 @@ pub fn build_qemu_command(
         }
     }
 
-    for (i, disk) in virtio_blk_files.iter().enumerate() {
-        let filename = disk.path.to_str().context("QEMU disk path is not UTF-8")?;
-        let index = devices.len() + i;
-        let addr = EXTRA_DEVICE_ADDR_BASE + index;
-        let slot = index + 1;
-        let rp_id = format!("storage_rp{i}");
-        let node_name = format!("petri_file_disk{i}");
-        cmd.arg("-device").arg(format!(
-            "pcie-root-port,id={rp_id},addr={addr:#x},slot={slot}"
-        ));
-        cmd.arg("-blockdev")
-            .arg(serde_json::to_string(&serde_json::json!({
-                "driver": "raw",
-                "node-name": node_name,
-                "read-only": disk.read_only,
-                "file": {
-                    "driver": "file",
-                    "filename": filename,
-                    "aio": "io_uring",
-                    "cache": { "direct": disk.direct, "no-flush": false }
-                }
-            }))?);
-        let packed = if disk.packed { "on" } else { "off" };
-        let merging = if disk.request_merging { "on" } else { "off" };
-        let legacy = if disk.disable_legacy { "on" } else { "off" };
-        cmd.arg("-device").arg(format!(
-            "virtio-blk-pci,drive={node_name},bus={rp_id},packed={packed},queue-size={},num-queues={},request-merging={merging},disable-legacy={legacy},logical_block_size={},physical_block_size={}",
-            disk.queue_size, disk.num_queues, disk.logical_block_size, disk.physical_block_size,
-        ));
-    }
-
     Ok(cmd)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use devices::VirtioBlkDeviceConfig;
+    use devices::VirtioBlkOptions;
     use test_with_tracing::test;
 
     fn linux_direct_config(arch: MachineArch) -> PetriVmConfig {
@@ -780,18 +775,25 @@ mod tests {
         }
     }
 
-    fn raw_disk(path: &str, read_only: bool, direct: bool) -> VirtioBlkFileConfig {
-        VirtioBlkFileConfig {
-            path: path.into(),
-            read_only,
-            direct,
-            packed: false,
-            queue_size: 128,
-            num_queues: 2,
-            request_merging: true,
-            disable_legacy: false,
-            logical_block_size: 1024,
-            physical_block_size: 2048,
+    fn raw_disk(path: &str, read_only: bool, direct: bool) -> VirtioBlkDeviceConfig {
+        VirtioBlkDeviceConfig {
+            name: "test-disk".into(),
+            backing: VirtioBlkBacking::File {
+                path: path.into(),
+                read_only,
+                direct,
+            },
+            vfio: false,
+            options: VirtioBlkOptions {
+                packed: Some(false),
+                queue_size: Some(128),
+                num_queues: Some(2),
+                request_merging: Some(true),
+                disable_legacy: Some(false),
+                iommu_platform: Some(false),
+                logical_block_size: Some(1024),
+                physical_block_size: Some(2048),
+            },
         }
     }
 
@@ -843,10 +845,10 @@ mod tests {
     fn native_kvm_raw_disks_preserve_paths_and_cache_modes() -> anyhow::Result<()> {
         let config = linux_direct_config(MachineArch::host());
         for direct in [false, true] {
-            let platform = QemuPetriConfig::default()
-                .with_kvm()
-                .with_virtio_blk_file(raw_disk("tools image.erofs", true, false))
-                .with_virtio_blk_file(raw_disk("data,with=options.raw", false, direct));
+            let platform = QemuPetriConfig::default().with_kvm().with_devices([
+                DeviceConfig::VirtioBlk(raw_disk("tools image.erofs", true, false)),
+                DeviceConfig::VirtioBlk(raw_disk("data,with=options.raw", false, direct)),
+            ]);
             let cmd = build_qemu_command(Path::new("qemu"), &config, &platform, 12345, &initrd())?;
             let args = cmd
                 .get_args()
@@ -882,26 +884,29 @@ mod tests {
         for (disk, expected) in [
             (
                 raw_disk("data.raw", false, false),
-                "virtio-blk-pci,drive=petri_file_disk0,bus=storage_rp0,packed=off,queue-size=128,num-queues=2,request-merging=on,disable-legacy=off,logical_block_size=1024,physical_block_size=2048",
+                "virtio-blk-pci,drive=disk0,bus=hosting_rp0,romfile=,packed=off,request-merging=on,disable-legacy=off,iommu_platform=off,queue-size=128,num-queues=2,logical_block_size=1024,physical_block_size=2048",
             ),
             (
-                VirtioBlkFileConfig {
-                    packed: true,
-                    queue_size: 512,
-                    num_queues: 4,
-                    request_merging: false,
-                    disable_legacy: true,
-                    logical_block_size: 4096,
-                    physical_block_size: 4096,
+                VirtioBlkDeviceConfig {
+                    options: VirtioBlkOptions {
+                        packed: Some(true),
+                        queue_size: Some(512),
+                        num_queues: Some(4),
+                        request_merging: Some(false),
+                        disable_legacy: Some(true),
+                        iommu_platform: Some(true),
+                        logical_block_size: Some(4096),
+                        physical_block_size: Some(4096),
+                    },
                     ..raw_disk("data.raw", false, false)
                 },
-                "virtio-blk-pci,drive=petri_file_disk0,bus=storage_rp0,packed=on,queue-size=512,num-queues=4,request-merging=off,disable-legacy=on,logical_block_size=4096,physical_block_size=4096",
+                "virtio-blk-pci,drive=disk0,bus=hosting_rp0,romfile=,packed=on,request-merging=off,disable-legacy=on,iommu_platform=on,queue-size=512,num-queues=4,logical_block_size=4096,physical_block_size=4096",
             ),
         ] {
             let cmd = build_qemu_command(
                 Path::new("qemu"),
                 &linux_direct_config(MachineArch::Aarch64),
-                &QemuPetriConfig::default().with_virtio_blk_file(disk),
+                &QemuPetriConfig::default().with_devices([DeviceConfig::VirtioBlk(disk)]),
                 12345,
                 &initrd(),
             )?;
@@ -912,6 +917,64 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn null_and_file_devices_share_root_port_allocation() -> anyhow::Result<()> {
+        let platform = QemuPetriConfig::default().with_devices([
+            DeviceConfig::VirtioBlk(VirtioBlkDeviceConfig {
+                name: "nested-disk".into(),
+                backing: VirtioBlkBacking::Null(64 * 1024 * 1024),
+                vfio: true,
+                options: VirtioBlkOptions {
+                    iommu_platform: Some(true),
+                    disable_legacy: Some(true),
+                    ..Default::default()
+                },
+            }),
+            DeviceConfig::VirtioBlk(raw_disk("data.raw", false, false)),
+        ]);
+        let cmd = build_qemu_command(
+            Path::new("qemu"),
+            &linux_direct_config(MachineArch::Aarch64),
+            &platform,
+            12345,
+            &initrd(),
+        )?;
+        let args = cmd
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect::<Vec<_>>();
+        let blocks = args
+            .windows(2)
+            .filter(|p| p[0] == "-blockdev")
+            .map(|p| serde_json::from_str::<serde_json::Value>(p[1]))
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(blocks[0]["driver"], "null-co");
+        assert_eq!(blocks[0]["size"], 64 * 1024 * 1024);
+        assert_eq!(blocks[1]["driver"], "raw");
+        assert_eq!(blocks[1]["file"]["filename"], "data.raw");
+        for expected in [
+            "pcie-root-port,id=hosting_rp0,addr=0x10,slot=1",
+            "pcie-root-port,id=hosting_rp1,addr=0x11,slot=2",
+            "virtio-blk-pci,drive=disk0,bus=hosting_rp0,romfile=,disable-legacy=on,iommu_platform=on",
+        ] {
+            assert!(
+                args.windows(2)
+                    .any(|p| p[0] == "-device" && p[1] == expected)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn default_backend_still_resolves_the_emulator_artifact() {
+        let mut requirements = crate::TestArtifactRequirements::new();
+        let resolver = ArtifactResolver::collector(&mut requirements);
+        let _backend = QemuPetriBackend::new(&resolver, MachineArch::Aarch64);
+        assert!(requirements.required_artifacts().any(|id| {
+            id == petri_artifacts_vmm_test::artifacts::QEMU_SYSTEM_AARCH64_LINUX_X64.erase()
+        }));
     }
 
     #[cfg(target_os = "linux")]
