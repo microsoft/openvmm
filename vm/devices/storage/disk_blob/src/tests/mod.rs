@@ -6,18 +6,27 @@
 mod http_server;
 
 use crate::BlobDisk;
+use crate::blob::Blob;
 use crate::blob::file::FileBlob;
 use crate::blob::http::HttpBlob;
+use crate::blob::http::HttpBlobOptions;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use guestmem::GuestMemory;
 use http_server::Behavior;
+use http_server::Script;
 use http_server::TestHttpServer;
 use pal_async::async_test;
 use scsi_buffers::OwnedRequestBuffers;
 use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+use std::time::Instant;
+use test_with_tracing::test;
 
 const SECTOR_SIZE: usize = 512;
 const DISK_SIZE: u64 = 1024 * 1024;
@@ -149,4 +158,562 @@ async fn misbehaving_server_never_reports_success() {
             _ => assert!(r.is_err(), "{behavior:?}: reported success"),
         }
     }
+}
+
+/// How long a fault test waits for a request. One still pending by then is
+/// taken to be hung for good, which is the failure these tests exist to catch.
+const LIMIT: Duration = Duration::from_secs(10);
+
+/// How long a fault test's options let a stall last before they time it out.
+///
+/// A request that the test server answers can take more than a second on a
+/// heavily loaded machine, so a test that expects such a request to succeed
+/// under the same timeout needs this margin. No test waits out more than two
+/// stalls, so that each stays well within [`LIMIT`].
+const STALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Content in which every offset is distinguishable from its neighbors, so that
+/// data from the wrong place does not pass for the right data.
+fn content() -> Vec<u8> {
+    (0..DISK_SIZE).map(|i| (i % 251) as u8).collect()
+}
+
+/// Options under which no request times out before the test stops waiting for
+/// it, for the tests in which nothing stalls, so that a slow machine does not
+/// turn a request that should succeed into a retry.
+fn patient_options() -> HttpBlobOptions {
+    HttpBlobOptions {
+        response_timeout: LIMIT,
+        body_idle_timeout: LIMIT,
+        operation_timeout: LIMIT,
+        max_attempts: 3,
+        initial_backoff: Duration::from_millis(10),
+        max_backoff: Duration::from_millis(40),
+        ..Default::default()
+    }
+}
+
+/// Options that time out a stall before the response after [`STALL_TIMEOUT`].
+fn response_stall_options() -> HttpBlobOptions {
+    HttpBlobOptions {
+        response_timeout: STALL_TIMEOUT,
+        ..patient_options()
+    }
+}
+
+/// Options that time out a stall in the body after [`STALL_TIMEOUT`], but wait
+/// for the response headers as long as the test does, so that every attempt
+/// gets as far as the stall.
+fn body_stall_options() -> HttpBlobOptions {
+    HttpBlobOptions {
+        body_idle_timeout: STALL_TIMEOUT,
+        ..patient_options()
+    }
+}
+
+/// A future running on a thread of its own. See [`background`].
+struct Background<T> {
+    recv: mpsc::Receiver<T>,
+    thread: JoinHandle<()>,
+}
+
+/// Runs `fut` on a thread of its own.
+///
+/// The test's thread then only waits for the output, for at most [`LIMIT`], so
+/// that a request that never completes fails the test rather than hanging the
+/// test runner.
+fn background<T: 'static + Send>(fut: impl 'static + Send + Future<Output = T>) -> Background<T> {
+    let (send, recv) = mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let output = pal_async::DefaultPool::run_with(async move |_| fut.await);
+        // The test may have stopped waiting.
+        let _ = send.send(output);
+    });
+    Background { recv, thread }
+}
+
+impl<T> Background<T> {
+    /// Waits up to [`LIMIT`] for the output, panicking if there is none.
+    fn wait(self, what: &str) -> T {
+        match self.recv.recv_timeout(LIMIT) {
+            Ok(output) => output,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!("{what} did not complete within {LIMIT:?}")
+            }
+            // The thread panicked. Report that panic rather than this one.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                std::panic::resume_unwind(self.thread.join().unwrap_err())
+            }
+        }
+    }
+}
+
+/// Runs `fut` to completion on a thread of its own, failing the test if that
+/// takes longer than [`LIMIT`].
+fn bounded<T: 'static + Send>(what: &str, fut: impl 'static + Send + Future<Output = T>) -> T {
+    background(fut).wait(what)
+}
+
+/// Opens the blob that `server` publishes and reads `len` bytes at `offset`
+/// from it, within [`LIMIT`].
+fn read_blob(
+    server: &TestHttpServer,
+    options: HttpBlobOptions,
+    offset: u64,
+    len: usize,
+) -> (HttpBlob, std::io::Result<Vec<u8>>) {
+    let url = server.url();
+    bounded("read", async move {
+        let blob = HttpBlob::with_options(&url, options).await.unwrap();
+        let mut buf = vec![0; len];
+        let r = blob.read(&mut buf, offset).await.map(|()| buf);
+        (blob, r)
+    })
+}
+
+/// Returns the JSON for `path` in the blob's inspection output.
+fn inspect_json(blob: &HttpBlob, path: &str) -> String {
+    inspect::inspect(path, blob).results().json().to_string()
+}
+
+/// Reads through a server that fails the first GET requests as `failures` says,
+/// with `options`, and checks that the read recovers: one retry per failure,
+/// the right data, and every stalled connection closed rather than leaked or
+/// reused.
+fn check_recovers(options: HttpBlobOptions, failures: &[Behavior]) {
+    let content = content();
+    let server = TestHttpServer::with_script(
+        content.clone(),
+        Script {
+            get: failures.to_vec(),
+            ..Default::default()
+        },
+    );
+    let (offset, len) = (12345, 64 * 1024);
+    let (_blob, r) = read_blob(&server, options, offset, len);
+    let data = r.unwrap_or_else(|err| panic!("{failures:?}: read failed: {err:?}"));
+    assert!(
+        data == content[offset as usize..][..len],
+        "{failures:?}: read returned the wrong data"
+    );
+    assert_eq!(
+        server.stats().gets,
+        failures.len() + 1,
+        "{failures:?}: wrong number of attempts"
+    );
+    server.wait_for("the stalled connections to be closed", LIMIT, |stats| {
+        stats.abandoned == stats.stalled
+    });
+}
+
+/// A server, or the network path to it, that goes silent before the response.
+#[test]
+fn stall_before_response_is_retried() {
+    check_recovers(response_stall_options(), &[Behavior::StallBeforeResponse]);
+}
+
+/// A server, or the network path to it, that goes silent part way through the
+/// body.
+#[test]
+fn stall_mid_body_is_retried() {
+    check_recovers(body_stall_options(), &[Behavior::StallMidBody]);
+}
+
+#[test]
+fn reset_before_response_is_retried() {
+    check_recovers(patient_options(), &[Behavior::ResetBeforeResponse]);
+}
+
+#[test]
+fn reset_mid_body_is_retried() {
+    check_recovers(patient_options(), &[Behavior::ResetMidBody]);
+}
+
+#[test]
+fn close_mid_body_is_retried() {
+    check_recovers(patient_options(), &[Behavior::CloseMidBody]);
+}
+
+#[test]
+fn service_unavailable_is_retried() {
+    check_recovers(patient_options(), &[Behavior::ServiceUnavailable]);
+}
+
+/// Every attempt is bounded and retried alike, up to the attempt limit.
+#[test]
+fn consecutive_failures_are_retried() {
+    check_recovers(
+        body_stall_options(),
+        &[Behavior::ResetBeforeResponse, Behavior::StallMidBody],
+    );
+}
+
+/// A guest waits for its disk reads, typically without a timeout of its own,
+/// so a read that never completes hangs the guest. When the server never
+/// recovers, the read must fail instead, in bounded time.
+#[test]
+fn persistent_stall_fails_disk_read() {
+    let server = TestHttpServer::new(content(), Behavior::StallMidBody);
+    let url = server.url();
+    // Two stalled attempts are enough to show that the retry is bounded too.
+    let options = HttpBlobOptions {
+        max_attempts: 2,
+        ..body_stall_options()
+    };
+    let attempts = options.max_attempts as usize;
+    let r = bounded("disk read", async move {
+        let blob = HttpBlob::with_options(&url, options).await.unwrap();
+        let disk = Disk::new(BlobDisk::new(blob)).unwrap();
+        let mem = GuestMemory::allocate(SECTOR_SIZE * 8);
+        disk.read_vectored(
+            &OwnedRequestBuffers::linear(0, SECTOR_SIZE * 8, true).buffer(&mem),
+            0,
+        )
+        .await
+    });
+    match r {
+        Err(DiskError::Io(err)) if err.kind() == std::io::ErrorKind::TimedOut => {}
+        r => panic!("expected a timeout, got {r:?}"),
+    }
+    assert_eq!(server.stats().gets, attempts);
+    server.wait_for("the stalled connections to be closed", LIMIT, |stats| {
+        stats.abandoned == attempts
+    });
+}
+
+/// A response that keeps arriving is not a stall, however long it takes.
+#[test]
+fn slow_body_is_not_a_stall() {
+    let content = content();
+    let options = HttpBlobOptions {
+        response_timeout: STALL_TIMEOUT,
+        ..body_stall_options()
+    };
+    // Each pause is well within the idle timeout, but the body as a whole takes
+    // longer than either timeout.
+    let interval = options.body_idle_timeout / 4;
+    let server = TestHttpServer::new(
+        content.clone(),
+        Behavior::SlowBody {
+            pieces: 8,
+            interval,
+        },
+    );
+    let start = Instant::now();
+    let (_blob, r) = read_blob(&server, options.clone(), 0, 64 * 1024);
+    let elapsed = start.elapsed();
+    assert!(r.unwrap() == content[..64 * 1024], "wrong data");
+    assert_eq!(server.stats().gets, 1, "the slow response was retried");
+    assert!(
+        elapsed > options.body_idle_timeout.max(options.response_timeout),
+        "the response was not slow: {elapsed:?}"
+    );
+}
+
+/// A response that keeps arriving, but too slowly ever to finish, is bounded by
+/// the operation timeout instead.
+#[test]
+fn endless_body_is_bounded_by_operation_timeout() {
+    let options = HttpBlobOptions {
+        operation_timeout: STALL_TIMEOUT * 2,
+        ..body_stall_options()
+    };
+    // One byte at a time: the body would take minutes.
+    let server = TestHttpServer::new(
+        content(),
+        Behavior::SlowBody {
+            pieces: 4096,
+            interval: options.body_idle_timeout / 10,
+        },
+    );
+    let start = Instant::now();
+    let (_blob, r) = read_blob(&server, options.clone(), 0, 4096);
+    let elapsed = start.elapsed();
+    match r {
+        Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {}
+        r => panic!("expected a timeout, got {:?}", r.map(|_| ())),
+    }
+    assert!(
+        elapsed >= options.operation_timeout,
+        "timed out early: {elapsed:?}"
+    );
+    assert_eq!(
+        server.stats().gets,
+        1,
+        "retried after the operation timeout"
+    );
+}
+
+/// Opening the blob probes it with a HEAD request, which must recover from a
+/// stall too.
+#[test]
+fn stalled_head_is_retried() {
+    let server = TestHttpServer::with_script(
+        content(),
+        Script {
+            head: vec![Behavior::StallBeforeResponse],
+            ..Default::default()
+        },
+    );
+    let url = server.url();
+    let blob = bounded("open", async move {
+        HttpBlob::with_options(&url, response_stall_options())
+            .await
+            .unwrap()
+    });
+    assert_eq!(blob.len(), DISK_SIZE);
+    assert_eq!(server.stats().heads, 2);
+}
+
+#[test]
+fn persistent_head_stall_fails_open() {
+    // Two stalled attempts are enough to show that the retry is bounded too.
+    let options = HttpBlobOptions {
+        max_attempts: 2,
+        ..response_stall_options()
+    };
+    let attempts = options.max_attempts as usize;
+    let server = TestHttpServer::with_script(
+        content(),
+        Script {
+            head: vec![Behavior::StallBeforeResponse; attempts + 1],
+            ..Default::default()
+        },
+    );
+    let url = server.url();
+    let r = bounded("open", async move {
+        HttpBlob::with_options(&url, options).await.map(drop)
+    });
+    assert!(r.is_err(), "opened a blob whose server never answered");
+    assert_eq!(server.stats().heads, attempts);
+}
+
+/// What a [`silent_server`] sees.
+#[derive(Debug)]
+enum SilentEvent {
+    /// It accepted a connection.
+    Accepted,
+    /// The client closed a connection, having first sent `first`, if it sent
+    /// anything at all.
+    Closed { first: Option<u8> },
+}
+
+/// Starts a server on the loopback interface that accepts connections but
+/// never sends a byte on them, as a server, or the network path to it, that
+/// goes silent once the TCP handshake is done. Returns its port, and a channel
+/// on which it reports each connection that it accepts and each that the
+/// client closes.
+///
+/// Like [`TestHttpServer`], it runs until the process exits.
+fn silent_server() -> (u16, mpsc::Receiver<SilentEvent>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (send, recv) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            if send.send(SilentEvent::Accepted).is_err() {
+                // The test has finished.
+                break;
+            }
+            let send = send.clone();
+            std::thread::spawn(move || {
+                let mut first = None;
+                let mut buf = [0; 4096];
+                // Take in whatever the client sends, and answer none of it.
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            first.get_or_insert(buf[0]);
+                        }
+                    }
+                }
+                let _ = send.send(SilentEvent::Closed { first });
+            });
+        }
+    });
+    (port, recv)
+}
+
+/// The TLS record type of handshake messages, with which the ClientHello that
+/// opens a TLS connection begins.
+const TLS_HANDSHAKE_RECORD: u8 = 0x16;
+
+/// Blobs are normally served over HTTPS, so each new connection begins with a
+/// TLS handshake, inside the connector and before any request is sent. When
+/// the server, or the network path to it, goes silent before answering the
+/// ClientHello, that stall must be bounded like the others: the open fails
+/// with a timeout after its attempts, each on a connection of its own that is
+/// closed when the attempt gives up, rather than waiting for good.
+#[test]
+fn stalled_tls_handshake_fails_open() {
+    let (port, events) = silent_server();
+    // Two stalled attempts are enough to show that the retry is bounded too.
+    let options = HttpBlobOptions {
+        max_attempts: 2,
+        ..response_stall_options()
+    };
+    let attempts = options.max_attempts as usize;
+    let url = format!("https://127.0.0.1:{port}/blob");
+    let r = bounded("open", async move {
+        HttpBlob::with_options(&url, options).await.map(drop)
+    });
+    let err = r.expect_err("opened a blob whose server never answered the TLS handshake");
+    assert!(
+        err.downcast_ref::<std::io::Error>()
+            .is_some_and(|err| err.kind() == std::io::ErrorKind::TimedOut),
+        "expected a timeout, got: {err:#}"
+    );
+
+    let mut accepted = 0;
+    let mut closed = 0;
+    while closed < attempts {
+        match events.recv_timeout(LIMIT) {
+            Ok(SilentEvent::Accepted) => accepted += 1,
+            Ok(SilentEvent::Closed { first }) => {
+                assert_eq!(
+                    first,
+                    Some(TLS_HANDSHAKE_RECORD),
+                    "a connection did not begin a TLS handshake"
+                );
+                closed += 1;
+            }
+            Err(_) => panic!("only {closed} of {attempts} stalled connections were closed"),
+        }
+    }
+    // The server reports each connection's acceptance before its close, so
+    // every connection that has been closed has been counted.
+    assert_eq!(accepted, attempts, "wrong number of connections");
+}
+
+/// A connection whose request timed out must be closed, not returned to the
+/// pool, where a later request would find it and stall in turn.
+#[test]
+fn stalled_connection_is_not_reused() {
+    let content = content();
+    let server = TestHttpServer::with_script(
+        content.clone(),
+        Script {
+            get: vec![Behavior::Correct, Behavior::StallBeforeResponse],
+            keep_alive: true,
+            ..Default::default()
+        },
+    );
+    let url = server.url();
+    let (blob, results) = bounded("reads", async move {
+        let blob = HttpBlob::with_options(&url, response_stall_options())
+            .await
+            .unwrap();
+        let mut results = Vec::new();
+        for i in 0..3 {
+            let mut buf = vec![0; 4096];
+            results.push(blob.read(&mut buf, i * 4096).await.map(|()| buf));
+        }
+        (blob, results)
+    });
+    for (i, r) in results.into_iter().enumerate() {
+        let data = r.unwrap_or_else(|err| panic!("read {i} failed: {err:?}"));
+        assert!(data == content[i * 4096..][..4096], "read {i}: wrong data");
+    }
+    // Only the stalled request was retried.
+    assert_eq!(inspect_json(&blob, "retries"), "1");
+    assert_eq!(inspect_json(&blob, "timeouts"), "1");
+    assert_eq!(server.stats().gets, 4);
+    server.wait_for("the stalled connection to be closed", LIMIT, |stats| {
+        stats.abandoned == 1
+    });
+}
+
+/// Inspection shows what a request that is taking long is waiting for, so that
+/// a hung guest's disk can be told apart from a slow one.
+#[test]
+fn inspect_shows_stalled_request() {
+    let content = content();
+    let server = TestHttpServer::with_script(
+        content.clone(),
+        Script {
+            get: vec![Behavior::StallBeforeResponse],
+            ..Default::default()
+        },
+    );
+    let url = server.url();
+    // Patient, so that the stall does not time out while it is inspected.
+    // Releasing the server ends it instead.
+    let options = patient_options();
+    let blob = Arc::new(bounded("open", async move {
+        HttpBlob::with_options(&url, options).await.unwrap()
+    }));
+    let read = background({
+        let blob = blob.clone();
+        async move {
+            let mut buf = vec![0; 4096];
+            blob.read(&mut buf, 8192).await.map(|()| buf)
+        }
+    });
+    server.wait_for("the request to stall", LIMIT, |stats| stats.stalled == 1);
+    let in_flight = inspect_json(&blob, "in_flight");
+    for expected in [
+        r#""request":"GET bytes=8192-12287""#,
+        r#""attempt":1"#,
+        r#""state":"awaiting_response""#,
+    ] {
+        assert!(
+            in_flight.contains(expected),
+            "{expected} not in {in_flight}"
+        );
+    }
+
+    // Ending the stall fails the attempt, and the retry succeeds.
+    server.release();
+    let data = read.wait("read").unwrap();
+    assert!(data == content[8192..][..4096], "wrong data");
+    assert_eq!(inspect_json(&blob, "in_flight"), "{}");
+    assert_eq!(inspect_json(&blob, "retries"), "1");
+    assert_eq!(inspect_json(&blob, "timeouts"), "0");
+}
+
+/// A failure that a new attempt would only repeat is returned at once.
+#[test]
+fn permanent_errors_are_not_retried() {
+    for behavior in [
+        Behavior::ShortBody,
+        Behavior::IgnoreRange,
+        Behavior::RangeNotSatisfiable,
+    ] {
+        let server = TestHttpServer::new(content(), behavior);
+        let (_blob, r) = read_blob(&server, patient_options(), 0, 4096);
+        assert!(r.is_err(), "{behavior:?}: reported success");
+        assert_eq!(server.stats().gets, 1, "{behavior:?}: retried");
+    }
+}
+
+/// A range whose last byte would lie past the largest offset that a request
+/// can name is refused, without a request, rather than overflowing.
+#[test]
+fn range_past_the_largest_offset_is_refused() {
+    let server = TestHttpServer::new(content(), Behavior::Correct);
+    let (_blob, r) = read_blob(&server, patient_options(), u64::MAX - 100, 4096);
+    match r {
+        Err(err) if err.kind() == std::io::ErrorKind::InvalidInput => {}
+        r => panic!("expected InvalidInput, got {:?}", r.map(|_| ())),
+    }
+    assert_eq!(server.stats().gets, 0);
+}
+
+/// A range that ends at the largest offset that a request can name is
+/// requested like any other, rather than overflowing as its last offset is
+/// computed. The server fails every attempt with 503, so that the read also
+/// names the range in its warnings and its error.
+#[test]
+fn range_ending_at_the_largest_offset_is_requested() {
+    let server = TestHttpServer::new(content(), Behavior::ServiceUnavailable);
+    let options = patient_options();
+    let attempts = options.max_attempts as usize;
+    let offset = u64::MAX - 4095;
+    let (_blob, r) = read_blob(&server, options, offset, 4096);
+    let err = r.map(|_| ()).expect_err("reported success");
+    let range = format!("GET bytes={offset}-{}", u64::MAX);
+    assert!(err.to_string().contains(&range), "{range} not in {err}");
+    assert_eq!(server.stats().gets, attempts);
 }
