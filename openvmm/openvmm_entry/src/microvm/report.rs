@@ -217,7 +217,14 @@ impl MicrovmReportPlan {
                     && teardown.auxiliary_workers_stopped,
             },
         };
-        let parent = self.path.parent().unwrap_or(Path::new("."));
+        // `tempfile` publishes the report with Win32 functions that take a path
+        // beyond the legacy MAX_PATH limits only in its extended-length form.
+        #[cfg(windows)]
+        let path = pal::windows::fs::extended_length_path(&self.path)
+            .context("failed to resolve the microVM report path")?;
+        #[cfg(not(windows))]
+        let path = self.path;
+        let parent = path.parent().unwrap_or(Path::new("."));
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .context("failed to create the microVM report staging file")?;
         serde_json::to_writer_pretty(temporary.as_file_mut(), &report)
@@ -231,7 +238,7 @@ impl MicrovmReportPlan {
             .sync_all()
             .context("failed to flush the microVM report")?;
         temporary
-            .persist_noclobber(&self.path)
+            .persist_noclobber(&path)
             .map_err(|error| error.error)
             .context("failed to publish the microVM report")?;
         Ok(())
@@ -425,5 +432,28 @@ mod tests {
         fs_err::write(&path, b"existing").unwrap();
         let error = validate_destination(&path).unwrap_err();
         assert!(error.to_string().contains("destination already exists"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reports_are_published_below_long_paths() {
+        use std::os::windows::ffi::OsStrExt;
+
+        // The report's path exceeds the legacy MAX_PATH limits of the Win32
+        // functions with which `tempfile` publishes it.
+        let directory = tempfile::tempdir().unwrap();
+        let mut parent = directory.path().to_path_buf();
+        while parent.as_os_str().encode_wide().count() < 300 {
+            parent.push("long-report-parent-component");
+        }
+        fs_err::create_dir_all(&parent).unwrap();
+        let path = parent.join("outcome.json");
+        test_plan(path.clone()).write(&Ok(0)).unwrap();
+        assert_eq!(read_report(&path)["outcome"]["category"], "success");
+
+        // A second report replaces nothing, and neither leaves a staging file.
+        test_plan(path.clone()).write(&Ok(1)).unwrap_err();
+        assert_eq!(read_report(&path)["outcome"]["category"], "success");
+        assert_eq!(fs_err::read_dir(&parent).unwrap().count(), 1);
     }
 }
